@@ -85,6 +85,13 @@ module Api
             tag = extract_tag(payload)
             return "No actionable tag in payload" if tag.blank?
 
+            # Refresh the module's manifest declaration FIRST, so the
+            # version snapshot below inherits the published manifest's
+            # spec/lifecycle fields rather than stale module state.
+            # Failure here is non-fatal — OCI ingest still proceeds with
+            # whatever the module currently declares.
+            refresh_manifest!(node_module, tag)
+
             oci_ref = build_oci_ref(node_module, tag)
             version = find_or_create_version(node_module, tag)
 
@@ -100,6 +107,27 @@ module Api
               Rails.logger.warn "[GiteaModule] ingest failed: #{result.error}"
               "Ingest failed: #{result.error}"
             end
+          end
+
+          # Pulls manifest.yaml from the Gitea repo at the published tag
+          # and runs it through ManifestImportService. Updates the
+          # module's spec/lifecycle columns in place so the version
+          # snapshot created later captures the published declaration,
+          # not the previous one.
+          def refresh_manifest!(node_module, tag)
+            yaml = ::System::ManifestFetchService.fetch(node_module: node_module, ref: tag)
+            return unless yaml.present?
+
+            result = ::System::ManifestImportService.import!(
+              node_module: node_module, yaml: yaml
+            )
+            unless result.ok?
+              Rails.logger.warn "[GiteaModule] manifest re-import failed at tag #{tag}: #{result.error}"
+              return
+            end
+            node_module.reload
+            Rails.logger.info "[GiteaModule] manifest refreshed at tag #{tag}: " \
+                              "#{result.resolved_dependencies.size} dependency reference(s)"
           end
 
           def extract_tag(payload)
