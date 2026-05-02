@@ -41,6 +41,18 @@ RSpec.describe "Api::V1::System::NodeApi::Enrollment", type: :request do
       expect(data["mtls_subject"]).to eq(instance.id)
     end
 
+    it "issues an instance JWT alongside the cert (legacy auth path)" do
+      post "/api/v1/system/node_api/enroll",
+           params: { bootstrap_token: token_plaintext, csr_pem: csr_pem }
+
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body).fetch("data")
+      expect(data["instance_token"]).to be_present
+      payload = ::Security::JwtService.decode(data["instance_token"])
+      expect(payload[:type] || payload["type"]).to eq("instance")
+      expect(payload[:sub] || payload["sub"]).to eq(instance.id)
+    end
+
     it "accepts the token via X-Bootstrap-Token header" do
       post "/api/v1/system/node_api/enroll",
            params: { csr_pem: csr_pem },

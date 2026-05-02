@@ -5,7 +5,7 @@ module System
     include System::Base
 
     # Provider type constants
-    PROVIDER_TYPES = %w[aws openstack gcp azure digitalocean linode vultr custom mock].freeze
+    PROVIDER_TYPES = %w[aws openstack gcp azure digitalocean linode vultr custom mock local_qemu].freeze
 
     # Associations
     belongs_to :account

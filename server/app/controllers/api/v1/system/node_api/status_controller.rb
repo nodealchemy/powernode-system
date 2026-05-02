@@ -48,17 +48,32 @@ module Api
           end
 
           # POST /api/v1/system/node_api/status/heartbeat
-          # Simple heartbeat endpoint
+          #
+          # Body (from powernode-agent's runtime.HeartbeatPayload):
+          #   boot_id, agent_version, architecture, uptime_seconds,
+          #   module_digests (hash of module_id → oci_digest), mount_state,
+          #   load_average, memory_free_kb
+          #
+          # Persists into the NodeInstance's M0.M runtime telemetry columns
+          # (last_heartbeat_at, agent_version, boot_id, running_module_digests,
+          # architecture) via the model's record_heartbeat! method.
           def heartbeat
-            current_instance.update!(
-              config: current_instance.config.merge(
-                "last_heartbeat" => Time.current.iso8601
-              )
+            digests = params[:module_digests]
+            digests = digests.to_unsafe_h if digests.respond_to?(:to_unsafe_h)
+            current_instance.record_heartbeat!(
+              agent_version:  params[:agent_version].presence || "unknown",
+              boot_id:        params[:boot_id].presence       || "unknown",
+              module_digests: digests || {},
+              architecture:   params[:architecture]
             )
 
+            # Transition pending → running on first heartbeat post-enrollment.
+            current_instance.mark_running! if current_instance.may_mark_running?
+
             render_success(
-              acknowledged: true,
-              server_time: Time.current.iso8601
+              acknowledged:      true,
+              server_time:       Time.current.iso8601,
+              next_poll_seconds: 30
             )
           end
 
