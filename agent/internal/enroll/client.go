@@ -26,6 +26,10 @@ type EnrolledIdentity struct {
 	MTLSSubject   string
 	NotAfter      time.Time
 	CertificateID string
+	// InstanceToken is the legacy-path JWT the platform issues alongside the
+	// mTLS cert. Used as Authorization: Bearer in environments where the
+	// reverse proxy isn't doing mTLS termination yet (dev / pre-M0.P).
+	InstanceToken string
 }
 
 // Client speaks to the platform's /node_api/enroll endpoint.
@@ -68,6 +72,7 @@ type EnrollResponse struct {
 		MTLSSubject   string `json:"mtls_subject"`
 		NotAfter      string `json:"not_after"`
 		CertificateID string `json:"certificate_id"`
+		InstanceToken string `json:"instance_token"`
 	} `json:"data"`
 	Error string `json:"error,omitempty"`
 }
@@ -172,6 +177,7 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 		MTLSSubject:   er.Data.MTLSSubject,
 		NotAfter:      notAfter,
 		CertificateID: er.Data.CertificateID,
+		InstanceToken: er.Data.InstanceToken,
 	}, nil
 }
 

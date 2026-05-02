@@ -15,12 +15,13 @@ const PKIDir = "/persist/var/lib/powernode/pki"
 
 // PKIPaths are the canonical filenames within PKIDir.
 type PKIPaths struct {
-	Dir     string
-	Key     string // private key (PEM)
-	Cert    string // leaf cert (PEM)
-	CAChain string // platform's issuing chain (PEM)
+	Dir      string
+	Key      string // private key (PEM)
+	Cert     string // leaf cert (PEM)
+	CAChain  string // platform's issuing chain (PEM)
 	CABundle string // platform's TLS verification chain (PEM, from boot identity)
-	Meta    string // small JSON sidecar with InstanceID, NotAfter, etc.
+	Meta     string // small JSON sidecar with InstanceID, NotAfter, etc.
+	Token    string // legacy-path instance JWT (Bearer for non-mTLS proxies)
 }
 
 // DefaultPKIPaths returns the canonical paths under PKIDir.
@@ -36,6 +37,7 @@ func PathsUnder(dir string) PKIPaths {
 		CAChain:  filepath.Join(dir, "ca-chain.crt"),
 		CABundle: filepath.Join(dir, "ca-bundle.crt"),
 		Meta:     filepath.Join(dir, "meta.json"),
+		Token:    filepath.Join(dir, "instance-token.jwt"),
 	}
 }
 
@@ -66,6 +68,11 @@ func Save(id *EnrolledIdentity, paths PKIPaths) error {
 	}
 	if len(id.CABundlePEM) > 0 {
 		if err := writeFileAtomic(paths.CABundle, id.CABundlePEM, 0o644); err != nil {
+			return err
+		}
+	}
+	if id.InstanceToken != "" {
+		if err := writeFileAtomic(paths.Token, []byte(id.InstanceToken), 0o600); err != nil {
 			return err
 		}
 	}

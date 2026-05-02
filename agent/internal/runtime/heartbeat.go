@@ -46,6 +46,10 @@ type Heartbeater struct {
 	Client       *transport.Client
 	StartedAt    time.Time
 	BuildPayload func() HeartbeatPayload // closure that gathers fresh runtime metrics
+	// PostSend, if non-nil, is invoked after each successful heartbeat. The
+	// service uses it to refresh ancillary state (e.g. authorized_keys) on the
+	// same cadence without spinning up a separate goroutine.
+	PostSend func()
 }
 
 // Send delivers one heartbeat. Returns the parsed response so callers
@@ -99,8 +103,13 @@ func (h *Heartbeater) Run(ctx context.Context, defaultInterval time.Duration, on
 			if onError != nil {
 				onError(err)
 			}
-		} else if hr.Data.NextPollSeconds > 0 {
-			nextInterval = time.Duration(hr.Data.NextPollSeconds) * time.Second
+		} else {
+			if hr.Data.NextPollSeconds > 0 {
+				nextInterval = time.Duration(hr.Data.NextPollSeconds) * time.Second
+			}
+			if h.PostSend != nil {
+				h.PostSend()
+			}
 		}
 
 		select {
@@ -120,5 +129,10 @@ func postJSON(ctx context.Context, c *transport.Client, path string, body []byte
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	// Attach the legacy-path Bearer JWT if the client has one. The platform's
+	// authenticate_instance! tries mTLS first, falls through to this token.
+	if c.InstanceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.InstanceToken)
+	}
 	return c.Do(req)
 }

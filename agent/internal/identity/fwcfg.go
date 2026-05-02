@@ -13,10 +13,13 @@ import (
 // (System::Providers::LocalQemuProvider in the platform extension) injects
 // each identity value under the path:
 //
-//	/sys/firmware/qemu_fw_cfg/by_name/opt/powernode/instance_uuid/raw
-//	/sys/firmware/qemu_fw_cfg/by_name/opt/powernode/bootstrap_token/raw
-//	/sys/firmware/qemu_fw_cfg/by_name/opt/powernode/platform_url/raw
-//	/sys/firmware/qemu_fw_cfg/by_name/opt/powernode/ca_pem/raw
+//	/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/instance_uuid/raw
+//	/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/bootstrap_token/raw
+//	/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw
+//	/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/ca_pem/raw
+//
+// The `com.powernode` prefix is QEMU's reverse-DNS convention for opt-namespace
+// fw-cfg entries. The platform's CloudSeed writes them under this path.
 //
 // This is the cleanest first-boot identity transport for QEMU/KVM (no
 // network required, no metadata service, no boot-disk formatting).
@@ -32,7 +35,7 @@ func (s *FwCfgStrategy) Name() string { return "virtio-fw-cfg" }
 func (s *FwCfgStrategy) Discover(ctx context.Context) (*Identity, error) {
 	root := s.Root
 	if root == "" {
-		root = "/sys/firmware/qemu_fw_cfg/by_name/opt/powernode"
+		root = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode"
 	}
 
 	uuid, err := readFwCfg(root, "instance_uuid")

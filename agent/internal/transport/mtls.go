@@ -22,6 +22,10 @@ type Client struct {
 	*http.Client
 	PlatformURL string
 	InstanceID  string
+	// InstanceToken is the legacy-path JWT. When non-empty, every request
+	// gets `Authorization: Bearer <token>` so the platform can authenticate
+	// us before mTLS termination is configured at the reverse proxy.
+	InstanceToken string
 }
 
 // LoadFromPKIDir reads cert + key + CA bundle from the canonical agent
@@ -64,11 +68,28 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 	// Read meta.json for instance_id (best-effort; non-fatal if absent).
 	instanceID := readInstanceID(paths.Meta)
 
+	// Read instance JWT (best-effort; absent on pure-mTLS deployments).
+	tokenBytes, _ := os.ReadFile(paths.Token)
+
 	return &Client{
-		Client:      httpClient,
-		PlatformURL: platformURL,
-		InstanceID:  instanceID,
+		Client:        httpClient,
+		PlatformURL:   platformURL,
+		InstanceID:    instanceID,
+		InstanceToken: trimSpace(string(tokenBytes)),
 	}, nil
+}
+
+// trimSpace removes leading/trailing whitespace without pulling strings.
+func trimSpace(s string) string {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[start:end]
 }
 
 // PostJSON wraps http.Client.Post with JSON content-type + Accept headers.
@@ -80,6 +101,7 @@ func (c *Client) PostJSON(path string, body []byte) (*http.Response, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	c.setAuth(req)
 	return c.Do(req)
 }
 
@@ -90,7 +112,19 @@ func (c *Client) GetJSON(path string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	c.setAuth(req)
 	return c.Do(req)
+}
+
+// setAuth attaches the instance JWT Bearer header when one is loaded. mTLS
+// material is already configured on the underlying http.Transport, so this
+// is purely additive — the platform's authenticate_instance! tries mTLS
+// first, then falls through to the Bearer token. Belt-and-suspenders is the
+// right posture during the M0.P transition window.
+func (c *Client) setAuth(req *http.Request) {
+	if c.InstanceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.InstanceToken)
+	}
 }
 
 // readInstanceID extracts "instance_id" from the meta.json sidecar. If
