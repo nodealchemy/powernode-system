@@ -1,0 +1,50 @@
+schema_version: 1
+
+name: apache
+display_name: "Apache 2.4 (mpm_event)"
+description: "Apache 2.4 with mpm_event + mod_security2. Example service module — runs a simple welcome page on port 80."
+license: "MIT"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/var/log/apache2/**"
+
+file_spec:
+  - "/etc/apache2/**"
+  - "/usr/sbin/apache2"
+  - "/usr/lib/apache2/**"
+  - "/var/www/**"
+
+package_spec:
+  - apache2
+  - apache2-utils
+  - libapache2-mod-security2
+
+dependencies:
+  requires:
+    - powernode/system-base@^1.0
+  provides:
+    - http.server
+    - http.port:80
+
+init:
+  start:   "systemctl start apache2"
+  stop:    "systemctl stop apache2"
+  restart: "systemctl reload apache2"
+
+reboot_required: false
+
+security:
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

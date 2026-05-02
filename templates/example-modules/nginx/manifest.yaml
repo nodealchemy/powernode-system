@@ -1,0 +1,53 @@
+schema_version: 1
+
+name: nginx
+display_name: "nginx 1.24"
+description: "nginx 1.24 — example service module. Alternative to apache; runs a simple welcome page on port 80."
+license: "MIT"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/var/log/nginx/**"
+
+file_spec:
+  - "/etc/nginx/**"
+  - "/usr/sbin/nginx"
+  - "/usr/share/nginx/**"
+  - "/var/www/**"
+
+package_spec:
+  - nginx
+  - nginx-common
+
+dependencies:
+  requires:
+    - powernode/system-base@^1.0
+  provides:
+    - http.server
+    - http.port:80
+
+# nginx and apache both provide http.port:80 — the dependency resolver will
+# refuse to attach both to the same template. The smoke catalog ships them
+# in separate templates (smoke-web-apache vs smoke-web-nginx) by design.
+
+init:
+  start:   "systemctl start nginx"
+  stop:    "systemctl stop nginx"
+  restart: "systemctl reload nginx"
+
+reboot_required: false
+
+security:
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

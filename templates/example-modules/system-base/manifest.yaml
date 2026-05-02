@@ -1,0 +1,70 @@
+schema_version: 1
+
+name: system-base
+display_name: "System Base (Ubuntu 24.04 minbase)"
+description: "Minimal Ubuntu 24.04 LTS rootfs — systemd-networkd, openssh, powernode-agent runtime deps. Every smoke node depends on this."
+license: "MIT"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/var/log/**"
+
+file_spec:
+  - "/etc/**"
+  - "/usr/bin/**"
+  - "/usr/sbin/**"
+  - "/usr/lib/**"
+  - "/lib/**"
+  - "/sbin/**"
+  - "/bin/**"
+
+package_spec:
+  - bash
+  - coreutils
+  - util-linux
+  - systemd
+  - systemd-sysv
+  - systemd-networkd
+  - systemd-resolved
+  - dbus
+  - iputils-ping
+  - iproute2
+  - openssh-server
+  - ca-certificates
+  - curl
+  - dosfstools
+  - kmod
+  - udev
+
+dependencies:
+  requires: []
+  provides:
+    - base.os
+    - net.systemd-networkd
+    - sshd
+
+init:
+  start: "systemctl start systemd-networkd systemd-resolved ssh"
+  stop:  "systemctl stop ssh"
+  restart: ""
+
+reboot_required: false
+
+security:
+  capabilities:
+    - CAP_NET_ADMIN
+    - CAP_NET_BIND_SERVICE
+    - CAP_SYS_ADMIN
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  ubuntu_digest: null
+  apt_snapshot: "20260415T000000Z"
