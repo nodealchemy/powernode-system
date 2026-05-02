@@ -22,8 +22,8 @@ import { AttributionFeedbackButton } from './AttributionFeedbackButton';
 // recent state on page load before live events start arriving.
 const MAX_EVENT_BUFFER = 200;
 
-export function FleetDashboardPage(): JSX.Element {
-  const { showNotification } = useNotifications();
+export function FleetDashboardPage(): React.JSX.Element {
+  const { addNotification } = useNotifications();
   const { currentUser } = useAuth();
   const accountId = (currentUser as { account?: { id?: string } } | null)?.account?.id;
 
@@ -40,11 +40,11 @@ export function FleetDashboardPage(): JSX.Element {
       const result = await fleetApi.recentSignals({ limit: 100, kind: filterKind || undefined });
       setEvents(result.events);
     } catch (err) {
-      showNotification({ type: 'error', message: 'Failed to load fleet events' });
+      addNotification({ type: 'error', message: 'Failed to load fleet events' });
     } finally {
       setLoading(false);
     }
-  }, [accountId, filterKind, showNotification]);
+  }, [accountId, filterKind, addNotification]);
 
   useEffect(() => {
     void refreshBacklog();
@@ -66,14 +66,14 @@ export function FleetDashboardPage(): JSX.Element {
         }
       },
       onError: (err: string) => {
-        showNotification({ type: 'warning', message: `Fleet channel error: ${err}` });
+        addNotification({ type: 'warning', message: `Fleet channel error: ${err}` });
       }
     });
 
     return () => {
       unsubscribe();
     };
-  }, [accountId, showNotification]);
+  }, [accountId, addNotification]);
 
   // Counters derived from buffer + a short-window rate
   const counters = useMemo(() => {
@@ -216,7 +216,7 @@ interface CounterProps {
   value: number | string;
   highlight?: boolean;
 }
-function Counter({ icon, label, value, highlight }: CounterProps): JSX.Element {
+function Counter({ icon, label, value, highlight }: CounterProps): React.JSX.Element {
   return (
     <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning' : 'border-theme-border'} p-3`}>
       <div className="flex items-center justify-between">
@@ -230,8 +230,8 @@ function Counter({ icon, label, value, highlight }: CounterProps): JSX.Element {
   );
 }
 
-function SeverityBadge({ severity }: { severity: FleetEvent['severity'] }): JSX.Element {
-  const variant = severity === 'critical' || severity === 'high' ? 'error' : severity === 'medium' ? 'warning' : 'default';
+function SeverityBadge({ severity }: { severity: FleetEvent['severity'] }): React.JSX.Element {
+  const variant = severity === 'critical' || severity === 'high' ? 'danger' : severity === 'medium' ? 'warning' : 'default';
   return <Badge variant={variant}>{severity}</Badge>;
 }
 

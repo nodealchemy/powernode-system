@@ -1,22 +1,30 @@
-import { lazy } from 'react';
+import { ComponentType, lazy } from 'react';
 import { featureRegistry } from '@/shared/services/featureRegistry';
 
-// Lazy-loaded system page components.
-// Paths are relative to this register.ts so the @system/ alias is not required here.
-const SystemOverviewPage = lazy(() => import('./pages/app/system/SystemOverviewPage').then(m => ({ default: m.default || m.SystemOverviewPage })));
-const NodesPage = lazy(() => import('./pages/app/system/NodesPage').then(m => ({ default: m.default || m.NodesPage })));
-const OperationsPage = lazy(() => import('./pages/app/system/OperationsPage').then(m => ({ default: m.default || m.OperationsPage })));
-const ProvidersPage = lazy(() => import('./pages/app/system/ProvidersPage').then(m => ({ default: m.default || m.ProvidersPage })));
-const ArchitecturesPage = lazy(() => import('./pages/app/system/ArchitecturesPage').then(m => ({ default: m.default || m.ArchitecturesPage })));
-const PlatformsPage = lazy(() => import('./pages/app/system/PlatformsPage').then(m => ({ default: m.default || m.PlatformsPage })));
-const TemplatesPage = lazy(() => import('./pages/app/system/TemplatesPage').then(m => ({ default: m.default || m.TemplatesPage })));
-const VolumesPage = lazy(() => import('./pages/app/system/VolumesPage').then(m => ({ default: m.default || m.VolumesPage })));
-const NetworksPage = lazy(() => import('./pages/app/system/NetworksPage').then(m => ({ default: m.default || m.NetworksPage })));
-const ScriptsPage = lazy(() => import('./pages/app/system/ScriptsPage').then(m => ({ default: m.default || m.ScriptsPage })));
-const ModulesPage = lazy(() => import('./pages/app/system/ModulesPage').then(m => ({ default: m.default || m.ModulesPage })));
-const PuppetModulesPage = lazy(() => import('./pages/app/system/PuppetModulesPage').then(m => ({ default: m.default || m.PuppetModulesPage })));
-const FleetDashboardPage = lazy(() => import('./pages/app/system/FleetDashboardPage').then(m => ({ default: m.default || m.FleetDashboardPage })));
-const TemplateComposerPage = lazy(() => import('./pages/app/system/TemplateComposerPage').then(m => ({ default: m.default || m.TemplateComposerPage })));
+// Helper: widen the lazy-loaded module's default-export type from the
+// concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
+// that `featureRegistry.FeatureRoute.component` expects. This is the
+// boundary where strict type variance bites — every page component is
+// a different `FC<P>`, but the registry stores them in a single typed
+// list. The cast happens here, once, instead of at every call site.
+const lazyPage = <P,>(
+  loader: () => Promise<{ default: ComponentType<P> }>
+) => lazy(loader as () => Promise<{ default: ComponentType<unknown> }>);
+
+const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverviewPage'));
+const NodesPage = lazyPage(() => import('./pages/app/system/NodesPage'));
+const OperationsPage = lazyPage(() => import('./pages/app/system/OperationsPage'));
+const ProvidersPage = lazyPage(() => import('./pages/app/system/ProvidersPage'));
+const ArchitecturesPage = lazyPage(() => import('./pages/app/system/ArchitecturesPage'));
+const PlatformsPage = lazyPage(() => import('./pages/app/system/PlatformsPage'));
+const TemplatesPage = lazyPage(() => import('./pages/app/system/TemplatesPage'));
+const VolumesPage = lazyPage(() => import('./pages/app/system/VolumesPage'));
+const NetworksPage = lazyPage(() => import('./pages/app/system/NetworksPage'));
+const ScriptsPage = lazyPage(() => import('./pages/app/system/ScriptsPage'));
+const ModulesPage = lazyPage(() => import('./pages/app/system/ModulesPage'));
+const PuppetModulesPage = lazyPage(() => import('./pages/app/system/PuppetModulesPage'));
+const FleetDashboardPage = lazyPage(() => import('./pages/app/system/FleetDashboardPage'));
+const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -42,8 +50,6 @@ export function register(): void {
     { path: '/system/puppet-modules', component: PuppetModulesPage },
     { path: '/system/fleet', component: FleetDashboardPage },
     { path: '/system/templates/compose', component: TemplateComposerPage },
-    // services / audit-logs / storage-providers / workers all removed —
-    // see comment above for rationale.
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -72,9 +78,6 @@ export function register(): void {
         { label: 'Modules', path: '/app/system/modules', icon: 'Boxes', order: 12 },
         { label: 'Puppet Modules', path: '/app/system/puppet-modules', icon: 'PackageOpen', order: 13 },
         { label: 'Scripts', path: '/app/system/scripts', icon: 'FileCode', order: 14 },
-        // Workers / Audit Logs / Storage / Services removed — these
-        // duplicated admin/* pages and live at /app/admin/{workers,audit-logs,
-        // storage-providers,services}.
       ],
     },
   ]);

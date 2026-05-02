@@ -18,7 +18,7 @@ interface Props {
 // confirm/reject each via the AttributionFeedbackButton — feeding the
 // learning loop that boosts/downweights similar candidates next time.
 export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, onClose }) => {
-  const { showNotification } = useNotifications();
+  const { addNotification } = useNotifications();
   const [result, setResult] = useState<AttributionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [lookbackHours, setLookbackHours] = useState(24);
@@ -30,7 +30,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
       const data = await fleetApi.attributeFailure(instanceId, lookbackHours);
       setResult(data);
     } catch {
-      showNotification({ type: 'error', message: 'Attribution failed' });
+      addNotification({ type: 'error', message: 'Attribution failed' });
     } finally {
       setLoading(false);
     }

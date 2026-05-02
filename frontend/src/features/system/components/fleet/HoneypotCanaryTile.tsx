@@ -44,7 +44,7 @@ export const HoneypotCanaryTile: React.FC = () => {
           {last24h.length > 0 ? <ShieldAlert size={14} className="text-theme-error" /> : <Shield size={14} />}
           Honeypot Canaries
         </div>
-        {last24h.length > 0 && <Badge variant="error">ALERT</Badge>}
+        {last24h.length > 0 && <Badge variant="danger">ALERT</Badge>}
       </div>
       <div className="mt-1">
         {loading ? (

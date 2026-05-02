@@ -22,7 +22,7 @@ interface Props {
 // existing endpoint shape. M-FE-1.1 will batch into a single transactional
 // "create_with_modules" endpoint once the operator UX warrants it.
 export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose, onSaved }) => {
-  const { showNotification } = useNotifications();
+  const { addNotification } = useNotifications();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [platformId, setPlatformId] = useState<string>('');
@@ -79,7 +79,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
 
       const failed = assignments.filter((a) => a.status === 'rejected');
       if (failed.length > 0) {
-        showNotification({
+        addNotification({
           type: 'warning',
           message: `Template saved but ${failed.length} module(s) failed to attach. Reassign from template detail.`
         });

@@ -206,7 +206,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
           message: `Connection "${payload.name}" updated successfully`
         });
       } else {
-        await systemApi.createProviderConnection(payload as Parameters<typeof systemApi.createProviderConnection>[0]);
+        await systemApi.createProviderConnection(payload as unknown as Parameters<typeof systemApi.createProviderConnection>[0]);
         addNotification({
           type: 'success',
           message: `Connection "${payload.name}" created successfully`

@@ -24,8 +24,8 @@ import { SaveTemplateModal } from './SaveTemplateModal';
 // Future hooks: drag-and-drop reordering of priority via ComposerCanvas
 // rows, dependency-graph visualization (react-flow), save-as-template
 // modal that feeds the same module_ids into POST /node_templates.
-export function TemplateComposerPage(): JSX.Element {
-  const { showNotification } = useNotifications();
+export function TemplateComposerPage(): React.JSX.Element {
+  const { addNotification } = useNotifications();
   const [selectedModules, setSelectedModules] = useState<SystemNodeModule[]>([]);
   const [preview, setPreview] = useState<TemplateComposePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -42,11 +42,11 @@ export function TemplateComposerPage(): JSX.Element {
       const response = await systemApi.getModules({ per_page: 200 });
       setCatalog(response.modules ?? []);
     } catch (error) {
-      showNotification({ type: 'error', message: 'Failed to load module catalog' });
+      addNotification({ type: 'error', message: 'Failed to load module catalog' });
     } finally {
       setCatalogLoading(false);
     }
-  }, [showNotification]);
+  }, [addNotification]);
 
   React.useEffect(() => {
     void refreshCatalog();
@@ -72,12 +72,12 @@ export function TemplateComposerPage(): JSX.Element {
         const result = await systemApi.composePreview(ids);
         setPreview(result);
       } catch (error) {
-        showNotification({ type: 'error', message: 'Compose preview failed' });
+        addNotification({ type: 'error', message: 'Compose preview failed' });
       } finally {
         setPreviewing(false);
       }
     },
-    [showNotification]
+    [addNotification]
   );
 
   const addModule = useCallback(
@@ -141,7 +141,7 @@ export function TemplateComposerPage(): JSX.Element {
           onClose={() => setShowSaveModal(false)}
           onSaved={(template) => {
             setShowSaveModal(false);
-            showNotification({ type: 'success', message: `Template ${template.name} created` });
+            addNotification({ type: 'success', message: `Template ${template.name} created` });
             setSelectedModules([]);
             setPreview(null);
           }}
@@ -235,7 +235,7 @@ export function TemplateComposerPage(): JSX.Element {
   );
 }
 
-function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }): JSX.Element {
+function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }): React.JSX.Element {
   if (conflicts.length === 0) {
     return (
       <div className="text-sm text-theme-muted">
@@ -261,7 +261,7 @@ function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }):
   );
 }
 
-function FootprintPanel({ footprint }: { footprint?: TemplateComposePreview['footprint'] }): JSX.Element {
+function FootprintPanel({ footprint }: { footprint?: TemplateComposePreview['footprint'] }): React.JSX.Element {
   if (!footprint) {
     return <div className="text-sm text-theme-muted">Footprint will appear once you add modules.</div>;
   }

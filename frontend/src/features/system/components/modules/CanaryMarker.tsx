@@ -24,7 +24,7 @@ const LURE_KINDS = [
 // Operator UI for marking/unmarking a module as a honeypot canary
 // (Track F-6). Confirms the security implication before flipping the bit.
 export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
-  const { showNotification } = useNotifications();
+  const { addNotification } = useNotifications();
   const honeypot = (module.config as { honeypot?: { canary?: boolean; lure_kind?: string; marked_at?: string } } | undefined)?.honeypot;
   const isCanary = honeypot?.canary === true;
   const [confirming, setConfirming] = useState(false);
@@ -35,14 +35,14 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
     setSubmitting(true);
     try {
       const updated = await systemApi.markModuleAsCanary(module.id, lureKind);
-      showNotification({
+      addNotification({
         type: 'success',
         message: `Module marked as honeypot canary (lure: ${lureKind})`
       });
       setConfirming(false);
       onUpdated?.(updated);
     } catch {
-      showNotification({ type: 'error', message: 'Failed to mark as canary' });
+      addNotification({ type: 'error', message: 'Failed to mark as canary' });
     } finally {
       setSubmitting(false);
     }
@@ -52,10 +52,10 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
     setSubmitting(true);
     try {
       const updated = await systemApi.unmarkModuleAsCanary(module.id);
-      showNotification({ type: 'success', message: 'Canary marker removed' });
+      addNotification({ type: 'success', message: 'Canary marker removed' });
       onUpdated?.(updated);
     } catch {
-      showNotification({ type: 'error', message: 'Failed to remove canary marker' });
+      addNotification({ type: 'error', message: 'Failed to remove canary marker' });
     } finally {
       setSubmitting(false);
     }

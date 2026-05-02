@@ -23,7 +23,7 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
   candidateKind,
   onSubmitted
 }) => {
-  const { showNotification } = useNotifications();
+  const { addNotification } = useNotifications();
   const [note, setNote] = useState('');
   const [showNote, setShowNote] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -38,7 +38,7 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
         confirmed,
         note: note.trim() || undefined
       });
-      showNotification({
+      addNotification({
         type: 'success',
         message: confirmed
           ? 'Confirmed — future calls will boost similar candidates'
@@ -48,7 +48,7 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
       setShowNote(false);
       onSubmitted?.();
     } catch {
-      showNotification({ type: 'error', message: 'Feedback submission failed' });
+      addNotification({ type: 'error', message: 'Feedback submission failed' });
     } finally {
       setSubmitting(false);
     }

@@ -13,7 +13,12 @@
     "baseUrl": ".",
     "noEmit": true
   },
-  "include": ["src", "../../../frontend/src/shared/**/*.ts", "../../../frontend/src/shared/**/*.tsx"],
+  "include": [
+    "src",
+    "../../../frontend/src/*.d.ts",
+    "../../../frontend/src/shared/**/*.ts",
+    "../../../frontend/src/shared/**/*.tsx"
+  ],
   "exclude": [
     "**/*.test.ts",
     "**/*.test.tsx",

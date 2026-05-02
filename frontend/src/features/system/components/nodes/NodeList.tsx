@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Server,
   Search,
-  Plus,
   Eye,
   Edit,
   Trash2,

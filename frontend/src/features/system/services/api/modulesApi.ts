@@ -160,4 +160,24 @@ export const modulesApi = {
   removeModuleDependency: async (moduleId: string, dependencyId: string): Promise<void> => {
     await apiClient.delete(`/system/node_modules/${moduleId}/dependencies/${dependencyId}`);
   },
+
+  // ===== Honeypot canary toggle =====
+  // Backend routes: POST /system/node_modules/:id/{mark,unmark}_canary
+  // (System::Honeypot::CanaryModuleService — flips a config flag on the
+  // module that HoneypotAccessSensor watches for unexpected reads).
+  markModuleAsCanary: async (moduleId: string, lureKind?: string): Promise<SystemNodeModule> => {
+    const response = await apiClient.post<ApiEnvelope<{ node_module: SystemNodeModule }>>(
+      `/system/node_modules/${moduleId}/mark_canary`,
+      lureKind ? { lure_kind: lureKind } : {},
+    );
+    return extractData(response).node_module;
+  },
+
+  unmarkModuleAsCanary: async (moduleId: string): Promise<SystemNodeModule> => {
+    const response = await apiClient.post<ApiEnvelope<{ node_module: SystemNodeModule }>>(
+      `/system/node_modules/${moduleId}/unmark_canary`,
+      {},
+    );
+    return extractData(response).node_module;
+  },
 };

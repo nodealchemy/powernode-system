@@ -13,6 +13,7 @@ export interface SystemNode {
   node_template_name?: string;
   worker_id?: string;
   instance_count?: number;
+  running_instances_count?: number;
   created_at: string;
   updated_at: string;
 }

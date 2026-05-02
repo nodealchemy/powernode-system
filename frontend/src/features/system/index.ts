@@ -1,21 +1,10 @@
 /**
- * System Feature Module
+ * System Feature Module — barrel export.
  *
- * System status, audit logs, storage providers, and worker management
+ * Previously re-exported status / audit-logs / storage / workers feature
+ * modules; those were moved to the platform's admin/* surface, leaving
+ * this barrel empty. Direct imports from `@system/features/system/<area>/...`
+ * are still the convention for the surfaces that remain (modules, nodes,
+ * fleet, providers, templates, etc.).
  */
-
-// Status monitoring
-export * from './status';
-
-// Audit logging
-export { auditLogsApi } from './audit-logs/services/auditLogsApi';
-
-// Storage providers
-export { storageApi } from './storage/services/storageApi';
-export { StorageProviderCard } from './storage/components/StorageProviderCard';
-export { StorageProviderModal } from './storage/components/StorageProviderModal';
-export { ConnectionTestModal } from './storage/components/ConnectionTestModal';
-
-// Workers
-export * from './workers/components';
-export { workerApi } from './workers/services/workerApi';
+export {};

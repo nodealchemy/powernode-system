@@ -23,7 +23,7 @@ interface Props {
 // the budget — useful when the operator approved a flurry of legitimate
 // decisions and wants to restore the budget without waiting 24 hours.
 export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
-  const { showNotification } = useNotifications();
+  const { addNotification } = useNotifications();
   const [budget, setBudget] = useState<string>(
     module.consent_budget_per_day != null ? String(module.consent_budget_per_day) : ''
   );
@@ -39,10 +39,10 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
     try {
       const value = budget === '' ? null : Math.max(0, parseInt(budget, 10) || 0);
       const updated = await systemApi.updateModule(module.id, { consent_budget_per_day: value });
-      showNotification({ type: 'success', message: 'Consent budget updated' });
+      addNotification({ type: 'success', message: 'Consent budget updated' });
       onUpdated?.(updated);
     } catch (err) {
-      showNotification({ type: 'error', message: 'Update failed' });
+      addNotification({ type: 'error', message: 'Update failed' });
     } finally {
       setSaving(false);
     }
@@ -55,10 +55,10 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
         consent_budget_used_count: 0,
         consent_budget_window_start_at: new Date().toISOString()
       });
-      showNotification({ type: 'success', message: 'Window reset' });
+      addNotification({ type: 'success', message: 'Window reset' });
       onUpdated?.(updated);
     } catch {
-      showNotification({ type: 'error', message: 'Reset failed' });
+      addNotification({ type: 'error', message: 'Reset failed' });
     } finally {
       setSaving(false);
     }

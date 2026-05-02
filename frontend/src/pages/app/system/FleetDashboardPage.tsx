@@ -1,5 +1,4 @@
 import React from 'react';
-import { Activity } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { FleetDashboardPage as FleetDashboardComponent } from '@system/features/system/components/fleet/FleetDashboardPage';
@@ -15,10 +14,7 @@ const FleetDashboardPageWrapper: React.FC = () => {
 
   if (!hasPermission('system.fleet.autonomy')) {
     return (
-      <PageContainer
-        title="Fleet Dashboard"
-        icon={<Activity size={20} />}
-      >
+      <PageContainer title="Fleet Dashboard">
         <div className="p-6 text-sm text-theme-muted">
           You don't have permission to view the fleet dashboard.
           Required: <code>system.fleet.autonomy</code>
@@ -28,11 +24,7 @@ const FleetDashboardPageWrapper: React.FC = () => {
   }
 
   return (
-    <PageContainer
-      title="Fleet Dashboard"
-      icon={<Activity size={20} />}
-      noPadding
-    >
+    <PageContainer title="Fleet Dashboard">
       <FleetDashboardComponent />
     </PageContainer>
   );
