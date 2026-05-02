@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -60,15 +61,23 @@ func UnmountModule(ctx context.Context, runner Runner, l Layout, digest string) 
 }
 
 // IsMountpoint returns true if the given path is currently a mount point.
-// Uses `findmnt` (cheap, returns nonzero if not a mount).
+// Uses `findmnt --noheadings` and inspects its stdout: non-empty output ⇒
+// path is a mount, empty (or non-zero exit) ⇒ not a mount.
+//
+// Inspecting stdout (rather than the exit code via Runner.Run) makes the
+// behavior trivially mockable via RecorderRunner — by default Output
+// returns nil bytes for unstubbed commands, which naturally maps to
+// "not a mountpoint". Tests that need to simulate "is mounted" populate
+// StubOutput[findmnt-key] with a non-empty byte slice.
+//
+// findmnt returns exit 1 when not a mount; treating any non-success as
+// "not mounted" is the right call here — real misconfig (findmnt missing,
+// etc.) surfaces in subsequent mount/umount commands rather than this
+// idempotency check.
 func IsMountpoint(ctx context.Context, runner Runner, path string) (bool, error) {
-	err := runner.Run(ctx, "findmnt", "--noheadings", path)
-	if err == nil {
-		return true, nil
+	out, err := runner.Output(ctx, "findmnt", "--noheadings", path)
+	if err != nil {
+		return false, nil
 	}
-	// findmnt returns exit 1 when not a mount; differentiating from a
-	// real error is awkward through Run's combined-error wrapper, so
-	// we treat any non-success as "not mounted" here. Real misconfig
-	// (findmnt missing, etc.) will surface in subsequent commands.
-	return false, nil
+	return len(bytes.TrimSpace(out)) > 0, nil
 }

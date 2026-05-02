@@ -260,6 +260,30 @@ func TestMountModule_MissingBlob_FailsClearly(t *testing.T) {
 	}
 }
 
+func TestMountModule_AlreadyMounted_NoOp(t *testing.T) {
+	// Idempotency: when findmnt reports the mountpoint is already a mount,
+	// MountModule must skip the actual `mount -t composefs` invocation.
+	l := DefaultLayout()
+	l.Root = t.TempDir()
+	l = l.Resolve()
+	digest := "sha256:abc"
+	mountpoint := l.ModuleMountPath(digest)
+
+	rec := &RecorderRunner{
+		StubOutput: map[string][]byte{
+			"findmnt --noheadings " + mountpoint: []byte(mountpoint + " composefs ro,...\n"),
+		},
+	}
+	if err := MountModule(context.Background(), rec, l, Module{Digest: digest}); err != nil {
+		t.Fatalf("MountModule: %v", err)
+	}
+	for _, inv := range rec.Invocations {
+		if inv.Op == "Run" && inv.Name == "mount" {
+			t.Errorf("expected no mount call when already mounted; got: %+v", inv)
+		}
+	}
+}
+
 func TestMountModule_WithBlob_IssuesComposefsMount(t *testing.T) {
 	l := DefaultLayout()
 	l.Root = t.TempDir()
