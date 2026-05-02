@@ -293,54 +293,141 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   const renderSpecsTab = () => {
     if (!module) return null;
 
-    const hasFileSpec = module.file_spec && Object.keys(module.file_spec).length > 0;
-    const hasMask = module.mask && Object.keys(module.mask).length > 0;
+    // Each spec field arrives from the API as a `string[]` of base64-encoded
+    // glob lines, paired with a pre-decoded `_text` companion. Use the
+    // _text companion for display — it's the same source the edit form uses.
+    const specSections: Array<{
+      key: string;
+      title: string;
+      icon: React.ReactNode;
+      help: string;
+      text?: string;
+      tone?: 'default' | 'protected' | 'mask';
+    }> = [
+      {
+        key: 'file_spec',
+        title: 'File spec',
+        icon: <FileCode className="w-4 h-4 text-theme-accent" />,
+        help: 'Paths this module owns and ships in its blob.',
+        text: module.file_spec_text,
+      },
+      {
+        key: 'protected_spec',
+        title: 'Protected spec',
+        icon: <ShieldCheck className="w-4 h-4 text-theme-accent" />,
+        help: 'Paths this module claims as sensitive. The build pipeline folds these into every neighbor\'s effective_mask, so no other module ships them. Used for /etc/shadow, /etc/ssh/ssh_host_*_key, and other security-critical files.',
+        text: module.protected_spec_text,
+        tone: 'protected',
+      },
+      {
+        key: 'mask',
+        title: 'Mask (local exclude)',
+        icon: <Settings className="w-4 h-4 text-theme-accent" />,
+        help: 'Paths to exclude from THIS module\'s blob during build (build cruft like /var/cache/apt/**). Local rsync filter; does not affect neighbors.',
+        text: module.mask_text,
+        tone: 'mask',
+      },
+      {
+        key: 'package_spec',
+        title: 'Package spec',
+        icon: <Package className="w-4 h-4 text-theme-accent" />,
+        help: 'Debian packages installed into the build chroot.',
+        text: module.package_spec_text,
+      },
+      {
+        key: 'dependency_spec',
+        title: 'Dependency spec',
+        icon: <GitBranch className="w-4 h-4 text-theme-accent" />,
+        help: 'Build-time dependency paths between modules. Rare; usually empty.',
+        text: module.dependency_spec_text,
+      },
+    ];
+
     const hasConfig = module.config && Object.keys(module.config).length > 0;
 
     return (
       <div className="space-y-6">
-        {/* File Spec */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <FileCode className="w-4 h-4 text-theme-accent" />
-            <h4 className="font-medium text-theme-primary">File Specification</h4>
-          </div>
-          {hasFileSpec ? (
-            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme">
-              {JSON.stringify(module.file_spec, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-theme-secondary text-sm">No file specification defined</p>
-          )}
-        </div>
+        {specSections.map(section => {
+          const lines = (section.text ?? '')
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .filter(l => l.length > 0);
+          const empty = lines.length === 0;
+          const borderClass =
+            section.tone === 'protected' ? 'border-theme-warning' :
+            section.tone === 'mask' ? 'border-theme-info' :
+            'border-theme';
+          return (
+            <div key={section.key}>
+              <div className="flex items-center gap-2 mb-1">
+                {section.icon}
+                <h4 className="font-medium text-theme-primary">{section.title}</h4>
+                {!empty && (
+                  <Badge variant="default" size="xs">{lines.length}</Badge>
+                )}
+              </div>
+              <p className="text-xs text-theme-secondary mb-2">{section.help}</p>
+              {empty ? (
+                <p className="text-theme-secondary text-sm italic">No entries.</p>
+              ) : (
+                <ul className={`bg-theme-background rounded-lg p-3 text-sm font-mono border ${borderClass} space-y-1 max-h-64 overflow-y-auto`}>
+                  {lines.map((line, idx) => (
+                    <li key={idx} className="text-theme-primary">{line}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
 
-        {/* Mask */}
+        {/* Lifecycle */}
         <div>
           <div className="flex items-center gap-2 mb-2">
             <Settings className="w-4 h-4 text-theme-accent" />
-            <h4 className="font-medium text-theme-primary">Mask</h4>
+            <h4 className="font-medium text-theme-primary">Lifecycle</h4>
           </div>
-          {hasMask ? (
-            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme">
-              {JSON.stringify(module.mask, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-theme-secondary text-sm">No mask defined</p>
-          )}
+          <div className="bg-theme-background rounded-lg p-4 border border-theme grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-theme-secondary">init_start</div>
+              <code className="text-theme-primary">{module.init_start || <span className="italic text-theme-tertiary">unset</span>}</code>
+            </div>
+            <div>
+              <div className="text-xs text-theme-secondary">init_stop</div>
+              <code className="text-theme-primary">{module.init_stop || <span className="italic text-theme-tertiary">unset</span>}</code>
+            </div>
+            <div>
+              <div className="text-xs text-theme-secondary">init_restart</div>
+              <code className="text-theme-primary">{module.init_restart || <span className="italic text-theme-tertiary">unset</span>}</code>
+            </div>
+            <div className="flex items-center gap-3">
+              <Badge variant={module.reboot_required ? 'warning' : 'default'} size="xs">
+                {module.reboot_required ? 'reboot required on attach/detach' : 'hot-swap allowed'}
+              </Badge>
+              <Badge variant={module.lock_spec ? 'danger' : 'default'} size="xs">
+                <Lock className="w-3 h-3 inline mr-1" />
+                {module.lock_spec ? 'spec locked' : 'spec mutable'}
+              </Badge>
+            </div>
+          </div>
         </div>
 
-        {/* Config */}
+        {/* Config (raw JSON — usually populated by manifest import) */}
         <div>
           <div className="flex items-center gap-2 mb-2">
             <Settings className="w-4 h-4 text-theme-accent" />
             <h4 className="font-medium text-theme-primary">Configuration</h4>
           </div>
+          <p className="text-xs text-theme-secondary mb-2">
+            Free-form JSON. Populated by <code>ManifestImportService</code> with the
+            module\'s security policy, declared skills, build hints, and any
+            unknown fields under <code>manifest_extras</code>.
+          </p>
           {hasConfig ? (
-            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme">
+            <pre className="bg-theme-background rounded-lg p-4 text-sm text-theme-primary overflow-x-auto border border-theme max-h-72">
               {JSON.stringify(module.config, null, 2)}
             </pre>
           ) : (
-            <p className="text-theme-secondary text-sm">No configuration defined</p>
+            <p className="text-theme-secondary text-sm italic">No configuration set.</p>
           )}
         </div>
       </div>

@@ -50,7 +50,11 @@ Rails.application.routes.draw do
         resources :node_templates do
           member { get :export }
           collection do
-            post :compose_preview, controller: "templates", action: "compose_preview"
+            # The action lives on this same NodeTemplatesController. Earlier
+            # versions pointed at a non-existent `templates` controller,
+            # which 500'd on every preview request — confirmed by the
+            # rspec coverage in node_templates_compose_preview_spec.rb.
+            post :compose_preview
           end
         end
         resources :node_architectures

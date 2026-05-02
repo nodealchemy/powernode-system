@@ -115,6 +115,10 @@ module Api
 
         def compose_detect_conflicts(modules)
           conflicts = []
+
+          # Hard conflict: two instance-variety modules in the same category.
+          # Only one instance can ship per category; the second would silently
+          # collide at build time.
           modules.group_by(&:category_id).each do |cat_id, ms|
             instance_variety = ms.select { |m| m.variety == "instance" }
             if instance_variety.size > 1
@@ -126,7 +130,67 @@ module Api
               }
             end
           end
+
+          # Soft conflict: another module's file_spec covers paths this
+          # module has claimed via protected_spec. Build pipeline will
+          # auto-resolve (the other module's blob excludes the path), but
+          # the operator probably wants to know — that's the whole point
+          # of protected_spec being visible at composition time.
+          decoded = modules.each_with_object({}) do |m, acc|
+            acc[m.id] = {
+              module:         m,
+              file_spec:      decode_b64_array(Array(m.file_spec)),
+              protected_spec: decode_b64_array(Array(m.protected_spec))
+            }
+          end
+
+          decoded.each do |claimer_id, claimer|
+            next if claimer[:protected_spec].empty?
+            decoded.each do |other_id, other|
+              next if other_id == claimer_id
+              next if other[:file_spec].empty?
+
+              overlapping = claimer[:protected_spec].each_with_object([]) do |claim, acc|
+                if other[:file_spec].any? { |fs| compose_paths_overlap?(claim, fs) }
+                  acc << claim
+                end
+              end
+              next if overlapping.empty?
+
+              conflicts << {
+                kind: "protected_spec_overlap",
+                severity: "warning",
+                claimer_id:   claimer[:module].id,
+                claimer_name: claimer[:module].name,
+                other_id:     other[:module].id,
+                other_name:   other[:module].name,
+                paths: overlapping,
+                detail: "#{other[:module].name}'s file_spec covers paths claimed by " \
+                        "#{claimer[:module].name}'s protected_spec. Build pipeline will " \
+                        "exclude them from #{other[:module].name}'s blob; only " \
+                        "#{claimer[:module].name} will ship them."
+              }
+            end
+          end
+
           conflicts
+        end
+
+        # Decodes a NodeModule jsonb-array spec column to plain glob lines.
+        def decode_b64_array(arr)
+          arr.map { |entry| ::Base64.decode64(entry.to_s) }
+        end
+
+        # Cheap path-prefix overlap check. Strips trailing `/*` or `/**`
+        # segments and tests prefix containment in either direction. Not
+        # a full rsync-glob matcher — that's what the build pipeline runs;
+        # we just need a usefully-loud preview signal.
+        def compose_paths_overlap?(a, b)
+          ax = a.to_s.sub(%r{/\*\*\z}, "").sub(%r{/\*\z}, "")
+          bx = b.to_s.sub(%r{/\*\*\z}, "").sub(%r{/\*\z}, "")
+          return true if ax == bx
+          return true if a.to_s == b.to_s
+          ax.start_with?("#{bx}/") || bx.start_with?("#{ax}/")
         end
 
         def compose_footprint(modules)
