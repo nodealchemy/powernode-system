@@ -15,8 +15,26 @@ module System
         enabled: @node_module.enabled,
         public: @node_module.public,
         priority: @node_module.priority,
-        mask: @node_module.mask,
-        file_spec: @node_module.file_spec,
+        # Spec fields — wire shape is jsonb arrays of base64-encoded glob
+        # lines. Frontend should decode via the same convention as the
+        # model's decode_spec when displaying. The *_text variants emit
+        # plain newline-joined strings for textarea rendering.
+        mask:            @node_module.mask,
+        mask_text:       @node_module.mask_text,
+        file_spec:       @node_module.file_spec,
+        file_spec_text:  @node_module.file_spec_text,
+        package_spec:    @node_module.package_spec,
+        package_spec_text: @node_module.package_spec_text,
+        dependency_spec: @node_module.dependency_spec,
+        dependency_spec_text: @node_module.dependency_spec_text,
+        protected_spec:  @node_module.protected_spec,
+        protected_spec_text: @node_module.protected_spec_text,
+        # Lifecycle / lock state
+        lock_spec:       @node_module.lock_spec,
+        init_start:      @node_module.init_start,
+        init_stop:       @node_module.init_stop,
+        init_restart:    @node_module.init_restart,
+        reboot_required: @node_module.reboot_required,
         config: @node_module.config,
         node_platform_id: @node_module.node_platform_id,
         node_platform_name: @node_module.node_platform&.name,

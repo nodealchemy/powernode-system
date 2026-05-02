@@ -10,7 +10,24 @@ module System
     # rsync-glob spec fields (legacy node_module.rb:34-37). Stored as JSONB
     # arrays of base64-encoded strings (one per glob line). Round-tripped via
     # encode_spec / decode_spec.
-    SPEC_FIELDS = %i[mask file_spec package_spec dependency_spec].freeze
+    #
+    # The five fields, with distinct semantics:
+    #   - mask: paths I exclude from MY OWN blob during the build (rsync
+    #     local-exclude). Used for build cruft (/var/cache/apt, doc/man,
+    #     /var/log) that the package install creates but I don't want to
+    #     ship. Does NOT cross module boundaries.
+    #   - file_spec: paths I include in my blob (rsync local-include).
+    #   - package_spec: deb packages installed into my build chroot.
+    #   - dependency_spec: build-time dependencies between modules.
+    #   - protected_spec (added 2026-05-02): paths I CLAIM as sensitive.
+    #     Flows in BOTH priority directions into every neighbor's
+    #     effective_mask, so no neighbor's blob may ship the claimed paths.
+    #     Used for things like /etc/shadow, /etc/ssh/ssh_host_*_key,
+    #     /etc/sudoers — where a union-mount override would be a security
+    #     regression. mask and protected_spec are intentionally separate:
+    #     a module typically wants to SHIP its protected paths (system-base
+    #     ships /etc/shadow), so the claim must not also self-exclude.
+    SPEC_FIELDS = %i[mask file_spec package_spec dependency_spec protected_spec].freeze
 
     # effective_priority = (category.position * MULTIPLIER) + module.priority.
     # Using `position` on NodeModuleCategory (the platform's analogue of the
@@ -156,6 +173,7 @@ module System
     def file_spec_text;       decode_spec_text(file_spec); end
     def package_spec_text;    decode_spec_text(package_spec); end
     def dependency_spec_text; decode_spec_text(dependency_spec); end
+    def protected_spec_text;  decode_spec_text(protected_spec); end
 
     # `.info` file content the on-node agent receives via
     # /node_api/modules JSON response. Legacy: node_module.rb:127-138.
@@ -172,9 +190,28 @@ module System
       INFO
     end
 
-    # Priority-aware effective mask. Walks the target's modules and adds
-    # higher-priority neighbors' file_spec + dependency_spec (when immutable)
-    # plus their mask. Legacy: node_module.rb:252-266.
+    # Priority-aware effective mask — the rsync exclude list used when this
+    # module's blob is built. Folds:
+    #
+    #   - This module's OWN mask (local rsync exclude — build cruft).
+    #   - Every NEIGHBOR's protected_spec (both priority directions). This
+    #     is the cross-neighbor claim: any path a neighbor flagged as
+    #     sensitive gets excluded from this blob, so the union mount
+    #     can't see two layers competing for the same path.
+    #   - Higher-priority neighbors' mask (legacy carry-down — preserves
+    #     pre-protected_spec semantics; neighbors who haven't migrated
+    #     to protected_spec still get their claims honored downward).
+    #   - Higher-priority neighbors' file_spec + dependency_spec when
+    #     they are immutable — locked higher modules' content can't
+    #     leak into this lower-priority blob.
+    #
+    # Symmetry: mask is local-only except for the legacy higher-down
+    # carry; protected_spec is the supported cross-module claim and
+    # flows in both directions. New modules should declare sensitive
+    # paths via protected_spec, not mask.
+    #
+    # Legacy reference: ~/Drive/Projects/powernode-server/app/models/node_module.rb:252-266.
+    # protected_spec direction added 2026-05-02.
     #
     # `target` is the deployment context — a Node or NodeInstance whose union
     # mount this module participates in. With no target, returns this module's
@@ -185,13 +222,19 @@ module System
       neighbors = neighboring_modules_for(target)
       collected = neighbors.each_with_object([]) do |neighbor, acc|
         next if neighbor.id == id
-        next unless neighbor.effective_priority > effective_priority
 
-        if neighbor.immutable?
-          acc.concat(Array(neighbor.file_spec))
-          acc.concat(Array(neighbor.dependency_spec))
+        # protected_spec flows in both directions — every neighbor's
+        # sensitive-path claim is honored regardless of priority.
+        acc.concat(Array(neighbor.protected_spec))
+
+        if neighbor.effective_priority > effective_priority
+          # Legacy higher-down carry of mask + immutable file/dep promotion.
+          acc.concat(Array(neighbor.mask))
+          if neighbor.immutable?
+            acc.concat(Array(neighbor.file_spec))
+            acc.concat(Array(neighbor.dependency_spec))
+          end
         end
-        acc.concat(Array(neighbor.mask))
       end
       (collected + Array(mask)).uniq.sort
     end
@@ -399,7 +442,7 @@ module System
 
     # Attributes that trigger versioning when changed
     VERSIONED_ATTRIBUTES = %w[
-      mask file_spec package_spec dependency_spec config
+      mask file_spec package_spec dependency_spec protected_spec config
       data_file_name data_checksum data_file_size
     ].freeze
 

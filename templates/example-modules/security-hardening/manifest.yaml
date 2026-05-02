@@ -1,0 +1,71 @@
+schema_version: 1
+
+name: security-hardening
+display_name: "Baseline Security Hardening"
+description: "Sysctl tunables, login.defs hardening, AppArmor profile-set baseline. Priority 20 — runs above system-base, below time/services. Adds no service binaries; ships only policy."
+license: "MIT"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/var/log/**"
+
+file_spec:
+  - "/etc/sysctl.d/**"
+  - "/etc/security/limits.d/**"
+  - "/etc/apparmor.d/**"
+  - "/etc/audit/auditd.conf"
+  - "/etc/audit/rules.d/**"
+  - "/etc/modprobe.d/blacklist-powernode.conf"
+
+# Anything here is policy. The whole point of the module is to declare a
+# floor that nothing higher may erode. Service modules that need a more
+# permissive setting must go through a dependant override (and the
+# corresponding consent budget / approval) rather than silently
+# overlaying a different file.
+protected_spec:
+  - "/etc/sysctl.d/99-powernode-baseline.conf"
+  - "/etc/security/limits.d/99-powernode-baseline.conf"
+  - "/etc/modprobe.d/blacklist-powernode.conf"
+
+package_spec:
+  - apparmor
+  - apparmor-profiles
+  - apparmor-utils
+  - auditd
+  - libpam-tmpdir
+
+dependencies:
+  requires:
+    - powernode/system-base@^1.0
+  provides:
+    - security.baseline
+    - security.apparmor
+    - security.audit
+
+# Hardening is policy-only — no init binary to start/stop. The kernel
+# applies sysctl on boot via systemd-sysctl.service (already in
+# system-base). AppArmor profiles load via apparmor.service (shipped
+# by the package). auditd is the only daemon, and it auto-starts.
+init:
+  start: "systemctl start auditd apparmor"
+  stop:  "systemctl stop auditd"
+  restart: "systemctl reload apparmor"
+
+reboot_required: false
+
+security:
+  capabilities:
+    - CAP_AUDIT_CONTROL
+    - CAP_AUDIT_WRITE
+    - CAP_MAC_ADMIN
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

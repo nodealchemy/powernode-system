@@ -22,6 +22,36 @@ file_spec:
   - "/sbin/**"
   - "/bin/**"
 
+# Sensitive paths that NO higher-priority module may override at union mount.
+# Build pipeline folds these into every higher neighbor's effective_mask, so
+# their blobs cannot ship these files. Anything machine-identity, account
+# policy, or trust-boundary lives here.
+protected_spec:
+  # Identity + account policy
+  - "/etc/passwd"
+  - "/etc/shadow"
+  - "/etc/group"
+  - "/etc/gshadow"
+  - "/etc/sudoers"
+  - "/etc/sudoers.d/**"
+  # Authentication policy
+  - "/etc/pam.d/**"
+  - "/etc/security/**"
+  - "/etc/login.defs"
+  # SSH machine identity + policy
+  - "/etc/ssh/sshd_config"
+  - "/etc/ssh/sshd_config.d/**"
+  - "/etc/ssh/ssh_host_*_key"
+  - "/etc/ssh/ssh_host_*_key.pub"
+  # Powernode-agent identity + binary
+  - "/etc/systemd/system/powernode-agent.service"
+  - "/usr/sbin/powernode-agent"
+  - "/sbin/powernode-agent"
+  # SUID trust boundary binaries
+  - "/usr/bin/sudo"
+  - "/usr/bin/su"
+  - "/usr/sbin/sshd"
+
 package_spec:
   - bash
   - coreutils

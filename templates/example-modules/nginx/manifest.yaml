@@ -16,7 +16,15 @@ file_spec:
   - "/etc/nginx/**"
   - "/usr/sbin/nginx"
   - "/usr/share/nginx/**"
+  - "/etc/init.d/nginx"
+  - "/etc/logrotate.d/nginx"
+  - "/lib/systemd/system/nginx.service"
   - "/var/www/**"
+
+# nginx, like apache, owns service-specific paths only. TLS material and
+# other secrets come from neighbor modules whose own protected_spec keeps
+# them safe.
+protected_spec: []
 
 package_spec:
   - nginx

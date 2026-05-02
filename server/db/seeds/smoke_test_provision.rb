@@ -26,10 +26,10 @@ puts "  POWERNODE_LIBVIRT_MODE=#{ENV.fetch('POWERNODE_LIBVIRT_MODE', '(default �
 puts "  POWERNODE_LIBVIRT_URI=#{ENV.fetch('POWERNODE_LIBVIRT_URI', 'qemu:///session (default)')}"
 
 account  = Account.first or abort("  ❌ No account")
-template = System::NodeTemplate.find_by(account: account, name: ENV.fetch('SMOKE_TEMPLATE', 'smoke-base'))
-abort("  ❌ Template not found — run smoke_test_catalog.rb first") unless template
+template = System::NodeTemplate.find_by(account: account, name: ENV.fetch('SMOKE_TEMPLATE', 'base'))
+abort("  ❌ Template not found — run node_module_catalog.rb first") unless template
 
-provider = System::Provider.find_by(account: account, provider_type: "local_qemu") or abort("  ❌ No local_qemu provider — re-run smoke catalog")
+provider = System::Provider.find_by(account: account, provider_type: "local_qemu") or abort("  ❌ No local_qemu provider — re-run node_module_catalog")
 region   = provider.provider_regions.find_by(region_code: "local") or abort("  ❌ No local region")
 itype    = provider.provider_instance_types.find_by(instance_type_code: "smoke.small") or abort("  ❌ No smoke.small itype")
 

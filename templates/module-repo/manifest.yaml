@@ -17,6 +17,14 @@ license: "Apache-2.0"
 
 # === Default content selection rules (mirrored to NodeModule on first import) ===
 # Each spec field is a list of rsync-style glob lines.
+#
+# - mask: paths to EXCLUDE from this module's blob at build time (rsync filter)
+# - file_spec: paths this module OWNS (anything matching is INCLUDED in the blob)
+# - protected_spec: paths I own that NO higher-priority neighbor may ship.
+#   The build pipeline folds these into every higher neighbor's effective_mask,
+#   so a sensitive lower-module file (e.g. /etc/shadow from system-base) cannot
+#   be overridden by a service module's overlay layer.
+# - package_spec: deb packages this module installs into the build chroot
 mask:
   - "/var/cache/apt/**"
   - "/var/lib/apt/lists/**"
@@ -25,6 +33,7 @@ mask:
 file_spec:
   - "/etc/example/**"
   - "/usr/lib/example/**"
+protected_spec: []
 package_spec:
   - example-package
   - example-package-extras

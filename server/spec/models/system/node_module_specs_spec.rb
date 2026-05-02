@@ -43,18 +43,20 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
       expect(mod.read_attribute(:file_spec)).to eq(encoded)
     end
 
-    it "round-trips all four spec fields" do
+    it "round-trips all five spec fields" do
       mod = build_module(category: category_a)
       mod.mask            = "/m"
       mod.file_spec       = "/f"
       mod.package_spec    = "pkg"
       mod.dependency_spec = "/d"
+      mod.protected_spec  = "/p"
       mod.save!
 
       expect(mod.mask_text).to            eq("/m\n")
       expect(mod.file_spec_text).to       eq("/f\n")
       expect(mod.package_spec_text).to    eq("pkg\n")
       expect(mod.dependency_spec_text).to eq("/d\n")
+      expect(mod.protected_spec_text).to  eq("/p\n")
     end
   end
 
@@ -125,8 +127,9 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
       let(:template) { create(:system_node_template, account: account, node_platform: platform) }
       let(:node)     { create(:system_node, account: account, node_template: template) }
 
-      it "incorporates higher-priority neighbors' mask" do
-        # category_a (position 5) vs category_b (position 10) → b is higher priority
+      # === mask: legacy direction (higher → lower) + own ===
+
+      it "incorporates higher-priority neighbors' mask plus the module's own" do
         low  = create_module(category: category_a, name: "low", mask: "/own_excl")
         high = create_module(category: category_b, name: "high", mask: "/high_excl")
         assign(node, low)
@@ -136,7 +139,19 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
         expect(decoded).to include("/own_excl", "/high_excl")
       end
 
-      it "only includes immutable higher-priority neighbors' file_spec + dependency_spec" do
+      it "does NOT carry mask UP from a lower-priority neighbor" do
+        # mask is local + legacy higher-down; the cross-module direction
+        # for newer modules lives on protected_spec.
+        low  = create_module(category: category_a, name: "low", mask: "/low_only_excl")
+        high = create_module(category: category_b, name: "high")
+        assign(node, low)
+        assign(node, high)
+
+        decoded = high.send(:decode_spec, high.effective_mask(target: node)).sort
+        expect(decoded).not_to include("/low_only_excl")
+      end
+
+      it "promotes immutable higher-priority neighbors' file_spec + dependency_spec" do
         low  = create_module(category: category_a, name: "low",
                              mask: "/own", file_spec: "/own_file")
         immut = create_module(category: category_b, name: "high-immut",
@@ -148,22 +163,69 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
         [low, immut, mutable].each { |m| assign(node, m) }
 
         decoded = low.send(:decode_spec, low.effective_mask(target: node)).sort
-        # immutable neighbor contributes its file_spec, dependency_spec, AND mask:
+        # immutable higher: file_spec + dependency_spec + mask all carry down
         expect(decoded).to include("/h_file", "/h_dep", "/h_excl")
-        # mutable neighbor only contributes its mask, NOT file_spec or dependency_spec:
+        # mutable higher: only mask carries down (legacy)
         expect(decoded).to include("/m_excl")
         expect(decoded).not_to include("/m_file")
         expect(decoded).not_to include("/m_dep")
       end
 
-      it "ignores neighbors with equal or lower effective_priority" do
-        peer  = create_module(category: category_a, name: "peer", priority: 1, mask: "/peer_excl")
-        focus = create_module(category: category_a, name: "focus", priority: 2, mask: "/own")
+      # === protected_spec: new direction (any-priority → any-priority) ===
+
+      it "folds higher-priority neighbors' protected_spec into a lower module's mask" do
+        low  = create_module(category: category_a, name: "low")
+        high = create_module(category: category_b, name: "high",
+                             protected_spec: "/etc/protected_by_high")
+        assign(node, low)
+        assign(node, high)
+
+        decoded = low.send(:decode_spec, low.effective_mask(target: node)).sort
+        expect(decoded).to include("/etc/protected_by_high")
+      end
+
+      it "folds lower-priority neighbors' protected_spec into a higher module's mask" do
+        # The new direction (2026-05-02): system-base claims /etc/shadow,
+        # apache (higher priority) cannot ship it.
+        low  = create_module(category: category_a, name: "low",
+                             protected_spec: "/etc/shadow\n/etc/ssh/ssh_host_*_key")
+        high = create_module(category: category_b, name: "high")
+        assign(node, low)
+        assign(node, high)
+
+        decoded = high.send(:decode_spec, high.effective_mask(target: node)).sort
+        expect(decoded).to include("/etc/shadow", "/etc/ssh/ssh_host_*_key")
+      end
+
+      it "folds protected_spec without requiring lock_spec on the claimer" do
+        # protected_spec is unconditional — sensitivity is the assertion,
+        # not lockability. (lock_spec only gates the file_spec /
+        # dependency_spec promotion path.)
+        low  = create_module(category: category_a, name: "low",
+                             protected_spec: "/etc/sudoers", lock_spec: false)
+        high = create_module(category: category_b, name: "high")
+        assign(node, low)
+        assign(node, high)
+
+        decoded = high.send(:decode_spec, high.effective_mask(target: node)).sort
+        expect(decoded).to include("/etc/sudoers")
+      end
+
+      it "folds peer-level neighbors' protected_spec but not their mask" do
+        # Same effective_priority: protected_spec still flows (it's a
+        # claim independent of priority direction); mask does not (it's
+        # local + legacy-higher-down only).
+        peer  = create_module(category: category_a, name: "peer", priority: 1,
+                              mask: "/peer_local_excl",
+                              protected_spec: "/etc/peer_claimed")
+        focus = create_module(category: category_a, name: "focus", priority: 1,
+                              mask: "/own")
         assign(node, peer)
         assign(node, focus)
 
         decoded = focus.send(:decode_spec, focus.effective_mask(target: node)).sort
-        expect(decoded).to eq(["/own"])
+        expect(decoded).to include("/etc/peer_claimed", "/own")
+        expect(decoded).not_to include("/peer_local_excl")
       end
     end
   end

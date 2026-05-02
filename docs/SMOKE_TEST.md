@@ -56,15 +56,15 @@ bash build.sh --arch amd64 --variants kernel-initrd
 
 Outputs land in `build/amd64/kernel-initrd/{kernel,initramfs.cpio.zst,SHA256SUMS}`.
 
-### 3. Seed the smoke-test catalog
+### 3. Seed the node-module catalog
 
 ```bash
 cd server
 bundle exec rails runner \
-  "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_catalog.rb')"
+  "load Rails.root.join('../extensions/system/server/db/seeds/node_module_catalog.rb')"
 ```
 
-Creates: NodeArchitecture (amd64), NodePlatform (ubuntu-24.04-lts), Provider (smoke-local-qemu, type=local_qemu), ProviderConnection, ProviderRegion (local), ProviderInstanceType (smoke.small/.medium), 3 NodeModules (system-base, apache, nginx), 3 NodeTemplates (smoke-base, smoke-web-apache, smoke-web-nginx).
+Creates: NodeArchitecture (amd64), NodePlatform (ubuntu-24.04-lts), Provider (smoke-local-qemu, type=local_qemu), ProviderConnection, ProviderRegion (local), ProviderInstanceType (smoke.small/.medium), 5 NodeModules (system-base, security-hardening, chrony, apache, nginx), 4 NodeTemplates (base, hardened, web-apache, web-nginx).
 
 ### 4. Provision (Pass 1 — RecorderRunner)
 
@@ -123,12 +123,12 @@ virsh -c qemu:///session undefine  powernode-smoke-<XXXXXXXX> --nvram
 | `POWERNODE_PLATFORM_URL` | `http://localhost:3000` | URL the agent dials for `/node_api/enroll` |
 | `POWERNODE_CA_PEM` | fixture PEM | inline CA chain (until `InternalCaService.public_chain` lands via Vault PKI) |
 
-## Smoke-test seed scripts
+## Seed scripts
 
 | Path | Purpose |
 |---|---|
-| `extensions/system/server/db/seeds/smoke_test_catalog.rb` | Seeds the catalog. Idempotent (find_or_create_by). |
-| `extensions/system/server/db/seeds/smoke_test_provision.rb` | Drives `LocalQemuProvider.create_instance`. Reports each step. |
+| `extensions/system/server/db/seeds/node_module_catalog.rb` | Seeds the end-user-usable module + template catalog plus smoke-scoped provider rows. Idempotent (find_or_create_by). |
+| `extensions/system/server/db/seeds/smoke_test_provision.rb` | Drives `LocalQemuProvider.create_instance` against a template from the catalog. Reports each step. |
 
 ## Example modules
 

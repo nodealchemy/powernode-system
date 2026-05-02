@@ -193,8 +193,28 @@ export interface SystemNodeModule {
   enabled: boolean;
   public: boolean;
   priority: number;
-  mask: Record<string, unknown>;
-  file_spec: Record<string, unknown>;
+  // rsync-glob spec fields. Wire shape is base64-encoded glob lines,
+  // one per array element. The `_text` companion fields are pre-decoded
+  // newline-joined strings convenient for textarea rendering.
+  mask: string[];
+  mask_text?: string;
+  file_spec: string[];
+  file_spec_text?: string;
+  package_spec?: string[];
+  package_spec_text?: string;
+  dependency_spec?: string[];
+  dependency_spec_text?: string;
+  // protected_spec: paths this module CLAIMS as sensitive. The build
+  // pipeline folds these into every neighbor's effective_mask, so no
+  // other module ships them — preventing union-mount overrides of
+  // security-sensitive content (e.g. /etc/shadow).
+  protected_spec?: string[];
+  protected_spec_text?: string;
+  lock_spec?: boolean;
+  init_start?: string;
+  init_stop?: string;
+  init_restart?: string;
+  reboot_required?: boolean;
   config: Record<string, unknown>;
   node_platform_id?: string;
   node_platform_name?: string;

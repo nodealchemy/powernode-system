@@ -2,7 +2,7 @@
 
 Minimal Ubuntu 24.04 LTS rootfs with systemd-networkd + openssh + powernode-agent runtime dependencies.
 
-Every Powernode smoke node depends on this module. It ships:
+Every Powernode node depends on this module. It ships:
 
 | File | Purpose |
 |---|---|
@@ -19,12 +19,24 @@ mcp__powernode__platform_dispatch_to_runner \
   inputs.rsync_spec=<server-computed>
 ```
 
-## Smoke testing
+## Catalog templates
 
-This module is referenced by all three smoke templates:
-- `smoke-base` — system-base only
-- `smoke-web-apache` — system-base + apache
-- `smoke-web-nginx` — system-base + nginx
+This module is the foundation for every template in `node_module_catalog.rb`:
+- `base` — system-base only
+- `hardened` — system-base + security-hardening + chrony
+- `web-apache` — hardened + apache
+- `web-nginx` — hardened + nginx
+
+## Protected paths
+
+system-base claims a number of identity, authentication, and trust-boundary
+paths via `protected_spec`. These are *guaranteed* to be the version
+shipped by system-base — no higher-priority module's blob may carry them,
+so a service module overlay can never silently shadow `/etc/shadow`,
+`/etc/ssh/ssh_host_*_key`, `/etc/sudoers`, the powernode-agent service
+unit, or the SUID trust-boundary binaries. See `manifest.yaml` for the
+complete list and the project root `effective_mask` documentation for
+how the build pipeline enforces them.
 
 ## License
 

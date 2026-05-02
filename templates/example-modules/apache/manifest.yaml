@@ -15,8 +15,19 @@ mask:
 file_spec:
   - "/etc/apache2/**"
   - "/usr/sbin/apache2"
+  - "/usr/sbin/apache2ctl"
   - "/usr/lib/apache2/**"
+  - "/usr/share/apache2/**"
+  - "/etc/init.d/apache2"
+  - "/etc/logrotate.d/apache2"
+  - "/lib/systemd/system/apache2.service"
   - "/var/www/**"
+
+# apache may serve sensitive content but doesn't itself own paths
+# that a higher-priority neighbor would need to be blocked from.
+# Site-specific protected paths (e.g. TLS certs from a cert-manager
+# module) are declared on those modules instead.
+protected_spec: []
 
 package_spec:
   - apache2
