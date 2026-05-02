@@ -11,7 +11,19 @@
       "@business/*": ["../../business/frontend/src/*"]
     },
     "baseUrl": ".",
-    "rootDir": "../.."
+    "noEmit": true
   },
-  "include": ["src", "../../../frontend/src/shared/**/*.ts", "../../../frontend/src/shared/**/*.tsx"]
+  "include": ["src", "../../../frontend/src/shared/**/*.ts", "../../../frontend/src/shared/**/*.tsx"],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/__tests__/**",
+    "../../../frontend/src/shared/**/*.test.ts",
+    "../../../frontend/src/shared/**/*.test.tsx",
+    "../../../frontend/src/shared/**/*.spec.ts",
+    "../../../frontend/src/shared/**/*.spec.tsx",
+    "../../../frontend/src/shared/**/__tests__/**"
+  ]
 }

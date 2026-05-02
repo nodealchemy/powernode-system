@@ -40,6 +40,13 @@ agent/*.test
 agent/*.out
 agent/coverage.html
 
+# === Frontend tsc gate ===
+# validate.sh symlinks the platform's frontend/node_modules into here so
+# tsc can resolve react / lucide-react / etc. when type-checking the
+# extension's frontend tree (Vite resolves the same way at runtime).
+# Never commit the symlink itself.
+frontend/node_modules
+
 # === Initramfs builder outputs ===
 # build.sh writes per-arch artifacts here; never commit them.
 initramfs/build/
