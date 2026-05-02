@@ -48,8 +48,14 @@ module System
           fw_cfg_xml = build_fw_cfg_qemu_args(fw_cfg_entries)
           cmdline = build_kernel_cmdline(fw_cfg_entries)
 
+          # libvirt domain type — kvm when /dev/kvm exists, qemu otherwise
+          # (TCG software emulation; slower but works in nested-virt-disabled
+          # environments and CI).
+          domain_type = File.exist?("/dev/kvm") ? "kvm" : "qemu"
+          cpu_mode    = domain_type == "kvm" ? "host-passthrough" : "host-model"
+
           <<~XML
-            <domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+            <domain type='#{domain_type}' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
               <name>#{escape(domain_name)}</name>
               <uuid>#{escape(instance.id)}</uuid>
               <memory unit='MiB'>#{memory_mb}</memory>
@@ -65,7 +71,7 @@ module System
                 <acpi/>
                 <apic/>
               </features>
-              <cpu mode='host-passthrough' check='none'/>
+              <cpu mode='#{cpu_mode}' check='none'/>
               <clock offset='utc'/>
               <on_poweroff>destroy</on_poweroff>
               <on_reboot>restart</on_reboot>
@@ -74,6 +80,7 @@ module System
                 <emulator>#{emulator}</emulator>
                 #{disk_xml(domain_name)}
                 #{network_xml}
+                #{modules_share_xml}
                 #{console_xml}
                 <rng model='virtio'>
                   <backend model='random'>/dev/urandom</backend>
@@ -90,13 +97,13 @@ module System
 
         # virtio-fw-cfg entries are passed via QEMU's `-fw_cfg` arg. Each
         # entry becomes one <qemu:arg value='...'/> pair. Names must start
-        # with `opt/` per QEMU's reservation rule.
+        # with `opt/` per QEMU's reservation rule. The path matches
+        # CloudSeed::FWCFG_DIR, which CloudSeed.build wrote before this
+        # XML is loaded — keeping the two in sync via shared constant.
         def build_fw_cfg_qemu_args(entries)
-          entries.map do |key, value|
-            file_path = "/var/run/powernode-fwcfg/#{key.gsub('/', '_')}"
-            # Stage-on-disk approach so libvirt apparmor doesn't complain
-            # about long inline values. The CloudSeed.build path writes
-            # these files before this XML is loaded.
+          fwcfg_dir = ::System::Providers::LocalQemu::CloudSeed::FWCFG_DIR
+          entries.map do |key, _value|
+            file_path = File.join(fwcfg_dir, key.gsub("/", "_"))
             <<~XMLPAIR
                 <qemu:arg value='-fw_cfg'/>
                 <qemu:arg value='name=#{key},file=#{file_path}'/>
@@ -121,25 +128,123 @@ module System
         end
 
         def disk_xml(domain_name)
+          # Skip the disk entirely when no qcow2 was pre-staged. The M4 thin
+          # slice boots directly into kernel+initramfs+powernode-agent; persistent
+          # /var on disk lands in M3 (raw disk image variant).
+          disk_dir = ENV.fetch("POWERNODE_DISK_DIR", "/var/lib/libvirt/images")
+          disk_path = File.join(disk_dir, "#{domain_name}.qcow2")
+          return "" unless File.exist?(disk_path)
+
           <<~XML.strip
               <disk type='file' device='disk'>
                   <driver name='qemu' type='qcow2'/>
-                  <source file='/var/lib/libvirt/images/#{escape(domain_name)}.qcow2'/>
+                  <source file='#{escape(disk_path)}'/>
                   <target dev='vda' bus='virtio'/>
                 </disk>
           XML
         end
 
+        # Three networking modes selectable via POWERNODE_NETWORK_MODE:
+        #
+        #   user    — QEMU slirp (10.0.2.15 + NAT-to-host). No host setup needed.
+        #             Default under qemu:///session.
+        #   network — libvirt-managed network (default: 'default' = virbr0
+        #             with built-in dnsmasq DHCP on 192.168.122.0/24, NAT
+        #             upstream). Default under qemu:///system.
+        #   bridge  — true Linux bridge (e.g. br0 enslaving the host's
+        #             physical NIC). VM gets a real LAN DHCP lease from
+        #             the upstream router and joins the LAN as a peer.
+        #             Requires:
+        #               • a host bridge created out-of-band (nmcli or netplan)
+        #               • /etc/qemu/bridge.conf containing 'allow <bridge>'
+        #                 (so qemu-bridge-helper, which is setuid root,
+        #                 permits session-mode VMs to attach a tap)
+        #               • on a nested-virt host: L0 must allow MAC spoofing
+        #                 / promiscuous mode on the L1 vNIC, otherwise the
+        #                 VM's frames are dropped because their MAC differs
+        #                 from the L1's
+        #             Override the bridge name with POWERNODE_BRIDGE_NAME (default: br0).
         def network_xml
+          mode = ENV.fetch("POWERNODE_NETWORK_MODE", default_network_mode)
+          case mode
+          when "bridge"
+            bridge = ENV.fetch("POWERNODE_BRIDGE_NAME", "br0")
+            <<~XML.strip
+                <interface type='bridge'>
+                    <source bridge='#{escape(bridge)}'/>
+                    <model type='virtio'/>
+                  </interface>
+            XML
+          when "user"
+            <<~XML.strip
+                <interface type='user'>
+                    <model type='virtio'/>
+                  </interface>
+            XML
+          else # "network" or any unknown → libvirt-managed network
+            net = ENV.fetch("POWERNODE_LIBVIRT_NETWORK", "default")
+            <<~XML.strip
+                <interface type='network'>
+                    <source network='#{escape(net)}'/>
+                    <model type='virtio'/>
+                  </interface>
+            XML
+          end
+        end
+
+        # virtio-9p passthrough share for the dev-mode local-fs module loader.
+        # Exposes the host's /var/lib/powernode/modules tree (or
+        # POWERNODE_MODULES_DIR override) into the guest at the 9p tag
+        # `powernode_modules`. The on-node agent's `prepare-root` subcommand
+        # mounts this share at /run/powernode/modules and stacks per-module
+        # rootfs/ subdirs as overlayfs lower layers.
+        #
+        # Skipped when the host directory doesn't exist yet (no modules built),
+        # so existing smoke runs that don't need the share keep working.
+        def modules_share_xml
+          host_dir = ENV.fetch("POWERNODE_MODULES_DIR", "/var/lib/powernode/modules")
+          return "" unless File.directory?(host_dir)
+
+          # virtio-9p is built into qemu (no extra daemon vs. virtiofs which
+          # needs virtiofsd running per-share). Default driver = 9p; the
+          # guest mounts with `mount -t 9p -o trans=virtio,version=9p2000.L`.
           <<~XML.strip
-              <interface type='network'>
-                  <source network='default'/>
-                  <model type='virtio'/>
-                </interface>
+              <filesystem type='mount' accessmode='passthrough'>
+                  <source dir='#{escape(host_dir)}'/>
+                  <target dir='powernode_modules'/>
+                  <readonly/>
+                </filesystem>
           XML
+        rescue StandardError
+          ""
+        end
+
+        def default_network_mode
+          libvirt_uri = ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///system")
+          libvirt_uri.include?("session") ? "user" : "network"
         end
 
         def console_xml
+          # When POWERNODE_SERIAL_LOG_DIR is set, redirect serial console
+          # to a per-domain log file in addition to the pty. Useful for CI
+          # smoke tests where there's no controlling TTY for `virsh console`.
+          serial_dir = ENV["POWERNODE_SERIAL_LOG_DIR"]
+          if serial_dir && !serial_dir.empty?
+            require "fileutils"
+            FileUtils.mkdir_p(serial_dir, mode: 0o755)
+            log_path = File.join(serial_dir, "domain-serial.log")
+            return <<~XML.strip
+                <serial type='file'>
+                    <source path='#{escape(log_path)}' append='off'/>
+                    <target type='isa-serial' port='0'/>
+                  </serial>
+                  <console type='file'>
+                    <source path='#{escape(log_path)}' append='off'/>
+                    <target type='serial' port='0'/>
+                  </console>
+            XML
+          end
+
           <<~XML.strip
               <serial type='pty'>
                   <target type='isa-serial' port='0'/>

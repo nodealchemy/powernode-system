@@ -22,6 +22,11 @@ module System
           new.build(instance: instance, options: options)
         end
 
+        # Filesystem location DomainXmlBuilder references in the
+        # <qemu:arg value='name=...,file=...'/> entries. Override via
+        # POWERNODE_FWCFG_DIR for ephemeral test runs.
+        FWCFG_DIR = ENV.fetch("POWERNODE_FWCFG_DIR", "/var/run/powernode-fwcfg")
+
         def build(instance:, options: {})
           bootstrap_token, plaintext = issue_bootstrap_token(instance)
           ca_pem = resolve_ca_pem
@@ -40,6 +45,11 @@ module System
           if (agent_url = options[:agent_url] || ENV["POWERNODE_AGENT_URL"])
             entries["opt/com.powernode/agent_url"] = agent_url
           end
+
+          # Stage each entry to disk. DomainXmlBuilder references these by
+          # path so libvirt's apparmor/selinux policy doesn't complain about
+          # large inline values (CA cert can exceed cmdline arg limits too).
+          stage_fw_cfg_files!(entries) unless options[:skip_fwcfg_stage]
 
           {
             bootstrap_token_id: bootstrap_token&.id,
@@ -73,17 +83,18 @@ module System
         end
 
         def resolve_ca_pem
-          # In the M0.N production path, the CA chain comes from Vault PKI.
-          # For M4 thin slice, fall back to an inline PEM placeholder if
-          # InternalCaService.public_chain isn't available — the agent's
-          # mTLS handshake will still proceed against the local fixture CA.
-          if defined?(::System::InternalCaService) && ::System::InternalCaService.respond_to?(:public_chain)
-            ::System::InternalCaService.public_chain
+          # InternalCaService.ca_chain_pem returns the platform CA chain via
+          # the active adapter (LocalCaAdapter in dev/test, VaultCaAdapter in
+          # production). Falls back to inline PEM only if the service is
+          # genuinely absent (e.g. running outside the Rails autoload tree).
+          if defined?(::System::InternalCaService) && ::System::InternalCaService.respond_to?(:ca_chain_pem)
+            ::System::InternalCaService.ca_chain_pem
           else
             ENV["POWERNODE_CA_PEM"] || "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----"
           end
-        rescue StandardError
-          "-----BEGIN CERTIFICATE-----\nFIXTURE-fallback\n-----END CERTIFICATE-----"
+        rescue StandardError => e
+          Rails.logger.warn("[CloudSeed] resolve_ca_pem fell back to fixture: #{e.message}")
+          ENV["POWERNODE_CA_PEM"] || "-----BEGIN CERTIFICATE-----\nFIXTURE-fallback\n-----END CERTIFICATE-----"
         end
 
         def resolve_image_base(options)
@@ -94,6 +105,31 @@ module System
         def platform_url
           ENV["POWERNODE_PLATFORM_URL"] ||
             (Rails.env.production? ? "https://platform.local" : "http://localhost:3000")
+        end
+
+        # Write each fw-cfg entry to disk so DomainXmlBuilder's
+        # `name=...,file=...` references resolve. Mode 0644 because qemu
+        # may run as a different user under qemu:///system; 0755 dir to
+        # let libvirt's discovery probe enumerate.
+        def stage_fw_cfg_files!(entries)
+          require "fileutils"
+          FileUtils.mkdir_p(FWCFG_DIR, mode: 0o755)
+          entries.each do |key, value|
+            file_path = File.join(FWCFG_DIR, key.gsub("/", "_"))
+            File.write(file_path, value.to_s)
+            File.chmod(0o644, file_path)
+          end
+        rescue Errno::EACCES => e
+          # Fall back to /tmp when /var/run isn't writable (test runs as
+          # non-root). Mutate FWCFG_DIR for this process; DomainXmlBuilder
+          # reads the same constant. NB: the const-rebind is intentional —
+          # it scopes a per-process runtime override.
+          fallback = File.join(Dir.tmpdir, "powernode-fwcfg-#{Process.uid}")
+          FileUtils.mkdir_p(fallback, mode: 0o755)
+          self.class.send(:remove_const, :FWCFG_DIR)
+          self.class.const_set(:FWCFG_DIR, fallback)
+          Rails.logger.warn("[CloudSeed] FWCFG_DIR fallback to #{fallback} (#{e.message})")
+          retry
         end
       end
     end
