@@ -35,7 +35,7 @@ class AddRuntimeAndProvenanceFieldsToSystemModels < ActiveRecord::Migration[8.0]
 
     # ---------- NodeInstance ----------
     change_table :system_node_instances, bulk: true do |t|
-      t.string  :agent_version                              # ipn-agent version reported via heartbeat
+      t.string  :agent_version                              # powernode-agent version reported via heartbeat
       t.datetime :last_heartbeat_at
       t.string  :boot_id                                    # uniquely identifies the current boot
       t.string  :architecture, default: "amd64", null: false

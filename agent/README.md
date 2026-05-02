@@ -1,4 +1,4 @@
-# System Agent (`ipn-agent`)
+# System Agent (`powernode-agent`)
 
 The on-node runtime for Powernode-managed instances. Lives inside the
 System extension at `extensions/system/agent/` (Golden Eclipse rule: all
@@ -20,22 +20,22 @@ Subsequent Golden Eclipse milestones fill in the rest:
 ## Subcommand surface
 
 ```
-ipn-agent boot           first-boot (initramfs init-bottom path)
-ipn-agent service        long-lived loop
-ipn-agent enroll         token → mTLS cert exchange
-ipn-agent verify <path>  cosign + fs-verity verification
-ipn-agent introspect     print agent's view of self
-ipn-agent attach <id>    mount module into union (legacy ipn -a)
-ipn-agent detach <id>    unmount module (legacy ipn -d)
-ipn-agent update         reconcile with /node_api/modules (legacy ipn -u)
-ipn-agent commit <id>    capture live delta + push (legacy ipn -c)
-ipn-agent status         module attach/detach state (legacy ipn -s)
-ipn-agent exec <id>      fetch + run NodeScript (legacy ipn -e)
-ipn-agent sync           reconcile cycle (legacy ipn -S)
-ipn-agent init <id> <a>  module init action (legacy ipn -I)
-ipn-agent volume-setup   partition disks (legacy ipn -X)
-ipn-agent puppet apply   puppet integration (legacy ipn -p)
-ipn-agent version        build info
+powernode-agent boot           first-boot (initramfs init-bottom path)
+powernode-agent service        long-lived loop
+powernode-agent enroll         token → mTLS cert exchange
+powernode-agent verify <path>  cosign + fs-verity verification
+powernode-agent introspect     print agent's view of self
+powernode-agent attach <id>    mount module into union (legacy ipn -a)
+powernode-agent detach <id>    unmount module (legacy ipn -d)
+powernode-agent update         reconcile with /node_api/modules (legacy ipn -u)
+powernode-agent commit <id>    capture live delta + push (legacy ipn -c)
+powernode-agent status         module attach/detach state (legacy ipn -s)
+powernode-agent exec <id>      fetch + run NodeScript (legacy ipn -e)
+powernode-agent sync           reconcile cycle (legacy ipn -S)
+powernode-agent init <id> <a>  module init action (legacy ipn -I)
+powernode-agent volume-setup   partition disks (legacy ipn -X)
+powernode-agent puppet apply   puppet integration (legacy ipn -p)
+powernode-agent version        build info
 ```
 
 ## Build

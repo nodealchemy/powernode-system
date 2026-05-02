@@ -48,7 +48,7 @@ module System
       cosign_bundle.present? && sbom_uri.present? && provenance_uri.present?
     end
 
-    # The fs-verity Merkle root (hex). Used by ipn-agent to verify the
+    # The fs-verity Merkle root (hex). Used by powernode-agent to verify the
     # composefs lower at file-open time.
     def has_fsverity?
       fsverity_root_hash.present?

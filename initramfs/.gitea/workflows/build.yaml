@@ -64,22 +64,22 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Stage cross-compiled ipn-agent binary
+      - name: Stage cross-compiled powernode-agent binary
         run: |
           mkdir -p extensions/system/initramfs/scripts
           # The agent CI publishes binaries as workflow artifacts; this
           # step downloads them via the platform agent registry. v0
           # placeholder until the agent CI's release artifacts are wired.
-          ARCH_OUT="extensions/system/initramfs/scripts/ipn-agent-${{ matrix.arch }}"
-          if [ -z "${IPN_AGENT_BINARY_URL:-}" ]; then
-            echo "WARN: IPN_AGENT_BINARY_URL not set — using placeholder shim"
+          ARCH_OUT="extensions/system/initramfs/scripts/powernode-agent-${{ matrix.arch }}"
+          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
+            echo "WARN: POWERNODE_AGENT_BINARY_URL not set — using placeholder shim"
             cat >"$ARCH_OUT" <<'SHIM'
           #!/bin/sh
-          echo "[powernode-shim] ipn-agent placeholder"
+          echo "[powernode-shim] powernode-agent placeholder"
           exec /bin/sh
           SHIM
           else
-            curl -fsSL "$IPN_AGENT_BINARY_URL" -o "$ARCH_OUT"
+            curl -fsSL "$POWERNODE_AGENT_BINARY_URL" -o "$ARCH_OUT"
           fi
           chmod +x "$ARCH_OUT"
 

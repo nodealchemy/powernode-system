@@ -26,15 +26,15 @@ build-amd64:
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 	  -ldflags='$(LDFLAGS)' -trimpath \
-	  -o dist/ipn-agent-linux-amd64 \
-	  ./cmd/ipn-agent
+	  -o dist/powernode-agent-linux-amd64 \
+	  ./cmd/powernode-agent
 
 build-arm64:
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
 	  -ldflags='$(LDFLAGS)' -trimpath \
-	  -o dist/ipn-agent-linux-arm64 \
-	  ./cmd/ipn-agent
+	  -o dist/powernode-agent-linux-arm64 \
+	  ./cmd/powernode-agent
 
 test:
 	go test -race ./...

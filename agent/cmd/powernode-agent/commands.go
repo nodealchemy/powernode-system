@@ -10,6 +10,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -33,7 +36,7 @@ func bootCmd() *cobra.Command {
 the bootstrap token, pulls modules, mounts the composefs+overlayfs union, and
 switch_root's into the assembled rootfs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent boot] not yet implemented (M2.B identity + M2.C enroll + M2.D mount)")
+			fmt.Println("[powernode-agent boot] not yet implemented (M2.B identity + M2.C enroll + M2.D mount)")
 			_ = identityFile
 			_ = caFile
 			_ = bootstrapTok
@@ -66,17 +69,169 @@ func serviceCmd() *cobra.Command {
 				HeartbeatInterval: heartbeatInterval,
 				PKIDir:            pkiDir,
 				OnError: func(stage string, err error) {
-					fmt.Fprintf(os.Stderr, "[ipn-agent service] %s: %v\n", stage, err)
+					fmt.Fprintf(os.Stderr, "[powernode-agent service] %s: %v\n", stage, err)
 				},
 			})
 			return svc.Run(cmd.Context())
 		},
 	}
-	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (required)")
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (overrides identity-discovered URL)")
 	c.Flags().DurationVar(&heartbeatInterval, "heartbeat-interval", 30*time.Second, "interval between heartbeats")
 	c.Flags().StringVar(&pkiDir, "pki-dir", enroll.PKIDir, "directory containing node.crt/node.key/ca-bundle.crt")
-	_ = c.MarkFlagRequired("platform-url")
+	// --platform-url is intentionally NOT required: the agent self-bootstraps
+	// from identity (kernel cmdline / virtio-fw-cfg / cloud metadata). Pass
+	// the flag only when the operator wants to override the discovered URL.
 	return c
+}
+
+// --- prepare-root ------------------------------------------------------------
+// prepareRootCmd mounts the module-rootfs union at /sysroot for switch-root.
+//
+// Pre-conditions:
+//   - 9p share `powernode_modules` is exposed by the host (via libvirt
+//     <filesystem> block in DomainXmlBuilder), backing /var/lib/powernode/modules
+//   - Each named module has a rootfs/ subtree at <share>/<name>/rootfs/
+//   - The agent has already enrolled (cert at /persist/var/lib/powernode/pki/)
+//
+// Mount layout produced:
+//   /run/powernode/modules                 (9p share, ro)
+//   /run/powernode/overlay/{upper,work}    (tmpfs scratch)
+//   /sysroot                               (overlayfs union)
+//     /sysroot/persist  ← bind /persist (PKI + agent state survive pivot)
+//     /sysroot/dev      ← rbind /dev
+//     /sysroot/sys      ← rbind /sys
+//     /sysroot/proc     ← rbind /proc
+//     /sysroot/run      ← rbind /run    (lets agent in new root see fw-cfg /
+//                                        9p share without remounting)
+//
+// Caller (typically powernode-mount.service) follows up with
+//   systemctl switch-root /sysroot /sbin/init
+// which kills the initramfs systemd and re-execs in the new rootfs.
+func prepareRootCmd() *cobra.Command {
+	var (
+		modulesSource string
+		sysroot       string
+		modules       []string
+		ninePTag      string
+	)
+	c := &cobra.Command{
+		Use:   "prepare-root",
+		Short: "Mount module rootfs as overlayfs at /sysroot, ready for switch-root",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPrepareRoot(modulesSource, sysroot, ninePTag, modules)
+		},
+	}
+	c.Flags().StringVar(&modulesSource, "modules-source", "/run/powernode/modules", "where the 9p share is mounted")
+	c.Flags().StringVar(&sysroot, "sysroot", "/sysroot", "target mount point for the union")
+	c.Flags().StringSliceVar(&modules, "modules", []string{"system-base"}, "module names in priority order, low to high")
+	c.Flags().StringVar(&ninePTag, "9p-tag", "powernode_modules", "9p share tag (must match libvirt <target dir=...>)")
+	return c
+}
+
+func runPrepareRoot(modulesSource, sysroot, ninePTag string, modules []string) error {
+	fmt.Printf("[prepare-root] modules=%v sysroot=%s\n", modules, sysroot)
+
+	// 1. Ensure 9p share is mounted.
+	if !isMountedAt(modulesSource) {
+		if err := os.MkdirAll(modulesSource, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", modulesSource, err)
+		}
+		out, err := exec.Command("mount", "-t", "9p", "-o",
+			"trans=virtio,version=9p2000.L,ro,msize=104857600",
+			ninePTag, modulesSource).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mount 9p %q at %s: %w (output: %s)", ninePTag, modulesSource, err, out)
+		}
+		fmt.Printf("[prepare-root] mounted 9p share at %s\n", modulesSource)
+	}
+
+	// 2. Validate each module has a rootfs/ dir.
+	var lowers []string
+	for _, m := range modules {
+		rootfsPath := filepath.Join(modulesSource, m, "rootfs")
+		if _, err := os.Stat(rootfsPath); err != nil {
+			return fmt.Errorf("module %q rootfs not found at %s: %w", m, rootfsPath, err)
+		}
+		lowers = append(lowers, rootfsPath)
+	}
+	if len(lowers) == 0 {
+		return fmt.Errorf("no modules supplied")
+	}
+
+	// 3. tmpfs upper + work; sysroot mountpoint.
+	const workBase = "/run/powernode/overlay"
+	upper := filepath.Join(workBase, "upper")
+	work := filepath.Join(workBase, "work")
+	for _, d := range []string{upper, work, sysroot} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+
+	// 4. Reverse lowers — overlayfs reads lowerdir top-to-bottom (highest priority
+	// first), but our convention is to pass low-to-high.
+	reversed := make([]string, len(lowers))
+	for i, l := range lowers {
+		reversed[len(lowers)-1-i] = l
+	}
+	lowerdir := strings.Join(reversed, ":")
+
+	// 5. Mount overlayfs.
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerdir, upper, work)
+	fmt.Printf("[prepare-root] mount -t overlay -o %s overlay %s\n", overlayOpts, sysroot)
+	out, err := exec.Command("mount", "-t", "overlay", "overlay", "-o", overlayOpts, sysroot).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mount overlay at %s: %w (output: %s)", sysroot, err, out)
+	}
+
+	// 6. Bind-mount /persist, /dev, /sys, /proc, /run into /sysroot.
+	// rbind so submounts (like /sys/firmware/qemu_fw_cfg) come along.
+	for _, src := range []string{"/persist", "/dev", "/sys", "/proc", "/run"} {
+		dst := filepath.Join(sysroot, src)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dst, err)
+		}
+		if isMountedAt(dst) {
+			continue
+		}
+		out, err := exec.Command("mount", "--rbind", src, dst).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("rbind %s -> %s: %w (output: %s)", src, dst, err, out)
+		}
+	}
+
+	// 7. Sanity-check: there's an init in the new root.
+	candidates := []string{
+		filepath.Join(sysroot, "sbin/init"),
+		filepath.Join(sysroot, "lib/systemd/systemd"),
+		filepath.Join(sysroot, "usr/lib/systemd/systemd"),
+	}
+	var found string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			found = p
+			break
+		}
+	}
+	if found == "" {
+		return fmt.Errorf("no init found in %s (tried %v)", sysroot, candidates)
+	}
+	fmt.Printf("[prepare-root] OK — init=%s\n", found)
+	return nil
+}
+
+func isMountedAt(path string) bool {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == path {
+			return true
+		}
+	}
+	return false
 }
 
 // --- enroll ------------------------------------------------------------------
@@ -139,7 +294,7 @@ func verifyCmd() *cobra.Command {
 		Short: "Verify cosign signature + fs-verity hash on a local module artifact",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent verify] not yet implemented (M2.D)")
+			fmt.Println("[powernode-agent verify] not yet implemented (M2.D)")
 			return nil
 		},
 	}
@@ -151,7 +306,7 @@ func introspectCmd() *cobra.Command {
 		Use:   "introspect",
 		Short: "Print the agent's view of itself (identity, modules, certs, mounts)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent introspect] not yet implemented")
+			fmt.Println("[powernode-agent introspect] not yet implemented")
 			return nil
 		},
 	}
@@ -164,7 +319,7 @@ func attachCmd() *cobra.Command {
 		Short: "Mount a module into the union (legacy ipn -a)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent attach %s] not yet implemented (M2.D)\n", args[0])
+			fmt.Printf("[powernode-agent attach %s] not yet implemented (M2.D)\n", args[0])
 			return nil
 		},
 	}
@@ -176,7 +331,7 @@ func detachCmd() *cobra.Command {
 		Short: "Unmount a module from the union (legacy ipn -d)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent detach %s] not yet implemented (M2.D)\n", args[0])
+			fmt.Printf("[powernode-agent detach %s] not yet implemented (M2.D)\n", args[0])
 			return nil
 		},
 	}
@@ -188,7 +343,7 @@ func updateCmd() *cobra.Command {
 		Use:   "update",
 		Short: "Reconcile assignments from /node_api/modules (legacy ipn -u)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent update] not yet implemented (M2.E)")
+			fmt.Println("[powernode-agent update] not yet implemented (M2.E)")
 			return nil
 		},
 	}
@@ -200,7 +355,7 @@ func commitCmd() *cobra.Command {
 		Short: "Capture live delta + push as new module version (legacy ipn -c)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent commit %s] not yet implemented\n", args[0])
+			fmt.Printf("[powernode-agent commit %s] not yet implemented\n", args[0])
 			return nil
 		},
 	}
@@ -211,7 +366,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Print attach/detach state of all modules (legacy ipn -s)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent status] not yet implemented")
+			fmt.Println("[powernode-agent status] not yet implemented")
 			return nil
 		},
 	}
@@ -223,7 +378,7 @@ func execCmd() *cobra.Command {
 		Short: "Fetch + run a NodeScript from /node_api/files/scripts/:id (legacy ipn -e)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent exec %s] not yet implemented\n", args[0])
+			fmt.Printf("[powernode-agent exec %s] not yet implemented\n", args[0])
 			return nil
 		},
 	}
@@ -234,7 +389,7 @@ func syncCmd() *cobra.Command {
 		Use:   "sync",
 		Short: "One reconcile cycle: pull config + modules + run puppet (legacy ipn -S)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent sync] not yet implemented")
+			fmt.Println("[powernode-agent sync] not yet implemented")
 			return nil
 		},
 	}
@@ -246,7 +401,7 @@ func initCmd() *cobra.Command {
 		Short: "Run a module's init action; action is start|stop|restart (legacy ipn -I)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent init %s %s] not yet implemented\n", args[0], args[1])
+			fmt.Printf("[powernode-agent init %s %s] not yet implemented\n", args[0], args[1])
 			return nil
 		},
 	}
@@ -258,7 +413,7 @@ func volumeSetupCmd() *cobra.Command {
 		Short: "Partition + format a disk per node policy (legacy ipn -X)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[ipn-agent volume-setup %s] not yet implemented\n", args[0])
+			fmt.Printf("[powernode-agent volume-setup %s] not yet implemented\n", args[0])
 			return nil
 		},
 	}
@@ -273,7 +428,7 @@ func puppetCmd() *cobra.Command {
 		Use:   "apply",
 		Short: "Fetch /node_api/puppet/resources and run `puppet apply` (legacy ipn -p)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[ipn-agent puppet apply] not yet implemented")
+			fmt.Println("[powernode-agent puppet apply] not yet implemented")
 			return nil
 		},
 	})

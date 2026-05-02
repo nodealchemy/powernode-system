@@ -43,7 +43,7 @@ agent/coverage.html
 # === Initramfs builder outputs ===
 # build.sh writes per-arch artifacts here; never commit them.
 initramfs/build/
-initramfs/scripts/ipn-agent-*
+initramfs/scripts/powernode-agent-*
 
 # === Editor / OS ===
 .vscode/

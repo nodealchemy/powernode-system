@@ -184,7 +184,7 @@ module System
     end
 
     # === Runtime telemetry (Golden Eclipse M0.M) ===
-    # Used by ipn-agent heartbeat path (M0.O / M0.P / M2). Maintains
+    # Used by powernode-agent heartbeat path (M0.O / M0.P / M2). Maintains
     # last_heartbeat_at, agent_version, boot_id, and the running_module_digests
     # snapshot so FleetAutonomyService (M7) can detect drift.
 
@@ -199,7 +199,7 @@ module System
       last_heartbeat_at < HEARTBEAT_STALE_AFTER.ago
     end
 
-    # Records a heartbeat from the on-node ipn-agent. The :module_digests
+    # Records a heartbeat from the on-node powernode-agent. The :module_digests
     # parameter is a hash of { module_id => oci_digest } captured by the agent.
     def record_heartbeat!(agent_version:, boot_id:, module_digests: {}, architecture: nil)
       attrs = {

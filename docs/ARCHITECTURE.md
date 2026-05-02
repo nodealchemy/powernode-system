@@ -35,7 +35,7 @@ It complements [README.md](../README.md) (operator-facing summary) and
 ┌──▼──────────────────────┐                                ┌─────────────▼──┐
 │  GITEA + ACTIONS        │  oras pull oci://...           │  NODE INSTANCE │
 │  Module CI:             │ ───────────────────────────►   │  ┌──────────┐  │
-│   buildah → mkcomposefs │                                │  │ipn-agent │  │
+│   buildah → mkcomposefs │                                │  │powernode-agent │  │
 │   → fs-verity → cosign  │                                │  │  (Go)    │  │
 │   → push (multi-arch)   │                                │  └─┬────────┘  │
 └─────────────────────────┘                                │ /sysroot       │
@@ -97,7 +97,7 @@ artifact per architecture.
 `built → staging → blessed → live → retired`, gated by `PromotionCriteria`
 (N successful instances run version V for ≥ M minutes).
 
-### 2. On-node runtime (`ipn-agent`)
+### 2. On-node runtime (`powernode-agent`)
 
 A single static Go binary (~20 MB) replaces legacy bash. Embedded in the
 initramfs, runs as a systemd service after switch_root.
@@ -286,7 +286,7 @@ in the parent platform.
 
 - **Internal CA root** in HashiCorp Vault PKI engine
 - **Node certificates** issued by `pki_int`, 90-day TTL, auto-rotated
-  at 75% lifetime by ipn-agent
+  at 75% lifetime by powernode-agent
 - **Cosign signing identity** uses Sigstore Fulcio with ephemeral
   OIDC-bound certs (no long-lived signing keys)
 - **Bootstrap tokens** SHA-256 hashed in DB, single-use, 1-hour TTL,
@@ -308,10 +308,10 @@ in the parent platform.
 - **fs-verity** mandatory at file open on every composefs lower
 - **Lockdown mode** (`lockdown=integrity`) on kernel cmdline by default
 - **IMA/EVM** for additional file integrity (defense-in-depth)
-- **Per-module SELinux/AppArmor profiles** loaded by ipn-agent on attach
+- **Per-module SELinux/AppArmor profiles** loaded by powernode-agent on attach
 - **Capability dropping** by default — modules declare required caps in
   manifest.yaml; everything else dropped
-- **seccomp filter** on ipn-agent itself (highest-privilege process)
+- **seccomp filter** on powernode-agent itself (highest-privilege process)
 - **Egress filtering** at node level — default-deny outbound except
   platform endpoints + manifest.yaml allowlist
 

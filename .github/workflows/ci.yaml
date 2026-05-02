@@ -68,8 +68,8 @@ jobs:
           go vet ./...
           go test ./...
           # Cross-compile sanity check for both target archs
-          GOOS=linux GOARCH=amd64 go build -o /tmp/ipn-agent-amd64 ./cmd/ipn-agent
-          GOOS=linux GOARCH=arm64 go build -o /tmp/ipn-agent-arm64 ./cmd/ipn-agent
+          GOOS=linux GOARCH=amd64 go build -o /tmp/powernode-agent-amd64 ./cmd/powernode-agent
+          GOOS=linux GOARCH=arm64 go build -o /tmp/powernode-agent-arm64 ./cmd/powernode-agent
 
   frontend-structure:
     name: Frontend structure check

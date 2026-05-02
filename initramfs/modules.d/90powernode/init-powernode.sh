@@ -2,9 +2,9 @@
 # Powernode early-boot hook. Runs from dracut's pre-mount phase.
 #
 # Responsibilities:
-#   1. Verify the agent is staged at /sbin/ipn-agent (and is fs-verity sealed
+#   1. Verify the agent is staged at /sbin/powernode-agent (and is fs-verity sealed
 #      where the kernel supports it).
-#   2. Hand off to `ipn-agent boot`, which orchestrates the entire first-boot
+#   2. Hand off to `powernode-agent boot`, which orchestrates the entire first-boot
 #      flow: identity discovery → enrollment → OCI module pull → cosign verify
 #      → composefs mount → switch_root.
 #   3. If the agent cannot complete (network down, enrollment denied, etc.),
@@ -23,15 +23,15 @@ powernode_log() {
 powernode_emergency() {
     powernode_log "ERROR: $*"
     powernode_log "Dropping to dracut emergency shell. Powernode boot diagnostics:"
-    powernode_log "  agent binary: $([[ -x /sbin/ipn-agent ]] && echo present || echo MISSING)"
+    powernode_log "  agent binary: $([[ -x /sbin/powernode-agent ]] && echo present || echo MISSING)"
     powernode_log "  kernel cmdline: $(cat /proc/cmdline)"
     powernode_log "  network: $(ip -br addr 2>/dev/null | head -3)"
     emergency_shell -n powernode "Powernode boot failed: $*"
 }
 
 # Sanity: agent must be present.
-if [[ ! -x /sbin/ipn-agent ]]; then
-    powernode_emergency "ipn-agent missing at /sbin/ipn-agent"
+if [[ ! -x /sbin/powernode-agent ]]; then
+    powernode_emergency "powernode-agent missing at /sbin/powernode-agent"
 fi
 
 # Honor the powernode.boot=1 cmdline switch — the dracut config bakes this
@@ -42,9 +42,9 @@ if ! getarg powernode.boot=1 >/dev/null 2>&1; then
     return 0
 fi
 
-powernode_log "Handing off to ipn-agent boot…"
-if ! /sbin/ipn-agent boot; then
-    powernode_emergency "ipn-agent boot failed (exit $?)"
+powernode_log "Handing off to powernode-agent boot…"
+if ! /sbin/powernode-agent boot; then
+    powernode_emergency "powernode-agent boot failed (exit $?)"
 fi
 
-powernode_log "ipn-agent boot returned successfully — overlayfs/composefs prepared"
+powernode_log "powernode-agent boot returned successfully — overlayfs/composefs prepared"

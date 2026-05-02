@@ -49,14 +49,14 @@ jobs:
         run: make build-${{ matrix.arch }}
       - name: Verify static binary
         run: |
-          file dist/ipn-agent-linux-${{ matrix.arch }}
+          file dist/powernode-agent-linux-${{ matrix.arch }}
           # Should print "statically linked" — fail loudly if not
-          file dist/ipn-agent-linux-${{ matrix.arch }} | grep -q "statically linked" || (echo "FATAL: binary is not statically linked"; exit 1)
+          file dist/powernode-agent-linux-${{ matrix.arch }} | grep -q "statically linked" || (echo "FATAL: binary is not statically linked"; exit 1)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ipn-agent-linux-${{ matrix.arch }}
-          path: dist/ipn-agent-linux-${{ matrix.arch }}
+          name: powernode-agent-linux-${{ matrix.arch }}
+          path: dist/powernode-agent-linux-${{ matrix.arch }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -77,7 +77,7 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
-          for f in dist/ipn-agent-linux-*; do
+          for f in dist/powernode-agent-linux-*; do
             cosign sign-blob --bundle "$f.cosign-bundle" --yes "$f"
             sha256sum "$f" > "$f.sha256"
           done
@@ -85,9 +85,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/ipn-agent-linux-amd64
-            dist/ipn-agent-linux-amd64.cosign-bundle
-            dist/ipn-agent-linux-amd64.sha256
-            dist/ipn-agent-linux-arm64
-            dist/ipn-agent-linux-arm64.cosign-bundle
-            dist/ipn-agent-linux-arm64.sha256
+            dist/powernode-agent-linux-amd64
+            dist/powernode-agent-linux-amd64.cosign-bundle
+            dist/powernode-agent-linux-amd64.sha256
+            dist/powernode-agent-linux-arm64
+            dist/powernode-agent-linux-arm64.cosign-bundle
+            dist/powernode-agent-linux-arm64.sha256

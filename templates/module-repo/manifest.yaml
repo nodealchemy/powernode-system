@@ -38,7 +38,7 @@ dependencies:
 
 # === Init lifecycle ===
 # Strings here populate System::NodeModule.init_start, init_stop, init_restart.
-# The on-node ipn-agent runs them as subprocesses (NEVER eval'd).
+# The on-node powernode-agent runs them as subprocesses (NEVER eval'd).
 init:
   start: ""
   stop:  ""
@@ -49,12 +49,12 @@ init:
 # `false`: hot-swap is allowed (overlayfs lower stack remount + service restart)
 reboot_required: false
 
-# === Security policy (consumed by ipn-agent at attach time) ===
+# === Security policy (consumed by powernode-agent at attach time) ===
 security:
   # Linux capabilities the module's processes are allowed to retain.
   # Empty list = drop everything except those needed by the kernel for basic IO.
   capabilities: []
-  # Optional MAC profiles bundled in this repo. Loaded by ipn-agent on attach.
+  # Optional MAC profiles bundled in this repo. Loaded by powernode-agent on attach.
   selinux_profile: null   # path to .te / .pp inside this repo, e.g. "profile.te"
   apparmor_profile: null
   seccomp_profile: null
@@ -67,7 +67,7 @@ security:
   user_namespace: true
 
 # === AI Skills this module ships (Track F-4 forward-compat) ===
-# When attached, ipn-agent registers each declared skill with the platform.
+# When attached, powernode-agent registers each declared skill with the platform.
 skills: []
 
 # === Build hints ===

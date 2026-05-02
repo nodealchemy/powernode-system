@@ -29,7 +29,7 @@ it via the standard extension contract.
 
 ### On-node runtime
 
-- **Go agent (`ipn-agent`)** — single static binary, ~20MB, replaces legacy
+- **Go agent (`powernode-agent`)** — single static binary, ~20MB, replaces legacy
   bash scripts. Multi-cloud identity discovery (AWS/GCP/Azure/DigitalOcean/
   libvirt fw-cfg), mTLS enrollment, OCI module pull, fs-verity verification,
   composefs+overlayfs union mount, heartbeat, task lease, cert rotation
@@ -97,7 +97,7 @@ extensions/system/
 ├── server/                 # Rails models, services, controllers, specs
 ├── frontend/               # React TypeScript surface
 ├── worker/                 # Sidekiq job classes
-├── agent/                  # Go on-node agent (ipn-agent)
+├── agent/                  # Go on-node agent (powernode-agent)
 ├── initramfs/              # Multi-arch boot artifact builder
 ├── templates/
 │   └── module-repo/        # Canonical module-source layout
