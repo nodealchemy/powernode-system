@@ -138,5 +138,63 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       expect(response).to have_http_status(:ok)
       expect(JSON.parse(response.body)["message"]).to include("Ingested")
     end
+
+    # Idempotency — Gitea retries are routine. Without the
+    # find-or-create-by-tag guard, every retry minted a fresh
+    # NodeModuleVersion, exploding version_number monotonically.
+    describe "idempotency on Gitea retry" do
+      def deliver(payload)
+        body = payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: {
+               "Content-Type" => "application/json",
+               "X-Gitea-Signature" => hmac_for(body)
+             }
+      end
+
+      it "does not mint a duplicate version on replay of the same tag" do
+        expect { deliver(push_payload) }.to change { node_module.versions.count }.by(1)
+        first_version = node_module.versions.order(:version_number).last
+
+        # Replay the same delivery (Gitea retry behavior).
+        expect { deliver(push_payload) }.not_to change { node_module.versions.count }
+        expect(response).to have_http_status(:ok)
+        expect(node_module.versions.order(:version_number).last).to eq(first_version)
+      end
+
+      it "still creates a fresh version for a new tag" do
+        deliver(push_payload)
+        next_payload = push_payload.deep_merge(ref: "refs/tags/v1.2.4")
+        expect { deliver(next_payload) }.to change { node_module.versions.count }.by(1)
+      end
+    end
+
+    # Spec inheritance — earlier behavior was to seed the new version
+    # with empty mask/file_spec/package_spec arrays regardless of the
+    # parent module's state. The version then carried no useful spec.
+    it "inherits the parent module's current spec arrays into the new version" do
+      node_module.update!(
+        mask:           "/var/cache/apt/**",
+        file_spec:      "/etc/foo/**",
+        package_spec:   "foo",
+        protected_spec: "/etc/foo/secret"
+      )
+
+      body = push_payload.to_json
+      post "/api/v1/system/webhooks/gitea/module",
+           params: body,
+           headers: {
+             "Content-Type" => "application/json",
+             "X-Gitea-Signature" => hmac_for(body)
+           }
+      expect(response).to have_http_status(:ok)
+
+      version = node_module.versions.order(:version_number).last
+      decoded = ->(arr) { arr.map { |b| Base64.decode64(b) } }
+      expect(decoded.call(version.protected_spec)).to include("/etc/foo/secret")
+      expect(decoded.call(version.file_spec)).to       include("/etc/foo/**")
+      expect(decoded.call(version.mask)).to            include("/var/cache/apt/**")
+    end
   end
 end
