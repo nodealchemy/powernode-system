@@ -114,13 +114,32 @@ module Api
             "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
           end
 
+          # Idempotent: if a version already exists for this tag, return it.
+          # Gitea retries are routine (network blips, slow ack), and prior
+          # to this guard the receiver would mint a fresh version on every
+          # delivery — exploding version_number monotonically and creating
+          # ghost versions with no real content delta.
+          #
+          # Spec arrays inherited from the module's current state so the
+          # snapshot captures something useful. A future enhancement
+          # (#3 in the audit notes) is to re-parse manifest.yaml from
+          # the OCI artifact and replace these with the published values.
           def find_or_create_version(node_module, tag)
-            # Tag is a friendly name (e.g. "v1.2.3"). The platform's
-            # NodeModuleVersion uses an integer version_number — bump it.
+            existing = ::System::NodeModuleVersion
+                         .where(node_module: node_module)
+                         .where("config->>'git_tag' = ?", tag)
+                         .order(version_number: :desc)
+                         .first
+            return existing if existing
+
             ::System::NodeModuleVersion.create!(
               node_module: node_module,
               changelog: "Auto-ingested from Gitea tag #{tag}",
-              mask: [], file_spec: [], package_spec: [], config: { "git_tag" => tag }
+              mask:           Array(node_module.mask),
+              file_spec:      Array(node_module.file_spec),
+              package_spec:   Array(node_module.package_spec),
+              protected_spec: Array(node_module.protected_spec),
+              config: { "git_tag" => tag }
             )
           end
 
