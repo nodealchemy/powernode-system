@@ -15,6 +15,7 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
+import { CanaryMarker } from './CanaryMarker';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';

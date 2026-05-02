@@ -79,7 +79,6 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
     errorMessage: 'Failed to load architectures',
   });
 
-  if (loading && architectures.length === 0) {
   return (
     <ResponsiveListContainer
       loading={loading}
