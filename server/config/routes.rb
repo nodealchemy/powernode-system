@@ -36,6 +36,10 @@ Rails.application.routes.draw do
             # Honeypot canary marker (Track F-6).
             post :mark_canary
             post :unmark_canary
+            # Manifest YAML import — parses a manifest.yaml payload onto
+            # this module. Used by the operator UI's "import" button and
+            # by the Gitea webhook ingest path.
+            post :import_manifest
           end
           resources :module_puppet_assignments, only: %i[index create]
         end
