@@ -1,0 +1,17 @@
+[Unit]
+Description=Generate SSH host keys on first boot (overlay upper layer)
+ConditionPathExistsGlob=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service ssh.socket
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sh -c 'rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub'
+ExecStart=/usr/bin/ssh-keygen -A
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=ssh.service ssh.socket multi-user.target

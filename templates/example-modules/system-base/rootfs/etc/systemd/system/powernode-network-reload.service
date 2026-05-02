@@ -1,0 +1,19 @@
+[Unit]
+Description=Restart systemd-networkd after switch-root to re-push DNS to resolved
+Documentation=https://github.com/powernode/platform
+After=systemd-networkd.service systemd-resolved.service
+Before=powernode-agent.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# After switch-root the new-root networkd inherits the link state from
+# initramfs but never pushes DNS to resolved. A restart triggers a fresh
+# config apply which includes the DNS hand-off.
+ExecStart=/bin/systemctl restart systemd-networkd
+ExecStartPost=/bin/sh -c "for i in $(seq 30); do resolvectl dns 2>/dev/null | grep -q 10\\. && exit 0 || sleep 1; done; exit 0"
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

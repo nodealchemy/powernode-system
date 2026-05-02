@@ -1,0 +1,17 @@
+[Unit]
+Description=Powernode Agent (system-base post-pivot context)
+Documentation=https://github.com/powernode/platform
+ConditionPathExists=/usr/sbin/powernode-agent
+After=network-online.target systemd-resolved.service
+Wants=network-online.target systemd-resolved.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/powernode-agent service
+Restart=always
+RestartSec=5s
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
