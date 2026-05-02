@@ -1,0 +1,19 @@
+[Unit]
+Description=Powernode Agent (initramfs / smoke-test context)
+Documentation=https://github.com/powernode/platform
+ConditionKernelCommandLine=powernode.boot=1
+ConditionPathExists=/sbin/powernode-agent
+DefaultDependencies=no
+After=basic.target systemd-networkd-wait-online.service
+Wants=basic.target systemd-networkd-wait-online.service
+
+[Service]
+Type=simple
+ExecStart=/sbin/powernode-agent service
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

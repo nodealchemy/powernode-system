@@ -1,0 +1,23 @@
+# Default DHCP for any en* / eth* interface in the initramfs context.
+#
+# This is the pre-enrollment fallback. Once the agent enrolls and learns
+# per-instance network policy from the platform, it can override this with
+# instance-specific .network files (static IPs, VLANs, etc.) and reload
+# networkd. For first-boot, "DHCP and hope" is the only sensible default
+# since no policy is known yet.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+UseDNS=yes
+UseRoutes=yes
+UseHostname=yes
+RouteMetric=100
+
+[DHCPv6]
+UseDNS=yes
+RouteMetric=100

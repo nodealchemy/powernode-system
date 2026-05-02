@@ -1,0 +1,15 @@
+[Unit]
+Description=Powernode persistent state tmpfs (/persist)
+Documentation=https://github.com/powernode/platform
+DefaultDependencies=no
+ConditionPathIsMountPoint=!/persist
+Before=powernode-agent.service powernode-mount.service local-fs.target
+
+[Mount]
+What=tmpfs
+Where=/persist
+Type=tmpfs
+Options=mode=0755,size=64M
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,38 @@
+[Unit]
+Description=Powernode: prepare overlay union + switch-root into module rootfs
+Documentation=https://github.com/powernode/platform
+ConditionKernelCommandLine=powernode.boot=1
+ConditionPathExists=/sbin/powernode-agent
+DefaultDependencies=no
+
+# Run AFTER the agent has had time to enroll and persist the mTLS cert. The
+# ExecStartPre wait-for-cert below is the actual gate; the After= just keeps
+# systemd's ordering reasonable.
+After=basic.target powernode-agent.service powernode-ssh-keygen.service
+Wants=basic.target powernode-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Wait until the agent has enrolled. Caps at ~120s — if enrollment never
+# completes, we give up rather than hanging the boot. The unit's `Restart=`
+# isn't applicable to oneshot; if this fails the smoke run continues with
+# the initramfs sshd as fallback.
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -f /persist/var/lib/powernode/pki/node.crt ] && [ "$i" -lt 120 ]; do sleep 1; i=$((i+1)); done; test -f /persist/var/lib/powernode/pki/node.crt'
+
+# Build the overlay union at /sysroot. Modules in priority order, low to high
+# (system-base provides Ubuntu base + sshd; nginx layered on top adds web tier).
+# The agent reverses this list when building lowerdir so highest priority is
+# top of the overlayfs stack.
+ExecStart=/sbin/powernode-agent prepare-root --modules system-base,nginx
+
+# Re-exec systemd into the new root. --no-block because the very act of
+# switch-root kills this unit's executor — waiting would deadlock.
+ExecStartPost=/usr/bin/systemctl --no-block switch-root /sysroot /sbin/init
+
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

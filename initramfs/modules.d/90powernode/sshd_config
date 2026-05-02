@@ -1,0 +1,36 @@
+# Powernode smoke-test sshd config.
+#
+# Pubkey-only authentication, no PAM (avoids PAM module dependencies in
+# initramfs), no GSSAPI/Kerberos. Root login allowed via pubkey only
+# (smoke context — production sshd lives in system-base module after
+# switch_root and uses operator-shipped sshd config).
+
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+
+AuthorizedKeysFile /root/.ssh/authorized_keys
+
+X11Forwarding no
+PrintMotd no
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+
+LogLevel INFO
+SyslogFacility AUTH
+
+# No sftp subsystem — keep the smoke initramfs minimal.

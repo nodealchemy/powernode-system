@@ -1,0 +1,25 @@
+[Unit]
+Description=Powernode SSH Server (initramfs / smoke-test context)
+Documentation=man:sshd(8)
+ConditionKernelCommandLine=powernode.boot=1
+ConditionPathExists=/usr/sbin/sshd
+After=basic.target powernode-ssh-keygen.service systemd-networkd-wait-online.service
+Wants=powernode-ssh-keygen.service systemd-networkd-wait-online.service
+DefaultDependencies=no
+
+[Service]
+Type=simple
+# /run is mounted as tmpfs at boot, replacing whatever the initramfs cpio
+# put there — so the privsep dir has to be (re-)created at service start
+# rather than baked into the cpio.
+ExecStartPre=/usr/bin/mkdir -p /run/sshd
+ExecStartPre=/usr/bin/chmod 0755 /run/sshd
+ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
+Restart=on-failure
+RestartSec=5s
+KillMode=process
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
