@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module System
-  module Audit
+  module Compliance
     # Generates a complete compliance snapshot for an account: every node,
     # every running instance, every module digest, every certificate, every
     # CVE exposure, every drift report. Output is a structured Hash that
@@ -49,7 +49,7 @@ module System
           account_name: account.name,
           generated_at: Time.current.iso8601,
           scope: scope.to_s,
-          generator: "System::Audit::ComplianceSnapshotService",
+          generator: "System::Compliance::ComplianceSnapshotService",
           generator_commit: ENV["POWERNODE_GIT_SHA"] || "unknown"
         }
       end

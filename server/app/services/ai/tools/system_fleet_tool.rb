@@ -521,7 +521,7 @@ module Ai
       # === Compliance snapshot ===
 
       def compliance_snapshot(_params)
-        result = ::System::Audit::ComplianceSnapshotService.snapshot!(account: @account)
+        result = ::System::Compliance::ComplianceSnapshotService.snapshot!(account: @account)
         return error_result(result.error) unless result.ok?
         success_result(snapshot: result.snapshot, generated_at: result.generated_at.iso8601)
       end

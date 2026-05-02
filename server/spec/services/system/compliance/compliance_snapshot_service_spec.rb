@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # Golden Eclipse M-D2-1 — ComplianceSnapshotService.
-RSpec.describe System::Audit::ComplianceSnapshotService do
+RSpec.describe System::Compliance::ComplianceSnapshotService do
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform) }
