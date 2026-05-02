@@ -82,7 +82,7 @@ build_kernel_initrd() {
   local arch_conf="${SCRIPT_DIR}/dracut.conf.d/powernode-${ARCH}.conf"
   local shared_conf="${SCRIPT_DIR}/dracut.conf.d/powernode.conf"
 
-  # Compose dracut module path so /sbin/ipn-agent is embedded into initramfs
+  # Compose dracut module path so /sbin/powernode-agent is embedded into initramfs
   # along with the powernode module-setup hook (modules.d/90powernode/).
   if ! command -v dracut >/dev/null 2>&1; then
     log "WARN: dracut not in PATH — emitting placeholder for offline planning"
@@ -92,42 +92,73 @@ build_kernel_initrd() {
   fi
 
   local kver
-  kver="$(cd /lib/modules && ls -1 | head -n1)"
+  # Prefer KERNEL_VERSION env override → running kernel → newest kernel that
+  # has both modules and a /boot/vmlinuz-${kver}. Avoid orphaned module dirs
+  # (modules present but no kernel image — common after partial kernel removals).
+  if [[ -n "${KERNEL_VERSION:-}" ]] && [[ -d "/lib/modules/${KERNEL_VERSION}" ]] && [[ -f "/boot/vmlinuz-${KERNEL_VERSION}" ]]; then
+    kver="${KERNEL_VERSION}"
+  elif [[ -d "/lib/modules/$(uname -r)" ]] && [[ -f "/boot/vmlinuz-$(uname -r)" ]]; then
+    kver="$(uname -r)"
+  else
+    kver="$(for d in /lib/modules/*/; do
+              v=$(basename "$d"); [[ -f "/boot/vmlinuz-${v}" ]] && echo "$v";
+            done | sort -V | tail -n1)"
+  fi
   if [[ -z "${kver}" ]]; then
-    log "ERROR: no kernel modules available under /lib/modules" >&2
+    log "ERROR: no kernel with both modules and /boot/vmlinuz-* found" >&2
     return 1
   fi
 
-  # The agent binary must already be staged at scripts/ipn-agent (built by
+  # The agent binary must already be staged at scripts/powernode-agent (built by
   # the agent CI in extensions/system/agent/.gitea/workflows/build.yaml).
-  if [[ ! -x "${SCRIPT_DIR}/scripts/ipn-agent-${ARCH}" ]]; then
+  if [[ ! -x "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" ]]; then
     log "WARN: agent binary missing for ${ARCH} — embedding placeholder shim"
     mkdir -p "${SCRIPT_DIR}/scripts"
-    cat >"${SCRIPT_DIR}/scripts/ipn-agent-${ARCH}" <<'SHIM'
+    cat >"${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" <<'SHIM'
 #!/bin/sh
-echo "[powernode-shim] ipn-agent placeholder — replace with cross-compiled binary"
+echo "[powernode-shim] powernode-agent placeholder — replace with cross-compiled binary"
 exec /bin/sh
 SHIM
-    chmod +x "${SCRIPT_DIR}/scripts/ipn-agent-${ARCH}"
+    chmod +x "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}"
   fi
-  cp "${SCRIPT_DIR}/scripts/ipn-agent-${ARCH}" /tmp/ipn-agent
+  cp "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" /tmp/powernode-agent
 
   local conf_args=("-c" "${shared_conf}")
   [[ -f "${arch_conf}" ]] && conf_args+=("-c" "${arch_conf}")
+
+  # Drivers explicitly forced in: dracut config-file merging via repeated -c is
+  # unreliable across distros; CLI --force-drivers is the durable mechanism.
+  # qemu_fw_cfg exposes virtio-fw-cfg under /sys/firmware/ for the agent's
+  # identity package on libvirt/QEMU first boot.
+  # 9p / 9pnet_virtio: filesystem passthrough from host (used by the dev-mode
+  # local-fs module loader to expose /var/lib/powernode/modules into the guest).
+  # overlay: union mount for stacking module rootfs lowers.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay"
 
   dracut \
     "${conf_args[@]}" \
     --modules "powernode" \
     --kver "${kver}" \
-    --include "/tmp/ipn-agent" "/sbin/ipn-agent" \
+    --force-drivers "${force_drivers}" \
+    --include "/tmp/powernode-agent" "/sbin/powernode-agent" \
     --compress zstd \
     --force \
     "${out}/initramfs.cpio.zst"
 
-  cp "/boot/vmlinuz-${kver}" "${out}/kernel"
+  # Ubuntu ships /boot/vmlinuz-* with mode 0600 owned by root (since 2018,
+  # KASLR consideration). Use sudo for the read; the destination ends up
+  # owned by the build user so subsequent runs don't need elevated rights.
+  if [[ -r "/boot/vmlinuz-${kver}" ]]; then
+    cp "/boot/vmlinuz-${kver}" "${out}/kernel"
+  else
+    log "kernel image needs sudo (mode 0600 in /boot)…"
+    sudo cp "/boot/vmlinuz-${kver}" "${out}/kernel"
+    sudo chown "$(id -u):$(id -g)" "${out}/kernel"
+  fi
+  chmod 0644 "${out}/kernel" "${out}/initramfs.cpio.zst"
 
   sha256sum "${out}/kernel" "${out}/initramfs.cpio.zst" >"${out}/SHA256SUMS"
-  log "kernel-initrd ✓ at ${out}"
+  log "kernel-initrd ✓ at ${out} (kver=${kver})"
 }
 
 # ── Variant: raw disk image (UEFI ESP + ext4 boot + ext4 persist) ──────────
