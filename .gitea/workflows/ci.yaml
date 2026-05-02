@@ -1,0 +1,156 @@
+name: ci
+
+# Top-level CI for the powernode-system extension. Validates the Rails
+# extension code, the React frontend type-correctness, and the Go agent
+# tests. Per-subproject builds (initramfs, module-repo template, agent
+# binary release) live in their own .gitea/workflows/build.yaml files.
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  rspec:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: powernode_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+    env:
+      RAILS_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/powernode_test
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: Check out the system extension
+        uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - name: Check out the parent platform
+        uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.GITEA_PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+          submodules: false
+
+      # The system extension's specs autoload through the parent platform's
+      # Rails app. We mount this checkout into the parent's
+      # extensions/system/ directory and run rspec from there.
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          ln -s "$(realpath extensions/system)" powernode-platform/extensions/system
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+          bundler-cache: true
+          working-directory: powernode-platform/server
+
+      - name: Prepare test database
+        working-directory: powernode-platform/server
+        run: |
+          bundle exec rails db:create
+          bundle exec rails db:schema:load
+          # Backfill schema_migrations from extension migrations so rspec
+          # doesn't complain about pending migrations
+          bundle exec rails runner '
+            Dir.glob("../extensions/*/server/db/migrate/*.rb").each do |f|
+              v = File.basename(f)[/\A\d+/]
+              ActiveRecord::Base.connection.execute(
+                "INSERT INTO schema_migrations (version) VALUES ('"'"'#{v}'"'"') ON CONFLICT DO NOTHING"
+              )
+            end
+          '
+
+      - name: Run system extension specs
+        working-directory: powernode-platform/server
+        run: bundle exec rspec ../extensions/system/server/spec/ --format progress
+
+  frontend-typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.GITEA_PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          ln -s "$(realpath extensions/system)" powernode-platform/extensions/system
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: powernode-platform/frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: powernode-platform/frontend
+        run: npm ci
+
+      - name: Type-check the system extension
+        working-directory: extensions/system/frontend
+        run: |
+          if [ -f tsconfig.check.json ]; then
+            npx --prefix ../../../powernode-platform/frontend tsc --noEmit -p tsconfig.check.json
+          else
+            echo "no tsconfig.check.json — skipping (this is expected for extension-only PRs)"
+          fi
+
+  go-agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: agent/go.sum
+      - name: Run agent tests
+        working-directory: agent
+        run: |
+          if [ -f go.mod ]; then
+            go test ./...
+          else
+            echo "agent/ has no go.mod yet — skipping"
+          fi
+
+  ruby-syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+      - name: Ruby syntax check on every .rb in the extension
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            ruby -c "$f" >/dev/null || { echo "syntax error: $f"; fail=1; }
+          done < <(find server worker -name '*.rb' 2>/dev/null)
+          exit $fail

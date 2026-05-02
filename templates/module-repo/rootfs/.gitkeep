@@ -1,0 +1,3 @@
+Files placed under this directory are baked into the module rootfs at /
+(e.g., put a config file at rootfs/etc/example/config.yaml to ship it as
+/etc/example/config.yaml on every node that mounts this module).

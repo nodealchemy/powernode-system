@@ -1,0 +1,122 @@
+name: ci
+
+# Public-side CI for community contributors. Runs without the parent
+# Powernode platform — covers everything that can be validated in
+# isolation: ruby syntax, frontend type structure, Go agent tests,
+# initramfs script lints. The full rspec suite that requires the
+# parent platform's autoloader runs on the Gitea side
+# (.gitea/workflows/ci.yaml).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ruby-syntax:
+    name: Ruby syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+      - name: Syntax-check every .rb file
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            ruby -c "$f" >/dev/null || { echo "::error file=${f}::ruby syntax error"; fail=1; }
+          done < <(find server worker -name '*.rb' 2>/dev/null)
+          exit $fail
+
+  rubocop:
+    name: Rubocop
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+      - name: Run rubocop (advisory)
+        run: |
+          gem install rubocop --no-document
+          # Run in advisory mode — this is community CI; we don't fail PRs
+          # on style yet, but show what would change.
+          rubocop server worker --no-color --format simple || true
+
+  go-agent:
+    name: Go agent
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: agent/go.sum
+      - name: Build + test
+        working-directory: agent
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "agent/ has no go.mod yet — skipping"
+            exit 0
+          fi
+          go vet ./...
+          go test ./...
+          # Cross-compile sanity check for both target archs
+          GOOS=linux GOARCH=amd64 go build -o /tmp/ipn-agent-amd64 ./cmd/ipn-agent
+          GOOS=linux GOARCH=arm64 go build -o /tmp/ipn-agent-arm64 ./cmd/ipn-agent
+
+  frontend-structure:
+    name: Frontend structure check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint imports + check no console.log
+        run: |
+          fail=0
+          # No console.log in production code (community CI gate)
+          if grep -rn "console\.log" frontend/src/ --include='*.ts' --include='*.tsx' 2>/dev/null; then
+            echo "::error::console.log found in frontend code; use logger instead"
+            fail=1
+          fi
+          # No `any` type
+          if grep -rn ": any" frontend/src/ --include='*.ts' --include='*.tsx' 2>/dev/null | grep -v "^.*://"; then
+            echo "::warning::': any' types found — prefer proper TypeScript types"
+          fi
+          exit $fail
+
+  shell-lint:
+    name: Shell scripts (initramfs builders)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          fail=0
+          while IFS= read -r f; do
+            shellcheck -S warning "$f" || fail=1
+          done < <(find initramfs -name '*.sh' 2>/dev/null)
+          exit $fail
+
+  yaml-lint:
+    name: YAML lint (workflows + dracut configs)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install yamllint
+          yamllint -d "{extends: relaxed, rules: {line-length: disable, indentation: {spaces: 2, indent-sequences: consistent}}}" \
+            .github .gitea initramfs/.gitea 2>&1 | head -50

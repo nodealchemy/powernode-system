@@ -1,0 +1,75 @@
+# Powernode System Extension — gitignore
+#
+# This file applies inside this extension's repo. The parent platform has
+# its own .gitignore that covers the platform's working tree.
+
+# === Ruby / Rails ===
+*.gem
+*.rbc
+.bundle
+.config
+.yardoc
+Gemfile.lock.bak
+InstalledFiles
+_yardoc
+coverage
+doc/
+lib/bundler/man
+pkg
+rdoc
+spec/reports
+spec/examples.txt
+test/tmp
+test/version_tmp
+tmp
+log/*.log
+
+# === Node / TypeScript ===
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm
+.yarn-integrity
+.pnp.*
+
+# === Go ===
+agent/bin/
+agent/*.exe
+agent/*.test
+agent/*.out
+agent/coverage.html
+
+# === Initramfs builder outputs ===
+# build.sh writes per-arch artifacts here; never commit them.
+initramfs/build/
+initramfs/scripts/ipn-agent-*
+
+# === Editor / OS ===
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# === Local config / secrets (paranoid catches) ===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cosign-bundle
+test-credentials.json
+
+# === Coverage artifacts ===
+coverage/
+.coverage
+.nyc_output
+
+# === Cache ===
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc

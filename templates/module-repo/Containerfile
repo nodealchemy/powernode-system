@@ -1,0 +1,50 @@
+# Powernode Module Builder — Stage 1
+#
+# Builds a fat staging filesystem from package_spec + rootfs/. The composer
+# stage in .gitea/workflows/build.yaml then carves a slim module out of this
+# image using the rsync_spec filter passed at dispatch time.
+#
+# Pinned to a specific Ubuntu 24.04 digest for reproducibility (per Golden
+# Eclipse Security Architecture: SLSA Level 3+ requires reproducible builds
+# pinned to immutable digests, not floating tags).
+#
+# Refresh the pin periodically — scripts/scripts/refresh-base-image-pin.sh
+# (TODO: ship as part of the module SDK) tracks ubuntu:24.04 LTS point releases.
+
+# renovate: datasource=docker depName=docker.io/library/ubuntu
+ARG UBUNTU_DIGEST=sha256:0e5e4a57c2499249aafcbb6a527eb1c86e4e3c0af3d5a7f7a2c9b9d1a9c0e5c7
+FROM docker.io/library/ubuntu@${UBUNTU_DIGEST}
+
+LABEL io.powernode.role="module-builder" \
+      io.powernode.schema="v1"
+
+# Snapshot pin for reproducible apt installs. Set via build-arg to override
+# (snapshot.debian.org rotates archives; pin to a recent timestamp for each
+# module release tag).
+ARG APT_SNAPSHOT="20260415T000000Z"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8
+
+# Reroute apt to the pinned snapshot so package versions are deterministic.
+RUN set -eux; \
+    sed -ri "s|http://(archive\|security)\.ubuntu\.com|http://snapshot.ubuntu.com/${APT_SNAPSHOT}|g" \
+        /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+
+# Install packages from the dispatched package_spec. The composer stage
+# writes the spec to /workspace/package_spec.txt before invoking buildah.
+COPY package_spec.txt /tmp/package_spec.txt
+RUN set -eux; \
+    apt-get update; \
+    if [ -s /tmp/package_spec.txt ]; then \
+      xargs -a /tmp/package_spec.txt apt-get install -y --no-install-recommends; \
+    fi; \
+    rm -rf /var/lib/apt/lists/* /tmp/package_spec.txt
+
+# Copy the module's tracked rootfs files on top of the package install.
+# Anything in rootfs/ overrides the equivalent file installed by apt — this
+# is the primary means by which a module customizes its package's defaults.
+COPY rootfs/ /
+
+# Builder image is the input to the composer stage. The composer rsyncs out
+# only the files matching rsync_spec; everything else is discarded.

@@ -1,0 +1,17 @@
+{
+  "extends": "../../../frontend/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["../../../frontend/src/*"],
+      "@/shared/*": ["../../../frontend/src/shared/*"],
+      "@/features/*": ["../../../frontend/src/features/*"],
+      "@/pages/*": ["../../../frontend/src/pages/*"],
+      "@/assets/*": ["../../../frontend/src/assets/*"],
+      "@system/*": ["./src/*"],
+      "@business/*": ["../../business/frontend/src/*"]
+    },
+    "baseUrl": ".",
+    "rootDir": "../.."
+  },
+  "include": ["src", "../../../frontend/src/shared/**/*.ts", "../../../frontend/src/shared/**/*.tsx"]
+}

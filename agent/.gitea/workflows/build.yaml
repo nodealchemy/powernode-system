@@ -1,0 +1,93 @@
+name: build-agent
+
+on:
+  push:
+    branches: [main, master, develop]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master, develop]
+
+permissions:
+  contents: write       # release uploads
+  id-token: write       # cosign keyless
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race
+        run: go test -race ./...
+
+  build:
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build (${{ matrix.arch }})
+        run: make build-${{ matrix.arch }}
+      - name: Verify static binary
+        run: |
+          file dist/ipn-agent-linux-${{ matrix.arch }}
+          # Should print "statically linked" — fail loudly if not
+          file dist/ipn-agent-linux-${{ matrix.arch }} | grep -q "statically linked" || (echo "FATAL: binary is not statically linked"; exit 1)
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipn-agent-linux-${{ matrix.arch }}
+          path: dist/ipn-agent-linux-${{ matrix.arch }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Install cosign
+        run: |
+          curl -sSLo /usr/local/bin/cosign \
+            "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+          chmod +x /usr/local/bin/cosign
+      - name: Sign binaries (Sigstore keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          for f in dist/ipn-agent-linux-*; do
+            cosign sign-blob --bundle "$f.cosign-bundle" --yes "$f"
+            sha256sum "$f" > "$f.sha256"
+          done
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ipn-agent-linux-amd64
+            dist/ipn-agent-linux-amd64.cosign-bundle
+            dist/ipn-agent-linux-amd64.sha256
+            dist/ipn-agent-linux-arm64
+            dist/ipn-agent-linux-arm64.cosign-bundle
+            dist/ipn-agent-linux-arm64.sha256

@@ -1,0 +1,70 @@
+# System extension scheduled jobs.
+#
+# This file deliberately holds ONE recurring job: the hourly reaper. The
+# primary operation-dispatch path is event-driven (Operation#after_commit
+# enqueues SystemExecuteTaskJob immediately on creation), so no
+# 30-second cron polling exists.
+#
+# The reaper is a low-frequency safety net for missed enqueues (Redis
+# blips during operation creation) and dead-worker recovery (a worker
+# crashed while holding the /execute HTTP connection mid-operation).
+#
+# === Long-running operation guardrails ===
+#
+# Sidekiq does NOT provide per-queue timeouts (see worker/config/sidekiq.yml
+# header). The system queue runs operations that may take many minutes
+# (e.g., cloud provisioning, module build+commit). Three safeguards apply:
+#
+#   1. SystemExecuteTaskJob declares `retry: 0`. The Operation AASM
+#      state machine is the source of truth — Sidekiq retries would corrupt
+#      it. Failures terminate the job and surface to the reaper.
+#   2. BackendApiClient's per-call timeout caps the worker→server HTTP wait.
+#      If a runtime service exceeds this, the worker job raises and the op
+#      stays in `:running`. The reaper picks it up after STUCK_RUNNING_THRESHOLD
+#      (default 60 min) and transitions it to `:failed` with execution_lost.
+#   3. Operator-tunable: SYSTEM_REAPER_STUCK_RUNNING_MIN env var raises the
+#      reaper's "stuck" threshold for slow workloads (e.g., minute 90 for
+#      AMI builds).
+#
+# A future P2 architecture change would move long ops to async runtime
+# execution (worker calls /execute, server returns 202, worker polls/subscribes
+# for completion) so the HTTP connection isn't held for the full op duration.
+:schedule:
+  system_task_reaper:
+    cron: "0 */1 * * *"            # every hour at :00
+    class: "SystemTaskReaperJob"
+    queue: system
+    description: "System: re-enqueue stuck pending ops and fail abandoned running ops"
+
+  # Fleet autonomy reconciliation tick (Golden Eclipse M7).
+  # Runs every minute. Hits POST /api/v1/system/worker_api/fleet/reconcile
+  # which dispatches to FleetAutonomyService.tick! per active account:
+  # sensors → DecisionEngine → LearningExtractor → PressureEmitter.
+  #
+  # Concurrency: Redis lock keyed `system:fleet:reconcile:lock` (90s TTL)
+  # prevents double-fire if the cron worker pool is busy.
+  system_fleet_reconcile:
+    cron: "* * * * *"
+    class: "SystemFleetReconcileJob"
+    queue: system
+    description: "Fleet: run sensors, route decisions, extract learnings, emit pressure signals"
+
+  # CVE feed ingest (Golden Eclipse M-D2-2).
+  # Hourly poll of NVD JSON. After ingestion, ExposureCalculator recomputes
+  # System::CveExposure rows for every account. Operators can trigger
+  # ad-hoc via the /worker_api/cve/ingest endpoint.
+  system_cve_feed:
+    cron: "7 * * * *"               # every hour at :07 (avoid :00 stampede)
+    class: "SystemCveFeedJob"
+    queue: system
+    description: "Fleet: ingest CVE feed entries + recompute exposures"
+
+  # FleetEvent retention sweep — nightly at 4:30 AM UTC.
+  # Drops routine events older than POWERNODE_FLEET_EVENT_RETENTION_DAYS
+  # (default 90); high/critical kept for POWERNODE_FLEET_EVENT_CRITICAL_RETENTION_DAYS
+  # (default 365) so audit history of high-impact decisions persists.
+  system_fleet_event_retention:
+    cron: "30 4 * * *"
+    class: "SystemFleetEventRetentionJob"
+    queue: maintenance
+    description: "Fleet: retention sweep of System::FleetEvent rows"

@@ -1,0 +1,77 @@
+# Powernode Module Manifest — authoring-time hints.
+#
+# This manifest provides defaults for module-creation flows; once a NodeModule
+# row exists in the platform, its mask/file_spec/package_spec/dependency_spec
+# columns are AUTHORITATIVE — this file is for first-import / docs only.
+#
+# Reference: Golden Eclipse plan (M1 module supply chain).
+
+schema_version: 1
+
+# Identity — must match the NodeModule.gitea_repo_full_name registered in
+# the platform. The webhook lookup uses this to route ingest events.
+name: example-mod
+display_name: "Example Module"
+description: "Replace with a one-paragraph description of what this module ships."
+license: "Apache-2.0"
+
+# === Default content selection rules (mirrored to NodeModule on first import) ===
+# Each spec field is a list of rsync-style glob lines.
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+file_spec:
+  - "/etc/example/**"
+  - "/usr/lib/example/**"
+package_spec:
+  - example-package
+  - example-package-extras
+
+# === Dependencies (other modules this one requires/provides) ===
+# `requires` are looked up by gitea_repo_full_name + version_constraint.
+# `provides` are abstract capability tags consumers can target.
+dependencies:
+  requires: []
+  provides: []
+
+# === Init lifecycle ===
+# Strings here populate System::NodeModule.init_start, init_stop, init_restart.
+# The on-node ipn-agent runs them as subprocesses (NEVER eval'd).
+init:
+  start: ""
+  stop:  ""
+  restart: ""
+
+# === Reboot semantics ===
+# `true`: attaching/detaching this module requires a reboot of the instance
+# `false`: hot-swap is allowed (overlayfs lower stack remount + service restart)
+reboot_required: false
+
+# === Security policy (consumed by ipn-agent at attach time) ===
+security:
+  # Linux capabilities the module's processes are allowed to retain.
+  # Empty list = drop everything except those needed by the kernel for basic IO.
+  capabilities: []
+  # Optional MAC profiles bundled in this repo. Loaded by ipn-agent on attach.
+  selinux_profile: null   # path to .te / .pp inside this repo, e.g. "profile.te"
+  apparmor_profile: null
+  seccomp_profile: null
+  # Egress allowlist (default-deny). Each entry is "host:port" (port optional).
+  egress_allow: []
+  # Whether the module needs raw hardware access. Default: false. Privileged
+  # modules require explicit operator approval to attach.
+  privileged: false
+  # Whether to map the module's processes into a user namespace.
+  user_namespace: true
+
+# === AI Skills this module ships (Track F-4 forward-compat) ===
+# When attached, ipn-agent registers each declared skill with the platform.
+skills: []
+
+# === Build hints ===
+# Optional: pin the Ubuntu base digest used by the Containerfile's FROM.
+build:
+  ubuntu_digest: null     # falls back to Containerfile's UBUNTU_DIGEST default
+  apt_snapshot: null      # falls back to Containerfile's APT_SNAPSHOT default

@@ -1,0 +1,200 @@
+# Powernode Module CI — two-stage build with multi-arch matrix.
+# Triggered by either:
+#   - workflow_dispatch (Powernode platform sends rsync_spec + package_spec)
+#   - tag push (matches v*.* — module author publishes a release)
+#
+# Stage 1: builder image (Containerfile + package_spec)
+# Stage 2: composer (rsync_spec → mkcomposefs → fs-verity → cosign → oras push)
+#
+# Reference: Golden Eclipse plan M1 — two-stage CI design.
+
+name: build-module
+
+on:
+  workflow_dispatch:
+    inputs:
+      rsync_spec:
+        description: "rsync filter rules (multi-line; '- excl', '+ incl', '- *')"
+        required: true
+        type: string
+      package_spec:
+        description: "Newline-separated package names for apt-get install"
+        required: false
+        type: string
+        default: ""
+      fingerprint:
+        description: "SHA256 fingerprint of compiled inputs (cache key)"
+        required: true
+        type: string
+      module_id:
+        description: "NodeModule UUID — passed back through to webhook"
+        required: true
+        type: string
+      module_name:
+        description: "Module slug for logging"
+        required: false
+        type: string
+        default: "module"
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read       # checkout
+  id-token: write      # cosign keyless signing via Sigstore Fulcio
+  packages: write      # oras push to Gitea registry
+
+env:
+  REGISTRY: ${{ vars.POWERNODE_OCI_REGISTRY || 'git.ipnode.org' }}
+  COMPOSEFS_TOOLS_VERSION: "1.0.4"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            buildah skopeo rsync xz-utils \
+            composefs-tools="${COMPOSEFS_TOOLS_VERSION}*" || \
+            sudo apt-get install -y composefs-tools
+
+          # cosign + oras + syft + grype + in-toto from official releases
+          curl -sSLo /usr/local/bin/cosign \
+            "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-${{ matrix.arch }}"
+          curl -sSL \
+            "https://github.com/oras-project/oras/releases/latest/download/oras_linux_${{ matrix.arch }}.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+          curl -sSL \
+            "https://github.com/anchore/syft/releases/latest/download/syft_linux_${{ matrix.arch }}.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin syft
+          curl -sSL \
+            "https://github.com/anchore/grype/releases/latest/download/grype_linux_${{ matrix.arch }}.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin grype
+          sudo chmod +x /usr/local/bin/cosign /usr/local/bin/oras /usr/local/bin/syft /usr/local/bin/grype
+
+      - name: Resolve dispatch inputs (or tag-push defaults)
+        id: resolve
+        run: |
+          set -eux
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            printf '%s' "${{ inputs.rsync_spec }}"   > rsync_spec.filter
+            printf '%s' "${{ inputs.package_spec }}" > package_spec.txt
+            echo "fingerprint=${{ inputs.fingerprint }}" >> $GITHUB_OUTPUT
+            echo "module_id=${{ inputs.module_id }}"     >> $GITHUB_OUTPUT
+            echo "module_name=${{ inputs.module_name }}" >> $GITHUB_OUTPUT
+          else
+            # Tag-push fallback: use whatever the repo committed under spec/
+            cp spec/rsync_spec.filter   rsync_spec.filter   2>/dev/null || echo "- *" > rsync_spec.filter
+            cp spec/package_spec.txt    package_spec.txt    2>/dev/null || true
+            echo "fingerprint=$(sha256sum rsync_spec.filter package_spec.txt 2>/dev/null | awk '{print $1}' | head -1)" >> $GITHUB_OUTPUT
+            echo "module_id=$(yq '.name' manifest.yaml)" >> $GITHUB_OUTPUT
+            echo "module_name=$(yq '.name' manifest.yaml)" >> $GITHUB_OUTPUT
+          fi
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "tag=${tag:-dispatched-${{ steps.resolve.outputs.fingerprint || github.sha }}}" >> $GITHUB_OUTPUT
+
+      # Stage 1: build the fat staging image with package_spec + rootfs/
+      - name: Stage 1 — buildah bud (builder image)
+        run: |
+          set -eux
+          buildah bud \
+            --platform="linux/${{ matrix.arch }}" \
+            --build-arg "APT_SNAPSHOT=${APT_SNAPSHOT:-20260415T000000Z}" \
+            -t "module-builder:${{ matrix.arch }}" \
+            -f Containerfile \
+            .
+
+      - name: Mount the builder image and rsync into staging
+        run: |
+          set -eux
+          BUILDER=$(buildah from "module-builder:${{ matrix.arch }}")
+          MOUNT=$(buildah mount "$BUILDER")
+          mkdir -p /tmp/staging
+          rsync -aH --filter="merge rsync_spec.filter" "$MOUNT/" /tmp/staging/
+          buildah umount "$BUILDER"
+          buildah rm "$BUILDER"
+
+      # Stage 2: compose into composefs + sign + push
+      - name: Stage 2 — mkcomposefs + fs-verity digest
+        id: compose
+        run: |
+          set -eux
+          mkdir -p cfs-store
+          mkcomposefs --digest-store=./cfs-store /tmp/staging /tmp/module.cfs
+          fsverity digest /tmp/module.cfs --hash-alg sha256 > /tmp/fsverity_root_hash.txt
+          # extract just the hash hex
+          ROOT_HASH=$(awk '{print $1}' /tmp/fsverity_root_hash.txt)
+          echo "fsverity_root_hash=${ROOT_HASH}" >> $GITHUB_OUTPUT
+          echo "size_bytes=$(stat -c%s /tmp/module.cfs)" >> $GITHUB_OUTPUT
+
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          syft /tmp/staging -o cyclonedx-json > /tmp/sbom.cdx.json
+
+      - name: Vulnerability scan (VEX)
+        run: |
+          grype --add-cpes-if-none /tmp/staging -o json > /tmp/vex.json || true
+
+      - name: Cosign sign-blob (keyless via Sigstore Fulcio)
+        run: |
+          set -eux
+          COSIGN_EXPERIMENTAL=1 cosign sign-blob \
+            --bundle /tmp/module.cosign-bundle \
+            --yes \
+            /tmp/module.cfs
+
+      - name: Push artifact to OCI registry (oras)
+        id: push
+        env:
+          ORAS_USERNAME: ${{ secrets.GITEA_PUSH_USERNAME }}
+          ORAS_PASSWORD: ${{ secrets.GITEA_PUSH_TOKEN }}
+        run: |
+          set -eux
+          REPO_PATH="${{ github.repository }}"
+          TAG="${{ steps.resolve.outputs.tag }}-${{ matrix.arch }}"
+          ARTIFACT_REF="${REGISTRY}/${REPO_PATH}:${TAG}"
+          oras login "${REGISTRY}" -u "${ORAS_USERNAME}" -p "${ORAS_PASSWORD}"
+          oras push "${ARTIFACT_REF}" \
+            --artifact-type application/vnd.powernode.module.v1 \
+            --annotation "io.powernode.fsverity_root_hash=${{ steps.compose.outputs.fsverity_root_hash }}" \
+            --annotation "io.powernode.fingerprint=${{ steps.resolve.outputs.fingerprint }}" \
+            --annotation "io.powernode.module_id=${{ steps.resolve.outputs.module_id }}" \
+            --annotation "io.powernode.built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            /tmp/module.cfs:application/octet-stream \
+            /tmp/sbom.cdx.json:application/vnd.cyclonedx+json \
+            /tmp/vex.json:application/vnd.cyclonedx.vex+json \
+            /tmp/module.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json
+          echo "artifact_ref=${ARTIFACT_REF}" >> $GITHUB_OUTPUT
+
+      - name: Notify Powernode webhook
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ vars.POWERNODE_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module' }}
+          WEBHOOK_SECRET: ${{ secrets.POWERNODE_WEBHOOK_SECRET }}
+        run: |
+          set -eux
+          PAYLOAD=$(jq -c -n \
+            --arg repo "${{ github.repository }}" \
+            --arg ref  "refs/tags/${{ steps.resolve.outputs.tag }}" \
+            --arg artifact "${{ steps.push.outputs.artifact_ref }}" \
+            --arg fingerprint "${{ steps.resolve.outputs.fingerprint }}" \
+            '{repository:{full_name:$repo}, ref:$ref, artifact:$artifact, fingerprint:$fingerprint}')
+          SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.*= //')
+          curl -fsS -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-Gitea-Signature: ${SIG}" \
+            --data "$PAYLOAD" || echo "[warn] webhook delivery failed; will retry on next dispatch"

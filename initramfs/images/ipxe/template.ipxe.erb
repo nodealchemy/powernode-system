@@ -1,0 +1,33 @@
+<%# iPXE chainload template, server-rendered by NetbootService per-instance. %>
+<%# Variables resolved by the controller before send:                       %>
+<%#   instance_uuid     — NodeInstance.id                                   %>
+<%#   bootstrap_token   — single-use token; consumed at /node_api/enroll    %>
+<%#   ca_pem_inline     — platform CA chain in PEM (or set ca_pem_url)      %>
+<%#   ca_pem_url        — alternative: HTTPS URL for CA chain (preferred    %>
+<%#                       when chain >1 cert; cmdline limit ~2KB)            %>
+<%#   image_base        — https://platform/.../images base URL              %>
+<%#   arch              — auto-resolved at iPXE runtime via ${buildarch}    %>
+#!ipxe
+
+# Identify the booting host's architecture. iPXE auto-populates ${buildarch}
+# with: i386 (legacy x86), x86_64 (modern x86), arm64 (aarch64).
+set arch ${buildarch}
+
+# Embed enrollment context on the kernel command line so the agent can
+# self-bootstrap without a separate config-fetch round-trip on first boot.
+imgargs kernel \
+  powernode.bootstrap_token=<%= bootstrap_token %> \
+  <% if defined?(ca_pem_url) && ca_pem_url %>powernode.ca_url=<%= ca_pem_url %><% else %>powernode.ca=<%= ca_pem_inline %><% end %> \
+  powernode.instance_uuid=<%= instance_uuid %> \
+  console=tty1 console=ttyS0,115200 \
+  lockdown=integrity ima_appraise=enforce ima_template=ima-ng \
+  powernode.boot=1
+
+kernel <%= image_base %>/${arch}/kernel
+initrd <%= image_base %>/${arch}/initramfs.cpio.zst
+boot
+
+# Fall-through: emergency shell if boot fails.
+:failed
+echo Powernode iPXE boot failed. Press any key for shell...
+shell
