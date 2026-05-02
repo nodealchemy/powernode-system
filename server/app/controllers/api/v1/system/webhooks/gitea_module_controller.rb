@@ -102,11 +102,78 @@ module Api
             )
 
             if result.ok?
+              register_skills_for(node_module)
+              emit_published_event(node_module, version, oci_ref, result.module_artifacts, tag)
               "Ingested #{oci_ref} → version=#{version.version_number} arches=#{result.module_artifacts.map(&:architecture).join(',')}"
             else
               Rails.logger.warn "[GiteaModule] ingest failed: #{result.error}"
+              emit_publish_failed_event(node_module, tag, result.error)
               "Ingest failed: #{result.error}"
             end
+          end
+
+          # Re-runs skill registration whenever a tag publishes — the
+          # manifest's `skills:` block is the source of truth, so each
+          # publish is the right moment to refresh registrations.
+          # Non-fatal: skill registration failure must not break the
+          # webhook ack (Gitea would retry, and the underlying issue
+          # likely isn't transient).
+          def register_skills_for(node_module)
+            return unless defined?(::System::ModuleSkillRegistrar)
+            result = ::System::ModuleSkillRegistrar.register_for_module!(node_module: node_module)
+            unless result.ok?
+              Rails.logger.warn "[GiteaModule] skill registration failed: #{result.error}"
+            end
+          rescue StandardError => e
+            Rails.logger.warn "[GiteaModule] skill registrar raised: #{e.class}: #{e.message}"
+          end
+
+          # Emits a system.module_published FleetEvent on every successful
+          # ingest. Surfaces in the operator dashboard so the fleet has
+          # an audit trail of which versions land when, with the OCI ref
+          # + arches embedded in the payload.
+          def emit_published_event(node_module, version, oci_ref, artifacts, tag)
+            return unless defined?(::System::Fleet::EventBroadcaster)
+
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: node_module.account,
+              kind: "system.module_published",
+              severity: :low,
+              source: "gitea_webhook",
+              node_module_id: node_module.id,
+              node_module_version_id: version.id,
+              payload: {
+                module_name:    node_module.name,
+                version_number: version.version_number,
+                git_tag:        tag,
+                oci_ref:        oci_ref,
+                arches:         artifacts.map(&:architecture)
+              }
+            )
+          rescue StandardError => e
+            Rails.logger.warn "[GiteaModule] fleet event emit failed: #{e.class}: #{e.message}"
+          end
+
+          # Failure-path complement. Severity is "high" because a broken
+          # publication blocks downstream deployments and the operator
+          # needs to act — so the dashboard should highlight it.
+          def emit_publish_failed_event(node_module, tag, error_message)
+            return unless defined?(::System::Fleet::EventBroadcaster)
+
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: node_module.account,
+              kind: "system.module_publish_failed",
+              severity: :high,
+              source: "gitea_webhook",
+              node_module_id: node_module.id,
+              payload: {
+                module_name: node_module.name,
+                git_tag:     tag,
+                error:       error_message
+              }
+            )
+          rescue StandardError => e
+            Rails.logger.warn "[GiteaModule] fleet event (failure) emit failed: #{e.class}: #{e.message}"
           end
 
           # Pulls manifest.yaml from the Gitea repo at the published tag

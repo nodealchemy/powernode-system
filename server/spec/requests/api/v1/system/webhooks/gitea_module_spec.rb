@@ -257,6 +257,82 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       end
     end
 
+    describe "post-import side effects" do
+      def deliver
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: {
+               "Content-Type" => "application/json",
+               "X-Gitea-Signature" => hmac_for(body)
+             }
+      end
+
+      it "emits a system.module_published FleetEvent on success" do
+        expect {
+          deliver
+        }.to change {
+          System::FleetEvent.where(account: account, kind: "system.module_published").count
+        }.by(1)
+        event = System::FleetEvent.where(kind: "system.module_published").last
+        expect(event.payload["git_tag"]).to eq("v1.2.3")
+        expect(event.payload["module_name"]).to eq("nginx-mod")
+        expect(event.payload["arches"]).to include("amd64")
+        expect(event.node_module_id).to eq(node_module.id)
+        expect(event.severity).to eq("low")
+      end
+
+      it "emits a system.module_publish_failed FleetEvent on ingest failure" do
+        System::ModuleOciIngestService.adapter.stub_manifest = { error: "registry returned 500" }
+        expect {
+          deliver
+        }.to change {
+          System::FleetEvent.where(account: account, kind: "system.module_publish_failed").count
+        }.by(1)
+        event = System::FleetEvent.where(kind: "system.module_publish_failed").last
+        expect(event.payload["git_tag"]).to eq("v1.2.3")
+        expect(event.payload["error"]).to include("registry returned 500")
+        expect(event.severity).to eq("high")
+      end
+
+      it "registers manifest-declared skills via ModuleSkillRegistrar on success" do
+        # Stub the registrar so we can assert it was called with this module
+        # — the registrar's own behavior is covered by its own spec.
+        registrar_double = double(ok?: true, registered: 1, removed: 0, proposed: 0, error: nil)
+        expect(System::ModuleSkillRegistrar)
+          .to receive(:register_for_module!)
+          .with(hash_including(node_module: node_module))
+          .and_return(registrar_double)
+        deliver
+        expect(response).to have_http_status(:ok)
+      end
+
+      it "is non-fatal when ModuleSkillRegistrar raises" do
+        allow(System::ModuleSkillRegistrar)
+          .to receive(:register_for_module!).and_raise(StandardError, "skill boom")
+        deliver
+        # Webhook still acks 200; OCI ingest still ran.
+        expect(response).to have_http_status(:ok)
+        expect(node_module.versions.count).to be > 0
+      end
+
+      it "is non-fatal when fleet event emit raises" do
+        allow(System::Fleet::EventBroadcaster)
+          .to receive(:emit!).and_raise(StandardError, "broadcaster boom")
+        deliver
+        expect(response).to have_http_status(:ok)
+      end
+
+      it "does NOT emit a published event when ingest fails" do
+        System::ModuleOciIngestService.adapter.stub_manifest = { error: "boom" }
+        expect {
+          deliver
+        }.not_to change {
+          System::FleetEvent.where(kind: "system.module_published").count
+        }
+      end
+    end
+
     # Spec inheritance — earlier behavior was to seed the new version
     # with empty mask/file_spec/package_spec arrays regardless of the
     # parent module's state. The version then carried no useful spec.
