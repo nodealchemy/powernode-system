@@ -40,6 +40,55 @@ RSpec.describe System::RsyncSpecCompiler do
       b = described_class.compile(node_module: node_module)
       expect(a.fingerprint).to eq(b.fingerprint)
     end
+
+    # Cross-module verification: when a target node has multiple modules
+    # assigned, lower-priority neighbors' protected_spec must end up in
+    # the higher module's rsync_spec exclude list. This is the gate the
+    # build pipeline relies on — without it, an apache layer could ship
+    # /etc/shadow and silently override system-base at union mount time.
+    context "with a target node and a lower-priority neighbor" do
+      let(:cat_low)  { create(:system_node_module_category, account: account, name: "low",  position: 1) }
+      let(:cat_high) { create(:system_node_module_category, account: account, name: "high", position: 10) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+
+      let(:base_mod) do
+        create(:system_node_module, account: account, node_platform: platform,
+               category: cat_low, variety: "subscription", name: "base-mod").tap do |m|
+          m.update!(protected_spec: "/etc/shadow\n/etc/sudoers")
+        end
+      end
+      let(:service_mod) do
+        create(:system_node_module, account: account, node_platform: platform,
+               category: cat_high, variety: "subscription", name: "service-mod").tap do |m|
+          m.update!(file_spec: "/etc/service/**", mask: "/var/cache/apt/**")
+        end
+      end
+
+      before do
+        System::NodeModuleAssignment.create!(node: node, node_module: base_mod, enabled: true)
+        System::NodeModuleAssignment.create!(node: node, node_module: service_mod, enabled: true)
+      end
+
+      it "folds the lower-priority neighbor's protected_spec into the higher module's rsync_spec" do
+        result = described_class.compile(node_module: service_mod, target: node)
+
+        expect(result.rsync_spec).to include("- /etc/shadow\n")
+        expect(result.rsync_spec).to include("- /etc/sudoers\n")
+        expect(result.rsync_spec).to include("- /var/cache/apt/**\n")  # service_mod's own mask
+        expect(result.rsync_spec).to include("+ /etc/service/**\n")    # service_mod's file_spec
+      end
+
+      it "the lower module's own rsync_spec does NOT exclude its own protected paths" do
+        # base-mod ships /etc/shadow itself (file_spec /etc/**, say). Its
+        # protected_spec is an outbound claim, not a self-exclude.
+        base_mod.update!(file_spec: "/etc/**")
+        result = described_class.compile(node_module: base_mod, target: node)
+
+        expect(result.rsync_spec).not_to include("- /etc/shadow\n")
+        expect(result.rsync_spec).to include("+ /etc/**\n")
+      end
+    end
   end
 end
 
@@ -100,6 +149,40 @@ RSpec.describe System::ModuleBuildDispatchService do
       stub_const("ENV", ENV.to_h.merge("POWERNODE_BUILD_DISPATCH_MODE" => "gitea"))
       described_class.reset!
       expect(described_class.adapter).to be_a(described_class::GiteaDispatchAdapter)
+    end
+
+    # End-to-end CI verification: when a build is dispatched against a
+    # target node, the workflow input rsync_spec MUST include neighbor
+    # modules' protected_spec entries. This is the gate the .gitea/
+    # workflows/build.yaml relies on — it merges the supplied filter
+    # via `rsync -aH --filter="merge rsync_spec.filter"`, so any path
+    # we want to keep out of the blob must reach the dispatched input.
+    it "dispatches with neighbor protected_spec folded into the workflow rsync_spec input" do
+      cat_low  = create(:system_node_module_category, account: account, name: "low",  position: 1)
+      cat_high = create(:system_node_module_category, account: account, name: "high", position: 10)
+      template = create(:system_node_template, account: account, node_platform: platform)
+      target_node = create(:system_node, account: account, node_template: template)
+
+      base_mod = create(:system_node_module, account: account, node_platform: platform,
+                        category: cat_low, variety: "subscription", name: "base-target",
+                        gitea_repo_full_name: "ipnode-acme/base-target")
+      base_mod.update!(protected_spec: "/etc/shadow\n/etc/ssh/ssh_host_*_key")
+
+      service_mod = create(:system_node_module, account: account, node_platform: platform,
+                           category: cat_high, variety: "subscription", name: "service-target",
+                           gitea_repo_full_name: "ipnode-acme/service-target")
+      service_mod.update!(file_spec: "/etc/service/**")
+
+      [base_mod, service_mod].each do |m|
+        System::NodeModuleAssignment.create!(node: target_node, node_module: m, enabled: true)
+      end
+
+      described_class.dispatch_build!(node_module: service_mod, target: target_node)
+      payload = described_class.adapter.dispatched.last
+
+      expect(payload[:inputs][:rsync_spec]).to include("- /etc/shadow\n")
+      expect(payload[:inputs][:rsync_spec]).to include("- /etc/ssh/ssh_host_*_key\n")
+      expect(payload[:inputs][:rsync_spec]).to include("+ /etc/service/**\n")
     end
   end
 end
