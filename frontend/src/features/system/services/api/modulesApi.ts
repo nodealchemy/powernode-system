@@ -31,8 +31,24 @@ export interface ModuleCreate {
   consent_budget_per_day?: number | null;
   consent_budget_used_count?: number;
   consent_budget_window_start_at?: string | null;
-  mask?: Record<string, unknown>;
-  file_spec?: Record<string, unknown>;
+  // Spec fields. Send as scalar newline-joined strings (the form-friendly
+  // shape — the model's encode_specs callback base64-encodes each line on
+  // save). Already-encoded arrays are also accepted for programmatic
+  // clients that already have the wire shape.
+  mask?: string | string[];
+  file_spec?: string | string[];
+  package_spec?: string | string[];
+  dependency_spec?: string | string[];
+  // protected_spec: paths I CLAIM. The build pipeline folds these into
+  // every neighbor's effective_mask, preventing union-mount overrides
+  // of paths I own (e.g. /etc/shadow shipped by system-base).
+  protected_spec?: string | string[];
+  // Lifecycle / lock state
+  lock_spec?: boolean;
+  init_start?: string;
+  init_stop?: string;
+  init_restart?: string;
+  reboot_required?: boolean;
   config?: Record<string, unknown>;
 }
 
@@ -159,6 +175,35 @@ export const modulesApi = {
 
   removeModuleDependency: async (moduleId: string, dependencyId: string): Promise<void> => {
     await apiClient.delete(`/system/node_modules/${moduleId}/dependencies/${dependencyId}`);
+  },
+
+  // ===== Manifest import =====
+  // Posts a manifest.yaml payload to the import endpoint, which parses it
+  // and writes the declared spec/lifecycle fields onto the module. Pass
+  // create_version: true to also snapshot the parsed state into a new
+  // NodeModuleVersion (used by the Gitea push webhook ingest path).
+  importManifest: async (
+    moduleId: string,
+    yaml: string,
+    options: { createVersion?: boolean; changelog?: string } = {}
+  ): Promise<{
+    node_module: SystemNodeModule;
+    node_module_version_id: string | null;
+    resolved_dependencies: Array<{ repo: string; constraint?: string; status: string }>;
+  }> => {
+    const response = await apiClient.post<ApiEnvelope<{
+      node_module: SystemNodeModule;
+      node_module_version_id: string | null;
+      resolved_dependencies: Array<{ repo: string; constraint?: string; status: string }>;
+    }>>(
+      `/system/node_modules/${moduleId}/import_manifest`,
+      {
+        yaml,
+        create_version: options.createVersion ?? false,
+        changelog: options.changelog,
+      },
+    );
+    return extractData(response);
   },
 
   // ===== Honeypot canary toggle =====
