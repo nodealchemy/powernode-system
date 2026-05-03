@@ -131,7 +131,17 @@ module System
           if oci_ref.include?("/") && !oci_ref.start_with?("local:", "file:")
             require "open3"; require "tmpdir"; require "fileutils"
             work = Dir.mktmpdir("powernode-disk-image-local-")
-            _out, err, status = Open3.capture3("oras", "pull", oci_ref, "--output", work)
+            # Augment PATH so the oras binary (commonly installed at
+            # ~/.local/bin or /usr/local/bin) is findable from a Puma
+            # process whose env was stripped by systemd.
+            augmented_env = {
+              "PATH" => [
+                ENV["HOME"] && "#{ENV["HOME"]}/.local/bin",
+                "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin",
+                "/bin", "/sbin", ENV["PATH"]
+              ].compact.uniq.join(":")
+            }
+            _out, err, status = Open3.capture3(augmented_env, "oras", "pull", oci_ref, "--output", work)
             unless status.success?
               FileUtils.remove_entry(work)
               return Result.new(ok?: false, error: "oras pull failed (smoke-mode): #{err.strip}")

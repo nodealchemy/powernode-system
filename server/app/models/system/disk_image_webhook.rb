@@ -82,7 +82,17 @@ module System
       return false if provided.blank?
 
       expected = ::OpenSSL::HMAC.hexdigest("SHA256", secret, raw_body)
-      ::ActiveSupport::SecurityUtils.secure_compare(provided, expected)
+      match = ::ActiveSupport::SecurityUtils.secure_compare(provided, expected)
+      unless match
+        # Diagnostic log on mismatch — helps debug CI/platform secret drift.
+        # Only logs prefixes of both signatures so the full HMAC isn't echoed.
+        ::Rails.logger.warn(
+          "[DiskImageWebhook] signature mismatch webhook=#{id} label=#{label} " \
+          "provided=#{provided[0, 12]} expected=#{expected[0, 12]} " \
+          "body_bytes=#{raw_body.bytesize} secret_preview=#{secret_preview}"
+        )
+      end
+      match
     rescue StandardError => e
       ::Rails.logger.warn("[DiskImageWebhook] verify_signature error: #{e.class}: #{e.message}")
       false

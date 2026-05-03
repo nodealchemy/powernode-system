@@ -318,14 +318,27 @@ jobs:
               --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed for $img"
 
             # 3. Push everything to OCI registry as a single artifact.
-            oras push "$ref" \
-              --artifact-type application/vnd.powernode.disk-image.v1 \
-              "$img:application/octet-stream" \
-              "$img.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json" \
-              "$img.attestation-bundle:application/vnd.dev.cosign.attestation.v1+json" \
-              || echo "WARN: oras push failed for $platform"
-
-            echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
+            #    cosign-bundle and attestation-bundle layers are optional
+            #    (smoke mode skips cosign signing because there's no ambient
+            #    OIDC token). Build the layer list dynamically so a missing
+            #    bundle doesn't error out the whole push.
+            push_args=("$ref" "--artifact-type" "application/vnd.powernode.disk-image.v1"
+                       "$img:application/octet-stream")
+            if [ -f "$img.cosign-bundle" ]; then
+              push_args+=("$img.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json")
+            else
+              echo "  (cosign-bundle missing — pushing without signature layer)"
+            fi
+            if [ -f "$img.attestation-bundle" ]; then
+              push_args+=("$img.attestation-bundle:application/vnd.dev.cosign.attestation.v1+json")
+            else
+              echo "  (attestation-bundle missing — pushing without attestation layer)"
+            fi
+            if oras push "${push_args[@]}"; then
+              echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
+            else
+              echo "WARN: oras push failed for $platform — webhook will fire but platform OCI pull will 404"
+            fi
           done
 
       - name: Notify platform of new disk images (HMAC webhook — OCI-pull mode)
