@@ -116,7 +116,28 @@ Comprehensive 9-phase sweep targeting end-to-end functional stability.
 | P6 — F-3 NodeInstance-as-Agent | agent_peer/registrar.go (Go) + AgentPeeringService + node_api/peer endpoint + operator delegation API | ✅ done — Go agent_peer tests pass |
 | P7 — UI features | Boot Replay viewer (timeline + detail), Marketplace skeleton (list + card + detail modal), AI Concierge panel | ✅ done — TypeScript clean |
 | P8 — Quality polish | Full verification (rspec + go + tsc) | ✅ done — RuboCop autocorrect deferred |
-| P9 — Submodule + parent | Dual-remote push (Gitea + GitHub mirror), parent pointer bump, MCP knowledge contributions | 🟡 commits deferred to operator decision |
+| P9 — Submodule + parent | Dual-remote push (Gitea + GitHub mirror), parent pointer bump, MCP knowledge contributions | ✅ done — 27 commits across both repos, all pushed |
+
+### Post-sweep follow-ups (refined plan: Phase 10 in the sweep plan file)
+
+A refined sequenced roadmap for the deferred items lives at
+`~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
+under "Phase 10 — Deferred Item Roadmap". Summary:
+
+| Subphase | Scope | Effort | Status |
+|---|---|---|---|
+| 10.1 | RuboCop autocorrect sweep | ~0.5d | ⬜ pending — parallelizable, no prereqs |
+| 10.2 | `syft` SBOM ingestion in module CI | ~2d | ⬜ pending — unblocks SBOM-aware CVE matching for real fleets |
+| 10.3 | AI Concierge production conversation routing | ~3d | ⬜ pending — depends on chat extension |
+| 10.4 | Workspace mention picker for peers | ~1.5d | ⬜ pending — depends on chat extension |
+| 10.5 | Metrics instrumentation (v1 = tagged logger) | ~1.5d | ⬜ pending — operator input needed on sink (StatsD/OTel/tagged) |
+| 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
+| 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | ⬜ slow-day work |
+
+**Total deferred**: ~17 engineer-days across 6 phases (excluding the
+decision-gated table extraction and slow-day polish list). See the plan
+file for per-subphase prerequisites, files to touch, success criteria,
+and risk register.
 
 ---
 
