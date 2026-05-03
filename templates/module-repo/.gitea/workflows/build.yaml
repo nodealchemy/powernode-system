@@ -198,3 +198,44 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-Gitea-Signature: ${SIG}" \
             --data "$PAYLOAD" || echo "[warn] webhook delivery failed; will retry on next dispatch"
+
+      - name: Notify Powernode SBOM webhook
+        # Sends the parsed SBOM to the platform so CVE exposure calculation
+        # can use ecosystem-aware version-range matching. The existing
+        # `Notify Powernode webhook` step above triggers async OCI ingestion
+        # of the artifact; the SBOM POST may race ahead of it, so we retry
+        # with backoff if the artifact row isn't in the DB yet.
+        if: success() && steps.push.outputs.artifact_ref != ''
+        env:
+          SBOM_WEBHOOK_URL: ${{ vars.POWERNODE_SBOM_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module_sbom' }}
+          WEBHOOK_SECRET: ${{ secrets.POWERNODE_WEBHOOK_SECRET }}
+        run: |
+          set -eu
+          PAYLOAD=$(jq -c -n \
+            --arg module_id "${{ steps.resolve.outputs.module_id }}" \
+            --arg tag "${{ steps.resolve.outputs.tag }}" \
+            --arg architecture "${{ matrix.arch }}" \
+            --slurpfile sbom /tmp/sbom.cdx.json \
+            '{module_id:$module_id, tag:$tag, architecture:$architecture, sbom:$sbom[0]}')
+          SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.*= //')
+          for delay in 0 10 30 60; do
+            [ "$delay" -gt 0 ] && { echo "[info] retrying SBOM ingestion in ${delay}s"; sleep "$delay"; }
+            RESP=$(curl -sS -X POST "$SBOM_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -H "X-Gitea-Signature: ${SIG}" \
+              --data "$PAYLOAD" || echo '{"message":"network error"}')
+            case "$RESP" in
+              *"SBOM ingested"*)
+                echo "$RESP"
+                exit 0
+                ;;
+              *"Artifact not found"*)
+                echo "[info] artifact not yet ingested, will retry"
+                ;;
+              *)
+                echo "[warn] SBOM webhook returned: $RESP"
+                exit 0
+                ;;
+            esac
+          done
+          echo "[warn] SBOM not ingested after retries; CVE matching will fall back to keyword overlap until next build"

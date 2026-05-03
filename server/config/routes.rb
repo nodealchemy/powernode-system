@@ -158,6 +158,9 @@ Rails.application.routes.draw do
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
           post "gitea/module", to: "gitea_module#handle"
+          # SBOM ingestion from module CI builds. Same per-module HMAC secret
+          # as gitea/module above. Phase 10.2 of stabilization sweep.
+          post "gitea/module_sbom", to: "module_sbom#create"
           # Disk-image build notifications from CI runners — the :webhook_id
           # segment scopes the request to a specific account's
           # DiskImageWebhook (account derived from webhook.account_id).
