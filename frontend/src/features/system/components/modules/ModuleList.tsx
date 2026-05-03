@@ -10,7 +10,10 @@ import {
   Lock,
   MoreVertical,
   Filter,
-  FolderTree
+  FolderTree,
+  GitBranch,
+  Power,
+  ShieldCheck
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -97,9 +100,12 @@ export const ModuleList: React.FC<ModuleListProps> = ({
     filterFn: (mod, f) => {
       if (f.search) {
         const searchLower = f.search.toLowerCase();
+        // Search now also matches the parent module name so operators
+        // can find dependant overrides by typing their parent's name.
         if (
           !mod.name.toLowerCase().includes(searchLower) &&
-          !mod.description?.toLowerCase().includes(searchLower)
+          !mod.description?.toLowerCase().includes(searchLower) &&
+          !mod.parent_module_name?.toLowerCase().includes(searchLower)
         ) {
           return false;
         }
@@ -298,7 +304,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                   <tr key={module.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
                     <td className="py-3 px-4">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <Package className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
                           <span
                             className="font-medium text-theme-primary hover:text-theme-link cursor-pointer"
@@ -311,7 +317,26 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                               P{module.priority}
                             </span>
                           )}
+                          {/* Operator-relevant flags surface as small icons
+                              next to the name. Hover titles explain what
+                              each one means; no extra columns needed. */}
+                          {module.lock_spec && (
+                            <Lock className="w-3.5 h-3.5 text-theme-warning" aria-label="Spec locked" />
+                          )}
+                          {module.reboot_required && (
+                            <Power className="w-3.5 h-3.5 text-theme-warning" aria-label="Reboot required on attach/detach" />
+                          )}
+                          {module.protected_spec && module.protected_spec.length > 0 && (
+                            <ShieldCheck className="w-3.5 h-3.5 text-theme-info" aria-label="Declares protected_spec" />
+                          )}
                         </div>
+                        {module.dependant && (
+                          <p className="text-xs text-theme-info mt-0.5 flex items-center gap-1">
+                            <GitBranch className="w-3 h-3" />
+                            dependant of{' '}
+                            <code className="text-theme-info">{module.parent_module_name ?? 'parent'}</code>
+                          </p>
+                        )}
                         {module.description && (
                           <p className="text-sm text-theme-secondary mt-1 truncate max-w-xs">
                             {module.description}
@@ -378,7 +403,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
               <div key={module.id} className="p-4">
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <Package className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
                       <span
                         className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
@@ -386,7 +411,22 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                       >
                         {module.name}
                       </span>
+                      {module.lock_spec && (
+                        <Lock className="w-3.5 h-3.5 text-theme-warning" aria-label="Spec locked" />
+                      )}
+                      {module.reboot_required && (
+                        <Power className="w-3.5 h-3.5 text-theme-warning" aria-label="Reboot required" />
+                      )}
+                      {module.protected_spec && module.protected_spec.length > 0 && (
+                        <ShieldCheck className="w-3.5 h-3.5 text-theme-info" aria-label="Declares protected_spec" />
+                      )}
                     </div>
+                    {module.dependant && (
+                      <p className="text-xs text-theme-info flex items-center gap-1">
+                        <GitBranch className="w-3 h-3" />
+                        dependant of <code>{module.parent_module_name ?? 'parent'}</code>
+                      </p>
+                    )}
                     {module.description && (
                       <p className="text-sm text-theme-secondary truncate">{module.description}</p>
                     )}
