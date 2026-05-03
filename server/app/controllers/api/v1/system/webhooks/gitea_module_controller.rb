@@ -75,127 +75,74 @@ module Api
             Rack::Utils.secure_compare(expected, signature)
           end
 
-          # Extracts the relevant tag/version + OCI ref from the Gitea event
-          # and triggers async ingest. Returns a short message string for
-          # the response body. Currently handles two event shapes:
-          # - Gitea push event with annotated tag → tag = ref_name
-          # - Gitea release event → tag = release.tag_name
-          # - Gitea package event → tag = package.tag (if present)
+          # Extracts the relevant tag/version + OCI ref from the Gitea event,
+          # synchronously creates a version snapshot (so we have a stable
+          # ID to track), then dispatches the long-pole work to the worker
+          # service. Falls back to inline processing only when worker
+          # dispatch is explicitly disabled (POWERNODE_WEBHOOK_INGEST_MODE=inline)
+          # — useful for dev environments without a running worker.
+          #
+          # Returns a short message string for the response body (Gitea
+          # ignores it; humans use logs + the FleetEvents the processor emits).
           def process_event(node_module, payload)
             tag = extract_tag(payload)
             return "No actionable tag in payload" if tag.blank?
 
-            # Refresh the module's manifest declaration FIRST, so the
-            # version snapshot below inherits the published manifest's
-            # spec/lifecycle fields rather than stale module state.
-            # Failure here is non-fatal — OCI ingest still proceeds with
-            # whatever the module currently declares.
-            refresh_manifest!(node_module, tag)
+            mode = ENV.fetch("POWERNODE_WEBHOOK_INGEST_MODE", default_ingest_mode)
+            case mode
+            when "async"
+              dispatch_async(node_module, tag)
+            when "inline"
+              run_inline(node_module, tag)
+            else
+              Rails.logger.warn "[GiteaModule] unknown POWERNODE_WEBHOOK_INGEST_MODE=#{mode.inspect}, falling back to inline"
+              run_inline(node_module, tag)
+            end
+          end
 
-            oci_ref = build_oci_ref(node_module, tag)
-            version = find_or_create_version(node_module, tag)
+          def default_ingest_mode
+            Rails.env.production? ? "async" : "inline"
+          end
 
-            # Synchronous ingest for now — wrap in a worker job in a follow-up.
-            result = ::System::ModuleOciIngestService.ingest!(
-              node_module_version: version,
-              oci_ref: oci_ref
+          # Production path: enqueue System::ProcessModulePublicationJob on
+          # the worker. Worker calls back to the worker_api endpoint to
+          # actually run the manifest fetch + version snapshot + OCI ingest.
+          # Webhook acks Gitea immediately.
+          def dispatch_async(node_module, tag)
+            response = ::WorkerApiClient.new.queue_module_publication_processing(
+              node_module.id, tag
+            )
+            "Queued module=#{node_module.name} tag=#{tag} job=#{response&.dig(:job_id) || response&.dig('job_id') || 'unknown'}"
+          rescue ::WorkerApiClient::ApiError => e
+            # Worker unreachable — fall back to inline so the publication
+            # still lands. The whole point of the dispatch is webhook
+            # latency, not correctness.
+            Rails.logger.warn "[GiteaModule] worker dispatch failed (#{e.message}); falling back to inline"
+            run_inline(node_module, tag)
+          end
+
+          # Inline path: call the processor directly in this request.
+          # Used in dev (no worker) and as the fallback if dispatch fails.
+          def run_inline(node_module, tag)
+            result = ::System::ModulePublicationProcessor.process!(
+              node_module: node_module,
+              tag: tag
             )
 
             if result.ok?
-              register_skills_for(node_module)
-              emit_published_event(node_module, version, oci_ref, result.module_artifacts, tag)
-              "Ingested #{oci_ref} → version=#{version.version_number} arches=#{result.module_artifacts.map(&:architecture).join(',')}"
+              version = result.node_module_version
+              "Ingested module=#{node_module.name} version=#{version.version_number} tag=#{tag} " \
+                "arches=#{Array(result.artifacts).map(&:architecture).join(',')}"
             else
-              Rails.logger.warn "[GiteaModule] ingest failed: #{result.error}"
-              emit_publish_failed_event(node_module, tag, result.error)
               "Ingest failed: #{result.error}"
             end
           end
 
-          # Re-runs skill registration whenever a tag publishes — the
-          # manifest's `skills:` block is the source of truth, so each
-          # publish is the right moment to refresh registrations.
-          # Non-fatal: skill registration failure must not break the
-          # webhook ack (Gitea would retry, and the underlying issue
-          # likely isn't transient).
-          def register_skills_for(node_module)
-            return unless defined?(::System::ModuleSkillRegistrar)
-            result = ::System::ModuleSkillRegistrar.register_for_module!(node_module: node_module)
-            unless result.ok?
-              Rails.logger.warn "[GiteaModule] skill registration failed: #{result.error}"
-            end
-          rescue StandardError => e
-            Rails.logger.warn "[GiteaModule] skill registrar raised: #{e.class}: #{e.message}"
-          end
-
-          # Emits a system.module_published FleetEvent on every successful
-          # ingest. Surfaces in the operator dashboard so the fleet has
-          # an audit trail of which versions land when, with the OCI ref
-          # + arches embedded in the payload.
-          def emit_published_event(node_module, version, oci_ref, artifacts, tag)
-            return unless defined?(::System::Fleet::EventBroadcaster)
-
-            ::System::Fleet::EventBroadcaster.emit!(
-              account: node_module.account,
-              kind: "system.module_published",
-              severity: :low,
-              source: "gitea_webhook",
-              node_module_id: node_module.id,
-              node_module_version_id: version.id,
-              payload: {
-                module_name:    node_module.name,
-                version_number: version.version_number,
-                git_tag:        tag,
-                oci_ref:        oci_ref,
-                arches:         artifacts.map(&:architecture)
-              }
-            )
-          rescue StandardError => e
-            Rails.logger.warn "[GiteaModule] fleet event emit failed: #{e.class}: #{e.message}"
-          end
-
-          # Failure-path complement. Severity is "high" because a broken
-          # publication blocks downstream deployments and the operator
-          # needs to act — so the dashboard should highlight it.
-          def emit_publish_failed_event(node_module, tag, error_message)
-            return unless defined?(::System::Fleet::EventBroadcaster)
-
-            ::System::Fleet::EventBroadcaster.emit!(
-              account: node_module.account,
-              kind: "system.module_publish_failed",
-              severity: :high,
-              source: "gitea_webhook",
-              node_module_id: node_module.id,
-              payload: {
-                module_name: node_module.name,
-                git_tag:     tag,
-                error:       error_message
-              }
-            )
-          rescue StandardError => e
-            Rails.logger.warn "[GiteaModule] fleet event (failure) emit failed: #{e.class}: #{e.message}"
-          end
-
-          # Pulls manifest.yaml from the Gitea repo at the published tag
-          # and runs it through ManifestImportService. Updates the
-          # module's spec/lifecycle columns in place so the version
-          # snapshot created later captures the published declaration,
-          # not the previous one.
-          def refresh_manifest!(node_module, tag)
-            yaml = ::System::ManifestFetchService.fetch(node_module: node_module, ref: tag)
-            return unless yaml.present?
-
-            result = ::System::ManifestImportService.import!(
-              node_module: node_module, yaml: yaml
-            )
-            unless result.ok?
-              Rails.logger.warn "[GiteaModule] manifest re-import failed at tag #{tag}: #{result.error}"
-              return
-            end
-            node_module.reload
-            Rails.logger.info "[GiteaModule] manifest refreshed at tag #{tag}: " \
-                              "#{result.resolved_dependencies.size} dependency reference(s)"
-          end
+          # All four post-version side effects (manifest re-import, OCI
+          # ingest, skill registration, fleet event emission) live on
+          # System::ModulePublicationProcessor — see that service for
+          # the implementations. Inlined helpers were removed when the
+          # async-dispatch refactor landed (2026-05-02).
 
           def extract_tag(payload)
             ref = payload[:ref] || payload.dig(:release, :tag_name) || payload.dig(:package, :tag)
@@ -209,34 +156,11 @@ module Api
             "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
           end
 
-          # Idempotent: if a version already exists for this tag, return it.
-          # Gitea retries are routine (network blips, slow ack), and prior
-          # to this guard the receiver would mint a fresh version on every
-          # delivery — exploding version_number monotonically and creating
-          # ghost versions with no real content delta.
-          #
-          # Spec arrays inherited from the module's current state so the
-          # snapshot captures something useful. A future enhancement
-          # (#3 in the audit notes) is to re-parse manifest.yaml from
-          # the OCI artifact and replace these with the published values.
-          def find_or_create_version(node_module, tag)
-            existing = ::System::NodeModuleVersion
-                         .where(node_module: node_module)
-                         .where("config->>'git_tag' = ?", tag)
-                         .order(version_number: :desc)
-                         .first
-            return existing if existing
-
-            ::System::NodeModuleVersion.create!(
-              node_module: node_module,
-              changelog: "Auto-ingested from Gitea tag #{tag}",
-              mask:           Array(node_module.mask),
-              file_spec:      Array(node_module.file_spec),
-              package_spec:   Array(node_module.package_spec),
-              protected_spec: Array(node_module.protected_spec),
-              config: { "git_tag" => tag }
-            )
-          end
+          # find_or_create_version was extracted to
+          # System::ModulePublicationProcessor#find_or_create_version
+          # so that both the inline and async paths get the same
+          # ordering: refresh manifest first, snapshot version with
+          # the imported state, then ingest OCI artifact.
 
           def render_ok(message = "OK")
             render json: { status: "ok", message: message }, status: :ok

@@ -359,5 +359,65 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       expect(decoded.call(version.file_spec)).to       include("/etc/foo/**")
       expect(decoded.call(version.mask)).to            include("/var/cache/apt/**")
     end
+
+    # Async dispatch path — the production behavior. Webhook hands off to
+    # the worker via WorkerApiClient and returns immediately; the actual
+    # ingest work happens in the worker's process. We stub the dispatch
+    # client to assert it was called with the right args without needing
+    # a live worker.
+    describe "POWERNODE_WEBHOOK_INGEST_MODE=async" do
+      around do |ex|
+        original = ENV["POWERNODE_WEBHOOK_INGEST_MODE"]
+        ENV["POWERNODE_WEBHOOK_INGEST_MODE"] = "async"
+        ex.run
+      ensure
+        ENV["POWERNODE_WEBHOOK_INGEST_MODE"] = original
+      end
+
+      it "enqueues System::ProcessModulePublicationJob and acks immediately without running the processor inline" do
+        worker_double = instance_double(WorkerApiClient,
+                                        queue_module_publication_processing: { job_id: "job-abc" })
+        allow(WorkerApiClient).to receive(:new).and_return(worker_double)
+
+        # Processor MUST NOT run inline when async dispatch succeeds.
+        expect(System::ModulePublicationProcessor).not_to receive(:process!)
+
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: {
+               "Content-Type" => "application/json",
+               "X-Gitea-Signature" => hmac_for(body)
+             }
+
+        expect(response).to have_http_status(:ok)
+        expect(JSON.parse(response.body)["message"]).to include("Queued", "v1.2.3", "job=job-abc")
+        expect(worker_double).to have_received(:queue_module_publication_processing).with(node_module.id, "v1.2.3")
+      end
+
+      it "falls back to inline processing when worker dispatch raises" do
+        worker_double = instance_double(WorkerApiClient)
+        allow(worker_double).to receive(:queue_module_publication_processing)
+          .and_raise(WorkerApiClient::ApiError, "worker unreachable")
+        allow(WorkerApiClient).to receive(:new).and_return(worker_double)
+
+        # Inline processor SHOULD run as fallback — preserves correctness
+        # at the cost of webhook latency. Better than silent loss when the
+        # worker is briefly down.
+        expect(System::ModulePublicationProcessor).to receive(:process!)
+          .with(hash_including(node_module: node_module, tag: "v1.2.3"))
+          .and_call_original
+
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: {
+               "Content-Type" => "application/json",
+               "X-Gitea-Signature" => hmac_for(body)
+             }
+
+        expect(response).to have_http_status(:ok)
+      end
+    end
   end
 end

@@ -104,6 +104,11 @@ Rails.application.routes.draw do
 
         # === Worker API (token-authenticated workers) ===
         namespace :worker_api do
+          # Async module publication processor — long-pole work the
+          # webhook receiver dispatches to the worker so Gitea acks fast.
+          post "module_publications/process",
+               to: "module_publications#process_publication"
+
           resources :tasks, only: %i[index show] do
             collection do
               get :pending
