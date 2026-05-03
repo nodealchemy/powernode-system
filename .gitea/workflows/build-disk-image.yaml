@@ -212,6 +212,14 @@ jobs:
       - name: Build disk-image-rpi4
         working-directory: initramfs
         env:
+          # SIZE_GB=1 keeps the image under Gitea's container-registry blob
+          # upload limit (typically ~1GB; default 4GB hit 413 Request Entity
+          # Too Large during oras push). 1GB is plenty for the smoke flow:
+          # 512MB FAT32 boot (firmware ~30MB + kernel ~10MB + initramfs +
+          # config) + 512MB ext4 persist (mostly empty for Path C claim flow).
+          # Operators with a registry that supports larger blobs can override
+          # SIZE_GB on dispatch.
+          SIZE_GB: "1"
           RPI4_FIRMWARE_DIR: /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware
           CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
         run: |
@@ -220,6 +228,7 @@ jobs:
       - name: Build disk-image-arm64-uefi
         working-directory: initramfs
         env:
+          SIZE_GB: "1"
           CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
         run: |
           ./build.sh --arch arm64 --variants disk-image-arm64-uefi
