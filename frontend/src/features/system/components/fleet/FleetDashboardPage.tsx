@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package } from 'lucide-react';
+import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package, PlayCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -314,6 +314,23 @@ export function FleetDashboardPage(): React.JSX.Element {
                         candidateModuleId={selectedEvent.node_module_id}
                         candidateKind="event_correlation"
                       />
+                    </div>
+                  )}
+                  {/* Boot Replay link — when the selected event references a
+                      NodeInstance, link to the dedicated boot timeline for
+                      that instance. Filtered to this event's correlation_id
+                      if present, so the timeline scopes to the same boot
+                      session. M-FE-3 completion. */}
+                  {selectedEvent.node_instance_id && (
+                    <div className="pt-2">
+                      <Link
+                        to={`/app/system/boot-replay/${selectedEvent.node_instance_id}${selectedEvent.correlation_id ? `?correlation_id=${selectedEvent.correlation_id}` : ''}`}
+                        className="inline-flex items-center gap-1 text-xs text-theme-link hover:underline"
+                        title="View boot timeline for this instance"
+                      >
+                        <PlayCircle size={12} />
+                        Boot Replay
+                      </Link>
                     </div>
                   )}
                 </div>

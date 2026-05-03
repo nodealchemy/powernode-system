@@ -30,6 +30,8 @@ const DiskImageWebhooksPage = lazyPage(() => import('./pages/app/system/DiskImag
 const CiWorkersPage = lazyPage(() => import('./pages/app/system/CiWorkersPage'));
 // Comprehensive stabilization sweep P7.2 — Module Marketplace.
 const MarketplacePage = lazyPage(() => import('./pages/app/system/MarketplacePage'));
+// Comprehensive stabilization sweep P7.1 — Boot Replay viewer (M-FE-3 completion).
+const BootReplayPage = lazyPage(() => import('./pages/app/system/BootReplayPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -59,6 +61,7 @@ export function register(): void {
     { path: '/system/disk-image-webhooks', component: DiskImageWebhooksPage },
     { path: '/system/ci-workers', component: CiWorkersPage },
     { path: '/system/marketplace', component: MarketplacePage },
+    { path: '/system/boot-replay/:instance_id', component: BootReplayPage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
