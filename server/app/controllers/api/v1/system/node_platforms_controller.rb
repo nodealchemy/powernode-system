@@ -113,10 +113,23 @@ module Api
         end
 
         def platform_params
-          params.require(:node_platform).permit(
+          base = params.require(:node_platform).permit(
             :name, :description, :enabled, :public, :node_architecture_id,
             :build_script, :init_script, :sync_script
           )
+          # Disk-image policy fields require a separate, more sensitive
+          # permission (system.platforms.manage_disk_image_policy). When
+          # the operator has it, allow them through; otherwise the
+          # update silently strips them so a basic `system.platforms.update`
+          # operator can edit name/description but not the trust regexps.
+          # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 3).
+          if current_user&.has_permission?("system.platforms.manage_disk_image_policy")
+            policy = params.require(:node_platform).permit(
+              :cosign_identity_regexp, :cosign_issuer_regexp, :disk_image_retention_count
+            )
+            base.merge!(policy)
+          end
+          base
         end
 
         def apply_filters(scope)

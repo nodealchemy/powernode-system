@@ -21,7 +21,25 @@ Rails.application.routes.draw do
 
         resources :nodes
         resources :node_platforms, only: %i[index show create update destroy] do
-          member { get :disk_image }
+          member do
+            get :disk_image
+            # Operator-driven rollback to a prior published publication.
+            # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 3).
+            post :rollback_disk_image, to: "disk_image_publications#rollback"
+          end
+          # Per-platform publication history list. Powers DiskImageHistoryTab.
+          resources :disk_image_publications,
+                    only: %i[index show],
+                    controller: "disk_image_publications"
+        end
+
+        # Per-account CRUD for HMAC webhook secrets + CI workers.
+        # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 3).
+        resources :disk_image_webhooks, only: %i[index show create destroy] do
+          member { post :rotate_secret }
+        end
+        resources :ci_workers, only: %i[index show create destroy] do
+          member { post :rotate_token }
         end
 
         # Physical-device claim queue (operator-facing). See plan
