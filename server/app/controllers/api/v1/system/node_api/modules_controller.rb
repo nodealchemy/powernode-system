@@ -144,7 +144,21 @@ module Api
               name: mod.name,
               variety: mod.variety,
               priority: mod.priority,
+              effective_priority: mod.effective_priority,
               category_id: mod.category_id,
+              # Dependant identity — non-nil when this module is a config /
+              # instance override of another module. The agent uses this to
+              # know which mounts belong to which subscription chain.
+              parent_module_id: mod.parent_module_id,
+              # Lifecycle hooks the on-node agent runs as subprocesses
+              # (NEVER eval'd) on attach / detach / hot-reload.
+              init_start: mod.init_start,
+              init_stop: mod.init_stop,
+              init_restart: mod.init_restart,
+              reboot_required: mod.reboot_required,
+              # Copy-path destination if set — agent writes this module's
+              # data file into <destination_path> at attach time.
+              copy_path_destination: mod.copy_path&.destination_path,
               has_data_file: mod.data_file_name.present?,
               current_version: mod.current_version_number,
               dependencies: mod.dependencies.map(&:id)
@@ -154,10 +168,33 @@ module Api
           def serialize_module_full(mod)
             serialize_module(mod).merge(
               description: mod.description,
+              # All five spec fields — base64-encoded jsonb arrays. The
+              # agent's rsync filter consumes file_spec; protected_spec
+              # is forward-compat for runtime overlay enforcement;
+              # dependency_spec lets the agent reason about parent
+              # inheritance even though the file_spec accessor already
+              # delegates to it transparently.
               mask: mod.mask,
               file_spec: mod.file_spec,
               package_spec: mod.package_spec,
+              dependency_spec: mod.dependency_spec,
+              protected_spec: mod.protected_spec,
+              # Lock state — when true, no further spec edits are allowed.
+              lock_spec: mod.lock_spec,
               config: mod.config,
+              # Copy-path full record (or nil).
+              copy_path: mod.copy_path && {
+                id: mod.copy_path.id,
+                name: mod.copy_path.name,
+                source_path: mod.copy_path.source_path,
+                destination_path: mod.copy_path.destination_path,
+                recursive: mod.copy_path.recursive,
+                preserve_permissions: mod.copy_path.preserve_permissions
+              },
+              # Legacy `.info` sidecar — key=value lines in the order the
+              # legacy on-node tooling expected. Kept for parity until the
+              # Go agent fully migrates to the JSON shape above.
+              info: mod.info,
               data_file_name: mod.data_file_name,
               data_file_size: mod.data_file_size,
               data_checksum: mod.data_checksum,

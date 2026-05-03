@@ -83,4 +83,75 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(ids).not_to include(other_child.id)
     end
   end
+
+  describe "agent-needed fields in the response" do
+    before do
+      base_module.update!(
+        init_start:      "systemctl start nginx",
+        init_stop:       "systemctl stop nginx",
+        init_restart:    "systemctl reload nginx",
+        reboot_required: true,
+        protected_spec:  "/etc/nginx/protected.conf",
+        dependency_spec: "/etc/nginx/inherited/**",
+        lock_spec:       true
+      )
+    end
+
+    it "index emits lifecycle hooks (init_*, reboot_required) on every module" do
+      get "/api/v1/system/node_api/modules", headers: headers
+      mod = JSON.parse(response.body).dig("data", "modules").find { |m| m["name"] == "nginx-base" }
+      expect(mod["init_start"]).to    eq("systemctl start nginx")
+      expect(mod["init_stop"]).to     eq("systemctl stop nginx")
+      expect(mod["init_restart"]).to  eq("systemctl reload nginx")
+      expect(mod["reboot_required"]).to be true
+    end
+
+    it "index emits effective_priority + parent_module_id" do
+      child = assignment.create_dependant!
+      get "/api/v1/system/node_api/modules", headers: headers
+      modules = JSON.parse(response.body).dig("data", "modules")
+      child_payload = modules.find { |m| m["id"] == child.id }
+      expect(child_payload["parent_module_id"]).to eq(base_module.id)
+      expect(child_payload["effective_priority"]).to eq(child.effective_priority)
+    end
+
+    it "show emits all five spec fields + lock_spec + info text" do
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      payload = JSON.parse(response.body).dig("data", "module")
+      expect(payload).to include(
+        "mask", "file_spec", "package_spec", "dependency_spec", "protected_spec",
+        "lock_spec", "info"
+      )
+      expect(payload["lock_spec"]).to be true
+      decoded_protected = payload["protected_spec"].map { |b| Base64.decode64(b) }
+      expect(decoded_protected).to include("/etc/nginx/protected.conf")
+      decoded_dependency = payload["dependency_spec"].map { |b| Base64.decode64(b) }
+      expect(decoded_dependency).to include("/etc/nginx/inherited/**")
+      expect(payload["info"]).to include("name=nginx-base", "init_start=systemctl start nginx", "reboot=true")
+    end
+
+    it "show emits copy_path block when copy_path is set" do
+      copy_path = create(:system_node_module_copy_path, account: account,
+                         name: "data-disk", source_path: "/src", destination_path: "/mnt/data",
+                         recursive: true, preserve_permissions: false)
+      base_module.update!(copy_path: copy_path)
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      payload = JSON.parse(response.body).dig("data", "module")
+      expect(payload["copy_path"]).to include(
+        "name" => "data-disk",
+        "source_path" => "/src",
+        "destination_path" => "/mnt/data",
+        "recursive" => true,
+        "preserve_permissions" => false
+      )
+      expect(payload["copy_path_destination"]).to eq("/mnt/data")
+    end
+
+    it "show emits copy_path: nil when not set" do
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      payload = JSON.parse(response.body).dig("data", "module")
+      expect(payload["copy_path"]).to be_nil
+    end
+  end
 end
