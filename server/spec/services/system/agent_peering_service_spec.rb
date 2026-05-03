@@ -18,8 +18,8 @@ RSpec.describe System::AgentPeeringService do
         result = described_class.announce!(
           node_instance: node_instance,
           capabilities: { os: "linux", arch: "amd64" },
-          skills: [{ "name" => "uptime" }],
-          addresses: ["10.0.0.5"]
+          skills: [ { "name" => "uptime" } ],
+          addresses: [ "10.0.0.5" ]
         )
 
         expect(result.ok?).to be true
@@ -33,15 +33,15 @@ RSpec.describe System::AgentPeeringService do
         result = described_class.announce!(
           node_instance: node_instance,
           capabilities: { os: "linux", agent_version: "v1.2.3" },
-          skills: [{ "name" => "uptime" }, { "name" => "metrics" }],
-          addresses: ["10.0.0.5", "fd00::5"]
+          skills: [ { "name" => "uptime" }, { "name" => "metrics" } ],
+          addresses: [ "10.0.0.5", "fd00::5" ]
         )
 
         peer = result.peer
         expect(peer.capabilities["os"]).to eq("linux")
         expect(peer.capabilities["agent_version"]).to eq("v1.2.3")
         expect(peer.declared_skills.map { |s| s["name"] }).to contain_exactly("uptime", "metrics")
-        expect(peer.addresses).to eq(["10.0.0.5", "fd00::5"])
+        expect(peer.addresses).to eq([ "10.0.0.5", "fd00::5" ])
       end
 
       it "starts trust score at 0.5" do
@@ -64,14 +64,14 @@ RSpec.describe System::AgentPeeringService do
         result = described_class.announce!(
           node_instance: node_instance,
           capabilities: { os: "linux", agent_version: "v2.0.0" },
-          skills: [{ "name" => "new_skill" }],
-          addresses: ["192.168.1.1"]
+          skills: [ { "name" => "new_skill" } ],
+          addresses: [ "192.168.1.1" ]
         )
 
         expect(result.created).to be false
         expect(result.peer.id).to eq(existing.id)
         expect(result.peer.capabilities["agent_version"]).to eq("v2.0.0")
-        expect(result.peer.declared_skills.map { |s| s["name"] }).to eq(["new_skill"])
+        expect(result.peer.declared_skills.map { |s| s["name"] }).to eq([ "new_skill" ])
       end
 
       it "preserves enabled state across re-announces" do
@@ -115,7 +115,7 @@ RSpec.describe System::AgentPeeringService do
       end
 
       it "limits hash to 50 keys at depth 0" do
-        many_caps = Array.new(200) { |i| ["key_#{i}", "v"] }.to_h
+        many_caps = Array.new(200) { |i| [ "key_#{i}", "v" ] }.to_h
         result = described_class.announce!(
           node_instance: node_instance,
           capabilities: many_caps, skills: [], addresses: []

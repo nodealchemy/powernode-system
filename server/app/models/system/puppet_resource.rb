@@ -7,7 +7,7 @@ module System
     RESOURCE_TYPES = %w[file package service exec user group cron mount host notify class define custom].freeze
 
     # == Associations
-    belongs_to :puppet_module, class_name: 'System::PuppetModule',
+    belongs_to :puppet_module, class_name: "System::PuppetModule",
                foreign_key: :puppet_module_id, inverse_of: :puppet_resources
 
     # == Delegations
@@ -16,7 +16,7 @@ module System
 
     # == Validations
     validates :name, presence: true,
-              uniqueness: { scope: :puppet_module_id, message: 'must be unique within puppet module' },
+              uniqueness: { scope: :puppet_module_id, message: "must be unique within puppet module" },
               length: { maximum: 255 }
     validates :resource_type, presence: true, inclusion: { in: RESOURCE_TYPES }
     validates :title, length: { maximum: 500 }, allow_blank: true
@@ -28,21 +28,21 @@ module System
     scope :exported, -> { where(exported: true) }
     scope :not_exported, -> { where(exported: false) }
     scope :by_type, ->(type) { where(resource_type: type) }
-    scope :files, -> { by_type('file') }
-    scope :packages, -> { by_type('package') }
-    scope :services, -> { by_type('service') }
-    scope :execs, -> { by_type('exec') }
-    scope :users, -> { by_type('user') }
-    scope :groups, -> { by_type('group') }
-    scope :crons, -> { by_type('cron') }
-    scope :mounts, -> { by_type('mount') }
-    scope :hosts, -> { by_type('host') }
-    scope :notifies, -> { by_type('notify') }
-    scope :classes, -> { by_type('class') }
-    scope :defines, -> { by_type('define') }
-    scope :custom, -> { by_type('custom') }
+    scope :files, -> { by_type("file") }
+    scope :packages, -> { by_type("package") }
+    scope :services, -> { by_type("service") }
+    scope :execs, -> { by_type("exec") }
+    scope :users, -> { by_type("user") }
+    scope :groups, -> { by_type("group") }
+    scope :crons, -> { by_type("cron") }
+    scope :mounts, -> { by_type("mount") }
+    scope :hosts, -> { by_type("host") }
+    scope :notifies, -> { by_type("notify") }
+    scope :classes, -> { by_type("class") }
+    scope :defines, -> { by_type("define") }
+    scope :custom, -> { by_type("custom") }
     scope :search, ->(query) {
-      where('name ILIKE :q OR description ILIKE :q OR title ILIKE :q', q: "%#{query}%")
+      where("name ILIKE :q OR description ILIKE :q OR title ILIKE :q", q: "%#{query}%")
     }
 
     # == Instance Methods
@@ -71,55 +71,55 @@ module System
     end
 
     def file?
-      resource_type == 'file'
+      resource_type == "file"
     end
 
     def package?
-      resource_type == 'package'
+      resource_type == "package"
     end
 
     def service?
-      resource_type == 'service'
+      resource_type == "service"
     end
 
     def exec?
-      resource_type == 'exec'
+      resource_type == "exec"
     end
 
     def user?
-      resource_type == 'user'
+      resource_type == "user"
     end
 
     def group?
-      resource_type == 'group'
+      resource_type == "group"
     end
 
     def cron?
-      resource_type == 'cron'
+      resource_type == "cron"
     end
 
     def mount?
-      resource_type == 'mount'
+      resource_type == "mount"
     end
 
     def host?
-      resource_type == 'host'
+      resource_type == "host"
     end
 
     def notify?
-      resource_type == 'notify'
+      resource_type == "notify"
     end
 
     def puppet_class?
-      resource_type == 'class'
+      resource_type == "class"
     end
 
     def define?
-      resource_type == 'define'
+      resource_type == "define"
     end
 
     def custom?
-      resource_type == 'custom'
+      resource_type == "custom"
     end
 
     def parameter(key)
@@ -146,7 +146,7 @@ module System
     def to_puppet_dsl
       lines = []
 
-      prefix = exported ? '@@' : ''
+      prefix = exported ? "@@" : ""
       lines << "#{prefix}#{resource_type} { '#{puppet_title}':"
 
       parameters.each do |key, value|
@@ -154,7 +154,7 @@ module System
         lines << "  #{key} => #{formatted_value},"
       end
 
-      lines << '}'
+      lines << "}"
       lines.join("\n")
     end
 

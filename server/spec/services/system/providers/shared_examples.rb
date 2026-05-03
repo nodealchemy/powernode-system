@@ -44,7 +44,6 @@ RSpec.shared_examples "a cloud provider" do
     it { is_expected.to respond_to(:delete_image) }
     it { is_expected.to respond_to(:get_image) }
   end
-
 end
 
 # Signature compliance is asserted at the class level (not against any
@@ -57,8 +56,8 @@ RSpec.shared_examples "a provider class with BaseProvider signatures" do
   # was (volume_id, instance_id) which silently broke polymorphism (audit S2).
   it "detach_volume signature is (volume_id, force:)" do
     params = adapter_class.instance_method(:detach_volume).parameters
-    expect(params.first).to eq([:req, :volume_id])
-    expect(params).to include([:key, :force])
+    expect(params.first).to eq([ :req, :volume_id ])
+    expect(params).to include([ :key, :force ])
   end
 
   # reboot_instance, not restart_instance — Azure's pre-fix name diverged.
@@ -70,9 +69,9 @@ RSpec.shared_examples "a provider class with BaseProvider signatures" do
   # attach_volume must accept (volume_id, instance_id, device:)
   it "attach_volume signature is (volume_id, instance_id, device:)" do
     params = adapter_class.instance_method(:attach_volume).parameters
-    expect(params[0]).to eq([:req, :volume_id])
-    expect(params[1]).to eq([:req, :instance_id])
-    expect(params).to include([:key, :device])
+    expect(params[0]).to eq([ :req, :volume_id ])
+    expect(params[1]).to eq([ :req, :instance_id ])
+    expect(params).to include([ :key, :device ])
   end
 end
 

@@ -41,7 +41,7 @@ module Api
           worker = ::Worker.create_worker!(
             name:    params.require(:name),
             account: @account,
-            roles:   ["ci_worker"]
+            roles:   [ "ci_worker" ]
           )
           render_success(
             ci_worker: ::System::CiWorkerSerializer.new(worker).as_json,

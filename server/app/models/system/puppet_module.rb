@@ -6,15 +6,15 @@ module System
 
     # == Associations
     belongs_to :account
-    has_many :puppet_resources, class_name: 'System::PuppetResource',
+    has_many :puppet_resources, class_name: "System::PuppetResource",
              foreign_key: :puppet_module_id, dependent: :destroy, inverse_of: :puppet_module
-    has_many :module_puppet_assignments, class_name: 'System::ModulePuppetAssignment',
+    has_many :module_puppet_assignments, class_name: "System::ModulePuppetAssignment",
              foreign_key: :puppet_module_id, dependent: :destroy, inverse_of: :puppet_module
     has_many :node_modules, through: :module_puppet_assignments
 
     # == Validations
     validates :name, presence: true,
-              uniqueness: { scope: :account_id, message: 'must be unique within account' },
+              uniqueness: { scope: :account_id, message: "must be unique within account" },
               length: { maximum: 255 }
     validates :version, length: { maximum: 50 }, allow_blank: true
     validates :author, length: { maximum: 255 }, allow_blank: true
@@ -30,9 +30,9 @@ module System
     scope :public_modules, -> { where(public: true) }
     scope :private_modules, -> { where(public: false) }
     scope :by_author, ->(author) { where(author: author) }
-    scope :from_forge, -> { where.not(forge_name: [nil, '']) }
+    scope :from_forge, -> { where.not(forge_name: [ nil, "" ]) }
     scope :search, ->(query) {
-      where('name ILIKE :q OR description ILIKE :q OR forge_name ILIKE :q', q: "%#{query}%")
+      where("name ILIKE :q OR description ILIKE :q OR forge_name ILIKE :q", q: "%#{query}%")
     }
 
     # == Class Methods
@@ -66,7 +66,7 @@ module System
     end
 
     def dependency_names
-      dependencies.map { |dep| dep['name'] || dep[:name] }
+      dependencies.map { |dep| dep["name"] || dep[:name] }
     end
 
     def has_dependency?(module_name)
@@ -74,13 +74,13 @@ module System
     end
 
     def add_dependency(name, version_requirement = nil)
-      dep = { 'name' => name }
-      dep['version_requirement'] = version_requirement if version_requirement.present?
-      self.dependencies = dependencies + [dep]
+      dep = { "name" => name }
+      dep["version_requirement"] = version_requirement if version_requirement.present?
+      self.dependencies = dependencies + [ dep ]
     end
 
     def remove_dependency(name)
-      self.dependencies = dependencies.reject { |dep| (dep['name'] || dep[:name]) == name }
+      self.dependencies = dependencies.reject { |dep| (dep["name"] || dep[:name]) == name }
     end
 
     def resources_by_type(type)
@@ -113,7 +113,7 @@ module System
       return if dependencies.blank?
 
       unless dependencies.is_a?(Array)
-        errors.add(:dependencies, 'must be an array')
+        errors.add(:dependencies, "must be an array")
         return
       end
 
@@ -123,7 +123,7 @@ module System
           next
         end
 
-        unless dep['name'].present? || dep[:name].present?
+        unless dep["name"].present? || dep[:name].present?
           errors.add(:dependencies, "item at index #{index} must have a name")
         end
       end

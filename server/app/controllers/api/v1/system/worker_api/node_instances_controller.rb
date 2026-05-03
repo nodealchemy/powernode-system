@@ -7,7 +7,7 @@ module Api
         # Node instance lifecycle management for infrastructure workers
         # Handles instance CRUD and state transitions
         class NodeInstancesController < BaseController
-          before_action :set_instance, only: [:show, :update, :destroy, :start, :stop, :reboot, :sync, :maintenance]
+          before_action :set_instance, only: [ :show, :update, :destroy, :start, :stop, :reboot, :sync, :maintenance ]
 
           # GET /api/v1/system/worker_api/node_instances
           # List instances for nodes managed by this worker

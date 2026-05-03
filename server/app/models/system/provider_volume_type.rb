@@ -9,10 +9,10 @@ module System
 
     # === Associations ===
     belongs_to :account
-    belongs_to :provider, class_name: 'System::Provider'
+    belongs_to :provider, class_name: "System::Provider"
 
-    has_many :volumes, class_name: 'System::ProviderVolume', foreign_key: :volume_type_id, dependent: :restrict_with_error
-    has_many :region_volume_types, class_name: 'System::RegionVolumeType', foreign_key: :volume_type_id, dependent: :destroy
+    has_many :volumes, class_name: "System::ProviderVolume", foreign_key: :volume_type_id, dependent: :restrict_with_error
+    has_many :region_volume_types, class_name: "System::RegionVolumeType", foreign_key: :volume_type_id, dependent: :destroy
     has_many :provider_regions, through: :region_volume_types
 
     # === Validations ===
@@ -65,7 +65,7 @@ module System
 
     def max_size_greater_than_min
       return unless min_size_gb && max_size_gb
-      errors.add(:max_size_gb, 'must be greater than or equal to min_size_gb') if max_size_gb < min_size_gb
+      errors.add(:max_size_gb, "must be greater than or equal to min_size_gb") if max_size_gb < min_size_gb
     end
   end
 end

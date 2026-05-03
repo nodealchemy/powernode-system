@@ -9,9 +9,9 @@ module System
 
     # === Associations ===
     belongs_to :account
-    belongs_to :volume, class_name: 'System::ProviderVolume', optional: true
+    belongs_to :volume, class_name: "System::ProviderVolume", optional: true
 
-    has_many :tasks, class_name: 'System::Task', as: :operable, dependent: :destroy
+    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
@@ -21,12 +21,12 @@ module System
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :pending, -> { by_status('pending') }
-    scope :creating, -> { by_status('creating') }
-    scope :completed, -> { by_status('completed') }
-    scope :errored, -> { by_status('error') }
-    scope :deleting, -> { by_status('deleting') }
-    scope :deleted, -> { by_status('deleted') }
+    scope :pending, -> { by_status("pending") }
+    scope :creating, -> { by_status("creating") }
+    scope :completed, -> { by_status("completed") }
+    scope :errored, -> { by_status("error") }
+    scope :deleting, -> { by_status("deleting") }
+    scope :deleted, -> { by_status("deleted") }
 
     scope :encrypted_snapshots, -> { where(encrypted: true) }
     scope :unencrypted_snapshots, -> { where(encrypted: false) }

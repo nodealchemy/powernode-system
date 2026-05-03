@@ -35,7 +35,7 @@ module System
             op.update!(
               status: "scheduled",
               scheduled_at: Time.current,
-              events: (op.events || []) + [event]
+              events: (op.events || []) + [ event ]
             )
             claimed_ids << op.id
           end

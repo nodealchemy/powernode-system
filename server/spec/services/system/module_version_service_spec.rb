@@ -258,7 +258,7 @@ RSpec.describe System::ModuleVersionService, type: :service do
     it 'returns version numbers' do
       diff = compare_service.compare_versions(v1, v2)
 
-      expect(diff[:version_numbers]).to eq([1, 2])
+      expect(diff[:version_numbers]).to eq([ 1, 2 ])
     end
 
     it 'identifies mask differences' do
@@ -308,7 +308,7 @@ RSpec.describe System::ModuleVersionService, type: :service do
     it 'orders by version_number descending' do
       history = history_service.version_history
 
-      expect(history.map { |h| h[:version_number] }).to eq([3, 2, 1])
+      expect(history.map { |h| h[:version_number] }).to eq([ 3, 2, 1 ])
     end
 
     it 'includes expected fields' do

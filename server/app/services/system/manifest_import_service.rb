@@ -54,7 +54,7 @@ module System
 
     class ImportError < StandardError; end
 
-    SUPPORTED_SCHEMA_VERSIONS = [1].freeze
+    SUPPORTED_SCHEMA_VERSIONS = [ 1 ].freeze
 
     # Top-level keys we recognize; everything else lands in
     # `config.manifest_extras` for forward compatibility.
@@ -117,7 +117,7 @@ module System
     end
 
     def parse_yaml(raw)
-      data = YAML.safe_load(raw, permitted_classes: [Symbol, Date, Time]) || {}
+      data = YAML.safe_load(raw, permitted_classes: [ Symbol, Date, Time ]) || {}
       return { ok: false, error: "manifest is not a hash" } unless data.is_a?(Hash)
       { ok: true, data: data.with_indifferent_access }
     rescue Psych::SyntaxError => e
@@ -154,7 +154,7 @@ module System
       end
 
       if (rb = manifest["reboot_required"])
-        unless [true, false].include?(rb)
+        unless [ true, false ].include?(rb)
           errors << "reboot_required must be a boolean"
         end
       end

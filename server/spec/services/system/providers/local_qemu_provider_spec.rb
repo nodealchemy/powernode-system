@@ -46,7 +46,7 @@ RSpec.describe System::Providers::LocalQemuProvider do
       expect(result[:bootstrap_token_id]).to be_present.or be_nil # token issuance is best-effort
 
       methods = runner.invocations.map { |i| i[:method] }
-      expect(methods).to eq([:define_domain!, :start_domain!])
+      expect(methods).to eq([ :define_domain!, :start_domain! ])
 
       define_call = runner.invocations.find { |i| i[:method] == :define_domain! }
       xml = define_call[:args][:xml]
@@ -110,7 +110,7 @@ RSpec.describe System::Providers::LocalQemuProvider do
       expect(result[:success]).to be true
       expect(result[:status]).to eq("terminated")
       methods = runner.invocations.map { |i| i[:method] }
-      expect(methods).to eq([:destroy_domain!, :undefine_domain!])
+      expect(methods).to eq([ :destroy_domain!, :undefine_domain! ])
     end
   end
 

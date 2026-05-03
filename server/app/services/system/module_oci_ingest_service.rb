@@ -70,7 +70,7 @@ module System
       mod = node_module_version.node_module
       identity_regexp = mod.cosign_identity_regexp.presence
       issuer_regexp   = mod.cosign_issuer_regexp.presence
-      effective_signers = expected_signers || (identity_regexp ? [identity_regexp] : nil)
+      effective_signers = expected_signers || (identity_regexp ? [ identity_regexp ] : nil)
 
       verification = adapter.verify_signature(
         oci_ref,
@@ -221,12 +221,12 @@ module System
 
       def verify_signature(oci_ref, expected_signers: nil, issuer_regexp: nil)
         ensure_binary!("cosign")
-        cmd = ["cosign", "verify", "--output", "json", oci_ref]
+        cmd = [ "cosign", "verify", "--output", "json", oci_ref ]
         if expected_signers&.any?
-          cmd += ["--certificate-identity-regexp", expected_signers.join("|")]
+          cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
         end
         if issuer_regexp.present?
-          cmd += ["--certificate-oidc-issuer-regexp", issuer_regexp]
+          cmd += [ "--certificate-oidc-issuer-regexp", issuer_regexp ]
         end
         out, err, status = Open3.capture3(*cmd)
         return { error: err.presence || "cosign exit #{status.exitstatus}" } unless status.success?

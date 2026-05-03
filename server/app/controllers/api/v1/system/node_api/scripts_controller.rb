@@ -7,7 +7,7 @@ module Api
         # Script content endpoint for node instances
         # Provides scripts assigned to the instance's node
         class ScriptsController < BaseController
-          before_action :set_script, only: [:show, :content]
+          before_action :set_script, only: [ :show, :content ]
 
           # GET /api/v1/system/node_api/scripts
           # List scripts available to this instance

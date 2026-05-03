@@ -276,11 +276,11 @@ module System
 
         status = if result.data[:stdout]&.strip == "active"
                    "running"
-                 elsif result.success?
+        elsif result.success?
                    "running"
-                 else
+        else
                    "stopped"
-                 end
+        end
 
         service_statuses[service] = status
         failed_services << service if status == "stopped"

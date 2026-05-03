@@ -7,7 +7,7 @@ module Api
         # Volume operations for infrastructure workers
         # Handles volume CRUD, attach/detach, and status management
         class VolumesController < BaseController
-          before_action :set_volume, only: [:show, :update, :destroy, :attach, :detach, :check]
+          before_action :set_volume, only: [ :show, :update, :destroy, :attach, :detach, :check ]
 
           # GET /api/v1/system/worker_api/volumes
           # List volumes for account(s) managed by this worker

@@ -131,7 +131,7 @@ RSpec.describe System::NodeInstance, type: :model do
         end
 
         it "returns false when status is not #{status}" do
-          other_status = (described_class::STATUSES - [status]).first
+          other_status = (described_class::STATUSES - [ status ]).first
           instance.status = other_status
           expect(instance.public_send("#{status}?")).to be false
         end

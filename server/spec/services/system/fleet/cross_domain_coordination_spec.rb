@@ -23,7 +23,7 @@ RSpec.describe "Cross-domain stigmergic coordination" do
       sig_b = double("StigSig", strength: 0.7, signal_type: "trading.market_pressure",
                               signal_key: "btc-usd", payload: {})
       allow(Ai::Coordination::StigmergicSignalService).to receive(:new).and_return(service_double)
-      allow(service_double).to receive(:perceive).and_return([sig_a, sig_b])
+      allow(service_double).to receive(:perceive).and_return([ sig_a, sig_b ])
 
       signals = sensor.sense
       expect(signals.size).to eq(1)
@@ -38,7 +38,7 @@ RSpec.describe "Cross-domain stigmergic coordination" do
       sig = double("StigSig", strength: 4.0, signal_type: "trading.high_load",
                             signal_key: "k", payload: {})
       allow(Ai::Coordination::StigmergicSignalService).to receive(:new).and_return(service_double)
-      allow(service_double).to receive(:perceive).and_return([sig])
+      allow(service_double).to receive(:perceive).and_return([ sig ])
       expect(sensor.sense.first.severity).to eq(:critical)
     end
 
@@ -47,7 +47,7 @@ RSpec.describe "Cross-domain stigmergic coordination" do
       sig = double("StigSig", strength: 0.1, signal_type: "trading.high_load",
                             signal_key: "k", payload: {})
       allow(Ai::Coordination::StigmergicSignalService).to receive(:new).and_return(service_double)
-      allow(service_double).to receive(:perceive).and_return([sig])
+      allow(service_double).to receive(:perceive).and_return([ sig ])
       expect(sensor.sense).to be_empty
     end
   end
@@ -97,7 +97,7 @@ RSpec.describe "Cross-domain stigmergic coordination" do
       sig = double("StigSig", strength: 1.5, signal_type: "trading.high_load",
                             signal_key: "k", payload: {})
       allow(Ai::Coordination::StigmergicSignalService).to receive(:new).and_return(service_double)
-      allow(service_double).to receive(:perceive).and_return([sig])
+      allow(service_double).to receive(:perceive).and_return([ sig ])
 
       result = described_class.evaluate(account: account, action_category: "system.module_assign")
       expect(result[:throttled]).to be true

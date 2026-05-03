@@ -44,7 +44,7 @@ module System
             },
             outputs: {
               draft_template: :object,
-              conflicts: [:object],
+              conflicts: [ :object ],
               candidate_count: :integer,
               reasoning: :string
             }
@@ -106,7 +106,7 @@ module System
             matched = tokens.uniq.select { |t| haystack.include?(t) }
             next if matched.empty?
 
-            score = matched.size / [token_count, 1].max
+            score = matched.size / [ token_count, 1 ].max
             next if score < INCLUDE_THRESHOLD
 
             { module: m, matched_tokens: matched, score: score.round(3) }

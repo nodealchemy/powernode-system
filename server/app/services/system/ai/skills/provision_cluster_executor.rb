@@ -31,9 +31,9 @@ module System
             outputs: {
               dry_run: :boolean,
               count: :integer,
-              created_nodes: [:object],
-              provisioned: [:object],
-              failures: [:object]
+              created_nodes: [ :object ],
+              provisioned: [ :object ],
+              failures: [ :object ]
             }
           }
         end

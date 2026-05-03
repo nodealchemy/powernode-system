@@ -47,16 +47,16 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'resolves complete dependency chain for app deployment' do
-      available = [base_module, network_module, security_module, app_module, monitoring_module]
+      available = [ base_module, network_module, security_module, app_module, monitoring_module ]
       service = System::DependencyResolutionService.new(available)
 
-      result = service.resolve([app_module])
+      result = service.resolve([ app_module ])
 
       expect(result.success?).to be true
       expect(result.modules).to include(base_module, network_module, security_module, app_module)
 
       # Verify resolution order: base comes before network/security, which come before app
-      orders = result.resolution_order.map { |r| [r[:module].name, r[:order]] }.to_h
+      orders = result.resolution_order.map { |r| [ r[:module].name, r[:order] ] }.to_h
       expect(orders['base-config']).to be < orders['network-config']
       expect(orders['base-config']).to be < orders['security-config']
       expect(orders['network-config']).to be < orders['app-deployment']
@@ -64,20 +64,20 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'handles diamond dependency without duplication' do
-      available = [base_module, network_module, security_module, app_module]
+      available = [ base_module, network_module, security_module, app_module ]
       service = System::DependencyResolutionService.new(available)
 
-      result = service.resolve([app_module])
+      result = service.resolve([ app_module ])
 
       # base_module should only appear once despite being required by both network and security
       expect(result.modules.count { |m| m.id == base_module.id }).to eq(1)
     end
 
     it 'includes optional dependencies when available' do
-      available = [base_module, network_module, security_module, app_module, monitoring_module]
+      available = [ base_module, network_module, security_module, app_module, monitoring_module ]
       service = System::DependencyResolutionService.new(available, include_optional: true)
 
-      result = service.resolve([monitoring_module])
+      result = service.resolve([ monitoring_module ])
 
       expect(result.success?).to be true
       # Should include the entire chain through app_module
@@ -85,10 +85,10 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'excludes optional dependencies when configured' do
-      available = [base_module, network_module, security_module, app_module, monitoring_module]
+      available = [ base_module, network_module, security_module, app_module, monitoring_module ]
       service = System::DependencyResolutionService.new(available, include_optional: false)
 
-      result = service.resolve([monitoring_module])
+      result = service.resolve([ monitoring_module ])
 
       expect(result.success?).to be true
       # Should only include monitoring module, not its optional dependency
@@ -97,10 +97,10 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'orders modules by priority when no dependencies conflict' do
-      available = [base_module, network_module, security_module, app_module, monitoring_module]
+      available = [ base_module, network_module, security_module, app_module, monitoring_module ]
       service = System::DependencyResolutionService.new(available)
 
-      result = service.resolve([base_module, network_module, security_module, app_module, monitoring_module])
+      result = service.resolve([ base_module, network_module, security_module, app_module, monitoring_module ])
 
       names_in_order = result.modules.map(&:name)
 
@@ -112,9 +112,9 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     context 'with missing required dependency' do
       it 'reports error when required dependency unavailable' do
         # Only provide app_module without its dependencies
-        service = System::DependencyResolutionService.new([app_module])
+        service = System::DependencyResolutionService.new([ app_module ])
 
-        result = service.resolve([app_module])
+        result = service.resolve([ app_module ])
 
         expect(result.success?).to be false
         expect(result.errors.any? { |e| e[:type] == :missing_required }).to be true
@@ -137,10 +137,10 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
       end
 
       it 'detects conflicts between modules' do
-        available = [base_module, security_module, alt_security_module]
+        available = [ base_module, security_module, alt_security_module ]
         service = System::DependencyResolutionService.new(available, detect_conflicts: true)
 
-        result = service.resolve([security_module, alt_security_module])
+        result = service.resolve([ security_module, alt_security_module ])
 
         expect(result.errors.any? { |e| e[:type] == :conflict }).to be true
       end
@@ -198,8 +198,8 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
 
     it 'validates module sets before deployment' do
       # Valid set with all required dependencies
-      service = System::DependencyResolutionService.new([module_a, module_b])
-      validation = service.validate_dependencies([module_a])
+      service = System::DependencyResolutionService.new([ module_a, module_b ])
+      validation = service.validate_dependencies([ module_a ])
 
       expect(validation[:valid]).to be true
       expect(validation[:missing_required]).to be_empty
@@ -208,8 +208,8 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
 
     it 'reports invalid sets with missing required dependencies' do
       # Invalid set missing required dependency
-      service = System::DependencyResolutionService.new([module_a])
-      validation = service.validate_dependencies([module_a])
+      service = System::DependencyResolutionService.new([ module_a ])
+      validation = service.validate_dependencies([ module_a ])
 
       expect(validation[:valid]).to be false
       expect(validation[:missing_required].length).to eq(1)
@@ -228,7 +228,7 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'detects potential circular dependencies before creation' do
-      service = System::DependencyResolutionService.new([module_a, module_b, module_c])
+      service = System::DependencyResolutionService.new([ module_a, module_b, module_c ])
 
       # C -> A would create cycle: A -> B -> C -> A
       expect(service.would_create_circular?(module_c, module_a)).to be true
@@ -238,7 +238,7 @@ RSpec.describe 'Module Dependency Resolution Integration', type: :integration do
     end
 
     it 'provides dependency tree visualization' do
-      service = System::DependencyResolutionService.new([module_a, module_b, module_c])
+      service = System::DependencyResolutionService.new([ module_a, module_b, module_c ])
       tree = service.dependency_tree(module_a)
 
       expect(tree[:module][:name]).to eq('Module A')

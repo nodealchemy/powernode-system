@@ -54,9 +54,9 @@ module Api
           def worker_account
             @worker_account ||= if current_worker.account?
                                   current_worker.account
-                                elsif params[:account_id].present?
+            elsif params[:account_id].present?
                                   Account.find(params[:account_id])
-                                end
+            end
           end
 
           # Standard error handler for record not found

@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class NodeModuleCategoriesController < BaseController
-        before_action :set_category, only: [:show, :update, :destroy]
+        before_action :set_category, only: [ :show, :update, :destroy ]
 
         # GET /api/v1/system/node_module_categories
         def index
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
 
           categories = current_account.system_node_module_categories
           categories = apply_filters(categories)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/node_module_categories/:id
         def show
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
           render_success(category: ::System::NodeModuleCategorySerializer.new(@category).as_json)
         end
 
         # POST /api/v1/system/node_module_categories
         def create
-          require_permission('system.modules.create')
+          require_permission("system.modules.create")
 
           category = current_account.system_node_module_categories.build(category_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/node_module_categories/:id
         def update
-          require_permission('system.modules.update')
+          require_permission("system.modules.update")
 
           if @category.update(category_params)
             render_success(category: ::System::NodeModuleCategorySerializer.new(@category).as_json)
@@ -52,13 +52,13 @@ module Api
 
         # DELETE /api/v1/system/node_module_categories/:id
         def destroy
-          require_permission('system.modules.delete')
+          require_permission("system.modules.delete")
 
           if @category.node_modules.exists?
-            render_error('Cannot delete category with existing modules', status: :unprocessable_entity)
+            render_error("Cannot delete category with existing modules", status: :unprocessable_entity)
           else
             @category.destroy
-            render_success(message: 'Category deleted successfully')
+            render_success(message: "Category deleted successfully")
           end
         end
 
@@ -75,11 +75,11 @@ module Api
         end
 
         def apply_filters(categories)
-          categories = categories.enabled if params[:enabled] == 'true'
-          categories = categories.disabled if params[:enabled] == 'false'
-          categories = categories.public_categories if params[:public] == 'true'
-          categories = categories.root_categories if params[:root_only] == 'true'
-          categories = categories.where('name ILIKE ?', "%#{params[:search]}%") if params[:search].present?
+          categories = categories.enabled if params[:enabled] == "true"
+          categories = categories.disabled if params[:enabled] == "false"
+          categories = categories.public_categories if params[:public] == "true"
+          categories = categories.root_categories if params[:root_only] == "true"
+          categories = categories.where("name ILIKE ?", "%#{params[:search]}%") if params[:search].present?
           categories
         end
       end

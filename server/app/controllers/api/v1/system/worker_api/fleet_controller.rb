@@ -113,7 +113,7 @@ module Api
           # the worker has the permission seeded.
           def scope_accounts
             if current_worker.account?
-              [current_worker.account]
+              [ current_worker.account ]
             else
               # Find accounts with at least one System::NodeInstance — avoids
               # ticking idle accounts every 60s.

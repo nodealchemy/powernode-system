@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class ProviderVolumesController < BaseController
-        before_action :set_volume, only: [:show, :update, :destroy, :attach, :detach, :snapshot]
+        before_action :set_volume, only: [ :show, :update, :destroy, :attach, :detach, :snapshot ]
 
         # GET /api/v1/system/provider_volumes
         def index
-          require_permission('system.volumes.read')
+          require_permission("system.volumes.read")
 
           volumes = current_account.system_provider_volumes
           volumes = apply_filters(volumes)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/provider_volumes/:id
         def show
-          require_permission('system.volumes.read')
+          require_permission("system.volumes.read")
           render_success(volume: ::System::ProviderVolumeSerializer.new(@volume).as_json)
         end
 
         # POST /api/v1/system/provider_volumes
         def create
-          require_permission('system.volumes.create')
+          require_permission("system.volumes.create")
 
           volume = current_account.system_provider_volumes.build(volume_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/provider_volumes/:id
         def update
-          require_permission('system.volumes.update')
+          require_permission("system.volumes.update")
 
           if @volume.update(volume_params)
             render_success(volume: ::System::ProviderVolumeSerializer.new(@volume).as_json)
@@ -52,52 +52,52 @@ module Api
 
         # DELETE /api/v1/system/provider_volumes/:id
         def destroy
-          require_permission('system.volumes.delete')
+          require_permission("system.volumes.delete")
 
           unless @volume.can_delete?
-            return render_error('Cannot delete volume in current state', status: :unprocessable_entity)
+            return render_error("Cannot delete volume in current state", status: :unprocessable_entity)
           end
 
-          @volume.update!(status: 'deleting')
-          render_success(message: 'Volume deletion initiated')
+          @volume.update!(status: "deleting")
+          render_success(message: "Volume deletion initiated")
         end
 
         # POST /api/v1/system/provider_volumes/:id/attach
         def attach
-          require_permission('system.volumes.update')
+          require_permission("system.volumes.update")
 
           instance = current_account.system_nodes
                                    .flat_map(&:node_instances)
                                    .find { |i| i.id == params[:node_instance_id] }
 
           unless instance
-            return render_error('Node instance not found', status: :not_found)
+            return render_error("Node instance not found", status: :not_found)
           end
 
           if @volume.attach_to!(instance, params[:device_name])
             render_success(volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json)
           else
-            render_error('Cannot attach volume in current state', status: :unprocessable_entity)
+            render_error("Cannot attach volume in current state", status: :unprocessable_entity)
           end
         end
 
         # POST /api/v1/system/provider_volumes/:id/detach
         def detach
-          require_permission('system.volumes.update')
+          require_permission("system.volumes.update")
 
           if @volume.detach!
             render_success(volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json)
           else
-            render_error('Cannot detach volume in current state', status: :unprocessable_entity)
+            render_error("Cannot detach volume in current state", status: :unprocessable_entity)
           end
         end
 
         # POST /api/v1/system/provider_volumes/:id/snapshot
         def snapshot
-          require_permission('system.volumes.snapshot')
+          require_permission("system.volumes.snapshot")
 
           unless @volume.can_snapshot?
-            return render_error('Cannot create snapshot in current state', status: :unprocessable_entity)
+            return render_error("Cannot create snapshot in current state", status: :unprocessable_entity)
           end
 
           snap = current_account.system_provider_volume_snapshots.create!(
@@ -106,7 +106,7 @@ module Api
             volume: @volume,
             size_gb: @volume.size_gb,
             encrypted: @volume.encrypted,
-            status: 'pending'
+            status: "pending"
           )
 
           render_success(snapshot: ::System::ProviderVolumeSnapshotSerializer.new(snap).as_json, status: :created)
@@ -129,10 +129,10 @@ module Api
 
         def apply_filters(volumes)
           volumes = volumes.by_status(params[:status]) if params[:status].present?
-          volumes = volumes.attached if params[:attached] == 'true'
-          volumes = volumes.unattached if params[:attached] == 'false'
-          volumes = volumes.encrypted_volumes if params[:encrypted] == 'true'
-          volumes = volumes.where('name ILIKE ?', "%#{params[:search]}%") if params[:search].present?
+          volumes = volumes.attached if params[:attached] == "true"
+          volumes = volumes.unattached if params[:attached] == "false"
+          volumes = volumes.encrypted_volumes if params[:encrypted] == "true"
+          volumes = volumes.where("name ILIKE ?", "%#{params[:search]}%") if params[:search].present?
           volumes
         end
       end

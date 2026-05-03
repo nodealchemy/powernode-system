@@ -25,7 +25,7 @@ RSpec.describe "POST /api/v1/system/node_templates/compose_preview", type: :requ
       service.update!(file_spec: "/etc/**")
 
       post "/api/v1/system/node_templates/compose_preview",
-           params: { module_ids: [base.id, service.id] }.to_json,
+           params: { module_ids: [ base.id, service.id ] }.to_json,
            headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
 
       expect(response).to have_http_status(:ok)
@@ -47,7 +47,7 @@ RSpec.describe "POST /api/v1/system/node_templates/compose_preview", type: :requ
       b.update!(file_spec: "/etc/b/**")
 
       post "/api/v1/system/node_templates/compose_preview",
-           params: { module_ids: [a.id, b.id] }.to_json,
+           params: { module_ids: [ a.id, b.id ] }.to_json,
            headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
 
       conflicts = JSON.parse(response.body).dig("data", "conflicts")
@@ -63,7 +63,7 @@ RSpec.describe "POST /api/v1/system/node_templates/compose_preview", type: :requ
       b.update!(file_spec: "/etc/b/**")
 
       post "/api/v1/system/node_templates/compose_preview",
-           params: { module_ids: [a.id, b.id] }.to_json,
+           params: { module_ids: [ a.id, b.id ] }.to_json,
            headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
 
       conflicts = JSON.parse(response.body).dig("data", "conflicts")
@@ -77,7 +77,7 @@ RSpec.describe "POST /api/v1/system/node_templates/compose_preview", type: :requ
                  category: cat_high, variety: "instance", name: "inst-b")
 
       post "/api/v1/system/node_templates/compose_preview",
-           params: { module_ids: [a.id, b.id] }.to_json,
+           params: { module_ids: [ a.id, b.id ] }.to_json,
            headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
 
       conflicts = JSON.parse(response.body).dig("data", "conflicts")

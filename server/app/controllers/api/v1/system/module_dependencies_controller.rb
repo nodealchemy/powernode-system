@@ -5,11 +5,11 @@ module Api
     module System
       class ModuleDependenciesController < BaseController
         before_action :set_node_module
-        before_action :set_dependency, only: [:show, :update, :destroy]
+        before_action :set_dependency, only: [ :show, :update, :destroy ]
 
         # GET /api/v1/system/node_modules/:node_module_id/dependencies
         def index
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
 
           dependencies = @node_module.module_dependencies
           dependencies = apply_filters(dependencies)
@@ -23,13 +23,13 @@ module Api
 
         # GET /api/v1/system/node_modules/:node_module_id/dependencies/:id
         def show
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
           render_success(dependency: ::System::ModuleDependencySerializer.new(@dependency).as_json)
         end
 
         # POST /api/v1/system/node_modules/:node_module_id/dependencies
         def create
-          require_permission('system.modules.update')
+          require_permission("system.modules.update")
 
           dependency = @node_module.module_dependencies.build(dependency_params)
 
@@ -42,7 +42,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/node_modules/:node_module_id/dependencies/:id
         def update
-          require_permission('system.modules.update')
+          require_permission("system.modules.update")
 
           if @dependency.update(dependency_params)
             render_success(dependency: ::System::ModuleDependencySerializer.new(@dependency).as_json)
@@ -53,10 +53,10 @@ module Api
 
         # DELETE /api/v1/system/node_modules/:node_module_id/dependencies/:id
         def destroy
-          require_permission('system.modules.update')
+          require_permission("system.modules.update")
 
           @dependency.destroy
-          render_success(message: 'Dependency removed successfully')
+          render_success(message: "Dependency removed successfully")
         end
 
         private
@@ -75,8 +75,8 @@ module Api
 
         def apply_filters(dependencies)
           dependencies = dependencies.by_type(params[:type]) if params[:type].present?
-          dependencies = dependencies.required if params[:required] == 'true'
-          dependencies = dependencies.optional if params[:required] == 'false'
+          dependencies = dependencies.required if params[:required] == "true"
+          dependencies = dependencies.optional if params[:required] == "false"
           dependencies
         end
       end

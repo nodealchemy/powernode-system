@@ -173,7 +173,7 @@ RSpec.describe System::ModuleBuildDispatchService do
                            gitea_repo_full_name: "ipnode-acme/service-target")
       service_mod.update!(file_spec: "/etc/service/**")
 
-      [base_mod, service_mod].each do |m|
+      [ base_mod, service_mod ].each do |m|
         System::NodeModuleAssignment.create!(node: target_node, node_module: m, enabled: true)
       end
 

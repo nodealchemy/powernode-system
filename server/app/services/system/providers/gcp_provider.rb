@@ -611,11 +611,11 @@ module System
           )
 
           status = case image.status
-                   when "READY" then "available"
-                   when "PENDING" then "pending"
-                   when "FAILED" then "failed"
-                   else "unknown"
-                   end
+          when "READY" then "available"
+          when "PENDING" then "pending"
+          when "FAILED" then "failed"
+          else "unknown"
+          end
 
           {
             success: true,
@@ -850,7 +850,7 @@ module System
             disk_type: disk_type_url(params[:root_volume_type] || "pd-standard")
           )
         )
-        instance.disks = [boot_disk]
+        instance.disks = [ boot_disk ]
 
         # Network interface
         network_interface = Google::Cloud::Compute::V1::NetworkInterface.new(
@@ -865,7 +865,7 @@ module System
             )
           ]
         end
-        instance.network_interfaces = [network_interface]
+        instance.network_interfaces = [ network_interface ]
 
         # Metadata (including startup script)
         if params[:user_data].present? || params[:startup_script].present?

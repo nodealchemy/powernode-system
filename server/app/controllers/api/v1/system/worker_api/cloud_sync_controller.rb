@@ -89,7 +89,7 @@ module Api
           # explicit `system.cloud_sync.reconcile` permission.
           def scope_accounts
             if current_worker.account?
-              [current_worker.account]
+              [ current_worker.account ]
             else
               account_ids = ::System::ProviderConnection
                 .where(enabled: true)

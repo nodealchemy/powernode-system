@@ -5,17 +5,17 @@ module Api
     module System
       class ModulePuppetAssignmentsController < BaseController
         before_action :set_node_module
-        before_action :set_assignment, only: [:show, :update, :destroy]
+        before_action :set_assignment, only: [ :show, :update, :destroy ]
 
         # GET /api/v1/system/node_modules/:node_module_id/puppet_assignments
         def index
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
 
           assignments = @node_module.module_puppet_assignments
                                      .includes(:puppet_module)
                                      .by_priority
 
-          assignments = assignments.enabled if params[:enabled] == 'true'
+          assignments = assignments.enabled if params[:enabled] == "true"
           assignments = paginate(assignments)
 
           render_success(
@@ -26,13 +26,13 @@ module Api
 
         # GET /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
         def show
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
           render_success(puppet_assignment: ::System::ModulePuppetAssignmentSerializer.new(@assignment).as_json)
         end
 
         # POST /api/v1/system/node_modules/:node_module_id/puppet_assignments
         def create
-          require_permission('system.puppet.create')
+          require_permission("system.puppet.create")
 
           assignment = @node_module.module_puppet_assignments.build(assignment_params)
 
@@ -45,7 +45,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
         def update
-          require_permission('system.puppet.update')
+          require_permission("system.puppet.update")
 
           if @assignment.update(assignment_params)
             render_success(puppet_assignment: ::System::ModulePuppetAssignmentSerializer.new(@assignment).as_json)
@@ -56,9 +56,9 @@ module Api
 
         # DELETE /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
         def destroy
-          require_permission('system.puppet.delete')
+          require_permission("system.puppet.delete")
           @assignment.destroy
-          render_success(message: 'Puppet assignment removed successfully')
+          render_success(message: "Puppet assignment removed successfully")
         end
 
         private

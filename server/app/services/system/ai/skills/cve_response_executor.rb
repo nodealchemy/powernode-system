@@ -45,7 +45,7 @@ module System
               cve_id: :string,
               severity: :string,
               risk_score: :integer,
-              exposed_modules: [:object],
+              exposed_modules: [ :object ],
               exposed_instance_count: :integer,
               remediation_plan: :object,
               requires_approval: :boolean
@@ -131,9 +131,9 @@ module System
           # Fall through to the keyword stub.
           tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
           modules_resp = tool.execute(params: { action: "system_list_modules" })
-          return [[], "module_lookup_failed"] unless modules_resp[:success]
+          return [ [], "module_lookup_failed" ] unless modules_resp[:success]
 
-          [score_exposed_modules(modules_resp[:data][:modules], packages), "keyword_stub"]
+          [ score_exposed_modules(modules_resp[:data][:modules], packages), "keyword_stub" ]
         end
 
         def find_or_create_cve(cve_id, severity, packages, summary, persist)
@@ -181,7 +181,7 @@ module System
           # weight (10..100) * (1 + log10(instance_count + 1))
           # caps the contribution of fleet size while still differentiating
           # 1-instance from 100-instance exposures (≈3x multiplier).
-          multiplier = 1 + Math.log10([instance_count, 1].max + 1)
+          multiplier = 1 + Math.log10([ instance_count, 1 ].max + 1)
           (weight * multiplier).round
         end
 

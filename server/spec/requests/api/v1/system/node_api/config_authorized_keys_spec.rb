@@ -30,7 +30,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
 
     it "includes operator-supplied keys when set in node config" do
       operator_key = "ssh-ed25519 AAAAfake operator@host"
-      node.update!(config: { "authorized_keys" => [operator_key] })
+      node.update!(config: { "authorized_keys" => [ operator_key ] })
 
       get "/api/v1/system/node_api/config/authorized_keys", headers: headers
 

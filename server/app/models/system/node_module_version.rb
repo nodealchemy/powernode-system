@@ -14,9 +14,9 @@ module System
     PROMOTION_STATES = %w[built staging blessed live retired].freeze
 
     # === Associations ===
-    belongs_to :node_module, class_name: 'System::NodeModule'
-    belongs_to :created_by, class_name: 'User', optional: true
-    has_many   :module_artifacts, class_name: 'System::ModuleArtifact', dependent: :destroy
+    belongs_to :node_module, class_name: "System::NodeModule"
+    belongs_to :created_by, class_name: "User", optional: true
+    has_many   :module_artifacts, class_name: "System::ModuleArtifact", dependent: :destroy
 
     # === Validations ===
     validates :version_number, presence: true,
@@ -30,11 +30,11 @@ module System
     scope :by_version, -> { order(version_number: :asc) }
     scope :latest_first, -> { order(version_number: :desc) }
     scope :with_data_file, -> { where.not(data_file_name: nil) }
-    scope :built,    -> { where(promotion_state: 'built') }
-    scope :staging,  -> { where(promotion_state: 'staging') }
-    scope :blessed,  -> { where(promotion_state: 'blessed') }
-    scope :live,     -> { where(promotion_state: 'live') }
-    scope :retired,  -> { where(promotion_state: 'retired') }
+    scope :built,    -> { where(promotion_state: "built") }
+    scope :staging,  -> { where(promotion_state: "staging") }
+    scope :blessed,  -> { where(promotion_state: "blessed") }
+    scope :live,     -> { where(promotion_state: "live") }
+    scope :retired,  -> { where(promotion_state: "retired") }
 
     # === Callbacks ===
     before_validation :set_version_number, on: :create
@@ -60,14 +60,14 @@ module System
     def previous_version
       return nil unless node_module
 
-      node_module.versions.where('version_number < ?', version_number).order(version_number: :desc).first
+      node_module.versions.where("version_number < ?", version_number).order(version_number: :desc).first
     end
 
     # Get the next version
     def next_version
       return nil unless node_module
 
-      node_module.versions.where('version_number > ?', version_number).order(version_number: :asc).first
+      node_module.versions.where("version_number > ?", version_number).order(version_number: :asc).first
     end
 
     # Verify data file integrity using checksum
@@ -111,11 +111,11 @@ module System
       end
 
       stamp = case target
-              when "staging" then :staging_baked_at
-              when "blessed" then :blessed_at
-              when "live"    then :live_at
-              when "retired" then :retired_at
-              end
+      when "staging" then :staging_baked_at
+      when "blessed" then :blessed_at
+      when "live"    then :live_at
+      when "retired" then :retired_at
+      end
 
       attrs = { promotion_state: target }
       attrs[stamp] = Time.current if stamp

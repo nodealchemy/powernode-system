@@ -6,7 +6,7 @@ module Api
       class ProviderRegionsController < BaseController
         before_action :set_account
         before_action :set_provider
-        before_action :set_region, only: [:show, :update, :destroy]
+        before_action :set_region, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.regions.read")

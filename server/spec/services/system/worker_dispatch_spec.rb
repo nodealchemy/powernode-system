@@ -14,7 +14,7 @@ RSpec.describe System::WorkerDispatch do
 
   describe '.enqueue' do
     it 'pushes a Sidekiq-format JSON payload to the named queue' do
-      jid = described_class.enqueue('FooJob', args: ['arg-1', 42])
+      jid = described_class.enqueue('FooJob', args: [ 'arg-1', 42 ])
 
       expect(redis).to have_received(:sadd).with('queues', 'system')
       expect(redis).to have_received(:lpush) do |key, payload|
@@ -22,7 +22,7 @@ RSpec.describe System::WorkerDispatch do
         parsed = JSON.parse(payload)
         expect(parsed).to include(
           'class' => 'FooJob',
-          'args' => ['arg-1', 42],
+          'args' => [ 'arg-1', 42 ],
           'queue' => 'system',
           'retry' => false
         )
@@ -38,7 +38,7 @@ RSpec.describe System::WorkerDispatch do
       described_class.enqueue('FooJob', args: 'just-one')
 
       expect(redis).to have_received(:lpush) do |_, payload|
-        expect(JSON.parse(payload)['args']).to eq(['just-one'])
+        expect(JSON.parse(payload)['args']).to eq([ 'just-one' ])
       end
     end
 
@@ -72,7 +72,7 @@ RSpec.describe System::WorkerDispatch do
       expect(redis).to have_received(:lpush) do |_, payload|
         parsed = JSON.parse(payload)
         expect(parsed['class']).to eq('SystemExecuteTaskJob')
-        expect(parsed['args']).to eq(['op-uuid-123'])
+        expect(parsed['args']).to eq([ 'op-uuid-123' ])
       end
     end
   end

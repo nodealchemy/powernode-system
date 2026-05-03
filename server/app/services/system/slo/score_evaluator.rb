@@ -72,13 +72,13 @@ module System
         instance_ids = node_module.node_module_assignments
                                   .joins(node: :node_instances)
                                   .pluck("system_node_instances.id").uniq
-        return [0, 0] if instance_ids.empty?
+        return [ 0, 0 ] if instance_ids.empty?
 
         healthy = ::System::NodeInstance
                   .where(id: instance_ids)
                   .where("last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= ?", cutoff)
                   .count
-        [instance_ids.size, healthy]
+        [ instance_ids.size, healthy ]
       end
 
       def error_event_count(node_module, cutoff)

@@ -9,23 +9,23 @@ module System
 
     # Associations
     belongs_to :account
-    has_many :node_platforms, class_name: 'System::NodePlatform', dependent: :restrict_with_error
+    has_many :node_platforms, class_name: "System::NodePlatform", dependent: :restrict_with_error
 
     # File attachments via FileManagement::Object (platform-shared file
     # management — provides multi-backend storage, versioning, sharing,
     # processing pipeline, ACL). The original migration's `to_table:
     # :file_objects` correctly targets FileManagement::Object's underlying
     # table (FileManagement uses table_name_prefix = "file_").
-    belongs_to :kernel_file_object,  class_name: 'FileManagement::Object', optional: true
-    belongs_to :ramdisk_file_object, class_name: 'FileManagement::Object', optional: true
-    belongs_to :image_file_object,   class_name: 'FileManagement::Object', optional: true
+    belongs_to :kernel_file_object,  class_name: "FileManagement::Object", optional: true
+    belongs_to :ramdisk_file_object, class_name: "FileManagement::Object", optional: true
+    belongs_to :image_file_object,   class_name: "FileManagement::Object", optional: true
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :account_id }
     validates :image_format, inclusion: { in: IMAGE_FORMATS }, allow_nil: true
-    validates :kernel_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: 'must be a valid SHA256 hash' }, allow_nil: true
-    validates :ramdisk_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: 'must be a valid SHA256 hash' }, allow_nil: true
-    validates :image_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: 'must be a valid SHA256 hash' }, allow_nil: true
+    validates :kernel_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: "must be a valid SHA256 hash" }, allow_nil: true
+    validates :ramdisk_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: "must be a valid SHA256 hash" }, allow_nil: true
+    validates :image_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: "must be a valid SHA256 hash" }, allow_nil: true
 
     # === Boot Image Methods ===
     def has_kernel?

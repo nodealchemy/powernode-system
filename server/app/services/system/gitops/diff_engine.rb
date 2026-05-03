@@ -72,7 +72,7 @@ module System
           .where(system_nodes: { account_id: @account.id })
           .map do |a|
             key = "#{a.node.name}:#{a.node_module.name}"
-            [key, a.attributes.slice("enabled", "priority", "config")]
+            [ key, a.attributes.slice("enabled", "priority", "config") ]
           end.to_h
 
         diffs = []

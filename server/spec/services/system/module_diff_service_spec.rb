@@ -15,9 +15,9 @@ RSpec.describe System::ModuleDiffService do
   let!(:version_a) do
     System::NodeModuleVersion.create!(
       node_module: mod, version_number: 1,
-      mask: ["L2V0Yy9zZWNyZXQ="],          # base64("/etc/secret")
-      file_spec: ["L2V0Yy9hcHA="],          # base64("/etc/app")
-      package_spec: ["bnNzcg=="],           # base64("nssr")
+      mask: [ "L2V0Yy9zZWNyZXQ=" ],          # base64("/etc/secret")
+      file_spec: [ "L2V0Yy9hcHA=" ],          # base64("/etc/app")
+      package_spec: [ "bnNzcg==" ],           # base64("nssr")
       config: {},
       oci_digest: "sha256:#{'a' * 64}"
     )
@@ -26,9 +26,9 @@ RSpec.describe System::ModuleDiffService do
   let!(:version_b) do
     System::NodeModuleVersion.create!(
       node_module: mod, version_number: 2,
-      mask: ["L2V0Yy9zZWNyZXQ="],
-      file_spec: ["L2V0Yy9hcHA=", "L2V0Yy9uZXc="],   # adds /etc/new
-      package_spec: ["bnNzcg==", "Y3VybA=="],         # adds curl
+      mask: [ "L2V0Yy9zZWNyZXQ=" ],
+      file_spec: [ "L2V0Yy9hcHA=", "L2V0Yy9uZXc=" ],   # adds /etc/new
+      package_spec: [ "bnNzcg==", "Y3VybA==" ],         # adds curl
       config: {},
       oci_digest: "sha256:#{'b' * 64}"
     )

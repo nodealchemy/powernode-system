@@ -43,10 +43,10 @@ module System
           # mean "trading is busy; throttle non-critical fleet actions".
           aggregate_strength = relevant.sum { |s| s.strength.to_f }
           severity = case aggregate_strength
-                     when 0..1.0 then :medium
-                     when 1.0..3.0 then :high
-                     else :critical
-                     end
+          when 0..1.0 then :medium
+          when 1.0..3.0 then :high
+          else :critical
+          end
 
           [
             signal(

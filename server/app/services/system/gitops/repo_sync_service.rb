@@ -80,7 +80,7 @@ module System
           sanitized = err.to_s.gsub(/(https?:\/\/)[^:@]+:[^@]+@/, '\1[REDACTED]@')
           raise "git #{args.first} failed: #{sanitized.strip}"
         end
-        [out, err]
+        [ out, err ]
       end
 
       # Builds an env hash with Git auth configured, depending on the
@@ -117,7 +117,7 @@ module System
         # in the URL via the standard Git mechanism.
         path = "#{work_tree_path}.askpass"
         File.open(path, "w", 0o700) do |f|
-          f.write("#!/bin/bash\necho '#{password.to_s.gsub("'", %q['"'"'])}'\n")
+          f.write("#!/bin/bash\necho '#{password.to_s.gsub("'", %q('"'"'))}'\n")
         end
         FileUtils.chmod(0o700, path)
         path

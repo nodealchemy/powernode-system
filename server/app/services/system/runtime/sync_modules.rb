@@ -43,7 +43,7 @@ module System
         failed = []
 
         modules.each_with_index do |mod, idx|
-          progress = 10 + ((idx + 1) * 80 / [modules.size, 1].max)
+          progress = 10 + ((idx + 1) * 80 / [ modules.size, 1 ].max)
           @operation.update_progress!(progress, "Committing module #{mod.name}")
 
           result =

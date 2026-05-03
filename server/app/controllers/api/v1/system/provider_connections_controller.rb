@@ -5,7 +5,7 @@ module Api
     module System
       class ProviderConnectionsController < BaseController
         before_action :set_account
-        before_action :set_connection, only: [:show, :update, :destroy, :test, :sync_catalog]
+        before_action :set_connection, only: [ :show, :update, :destroy, :test, :sync_catalog ]
 
         def index
           require_permission("system.connections.read")

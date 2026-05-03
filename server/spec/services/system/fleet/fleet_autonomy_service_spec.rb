@@ -31,7 +31,7 @@ RSpec.describe System::Fleet::FleetAutonomyService do
       Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
                                      action_category: "trading.create_session",
                                      policy: "require_approval", is_active: true)
-      expect(described_class.all_fleet_actions(account)).to eq(["system.cert_rotate"])
+      expect(described_class.all_fleet_actions(account)).to eq([ "system.cert_rotate" ])
     end
   end
 

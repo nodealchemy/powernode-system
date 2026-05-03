@@ -460,9 +460,9 @@ module System
       def get_metadata
         {
           provider: "mock",
-          regions: ["mock-region-1", "mock-region-2"],
-          instance_types: ["mock.small", "mock.medium", "mock.large"],
-          volume_types: ["standard", "ssd", "fast-ssd"]
+          regions: [ "mock-region-1", "mock-region-2" ],
+          instance_types: [ "mock.small", "mock.medium", "mock.large" ],
+          volume_types: [ "standard", "ssd", "fast-ssd" ]
         }
       end
 

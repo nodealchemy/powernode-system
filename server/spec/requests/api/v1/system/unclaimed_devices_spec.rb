@@ -87,7 +87,7 @@ RSpec.describe "Api::V1::System::UnclaimedDevices", type: :request do
       no_perms = user_with_permissions(account: account)
       get "/api/v1/system/unclaimed_devices",
           headers: auth_headers_for(no_perms)
-      expect(response.status).to be_in([401, 403, 422])
+      expect(response.status).to be_in([ 401, 403, 422 ])
     end
   end
 end

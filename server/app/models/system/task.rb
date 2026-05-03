@@ -24,7 +24,7 @@ module System
     # === Associations ===
     belongs_to :account
     belongs_to :operable, polymorphic: true, optional: true
-    belongs_to :initiated_by, class_name: 'User', optional: true
+    belongs_to :initiated_by, class_name: "User", optional: true
 
     # === Validations ===
     validates :command, presence: true
@@ -59,12 +59,12 @@ module System
       end
 
       event :start do
-        transitions from: [:pending, :scheduled], to: :running
+        transitions from: [ :pending, :scheduled ], to: :running
 
         before do
           self.started_at = Time.current
           self.progress = 0
-          stage_event('started', 'Operation started')
+          stage_event("started", "Operation started")
         end
       end
 
@@ -74,7 +74,7 @@ module System
         before do
           self.completed_at = Time.current
           self.progress = 100
-          stage_event('completed', 'Operation completed successfully')
+          stage_event("completed", "Operation completed successfully")
         end
       end
 
@@ -84,7 +84,7 @@ module System
         before do |message = nil|
           self.completed_at = Time.current
           self.error_message = message
-          stage_event('failed', message || 'Operation failed')
+          stage_event("failed", message || "Operation failed")
         end
       end
 
@@ -94,30 +94,30 @@ module System
         before do |message = nil|
           self.completed_at = Time.current
           self.error_message = message
-          stage_event('aborted', message || 'Operation aborted')
+          stage_event("aborted", message || "Operation aborted")
         end
       end
 
       event :cancel do
-        transitions from: [:pending, :scheduled], to: :cancelled
+        transitions from: [ :pending, :scheduled ], to: :cancelled
 
         before do |message = nil|
           self.completed_at = Time.current
           self.error_message = message
-          stage_event('cancelled', message || 'Operation cancelled')
+          stage_event("cancelled", message || "Operation cancelled")
         end
       end
     end
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :pending, -> { by_status('pending') }
-    scope :scheduled, -> { by_status('scheduled') }
-    scope :running, -> { by_status('running') }
-    scope :complete, -> { by_status('complete') }
-    scope :failed, -> { by_status('failed') }
-    scope :aborted, -> { by_status('aborted') }
-    scope :cancelled, -> { by_status('cancelled') }
+    scope :pending, -> { by_status("pending") }
+    scope :scheduled, -> { by_status("scheduled") }
+    scope :running, -> { by_status("running") }
+    scope :complete, -> { by_status("complete") }
+    scope :failed, -> { by_status("failed") }
+    scope :aborted, -> { by_status("aborted") }
+    scope :cancelled, -> { by_status("cancelled") }
 
     scope :active, -> { where(status: %w[pending scheduled running]) }
     scope :finished, -> { where(status: %w[complete failed aborted cancelled]) }
@@ -127,13 +127,13 @@ module System
     scope :for_operable, ->(operable) { where(operable: operable) }
     scope :by_command, ->(command) { where(command: command) }
     scope :recent, -> { order(created_at: :desc) }
-    scope :scheduled_before, ->(time) { where('scheduled_at <= ?', time) }
+    scope :scheduled_before, ->(time) { where("scheduled_at <= ?", time) }
 
     # === Progress (not a state transition) ===
     def update_progress!(new_progress, message = nil)
       return false unless running?
 
-      stage_event('progress', message || "Progress: #{new_progress}%")
+      stage_event("progress", message || "Progress: #{new_progress}%")
       update!(progress: new_progress.clamp(0, 100), events: events)
       true
     end
@@ -196,7 +196,7 @@ module System
         timestamp: Time.current.iso8601,
         data: data
       }
-      self.events = (events || []) + [new_event]
+      self.events = (events || []) + [ new_event ]
       new_event
     end
 

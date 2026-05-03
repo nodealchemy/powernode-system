@@ -56,7 +56,7 @@ module System
       secret = "pndis_#{SecureRandom.urlsafe_base64(32)}"
       record = new(attrs.merge(secret: secret, secret_preview: secret[0, 8]))
       record.save!
-      [record, secret]
+      [ record, secret ]
     end
 
     # Rotates the secret. Returns the new plaintext exactly once.

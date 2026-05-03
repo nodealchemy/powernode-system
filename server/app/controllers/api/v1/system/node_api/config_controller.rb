@@ -120,7 +120,6 @@ module Api
               region_code: region.region_code
             }
           end
-
         end
       end
     end

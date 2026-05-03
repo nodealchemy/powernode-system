@@ -6,7 +6,7 @@ module System
     STATUSES = %w[available impaired unavailable].freeze
 
     # Associations
-    belongs_to :provider_region, class_name: 'System::ProviderRegion'
+    belongs_to :provider_region, class_name: "System::ProviderRegion"
 
     # Delegations
     delegate :account, :account_id, :provider, to: :provider_region
@@ -19,9 +19,9 @@ module System
     # Scopes
     scope :enabled, -> { where(enabled: true) }
     scope :disabled, -> { where(enabled: false) }
-    scope :available, -> { where(status: 'available') }
-    scope :impaired, -> { where(status: 'impaired') }
-    scope :unavailable, -> { where(status: 'unavailable') }
+    scope :available, -> { where(status: "available") }
+    scope :impaired, -> { where(status: "impaired") }
+    scope :unavailable, -> { where(status: "unavailable") }
     scope :operational, -> { where(status: %w[available impaired]) }
 
     # Capabilities accessor

@@ -6,20 +6,20 @@ module System
 
     # === Constants ===
     STATUSES = %w[creating available in-use deleting deleted error].freeze
-    RAID_LEVELS = [0, 1].freeze # 0 = striping, 1 = mirroring
+    RAID_LEVELS = [ 0, 1 ].freeze # 0 = striping, 1 = mirroring
 
     # === Associations ===
     belongs_to :account
-    belongs_to :volume_type, class_name: 'System::ProviderVolumeType', optional: true
-    belongs_to :provider_region, class_name: 'System::ProviderRegion', optional: true
-    belongs_to :availability_zone, class_name: 'System::ProviderAvailabilityZone', optional: true
-    belongs_to :node_instance, class_name: 'System::NodeInstance', optional: true
+    belongs_to :volume_type, class_name: "System::ProviderVolumeType", optional: true
+    belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
+    belongs_to :availability_zone, class_name: "System::ProviderAvailabilityZone", optional: true
+    belongs_to :node_instance, class_name: "System::NodeInstance", optional: true
 
-    has_many :snapshots, class_name: 'System::ProviderVolumeSnapshot', foreign_key: :volume_id, dependent: :restrict_with_error
-    has_many :tasks, class_name: 'System::Task', as: :operable, dependent: :destroy
+    has_many :snapshots, class_name: "System::ProviderVolumeSnapshot", foreign_key: :volume_id, dependent: :restrict_with_error
+    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
 
     # RAID members
-    has_many :volume_members, class_name: 'System::ProviderVolumeMember', dependent: :destroy
+    has_many :volume_members, class_name: "System::ProviderVolumeMember", dependent: :destroy
 
     # === Validations ===
     validates :raid_level, inclusion: { in: RAID_LEVELS }, allow_nil: true
@@ -31,12 +31,12 @@ module System
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :creating, -> { by_status('creating') }
-    scope :available, -> { by_status('available') }
-    scope :in_use, -> { by_status('in-use') }
-    scope :deleting, -> { by_status('deleting') }
-    scope :deleted, -> { by_status('deleted') }
-    scope :errored, -> { by_status('error') }
+    scope :creating, -> { by_status("creating") }
+    scope :available, -> { by_status("available") }
+    scope :in_use, -> { by_status("in-use") }
+    scope :deleting, -> { by_status("deleting") }
+    scope :deleted, -> { by_status("deleted") }
+    scope :errored, -> { by_status("error") }
 
     scope :attached, -> { where.not(node_instance_id: nil) }
     scope :unattached, -> { where(node_instance_id: nil) }
@@ -47,7 +47,7 @@ module System
 
     # === Status Predicates ===
     STATUSES.each do |status_name|
-      method_name = status_name.gsub('-', '_')
+      method_name = status_name.gsub("-", "_")
       define_method("#{method_name}?") { status == status_name }
     end
 
@@ -77,7 +77,7 @@ module System
       update!(
         node_instance: instance,
         device_name: device_name,
-        status: 'in-use'
+        status: "in-use"
       )
       true
     end
@@ -87,7 +87,7 @@ module System
       update!(
         node_instance: nil,
         device_name: nil,
-        status: 'available'
+        status: "available"
       )
       true
     end
@@ -133,7 +133,7 @@ module System
         size_gb: size_gb,
         device_name: device_name,
         member_index: next_index,
-        status: 'pending'
+        status: "pending"
       )
     end
 

@@ -207,7 +207,7 @@ module System
       def key_value(metadata, name)
         v = metadata&.dig(name) || metadata&.dig(name.to_sym)
         return nil if v.blank?
-        [name, v.to_s]
+        [ name, v.to_s ]
       end
 
       def create_pending_approval(action_category:, metadata:, reasoning:, temporal_context:)
@@ -235,8 +235,8 @@ module System
           end
 
           if recently_rejected_approval?(action_category,
-              ["request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
-               action_category, name, value])
+              [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
+               action_category, name, value ])
             Rails.logger.info("[FleetAutonomy] Skipped #{action_category} for #{name}=#{value} — rejected within cooldown")
             return nil
           end
@@ -244,7 +244,7 @@ module System
 
         # Fallback: action-level cooldown for actions without natural dedup keys.
         if recently_rejected_approval?(action_category,
-            ["request_data->>'action_category' = ?", action_category])
+            [ "request_data->>'action_category' = ?", action_category ])
           Rails.logger.info("[FleetAutonomy] Skipped #{action_category} — rejected within cooldown")
           return nil
         end

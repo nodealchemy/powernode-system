@@ -597,7 +597,7 @@ module System
 
         server_params[:key_name] = params[:key_name] if params[:key_name]
         server_params[:security_groups] = Array(params[:security_groups]) if params[:security_groups]
-        server_params[:nics] = [{ net_id: params[:network_id] }] if params[:network_id]
+        server_params[:nics] = [ { net_id: params[:network_id] } ] if params[:network_id]
         server_params[:user_data] = Base64.encode64(params[:user_data]) if params[:user_data]
         server_params[:availability_zone] = params[:availability_zone] if params[:availability_zone]
 

@@ -5,8 +5,8 @@ module System
     include System::Base
 
     # === Associations ===
-    belongs_to :provider_region, class_name: 'System::ProviderRegion'
-    belongs_to :volume_type, class_name: 'System::ProviderVolumeType'
+    belongs_to :provider_region, class_name: "System::ProviderRegion"
+    belongs_to :volume_type, class_name: "System::ProviderVolumeType"
 
     # Delegate account access through region
     delegate :account, to: :provider_region
@@ -14,7 +14,7 @@ module System
     delegate :provider, to: :provider_region
 
     # === Validations ===
-    validates :provider_region_id, uniqueness: { scope: :volume_type_id, message: 'already has this volume type' }
+    validates :provider_region_id, uniqueness: { scope: :volume_type_id, message: "already has this volume type" }
 
     # === Scopes ===
     scope :enabled, -> { where(enabled: true) }

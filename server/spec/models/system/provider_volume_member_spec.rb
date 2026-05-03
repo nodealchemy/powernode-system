@@ -81,7 +81,7 @@ RSpec.describe System::ProviderVolumeMember, type: :model do
 
     describe '.ordered' do
       it 'orders by member_index ascending' do
-        expect(described_class.ordered.pluck(:member_index)).to eq([0, 1, 2, 3, 4])
+        expect(described_class.ordered.pluck(:member_index)).to eq([ 0, 1, 2, 3, 4 ])
       end
     end
 

@@ -47,7 +47,7 @@ module System
         if aggregate >= THROTTLE_STRENGTH_THRESHOLD
           # Defer hint scales with pressure — modest delay so the fleet
           # eventually catches up, longer delay when trading is very busy.
-          defer_seconds = [(aggregate * 60).to_i, 600].min
+          defer_seconds = [ (aggregate * 60).to_i, 600 ].min
           {
             throttled: true,
             reason: "trading_pressure_aggregate=#{aggregate.round(2)}",

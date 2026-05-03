@@ -5,11 +5,11 @@ module Api
     module System
       class PuppetResourcesController < BaseController
         before_action :set_puppet_module
-        before_action :set_puppet_resource, only: [:show, :update, :destroy, :puppet_dsl]
+        before_action :set_puppet_resource, only: [ :show, :update, :destroy, :puppet_dsl ]
 
         # GET /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources
         def index
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
 
           resources = @puppet_module.puppet_resources
           resources = apply_filters(resources)
@@ -23,13 +23,13 @@ module Api
 
         # GET /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources/:id
         def show
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
           render_success(puppet_resource: ::System::PuppetResourceSerializer.new(@puppet_resource).as_json)
         end
 
         # POST /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources
         def create
-          require_permission('system.puppet.create')
+          require_permission("system.puppet.create")
 
           puppet_resource = @puppet_module.puppet_resources.build(puppet_resource_params)
 
@@ -42,7 +42,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources/:id
         def update
-          require_permission('system.puppet.update')
+          require_permission("system.puppet.update")
 
           if @puppet_resource.update(puppet_resource_params)
             render_success(puppet_resource: ::System::PuppetResourceSerializer.new(@puppet_resource).as_json)
@@ -53,14 +53,14 @@ module Api
 
         # DELETE /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources/:id
         def destroy
-          require_permission('system.puppet.delete')
+          require_permission("system.puppet.delete")
           @puppet_resource.destroy
-          render_success(message: 'Puppet resource deleted successfully')
+          render_success(message: "Puppet resource deleted successfully")
         end
 
         # GET /api/v1/system/puppet_modules/:puppet_module_id/puppet_resources/:id/puppet_dsl
         def puppet_dsl
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
           render_success(puppet_dsl: @puppet_resource.to_puppet_dsl)
         end
 
@@ -84,10 +84,10 @@ module Api
         end
 
         def apply_filters(resources)
-          resources = resources.enabled if params[:enabled] == 'true'
-          resources = resources.disabled if params[:enabled] == 'false'
-          resources = resources.exported if params[:exported] == 'true'
-          resources = resources.not_exported if params[:exported] == 'false'
+          resources = resources.enabled if params[:enabled] == "true"
+          resources = resources.disabled if params[:enabled] == "false"
+          resources = resources.exported if params[:exported] == "true"
+          resources = resources.not_exported if params[:exported] == "false"
           resources = resources.by_type(params[:resource_type]) if params[:resource_type].present?
           resources = resources.search(params[:search]) if params[:search].present?
           resources

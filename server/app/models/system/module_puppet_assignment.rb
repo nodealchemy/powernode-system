@@ -5,9 +5,9 @@ module System
     include System::Base
 
     # == Associations
-    belongs_to :node_module, class_name: 'System::NodeModule',
+    belongs_to :node_module, class_name: "System::NodeModule",
                foreign_key: :node_module_id, inverse_of: :module_puppet_assignments
-    belongs_to :puppet_module, class_name: 'System::PuppetModule',
+    belongs_to :puppet_module, class_name: "System::PuppetModule",
                foreign_key: :puppet_module_id, inverse_of: :module_puppet_assignments
 
     # == Delegations
@@ -19,7 +19,7 @@ module System
     # == Validations
     validates :node_module_id, uniqueness: {
       scope: :puppet_module_id,
-      message: 'puppet module already assigned to this node module'
+      message: "puppet module already assigned to this node module"
     }
     validates :priority, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 

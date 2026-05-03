@@ -5,7 +5,7 @@ module Api
     module System
       class ProvidersController < BaseController
         before_action :set_account
-        before_action :set_provider, only: [:show, :update, :destroy, :test]
+        before_action :set_provider, only: [ :show, :update, :destroy, :test ]
 
         def index
           require_permission("system.providers.read")

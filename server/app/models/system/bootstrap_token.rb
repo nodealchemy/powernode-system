@@ -51,7 +51,7 @@ module System
         single_use: single_use,
         purpose: purpose
       )
-      [token, plaintext]
+      [ token, plaintext ]
     end
 
     # Look up an active (non-consumed, non-expired) token by plaintext value.

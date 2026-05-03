@@ -158,10 +158,10 @@ module System
 
     def generate_keypair(type)
       pkey = case type
-             when "ed25519" then OpenSSL::PKey.generate_key("ED25519")
-             when "rsa"     then OpenSSL::PKey::RSA.new(RSA_KEY_BITS)
-             else raise ArgumentError, "Unsupported ssh_key_type: #{type}"
-             end
+      when "ed25519" then OpenSSL::PKey.generate_key("ED25519")
+      when "rsa"     then OpenSSL::PKey::RSA.new(RSA_KEY_BITS)
+      else raise ArgumentError, "Unsupported ssh_key_type: #{type}"
+      end
       # `private_to_pem` is the universal accessor across all OpenSSL::PKey subclasses
       # (RSA, EC, Ed25519). The legacy code used `to_pem` which only worked on RSA.
       { pem: pkey.private_to_pem, fingerprint: compute_fingerprint(pkey) }

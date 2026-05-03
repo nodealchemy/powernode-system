@@ -45,7 +45,7 @@ module System
               batch_count: :integer,
               estimated_total_seconds: :integer,
               circuit_breaker: :object,
-              batches: [:object]
+              batches: [ :object ]
             }
           }
         end
@@ -60,7 +60,6 @@ module System
                     batch_pct: DEFAULT_BATCH_PCT,
                     max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILS,
                     health_timeout_sec: DEFAULT_HEALTH_TIMEOUT_SEC)
-
           batch_pct = batch_pct.to_i
           return failure("batch_pct must be between 1 and 100") unless batch_pct.between?(1, 100)
 
@@ -96,7 +95,7 @@ module System
             )
           end
 
-          batch_size = [(instances.size * batch_pct / 100.0).ceil, 1].max
+          batch_size = [ (instances.size * batch_pct / 100.0).ceil, 1 ].max
           batches = instances.each_slice(batch_size).each_with_index.map do |group, idx|
             {
               index: idx,

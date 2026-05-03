@@ -13,9 +13,9 @@ module Api
                         Account.includes(:subscription)
                                .where(subscriptions: { status: %w[active trialing] })
                                .or(Account.includes(:subscription).where(subscriptions: { id: nil }))
-                       else
+            else
                         Account.all
-                       end
+            end
 
             accounts = accounts.limit(params[:limit] || 100)
 

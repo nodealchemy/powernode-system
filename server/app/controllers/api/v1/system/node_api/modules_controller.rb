@@ -7,7 +7,7 @@ module Api
         # Module data endpoint for node instances
         # Provides modules assigned to the instance's node
         class ModulesController < BaseController
-          before_action :set_module, only: [:show, :download, :resource]
+          before_action :set_module, only: [ :show, :download, :resource ]
 
           # GET /api/v1/system/node_api/modules
           # List modules assigned to this node with dependencies resolved

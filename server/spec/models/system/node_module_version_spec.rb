@@ -44,13 +44,13 @@ RSpec.describe System::NodeModuleVersion, type: :model do
 
     describe '.ordered' do
       it 'orders by version_number descending' do
-        expect(node_module.versions.ordered.pluck(:version_number)).to eq([3, 2, 1])
+        expect(node_module.versions.ordered.pluck(:version_number)).to eq([ 3, 2, 1 ])
       end
     end
 
     describe '.by_version' do
       it 'orders by version_number ascending' do
-        expect(node_module.versions.by_version.pluck(:version_number)).to eq([1, 2, 3])
+        expect(node_module.versions.by_version.pluck(:version_number)).to eq([ 1, 2, 3 ])
       end
     end
 

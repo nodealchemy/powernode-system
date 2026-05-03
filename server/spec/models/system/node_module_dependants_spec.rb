@@ -139,11 +139,11 @@ RSpec.describe System::NodeModule, "dependant modules", type: :model do
       child = assignment.create_dependant!
       base_module.update!(dependency_spec: "/etc/v1/**")
       decoded_v1 = base_module.send(:decode_spec, child.file_spec).sort
-      expect(decoded_v1).to eq(["/etc/v1/**"])
+      expect(decoded_v1).to eq([ "/etc/v1/**" ])
 
       base_module.update!(dependency_spec: "/etc/v2/**\n/etc/v2-extra/**")
       decoded_v2 = base_module.send(:decode_spec, child.reload.file_spec).sort
-      expect(decoded_v2).to eq(["/etc/v2-extra/**", "/etc/v2/**"])
+      expect(decoded_v2).to eq([ "/etc/v2-extra/**", "/etc/v2/**" ])
     end
 
     it "ignores the dependant child's own file_spec column when parent is set" do
@@ -153,13 +153,13 @@ RSpec.describe System::NodeModule, "dependant modules", type: :model do
       child.update!(file_spec: "/this/should/be/ignored/**")
 
       decoded = base_module.send(:decode_spec, child.file_spec).sort
-      expect(decoded).to eq(["/from/parent/**"])
+      expect(decoded).to eq([ "/from/parent/**" ])
     end
 
     it "returns its own column for non-dependant (base) modules" do
       base_module.update!(file_spec: "/etc/own/**", dependency_spec: "/inherited/**")
       decoded = base_module.send(:decode_spec, base_module.file_spec).sort
-      expect(decoded).to eq(["/etc/own/**"])
+      expect(decoded).to eq([ "/etc/own/**" ])
     end
 
     it "file_spec_text on a dependant reflects parent's dependency_spec" do

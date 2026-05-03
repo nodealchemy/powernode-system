@@ -33,7 +33,7 @@ RSpec.describe System::Ai::Skills::CveResponseExecutor do
     context "with no matching modules" do
       it "returns risk_score=0 and an empty plan" do
         r = exec.execute(cve_id: "CVE-2026-99999", severity: "high",
-                         affected_packages: [{ name: "obscurelib" }])
+                         affected_packages: [ { name: "obscurelib" } ])
         expect(r[:success]).to be true
         d = r[:data]
         expect(d[:risk_score]).to eq(0)
@@ -50,7 +50,7 @@ RSpec.describe System::Ai::Skills::CveResponseExecutor do
 
       it "scores risk and proposes a remediation plan" do
         r = exec.execute(cve_id: "CVE-2026-12345", severity: "high",
-                         affected_packages: [{ name: "openssl", version: "<3.1.4" }])
+                         affected_packages: [ { name: "openssl", version: "<3.1.4" } ])
         d = r[:data]
         expect(d[:exposed_modules].size).to eq(1)
         expect(d[:exposed_modules].first[:matched_packages]).to include("openssl")
@@ -67,7 +67,7 @@ RSpec.describe System::Ai::Skills::CveResponseExecutor do
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod, enabled: true, priority: 0)
 
         r = exec.execute(cve_id: "CVE-2026-1", severity: "critical",
-                         affected_packages: [{ name: "openssl" }])
+                         affected_packages: [ { name: "openssl" } ])
         steps = r[:data][:remediation_plan][:steps]
         expect(steps.find { |s| s[:step] == "rolling_upgrade" }[:batch_pct]).to eq(25)
         expect(r[:data][:requires_approval]).to be true
@@ -80,7 +80,7 @@ RSpec.describe System::Ai::Skills::CveResponseExecutor do
         System::NodeModuleAssignment.create!(node: node, node_module: openssl_mod, enabled: true, priority: 0)
 
         r = exec.execute(cve_id: "CVE-2026-2", severity: "low",
-                         affected_packages: [{ name: "openssl" }])
+                         affected_packages: [ { name: "openssl" } ])
         # severity weight 10 * (1 + log10(2)) ≈ 13 — below 50 gate.
         expect(r[:data][:requires_approval]).to be false
       end
@@ -89,7 +89,7 @@ RSpec.describe System::Ai::Skills::CveResponseExecutor do
     context "with bad severity input" do
       it "fails fast" do
         r = exec.execute(cve_id: "CVE-2026-3", severity: "totally-fake",
-                         affected_packages: [{ name: "x" }])
+                         affected_packages: [ { name: "x" } ])
         expect(r[:success]).to be false
         expect(r[:error]).to match(/severity must be/)
       end

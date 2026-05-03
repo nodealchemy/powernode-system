@@ -85,7 +85,7 @@ RSpec.describe System::Providers::AzureProvider do
 
     it "returns aggregated instances and pagination metadata" do
       stubs.get(list_path) do
-        [200, { "Content-Type" => "application/json" }, { "value" => [vm_payload] }.to_json]
+        [ 200, { "Content-Type" => "application/json" }, { "value" => [ vm_payload ] }.to_json ]
       end
 
       result = provider.list_instances
@@ -101,13 +101,13 @@ RSpec.describe System::Providers::AzureProvider do
     it "follows nextLink across pages" do
       page2_url = "https://management.azure.com/page2-token"
       stubs.get(list_path) do
-        [200, { "Content-Type" => "application/json" },
-         { "value" => [vm_payload], "nextLink" => page2_url }.to_json]
+        [ 200, { "Content-Type" => "application/json" },
+         { "value" => [ vm_payload ], "nextLink" => page2_url }.to_json ]
       end
       stubs.get("/page2-token") do
-        [200, { "Content-Type" => "application/json" },
-         { "value" => [vm_payload.merge("name" => "test-vm-2",
-                                        "id" => vm_payload["id"].sub("test-vm-1", "test-vm-2"))] }.to_json]
+        [ 200, { "Content-Type" => "application/json" },
+         { "value" => [ vm_payload.merge("name" => "test-vm-2",
+                                        "id" => vm_payload["id"].sub("test-vm-1", "test-vm-2")) ] }.to_json ]
       end
 
       result = provider.list_instances
@@ -120,8 +120,8 @@ RSpec.describe System::Providers::AzureProvider do
     it "respects max_pages and reports truncation" do
       page2_url = "https://management.azure.com/page2-token"
       stubs.get(list_path) do
-        [200, { "Content-Type" => "application/json" },
-         { "value" => [vm_payload], "nextLink" => page2_url }.to_json]
+        [ 200, { "Content-Type" => "application/json" },
+         { "value" => [ vm_payload ], "nextLink" => page2_url }.to_json ]
       end
 
       result = provider.list_instances(max_pages: 1)
@@ -134,7 +134,7 @@ RSpec.describe System::Providers::AzureProvider do
   describe "#get_instance" do
     it "returns instance details" do
       stubs.get("/subscriptions/sub-12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/test-vm") do
-        [200, { "Content-Type" => "application/json" }, vm_payload.merge("name" => "test-vm").to_json]
+        [ 200, { "Content-Type" => "application/json" }, vm_payload.merge("name" => "test-vm").to_json ]
       end
 
       # NIC + public-IP lookups have their own focused endpoints; stub the
@@ -150,7 +150,7 @@ RSpec.describe System::Providers::AzureProvider do
 
     it "returns nil when the VM does not exist (non-success)" do
       stubs.get("/subscriptions/sub-12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/missing-vm") do
-        [404, {}, { "error" => { "message" => "Not found" } }.to_json]
+        [ 404, {}, { "error" => { "message" => "Not found" } }.to_json ]
       end
       expect(provider.get_instance("missing-vm")).to be_nil
     end
@@ -159,7 +159,7 @@ RSpec.describe System::Providers::AzureProvider do
   describe "#terminate_instance" do
     it "returns success on 202 Accepted (Azure async delete)" do
       stubs.delete("/subscriptions/sub-12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/test-vm") do
-        [202, { "Content-Type" => "application/json" }, ""]
+        [ 202, { "Content-Type" => "application/json" }, "" ]
       end
 
       result = provider.terminate_instance("test-vm")
@@ -170,7 +170,7 @@ RSpec.describe System::Providers::AzureProvider do
   describe "#reboot_instance" do
     it "POSTs to the /restart action endpoint" do
       stubs.post("/subscriptions/sub-12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/test-vm/restart") do
-        [202, { "Content-Type" => "application/json" }, ""]
+        [ 202, { "Content-Type" => "application/json" }, "" ]
       end
       expect(provider.reboot_instance("test-vm")[:success]).to be true
     end
@@ -189,7 +189,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 401 Unauthorized" do
       before do
         stubs.get(list_path) do
-          [401, {}, { "error" => { "message" => "Token invalid" } }.to_json]
+          [ 401, {}, { "error" => { "message" => "Token invalid" } }.to_json ]
         end
       end
 
@@ -199,7 +199,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 403 Forbidden" do
       before do
         stubs.get(list_path) do
-          [403, {}, { "error" => { "message" => "Forbidden" } }.to_json]
+          [ 403, {}, { "error" => { "message" => "Forbidden" } }.to_json ]
         end
       end
 
@@ -212,7 +212,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 429 Too Many Requests" do
       before do
         stubs.get(list_path) do
-          [429, {}, { "error" => { "message" => "Throttled" } }.to_json]
+          [ 429, {}, { "error" => { "message" => "Throttled" } }.to_json ]
         end
       end
 
@@ -222,7 +222,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 404 Not Found (subscription scope)" do
       before do
         stubs.get(list_path) do
-          [404, {}, { "error" => { "message" => "Subscription not found" } }.to_json]
+          [ 404, {}, { "error" => { "message" => "Subscription not found" } }.to_json ]
         end
       end
 
@@ -232,7 +232,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 402 Payment Required (quota)" do
       before do
         stubs.get(list_path) do
-          [402, {}, { "error" => { "message" => "Subscription quota exceeded" } }.to_json]
+          [ 402, {}, { "error" => { "message" => "Subscription quota exceeded" } }.to_json ]
         end
       end
 
@@ -245,7 +245,7 @@ RSpec.describe System::Providers::AzureProvider do
     context "on 500 Internal Server Error" do
       before do
         stubs.get(list_path) do
-          [500, {}, { "error" => { "message" => "Service down" } }.to_json]
+          [ 500, {}, { "error" => { "message" => "Service down" } }.to_json ]
         end
       end
 

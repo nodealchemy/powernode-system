@@ -8,8 +8,8 @@ module System
     STATUSES = %w[pending available deleting deleted error].freeze
 
     # === Associations ===
-    belongs_to :network, class_name: 'System::ProviderNetwork'
-    belongs_to :availability_zone, class_name: 'System::ProviderAvailabilityZone', optional: true
+    belongs_to :network, class_name: "System::ProviderNetwork"
+    belongs_to :availability_zone, class_name: "System::ProviderAvailabilityZone", optional: true
 
     # Delegate account access through network
     delegate :account, to: :network
@@ -26,11 +26,11 @@ module System
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :pending, -> { by_status('pending') }
-    scope :available, -> { by_status('available') }
-    scope :deleting, -> { by_status('deleting') }
-    scope :deleted, -> { by_status('deleted') }
-    scope :errored, -> { by_status('error') }
+    scope :pending, -> { by_status("pending") }
+    scope :available, -> { by_status("available") }
+    scope :deleting, -> { by_status("deleting") }
+    scope :deleted, -> { by_status("deleted") }
+    scope :errored, -> { by_status("error") }
 
     scope :public_subnets, -> { where(is_public: true) }
     scope :private_subnets, -> { where(is_public: false) }
@@ -60,7 +60,7 @@ module System
     def valid_cidr_format
       return unless cidr_block.present?
       unless cidr_block.match?(/\A\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}\z/)
-        errors.add(:cidr_block, 'must be a valid CIDR block (e.g., 10.0.1.0/24)')
+        errors.add(:cidr_block, "must be a valid CIDR block (e.g., 10.0.1.0/24)")
       end
     end
 

@@ -185,7 +185,7 @@ module System
         applied = if options[:apply_updates]
                     apply_result = apply_security_updates(instance)
                     apply_result[:success] ? instance.name : nil
-                  end
+        end
 
         { needed: { instance: instance.name, count: updates.count }, applied: applied }
       end
@@ -253,7 +253,7 @@ module System
         renewed = if options[:auto_renew]
                     renew_result = renew_certificates(instance)
                     renew_result[:success] ? instance.name : nil
-                  end
+        end
 
         { expiring: { instance: instance.name, certs: cert_result[:expiring] }, renewed: renewed }
       end
@@ -341,7 +341,7 @@ module System
       return [] if items.empty?
 
       max_threads = options[:max_threads] || DEFAULT_MAX_THREADS
-      pool_size = [items.size, max_threads].min
+      pool_size = [ items.size, max_threads ].min
       pool = Concurrent::FixedThreadPool.new(pool_size)
 
       begin

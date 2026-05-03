@@ -7,7 +7,7 @@ module Api
         # Mount point configuration for node instances
         # Provides mount point data for filesystem mounting
         class MountPointsController < BaseController
-          before_action :set_mount_point, only: [:show]
+          before_action :set_mount_point, only: [ :show ]
 
           # GET /api/v1/system/node_api/mount_points
           # List mount points for this instance

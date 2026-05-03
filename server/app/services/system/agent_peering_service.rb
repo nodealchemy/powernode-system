@@ -79,7 +79,7 @@ module System
       return value if depth > 5
       case value
       when Hash
-        value.first(50).map { |k, v| [k.to_s.first(64), sanitize(v, depth: depth + 1)] }.to_h
+        value.first(50).map { |k, v| [ k.to_s.first(64), sanitize(v, depth: depth + 1) ] }.to_h
       when Array
         value.first(64).map { |v| sanitize(v, depth: depth + 1) }
       when String

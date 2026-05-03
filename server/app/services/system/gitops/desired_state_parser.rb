@@ -41,7 +41,7 @@ module System
 
         raw = YAML.safe_load(
           File.read(path),
-          permitted_classes: [Symbol, Date, Time],
+          permitted_classes: [ Symbol, Date, Time ],
           aliases: true
         )
 
@@ -76,7 +76,7 @@ module System
       def parse_section(section)
         return {} if section.nil?
         return section if section.is_a?(Hash)
-        return Hash[section.map { |item| [item["name"] || item[:name], item] }] if section.is_a?(Array)
+        return Hash[section.map { |item| [ item["name"] || item[:name], item ] }] if section.is_a?(Array)
         {}
       end
     end

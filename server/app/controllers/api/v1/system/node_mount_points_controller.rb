@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class NodeMountPointsController < BaseController
-        before_action :set_mount_point, only: [:show, :update, :destroy]
+        before_action :set_mount_point, only: [ :show, :update, :destroy ]
 
         # GET /api/v1/system/node_mount_points
         def index
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
 
           mount_points = current_account.system_node_mount_points
           mount_points = apply_filters(mount_points)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/node_mount_points/:id
         def show
-          require_permission('system.modules.read')
+          require_permission("system.modules.read")
           render_success(mount_point: ::System::NodeMountPointSerializer.new(@mount_point).as_json)
         end
 
         # POST /api/v1/system/node_mount_points
         def create
-          require_permission('system.modules.create')
+          require_permission("system.modules.create")
 
           mount_point = current_account.system_node_mount_points.build(mount_point_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/node_mount_points/:id
         def update
-          require_permission('system.modules.update')
+          require_permission("system.modules.update")
 
           if @mount_point.update(mount_point_params)
             render_success(mount_point: ::System::NodeMountPointSerializer.new(@mount_point).as_json)
@@ -52,13 +52,13 @@ module Api
 
         # DELETE /api/v1/system/node_mount_points/:id
         def destroy
-          require_permission('system.modules.delete')
+          require_permission("system.modules.delete")
 
           if @mount_point.instance_mount_points.exists?
-            render_error('Cannot delete mount point that is in use', status: :unprocessable_entity)
+            render_error("Cannot delete mount point that is in use", status: :unprocessable_entity)
           else
             @mount_point.destroy
-            render_success(message: 'Mount point deleted successfully')
+            render_success(message: "Mount point deleted successfully")
           end
         end
 
@@ -76,11 +76,11 @@ module Api
         end
 
         def apply_filters(mount_points)
-          mount_points = mount_points.enabled if params[:enabled] == 'true'
-          mount_points = mount_points.disabled if params[:enabled] == 'false'
-          mount_points = mount_points.auto_mount if params[:auto_mount] == 'true'
+          mount_points = mount_points.enabled if params[:enabled] == "true"
+          mount_points = mount_points.disabled if params[:enabled] == "false"
+          mount_points = mount_points.auto_mount if params[:auto_mount] == "true"
           mount_points = mount_points.by_type(params[:mount_type]) if params[:mount_type].present?
-          mount_points = mount_points.where('name ILIKE ?', "%#{params[:search]}%") if params[:search].present?
+          mount_points = mount_points.where("name ILIKE ?", "%#{params[:search]}%") if params[:search].present?
           mount_points
         end
       end

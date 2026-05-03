@@ -9,11 +9,11 @@ module System
 
     # === Associations ===
     belongs_to :account
-    belongs_to :provider, class_name: 'System::Provider'
-    belongs_to :provider_region, class_name: 'System::ProviderRegion', optional: true
+    belongs_to :provider, class_name: "System::Provider"
+    belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
 
-    has_many :subnets, class_name: 'System::ProviderNetworkSubnet', foreign_key: :network_id, dependent: :destroy
-    has_many :tasks, class_name: 'System::Task', as: :operable, dependent: :destroy
+    has_many :subnets, class_name: "System::ProviderNetworkSubnet", foreign_key: :network_id, dependent: :destroy
+    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
@@ -23,11 +23,11 @@ module System
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :pending, -> { by_status('pending') }
-    scope :available, -> { by_status('available') }
-    scope :deleting, -> { by_status('deleting') }
-    scope :deleted, -> { by_status('deleted') }
-    scope :errored, -> { by_status('error') }
+    scope :pending, -> { by_status("pending") }
+    scope :available, -> { by_status("available") }
+    scope :deleting, -> { by_status("deleting") }
+    scope :deleted, -> { by_status("deleted") }
+    scope :errored, -> { by_status("error") }
 
     scope :default_networks, -> { where(is_default: true) }
     scope :custom_networks, -> { where(is_default: false) }
@@ -67,7 +67,7 @@ module System
       return unless cidr_block.present?
       # Basic CIDR validation (e.g., 10.0.0.0/16)
       unless cidr_block.match?(/\A\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}\z/)
-        errors.add(:cidr_block, 'must be a valid CIDR block (e.g., 10.0.0.0/16)')
+        errors.add(:cidr_block, "must be a valid CIDR block (e.g., 10.0.0.0/16)")
       end
     end
   end

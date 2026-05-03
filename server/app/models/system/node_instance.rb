@@ -13,19 +13,19 @@ module System
     encrypts :key
 
     # Associations
-    belongs_to :node, class_name: 'System::Node'
-    belongs_to :provider_region, class_name: 'System::ProviderRegion', optional: true
-    belongs_to :provider_instance_type, class_name: 'System::ProviderInstanceType', optional: true
+    belongs_to :node, class_name: "System::Node"
+    belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
+    belongs_to :provider_instance_type, class_name: "System::ProviderInstanceType", optional: true
 
     # Mount point associations (Release 3)
-    has_many :instance_mount_points, class_name: 'System::InstanceMountPoint', dependent: :destroy
+    has_many :instance_mount_points, class_name: "System::InstanceMountPoint", dependent: :destroy
     has_many :mount_points, through: :instance_mount_points, source: :mount_point
 
     # Task associations (Release 4)
-    has_many :tasks, class_name: 'System::Task', as: :operable, dependent: :destroy
+    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
 
     # Volume associations (Release 4)
-    has_many :provider_volumes, class_name: 'System::ProviderVolume'
+    has_many :provider_volumes, class_name: "System::ProviderVolume"
 
     # Delegations
     delegate :account, :account_id, to: :node
@@ -34,7 +34,7 @@ module System
     validates :name, presence: true, uniqueness: { scope: :node_id }
     validates :variety, presence: true, inclusion: { in: VARIETIES }
     validates :status, presence: true, inclusion: { in: STATUSES }
-    validates :mac_address, format: { with: MAC_ADDRESS_REGEX, message: 'must be a valid MAC address' }, allow_nil: true
+    validates :mac_address, format: { with: MAC_ADDRESS_REGEX, message: "must be a valid MAC address" }, allow_nil: true
     validates :latitude, numericality: { greater_than_or_equal_to: -90, less_than_or_equal_to: 90 }, allow_nil: true
     validates :longitude, numericality: { greater_than_or_equal_to: -180, less_than_or_equal_to: 180 }, allow_nil: true
 
@@ -65,11 +65,11 @@ module System
 
       # Operator-initiated transitions (intermediate states)
       event :start do
-        transitions from: [:stopped, :error], to: :starting
+        transitions from: [ :stopped, :error ], to: :starting
       end
 
       event :stop do
-        transitions from: [:running, :starting], to: :stopping
+        transitions from: [ :running, :starting ], to: :stopping
       end
 
       event :reboot do
@@ -77,7 +77,7 @@ module System
       end
 
       event :terminate do
-        transitions from: [:stopped, :running, :error], to: :terminated
+        transitions from: [ :stopped, :running, :error ], to: :terminated
       end
 
       # Worker runtime finalizers
@@ -86,32 +86,32 @@ module System
       end
 
       event :mark_running do
-        transitions from: [:starting, :rebooting, :provisioning, :pending], to: :running
+        transitions from: [ :starting, :rebooting, :provisioning, :pending ], to: :running
       end
 
       event :mark_stopped do
-        transitions from: [:stopping, :running], to: :stopped
+        transitions from: [ :stopping, :running ], to: :stopped
       end
 
       event :mark_terminated do
-        transitions from: [:terminated, :stopped, :running, :error], to: :terminated
+        transitions from: [ :terminated, :stopped, :running, :error ], to: :terminated
       end
 
       event :mark_errored do
-        transitions from: [:pending, :provisioning, :starting, :running, :stopping, :rebooting], to: :error
+        transitions from: [ :pending, :provisioning, :starting, :running, :stopping, :rebooting ], to: :error
       end
     end
 
     # Scopes
-    scope :cloud, -> { where(variety: 'cloud') }
-    scope :physical, -> { where(variety: 'physical') }
-    scope :dynamic, -> { where(variety: 'dynamic') }
-    scope :pending, -> { where(status: 'pending') }
-    scope :provisioning, -> { where(status: 'provisioning') }
-    scope :running, -> { where(status: 'running') }
-    scope :stopped, -> { where(status: 'stopped') }
-    scope :terminated, -> { where(status: 'terminated') }
-    scope :errored, -> { where(status: 'error') }
+    scope :cloud, -> { where(variety: "cloud") }
+    scope :physical, -> { where(variety: "physical") }
+    scope :dynamic, -> { where(variety: "dynamic") }
+    scope :pending, -> { where(status: "pending") }
+    scope :provisioning, -> { where(status: "provisioning") }
+    scope :running, -> { where(status: "running") }
+    scope :stopped, -> { where(status: "stopped") }
+    scope :terminated, -> { where(status: "terminated") }
+    scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
 
     # Variety predicates
@@ -167,7 +167,7 @@ module System
 
     def normalized_mac_address
       return nil unless has_mac_address?
-      mac_address.upcase.gsub('-', ':')
+      mac_address.upcase.gsub("-", ":")
     end
 
     def netboot_enabled?
@@ -190,8 +190,8 @@ module System
 
     HEARTBEAT_STALE_AFTER = 3.minutes
 
-    has_many :node_certificates, class_name: 'System::NodeCertificate', dependent: :destroy
-    belongs_to :enrollment_token, class_name: 'System::BootstrapToken', optional: true
+    has_many :node_certificates, class_name: "System::NodeCertificate", dependent: :destroy
+    belongs_to :enrollment_token, class_name: "System::BootstrapToken", optional: true
 
     def stale_heartbeat?
       return true if last_heartbeat_at.nil?

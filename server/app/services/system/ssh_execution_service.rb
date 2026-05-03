@@ -138,7 +138,7 @@ module System
       require "open3"
       require "tempfile"
 
-      key_file = Tempfile.new(["ssh_key", ".pem"])
+      key_file = Tempfile.new([ "ssh_key", ".pem" ])
       begin
         key_file.write(key)
         key_file.close
@@ -152,7 +152,7 @@ module System
           "-i", key_file.path
         ]
 
-        ssh_command = ["ssh", *ssh_options, "#{user}@#{host}", command]
+        ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", command ]
 
         stdout, stderr, status = Open3.capture3(*ssh_command)
         { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }
@@ -195,7 +195,7 @@ module System
       require "open3"
       require "tempfile"
 
-      key_file = Tempfile.new(["ssh_key", ".pem"])
+      key_file = Tempfile.new([ "ssh_key", ".pem" ])
       begin
         key_file.write(key)
         key_file.close
@@ -210,7 +210,7 @@ module System
         ]
         scp_options << "-r" if recursive
 
-        scp_command = ["scp", *scp_options, local_path, "#{user}@#{host}:#{remote_path}"]
+        scp_command = [ "scp", *scp_options, local_path, "#{user}@#{host}:#{remote_path}" ]
         stdout, stderr, status = Open3.capture3(*scp_command)
 
         { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }

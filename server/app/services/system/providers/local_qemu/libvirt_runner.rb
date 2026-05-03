@@ -70,12 +70,12 @@ module System
         private
 
         def run_virsh(*args, stdin: nil, fail_silently: false)
-          cmd = ["virsh", "-c", URI, *args]
+          cmd = [ "virsh", "-c", URI, *args ]
           stdout, stderr, status = if stdin
                                      Open3.capture3(*cmd, stdin_data: stdin)
-                                   else
+          else
                                      Open3.capture3(*cmd)
-                                   end
+          end
           if status.success?
             { ok: true, stdout: stdout, stderr: stderr }
           elsif fail_silently

@@ -77,7 +77,7 @@ RSpec.describe System::ManifestImportService, type: :service do
     it "preserves security + skills + build hints under config" do
       described_class.import!(node_module: mod, yaml: manifest_yaml)
       mod.reload
-      expect(mod.config["security"]).to include("capabilities" => ["CAP_NET_BIND_SERVICE"])
+      expect(mod.config["security"]).to include("capabilities" => [ "CAP_NET_BIND_SERVICE" ])
       expect(mod.config["build"]).to include("apt_snapshot" => "20260415T000000Z")
       expect(mod.config["display_name"]).to eq("Demo Module")
       expect(mod.config["license"]).to eq("MIT")

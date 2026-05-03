@@ -33,7 +33,7 @@ module System
               lookback_hours: { type: "integer", required: false, default: 24 }
             },
             outputs: {
-              candidates: [:object],
+              candidates: [ :object ],
               top_candidate: :object,
               confidence: :decimal,
               reasoning: :string
@@ -63,7 +63,7 @@ module System
 
           # Deduplicate by (kind, module_id) — the same module surfacing in
           # multiple paths gets its scores summed.
-          merged = candidates.group_by { |c| [c[:kind], c[:module_id]] }.map do |_key, group|
+          merged = candidates.group_by { |c| [ c[:kind], c[:module_id] ] }.map do |_key, group|
             base = group.first.dup
             base[:score] = group.sum { |c| c[:score] }
             base[:reasons] = group.flat_map { |c| Array(c[:reasons]) }.uniq
@@ -77,7 +77,7 @@ module System
           merged = merged.sort_by { |c| -c[:score] }
 
           top = merged.first
-          confidence = top.nil? ? 0.0 : (top[:score] / [merged.sum { |c| c[:score] }.to_f, 1.0].max).round(3)
+          confidence = top.nil? ? 0.0 : (top[:score] / [ merged.sum { |c| c[:score] }.to_f, 1.0 ].max).round(3)
 
           success(
             candidates: merged.first(10),
@@ -98,8 +98,8 @@ module System
           # Pull recent attribution learnings for this account.
           learnings = ::Ai::CompoundLearning
                       .where(account_id: @account.id, status: "active")
-                      .where("tags @> ?", ["fleet"].to_json)
-                      .where("tags @> ?", ["attribution"].to_json)
+                      .where("tags @> ?", [ "fleet" ].to_json)
+                      .where("tags @> ?", [ "attribution" ].to_json)
                       .limit(200)
           return candidates if learnings.empty?
 
@@ -110,13 +110,13 @@ module System
             kind_tag = tags.find { |t| t.start_with?("kind:") }&.sub("kind:", "")
             mod_tag  = tags.find { |t| t.start_with?("module:") }&.sub("module:", "")
             next if kind_tag.blank? || mod_tag.blank?
-            key = [kind_tag, mod_tag]
+            key = [ kind_tag, mod_tag ]
             confirmed_keys << key if tags.include?("outcome:confirmed")
             rejected_keys  << key if tags.include?("outcome:rejected")
           end
 
           candidates.map do |c|
-            key = [c[:kind], c[:module_id]]
+            key = [ c[:kind], c[:module_id] ]
             if confirmed_keys.include?(key)
               c.merge(score: (c[:score] * 1.5).round, feedback: "boosted_by_prior_confirmation")
             elsif rejected_keys.include?(key)
@@ -137,7 +137,7 @@ module System
                 module_id: asgn.node_module_id,
                 module_name: asgn.node_module&.name,
                 score: 5,
-                reasons: ["assignment touched #{asgn.updated_at.iso8601}"],
+                reasons: [ "assignment touched #{asgn.updated_at.iso8601}" ],
                 changed_at: asgn.updated_at.iso8601
               }
             end

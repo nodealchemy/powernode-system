@@ -14,16 +14,16 @@ RSpec.describe System::DependencyResolutionService do
   describe '#resolve' do
     context 'with no dependencies' do
       it 'returns all requested modules' do
-        service = described_class.new([module_a, module_b])
-        result = service.resolve([module_a, module_b])
+        service = described_class.new([ module_a, module_b ])
+        result = service.resolve([ module_a, module_b ])
 
         expect(result.success?).to be true
         expect(result.modules).to include(module_a, module_b)
       end
 
       it 'orders by priority descending' do
-        service = described_class.new([module_a, module_b, module_c])
-        result = service.resolve([module_a, module_b, module_c])
+        service = described_class.new([ module_a, module_b, module_c ])
+        result = service.resolve([ module_a, module_b, module_c ])
 
         priorities = result.modules.map(&:priority)
         expect(priorities).to eq(priorities.sort.reverse)
@@ -37,16 +37,16 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'includes dependencies in result' do
-        service = described_class.new([module_a, module_b])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b ])
+        result = service.resolve([ module_a ])
 
         expect(result.success?).to be true
         expect(result.modules).to include(module_a, module_b)
       end
 
       it 'resolves dependencies before dependents' do
-        service = described_class.new([module_a, module_b])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b ])
+        result = service.resolve([ module_a ])
 
         # B should appear before A in resolution order
         b_order = result.resolution_order.find { |r| r[:module].id == module_b.id }[:order]
@@ -64,18 +64,18 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'resolves A -> B -> C correctly' do
-        service = described_class.new([module_a, module_b, module_c])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b, module_c ])
+        result = service.resolve([ module_a ])
 
         expect(result.success?).to be true
         expect(result.modules.map(&:id)).to include(module_a.id, module_b.id, module_c.id)
       end
 
       it 'maintains correct resolution order for chain' do
-        service = described_class.new([module_a, module_b, module_c])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b, module_c ])
+        result = service.resolve([ module_a ])
 
-        orders = result.resolution_order.map { |r| [r[:module].name, r[:order]] }.to_h
+        orders = result.resolution_order.map { |r| [ r[:module].name, r[:order] ] }.to_h
 
         expect(orders['Module C']).to be < orders['Module B']
         expect(orders['Module B']).to be < orders['Module A']
@@ -94,8 +94,8 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'handles diamond dependencies without duplication' do
-        service = described_class.new([module_a, module_b, module_c, module_d])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b, module_c, module_d ])
+        result = service.resolve([ module_a ])
 
         expect(result.success?).to be true
         # D should only appear once
@@ -103,10 +103,10 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'resolves D before B and C' do
-        service = described_class.new([module_a, module_b, module_c, module_d])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b, module_c, module_d ])
+        result = service.resolve([ module_a ])
 
-        orders = result.resolution_order.map { |r| [r[:module].name, r[:order]] }.to_h
+        orders = result.resolution_order.map { |r| [ r[:module].name, r[:order] ] }.to_h
 
         expect(orders['Module D']).to be < orders['Module B']
         expect(orders['Module D']).to be < orders['Module C']
@@ -119,15 +119,15 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'includes optional dependencies by default' do
-        service = described_class.new([module_a, module_b])
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b ])
+        result = service.resolve([ module_a ])
 
         expect(result.modules).to include(module_b)
       end
 
       it 'excludes optional dependencies when configured' do
-        service = described_class.new([module_a, module_b], include_optional: false)
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a, module_b ], include_optional: false)
+        result = service.resolve([ module_a ])
 
         expect(result.modules).not_to include(module_b)
       end
@@ -140,17 +140,17 @@ RSpec.describe System::DependencyResolutionService do
       end
 
       it 'reports missing required dependency as error' do
-        service = described_class.new([module_a]) # B not included
-        result = service.resolve([module_a])
+        service = described_class.new([ module_a ]) # B not included
+        result = service.resolve([ module_a ])
 
         expect(result.success?).to be false
         expect(result.errors.any? { |e| e[:type] == :missing_required }).to be true
       end
 
       it 'raises when fail_on_missing is true' do
-        service = described_class.new([module_a], fail_on_missing: true)
+        service = described_class.new([ module_a ], fail_on_missing: true)
 
-        expect { service.resolve([module_a]) }.to raise_error(
+        expect { service.resolve([ module_a ]) }.to raise_error(
           System::DependencyResolutionService::MissingDependencyError
         )
       end
@@ -158,8 +158,8 @@ RSpec.describe System::DependencyResolutionService do
       it 'reports missing optional dependency as warning' do
         create(:system_module_dependency, node_module: module_c, dependency: module_d, required: false)
 
-        service = described_class.new([module_c]) # D not included
-        result = service.resolve([module_c])
+        service = described_class.new([ module_c ]) # D not included
+        result = service.resolve([ module_c ])
 
         expect(result.success?).to be true
         expect(result.has_warnings?).to be true
@@ -174,7 +174,7 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'resolves dependencies for a single module' do
-      service = described_class.new([module_a, module_b])
+      service = described_class.new([ module_a, module_b ])
       result = service.resolve_single(module_a)
 
       expect(result.success?).to be true
@@ -189,14 +189,14 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'returns true when dependency would create cycle' do
-      service = described_class.new([module_a, module_b, module_c])
+      service = described_class.new([ module_a, module_b, module_c ])
 
       # C -> A would create: A -> B -> C -> A
       expect(service.would_create_circular?(module_c, module_a)).to be true
     end
 
     it 'returns false when dependency is safe' do
-      service = described_class.new([module_a, module_b, module_c, module_d])
+      service = described_class.new([ module_a, module_b, module_c, module_d ])
 
       # A -> D is safe (D doesn't depend on A)
       expect(service.would_create_circular?(module_a, module_d)).to be false
@@ -210,14 +210,14 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'returns all dependencies recursively' do
-      service = described_class.new([module_a, module_b, module_c])
+      service = described_class.new([ module_a, module_b, module_c ])
       deps = service.get_all_dependencies(module_a)
 
       expect(deps.map(&:id)).to include(module_b.id, module_c.id)
     end
 
     it 'does not include the module itself' do
-      service = described_class.new([module_a, module_b, module_c])
+      service = described_class.new([ module_a, module_b, module_c ])
       deps = service.get_all_dependencies(module_a)
 
       expect(deps.map(&:id)).not_to include(module_a.id)
@@ -231,23 +231,23 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'returns valid when all required dependencies available' do
-      service = described_class.new([module_a, module_b])
-      validation = service.validate_dependencies([module_a])
+      service = described_class.new([ module_a, module_b ])
+      validation = service.validate_dependencies([ module_a ])
 
       expect(validation[:valid]).to be true
     end
 
     it 'returns invalid when required dependency missing' do
-      service = described_class.new([module_a]) # B not included
-      validation = service.validate_dependencies([module_a])
+      service = described_class.new([ module_a ]) # B not included
+      validation = service.validate_dependencies([ module_a ])
 
       expect(validation[:valid]).to be false
       expect(validation[:missing_required].length).to eq(1)
     end
 
     it 'reports missing optional dependencies separately' do
-      service = described_class.new([module_a, module_b]) # C not included
-      validation = service.validate_dependencies([module_a])
+      service = described_class.new([ module_a, module_b ]) # C not included
+      validation = service.validate_dependencies([ module_a ])
 
       expect(validation[:valid]).to be true
       expect(validation[:missing_optional].length).to eq(1)
@@ -261,7 +261,7 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'builds a tree structure' do
-      service = described_class.new([module_a, module_b, module_c])
+      service = described_class.new([ module_a, module_b, module_c ])
       tree = service.dependency_tree(module_a)
 
       expect(tree[:module][:name]).to eq('Module A')
@@ -270,7 +270,7 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'includes required flag in tree' do
-      service = described_class.new([module_a, module_b, module_c])
+      service = described_class.new([ module_a, module_b, module_c ])
       tree = service.dependency_tree(module_a)
 
       b_dep = tree[:dependencies].first
@@ -317,13 +317,13 @@ RSpec.describe System::DependencyResolutionService do
     it 'returns true for resolvable modules' do
       create(:system_module_dependency, node_module: module_a, dependency: module_b, required: true)
 
-      expect(described_class.resolvable?([module_a, module_b])).to be true
+      expect(described_class.resolvable?([ module_a, module_b ])).to be true
     end
 
     it 'returns false when required dependencies missing' do
       create(:system_module_dependency, node_module: module_a, dependency: module_b, required: true)
 
-      expect(described_class.resolvable?([module_a])).to be false
+      expect(described_class.resolvable?([ module_a ])).to be false
     end
   end
 
@@ -333,23 +333,23 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'orders modules by priority descending' do
-      service = described_class.new([module_a, module_b, module_c, module_d])
-      result = service.resolve([module_a, module_b, module_c, module_d])
+      service = described_class.new([ module_a, module_b, module_c, module_d ])
+      result = service.resolve([ module_a, module_b, module_c, module_d ])
 
       names = result.modules.map(&:name)
       # A(100) > C(75) > B(50) > D(25)
-      expect(names).to eq(['Module A', 'Module C', 'Module B', 'Module D'])
+      expect(names).to eq([ 'Module A', 'Module C', 'Module B', 'Module D' ])
     end
 
     it 'maintains stable ordering for same priority' do
       module_e = create(:system_node_module, account: account, name: 'Module E', priority: 50)
 
-      service = described_class.new([module_b, module_e])
-      result = service.resolve([module_b, module_e])
+      service = described_class.new([ module_b, module_e ])
+      result = service.resolve([ module_b, module_e ])
 
       # Same priority, alphabetical by name
       names = result.modules.map(&:name)
-      expect(names).to eq(['Module B', 'Module E'])
+      expect(names).to eq([ 'Module B', 'Module E' ])
     end
   end
 
@@ -364,15 +364,15 @@ RSpec.describe System::DependencyResolutionService do
     end
 
     it 'detects conflicts between modules' do
-      service = described_class.new([module_a, module_b], detect_conflicts: true)
-      result = service.resolve([module_a, module_b])
+      service = described_class.new([ module_a, module_b ], detect_conflicts: true)
+      result = service.resolve([ module_a, module_b ])
 
       expect(result.errors.any? { |e| e[:type] == :conflict }).to be true
     end
 
     it 'can skip conflict detection' do
-      service = described_class.new([module_a, module_b], detect_conflicts: false)
-      result = service.resolve([module_a, module_b])
+      service = described_class.new([ module_a, module_b ], detect_conflicts: false)
+      result = service.resolve([ module_a, module_b ])
 
       expect(result.errors.any? { |e| e[:type] == :conflict }).to be false
     end

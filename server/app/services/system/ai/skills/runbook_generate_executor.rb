@@ -227,7 +227,7 @@ module System
             .where(account_id: @account.id, status: "active")
             .where(
               module_names.map { "tags @> ?" }.join(" OR "),
-              *module_names.map { |n| [n].to_json }
+              *module_names.map { |n| [ n ].to_json }
             )
             .order(importance_score: :desc)
             .limit(20)
@@ -249,7 +249,7 @@ module System
             title: "Runbook: #{template[:name]}",
             content: markdown,
             status: "published",
-            tags: ["runbook", "fleet", "template:#{template[:id]}"]
+            tags: [ "runbook", "fleet", "template:#{template[:id]}" ]
           )
           page.id
         rescue StandardError => e

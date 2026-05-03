@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class TasksController < BaseController
-        before_action :set_task, only: [:show, :cancel]
+        before_action :set_task, only: [ :show, :cancel ]
 
         # GET /api/v1/system/tasks
         def index
-          require_permission('system.infra_tasks.read')
+          require_permission("system.infra_tasks.read")
 
           tasks = current_account.system_tasks
           tasks = apply_filters(tasks)
@@ -22,7 +22,7 @@ module Api
 
         # GET /api/v1/system/tasks/:id
         def show
-          require_permission('system.infra_tasks.read')
+          require_permission("system.infra_tasks.read")
           render_success(task: ::System::TaskSerializer.new(@task).as_json)
         end
 
@@ -32,7 +32,7 @@ module Api
         # task instead of creating a second one. This protects against
         # flaky-network retry double-provisioning.
         def create
-          require_permission('system.infra_tasks.create')
+          require_permission("system.infra_tasks.create")
 
           if (key = task_params[:idempotency_key]).present?
             existing = current_account.system_tasks.find_by(idempotency_key: key)
@@ -62,7 +62,7 @@ module Api
         # audit trail. Cancel stays public because cancelling a pending task
         # is a legitimate user action.
         def cancel
-          require_permission('system.infra_tasks.control')
+          require_permission("system.infra_tasks.control")
           transition_or_error(:cancel, params[:reason])
         end
 
@@ -96,9 +96,9 @@ module Api
         def apply_filters(tasks)
           tasks = tasks.by_status(params[:status]) if params[:status].present?
           tasks = tasks.by_command(params[:command]) if params[:command].present?
-          tasks = tasks.active if params[:active] == 'true'
-          tasks = tasks.finished if params[:finished] == 'true'
-          tasks = tasks.exclusive if params[:exclusive] == 'true'
+          tasks = tasks.active if params[:active] == "true"
+          tasks = tasks.finished if params[:finished] == "true"
+          tasks = tasks.exclusive if params[:exclusive] == "true"
           tasks
         end
       end

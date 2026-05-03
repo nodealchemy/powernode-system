@@ -88,10 +88,10 @@ module System
 
         if sbom_artifact
           matches = match_via_sbom(sbom_artifact, affected_packages)
-          return [matches, :sbom]
+          return [ matches, :sbom ]
         end
 
-        [match_via_keywords(version, package_names), :keyword]
+        [ match_via_keywords(version, package_names), :keyword ]
       end
 
       # Real matcher: cross every CVE entry against every SBOM package,

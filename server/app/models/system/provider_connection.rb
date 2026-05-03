@@ -16,7 +16,7 @@ module System
 
     # Associations
     belongs_to :account
-    belongs_to :provider, class_name: 'System::Provider'
+    belongs_to :provider, class_name: "System::Provider"
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :account_id }
@@ -25,9 +25,9 @@ module System
     # Scopes
     scope :enabled, -> { where(enabled: true) }
     scope :disabled, -> { where(enabled: false) }
-    scope :connected, -> { where(status: 'connected') }
-    scope :pending, -> { where(status: 'pending') }
-    scope :errored, -> { where(status: 'error') }
+    scope :connected, -> { where(status: "connected") }
+    scope :pending, -> { where(status: "pending") }
+    scope :errored, -> { where(status: "error") }
     scope :for_provider, ->(provider) { where(provider: provider) }
 
     # Config accessor
@@ -41,9 +41,9 @@ module System
     # Mark as connected
     def mark_connected!(message = nil)
       update!(
-        status: 'connected',
+        status: "connected",
         last_tested_at: Time.current,
-        last_test_status: 'success',
+        last_test_status: "success",
         last_test_message: message
       )
     end
@@ -51,9 +51,9 @@ module System
     # Mark as error
     def mark_error!(message)
       update!(
-        status: 'error',
+        status: "error",
         last_tested_at: Time.current,
-        last_test_status: 'error',
+        last_test_status: "error",
         last_test_message: message
       )
     end

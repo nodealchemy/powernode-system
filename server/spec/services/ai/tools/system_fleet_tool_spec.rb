@@ -97,7 +97,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       )
       r = call("system_list_module_versions", module_id: mod.id)
       numbers = r[:data][:versions].map { |v| v[:version_number] }
-      expect(numbers).to eq([2, 1])
+      expect(numbers).to eq([ 2, 1 ])
       _ = v2
     end
 
@@ -122,7 +122,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       other_node = create(:system_node, account: account, node_template: template, name: "other")
       _other_inst = create(:system_node_instance, :running, node: other_node)
       r = call("system_list_instances", node_id: node.id)
-      expect(r[:data][:instances].map { |i| i[:id] }).to eq([running_instance.id])
+      expect(r[:data][:instances].map { |i| i[:id] }).to eq([ running_instance.id ])
     end
 
     it "system_get_instance returns the full payload" do

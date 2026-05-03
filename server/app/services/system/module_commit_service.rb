@@ -352,9 +352,9 @@ module System
     def execute_copy_path(instance, copy_path)
       cmd = if copy_path.recursive?
               "cp -r /tmp/module-staging/#{copy_path.source_path} #{copy_path.destination_path}"
-            else
+      else
               "cp /tmp/module-staging/#{copy_path.source_path} #{copy_path.destination_path}"
-            end
+      end
 
       dest_dir = File.dirname(copy_path.destination_path)
       SshExecutionService.execute(instance: instance, command: "mkdir -p #{dest_dir}", sudo: true)
@@ -382,13 +382,13 @@ module System
         # Delimiter `|` is uncommon in config values and avoids the clash with
         # paths that `/` would create.
         sed_args = values.flat_map do |key, value|
-          ["-e", "s|{{#{sed_escape_search(key.to_s)}}}|#{sed_escape_replacement(value.to_s)}|g"]
+          [ "-e", "s|{{#{sed_escape_search(key.to_s)}}}|#{sed_escape_replacement(value.to_s)}|g" ]
         end
 
         # Shellwords.escape every arg so the remote shell can't reinterpret
         # special characters embedded in operator-supplied values.
         cmd = (
-          ["sed", "-i"] + sed_args + [file_path]
+          [ "sed", "-i" ] + sed_args + [ file_path ]
         ).map { |a| Shellwords.escape(a) }.join(" ")
 
         result = ::System::SshExecutionService.execute(instance: instance, command: cmd, sudo: true)

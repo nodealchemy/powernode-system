@@ -83,7 +83,7 @@ module System
           core, _suffix = v.split(/[-+]/, 2)
           components = core.split(".").map { |c| c.to_i.to_s == c ? c.to_i : 0 }
           # Pad to length 4 so [1,2,3] vs [1,2,3,0] both compare equally
-          components += [0] * (4 - components.size) if components.size < 4
+          components += [ 0 ] * (4 - components.size) if components.size < 4
           components
         end
 

@@ -116,7 +116,7 @@ module System
     def parse_manifest(node_module)
       raw = node_module.respond_to?(:manifest_yaml) ? node_module.manifest_yaml : nil
       return {} if raw.blank?
-      YAML.safe_load(raw, permitted_classes: [Symbol]) || {}
+      YAML.safe_load(raw, permitted_classes: [ Symbol ]) || {}
     rescue Psych::SyntaxError => e
       Rails.logger.warn("[ModuleSkillRegistrar] manifest YAML parse failed for module #{node_module.id}: #{e.message}")
       {}
@@ -145,7 +145,7 @@ module System
         description: entry["description"].presence || "Skill provided by node module #{node_module.name}",
         category: ::Ai::Skill::CATEGORIES.include?(category) ? category : "skill_management",
         status: "active",
-        tags: ["module-skill", "module:#{node_module.id}", "tier:#{tier}", *Array(entry["tags"])].uniq,
+        tags: [ "module-skill", "module:#{node_module.id}", "tier:#{tier}", *Array(entry["tags"]) ].uniq,
         commands: Array(entry["commands"]),
         system_prompt: entry["system_prompt"]
       }

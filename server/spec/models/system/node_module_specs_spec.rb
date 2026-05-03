@@ -32,11 +32,11 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
       expect(raw_array.size).to eq(3)
 
       decoded = raw_array.map { |s| Base64.decode64(s) }.sort
-      expect(decoded).to eq(["/etc/bar", "/etc/baz", "/etc/foo"])
+      expect(decoded).to eq([ "/etc/bar", "/etc/baz", "/etc/foo" ])
     end
 
     it "leaves an Array input unchanged (idempotent)" do
-      encoded = ["/x", "/y"].sort.map { |l| Base64.strict_encode64(l) }
+      encoded = [ "/x", "/y" ].sort.map { |l| Base64.strict_encode64(l) }
       mod = build_module(category: category_a)
       mod.write_attribute(:file_spec, encoded)
       mod.save!
@@ -120,7 +120,7 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
       mod = create_module(category: category_a, mask: "/x\n/y")
       result = mod.effective_mask
       decoded = mod.send(:decode_spec, result).sort
-      expect(decoded).to eq(["/x", "/y"])
+      expect(decoded).to eq([ "/x", "/y" ])
     end
 
     context "with a Node target" do
@@ -160,7 +160,7 @@ RSpec.describe System::NodeModule, "spec methods", type: :model do
         mutable = create_module(category: category_b, name: "high-mut",
                                 mask: "/m_excl", file_spec: "/m_file",
                                 dependency_spec: "/m_dep", lock_spec: false)
-        [low, immut, mutable].each { |m| assign(node, m) }
+        [ low, immut, mutable ].each { |m| assign(node, m) }
 
         decoded = low.send(:decode_spec, low.effective_mask(target: node)).sort
         # immutable higher: file_spec + dependency_spec + mask all carry down

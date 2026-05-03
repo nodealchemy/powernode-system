@@ -130,7 +130,7 @@ RSpec.describe System::Node, type: :model do
 
     it "includes operator-supplied keys from config['authorized_keys']" do
       operator_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... operator@example.com"
-      node.update!(config: { "authorized_keys" => [operator_key] })
+      node.update!(config: { "authorized_keys" => [ operator_key ] })
 
       expect(node.authorized_keys).to include(operator_key)
       expect(node.authorized_keys).to include(node.ssh_public_key)
@@ -138,7 +138,7 @@ RSpec.describe System::Node, type: :model do
 
     it "deduplicates entries" do
       key = node.ssh_public_key
-      node.update!(config: { "authorized_keys" => [key, key] })
+      node.update!(config: { "authorized_keys" => [ key, key ] })
       expect(node.authorized_keys.count(key)).to eq(1)
     end
   end

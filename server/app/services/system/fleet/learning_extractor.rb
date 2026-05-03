@@ -24,7 +24,7 @@ module System
         learning_tool = ::Ai::Tools::LearningTool.new(account: account, agent: nil, user: nil) if defined?(::Ai::Tools::LearningTool)
         return record_dry(account: account, decisions: decisions) unless learning_tool
 
-        bucketed = decisions.group_by { |d| [d[:signal_kind], d[:gate], d[:decision]] }
+        bucketed = decisions.group_by { |d| [ d[:signal_kind], d[:gate], d[:decision] ] }
         bucketed.each do |key, group|
           signal_kind, gate, decision = key
           # We only learn from decisions that resulted in a *gate decision*
@@ -47,7 +47,7 @@ module System
           title: title.truncate(120),
           content: content.truncate(2000),
           category: category,
-          tags: ["fleet", "autonomy", signal_kind].compact
+          tags: [ "fleet", "autonomy", signal_kind ].compact
         })
       rescue StandardError => e
         Rails.logger.warn("[FleetLearningExtractor] failed to record learning: #{e.message}")

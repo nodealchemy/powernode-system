@@ -7,7 +7,7 @@ RSpec.describe System::ProviderVolume, 'RAID functionality', type: :model do
 
   describe 'RAID constants' do
     it 'defines valid RAID levels' do
-      expect(System::ProviderVolume::RAID_LEVELS).to eq([0, 1])
+      expect(System::ProviderVolume::RAID_LEVELS).to eq([ 0, 1 ])
     end
   end
 

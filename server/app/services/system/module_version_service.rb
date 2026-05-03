@@ -20,7 +20,7 @@ module System
     # @param user [User] optional user who created this version
     # @return [System::NodeModuleVersion] the created version
     def create_version(changelog: nil, user: nil)
-      raise LockError, 'Module is locked and cannot be versioned' if node_module.locked?
+      raise LockError, "Module is locked and cannot be versioned" if node_module.locked?
 
       user ||= current_user
 
@@ -51,7 +51,7 @@ module System
     def create_initial_version
       return if node_module.versions.exists?
 
-      create_version(changelog: 'Initial version')
+      create_version(changelog: "Initial version")
     end
 
     # Rollback to a specific version
@@ -59,8 +59,8 @@ module System
     # @param changelog [String] optional description for the rollback
     # @return [System::NodeModuleVersion] new version created from rollback
     def rollback_to(version, changelog: nil)
-      raise LockError, 'Module is locked and cannot be modified' if node_module.locked?
-      raise RollbackError, 'Version does not belong to this module' unless version.node_module_id == node_module.id
+      raise LockError, "Module is locked and cannot be modified" if node_module.locked?
+      raise RollbackError, "Version does not belong to this module" unless version.node_module_id == node_module.id
 
       changelog ||= "Rollback to version #{version.version_number}"
 
@@ -90,10 +90,10 @@ module System
     # @return [System::NodeModuleVersion] new version created from rollback
     def rollback_to_previous
       current = node_module.current_version
-      raise RollbackError, 'No current version to rollback from' unless current
+      raise RollbackError, "No current version to rollback from" unless current
 
       previous = current.previous_version
-      raise RollbackError, 'No previous version available' unless previous
+      raise RollbackError, "No previous version available" unless previous
 
       rollback_to(previous, changelog: "Rollback to version #{previous.version_number}")
     end
@@ -101,7 +101,7 @@ module System
     # Lock the module to prevent further changes
     # @return [Boolean] true if locked successfully
     def lock!
-      raise LockError, 'Module is already locked' if node_module.locked?
+      raise LockError, "Module is already locked" if node_module.locked?
 
       node_module.update!(lock_spec: true)
     end
@@ -109,7 +109,7 @@ module System
     # Unlock the module to allow changes (admin only typically)
     # @return [Boolean] true if unlocked successfully
     def unlock!
-      raise LockError, 'Module is not locked' unless node_module.locked?
+      raise LockError, "Module is not locked" unless node_module.locked?
 
       node_module.update!(lock_spec: false)
     end
@@ -120,7 +120,7 @@ module System
     # @return [Hash] differences between versions
     def compare_versions(version_a, version_b)
       {
-        version_numbers: [version_a.version_number, version_b.version_number],
+        version_numbers: [ version_a.version_number, version_b.version_number ],
         mask_diff: diff_json(version_a.mask, version_b.mask),
         file_spec_diff: diff_json(version_a.file_spec, version_b.file_spec),
         package_spec_diff: diff_json(version_a.package_spec, version_b.package_spec),

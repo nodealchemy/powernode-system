@@ -162,3 +162,41 @@ jobs:
             ruby -c "$f" >/dev/null || { echo "syntax error: $f"; fail=1; }
           done < <(find server worker -name '*.rb' 2>/dev/null)
           exit $fail
+
+  rubocop:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the system extension
+        uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - name: Check out the parent platform
+        uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+          # Submodules required so 'bundle install' resolves frozen lockfile
+          submodules: recursive
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          mv extensions/system powernode-platform/extensions/system
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+          bundler-cache: true
+          working-directory: powernode-platform/server
+
+      - name: Run RuboCop on extension Ruby
+        working-directory: powernode-platform/server
+        run: |
+          bundle exec rubocop \
+            ../extensions/system/server/app \
+            ../extensions/system/server/lib \
+            ../extensions/system/server/spec \
+            ../extensions/system/worker/app

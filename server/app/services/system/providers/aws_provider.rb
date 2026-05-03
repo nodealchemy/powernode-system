@@ -35,8 +35,8 @@ module System
           # Tag the instance with name
           if params[:name].present?
             ec2_client.create_tags(
-              resources: [instance.instance_id],
-              tags: [{ key: "Name", value: params[:name] }]
+              resources: [ instance.instance_id ],
+              tags: [ { key: "Name", value: params[:name] } ]
             )
           end
 
@@ -55,7 +55,7 @@ module System
         log_operation("start_instance", instance_id: instance_id)
 
         begin
-          ec2_client.start_instances(instance_ids: [instance_id])
+          ec2_client.start_instances(instance_ids: [ instance_id ])
 
           # Get updated instance state
           instance_data = describe_instance(instance_id)
@@ -77,7 +77,7 @@ module System
 
         begin
           ec2_client.stop_instances(
-            instance_ids: [instance_id],
+            instance_ids: [ instance_id ],
             force: force
           )
 
@@ -98,7 +98,7 @@ module System
         log_operation("reboot_instance", instance_id: instance_id)
 
         begin
-          ec2_client.reboot_instances(instance_ids: [instance_id])
+          ec2_client.reboot_instances(instance_ids: [ instance_id ])
 
           instance_data = describe_instance(instance_id)
           return instance_data unless instance_data[:success]
@@ -118,7 +118,7 @@ module System
         log_operation("terminate_instance", instance_id: instance_id)
 
         begin
-          ec2_client.terminate_instances(instance_ids: [instance_id])
+          ec2_client.terminate_instances(instance_ids: [ instance_id ])
 
           build_instance_response(
             cloud_id: instance_id,
@@ -220,7 +220,7 @@ module System
           )
 
           # Get the public IP
-          address = ec2_client.describe_addresses(allocation_ids: [allocation_id]).addresses.first
+          address = ec2_client.describe_addresses(allocation_ids: [ allocation_id ]).addresses.first
 
           {
             success: true,
@@ -338,7 +338,7 @@ module System
         log_operation("get_volume", volume_id: volume_id)
 
         begin
-          response = ec2_client.describe_volumes(volume_ids: [volume_id])
+          response = ec2_client.describe_volumes(volume_ids: [ volume_id ])
           volume = response.volumes.first
 
           return build_error_response("Volume not found", code: "NotFound") unless volume
@@ -388,7 +388,7 @@ module System
         log_operation("get_image", image_id: image_id)
 
         begin
-          response = ec2_client.describe_images(image_ids: [image_id])
+          response = ec2_client.describe_images(image_ids: [ image_id ])
           image = response.images.first
 
           return build_error_response("Image not found", code: "NotFound") unless image
@@ -484,7 +484,7 @@ module System
       end
 
       def describe_instance(instance_id)
-        response = ec2_client.describe_instances(instance_ids: [instance_id])
+        response = ec2_client.describe_instances(instance_ids: [ instance_id ])
         instance = response.reservations.first&.instances&.first
 
         return build_error_response("Instance not found", code: "NotFound") unless instance
@@ -514,22 +514,22 @@ module System
         run_params[:user_data] = Base64.encode64(params[:user_data]) if params[:user_data]
 
         if params[:tags].present?
-          run_params[:tag_specifications] = [{
+          run_params[:tag_specifications] = [ {
             resource_type: "instance",
             tags: params[:tags].map { |k, v| { key: k.to_s, value: v.to_s } }
-          }]
+          } ]
         end
 
         # Block device mappings for root volume
         if params[:root_volume_size]
-          run_params[:block_device_mappings] = [{
+          run_params[:block_device_mappings] = [ {
             device_name: "/dev/xvda",
             ebs: {
               volume_size: params[:root_volume_size],
               volume_type: params[:root_volume_type] || "gp3",
               delete_on_termination: true
             }
-          }]
+          } ]
         end
 
         run_params
@@ -539,7 +539,7 @@ module System
         ec2_filters = []
 
         if filters[:status]
-          ec2_filters << { name: "instance-state-name", values: [filters[:status]] }
+          ec2_filters << { name: "instance-state-name", values: [ filters[:status] ] }
         end
 
         if filters[:instance_ids]
@@ -548,7 +548,7 @@ module System
 
         if filters[:tags]
           filters[:tags].each do |key, value|
-            ec2_filters << { name: "tag:#{key}", values: [value] }
+            ec2_filters << { name: "tag:#{key}", values: [ value ] }
           end
         end
 
@@ -557,7 +557,7 @@ module System
 
       def next_available_device(instance_id)
         # Get current block device mappings
-        response = ec2_client.describe_instances(instance_ids: [instance_id])
+        response = ec2_client.describe_instances(instance_ids: [ instance_id ])
         instance = response.reservations.first&.instances&.first
 
         return "/dev/sdf" unless instance

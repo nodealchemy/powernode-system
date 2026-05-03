@@ -21,10 +21,10 @@ module System
             next if score.within_target
 
             severity = case score.violations.size
-                       when 1 then :medium
-                       when 2 then :high
-                       else :critical
-                       end
+            when 1 then :medium
+            when 2 then :high
+            else :critical
+            end
 
             signal(
               kind: "system.slo_violation",

@@ -35,7 +35,7 @@ RSpec.describe "POST /api/v1/system/worker_api/unclaimed_devices/expire", type: 
 
     # Surviving row
     expect(System::UnclaimedDevice.where(id: fresh.id)).to exist
-    expect(System::UnclaimedDevice.where(id: [stale_a.id, stale_b.id])).to be_empty
+    expect(System::UnclaimedDevice.where(id: [ stale_a.id, stale_b.id ])).to be_empty
   end
 
   it "returns reaped_count: 0 with no FleetEvent when nothing's expired" do

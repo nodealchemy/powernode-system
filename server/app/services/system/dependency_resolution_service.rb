@@ -76,7 +76,7 @@ module System
     # @param node_module [System::NodeModule] module to resolve
     # @return [ResolutionResult] result for single module
     def resolve_single(node_module)
-      resolve([node_module])
+      resolve([ node_module ])
     end
 
     # Check if adding a module would create a circular dependency
@@ -210,7 +210,7 @@ module System
 
     def order_by_priority(modules)
       # Sort by priority (descending) then by name (ascending) for stable ordering
-      modules.sort_by { |m| [-m.priority, m.name] }
+      modules.sort_by { |m| [ -m.priority, m.name ] }
     end
 
     def collect_dependencies(node_module, visited)

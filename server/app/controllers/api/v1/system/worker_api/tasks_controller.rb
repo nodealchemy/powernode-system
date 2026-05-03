@@ -7,7 +7,7 @@ module Api
         # Operation tracking and management for infrastructure workers
         # Handles operation lifecycle: create, start, progress, complete, fail
         class TasksController < BaseController
-          before_action :set_operation, only: [:show, :start, :progress, :complete, :fail, :add_event, :execute]
+          before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :add_event, :execute ]
 
           # GET /api/v1/system/worker_api/operations
           # List operations for resources managed by this worker

@@ -7,7 +7,7 @@ module Api
         # Module data and file management for infrastructure workers
         # Provides module configuration and data file transfers
         class ModulesController < BaseController
-          before_action :set_module, only: [:show, :download, :upload, :versions, :rollback]
+          before_action :set_module, only: [ :show, :download, :upload, :versions, :rollback ]
 
           # GET /api/v1/system/worker_api/modules
           # List modules for nodes managed by this worker

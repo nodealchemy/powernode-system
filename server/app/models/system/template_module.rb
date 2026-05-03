@@ -5,15 +5,15 @@ module System
     include System::Base
 
     # === Associations ===
-    belongs_to :node_template, class_name: 'System::NodeTemplate'
-    belongs_to :node_module, class_name: 'System::NodeModule'
+    belongs_to :node_template, class_name: "System::NodeTemplate"
+    belongs_to :node_module, class_name: "System::NodeModule"
 
     # Delegate account access through template
     delegate :account, to: :node_template
     delegate :account_id, to: :node_template
 
     # === Validations ===
-    validates :node_template_id, uniqueness: { scope: :node_module_id, message: 'already has this module' }
+    validates :node_template_id, uniqueness: { scope: :node_module_id, message: "already has this module" }
     validates :priority, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 
     # === Scopes ===

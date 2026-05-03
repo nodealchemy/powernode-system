@@ -151,7 +151,7 @@ RSpec.describe System::DiskImageWebhook, type: :model do
       a = create(:system_disk_image_webhook, account: account, status: "active")
       _b = create(:system_disk_image_webhook, account: account, status: "disabled")
       _c = create(:system_disk_image_webhook, account: account, status: "revoked")
-      expect(described_class.active.pluck(:id)).to eq([a.id])
+      expect(described_class.active.pluck(:id)).to eq([ a.id ])
     end
   end
 end

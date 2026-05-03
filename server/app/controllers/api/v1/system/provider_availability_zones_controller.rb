@@ -7,7 +7,7 @@ module Api
         before_action :set_account
         before_action :set_provider
         before_action :set_region
-        before_action :set_zone, only: [:show, :update, :destroy]
+        before_action :set_zone, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.regions.read")

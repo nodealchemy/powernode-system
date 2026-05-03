@@ -5,7 +5,7 @@ module Api
     module System
       class NodePlatformsController < BaseController
         before_action :set_account
-        before_action :set_platform, only: [:show, :update, :destroy]
+        before_action :set_platform, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.platforms.read")

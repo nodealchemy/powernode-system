@@ -76,11 +76,11 @@ module System
         utilization = running.to_f / total
         strength = if utilization < 0.5
                      1.0 * (1.0 - utilization * 2) # 0.5 underutilized = 0; 0% = 1.0
-                   elsif utilization > 0.9
+        elsif utilization > 0.9
                      1.0 * (utilization - 0.9) * 10  # 90% = 0; 100% = 1.0
-                   else
+        else
                      0
-                   end
+        end
         { strength: strength.round(3), ratio: utilization.round(3), running: running, total: total }
       end
 
@@ -115,8 +115,8 @@ module System
             # Saturation proxy: each region's instance count relative to
             # account median. Until M-D2-2 ships per-region capacity hints,
             # we use raw count.
-            [region_id, { strength: [count.to_f / 20.0, 1.0].min.round(3),
-                          instance_count: count }]
+            [ region_id, { strength: [ count.to_f / 20.0, 1.0 ].min.round(3),
+                          instance_count: count } ]
           end
           .to_h
       end

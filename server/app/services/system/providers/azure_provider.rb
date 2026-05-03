@@ -170,9 +170,9 @@ module System
         rg = filters[:resource_group] || resource_group
         base_path = if rg
                       "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines"
-                    else
+        else
                       "/subscriptions/#{subscription_id}/providers/Microsoft.Compute/virtualMachines"
-                    end
+        end
 
         max_pages = filters.key?(:max_pages) ? filters[:max_pages] : 100
 
@@ -430,9 +430,9 @@ module System
         rg = filters[:resource_group] || resource_group
         path = if rg
                  "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/disks"
-               else
+        else
                  "/subscriptions/#{subscription_id}/providers/Microsoft.Compute/disks"
-               end
+        end
 
         response = arm_get(path, api_version: ARM_API_VERSION)
         return [] unless response.success?
@@ -803,15 +803,15 @@ module System
               linuxConfiguration: {
                 disablePasswordAuthentication: true,
                 ssh: {
-                  publicKeys: [{
+                  publicKeys: [ {
                     path: "/home/#{params[:admin_user] || 'powernode'}/.ssh/authorized_keys",
                     keyData: params[:ssh_public_key]
-                  }]
+                  } ]
                 }
               }
             },
             networkProfile: {
-              networkInterfaces: [{ id: params[:network_interface_id] }]
+              networkInterfaces: [ { id: params[:network_interface_id] } ]
             }
           }
         }
@@ -914,7 +914,7 @@ module System
           raise AzureError, "Resource poll failed: #{response.status}" unless response.success?
 
           state = response.body.dig("properties", "provisioningState")
-          return response.body if [desired_state, "Failed", "Canceled"].include?(state)
+          return response.body if [ desired_state, "Failed", "Canceled" ].include?(state)
           raise AzureError, "Resource provisioning timeout after #{max_wait}s for #{resource_path}" if Time.now > deadline
 
           sleep interval

@@ -6,7 +6,7 @@ module System
 
     # === Associations ===
     belongs_to :account
-    has_many :node_modules, class_name: 'System::NodeModule', foreign_key: :copy_path_id, dependent: :nullify
+    has_many :node_modules, class_name: "System::NodeModule", foreign_key: :copy_path_id, dependent: :nullify
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }

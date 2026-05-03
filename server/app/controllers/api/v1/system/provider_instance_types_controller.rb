@@ -6,16 +6,16 @@ module Api
       class ProviderInstanceTypesController < BaseController
         before_action :set_account
         before_action :set_provider, if: -> { params[:provider_id].present? }
-        before_action :set_instance_type, only: [:show, :update, :destroy]
+        before_action :set_instance_type, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.providers.read")
 
           instance_types = if @provider
                              @provider.provider_instance_types
-                           else
+          else
                              @account.system_provider_instance_types
-                           end
+          end
 
           instance_types = apply_filters(instance_types)
           instance_types = paginate(instance_types)
@@ -90,9 +90,9 @@ module Api
         def set_instance_type
           @instance_type = if @provider
                              @provider.provider_instance_types.find(params[:id])
-                           else
+          else
                              @account.system_provider_instance_types.find(params[:id])
-                           end
+          end
         rescue ActiveRecord::RecordNotFound
           render_not_found("Instance Type")
         end

@@ -23,7 +23,7 @@ RSpec.describe System::CveOps::ExposureCalculator do
     System::Cve.create!(
       cve_id: "CVE-2026-12345",
       severity: "high",
-      affected_packages: [{ "name" => "openssl", "version" => "<3.1.4" }]
+      affected_packages: [ { "name" => "openssl", "version" => "<3.1.4" } ]
     )
   end
 

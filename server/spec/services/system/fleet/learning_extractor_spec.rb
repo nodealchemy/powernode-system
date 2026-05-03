@@ -40,12 +40,12 @@ RSpec.describe System::Fleet::LearningExtractor do
 
     context "with a skipped decision" do
       it "does not record a learning" do
-        skipped = [{
+        skipped = [ {
           signal_kind: "system.unknown",
           action_category: nil,
           gate: nil,
           decision: :skipped
-        }]
+        } ]
 
         expect(Ai::CompoundLearning).not_to receive(:where) if defined?(Ai::CompoundLearning)
         expect {
@@ -70,7 +70,7 @@ RSpec.describe System::Fleet::LearningExtractor do
             category: "discovery",
             scope: "team",
             ai_agent_team_id: nil,
-            tags: ["fleet", "autonomy", "system.module_drift"],
+            tags: [ "fleet", "autonomy", "system.module_drift" ],
             status: "active",
             confidence_score: 0.5,
             importance_score: 0.5

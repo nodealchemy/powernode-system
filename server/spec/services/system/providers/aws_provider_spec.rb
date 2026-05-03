@@ -34,7 +34,7 @@ RSpec.describe System::Providers::AwsProvider do
         name: "test-instance",
         instance_type: "t2.micro",
         image_id: "ami-12345678",
-        security_group_ids: ["sg-12345"],
+        security_group_ids: [ "sg-12345" ],
         subnet_id: "subnet-12345"
       }
     end

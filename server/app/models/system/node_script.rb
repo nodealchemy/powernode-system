@@ -15,9 +15,9 @@ module System
     validates :variety, presence: true, inclusion: { in: VARIETIES }
 
     # Scopes
-    scope :build_scripts, -> { where(variety: 'build') }
-    scope :init_scripts, -> { where(variety: 'init') }
-    scope :sync_scripts, -> { where(variety: 'sync') }
-    scope :custom_scripts, -> { where(variety: 'custom') }
+    scope :build_scripts, -> { where(variety: "build") }
+    scope :init_scripts, -> { where(variety: "init") }
+    scope :sync_scripts, -> { where(variety: "sync") }
+    scope :custom_scripts, -> { where(variety: "custom") }
   end
 end

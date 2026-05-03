@@ -229,11 +229,11 @@ module Api
           # already in a terminal state or already in the target state.
           def finalize_state_from_cloud(instance, reported_status)
             event = case reported_status
-                    when "running"    then :mark_running
-                    when "stopped"    then :mark_stopped
-                    when "terminated" then :mark_terminated
-                    when "error"      then :mark_errored
-                    end
+            when "running"    then :mark_running
+            when "stopped"    then :mark_stopped
+            when "terminated" then :mark_terminated
+            when "error"      then :mark_errored
+            end
             return unless event && instance.public_send("may_#{event}?")
             instance.public_send("#{event}!")
           end

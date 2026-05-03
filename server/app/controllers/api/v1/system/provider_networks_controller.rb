@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class ProviderNetworksController < BaseController
-        before_action :set_network, only: [:show, :update, :destroy]
+        before_action :set_network, only: [ :show, :update, :destroy ]
 
         # GET /api/v1/system/provider_networks
         def index
-          require_permission('system.networks.read')
+          require_permission("system.networks.read")
 
           networks = current_account.system_provider_networks
           networks = apply_filters(networks)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/provider_networks/:id
         def show
-          require_permission('system.networks.read')
+          require_permission("system.networks.read")
           render_success(network: ::System::ProviderNetworkSerializer.new(@network).as_json)
         end
 
         # POST /api/v1/system/provider_networks
         def create
-          require_permission('system.networks.create')
+          require_permission("system.networks.create")
 
           network = current_account.system_provider_networks.build(network_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/provider_networks/:id
         def update
-          require_permission('system.networks.update')
+          require_permission("system.networks.update")
 
           if @network.update(network_params)
             render_success(network: ::System::ProviderNetworkSerializer.new(@network).as_json)
@@ -52,14 +52,14 @@ module Api
 
         # DELETE /api/v1/system/provider_networks/:id
         def destroy
-          require_permission('system.networks.delete')
+          require_permission("system.networks.delete")
 
           unless @network.can_delete?
-            return render_error('Cannot delete network (may be default or has subnets)', status: :unprocessable_entity)
+            return render_error("Cannot delete network (may be default or has subnets)", status: :unprocessable_entity)
           end
 
-          @network.update!(status: 'deleting')
-          render_success(message: 'Network deletion initiated')
+          @network.update!(status: "deleting")
+          render_success(message: "Network deletion initiated")
         end
 
         private
@@ -78,9 +78,9 @@ module Api
 
         def apply_filters(networks)
           networks = networks.by_status(params[:status]) if params[:status].present?
-          networks = networks.default_networks if params[:default] == 'true'
-          networks = networks.custom_networks if params[:default] == 'false'
-          networks = networks.where('name ILIKE ?', "%#{params[:search]}%") if params[:search].present?
+          networks = networks.default_networks if params[:default] == "true"
+          networks = networks.custom_networks if params[:default] == "false"
+          networks = networks.where("name ILIKE ?", "%#{params[:search]}%") if params[:search].present?
           networks
         end
       end

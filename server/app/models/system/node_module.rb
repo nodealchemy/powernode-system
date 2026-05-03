@@ -52,9 +52,9 @@ module System
 
     # === Associations ===
     belongs_to :account
-    belongs_to :node_platform, class_name: 'System::NodePlatform', optional: true
-    belongs_to :category, class_name: 'System::NodeModuleCategory', optional: true
-    belongs_to :copy_path, class_name: 'System::NodeModuleCopyPath', optional: true
+    belongs_to :node_platform, class_name: "System::NodePlatform", optional: true
+    belongs_to :category, class_name: "System::NodeModuleCategory", optional: true
+    belongs_to :copy_path, class_name: "System::NodeModuleCopyPath", optional: true
 
     # Dependant-module scoping (Golden Eclipse M0.J — restores legacy
     # parent_module / config-variety / instance-variety hierarchy from
@@ -63,13 +63,13 @@ module System
     # - parent_module: the subscription-variety base whose deployment this child overrides
     # - node: the node this child is bound to (config + instance varieties both)
     # - node_instance: the specific instance this child overrides (instance variety only)
-    belongs_to :parent_module, class_name: 'System::NodeModule', optional: true
+    belongs_to :parent_module, class_name: "System::NodeModule", optional: true
     has_many :child_modules,
-             class_name: 'System::NodeModule',
+             class_name: "System::NodeModule",
              foreign_key: :parent_module_id,
              dependent: :destroy
-    belongs_to :node, class_name: 'System::Node', optional: true
-    belongs_to :node_instance, class_name: 'System::NodeInstance', optional: true
+    belongs_to :node, class_name: "System::Node", optional: true
+    belongs_to :node_instance, class_name: "System::NodeInstance", optional: true
 
     # Scopes for dependant lookup
     scope :dependants, -> { where.not(parent_module_id: nil) }
@@ -78,24 +78,24 @@ module System
     scope :for_instance, ->(instance) { where(node_instance_id: instance) }
 
     # Versioning associations
-    has_many :versions, class_name: 'System::NodeModuleVersion', dependent: :destroy
-    belongs_to :current_version, class_name: 'System::NodeModuleVersion', optional: true
+    has_many :versions, class_name: "System::NodeModuleVersion", dependent: :destroy
+    belongs_to :current_version, class_name: "System::NodeModuleVersion", optional: true
 
     # Node assignments (which nodes have this module)
-    has_many :node_module_assignments, class_name: 'System::NodeModuleAssignment', dependent: :destroy
+    has_many :node_module_assignments, class_name: "System::NodeModuleAssignment", dependent: :destroy
     has_many :nodes, through: :node_module_assignments
 
     # Template assignments (which templates include this module)
-    has_many :template_modules, class_name: 'System::TemplateModule', dependent: :destroy
+    has_many :template_modules, class_name: "System::TemplateModule", dependent: :destroy
     has_many :node_templates, through: :template_modules
 
     # Puppet module assignments (configuration management)
-    has_many :module_puppet_assignments, class_name: 'System::ModulePuppetAssignment', dependent: :destroy
+    has_many :module_puppet_assignments, class_name: "System::ModulePuppetAssignment", dependent: :destroy
     has_many :puppet_modules, through: :module_puppet_assignments
 
     # Dependencies (what this module requires)
     has_many :module_dependencies,
-             class_name: 'System::ModuleDependency',
+             class_name: "System::ModuleDependency",
              foreign_key: :node_module_id,
              dependent: :destroy
     has_many :dependencies,
@@ -104,7 +104,7 @@ module System
 
     # Dependents (what requires this module)
     has_many :dependent_relationships,
-             class_name: 'System::ModuleDependency',
+             class_name: "System::ModuleDependency",
              foreign_key: :dependency_id,
              dependent: :destroy
     has_many :dependents,
@@ -122,9 +122,9 @@ module System
     scope :public_modules, -> { where(public: true) }
     scope :private_modules, -> { where(public: false) }
     scope :by_variety, ->(variety) { where(variety: variety) }
-    scope :config_modules, -> { by_variety('config') }
-    scope :instance_modules, -> { by_variety('instance') }
-    scope :subscription_modules, -> { by_variety('subscription') }
+    scope :config_modules, -> { by_variety("config") }
+    scope :instance_modules, -> { by_variety("instance") }
+    scope :subscription_modules, -> { by_variety("subscription") }
     scope :by_priority, -> { order(priority: :desc, name: :asc) }
     scope :by_name, -> { order(name: :asc) }
     scope :for_platform, ->(platform_id) { where(node_platform_id: platform_id) }
@@ -272,15 +272,15 @@ module System
     end
 
     def config?
-      variety == 'config'
+      variety == "config"
     end
 
     def instance?
-      variety == 'instance'
+      variety == "instance"
     end
 
     def subscription?
-      variety == 'subscription'
+      variety == "subscription"
     end
 
     def has_dependencies?
@@ -459,7 +459,7 @@ module System
         if raw.blank?
           {}
         else
-          parsed = YAML.safe_load(raw, permitted_classes: [Symbol, Date, Time], aliases: true)
+          parsed = YAML.safe_load(raw, permitted_classes: [ Symbol, Date, Time ], aliases: true)
           parsed.is_a?(Hash) ? parsed : {}
         end
     rescue Psych::SyntaxError
@@ -481,10 +481,10 @@ module System
     # children scoped to the target.
     def neighboring_modules_for(target)
       node = case target
-             when System::NodeInstance then target.node
-             when System::Node         then target
-             else return []
-             end
+      when System::NodeInstance then target.node
+      when System::Node         then target
+      else return []
+      end
       return [] unless node
 
       System::NodeModuleAssignment
@@ -511,7 +511,7 @@ module System
     def check_lock_status
       return unless lock_spec && !lock_spec_changed?
 
-      errors.add(:base, 'Module is locked and cannot be modified')
+      errors.add(:base, "Module is locked and cannot be modified")
       throw(:abort)
     end
 
@@ -523,7 +523,7 @@ module System
       return unless versioned?
 
       @skip_auto_version = true
-      create_version!(changelog: 'Auto-versioned on update')
+      create_version!(changelog: "Auto-versioned on update")
     ensure
       @skip_auto_version = false
     end

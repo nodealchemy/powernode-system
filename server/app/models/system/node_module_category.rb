@@ -13,17 +13,17 @@ module System
 
     # === Associations ===
     belongs_to :account
-    belongs_to :parent, class_name: 'System::NodeModuleCategory', optional: true
-    has_many :children, class_name: 'System::NodeModuleCategory', foreign_key: :parent_id, dependent: :nullify
-    has_many :node_modules, class_name: 'System::NodeModule', foreign_key: :category_id, dependent: :nullify
+    belongs_to :parent, class_name: "System::NodeModuleCategory", optional: true
+    has_many :children, class_name: "System::NodeModuleCategory", foreign_key: :parent_id, dependent: :nullify
+    has_many :node_modules, class_name: "System::NodeModule", foreign_key: :category_id, dependent: :nullify
 
     # Sibling-variety categories — populated only on subscription-variety rows.
     # Each subscription category points at its config + instance counterparts
     # so dependant module spawning can resolve the right higher-priority bucket.
     belongs_to :config_category,
-               class_name: 'System::NodeModuleCategory', optional: true
+               class_name: "System::NodeModuleCategory", optional: true
     belongs_to :instance_category,
-               class_name: 'System::NodeModuleCategory', optional: true
+               class_name: "System::NodeModuleCategory", optional: true
 
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
@@ -104,11 +104,11 @@ module System
 
     def ancestors
       return [] if root?
-      [parent] + parent.ancestors
+      [ parent ] + parent.ancestors
     end
 
     def descendants
-      children.flat_map { |child| [child] + child.descendants }
+      children.flat_map { |child| [ child ] + child.descendants }
     end
 
     def module_count

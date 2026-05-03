@@ -68,7 +68,7 @@ module System
     end
 
     def stream_to_tmp(storage, file_object)
-      tmp = Tempfile.new(["powernode-direct-upload-", ".img"])
+      tmp = Tempfile.new([ "powernode-direct-upload-", ".img" ])
       tmp.binmode
       storage.stream_file(file_object) do |chunk|
         tmp.write(chunk)

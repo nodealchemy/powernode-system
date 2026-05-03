@@ -37,7 +37,7 @@ module System
               resolved: :boolean,
               requires_approval: :boolean,
               disruption_pct: :integer,
-              planned_actions: { attach: [:string], detach: [:string], update: [:string] }
+              planned_actions: { attach: [ :string ], detach: [ :string ], update: [ :string ] }
             }
           }
         end
@@ -87,7 +87,7 @@ module System
           total = report[:missing_count].to_i + report[:extra_count].to_i + report[:mismatched_count].to_i
           return 0 if total.zero?
 
-          [total * DISRUPTION_PER_CHANGE_PCT, 100].min
+          [ total * DISRUPTION_PER_CHANGE_PCT, 100 ].min
         end
 
         def planned_actions_from(report)

@@ -45,7 +45,7 @@ RSpec.describe "Api::V1::System::NetbootController", type: :request do
 
       it "rejects with 403" do
         get "/api/v1/system/netboot/#{instance.id}/script.ipxe", headers: auth_headers_for(user_no_perms)
-        expect(response.status).to be_in([401, 403])
+        expect(response.status).to be_in([ 401, 403 ])
       end
     end
 

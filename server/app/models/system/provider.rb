@@ -9,18 +9,18 @@ module System
 
     # Associations
     belongs_to :account
-    has_many :provider_regions, class_name: 'System::ProviderRegion', dependent: :destroy
-    has_many :provider_connections, class_name: 'System::ProviderConnection', dependent: :destroy
-    has_many :provider_instance_types, class_name: 'System::ProviderInstanceType', dependent: :destroy
+    has_many :provider_regions, class_name: "System::ProviderRegion", dependent: :destroy
+    has_many :provider_connections, class_name: "System::ProviderConnection", dependent: :destroy
+    has_many :provider_instance_types, class_name: "System::ProviderInstanceType", dependent: :destroy
 
     # Volume associations (Release 4)
-    has_many :provider_volume_types, class_name: 'System::ProviderVolumeType', dependent: :destroy
+    has_many :provider_volume_types, class_name: "System::ProviderVolumeType", dependent: :destroy
 
     # Network associations (Release 4)
-    has_many :provider_networks, class_name: 'System::ProviderNetwork', dependent: :destroy
+    has_many :provider_networks, class_name: "System::ProviderNetwork", dependent: :destroy
 
     # Task associations (Release 4)
-    has_many :tasks, class_name: 'System::Task', as: :operable, dependent: :destroy
+    has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :account_id }
@@ -28,10 +28,10 @@ module System
 
     # Scopes
     scope :by_type, ->(type) { where(provider_type: type) }
-    scope :aws, -> { where(provider_type: 'aws') }
-    scope :openstack, -> { where(provider_type: 'openstack') }
-    scope :gcp, -> { where(provider_type: 'gcp') }
-    scope :azure, -> { where(provider_type: 'azure') }
+    scope :aws, -> { where(provider_type: "aws") }
+    scope :openstack, -> { where(provider_type: "openstack") }
+    scope :gcp, -> { where(provider_type: "gcp") }
+    scope :azure, -> { where(provider_type: "azure") }
 
     # Config and capabilities accessors
     store_accessor :config
@@ -39,23 +39,23 @@ module System
 
     # Helper methods
     def aws?
-      provider_type == 'aws'
+      provider_type == "aws"
     end
 
     def openstack?
-      provider_type == 'openstack'
+      provider_type == "openstack"
     end
 
     def gcp?
-      provider_type == 'gcp'
+      provider_type == "gcp"
     end
 
     def azure?
-      provider_type == 'azure'
+      provider_type == "azure"
     end
 
     def custom?
-      provider_type == 'custom'
+      provider_type == "custom"
     end
 
     def has_capability?(capability)

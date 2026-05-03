@@ -136,12 +136,12 @@ module System
         local_path = File.join(tmpdir, build_filename(architecture, format))
 
         size_bytes = case format
-                     when "img"   then build_raw_image(local_path, options)
-                     when "iso"   then build_iso_image(architecture, local_path, options)
-                     when "qcow2" then build_qcow2_image(local_path, options)
-                     when "ami"   then build_ami_image(local_path, options)
-                     when "vmdk"  then build_vmdk_image(local_path, options)
-                     end
+        when "img"   then build_raw_image(local_path, options)
+        when "iso"   then build_iso_image(architecture, local_path, options)
+        when "qcow2" then build_qcow2_image(local_path, options)
+        when "ami"   then build_ami_image(local_path, options)
+        when "vmdk"  then build_vmdk_image(local_path, options)
+        end
 
         upload_result = upload_image(architecture, local_path, format, size_bytes, options)
         return upload_result unless upload_result.success?
@@ -293,11 +293,11 @@ module System
     # without changing the architecture's bootable image.
     def link_to_architecture(architecture, file_object, options)
       column = case options[:link_as].to_s
-               when "kernel"  then :kernel_file_object_id
-               when "ramdisk" then :ramdisk_file_object_id
-               when "image"   then :image_file_object_id
-               else nil
-               end
+      when "kernel"  then :kernel_file_object_id
+      when "ramdisk" then :ramdisk_file_object_id
+      when "image"   then :image_file_object_id
+      else nil
+      end
       return unless column
 
       architecture.update!(column => file_object.id)
@@ -307,9 +307,9 @@ module System
 
     def copy_arch_boot_files(architecture, staging)
       [
-        [architecture.kernel_file_object,  "vmlinuz"],
-        [architecture.ramdisk_file_object, "initrd.img"],
-        [architecture.image_file_object,   "rootfs.img"]
+        [ architecture.kernel_file_object,  "vmlinuz" ],
+        [ architecture.ramdisk_file_object, "initrd.img" ],
+        [ architecture.image_file_object,   "rootfs.img" ]
       ].each do |file_object, dest_name|
         next unless file_object
 

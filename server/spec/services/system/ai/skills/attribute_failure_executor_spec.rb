@@ -90,7 +90,7 @@ RSpec.describe System::Ai::Skills::AttributeFailureExecutor do
           content: "test",
           category: "discovery",
           scope: "team",
-          tags: ["fleet", "attribution", "module:#{mod.id}", "kind:assignment_change", "outcome:confirmed"],
+          tags: [ "fleet", "attribution", "module:#{mod.id}", "kind:assignment_change", "outcome:confirmed" ],
           status: "active",
           confidence_score: 0.7,
           importance_score: 0.7
@@ -116,7 +116,7 @@ RSpec.describe System::Ai::Skills::AttributeFailureExecutor do
           content: "test",
           category: "failure_mode",
           scope: "team",
-          tags: ["fleet", "attribution", "module:#{mod.id}", "kind:assignment_change", "outcome:rejected"],
+          tags: [ "fleet", "attribution", "module:#{mod.id}", "kind:assignment_change", "outcome:rejected" ],
           status: "active",
           confidence_score: 0.5,
           importance_score: 0.4

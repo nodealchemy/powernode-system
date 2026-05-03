@@ -27,9 +27,9 @@ RSpec.describe System::Gitops::DesiredStateParser do
 
       result = described_class.parse!(work_tree_path: work_tree)
       expect(result.ok?).to be true
-      expect(result.desired_state.templates.keys).to eq(["web"])
-      expect(result.desired_state.modules.keys).to eq(["nginx"])
-      expect(result.desired_state.assignments.keys).to eq(["host-1:nginx"])
+      expect(result.desired_state.templates.keys).to eq([ "web" ])
+      expect(result.desired_state.modules.keys).to eq([ "nginx" ])
+      expect(result.desired_state.assignments.keys).to eq([ "host-1:nginx" ])
     end
 
     it "returns err when fleet.yaml is missing" do
@@ -61,7 +61,7 @@ RSpec.describe System::Gitops::DesiredStateParser do
 
       result = described_class.parse!(work_tree_path: work_tree, path_prefix: "sub/dir")
       expect(result.ok?).to be true
-      expect(result.desired_state.templates.keys).to eq(["web"])
+      expect(result.desired_state.templates.keys).to eq([ "web" ])
     end
 
     it "treats an empty fleet.yaml as a valid empty desired state" do

@@ -10,7 +10,7 @@ module System
     STATUSES = %w[pending creating available attached error deleted].freeze
 
     # === Associations ===
-    belongs_to :provider_volume, class_name: 'System::ProviderVolume'
+    belongs_to :provider_volume, class_name: "System::ProviderVolume"
 
     # Delegate account access through volume
     delegate :account, to: :provider_volume
@@ -24,12 +24,12 @@ module System
 
     # === Scopes ===
     scope :by_status, ->(status) { where(status: status) }
-    scope :pending, -> { by_status('pending') }
-    scope :creating, -> { by_status('creating') }
-    scope :available, -> { by_status('available') }
-    scope :attached, -> { by_status('attached') }
-    scope :errored, -> { by_status('error') }
-    scope :deleted, -> { by_status('deleted') }
+    scope :pending, -> { by_status("pending") }
+    scope :creating, -> { by_status("creating") }
+    scope :available, -> { by_status("available") }
+    scope :attached, -> { by_status("attached") }
+    scope :errored, -> { by_status("error") }
+    scope :deleted, -> { by_status("deleted") }
     scope :ordered, -> { order(member_index: :asc) }
     scope :active, -> { where.not(status: %w[deleted error]) }
 

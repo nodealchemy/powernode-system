@@ -4,11 +4,11 @@ module Api
   module V1
     module System
       class PuppetModulesController < BaseController
-        before_action :set_puppet_module, only: [:show, :update, :destroy, :resources, :assignments]
+        before_action :set_puppet_module, only: [ :show, :update, :destroy, :resources, :assignments ]
 
         # GET /api/v1/system/puppet_modules
         def index
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
 
           modules = current_account.system_puppet_modules
           modules = apply_filters(modules)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/puppet_modules/:id
         def show
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
           render_success(puppet_module: ::System::PuppetModuleSerializer.new(@puppet_module).as_json)
         end
 
         # POST /api/v1/system/puppet_modules
         def create
-          require_permission('system.puppet.create')
+          require_permission("system.puppet.create")
 
           puppet_module = current_account.system_puppet_modules.build(puppet_module_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/puppet_modules/:id
         def update
-          require_permission('system.puppet.update')
+          require_permission("system.puppet.update")
 
           if @puppet_module.update(puppet_module_params)
             render_success(puppet_module: ::System::PuppetModuleSerializer.new(@puppet_module).as_json)
@@ -52,22 +52,22 @@ module Api
 
         # DELETE /api/v1/system/puppet_modules/:id
         def destroy
-          require_permission('system.puppet.delete')
+          require_permission("system.puppet.delete")
 
           if @puppet_module.module_puppet_assignments.exists?
-            render_error('Cannot delete puppet module that is assigned to node modules', status: :unprocessable_entity)
+            render_error("Cannot delete puppet module that is assigned to node modules", status: :unprocessable_entity)
           else
             @puppet_module.destroy
-            render_success(message: 'Puppet module deleted successfully')
+            render_success(message: "Puppet module deleted successfully")
           end
         end
 
         # GET /api/v1/system/puppet_modules/:id/resources
         def resources
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
 
           resources = @puppet_module.puppet_resources
-          resources = resources.enabled if params[:enabled] == 'true'
+          resources = resources.enabled if params[:enabled] == "true"
           resources = resources.by_type(params[:resource_type]) if params[:resource_type].present?
           resources = resources.search(params[:search]) if params[:search].present?
 
@@ -78,7 +78,7 @@ module Api
 
         # GET /api/v1/system/puppet_modules/:id/assignments
         def assignments
-          require_permission('system.puppet.read')
+          require_permission("system.puppet.read")
 
           assignments = @puppet_module.module_puppet_assignments
                                        .includes(:node_module)
@@ -99,18 +99,18 @@ module Api
           params.require(:puppet_module).permit(
             :name, :description, :enabled, :public, :version, :author, :license,
             :source_url, :project_url, :forge_name,
-            dependencies: [:name, :version_requirement],
+            dependencies: [ :name, :version_requirement ],
             config: {},
             metadata: {}
           )
         end
 
         def apply_filters(modules)
-          modules = modules.enabled if params[:enabled] == 'true'
-          modules = modules.disabled if params[:enabled] == 'false'
-          modules = modules.public_modules if params[:public] == 'true'
-          modules = modules.private_modules if params[:public] == 'false'
-          modules = modules.from_forge if params[:from_forge] == 'true'
+          modules = modules.enabled if params[:enabled] == "true"
+          modules = modules.disabled if params[:enabled] == "false"
+          modules = modules.public_modules if params[:public] == "true"
+          modules = modules.private_modules if params[:public] == "false"
+          modules = modules.from_forge if params[:from_forge] == "true"
           modules = modules.by_author(params[:author]) if params[:author].present?
           modules = modules.search(params[:search]) if params[:search].present?
           modules

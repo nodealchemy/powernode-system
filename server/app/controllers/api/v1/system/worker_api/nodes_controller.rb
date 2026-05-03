@@ -7,7 +7,7 @@ module Api
         # Node management for infrastructure workers
         # Provides node data and SSH key updates
         class NodesController < BaseController
-          before_action :set_node, only: [:show, :update, :update_ssh_keys]
+          before_action :set_node, only: [ :show, :update, :update_ssh_keys ]
 
           # GET /api/v1/system/worker_api/nodes
           # List nodes managed by this worker

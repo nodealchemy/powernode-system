@@ -42,7 +42,7 @@ RSpec.describe System::Providers::GcpProvider do
     let(:network_interface) do
       double("Google NetworkInterface",
         network_i_p: "10.128.0.2",
-        access_configs: [access_config]
+        access_configs: [ access_config ]
       )
     end
 
@@ -52,7 +52,7 @@ RSpec.describe System::Providers::GcpProvider do
         id: 12345678901234567,
         status: "RUNNING",
         machine_type: "zones/us-central1-a/machineTypes/n1-standard-1",
-        network_interfaces: [network_interface]
+        network_interfaces: [ network_interface ]
       )
     end
 
@@ -76,7 +76,7 @@ RSpec.describe System::Providers::GcpProvider do
     let(:network_interface) do
       double("Google NetworkInterface",
         network_i_p: "10.128.0.2",
-        access_configs: [access_config]
+        access_configs: [ access_config ]
       )
     end
 
@@ -85,7 +85,7 @@ RSpec.describe System::Providers::GcpProvider do
         name: "test-instance",
         status: "RUNNING",
         machine_type: "zones/us-central1-a/machineTypes/n1-standard-1",
-        network_interfaces: [network_interface]
+        network_interfaces: [ network_interface ]
       )
     end
 
@@ -93,7 +93,7 @@ RSpec.describe System::Providers::GcpProvider do
       # The real GCP SDK returns a Gapic::PagedEnumerable; #each_page yields
       # one page (an Enumerable of instances) per iteration.
       paged_enumerable = double("PagedEnumerable")
-      allow(paged_enumerable).to receive(:each_page).and_yield([instance])
+      allow(paged_enumerable).to receive(:each_page).and_yield([ instance ])
       allow(instances_client).to receive(:list).and_return(paged_enumerable)
     end
 

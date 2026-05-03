@@ -64,12 +64,12 @@ module System
         category = confirmed ? "discovery" : "failure_mode"
         title = if confirmed
                   "Module #{mod.name} confirmed cause of instance failure"
-                else
+        else
                   "Module #{mod.name} rejected as cause of instance failure"
-                end
+        end
 
         content = build_content(instance, mod, candidate_kind, confirmed, note)
-        tags = ["fleet", "attribution", "module:#{mod.id}", "kind:#{candidate_kind}"]
+        tags = [ "fleet", "attribution", "module:#{mod.id}", "kind:#{candidate_kind}" ]
         tags << (confirmed ? "outcome:confirmed" : "outcome:rejected")
 
         ::Ai::CompoundLearning.create!(

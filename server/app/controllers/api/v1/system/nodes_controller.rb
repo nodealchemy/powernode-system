@@ -5,7 +5,7 @@ module Api
     module System
       class NodesController < BaseController
         before_action :set_account
-        before_action :set_node, only: [:show, :update, :destroy]
+        before_action :set_node, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.nodes.read")

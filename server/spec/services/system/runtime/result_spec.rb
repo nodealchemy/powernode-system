@@ -14,9 +14,9 @@ RSpec.describe System::Runtime::Result do
     end
 
     it 'accepts custom data and events' do
-      result = described_class.ok(data: { id: 'abc' }, events: [{ type: 'started' }])
+      result = described_class.ok(data: { id: 'abc' }, events: [ { type: 'started' } ])
       expect(result.data).to eq(id: 'abc')
-      expect(result.events).to eq([{ type: 'started' }])
+      expect(result.events).to eq([ { type: 'started' } ])
     end
   end
 

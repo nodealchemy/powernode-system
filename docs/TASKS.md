@@ -6,9 +6,10 @@ file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
 **Last updated:** 2026-05-03
-**Spec coverage:** 1430 examples / 0 failures / 1 conditional-pending
+**Spec coverage:** 1534 examples / 0 failures / 1 conditional-pending
 **Frontend:** TS clean across all session-touched files
 **Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
+**Phase 10:** 1 of 7 subphases done (10.1 RuboCop) — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
 
 ---
 
@@ -126,11 +127,11 @@ under "Phase 10 — Deferred Item Roadmap". Summary:
 
 | Subphase | Scope | Effort | Status |
 |---|---|---|---|
-| 10.1 | RuboCop autocorrect sweep | ~0.5d | ⬜ pending — parallelizable, no prereqs |
+| 10.1 | RuboCop autocorrect sweep | ~0.5d | ✅ done — 1127 → 0 offenses; 154 files autocorrected; CI rubocop job added |
 | 10.2 | `syft` SBOM ingestion in module CI | ~2d | ⬜ pending — unblocks SBOM-aware CVE matching for real fleets |
 | 10.3 | AI Concierge production conversation routing | ~3d | ⬜ pending — depends on chat extension |
 | 10.4 | Workspace mention picker for peers | ~1.5d | ⬜ pending — depends on chat extension |
-| 10.5 | Metrics instrumentation (v1 = tagged logger) | ~1.5d | ⬜ pending — operator input needed on sink (StatsD/OTel/tagged) |
+| 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ⬜ pending — approach revised: subscribe to existing instrumentation rather than add tagged-logger calls |
 | 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
 | 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | ⬜ slow-day work |
 
@@ -143,6 +144,10 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-03 — Phase 10.1 RuboCop bootstrap + autocorrect sweep:
+  `server/.rubocop.yml` + `worker/.rubocop.yml` inheriting Omakase; new
+  `rubocop` job in `.gitea/workflows/ci.yaml`; 1127 → 0 offenses across
+  154 Ruby files; spec suite green at 1534/0/1
 - 2026-05-02 — System extension extracted to its own repo (`powernode-system`)
   — meta files (README, LICENSE MIT, CONTRIBUTING, CI workflows for both
   Gitea + GitHub) added in preparation

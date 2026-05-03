@@ -23,7 +23,7 @@ RSpec.describe System::CveOps::ExposureCalculator do
       sbom_packages_data: [
         { "name" => "openssl", "version" => "3.0.5",   "ecosystem" => "generic" },
         { "name" => "libxml2", "version" => "2.9.14",  "ecosystem" => "generic" },
-        { "name" => "express", "version" => "4.17.1",  "ecosystem" => "npm" },
+        { "name" => "express", "version" => "4.17.1",  "ecosystem" => "npm" }
       ],
       sbom_packages_count: 3,
       sbom_packages_synced_at: 1.day.ago
@@ -143,7 +143,7 @@ RSpec.describe System::CveOps::ExposureCalculator do
         create_cve(
           cve_id: "CVE-2024-0006",
           severity: "low",
-          affected_packages: [{ "name" => "openssl", "version" => ">=3.0.0", "ecosystem" => "generic" }]
+          affected_packages: [ { "name" => "openssl", "version" => ">=3.0.0", "ecosystem" => "generic" } ]
         )
       end
 

@@ -6,7 +6,7 @@ module Api
       class ProviderNetworkSubnetsController < BaseController
         before_action :set_account
         before_action :set_network
-        before_action :set_subnet, only: [:show, :update, :destroy]
+        before_action :set_subnet, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.networks.read")

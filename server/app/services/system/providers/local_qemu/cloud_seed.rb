@@ -61,7 +61,7 @@ module System
         private
 
         def issue_bootstrap_token(instance)
-          return [nil, options_test_token] unless defined?(::System::BootstrapToken)
+          return [ nil, options_test_token ] unless defined?(::System::BootstrapToken)
 
           ::System::BootstrapToken.issue!(
             node: instance.node,
@@ -72,7 +72,7 @@ module System
           )
         rescue StandardError => e
           Rails.logger.warn("[LocalQemu::CloudSeed] BootstrapToken.issue! failed: #{e.message}")
-          [nil, options_test_token]
+          [ nil, options_test_token ]
         end
 
         # Test fallback when BootstrapToken model isn't available or token

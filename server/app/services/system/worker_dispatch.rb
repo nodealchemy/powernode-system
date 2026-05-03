@@ -48,7 +48,7 @@ module System
     # @param operation_id [String] UUID of the System::Task to execute
     # @return [String] sidekiq jid
     def self.enqueue_operation_execution(operation_id)
-      enqueue("SystemExecuteTaskJob", args: [operation_id])
+      enqueue("SystemExecuteTaskJob", args: [ operation_id ])
     end
 
     def self.with_redis

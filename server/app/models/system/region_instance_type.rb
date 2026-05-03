@@ -3,8 +3,8 @@
 module System
   class RegionInstanceType < BaseRecord
     # Associations
-    belongs_to :provider_region, class_name: 'System::ProviderRegion'
-    belongs_to :provider_instance_type, class_name: 'System::ProviderInstanceType'
+    belongs_to :provider_region, class_name: "System::ProviderRegion"
+    belongs_to :provider_instance_type, class_name: "System::ProviderInstanceType"
 
     # Validations
     validates :provider_region_id, uniqueness: { scope: :provider_instance_type_id }
@@ -23,7 +23,7 @@ module System
     end
 
     def effective_currency
-      currency || provider_instance_type.currency || 'USD'
+      currency || provider_instance_type.currency || "USD"
     end
   end
 end

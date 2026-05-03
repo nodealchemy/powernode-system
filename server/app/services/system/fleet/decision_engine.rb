@@ -180,7 +180,7 @@ module System
       end
 
       def build_summary(signal, skill_result)
-        parts = ["Fleet signal #{signal.kind} (severity=#{signal.severity})"]
+        parts = [ "Fleet signal #{signal.kind} (severity=#{signal.severity})" ]
         if signal.payload.is_a?(Hash)
           if signal.payload["instance_id"]
             parts << "instance=#{signal.payload['instance_id']}"

@@ -5,15 +5,15 @@ module System
     include System::Base
 
     # === Associations ===
-    belongs_to :node, class_name: 'System::Node'
-    belongs_to :node_module, class_name: 'System::NodeModule'
+    belongs_to :node, class_name: "System::Node"
+    belongs_to :node_module, class_name: "System::NodeModule"
 
     # Delegate account access through node
     delegate :account, to: :node
     delegate :account_id, to: :node
 
     # === Validations ===
-    validates :node_id, uniqueness: { scope: :node_module_id, message: 'already has this module assigned' }
+    validates :node_id, uniqueness: { scope: :node_module_id, message: "already has this module assigned" }
     validates :priority, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 
     # === Scopes ===
@@ -94,9 +94,9 @@ module System
                       resolved_category == node_module.category
       child_priority = if resolved_category.nil? || same_category
                          node_module.priority.to_i + 1
-                       else
+      else
                          node_module.priority.to_i
-                       end
+      end
 
       ::System::NodeModule.create!(
         account: node.account,

@@ -78,7 +78,7 @@ RSpec.describe System::BootstrapToken, type: :model do
       consumed.consume!
       stale, _    = described_class.issue!(node: node, intended_subject: "stale", ttl: 1.second)
       travel 2.seconds do
-        expect(described_class.active).to    include(fresh)
+        expect(described_class.active).to include(fresh)
         expect(described_class.active).not_to include(consumed, stale)
         expect(described_class.consumed).to  include(consumed)
         expect(described_class.expired).to   include(stale)

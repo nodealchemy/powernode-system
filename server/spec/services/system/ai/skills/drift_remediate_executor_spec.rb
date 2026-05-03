@@ -66,7 +66,7 @@ RSpec.describe System::Ai::Skills::DriftRemediateExecutor do
         expect(r[:data][:resolved]).to be true # below default 20% threshold
         expect(r[:data][:requires_approval]).to be false
         expect(r[:data][:disruption_pct]).to eq(20)
-        expect(r[:data][:planned_actions][:attach]).to eq([mod.id])
+        expect(r[:data][:planned_actions][:attach]).to eq([ mod.id ])
       end
     end
 

@@ -42,7 +42,7 @@ RSpec.describe System::Providers::OpenStackProvider do
         name: "test-instance",
         instance_type: "m1.small",
         image_id: "image-uuid-12345",
-        security_group_ids: ["sg-12345"],
+        security_group_ids: [ "sg-12345" ],
         network_id: "network-uuid"
       }
     end

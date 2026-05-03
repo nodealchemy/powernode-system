@@ -26,10 +26,10 @@ module System
       update_transitional_status(instance, action)
 
       adapter_result = case instance.variety
-                       when "cloud", "dynamic" then execute_cloud_action(instance, action, force: force)
-                       when "physical"          then execute_physical_action(instance, action)
-                       else { success: false, error: "Unknown instance variety: #{instance.variety}" }
-                       end
+      when "cloud", "dynamic" then execute_cloud_action(instance, action, force: force)
+      when "physical"          then execute_physical_action(instance, action)
+      else { success: false, error: "Unknown instance variety: #{instance.variety}" }
+      end
 
       if adapter_result[:success]
         update_instance_from_result(instance, adapter_result)
@@ -92,11 +92,11 @@ module System
     # state (or invalid for this transition), the call is a safe no-op.
     def finalize_state_from_result(instance, reported_status)
       event = case reported_status
-              when "running"    then :mark_running
-              when "stopped"    then :mark_stopped
-              when "terminated" then :mark_terminated
-              when "error"      then :mark_errored
-              end
+      when "running"    then :mark_running
+      when "stopped"    then :mark_stopped
+      when "terminated" then :mark_terminated
+      when "error"      then :mark_errored
+      end
       return unless event && instance.public_send("may_#{event}?")
       instance.public_send("#{event}!")
     end
