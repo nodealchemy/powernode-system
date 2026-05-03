@@ -24,6 +24,7 @@ import { tasksApi } from './api/tasksApi';
 import { puppetApi } from './api/puppetApi';
 import { volumesApi } from './api/volumesApi';
 import { networksApi } from './api/networksApi';
+import { unclaimedDevicesApi } from './api/unclaimedDevicesApi';
 
 // Re-export domain modules for callers that want narrower typing.
 export {
@@ -39,6 +40,7 @@ export {
   puppetApi,
   volumesApi,
   networksApi,
+  unclaimedDevicesApi,
 };
 
 export const systemApi = {

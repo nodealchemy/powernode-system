@@ -31,8 +31,51 @@ export interface SystemNodeInstance {
   node_name?: string;
   provider_region_id?: string;
   provider_instance_type_id?: string;
+  // Physical-device claim flow (Path C provisioning).
+  // Plan: docs/plans/wondrous-yawning-anchor.md
+  mac_address?: string;
+  private_netboot?: boolean;
+  claim_code?: string;
+  claimed_at?: string;
+  discovered_mac?: string;
+  discovered_dmi_uuid?: string;
+  discovered_hostname?: string;
+  discovered_at?: string;
+  claimed?: boolean;
+  active?: boolean;
+  description?: string;
   created_at: string;
   updated_at: string;
+}
+
+// UnclaimedDevice — a physical device polling /api/v1/system/node_api/claim
+// before being bound to a NodeInstance. Surfaces in the operator's
+// "Unclaimed Devices" panel for confirm-and-claim.
+export interface SystemUnclaimedDevice {
+  id: string;
+  claim_code: string;
+  discovered_mac: string;
+  discovered_dmi_uuid?: string;
+  discovered_hostname?: string;
+  agent_version?: string;
+  architecture?: string;
+  platform_hint?: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  claimed_at?: string;
+  claimed_node_instance_id?: string;
+}
+
+// Disk image download metadata for a NodePlatform (the generic .img
+// operators flash to provision physical devices via the claim flow).
+export interface SystemDiskImage {
+  url: string;
+  expires_at: string;
+  sha256: string;
+  size_bytes: number;
+  built_at?: string;
+  filename: string;
 }
 
 export interface SystemNodeTemplate {
@@ -63,6 +106,12 @@ export interface SystemNodePlatform {
   architecture_name?: string;
   template_count?: number;
   module_count?: number;
+  // Disk image (claim-flow physical provisioning) — set when CI has
+  // built and uploaded a generic .img for this platform.
+  disk_image_file_object_id?: string;
+  disk_image_sha256?: string;
+  disk_image_size_bytes?: number;
+  disk_image_built_at?: string;
   created_at: string;
   updated_at: string;
 }

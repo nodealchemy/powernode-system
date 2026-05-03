@@ -25,6 +25,7 @@ const ModulesPage = lazyPage(() => import('./pages/app/system/ModulesPage'));
 const PuppetModulesPage = lazyPage(() => import('./pages/app/system/PuppetModulesPage'));
 const FleetDashboardPage = lazyPage(() => import('./pages/app/system/FleetDashboardPage'));
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
+const UnclaimedDevicesPage = lazyPage(() => import('./pages/app/system/UnclaimedDevicesPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -50,6 +51,7 @@ export function register(): void {
     { path: '/system/puppet-modules', component: PuppetModulesPage },
     { path: '/system/fleet', component: FleetDashboardPage },
     { path: '/system/templates/compose', component: TemplateComposerPage },
+    { path: '/system/unclaimed-devices', component: UnclaimedDevicesPage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -67,6 +69,8 @@ export function register(): void {
         { label: 'Overview', path: '/app/system', icon: 'LayoutDashboard', order: 1 },
         { label: 'Fleet Dashboard', path: '/app/system/fleet', icon: 'Activity', order: 2 },
         { label: 'Nodes', path: '/app/system/nodes', icon: 'Server', order: 3 },
+        // Physical-device claim queue (plan wondrous-yawning-anchor.md).
+        { label: 'Unclaimed Devices', path: '/app/system/unclaimed-devices', icon: 'Cpu', order: 3.5 },
         { label: 'Operations', path: '/app/system/tasks', icon: 'Activity', order: 4 },
         { label: 'Providers', path: '/app/system/providers', icon: 'Cloud', order: 5 },
         { label: 'Templates', path: '/app/system/templates', icon: 'LayoutTemplate', order: 6 },

@@ -7,6 +7,7 @@ import { systemApi } from '@system/features/system/services/systemApi';
 import type {
   SystemNode,
   SystemNodeInstance,
+  SystemNodePlatform,
   SystemProviderConnection,
   SystemProviderRegion,
   SystemProviderInstanceType,
@@ -29,6 +30,7 @@ interface CreateInstanceModalProps {
 interface FormData {
   name: string;
   variety: 'cloud' | 'physical' | 'dynamic';
+  description: string;
   private_ip_address: string;
   public_ip_address: string;
   vpn_ip_address: string;
@@ -39,6 +41,10 @@ interface FormData {
   provider_availability_zone_id: string;
   provider_network_id: string;
   provider_network_subnet_id: string;
+  // Physical-specific fields (Path C claim flow)
+  // Plan: docs/plans/wondrous-yawning-anchor.md
+  node_platform_id: string;
+  mac_address: string;            // optional pre-binding for known devices
 }
 
 interface FormErrors {
@@ -68,6 +74,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   const [formData, setFormData] = useState<FormData>({
     name: '',
     variety: 'cloud',
+    description: '',
     private_ip_address: '',
     public_ip_address: '',
     vpn_ip_address: '',
@@ -76,8 +83,16 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
     provider_instance_type_id: '',
     provider_availability_zone_id: '',
     provider_network_id: '',
-    provider_network_subnet_id: ''
+    provider_network_subnet_id: '',
+    node_platform_id: '',
+    mac_address: '',
   });
+
+  // Available platforms for the physical branch (architecture cascades from
+  // platform.node_architecture_id; we filter to enabled rows for the
+  // operator's account in the platform dropdown).
+  const [platforms, setPlatforms] = useState<SystemNodePlatform[]>([]);
+  const [loadingPlatforms, setLoadingPlatforms] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
 
   // Cascading dropdown data
@@ -102,6 +117,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
       setFormData({
         name: `${node.name}-instance-${Date.now().toString(36).slice(-4)}`,
         variety: 'cloud',
+        description: '',
         private_ip_address: '',
         public_ip_address: '',
         vpn_ip_address: '',
@@ -110,7 +126,9 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
         provider_instance_type_id: '',
         provider_availability_zone_id: '',
         provider_network_id: '',
-        provider_network_subnet_id: ''
+        provider_network_subnet_id: '',
+        node_platform_id: '',
+        mac_address: '',
       });
       setErrors({});
       setRegions([]);
@@ -120,6 +138,17 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
       setSubnets([]);
     }
   }, [isOpen, node]);
+
+  // Load platforms when the operator switches to the physical branch.
+  useEffect(() => {
+    if (isOpen && formData.variety === 'physical' && platforms.length === 0) {
+      setLoadingPlatforms(true);
+      systemApi.getPlatforms()
+        .then(setPlatforms)
+        .catch(() => setPlatforms([]))
+        .finally(() => setLoadingPlatforms(false));
+    }
+  }, [isOpen, formData.variety, platforms.length]);
 
   // Load provider connections on modal open
   useEffect(() => {
@@ -588,6 +617,89 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Physical Device Configuration (Path C claim flow) */}
+        {/* Plan: docs/plans/wondrous-yawning-anchor.md */}
+        {formData.variety === 'physical' && (
+          <div className="space-y-4 p-4 bg-theme-background rounded-lg border border-theme">
+            <h3 className="text-sm font-medium text-theme-primary flex items-center gap-2">
+              <Server className="w-4 h-4" />
+              Physical Device Configuration
+            </h3>
+            <p className="text-xs text-theme-secondary">
+              The instance will be created in a pending state. Flash the platform&apos;s
+              disk image onto an SD card / USB stick and plug the device in — it will
+              poll the platform and surface in the &ldquo;Unclaimed Devices&rdquo; panel for you to
+              claim.
+            </p>
+
+            <div>
+              <label htmlFor="instance-platform" className="block text-sm font-medium text-theme-secondary mb-1">
+                Platform <span className="text-theme-danger">*</span>
+              </label>
+              <div className="relative">
+                <select
+                  id="instance-platform"
+                  value={formData.node_platform_id}
+                  onChange={(e) => handleChange('node_platform_id', e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
+                    focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
+                  disabled={submitting || loadingPlatforms}
+                >
+                  <option value="">Select a platform...</option>
+                  {platforms.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.architecture_name ? ` (${p.architecture_name})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {loadingPlatforms && (
+                  <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
+                )}
+              </div>
+              <p className="mt-1 text-xs text-theme-tertiary">
+                Determines which generic disk image to flash. RPi 4 → ubuntu-24.04-rpi4;
+                generic UEFI arm64 SBC → ubuntu-24.04-arm64-uefi.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="instance-mac" className="block text-sm font-medium text-theme-secondary mb-1">
+                MAC address (optional pre-binding)
+              </label>
+              <input
+                id="instance-mac"
+                type="text"
+                value={formData.mac_address}
+                onChange={(e) => handleChange('mac_address', e.target.value)}
+                placeholder="aa:bb:cc:dd:ee:ff"
+                className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary font-mono
+                  focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
+                disabled={submitting}
+              />
+              <p className="mt-1 text-xs text-theme-tertiary">
+                Leave blank for the standard claim flow (operator confirms in Unclaimed Devices
+                panel). If you know the device&apos;s MAC, set it here for deterministic auto-binding.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="instance-description" className="block text-sm font-medium text-theme-secondary mb-1">
+                Description / notes
+              </label>
+              <input
+                id="instance-description"
+                type="text"
+                value={formData.description}
+                onChange={(e) => handleChange('description', e.target.value)}
+                placeholder="e.g. Pi 4 in network closet rack 2"
+                className="w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
+                  focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary border-theme"
+                disabled={submitting}
+              />
+            </div>
           </div>
         )}
 
