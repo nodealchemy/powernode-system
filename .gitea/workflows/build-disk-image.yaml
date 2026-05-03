@@ -70,8 +70,8 @@ jobs:
 
       - name: Stage cross-compiled powernode-agent (arm64)
         run: |
-          mkdir -p extensions/system/initramfs/scripts
-          ARCH_OUT="extensions/system/initramfs/scripts/powernode-agent-arm64"
+          mkdir -p initramfs/scripts
+          ARCH_OUT="initramfs/scripts/powernode-agent-arm64"
           if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
             echo "WARN: POWERNODE_AGENT_BINARY_URL not set — using placeholder shim"
             cat >"$ARCH_OUT" <<'SHIM'
@@ -88,7 +88,7 @@ jobs:
 
       - name: Build rpi4-firmware module rootfs
         run: |
-          cd extensions/system/templates/example-modules/rpi4-firmware
+          cd templates/example-modules/rpi4-firmware
           FIRMWARE_REF="${{ inputs.firmware_ref }}"
           if [ -z "$FIRMWARE_REF" ]; then
             FIRMWARE_REF="$(grep firmware_ref manifest.yaml | awk '{print $2}' | tr -d '"')"
@@ -118,12 +118,12 @@ jobs:
           openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
 
       - name: Build kernel + initramfs (arm64)
-        working-directory: extensions/system/initramfs
+        working-directory: initramfs
         run: |
           ./build.sh --arch arm64 --variants kernel-initrd
 
       - name: Build disk-image-rpi4
-        working-directory: extensions/system/initramfs
+        working-directory: initramfs
         env:
           RPI4_FIRMWARE_DIR: /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware
           CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
@@ -131,14 +131,14 @@ jobs:
           ./build.sh --arch arm64 --variants disk-image-rpi4
 
       - name: Build disk-image-arm64-uefi
-        working-directory: extensions/system/initramfs
+        working-directory: initramfs
         env:
           CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
         run: |
           ./build.sh --arch arm64 --variants disk-image-arm64-uefi
 
       - name: Cosign sign disk images (keyless, Fulcio)
-        working-directory: extensions/system/initramfs/build/arm64
+        working-directory: initramfs/build/arm64
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
@@ -150,7 +150,7 @@ jobs:
           done
 
       - name: Compute manifest
-        working-directory: extensions/system/initramfs/build/arm64
+        working-directory: initramfs/build/arm64
         run: |
           {
             echo "platform_url=${PLATFORM_URL}"
@@ -194,7 +194,7 @@ jobs:
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
-            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            img="initramfs/build/arm64/${entry#*:}"
             [ -f "$img" ] || continue
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
@@ -242,7 +242,7 @@ jobs:
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
-            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            img="initramfs/build/arm64/${entry#*:}"
             [ -f "$img" ] || continue
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
@@ -280,7 +280,7 @@ jobs:
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
-            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            img="initramfs/build/arm64/${entry#*:}"
             [ -f "$img" ] || continue
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
@@ -311,7 +311,7 @@ jobs:
         with:
           name: powernode-disk-images-${{ github.sha }}
           path: |
-            extensions/system/initramfs/build/arm64/disk-image-rpi4/
-            extensions/system/initramfs/build/arm64/disk-image-arm64-uefi/
-            extensions/system/initramfs/build/arm64/disk-image-manifest.txt
+            initramfs/build/arm64/disk-image-rpi4/
+            initramfs/build/arm64/disk-image-arm64-uefi/
+            initramfs/build/arm64/disk-image-manifest.txt
           retention-days: 30
