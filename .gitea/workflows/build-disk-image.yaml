@@ -58,10 +58,34 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
+          # cosign + oras aren't in apt — fetch released binaries.
+          # buildah/podman are in apt on Ubuntu 24.04.
           sudo apt-get install -y \
-            dosfstools e2fsprogs sgdisk \
-            buildah podman cosign \
+            dosfstools e2fsprogs gdisk \
+            buildah podman \
             curl jq zstd
+
+          # Install cosign v2.4 from upstream (apt's cosign pkg doesn't
+          # exist on Ubuntu 24.04 base + we want a known-good version
+          # to match the worker container per plan deferred risk #5).
+          if ! command -v cosign >/dev/null 2>&1; then
+            COSIGN_VERSION=2.4.1
+            curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" \
+              -o /tmp/cosign
+            sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+          fi
+
+          # Install oras for OCI artifact push.
+          if ! command -v oras >/dev/null 2>&1; then
+            ORAS_VERSION=1.2.0
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+              -o /tmp/oras.tar.gz
+            sudo tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras
+            sudo chmod +x /usr/local/bin/oras
+          fi
+
+          echo "cosign $(cosign version --json 2>/dev/null | jq -r .GitVersion 2>/dev/null || cosign version 2>&1 | head -1)"
+          echo "oras $(oras version | head -1)"
 
       - name: Set up QEMU for arm64 emulation
         uses: docker/setup-qemu-action@v3
