@@ -44,14 +44,12 @@ permissions:
 
 jobs:
   build:
-    # ubuntu-24.04 with the act-runner default privilege level. losetup
-    # is not available, so build-disk-image-rpi4.sh / -arm64-uefi.sh
-    # fall back to placeholder mode — they emit a valid partition table
-    # but skip mkfs.fat/mkfs.ext4 (require loop devices). The .img is
-    # downloadable + verifiable end-to-end via the platform UI; full
-    # bootable images need a runner with /dev/loop-control access (operator
-    # provisions a privileged runner labelled "ubuntu-24.04-privileged"
-    # and changes this back).
+    # ubuntu-24.04 unprivileged runner. Filesystem creation uses offline
+    # tools (mtools mformat/mcopy for FAT32, mkfs.ext4 -E offset for ext4)
+    # so /dev/loop-control is not required. The disk-image-rpi4 script
+    # produces a flashable, GPU-loader-bootable image on this runner.
+    # For privileged runners (with losetup), the script auto-detects and
+    # uses the loopback path instead.
     runs-on: ubuntu-24.04
 
     env:
@@ -70,8 +68,15 @@ jobs:
           # buildah/podman are in apt on Ubuntu 24.04.
           sudo apt-get install -y \
             dosfstools e2fsprogs gdisk \
+            mtools \
             buildah podman \
             curl jq zstd
+          # mtools (mformat/mcopy) lets the disk-image build script create
+          # a populated FAT32 partition WITHOUT losetup — needed because
+          # the runner doesn't have /dev/loop-control access. mkfs.ext4 -E
+          # offset (already in e2fsprogs >= 1.42) handles the ext4 partition
+          # similarly. Together they let us produce a flashable image on an
+          # unprivileged runner.
 
           # Install cosign v2.4 from upstream (apt's cosign pkg doesn't
           # exist on Ubuntu 24.04 base + we want a known-good version
@@ -142,8 +147,14 @@ jobs:
           # Download just the boot blobs we need (RPi 4 boot files).
           # Full repo is 5+ GB; we only need ~30MB of firmware.
           BASE="https://github.com/raspberrypi/firmware/raw/${FIRMWARE_REF}/boot"
+          # kernel8.img comes from the firmware repo (RPi-tuned arm64 kernel).
+          # This is what makes the SD-card flashable + bootable: the GPU
+          # loader (start4.elf) reads kernel8.img from the FAT32 partition.
+          # If our dracut build produces a custom kernel later, the disk-image
+          # script will prefer it; otherwise this firmware kernel is used.
           for f in start4.elf fixup4.dat start.elf fixup.dat bootcode.bin \
-                   bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2711-rpi-cm4.dtb; do
+                   bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2711-rpi-cm4.dtb \
+                   kernel8.img; do
             if curl -fsSL "$BASE/$f" -o "$f"; then
               echo "  ✓ $f ($(stat -c '%s' "$f") bytes)"
             else
@@ -152,9 +163,18 @@ jobs:
             fi
           done
 
-          # Overlays directory (empty placeholder; real builds layer in via
-          # the OCI artifact path).
+          # Overlays directory — fetch a small set of common ones. For the
+          # smoke-test image we only need disable-bt.dtbo (referenced by
+          # config.txt's dtoverlay=disable-bt line). Missing overlays are
+          # tolerated by the GPU loader (warning only, not boot failure).
           mkdir -p overlays
+          for ov in disable-bt.dtbo miniuart-bt.dtbo; do
+            if curl -fsSL "$BASE/overlays/$ov" -o "overlays/$ov"; then
+              echo "  ✓ overlays/$ov ($(stat -c '%s' "overlays/$ov") bytes)"
+            else
+              echo "  ⚠ overlays/$ov — fetch failed"
+            fi
+          done
           echo "$FIRMWARE_REF" > POWERNODE_FIRMWARE_VERSION
 
           ls -la /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware/ | head

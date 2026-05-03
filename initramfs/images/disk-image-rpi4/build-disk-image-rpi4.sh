@@ -113,62 +113,77 @@ SFDISK_EOF
 log "partition table:"
 sfdisk -d "$OUTPUT" | tail -3
 
-# Filesystem creation requires loop device — skip in placeholder mode if
-# loopback is unavailable (most CI runners need privileged mode).
-if ! command -v losetup >/dev/null 2>&1 || [[ ! -w /dev/loop-control ]]; then
-  log "losetup unavailable — skipping FS creation (CI must run privileged for full build)"
-  exit 0
-fi
+# Compute partition byte offsets from the sfdisk dump. sfdisk's output
+# format is whitespace-padded (`start=        2048,`), so awk field
+# splitting gets ugly — sed regex is more robust.
+DUMP=$(sfdisk -d "$OUTPUT")
+P1_LINE=$(echo "$DUMP" | grep -E 'type=c[, ]')
+P2_LINE=$(echo "$DUMP" | grep -E 'type=83[, ]?')
+P1_START_SECTORS=$(echo "$P1_LINE" | sed -E 's/.*start=[[:space:]]*([0-9]+).*/\1/')
+P1_SIZE_SECTORS=$( echo "$P1_LINE" | sed -E 's/.*size=[[:space:]]*([0-9]+).*/\1/')
+P2_START_SECTORS=$(echo "$P2_LINE" | sed -E 's/.*start=[[:space:]]*([0-9]+).*/\1/')
+P2_SIZE_SECTORS=$( echo "$P2_LINE" | sed -E 's/.*size=[[:space:]]*([0-9]+).*/\1/')
 
-LOOP="$(losetup --partscan --find --show "$OUTPUT")"
-trap 'umount "${LOOP}p1" 2>/dev/null || true; losetup -d "$LOOP" 2>/dev/null || true' EXIT
+# Sanity-check the parses — if anything is empty or non-numeric we'd corrupt
+# the partition offsets and silently produce a broken image.
+for v in P1_START_SECTORS P1_SIZE_SECTORS P2_START_SECTORS P2_SIZE_SECTORS; do
+  if ! [[ "${!v}" =~ ^[0-9]+$ ]]; then
+    log "ERROR: failed to parse $v from sfdisk dump:"
+    echo "$DUMP" >&2
+    exit 1
+  fi
+done
+P1_OFFSET=$((P1_START_SECTORS * 512))
+P2_OFFSET=$((P2_START_SECTORS * 512))
+P1_BYTES=$((P1_SIZE_SECTORS  * 512))
+P2_BYTES=$((P2_SIZE_SECTORS  * 512))
+log "  p1 (FAT32 boot): offset=$P1_OFFSET size=$P1_BYTES"
+log "  p2 (ext4 persist): offset=$P2_OFFSET size=$P2_BYTES"
 
-# FAT32 with the "BOOT" label — init-powernode.sh's mount loop tries
-# LABEL=BOOT as one of its fallbacks.
-mkfs.fat -F32 -n BOOT "${LOOP}p1"
-mkfs.ext4 -F -L persist "${LOOP}p2"
+# Stage all FAT32-boot contents into a temp dir. Both the offline (mtools)
+# and losetup paths copy from this directory.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
 
-# Mount P1 and stage RPi-bootable contents.
-MNT="$(mktemp -d)"
-mount "${LOOP}p1" "$MNT"
-
-# RPi GPU firmware (start4.elf, fixup4.dat, bootcode.bin, dtbs).
+# RPi GPU firmware (start4.elf, fixup4.dat, bootcode.bin, dtbs, kernel8.img).
 if [[ -n "$FIRMWARE_DIR" && -d "$FIRMWARE_DIR" ]]; then
-  log "copying RPi firmware from $FIRMWARE_DIR"
-  cp -a "${FIRMWARE_DIR}/." "$MNT/"
+  log "staging RPi firmware from $FIRMWARE_DIR"
+  cp -a "${FIRMWARE_DIR}/." "$STAGE/"
 else
   log "WARN: --firmware-dir unset — image will not boot until firmware is layered in"
-  cat >"$MNT/FIRMWARE_MISSING.txt" <<EOF
+  cat >"$STAGE/FIRMWARE_MISSING.txt" <<EOF
 This image lacks RPi GPU firmware. The Pi 4 needs:
-  start4.elf, fixup4.dat, bootcode.bin, bcm2711-rpi-4-b.dtb, overlays/
+  start4.elf, fixup4.dat, bootcode.bin, bcm2711-rpi-4-b.dtb, overlays/, kernel8.img
 
 Source: https://github.com/raspberrypi/firmware/tree/master/boot
 Or use the powernode rpi4-firmware module which packages these for OCI distribution.
 EOF
 fi
 
-# Kernel (renamed kernel8.img — RPi 64-bit convention) + initramfs.
-if [[ -f "${KERNEL_INITRD_DIR}/kernel" ]]; then
-  log "embedding kernel from ${KERNEL_INITRD_DIR}/kernel as /kernel8.img"
-  cp "${KERNEL_INITRD_DIR}/kernel" "$MNT/kernel8.img"
+# Kernel — prefer locally-built (KERNEL_INITRD_DIR/kernel from dracut) if
+# present, else fall back to the firmware-distributed kernel8.img (already
+# in $STAGE/ from the firmware copy above), else placeholder. The
+# firmware-distributed kernel boots far enough to print on serial console
+# even without our dracut-built initramfs, which is enough for an SD-card
+# flash test.
+if [[ -f "${KERNEL_INITRD_DIR}/kernel" ]] && [[ "$(stat -c '%s' "${KERNEL_INITRD_DIR}/kernel")" -gt 1024 ]]; then
+  log "staging custom kernel from ${KERNEL_INITRD_DIR}/kernel as kernel8.img"
+  cp "${KERNEL_INITRD_DIR}/kernel" "$STAGE/kernel8.img"
+elif [[ -f "$STAGE/kernel8.img" ]] && [[ "$(stat -c '%s' "$STAGE/kernel8.img")" -gt 1024 ]]; then
+  log "using firmware-distributed kernel8.img ($(stat -c '%s' "$STAGE/kernel8.img") bytes)"
 else
-  log "WARN: kernel missing at ${KERNEL_INITRD_DIR}/kernel — embedding placeholder"
-  echo "kernel-placeholder" >"$MNT/kernel8.img"
+  log "WARN: no kernel available — embedding placeholder"
+  echo "kernel-placeholder" >"$STAGE/kernel8.img"
 fi
-if [[ -f "${KERNEL_INITRD_DIR}/initramfs.cpio.zst" ]]; then
-  log "embedding initramfs from ${KERNEL_INITRD_DIR}/initramfs.cpio.zst"
-  cp "${KERNEL_INITRD_DIR}/initramfs.cpio.zst" "$MNT/initramfs.cpio.zst"
+if [[ -f "${KERNEL_INITRD_DIR}/initramfs.cpio.zst" ]] && [[ "$(stat -c '%s' "${KERNEL_INITRD_DIR}/initramfs.cpio.zst")" -gt 1024 ]]; then
+  log "staging initramfs from ${KERNEL_INITRD_DIR}/initramfs.cpio.zst"
+  cp "${KERNEL_INITRD_DIR}/initramfs.cpio.zst" "$STAGE/initramfs.cpio.zst"
 else
-  log "WARN: initramfs missing at ${KERNEL_INITRD_DIR}/initramfs.cpio.zst — embedding placeholder"
-  echo "initramfs-placeholder" >"$MNT/initramfs.cpio.zst"
+  log "WARN: initramfs missing — embedding placeholder"
+  echo "initramfs-placeholder" >"$STAGE/initramfs.cpio.zst"
 fi
 
-# RPi GPU bootloader config. arm_64bit=1 selects the 64-bit kernel path.
-# enable_uart=1 + dtoverlay=disable-bt frees the PL011 UART for serial console
-# (the Pi 4's BT chip is on the mini-UART by default; swap so console works).
-# initramfs <name> followkernel tells the GPU bootloader to load the
-# initramfs file at the same physical address the kernel expects.
-cat >"$MNT/config.txt" <<'CONFIG_TXT'
+cat >"$STAGE/config.txt" <<'CONFIG_TXT'
 # Powernode Pi 4 boot configuration
 arm_64bit=1
 enable_uart=1
@@ -177,19 +192,11 @@ kernel=kernel8.img
 initramfs initramfs.cpio.zst followkernel
 CONFIG_TXT
 
-# Kernel cmdline. console=serial0 (UART, mapped to PL011 by config.txt
-# overlay above) + console=tty1 (HDMI) gives both routes.
-# powernode.boot=1 triggers the powernode dracut hook (init-powernode.sh).
-# root= points at the persist partition; the agent pivots into a
-# composefs-mounted union root after enrollment.
-cat >"$MNT/cmdline.txt" <<CMDLINE
+cat >"$STAGE/cmdline.txt" <<CMDLINE
 console=serial0,115200 console=tty1 powernode.boot=1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait
 CMDLINE
 
-# Path C identity placeholder. Empty ID + KEY signals to BootIdentityStrategy
-# that the device hasn't been bound yet — ClaimStrategy will poll
-# /node_api/claim until an operator confirms in the UI.
-cat >"$MNT/identity.cfg" <<EOF
+cat >"$STAGE/identity.cfg" <<EOF
 # Powernode device identity — Path C placeholder
 # Agent will fill in ID + KEY via the claim flow on first boot.
 ID=
@@ -198,21 +205,69 @@ SERVER=${PLATFORM_URL}
 CA_PEM_FILE=/boot/powernode-ca.pem
 EOF
 
-# Platform CA chain. Without this the agent can't verify the platform's
-# TLS cert when calling /node_api/claim or /node_api/enroll.
 if [[ -n "$CA_PEM_FILE" && -f "$CA_PEM_FILE" ]]; then
-  log "embedding platform CA from $CA_PEM_FILE"
-  cp "$CA_PEM_FILE" "$MNT/powernode-ca.pem"
+  log "staging platform CA from $CA_PEM_FILE"
+  cp "$CA_PEM_FILE" "$STAGE/powernode-ca.pem"
 else
   log "WARN: --ca-pem-file unset — image will fail TLS verify against platform"
-  cat >"$MNT/powernode-ca.pem" <<EOF
+  cat >"$STAGE/powernode-ca.pem" <<EOF
 # CA placeholder — replace with the platform's CA chain at deploy time.
 # In CI this is rendered from the System::InternalCaService output.
 EOF
 fi
 
-umount "$MNT"
-rmdir "$MNT"
+# ── Filesystem creation: try offline first (no losetup), fall back to
+#    losetup on privileged runners, fall back to placeholder on neither.
+HAVE_MTOOLS=0
+if command -v mformat >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
+  HAVE_MTOOLS=1
+fi
+HAVE_LOSETUP=0
+if command -v losetup >/dev/null 2>&1 && [[ -w /dev/loop-control ]]; then
+  HAVE_LOSETUP=1
+fi
 
-log "image ready: $OUTPUT"
+if [[ "$HAVE_MTOOLS" -eq 1 ]]; then
+  log "creating FAT32 boot partition via mtools at offset $P1_OFFSET (offline, no losetup)"
+  # mformat -F = FAT32, -i image@@offset = address partition inside disk image,
+  # -v BOOT = volume label (init-powernode.sh tries LABEL=BOOT).
+  mformat -F -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
+  log "populating FAT32 with $(find "$STAGE" -type f | wc -l) files / $(find "$STAGE" -type d | wc -l) dirs"
+  ( cd "$STAGE" && for entry in * .* ; do
+      [[ "$entry" == "." || "$entry" == ".." ]] && continue
+      [[ ! -e "$entry" ]] && continue
+      if [[ -d "$entry" ]]; then
+        mcopy -i "${OUTPUT}@@${P1_OFFSET}" -s -p -Q "$entry" "::" || log "WARN: mcopy dir $entry failed"
+      else
+        mcopy -i "${OUTPUT}@@${P1_OFFSET}" -p -Q "$entry" "::" || log "WARN: mcopy $entry failed"
+      fi
+    done )
+
+  log "creating ext4 persist partition via mkfs.ext4 -E offset=$P2_OFFSET"
+  # -b 4096 = 4K blocks; size argument is in blocks. -E offset places the
+  # filesystem at the given byte offset within the containing file.
+  if mkfs.ext4 -F -L persist -b 4096 -E "offset=$P2_OFFSET" "$OUTPUT" "$((P2_BYTES / 4096))"; then
+    log "ext4 persist partition created"
+  else
+    log "WARN: mkfs.ext4 -E offset failed (older e2fsprogs?) — kernel will hang on rootwait"
+  fi
+  log "image ready: $OUTPUT (offline-FS mode — bootable to GPU loader stage)"
+elif [[ "$HAVE_LOSETUP" -eq 1 ]]; then
+  log "mtools unavailable — falling back to losetup-based FS creation (privileged runner)"
+  LOOP="$(losetup --partscan --find --show "$OUTPUT")"
+  trap 'umount "${LOOP}p1" 2>/dev/null || true; losetup -d "$LOOP" 2>/dev/null || true; rm -rf "$STAGE"' EXIT
+  mkfs.fat -F32 -n BOOT "${LOOP}p1"
+  mkfs.ext4 -F -L persist "${LOOP}p2"
+  MNT="$(mktemp -d)"
+  mount "${LOOP}p1" "$MNT"
+  cp -a "$STAGE/." "$MNT/"
+  umount "$MNT"
+  rmdir "$MNT"
+  log "image ready: $OUTPUT (losetup mode)"
+else
+  log "WARN: neither mtools nor losetup available — exiting with partition table only"
+  log "WARN: install mtools (apt install mtools) for offline FS creation"
+  exit 0
+fi
+
 log "  to flash: sudo dd if=$OUTPUT of=/dev/sdX bs=4M status=progress conv=fsync"
