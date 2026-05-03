@@ -109,6 +109,11 @@ Rails.application.routes.draw do
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
           post "gitea/module", to: "gitea_module#handle"
+          # Disk-image build notifications from CI runners — the :webhook_id
+          # segment scopes the request to a specific account's
+          # DiskImageWebhook (account derived from webhook.account_id).
+          # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 2).
+          post "disk_image/built/:webhook_id", to: "disk_image_built#handle"
         end
 
         # === Netboot (operator-driven iPXE script generation) ===
@@ -129,6 +134,20 @@ Rails.application.routes.draw do
           # UnclaimedDevice reaper — daily cron from System::ExpireUnclaimedDevicesJob.
           post "unclaimed_devices/expire",
                to: "unclaimed_devices#expire"
+
+          # Disk-image publication flow (Phase 2 — Chunk 2).
+          # Plan: docs/plans/wondrous-yawning-anchor.md.
+          # process: long-pole OCI pull + cosign verify + storage upload, called by worker job
+          # initiate/finalize: cloud-direct-upload alternate path (S3/Azure/GCS only)
+          # sweep_retention: per-platform retire/purge, called by daily reaper job
+          resources :disk_image_publications, only: [] do
+            collection do
+              post :process,         action: :process_publication
+              post :initiate
+              post :finalize
+              post :sweep_retention
+            end
+          end
 
           resources :tasks, only: %i[index show] do
             collection do
