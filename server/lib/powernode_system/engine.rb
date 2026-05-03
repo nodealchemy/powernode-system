@@ -26,6 +26,12 @@ module PowernodeSystem
         path = engine_root.join("app", subdir)
         app.config.autoload_paths << path.to_s if path.exist?
       end
+
+      # `lib/` for pure helpers that don't fit the app/ Zeitwerk conventions
+      # (e.g., System::CveOps::VersionMatcher — a stateless table-driven
+      # version-range matcher). Comprehensive stabilization sweep P4.
+      lib_path = engine_root.join("lib")
+      app.config.autoload_paths << lib_path.to_s if lib_path.exist?
     end
 
     # Load decorators that extend core models (none expected initially).

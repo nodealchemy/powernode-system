@@ -443,6 +443,37 @@ module System
       decode_spec(spec).map { |line| "#{line}\n" }.join
     end
 
+    public
+
+    # Parses the cached `manifest_yaml` (text column, raw YAML) into a Hash.
+    # Memoized per-instance. Returns {} on parse error or absent manifest.
+    # Used by Marketplace browse + Module-as-Skill (F-4) registrar to read
+    # operator-supplied manifest fields without each caller re-parsing.
+    #
+    # Reference: comprehensive stabilization sweep follow-up.
+    def manifest_yaml_parsed
+      return @manifest_yaml_parsed if defined?(@manifest_yaml_parsed)
+
+      raw = manifest_yaml
+      @manifest_yaml_parsed =
+        if raw.blank?
+          {}
+        else
+          parsed = YAML.safe_load(raw, permitted_classes: [Symbol, Date, Time], aliases: true)
+          parsed.is_a?(Hash) ? parsed : {}
+        end
+    rescue Psych::SyntaxError
+      @manifest_yaml_parsed = {}
+    end
+
+    # Trust tier surfaced to the Marketplace UI. Defaults to "community"
+    # when the manifest doesn't declare one (or there's no manifest).
+    def manifest_trust_tier
+      manifest_yaml_parsed["trust_tier"].presence || "community"
+    end
+
+    private
+
     # Used by `effective_mask` neighbor analysis — returns sibling modules
     # the target's union will compose alongside this one. Honors per-(node,
     # module) enable state via NodeModuleAssignment.enabled.

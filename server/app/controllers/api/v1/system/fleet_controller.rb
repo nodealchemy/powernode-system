@@ -57,7 +57,10 @@ module Api
           end
 
           limit = (params[:limit] || 200).to_i.clamp(1, 500)
-          events = scope.order(emitted_at: :asc).limit(limit)
+          # `reorder` (not `order`) so we replace .recent's DESC order
+          # rather than chain it. The Boot Replay timeline must read
+          # earliest-first to render the boot phases correctly.
+          events = scope.reorder(emitted_at: :asc).limit(limit)
 
           render_success(
             events: events.map(&:as_broadcast),
