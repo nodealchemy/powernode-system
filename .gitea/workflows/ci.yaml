@@ -49,7 +49,11 @@ jobs:
           repository: powernode/powernode-platform
           token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
-          submodules: false
+          # Pull submodules (business, marketing, supply-chain, system).
+          # Bundler requires these gemspec paths to resolve — without them
+          # 'bundle install' fails with 'lockfile can't be updated because
+          # frozen mode is set' since the Gemfile.lock references them.
+          submodules: recursive
 
       # The system extension's specs autoload through the parent platform's
       # Rails app. We mount this checkout into the parent's
