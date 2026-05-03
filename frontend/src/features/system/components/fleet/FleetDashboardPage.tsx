@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, Clock, Cpu, GitBranch } from 'lucide-react';
+import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -8,6 +9,23 @@ import { useAuth } from '@/shared/hooks/useAuth';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
+
+// Severity levels in increasing-urgency order. Used by the severity
+// quick-filter chips below.
+const SEVERITY_RANKS: Record<FleetEvent['severity'], number> = {
+  low: 0, medium: 1, high: 2, critical: 3
+};
+
+// Common kind prefixes operators reach for. The kind input is still
+// free-text (substring match), but these chips give one-click access
+// to the most common drill-ins.
+const QUICK_KIND_FILTERS: Array<{ label: string; match: string }> = [
+  { label: 'All',                match: '' },
+  { label: 'Module publish',     match: 'system.module_publish' },
+  { label: 'Honeypot',           match: 'honeypot' },
+  { label: 'Capacity / pressure', match: 'pressure' },
+  { label: 'Decisions',          match: 'decision.' },
+];
 
 // Fleet Dashboard (Golden Eclipse plan M-FE-3).
 //
@@ -30,6 +48,7 @@ export function FleetDashboardPage(): React.JSX.Element {
   const [events, setEvents] = useState<FleetEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [filterKind, setFilterKind] = useState<string>('');
+  const [minSeverity, setMinSeverity] = useState<FleetEvent['severity'] | 'all'>('all');
   const [selectedCorrelation, setSelectedCorrelation] = useState<string | null>(null);
 
   // Initial backlog
@@ -93,9 +112,16 @@ export function FleetDashboardPage(): React.JSX.Element {
   }, [events]);
 
   const filteredEvents = useMemo(() => {
-    if (!filterKind) return events;
-    return events.filter((e) => e.kind.includes(filterKind));
-  }, [events, filterKind]);
+    return events.filter((e) => {
+      if (filterKind && !e.kind.includes(filterKind)) return false;
+      if (minSeverity !== 'all') {
+        const eventRank = SEVERITY_RANKS[e.severity] ?? 0;
+        const minRank = SEVERITY_RANKS[minSeverity] ?? 0;
+        if (eventRank < minRank) return false;
+      }
+      return true;
+    });
+  }, [events, filterKind, minSeverity]);
 
   const correlationEvents = useMemo(() => {
     if (!selectedCorrelation) return [];
@@ -106,24 +132,68 @@ export function FleetDashboardPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col h-full bg-theme-background text-theme-foreground">
-      <header className="px-6 py-4 border-b border-theme-border flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">Fleet Dashboard</h1>
-          <p className="text-sm text-theme-muted mt-1">
-            Live observability of FleetAutonomyService — signals, decisions, ticks.
-          </p>
+      <header className="px-6 py-4 border-b border-theme-border space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold">Fleet Dashboard</h1>
+            <p className="text-sm text-theme-muted mt-1">
+              Live observability of FleetAutonomyService — signals, decisions, ticks.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={filterKind}
+              onChange={(e) => setFilterKind(e.target.value)}
+              placeholder="Filter kind…"
+              className="px-3 py-1.5 text-sm rounded border border-theme-border bg-theme-background"
+            />
+            <Button size="sm" variant="secondary" onClick={refreshBacklog} disabled={loading}>
+              Refresh
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={filterKind}
-            onChange={(e) => setFilterKind(e.target.value)}
-            placeholder="Filter kind…"
-            className="px-3 py-1.5 text-sm rounded border border-theme-border bg-theme-background"
-          />
-          <Button size="sm" variant="secondary" onClick={refreshBacklog} disabled={loading}>
-            Refresh
-          </Button>
+
+        {/* Quick-filter chips. Kind chips set the kind substring filter;
+            severity chips set the floor. Both compose with the free-text
+            kind input above. */}
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-theme-muted">Kind:</span>
+          {QUICK_KIND_FILTERS.map((chip) => {
+            const active = filterKind === chip.match;
+            return (
+              <button
+                key={chip.label}
+                onClick={() => setFilterKind(chip.match)}
+                className={
+                  'px-2 py-0.5 rounded border transition-colors ' +
+                  (active
+                    ? 'bg-theme-accent text-theme-on-accent border-theme-accent'
+                    : 'border-theme-border text-theme-primary hover:bg-theme-hover')
+                }
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+          <span className="text-theme-muted ml-3">Min severity:</span>
+          {(['all', 'low', 'medium', 'high', 'critical'] as const).map((sev) => {
+            const active = minSeverity === sev;
+            return (
+              <button
+                key={sev}
+                onClick={() => setMinSeverity(sev)}
+                className={
+                  'px-2 py-0.5 rounded border transition-colors ' +
+                  (active
+                    ? 'bg-theme-accent text-theme-on-accent border-theme-accent'
+                    : 'border-theme-border text-theme-primary hover:bg-theme-hover')
+                }
+              >
+                {sev}
+              </button>
+            );
+          })}
         </div>
       </header>
 
@@ -160,9 +230,23 @@ export function FleetDashboardPage(): React.JSX.Element {
                         {new Date(e.emitted_at).toLocaleTimeString()}
                       </span>
                     </div>
-                    {e.source && (
-                      <div className="text-xs text-theme-muted mt-0.5">source: {e.source}</div>
-                    )}
+                    <div className="flex items-center gap-3 mt-0.5 text-xs text-theme-muted">
+                      {e.source && <span>source: {e.source}</span>}
+                      {/* When an event references a specific module (e.g.
+                          system.module_published), give the operator one-
+                          click navigation to that module's detail page. */}
+                      {e.node_module_id && (
+                        <Link
+                          to={`/app/system/modules?module_id=${e.node_module_id}`}
+                          onClick={(ev) => ev.stopPropagation()}
+                          className="inline-flex items-center gap-1 text-theme-link hover:underline"
+                          title="View module"
+                        >
+                          <Package size={12} />
+                          {(e.payload?.module_name as string | undefined) ?? 'view module'}
+                        </Link>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>
