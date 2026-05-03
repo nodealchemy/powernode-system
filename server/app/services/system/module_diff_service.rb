@@ -75,9 +75,17 @@ module System
     # Snapshot a NodeModule with the spec arrays from a specific version
     # so RsyncSpecCompiler produces the rsync_spec for that version, not
     # the module's current spec.
+    #
+    # Important: clear parent_module_id on the shadow so NodeModule#file_spec
+    # returns the explicitly-assigned column value rather than delegating
+    # to parent.dependency_spec at runtime. The diff service's purpose is
+    # to compare what each version SHIPPED, not what the parent currently
+    # delegates — for dependants those are different (the version's
+    # snapshot was captured at create time, the parent has since drifted).
     def snapshot_module(node_module, version)
       shadow = node_module.dup
-      shadow.id = node_module.id  # preserve associations
+      shadow.id = node_module.id           # preserve associations
+      shadow.parent_module_id = nil        # disable dependant inheritance for the diff
       shadow.mask = version.mask
       shadow.file_spec = version.file_spec
       shadow.package_spec = version.package_spec

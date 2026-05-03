@@ -72,12 +72,30 @@ module Api
           end
 
           def node_modules
-            # Get modules assigned to this node
-            module_ids = ::System::NodeModuleAssignment
-                         .where(node_id: current_node.id, enabled: true)
-                         .pluck(:node_module_id)
+            # Two pathways for "module on this node":
+            #
+            # 1. Base modules — explicit NodeModuleAssignment row pointing at
+            #    this node. These are the subscription-variety / standalone
+            #    modules the operator attached.
+            # 2. Dependant children — config-variety or instance-variety
+            #    modules created via NodeModuleAssignment#create_dependant!.
+            #    These have parent_module_id set and node_id pointing at this
+            #    node directly; no assignment row is created (the
+            #    parent_module + node FK pair already scopes them).
+            #
+            # The agent needs to see both. Earlier the query only honored
+            # path 1, so dependant children were silently absent from the
+            # on-node module list.
+            assigned_ids = ::System::NodeModuleAssignment
+                           .where(node_id: current_node.id, enabled: true)
+                           .pluck(:node_module_id)
 
-            ::System::NodeModule.where(id: module_ids)
+            dependant_ids = ::System::NodeModule
+                            .where(node_id: current_node.id, enabled: true)
+                            .where.not(parent_module_id: nil)
+                            .pluck(:id)
+
+            ::System::NodeModule.where(id: (assigned_ids + dependant_ids).uniq)
           end
 
           def resolve_module_dependencies(modules)
