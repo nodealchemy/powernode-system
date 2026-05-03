@@ -68,3 +68,36 @@
     class: "SystemFleetEventRetentionJob"
     queue: maintenance
     description: "Fleet: retention sweep of System::FleetEvent rows"
+
+  # GitOps reconciliation — every 5 minutes.
+  # Iterates GitopsRepository rows due for sync (last_synced_at older than
+  # 5min OR null); per-repo: clones/pulls → parses fleet.yaml → diffs vs
+  # live → opens Ai::AgentProposal rows for each diff.
+  #
+  # Single-flight enforced via Redis lock (10 min TTL bounded by clone
+  # latency).
+  #
+  # Comprehensive stabilization sweep P5; Golden Eclipse M-D2-3.
+  system_gitops_sync:
+    cron: "*/5 * * * *"
+    class: "SystemGitopsSyncJob"
+    queue: system
+    description: "GitOps: reconcile fleet.yaml → live state, open Ai::AgentProposal for diffs"
+
+  # Cloud-state reconciliation — hourly at :17 (offset from :00 reaper and
+  # :07 CVE feed to spread cloud-API load).
+  # Iterates every account's enabled provider connections + each active
+  # region; calls System::CloudSyncService.sync_region_instances per region
+  # to reconcile NodeInstance status / IP / instance-type drift.
+  #
+  # Single-flight enforced via Redis lock (30 min TTL — bounded by
+  # cloud-API latency on large fleets). A slow tick won't double-fire;
+  # the next hour's tick simply skips with `{ skipped: true }` if the
+  # lock is held.
+  #
+  # Comprehensive stabilization sweep P2.1.
+  system_cloud_sync:
+    cron: "17 * * * *"
+    class: "SystemCloudSyncJob"
+    queue: system
+    description: "System: hourly cloud-state reconciliation across all accounts"

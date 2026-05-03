@@ -59,6 +59,18 @@ Account.class_eval do
   # Puppet
   has_many :system_puppet_modules, class_name: "System::PuppetModule", dependent: :restrict_with_error
 
+  # GitOps reconciliation (M-D2-3, comprehensive stabilization sweep P5)
+  has_many :system_gitops_repositories,
+           class_name: "System::GitopsRepository",
+           dependent: :destroy
+
+  # NodeInstance-as-Agent peers (F-3, comprehensive stabilization sweep P6)
+  # destroy_all is safe — peers are derived from node_instances; if the
+  # account is being destroyed, all instances are too.
+  has_many :system_node_instance_peers,
+           class_name: "System::NodeInstancePeer",
+           dependent: :destroy
+
   # System uses platform's FileManagement::Object for kernels/ramdisks/images
   # and module data tarballs. The platform-level Account model already
   # declares `has_many :file_objects, class_name: "FileManagement::Object"`,

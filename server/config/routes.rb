@@ -76,6 +76,18 @@ Rails.application.routes.draw do
         resources :module_dependencies
         resources :module_puppet_assignments, only: %i[show update destroy]
 
+        # Per-(node, module) toggle endpoints. The assignment row carries
+        # `enabled`, `priority`, `config` — toggling enabled lets operators
+        # disable a module on specific nodes without losing the join state.
+        # Legacy parity for powernode-server's node_module_subscription.
+        # Comprehensive stabilization sweep P2.2.
+        resources :node_module_assignments, only: %i[show] do
+          member do
+            post :enable
+            post :disable
+          end
+        end
+
         resources :node_templates do
           member do
             get :export
@@ -124,6 +136,25 @@ Rails.application.routes.draw do
           end
         end
 
+        # === NodeInstance-as-Agent peers (F-3) ===
+        # Operator-side: list/show + activate/deactivate + delegate task.
+        # Comprehensive stabilization sweep P6.
+        resources :node_instance_peers, only: %i[index show] do
+          member do
+            post :activate
+            post :deactivate
+            post :execute
+          end
+        end
+
+        # === GitOps reconciliation (M-D2-3) ===
+        resources :gitops_repositories, only: %i[index show create update destroy] do
+          member do
+            post :sync_now
+            get :sync_runs
+          end
+        end
+
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
           post "gitea/module", to: "gitea_module#handle"
@@ -141,6 +172,13 @@ Rails.application.routes.draw do
         post "fleet/signals",                to: "fleet#signals"
         post "fleet/attribute_failure",      to: "fleet#attribute_failure"
         post "fleet/attribution_feedback",   to: "fleet#attribution_feedback"
+        # Boot replay timeline — comprehensive stabilization sweep P7.1.
+        get  "fleet/boot_replay",            to: "fleet#boot_replay"
+
+        # === Module Marketplace (M-FE-2 — comprehensive sweep P7.2) ===
+        # Browse-side catalog. Lists modules with trust tier badges and
+        # version metadata. Submission/review pipeline is out of scope.
+        resources :marketplace, only: %i[index show], controller: "marketplace"
 
         # === Worker API (token-authenticated workers) ===
         namespace :worker_api do
@@ -228,6 +266,18 @@ Rails.application.routes.draw do
 
           # Nightly retention sweep — drops aged FleetEvents.
           post "fleet/retention_sweep", to: "fleet#retention_sweep"
+
+          # Cloud-state reconciliation — invoked hourly by SystemCloudSyncJob.
+          # Iterates every account's enabled provider connections and syncs
+          # each region's instances via System::CloudSyncService.
+          # Comprehensive stabilization sweep P2.1.
+          post "cloud_sync/reconcile", to: "cloud_sync#reconcile"
+
+          # GitOps reconcile tick — invoked by SystemGitopsSyncJob every 5
+          # minutes. Iterates GitopsRepository rows due for sync, opens
+          # Ai::AgentProposal for each diff. Comprehensive stabilization
+          # sweep P5; Golden Eclipse M-D2-3.
+          post "gitops/reconcile", to: "gitops#reconcile"
         end
 
         # === Node API (instance-token-authenticated running instances) ===
@@ -273,6 +323,11 @@ Rails.application.routes.draw do
           get "files/scripts/:id", to: "files#script_file"
           get "files/node_modules", to: "files#node_modules"
           get "files/node_scripts", to: "files#node_scripts"
+
+          # NodeInstance-as-Agent peer endpoints (F-3)
+          # Comprehensive stabilization sweep P6.
+          post "peer/announce", to: "peer#announce"
+          post "peer/execute_result", to: "peer#execute_result"
         end
       end
     end
