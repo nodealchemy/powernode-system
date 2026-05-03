@@ -131,6 +131,23 @@ platform_arm64_uefi = System::NodePlatform.find_or_create_by!(account: account, 
 end
 puts "    ✓ NodePlatform: ubuntu-24.04-arm64-uefi (id=#{platform_arm64_uefi.id})"
 
+# ── Cosign trust policy backfill (Phase 2 — Chunk 1) ────────────────────────
+#
+# Sets default cosign identity + issuer regexps so the disk-image
+# publication processor will accept artifacts signed by the platform's
+# CI pipelines. Operators can edit these via the PlatformEditModal in
+# the UI when they switch CI providers (e.g. self-hosted Gitea →
+# managed GitHub Actions). Idempotent: only sets when blank, so
+# operator overrides are preserved across seed reruns.
+[platform, platform_rpi4, platform_arm64_uefi].each do |p|
+  attrs = {}
+  attrs[:cosign_identity_regexp] = "https://git.ipnode.org/powernode/.+" if p.cosign_identity_regexp.blank?
+  attrs[:cosign_issuer_regexp]   = "https://git.ipnode.org"              if p.cosign_issuer_regexp.blank?
+  next if attrs.empty?
+  p.update!(attrs)
+  puts "    ↻ NodePlatform: #{p.name} cosign trust policy seeded"
+end
+
 # ── Provider catalog (local_qemu) ───────────────────────────────────────────
 
 provider = System::Provider.find_or_create_by!(account: account, provider_type: "local_qemu", name: "local-qemu") do |p|

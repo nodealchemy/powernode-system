@@ -444,4 +444,67 @@ FactoryBot.define do
     last_seen_at { Time.current }
     expires_at { 24.hours.from_now }
   end
+
+  # System::DiskImageWebhook — per-account, per-pipeline HMAC secret.
+  # Uses the model's create_with_secret! factory in tests that need
+  # the plaintext (it's not recoverable post-create); this build path
+  # bypasses for cases where verify_signature isn't being exercised.
+  factory :system_disk_image_webhook, class: "System::DiskImageWebhook" do
+    association :account
+    sequence(:label) { |n| "test-pipeline-#{n}" }
+    secret { "pndis_#{SecureRandom.urlsafe_base64(32)}" }
+    secret_preview { "pndis_te" }
+    status { "active" }
+  end
+
+  # System::DiskImagePublication — append-only history of CI builds.
+  # Default factory creates a queued publication; use traits for
+  # downstream states (e.g. :published, :failed, :retired).
+  factory :system_disk_image_publication, class: "System::DiskImagePublication" do
+    association :account
+    association :node_platform, factory: :system_node_platform
+    sequence(:git_sha) { |n| "test-sha-#{n}-#{SecureRandom.hex(4)}" }
+    sha256 { "a" * 64 }
+    size_bytes { 10_485_760 } # 10 MB
+    arch { "arm64" }
+    firmware_ref { "1.20240306" }
+    oci_ref { "git.ipnode.org/powernode/disk-images/test:abc" }
+    status { "queued" }
+    payload { {} }
+
+    trait :awaiting_upload do
+      status { "awaiting_upload" }
+    end
+
+    trait :verifying do
+      status { "verifying" }
+    end
+
+    trait :published do
+      status { "published" }
+      verified_at { Time.current }
+      published_at { Time.current }
+      after(:build) do |pub, _evaluator|
+        pub.file_object ||= FactoryBot.create(:file_object,
+          account: pub.account,
+          filename: "test.img",
+          file_size: pub.size_bytes,
+          content_type: "application/octet-stream",
+          checksum_sha256: pub.sha256
+        )
+      end
+    end
+
+    trait :failed do
+      status { "failed" }
+      error_message { "test failure" }
+    end
+
+    trait :retired do
+      status { "retired" }
+      verified_at { Time.current }
+      published_at { 1.week.ago }
+      retired_at { Time.current }
+    end
+  end
 end

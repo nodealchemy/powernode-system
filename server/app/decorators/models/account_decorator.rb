@@ -25,6 +25,16 @@ Account.class_eval do
   has_many :system_node_architectures, class_name: "System::NodeArchitecture", dependent: :restrict_with_error
   has_many :system_node_platforms, class_name: "System::NodePlatform", dependent: :restrict_with_error
   has_many :system_node_templates, class_name: "System::NodeTemplate", dependent: :restrict_with_error
+
+  # Disk-image publication flow (Phase 2 — Chunk 1, plan wondrous-yawning-anchor.md).
+  # Both per-account scoped — each account owns its CI workers, webhook
+  # secrets, and publication history independently.
+  has_many :system_disk_image_publications,
+           class_name: "System::DiskImagePublication",
+           dependent: :destroy
+  has_many :system_disk_image_webhooks,
+           class_name: "System::DiskImageWebhook",
+           dependent: :destroy
   has_many :system_node_scripts, class_name: "System::NodeScript", dependent: :restrict_with_error
   has_many :system_node_mount_points, class_name: "System::NodeMountPoint", dependent: :restrict_with_error
 
