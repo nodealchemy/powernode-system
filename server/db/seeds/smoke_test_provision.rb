@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# Golden Eclipse — Smoke-test provisioning driver.
+# System extension — Smoke-test provisioning driver.
 #
-# Exercises the LocalQemuProvider end-to-end against the smoke-test catalog.
+# Exercises the LocalQemuProvider end-to-end against the node-module
+# catalog (see node_module_catalog.rb).
 # Two modes:
 #   POWERNODE_LIBVIRT_MODE=local   → RecorderRunner (default in dev) — validates
 #                                    dispatch chain logically without VM startup
@@ -31,7 +32,7 @@ abort("  ❌ Template not found — run node_module_catalog.rb first") unless te
 
 provider = System::Provider.find_by(account: account, provider_type: "local_qemu") or abort("  ❌ No local_qemu provider — re-run node_module_catalog")
 region   = provider.provider_regions.find_by(region_code: "local") or abort("  ❌ No local region")
-itype    = provider.provider_instance_types.find_by(instance_type_code: "smoke.small") or abort("  ❌ No smoke.small itype")
+itype    = provider.provider_instance_types.find_by(instance_type_code: "qemu.small") or abort("  ❌ No qemu.small itype — re-run node_module_catalog")
 
 puts "  Template: #{template.name} (#{template.template_modules.count} modules)"
 puts "  Provider: #{provider.name} → #{region.region_code} → #{itype.name}"
@@ -84,7 +85,7 @@ puts ""
 
 # ── Drive the provider directly (skips ProvisioningService orchestration) ─
 
-connection = provider.provider_connections.find_by(name: "smoke-conn") or abort("  ❌ No smoke-conn")
+connection = provider.provider_connections.find_by(name: "qemu-conn") or abort("  ❌ No qemu-conn — re-run node_module_catalog")
 adapter = System::Providers::Registry.for(connection, region: region)
 puts "  Adapter:  #{adapter.class.name} (provider_type=#{adapter.provider_type})"
 puts "  Runner:   #{System::Providers::LocalQemuProvider.runner.class.name}"

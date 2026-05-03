@@ -4,8 +4,8 @@
 # system via the bootc workflow (https://containers.github.io/bootc/) —
 # the entire OS is the container image, kernel and all.
 #
-# v0 stages: minimal Ubuntu 24.04 + kernel + dracut + ipn-agent. The
-# Containerfile is parameterized by BASE_IMAGE_DIGEST so reproducible
+# v0 stages: minimal Ubuntu 24.04 + kernel + dracut + powernode-agent.
+# The Containerfile is parameterized by BASE_IMAGE_DIGEST so reproducible
 # builds can pin the exact base layer.
 #
 # Reference: Golden Eclipse plan M3 — images/oci.
@@ -36,8 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Stage the agent binary (built by extensions/system/agent CI for matching arch).
-COPY ipn-agent-${TARGETARCH} /sbin/ipn-agent
-RUN chmod +x /sbin/ipn-agent
+COPY powernode-agent-${TARGETARCH} /sbin/powernode-agent
+RUN chmod +x /sbin/powernode-agent
 
 # Powernode dracut module
 COPY modules.d/90powernode/ /usr/lib/dracut/modules.d/90powernode/

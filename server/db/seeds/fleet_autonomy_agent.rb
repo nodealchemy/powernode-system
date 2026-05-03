@@ -54,6 +54,17 @@ def upsert_fleet_policies!(account, agent, policies)
 end
 
 # ── Fleet Autonomy agent ─────────────────────────────────────────────────
+#
+# Ai::Agent requires a creator (User) + provider (Ai::Provider) at create
+# time. Pick the admin user + first available provider as defaults; an
+# operator can swap the provider later in the agents UI.
+
+creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
+provider = ::Ai::Provider.first
+unless creator && provider
+  puts "  ⚠️  Need at least one user + Ai::Provider before seeding the Fleet Autonomy agent — skipping"
+  return
+end
 
 fleet_agent = admin_account.ai_agents.find_or_initialize_by(
   name: "Fleet Autonomy",
@@ -62,11 +73,16 @@ fleet_agent = admin_account.ai_agents.find_or_initialize_by(
 fleet_agent.assign_attributes(
   description: "Self-improving fleet reconciler — runs sensors, gates actions, extracts learnings",
   status: "active",
-  configuration: { "interval_seconds" => 60, "extension" => "system" }
+  autonomy_config: { "interval_seconds" => 60, "extension" => "system" }
 )
+# Only set creator/provider on new records — preserves operator overrides on existing rows.
+if fleet_agent.new_record?
+  fleet_agent.creator  = creator
+  fleet_agent.provider = provider
+end
 fleet_agent.save!
 ensure_trust_score!(admin_account, fleet_agent)
-puts "  ✅ Fleet Autonomy agent: #{fleet_agent.persisted? ? 'ready' : 'created'}"
+puts "  ✅ Fleet Autonomy agent: #{fleet_agent.previously_new_record? ? 'created' : 'updated'}"
 
 # ── Default action policies (mirrors plan M7 vocabulary) ────────────────
 
