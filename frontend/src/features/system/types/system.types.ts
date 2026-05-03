@@ -125,8 +125,109 @@ export interface SystemNodePlatform {
   disk_image_sha256?: string;
   disk_image_size_bytes?: number;
   disk_image_built_at?: string;
+  disk_image_oci_ref?: string;
+  disk_image_git_sha?: string;
+  disk_image_publication_status?: 'none' | 'verifying' | 'published' | 'failed';
+  disk_image_publication_error?: string;
+  // Cosign trust policy — operator-editable, gated on
+  // system.platforms.manage_disk_image_policy permission.
+  cosign_identity_regexp?: string;
+  cosign_issuer_regexp?: string;
+  // Per-platform retention count for disk-image publications
+  // (default 3 — older publications get retired by the daily reaper).
+  disk_image_retention_count?: number;
   created_at: string;
   updated_at: string;
+}
+
+// Append-only history of CI builds for a platform. Powers the
+// DiskImageHistoryTab on the platform detail page + drives rollback.
+// Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 4).
+export type SystemDiskImagePublicationStatus =
+  | 'queued'
+  | 'awaiting_upload'
+  | 'verifying'
+  | 'published'
+  | 'failed'
+  | 'retired'
+  | 'purged';
+
+export interface SystemDiskImagePublication {
+  id: string;
+  platform_id: string;
+  account_id: string;
+  status: SystemDiskImagePublicationStatus;
+  active: boolean;
+  git_sha: string;
+  git_sha_short: string;
+  sha256: string;
+  sha256_short: string;
+  oci_ref?: string;
+  size_bytes: number;
+  firmware_ref?: string;
+  arch: string;
+  attempt_count: number;
+  attestation_predicate?: Record<string, unknown> | null;
+  attestation_present: boolean;
+  cosign_bundle_present: boolean;
+  file_object_id?: string;
+  prior_file_object_id?: string;
+  webhook_id?: string;
+  webhook_label?: string;
+  triggered_by_worker_id?: string;
+  error_message?: string;
+  verified_at?: string;
+  published_at?: string;
+  retired_at?: string;
+  purged_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Per-account, per-pipeline HMAC webhook secret.
+// Operators see secret_preview (first 8 chars) only; the full
+// plaintext is shown EXACTLY ONCE on create + rotate response bodies.
+export interface SystemDiskImageWebhook {
+  id: string;
+  account_id: string;
+  label: string;
+  status: 'active' | 'disabled' | 'revoked';
+  secret_preview: string;
+  last_received_at?: string;
+  received_count: number;
+  last_rotated_at?: string;
+  created_by_id?: string;
+  webhook_url_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Returned by POST /disk_image_webhooks (and rotate_secret) — wraps
+// the serialized webhook + the plaintext secret + the absolute URL.
+export interface SystemDiskImageWebhookCreatedResponse {
+  disk_image_webhook: SystemDiskImageWebhook;
+  secret_plaintext: string;
+  webhook_url: string;
+  note: string;
+}
+
+// CI worker (Worker row with ci_worker role).
+export interface SystemCiWorker {
+  id: string;
+  account_id: string;
+  name: string;
+  description?: string;
+  status: string;
+  last_seen_at?: string;
+  roles: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SystemCiWorkerCreatedResponse {
+  ci_worker: SystemCiWorker;
+  token_plaintext: string;
+  note: string;
 }
 
 export interface SystemNodeArchitecture {

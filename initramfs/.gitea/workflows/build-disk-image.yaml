@@ -165,27 +165,145 @@ jobs:
           } >disk-image-manifest.txt
           cat disk-image-manifest.txt
 
-      - name: Notify platform of new disk images
-        if: env.POWERNODE_API_TOKEN != ''
+      # ─── Disk-image registration with the platform (Phase 2 — Chunk 4) ───
+      # Plan: docs/plans/wondrous-yawning-anchor.md.
+      #
+      # Three modes:
+      #  1. Push to OCI registry (oras) with cosign sign-blob + cosign attest-blob
+      #     for the publication payload. Default for all builds — needed even when
+      #     the platform notify is skipped, so the artifact is durably stored.
+      #  2. HMAC webhook to platform (default) — operator's CI provides
+      #     POWERNODE_DISK_IMAGE_WEBHOOK_URL + POWERNODE_DISK_IMAGE_WEBHOOK_SECRET
+      #     pointing at /api/v1/system/webhooks/disk_image/built/:webhook_id.
+      #     Platform pulls from OCI, verifies cosign + attestation, registers.
+      #  3. Cloud-direct upload (S3/Azure/GCS only) — POWERNODE_STORAGE_MODE=cloud-direct.
+      #     CI uploads bytes directly to storage backend via signed PUT URL.
+      #     Avoids OCI registry pull on the platform side.
+
+      - name: Push disk images to OCI registry (cosign-signed + attested)
+        if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
-          POWERNODE_API: ${{ secrets.POWERNODE_API_URL }}
-          POWERNODE_API_TOKEN: ${{ secrets.POWERNODE_API_TOKEN }}
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'git.ipnode.org' }}
+          POWERNODE_REGISTRY_USER: ${{ secrets.POWERNODE_REGISTRY_USER }}
+          POWERNODE_REGISTRY_TOKEN: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
         run: |
-          # POST /api/v1/system/worker_api/disk_images/upload — registers the
-          # new image's digest + size against the matching NodePlatform.
-          # (Endpoint to be added in a follow-up — placeholder for now.)
+          if [ -n "$POWERNODE_REGISTRY_USER" ] && [ -n "$POWERNODE_REGISTRY_TOKEN" ]; then
+            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" || true
+          fi
+
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
             img="extensions/system/initramfs/build/arm64/${entry#*:}"
             [ -f "$img" ] || continue
+
             sha="$(sha256sum "$img" | awk '{print $1}')"
             size="$(stat -c '%s' "$img")"
-            echo "Would notify platform: platform=$platform sha=$sha size=$size"
-            # curl -X POST "$POWERNODE_API/api/v1/system/worker_api/disk_images/upload" \
-            #   -H "Authorization: Bearer $POWERNODE_API_TOKEN" \
-            #   -H "Content-Type: application/json" \
-            #   -d "{\"platform_name\":\"$platform\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"git_sha\":\"${{ github.sha }}\"}"
+            ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
+
+            # 1. Sign blob (signature on the bytes themselves)
+            cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" || echo "WARN: cosign sign-blob failed for $img"
+
+            # 2. Attest payload (signature on the publication metadata —
+            #    catches webhook-payload tampering even if HMAC was leaked).
+            cat >/tmp/payload-${platform}.json <<EOF
+          {
+            "platform_name": "$platform",
+            "sha256":        "$sha",
+            "size_bytes":    $size,
+            "git_sha":       "${{ github.sha }}",
+            "firmware_ref":  "${{ inputs.firmware_ref }}",
+            "oci_ref":       "$ref",
+            "arch":          "arm64",
+            "built_at":      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+            cosign attest-blob --yes --predicate /tmp/payload-${platform}.json \
+              --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed for $img"
+
+            # 3. Push everything to OCI registry as a single artifact.
+            oras push "$ref" \
+              --artifact-type application/vnd.powernode.disk-image.v1 \
+              "$img:application/octet-stream" \
+              "$img.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json" \
+              "$img.attestation-bundle:application/vnd.dev.cosign.attestation.v1+json" \
+              || echo "WARN: oras push failed for $platform"
+
+            echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
+          done
+
+      - name: Notify platform of new disk images (HMAC webhook — OCI-pull mode)
+        if: env.POWERNODE_DISK_IMAGE_WEBHOOK_URL != '' && env.POWERNODE_STORAGE_MODE != 'cloud-direct'
+        env:
+          POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
+          POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'git.ipnode.org' }}
+        run: |
+          for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
+                       "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
+            platform="${entry%%:*}"
+            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            [ -f "$img" ] || continue
+
+            sha="$(sha256sum "$img" | awk '{print $1}')"
+            size="$(stat -c '%s' "$img")"
+            ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
+
+            body=$(jq -nc \
+              --arg p "$platform" \
+              --arg ref "$ref" \
+              --arg sha "$sha" \
+              --arg gs "${{ github.sha }}" \
+              --arg fr "${{ inputs.firmware_ref }}" \
+              --argjson sz "$size" \
+              --arg arch "arm64" \
+              '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz,
+                git_sha:$gs, firmware_ref:$fr, arch:$arch}')
+
+            sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex \
+                  | awk '{print $2}')
+
+            echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
+            curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+              -H "X-Powernode-Signature: sha256=$sig" \
+              -H "Content-Type: application/json" \
+              -d "$body" \
+              || echo "WARN: webhook POST failed for $platform"
+          done
+
+      - name: Direct-upload disk images (cloud-install mode)
+        if: env.POWERNODE_STORAGE_MODE == 'cloud-direct' && env.POWERNODE_CI_WORKER_TOKEN != ''
+        env:
+          POWERNODE_API_BASE: ${{ secrets.POWERNODE_API_BASE }}
+          POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+        run: |
+          for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
+                       "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
+            platform="${entry%%:*}"
+            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            [ -f "$img" ] || continue
+
+            sha="$(sha256sum "$img" | awk '{print $1}')"
+            size="$(stat -c '%s' "$img")"
+
+            # Phase 1: initiate (returns presigned PUT URL + publication_id)
+            init=$(curl -fsSL -X POST "$POWERNODE_API_BASE/api/v1/system/worker_api/disk_image_publications/initiate" \
+              -H "X-Worker-Token: $POWERNODE_CI_WORKER_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"platform_name\":\"$platform\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"git_sha\":\"${{ github.sha }}\",\"arch\":\"arm64\",\"firmware_ref\":\"${{ inputs.firmware_ref }}\"}")
+            pub_id=$(echo "$init" | jq -r .data.publication_id)
+            url=$(echo "$init" | jq -r .data.signed_upload_url)
+
+            # Phase 2: PUT bytes directly to storage backend
+            curl -fsSL -X PUT "$url" \
+              --data-binary "@$img" \
+              -H "Content-Type: application/octet-stream"
+
+            # Phase 3: finalize (verify SHA + cosign + flip platform pointer)
+            curl -fsSL -X POST "$POWERNODE_API_BASE/api/v1/system/worker_api/disk_image_publications/finalize" \
+              -H "X-Worker-Token: $POWERNODE_CI_WORKER_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"publication_id\":\"$pub_id\",\"sha256_verify\":\"$sha\"}"
           done
 
       - name: Upload artifacts

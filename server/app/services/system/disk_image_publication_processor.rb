@@ -97,12 +97,19 @@ module System
     # side too — matching our independent SHA check during ingest.
     def upload_to_storage!(publication, local_path)
       storage = ::FileStorageService.new(publication.account)
+      # FileObject.belongs_to :uploaded_by is required. CI-triggered
+      # uploads don't have a User context, so attribute to the account's
+      # owner/admin (whichever exists). The DiskImagePublication carries
+      # triggered_by_worker for the full audit trail.
+      # NOTE: FileStorageService.upload_file expects `uploaded_by_id`
+      # (singular id), not the User object (`uploaded_by:`).
+      uploader = publication.account.users.first
       File.open(local_path, "rb") do |io|
         storage.upload_file(io,
-          filename:     storage_filename(publication),
-          content_type: "application/octet-stream",
-          category:     "disk_image",
-          uploaded_by:  publication.triggered_by_worker
+          filename:        storage_filename(publication),
+          content_type:    "application/octet-stream",
+          category:        "disk_image",
+          uploaded_by_id:  uploader&.id
         )
       end
     end

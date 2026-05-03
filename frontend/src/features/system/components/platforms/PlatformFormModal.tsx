@@ -32,7 +32,12 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
     init_script: '',
     sync_script: '',
     enabled: true,
-    public: false
+    public: false,
+    // Disk-image trust policy + retention (Phase 2 — Chunk 4).
+    // Plan: docs/plans/wondrous-yawning-anchor.md.
+    cosign_identity_regexp: '',
+    cosign_issuer_regexp: '',
+    disk_image_retention_count: 3,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -72,7 +77,10 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
           init_script: editPlatform.init_script || '',
           sync_script: editPlatform.sync_script || '',
           enabled: editPlatform.enabled,
-          public: editPlatform.public
+          public: editPlatform.public,
+          cosign_identity_regexp: editPlatform.cosign_identity_regexp || '',
+          cosign_issuer_regexp: editPlatform.cosign_issuer_regexp || '',
+          disk_image_retention_count: editPlatform.disk_image_retention_count ?? 3,
         });
       } else {
         setFormData({
@@ -83,7 +91,10 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
           init_script: '',
           sync_script: '',
           enabled: true,
-          public: false
+          public: false,
+          cosign_identity_regexp: '',
+          cosign_issuer_regexp: '',
+          disk_image_retention_count: 3,
         });
       }
       setErrors({});
@@ -317,6 +328,82 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>
+              </div>
+
+              {/*
+                Disk-image trust policy + retention.
+                Backend-side, these fields are gated on the
+                system.platforms.manage_disk_image_policy permission —
+                operators without it have the values silently dropped
+                from the params permit list. We render the fields
+                regardless so operators see what's configured; only
+                the SAVE attempt would fail server-side. Plan:
+                docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 4).
+              */}
+              <div className="border-t border-theme pt-4 mt-2">
+                <h3 className="text-sm font-medium text-theme-primary mb-3">
+                  Disk-image trust policy
+                </h3>
+                <p className="text-xs text-theme-tertiary mb-3">
+                  Cosign Sigstore Fulcio identity + issuer regexps that the disk-image
+                  publication processor will accept signatures from. CI runs whose
+                  signing identity does not match either regexp will be rejected.
+                </p>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label htmlFor="cosign_identity_regexp" className="block text-sm text-theme-secondary mb-1">
+                      Cosign identity regexp
+                    </label>
+                    <input
+                      id="cosign_identity_regexp"
+                      name="cosign_identity_regexp"
+                      type="text"
+                      value={formData.cosign_identity_regexp}
+                      onChange={handleChange}
+                      placeholder="https://git.ipnode.org/powernode/.+"
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="cosign_issuer_regexp" className="block text-sm text-theme-secondary mb-1">
+                      Cosign OIDC issuer regexp
+                    </label>
+                    <input
+                      id="cosign_issuer_regexp"
+                      name="cosign_issuer_regexp"
+                      type="text"
+                      value={formData.cosign_issuer_regexp}
+                      onChange={handleChange}
+                      placeholder="https://git.ipnode.org"
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="disk_image_retention_count" className="block text-sm text-theme-secondary mb-1">
+                      Retention: keep latest N publications
+                    </label>
+                    <input
+                      id="disk_image_retention_count"
+                      name="disk_image_retention_count"
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={formData.disk_image_retention_count}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        disk_image_retention_count: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1))
+                      }))}
+                      className="w-32 px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                    />
+                    <p className="text-xs text-theme-tertiary mt-1">
+                      Older publications get retired by the daily reaper (file_object soft-deleted).
+                      Default 3, max 50.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 

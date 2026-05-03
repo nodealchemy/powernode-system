@@ -26,6 +26,8 @@ const PuppetModulesPage = lazyPage(() => import('./pages/app/system/PuppetModule
 const FleetDashboardPage = lazyPage(() => import('./pages/app/system/FleetDashboardPage'));
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
 const UnclaimedDevicesPage = lazyPage(() => import('./pages/app/system/UnclaimedDevicesPage'));
+const DiskImageWebhooksPage = lazyPage(() => import('./pages/app/system/DiskImageWebhooksPage'));
+const CiWorkersPage = lazyPage(() => import('./pages/app/system/CiWorkersPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -52,6 +54,8 @@ export function register(): void {
     { path: '/system/fleet', component: FleetDashboardPage },
     { path: '/system/templates/compose', component: TemplateComposerPage },
     { path: '/system/unclaimed-devices', component: UnclaimedDevicesPage },
+    { path: '/system/disk-image-webhooks', component: DiskImageWebhooksPage },
+    { path: '/system/ci-workers', component: CiWorkersPage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -82,6 +86,9 @@ export function register(): void {
         { label: 'Modules', path: '/app/system/modules', icon: 'Boxes', order: 12 },
         { label: 'Puppet Modules', path: '/app/system/puppet-modules', icon: 'PackageOpen', order: 13 },
         { label: 'Scripts', path: '/app/system/scripts', icon: 'FileCode', order: 14 },
+        // Disk-image CI registration (plan wondrous-yawning-anchor.md Phase 2).
+        { label: 'CI Webhooks', path: '/app/system/disk-image-webhooks', icon: 'Webhook', order: 15 },
+        { label: 'CI Workers', path: '/app/system/ci-workers', icon: 'Bot', order: 16 },
       ],
     },
   ]);
