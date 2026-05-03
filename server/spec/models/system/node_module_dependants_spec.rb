@@ -121,4 +121,57 @@ RSpec.describe System::NodeModule, "dependant modules", type: :model do
       expect { child_assignment.create_dependant! }.to raise_error(ArgumentError, /already-dependant/)
     end
   end
+
+  # `dependency_spec` semantics: the file-spec a dependant child inherits
+  # from its parent. Reading `file_spec` on a dependant transparently
+  # resolves to `parent.dependency_spec` rather than the child's own
+  # column. See node_module.rb#file_spec — mirrors legacy line 124.
+  describe "#file_spec inheritance from parent.dependency_spec" do
+    it "returns the parent's dependency_spec for dependant children" do
+      base_module.update!(dependency_spec: "/etc/nginx/sites-enabled/**\n/var/www/inherited/**")
+      child = assignment.create_dependant!
+
+      decoded = base_module.send(:decode_spec, child.file_spec).sort
+      expect(decoded).to include("/etc/nginx/sites-enabled/**", "/var/www/inherited/**")
+    end
+
+    it "tracks live changes to the parent's dependency_spec" do
+      child = assignment.create_dependant!
+      base_module.update!(dependency_spec: "/etc/v1/**")
+      decoded_v1 = base_module.send(:decode_spec, child.file_spec).sort
+      expect(decoded_v1).to eq(["/etc/v1/**"])
+
+      base_module.update!(dependency_spec: "/etc/v2/**\n/etc/v2-extra/**")
+      decoded_v2 = base_module.send(:decode_spec, child.reload.file_spec).sort
+      expect(decoded_v2).to eq(["/etc/v2-extra/**", "/etc/v2/**"])
+    end
+
+    it "ignores the dependant child's own file_spec column when parent is set" do
+      base_module.update!(dependency_spec: "/from/parent/**")
+      child = assignment.create_dependant!
+      # Direct column write on the child — silently shadowed for dependants.
+      child.update!(file_spec: "/this/should/be/ignored/**")
+
+      decoded = base_module.send(:decode_spec, child.file_spec).sort
+      expect(decoded).to eq(["/from/parent/**"])
+    end
+
+    it "returns its own column for non-dependant (base) modules" do
+      base_module.update!(file_spec: "/etc/own/**", dependency_spec: "/inherited/**")
+      decoded = base_module.send(:decode_spec, base_module.file_spec).sort
+      expect(decoded).to eq(["/etc/own/**"])
+    end
+
+    it "file_spec_text on a dependant reflects parent's dependency_spec" do
+      base_module.update!(dependency_spec: "/inherited/path")
+      child = assignment.create_dependant!
+      expect(child.file_spec_text).to include("/inherited/path")
+    end
+
+    it "rsync_spec on a dependant emits parent's dependency_spec as include rules" do
+      base_module.update!(dependency_spec: "/etc/inherited/**")
+      child = assignment.create_dependant!
+      expect(child.rsync_spec).to include("+ /etc/inherited/**\n")
+    end
+  end
 end

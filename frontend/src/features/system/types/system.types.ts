@@ -220,6 +220,14 @@ export interface SystemNodeModule {
   node_platform_name?: string;
   category_id?: string;
   category_name?: string;
+  // Dependant-module hierarchy. When `dependant: true` (i.e. parent_module_id
+  // is set), this module is a config-variety or instance-variety override of
+  // its parent. Its `file_spec` (and `file_spec_text`) returns the parent's
+  // `dependency_spec` rather than its own column — editing the column has no
+  // effect; the canonical edit point is the parent's `dependency_spec`.
+  parent_module_id?: string;
+  parent_module_name?: string;
+  dependant?: boolean;
   dependencies_count?: number;
   dependents_count?: number;
   assignments_count?: number;

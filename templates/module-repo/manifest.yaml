@@ -18,13 +18,21 @@ license: "Apache-2.0"
 # === Default content selection rules (mirrored to NodeModule on first import) ===
 # Each spec field is a list of rsync-style glob lines.
 #
-# - mask: paths to EXCLUDE from this module's blob at build time (rsync filter)
-# - file_spec: paths this module OWNS (anything matching is INCLUDED in the blob)
-# - protected_spec: paths I own that NO higher-priority neighbor may ship.
-#   The build pipeline folds these into every higher neighbor's effective_mask,
-#   so a sensitive lower-module file (e.g. /etc/shadow from system-base) cannot
-#   be overridden by a service module's overlay layer.
-# - package_spec: deb packages this module installs into the build chroot
+# - mask: paths to EXCLUDE from this module's blob at build time (rsync filter).
+#     Local-only — does NOT affect neighbor modules' blobs.
+# - file_spec: paths this module OWNS (rsync include). For DEPENDANT children
+#     (modules with parent_module_id set — config + instance varieties), this
+#     field is silently shadowed by parent.dependency_spec at read time.
+# - protected_spec: paths I own that NO neighbor may ship. The build pipeline
+#     folds these into every neighbor's effective_mask in BOTH priority
+#     directions, so a sensitive lower-module file (e.g. /etc/shadow from
+#     system-base) cannot be overridden by a service module's overlay layer.
+# - dependency_spec: the file-spec my dependant config / instance children
+#     inherit. When a child is created with `parent_module: <self>`, the
+#     child's `file_spec` reader returns this value transparently — the
+#     child's own file_spec column is dead weight. Leaf modules with no
+#     dependants leave this empty.
+# - package_spec: deb packages this module installs into the build chroot.
 mask:
   - "/var/cache/apt/**"
   - "/var/lib/apt/lists/**"
@@ -34,6 +42,7 @@ file_spec:
   - "/etc/example/**"
   - "/usr/lib/example/**"
 protected_spec: []
+dependency_spec: []
 package_spec:
   - example-package
   - example-package-extras

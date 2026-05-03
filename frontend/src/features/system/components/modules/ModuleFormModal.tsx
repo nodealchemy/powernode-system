@@ -39,8 +39,8 @@ const SPEC_LABELS: Record<SpecField, { title: string; help: string }> = {
     help: 'Debian packages installed into the build chroot (one per line).',
   },
   dependency_spec: {
-    title: 'Dependency spec',
-    help: 'Build-time dependencies between modules (rare; usually empty).',
+    title: 'Dependency spec (inherited by dependants)',
+    help: 'The file-spec this module\'s dependant config / instance children inherit. When a dependant child is created with this module as its parent, the child\'s file_spec returns this value transparently. Leaf modules with no dependants leave this empty; subscription-variety bases populate it as the contract for their children.',
   },
 };
 
@@ -519,29 +519,57 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                   internally; the form decodes / encodes for you.
                 </p>
 
-                {SPEC_FIELDS.map((field) => (
-                  <div key={field}>
-                    <label htmlFor={field} className="block text-sm font-medium text-theme-primary mb-1">
-                      {SPEC_LABELS[field].title}
-                    </label>
-                    <p className="text-xs text-theme-secondary mb-1">{SPEC_LABELS[field].help}</p>
-                    <textarea
-                      id={field}
-                      name={field}
-                      value={formData[field]}
-                      onChange={handleChange}
-                      rows={field === 'file_spec' || field === 'protected_spec' ? 5 : 3}
-                      placeholder={
-                        field === 'file_spec' ? '/etc/foo/**\n/usr/bin/foo' :
-                        field === 'mask' ? '/var/cache/apt/**\n/usr/share/doc/**' :
-                        field === 'protected_spec' ? '/etc/secret\n/etc/policy/**' :
-                        field === 'package_spec' ? 'foo\nfoo-extras' :
-                        ''
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-y font-mono text-sm"
-                    />
+                {editModule?.dependant && (
+                  <div className="rounded-lg border border-theme-info bg-theme-info/10 p-3 text-xs text-theme-primary">
+                    This is a <strong>dependant child module</strong>
+                    {editModule.parent_module_name ? <> of <code>{editModule.parent_module_name}</code></> : null}.
+                    Its <code>file_spec</code> is inherited from the parent&apos;s
+                    <code> dependency_spec</code> at runtime — editing the textarea below
+                    has no effect. To change what this dependant ships, edit the parent
+                    module&apos;s <code>dependency_spec</code>.
                   </div>
-                ))}
+                )}
+
+                {SPEC_FIELDS.map((field) => {
+                  // file_spec on a dependant child is inherited from
+                  // parent.dependency_spec — show it read-only with a
+                  // visible note rather than letting the operator edit
+                  // a column that has no effect.
+                  const isDependantInheritedField = field === 'file_spec' && !!editModule?.dependant;
+                  return (
+                    <div key={field}>
+                      <label htmlFor={field} className="block text-sm font-medium text-theme-primary mb-1">
+                        {SPEC_LABELS[field].title}
+                        {isDependantInheritedField && (
+                          <span className="ml-2 text-xs text-theme-info font-normal">
+                            (inherited from <code>{editModule?.parent_module_name ?? 'parent'}.dependency_spec</code>)
+                          </span>
+                        )}
+                      </label>
+                      <p className="text-xs text-theme-secondary mb-1">{SPEC_LABELS[field].help}</p>
+                      <textarea
+                        id={field}
+                        name={field}
+                        value={formData[field]}
+                        onChange={handleChange}
+                        readOnly={isDependantInheritedField}
+                        rows={field === 'file_spec' || field === 'protected_spec' ? 5 : 3}
+                        placeholder={
+                          field === 'file_spec' ? '/etc/foo/**\n/usr/bin/foo' :
+                          field === 'mask' ? '/var/cache/apt/**\n/usr/share/doc/**' :
+                          field === 'protected_spec' ? '/etc/secret\n/etc/policy/**' :
+                          field === 'package_spec' ? 'foo\nfoo-extras' :
+                          field === 'dependency_spec' ? '/etc/myapp/sites-enabled/**\n/var/lib/myapp/**' :
+                          ''
+                        }
+                        className={
+                          'w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-y font-mono text-sm ' +
+                          (isDependantInheritedField ? 'opacity-70 cursor-not-allowed' : '')
+                        }
+                      />
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Lifecycle */}

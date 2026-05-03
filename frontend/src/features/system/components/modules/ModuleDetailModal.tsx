@@ -306,9 +306,13 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     }> = [
       {
         key: 'file_spec',
-        title: 'File spec',
+        title: module.dependant
+          ? `File spec (inherited from ${module.parent_module_name ?? 'parent'}.dependency_spec)`
+          : 'File spec',
         icon: <FileCode className="w-4 h-4 text-theme-accent" />,
-        help: 'Paths this module owns and ships in its blob.',
+        help: module.dependant
+          ? `This is a dependant child module. Its file_spec is read-through from its parent's dependency_spec at runtime — to change what this dependant ships, edit ${module.parent_module_name ?? 'the parent'}'s dependency_spec instead.`
+          : 'Paths this module owns and ships in its blob.',
         text: module.file_spec_text,
       },
       {
@@ -336,9 +340,9 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       },
       {
         key: 'dependency_spec',
-        title: 'Dependency spec',
+        title: 'Dependency spec (inherited by dependants)',
         icon: <GitBranch className="w-4 h-4 text-theme-accent" />,
-        help: 'Build-time dependency paths between modules. Rare; usually empty.',
+        help: 'The file-spec this module\'s dependant config / instance children inherit. When a child is created with this module as its parent_module, the child\'s file_spec returns this value transparently. Subscription-variety bases populate it; leaf modules with no dependants leave it empty.',
         text: module.dependency_spec_text,
       },
     ];

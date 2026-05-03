@@ -16,9 +16,22 @@ module System
     #     local-exclude). Used for build cruft (/var/cache/apt, doc/man,
     #     /var/log) that the package install creates but I don't want to
     #     ship. Does NOT cross module boundaries.
-    #   - file_spec: paths I include in my blob (rsync local-include).
+    #   - file_spec: paths I include in my blob (rsync local-include). For
+    #     DEPENDANT children (parent_module_id present), the `file_spec`
+    #     reader transparently delegates to `parent.dependency_spec` — see
+    #     the `file_spec` method below. The column on a dependant is dead
+    #     weight; only base modules should populate it.
     #   - package_spec: deb packages installed into my build chroot.
-    #   - dependency_spec: build-time dependencies between modules.
+    #   - dependency_spec: the file-spec my DEPENDANT children inherit. When
+    #     a config-variety or instance-variety override is created with
+    #     `parent_module: <subscription-base>`, the child's `file_spec`
+    #     resolves to `<base>.dependency_spec`. Doubles as a build-time
+    #     reservation: when this module is immutable and assigned alongside
+    #     other modules on a node, its `dependency_spec` also folds into
+    #     peer modules' `effective_mask`, so peers don't ship paths
+    #     earmarked for this module's future dependant inheritance. On
+    #     leaf modules with no dependant children, `dependency_spec` is
+    #     informational only.
     #   - protected_spec (added 2026-05-02): paths I CLAIM as sensitive.
     #     Flows in BOTH priority directions into every neighbor's
     #     effective_mask, so no neighbor's blob may ship the claimed paths.
@@ -164,6 +177,16 @@ module System
     def effective_priority
       cat_position = category&.position.to_i
       (cat_position * PRIORITY_CATEGORY_MULTIPLIER) + priority.to_i
+    end
+
+    # Dependant inheritance: dependant children inherit their `file_spec`
+    # from `parent.dependency_spec` (legacy node_module.rb:123-125). The
+    # column on a dependant is silently shadowed; only base subscription
+    # modules populate it. Reading `file_spec` always returns whatever
+    # the runtime stack would actually ship in the blob.
+    def file_spec
+      return parent_module.dependency_spec if parent_module_id.present? && parent_module
+      read_attribute(:file_spec)
     end
 
     # Decoded text representation of each glob spec field (one decoded line

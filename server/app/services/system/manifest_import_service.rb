@@ -13,11 +13,17 @@ module System
   #   display_name: "Human label"     # optional
   #   description: "..."              # NodeModule.description
   #   license: "MIT"                  # informational; stored verbatim
-  #   mask:           [<glob>...]     # NodeModule.mask
-  #   file_spec:      [<glob>...]     # NodeModule.file_spec
-  #   package_spec:   [<deb>...]      # NodeModule.package_spec
-  #   dependency_spec: [<glob>...]    # NodeModule.dependency_spec (rare)
-  #   protected_spec: [<glob>...]     # NodeModule.protected_spec
+  #   mask:            [<glob>...]    # NodeModule.mask         (local rsync exclude)
+  #   file_spec:       [<glob>...]    # NodeModule.file_spec    (paths shipped in this module's blob)
+  #   package_spec:    [<deb>...]     # NodeModule.package_spec (deb packages)
+  #   dependency_spec: [<glob>...]    # NodeModule.dependency_spec — the file-spec
+  #                                   #   inherited by THIS module's dependant
+  #                                   #   children (config / instance varieties
+  #                                   #   created via `parent_module: <self>`).
+  #                                   #   Subscription-variety bases populate it;
+  #                                   #   leaf modules with no dependants leave it
+  #                                   #   empty.
+  #   protected_spec: [<glob>...]     # NodeModule.protected_spec (cross-neighbor sensitive claim)
   #   dependencies:
   #     requires:  [<repo>@<ver>...]  # resolved to ModuleDependency rows
   #     provides:  [<capability>...]  # informational

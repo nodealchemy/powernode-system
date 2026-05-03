@@ -42,6 +42,15 @@ module System
         category_name: @node_module.category&.name,
         copy_path_id: @node_module.copy_path_id,
         copy_path_name: @node_module.copy_path&.name,
+        # Dependant-module hierarchy (legacy parent_module restoration).
+        # When parent_module_id is present, this module is a dependant
+        # config-variety or instance-variety override and inherits its
+        # `file_spec` from the parent's `dependency_spec`. The frontend
+        # uses these to render dependants with a "Inherited from <parent>"
+        # note on file_spec, since editing the column has no effect.
+        parent_module_id:   @node_module.parent_module_id,
+        parent_module_name: @node_module.parent_module&.name,
+        dependant:          @node_module.parent_module_id.present?,
         dependencies_count: @node_module.module_dependencies.count,
         dependents_count: @node_module.dependent_relationships.count,
         assignments_count: @node_module.node_module_assignments.count,
