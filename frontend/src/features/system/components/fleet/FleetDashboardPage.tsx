@@ -49,7 +49,13 @@ export function FleetDashboardPage(): React.JSX.Element {
   const [loading, setLoading] = useState(false);
   const [filterKind, setFilterKind] = useState<string>('');
   const [minSeverity, setMinSeverity] = useState<FleetEvent['severity'] | 'all'>('all');
-  const [selectedCorrelation, setSelectedCorrelation] = useState<string | null>(null);
+  // Track the clicked event (full row) so the right pane can show
+  // full payload + correlation chain. Previously we only stored
+  // correlation_id, which left the pane empty when the clicked event
+  // had no correlation_id (most common case) — clicking did nothing
+  // visible.
+  const [selectedEvent, setSelectedEvent] = useState<FleetEvent | null>(null);
+  const selectedCorrelation = selectedEvent?.correlation_id ?? null;
 
   // Initial backlog
   const refreshBacklog = useCallback(async () => {
@@ -220,8 +226,8 @@ export function FleetDashboardPage(): React.JSX.Element {
                 {filteredEvents.map((e) => (
                   <li
                     key={e.id}
-                    className="px-4 py-2 hover:bg-theme-hover cursor-pointer"
-                    onClick={() => setSelectedCorrelation(e.correlation_id)}
+                    className={`px-4 py-2 hover:bg-theme-hover cursor-pointer ${selectedEvent?.id === e.id ? 'bg-theme-hover' : ''}`}
+                    onClick={() => setSelectedEvent(e)}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="font-mono text-xs flex-1 truncate">{e.kind}</div>
@@ -255,37 +261,88 @@ export function FleetDashboardPage(): React.JSX.Element {
         </section>
 
         <section className="flex flex-col bg-theme-surface rounded-lg border border-theme-border overflow-hidden">
-          <div className="px-4 py-2 border-b border-theme-border flex items-center gap-2">
-            <Clock size={14} />
-            <h2 className="font-medium">Correlation Chain</h2>
+          <div className="px-4 py-2 border-b border-theme-border flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock size={14} />
+              <h2 className="font-medium">{selectedEvent ? 'Event Detail' : 'Correlation Chain'}</h2>
+            </div>
+            {selectedEvent && (
+              <button
+                onClick={() => setSelectedEvent(null)}
+                className="text-xs text-theme-muted hover:text-theme-primary"
+              >
+                clear
+              </button>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto">
-            {!selectedCorrelation ? (
-              <p className="p-4 text-sm text-theme-muted">Click an event to view its tick chain.</p>
-            ) : correlationEvents.length === 0 ? (
-              <p className="p-4 text-sm text-theme-muted">No matching events in the buffer.</p>
+            {!selectedEvent ? (
+              <p className="p-4 text-sm text-theme-muted">Click an event to view its details + correlation chain.</p>
             ) : (
-              <ul className="divide-y divide-theme-border text-sm">
-                {correlationEvents.map((e) => (
-                  <li key={e.id} className="px-4 py-2 space-y-1">
-                    <div className="font-mono text-xs">{e.kind}</div>
-                    <div className="text-xs text-theme-muted">
-                      {new Date(e.emitted_at).toLocaleTimeString()}
-                    </div>
-                    {/* Attribution feedback button surfaces when the event */}
-                    {/* references a specific instance + module — operator can */}
-                    {/* confirm/reject the autonomy's attribution and feed the */}
-                    {/* learning loop. */}
-                    {e.node_instance_id && e.node_module_id && (
+              <div className="text-sm">
+                {/* Selected event detail — was missing entirely before; clicking
+                    only set selectedCorrelation, so events without a correlation_id
+                    (most events) produced no visible response. */}
+                <div className="px-4 py-3 border-b border-theme-border space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs">{selectedEvent.kind}</span>
+                    <SeverityBadge severity={selectedEvent.severity} />
+                  </div>
+                  <div className="text-xs text-theme-muted space-y-0.5">
+                    <div>id: <code className="font-mono">{selectedEvent.id}</code></div>
+                    <div>emitted: {new Date(selectedEvent.emitted_at).toLocaleString()}</div>
+                    {selectedEvent.source && <div>source: {selectedEvent.source}</div>}
+                    {selectedEvent.correlation_id && (
+                      <div>correlation_id: <code className="font-mono">{selectedEvent.correlation_id}</code></div>
+                    )}
+                    {selectedEvent.node_id && <div>node_id: <code className="font-mono">{selectedEvent.node_id}</code></div>}
+                    {selectedEvent.node_instance_id && <div>instance_id: <code className="font-mono">{selectedEvent.node_instance_id}</code></div>}
+                    {selectedEvent.node_module_id && <div>module_id: <code className="font-mono">{selectedEvent.node_module_id}</code></div>}
+                  </div>
+                  {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
+                    <details className="text-xs" open>
+                      <summary className="cursor-pointer text-theme-muted hover:text-theme-primary">payload</summary>
+                      <pre className="mt-1 p-2 bg-theme-background rounded text-xs overflow-x-auto font-mono">
+{JSON.stringify(selectedEvent.payload, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                  {selectedEvent.node_instance_id && selectedEvent.node_module_id && (
+                    <div className="pt-2">
                       <AttributionFeedbackButton
-                        instanceId={e.node_instance_id}
-                        candidateModuleId={e.node_module_id}
+                        instanceId={selectedEvent.node_instance_id}
+                        candidateModuleId={selectedEvent.node_module_id}
                         candidateKind="event_correlation"
                       />
+                    </div>
+                  )}
+                </div>
+
+                {/* Correlation chain — separate section, only meaningful
+                    when correlation_id is present AND there are multiple
+                    events in the chain. */}
+                {selectedCorrelation && (
+                  <div>
+                    <div className="px-4 py-2 border-b border-theme-border bg-theme-background">
+                      <span className="text-xs font-medium text-theme-muted uppercase tracking-wide">Correlation Chain ({correlationEvents.length})</span>
+                    </div>
+                    {correlationEvents.length === 0 ? (
+                      <p className="px-4 py-2 text-xs text-theme-muted">No other events with this correlation_id in the buffer.</p>
+                    ) : (
+                      <ul className="divide-y divide-theme-border">
+                        {correlationEvents.map((e) => (
+                          <li key={e.id} className={`px-4 py-2 space-y-0.5 cursor-pointer hover:bg-theme-hover ${selectedEvent.id === e.id ? 'bg-theme-hover' : ''}`} onClick={() => setSelectedEvent(e)}>
+                            <div className="font-mono text-xs">{e.kind}</div>
+                            <div className="text-xs text-theme-muted">
+                              {new Date(e.emitted_at).toLocaleTimeString()}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </li>
-                ))}
-              </ul>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </section>
