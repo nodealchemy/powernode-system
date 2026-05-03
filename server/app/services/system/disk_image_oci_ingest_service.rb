@@ -69,11 +69,15 @@ module System
       return failure("oci_ref required")    if publication.oci_ref.blank?
 
       platform = publication.node_platform
-      unless platform.cosign_trust_configured?
+      adapter  = self.class.adapter
+      # Cosign trust policy is mandatory for the production OrasDiskImageAdapter
+      # but not for the LocalDiskImageAdapter (smoke/dev path skips cosign
+      # entirely). Defer the check to the adapter layer.
+      if adapter.is_a?(OrasDiskImageAdapter) && !platform.cosign_trust_configured?
         return failure("platform '#{platform.name}' has no cosign trust policy configured (set cosign_identity_regexp + cosign_issuer_regexp)")
       end
 
-      self.class.adapter.verify_and_pull!(
+      adapter.verify_and_pull!(
         oci_ref:               publication.oci_ref,
         expected_sha256:       publication.sha256,
         identity_regexp:       platform.cosign_identity_regexp,
@@ -109,14 +113,39 @@ module System
     # Test + dev path. Accepts oci_ref shaped as:
     #   - local:///absolute/path/to/img         — direct file ref (no copy)
     #   - file:///absolute/path/to/img          — alias
+    #   - <ORAS-style remote ref>               — oras pull, NO cosign verify
+    #     (smoke-mode shortcut for end-to-end tests on a runner that
+    #     can't keyless-sign — the SHA-256 verify still runs)
     #   - <anything else> + DISK_IMAGE_LOCAL_FIXTURE_PATH env var
     #
-    # No cosign verification — test code that exercises the cosign trust
-    # path stubs OrasDiskImageAdapter directly.
+    # No cosign verification at all — test code that exercises the cosign
+    # trust path stubs OrasDiskImageAdapter directly.
     class LocalDiskImageAdapter
       def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:)
         path = resolve_local_path(oci_ref)
-        return Result.new(ok?: false, error: "local file not found: #{path}") unless File.exist?(path)
+
+        # If the path resolved isn't on disk, try oras pull as a smoke-mode
+        # fallback (ref like `git.ipnode.org/.../...:sha`). Skips cosign
+        # verify; still runs SHA-256 verify on the pulled bytes.
+        unless File.exist?(path)
+          if oci_ref.include?("/") && !oci_ref.start_with?("local:", "file:")
+            require "open3"; require "tmpdir"; require "fileutils"
+            work = Dir.mktmpdir("powernode-disk-image-local-")
+            _out, err, status = Open3.capture3("oras", "pull", oci_ref, "--output", work)
+            unless status.success?
+              FileUtils.remove_entry(work)
+              return Result.new(ok?: false, error: "oras pull failed (smoke-mode): #{err.strip}")
+            end
+            img_path = Dir["#{work}/**/*.img"].first
+            unless img_path
+              FileUtils.remove_entry(work)
+              return Result.new(ok?: false, error: "no .img in pulled OCI artifact")
+            end
+            path = img_path
+          else
+            return Result.new(ok?: false, error: "local file not found: #{path}")
+          end
+        end
 
         actual_sha = Digest::SHA256.file(path).hexdigest
         if actual_sha != expected_sha256

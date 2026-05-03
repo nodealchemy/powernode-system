@@ -191,10 +191,16 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
+          # 30s timeout — cosign keyless tries interactive OIDC device flow
+          # when no ambient OIDC token is present (Gitea Actions doesn't
+          # publish one by default). The timeout makes the workflow
+          # fail-fast instead of hanging for 5 minutes per image.
+          # Platform-side LocalDiskImageAdapter (smoke mode) skips cosign
+          # verify so missing bundles don't block ingestion.
           for img in disk-image-rpi4/powernode-rpi4.img disk-image-arm64-uefi/powernode-arm64-uefi.img; do
             if [ -f "$img" ]; then
-              cosign sign-blob --yes --bundle "${img}.cosign-bundle" "$img" \
-                || echo "WARN: signing failed for $img"
+              timeout 30s cosign sign-blob --yes --bundle "${img}.cosign-bundle" "$img" \
+                || echo "WARN: cosign signing skipped/failed for $img (smoke mode tolerates this)"
             fi
           done
 
@@ -250,8 +256,11 @@ jobs:
             size="$(stat -c '%s' "$img")"
             ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
 
-            # 1. Sign blob (signature on the bytes themselves)
-            cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" || echo "WARN: cosign sign-blob failed for $img"
+            # 1. Sign blob (signature on the bytes themselves) — 30s
+            #    timeout because cosign's keyless OIDC device flow hangs
+            #    in non-interactive CI without an ambient OIDC token.
+            timeout 30s cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" \
+              || echo "WARN: cosign sign-blob skipped/failed for $img (smoke mode tolerates this)"
 
             # 2. Attest payload (signature on the publication metadata —
             #    catches webhook-payload tampering even if HMAC was leaked).
@@ -267,7 +276,7 @@ jobs:
             "built_at":      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-            cosign attest-blob --yes --predicate /tmp/payload-${platform}.json \
+            timeout 30s cosign attest-blob --yes --predicate /tmp/payload-${platform}.json \
               --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed for $img"
 
             # 3. Push everything to OCI registry as a single artifact.
