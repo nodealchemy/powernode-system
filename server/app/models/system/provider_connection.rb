@@ -5,9 +5,14 @@ module System
     # Status constants
     STATUSES = %w[pending connected error].freeze
 
-    # Encryption for sensitive fields
+    # Layered encryption: Rails `encrypts` provides at-rest protection; the
+    # AccountPepperedEncryption concern adds a per-account Vault transit
+    # pepper layer on top. Both layers must be present to recover plaintext.
+    # See docs/system/credential-restoration.md.
+    include ::AccountPepperedEncryption
     encrypts :access_key
     encrypts :secret_key
+    peppered_attribute :access_key, :secret_key
 
     # Associations
     belongs_to :account
