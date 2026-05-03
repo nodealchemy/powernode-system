@@ -28,6 +28,8 @@ const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateC
 const UnclaimedDevicesPage = lazyPage(() => import('./pages/app/system/UnclaimedDevicesPage'));
 const DiskImageWebhooksPage = lazyPage(() => import('./pages/app/system/DiskImageWebhooksPage'));
 const CiWorkersPage = lazyPage(() => import('./pages/app/system/CiWorkersPage'));
+// Comprehensive stabilization sweep P7.2 — Module Marketplace.
+const MarketplacePage = lazyPage(() => import('./pages/app/system/MarketplacePage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -56,6 +58,7 @@ export function register(): void {
     { path: '/system/unclaimed-devices', component: UnclaimedDevicesPage },
     { path: '/system/disk-image-webhooks', component: DiskImageWebhooksPage },
     { path: '/system/ci-workers', component: CiWorkersPage },
+    { path: '/system/marketplace', component: MarketplacePage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -89,6 +92,8 @@ export function register(): void {
         // Disk-image CI registration (plan wondrous-yawning-anchor.md Phase 2).
         { label: 'CI Webhooks', path: '/app/system/disk-image-webhooks', icon: 'Webhook', order: 15 },
         { label: 'CI Workers', path: '/app/system/ci-workers', icon: 'Bot', order: 16 },
+        // Module Marketplace (P7.2 / M-FE-2 — comprehensive stabilization sweep).
+        { label: 'Marketplace', path: '/app/system/marketplace', icon: 'Store', order: 17 },
       ],
     },
   ]);
