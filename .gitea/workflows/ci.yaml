@@ -57,7 +57,8 @@ jobs:
       - name: Mount extension into parent
         run: |
           rm -rf powernode-platform/extensions/system
-          ln -s "$(realpath extensions/system)" powernode-platform/extensions/system
+          # Use mv (not ln -s) — git>=2.43 rejects symlinks at submodule paths
+          mv extensions/system powernode-platform/extensions/system
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -102,7 +103,8 @@ jobs:
       - name: Mount extension into parent
         run: |
           rm -rf powernode-platform/extensions/system
-          ln -s "$(realpath extensions/system)" powernode-platform/extensions/system
+          # Use mv (not ln -s) — git>=2.43 rejects symlinks at submodule paths
+          mv extensions/system powernode-platform/extensions/system
 
       - uses: actions/setup-node@v4
         with:
@@ -115,10 +117,12 @@ jobs:
         run: npm ci
 
       - name: Type-check the system extension
-        working-directory: extensions/system/frontend
+        # extensions/system was MOVED into powernode-platform/extensions/system
+        # by the Mount step above, so cwd must follow.
+        working-directory: powernode-platform/extensions/system/frontend
         run: |
           if [ -f tsconfig.check.json ]; then
-            npx --prefix ../../../powernode-platform/frontend tsc --noEmit -p tsconfig.check.json
+            npx --prefix ../../../frontend tsc --noEmit -p tsconfig.check.json
           else
             echo "no tsconfig.check.json — skipping (this is expected for extension-only PRs)"
           fi
