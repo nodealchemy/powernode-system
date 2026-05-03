@@ -428,4 +428,20 @@ FactoryBot.define do
     recursive { false }
     preserve_permissions { true }
   end
+
+  # System::UnclaimedDevice — physical device polling /node_api/claim
+  # before being bound to a NodeInstance.
+  factory :system_unclaimed_device, class: "System::UnclaimedDevice" do
+    association :account
+    claim_code { System::UnclaimedDevice.generate_claim_code }
+    sequence(:discovered_mac) { |n| "AA:BB:CC:DD:EE:%02X" % (n % 256) }
+    discovered_dmi_uuid { SecureRandom.uuid }
+    discovered_hostname { "test-pi-#{SecureRandom.hex(2)}" }
+    agent_version { "0.1.0-test" }
+    architecture { "arm64" }
+    platform_hint { "rpi4" }
+    first_seen_at { Time.current }
+    last_seen_at { Time.current }
+    expires_at { 24.hours.from_now }
+  end
 end

@@ -217,5 +217,20 @@ module System
     def active_certificate
       node_certificates.active.order(not_before: :desc).first
     end
+
+    # === Physical-device claim helpers (plan wondrous-yawning-anchor.md) ===
+    # claimed? — true once an operator has confirmed the device's identity
+    # via the Unclaimed Devices UI. The device's next /claim poll receives
+    # a bootstrap token at that point.
+    def claimed?
+      claimed_at.present? && claim_code.present?
+    end
+
+    # awaiting_claim? — true for physical instances that exist in the
+    # platform but haven't yet been bound to a real device. UI surfaces a
+    # "waiting for device to come online" banner when this is true.
+    def awaiting_claim?
+      physical? && claimed_at.nil?
+    end
   end
 end

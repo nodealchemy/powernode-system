@@ -20,6 +20,17 @@ Rails.application.routes.draw do
         end
 
         resources :nodes
+        resources :node_platforms, only: %i[index show create update destroy] do
+          member { get :disk_image }
+        end
+
+        # Physical-device claim queue (operator-facing). See plan
+        # wondrous-yawning-anchor.md — devices polling /node_api/claim
+        # surface here for the operator to bind to a NodeInstance.
+        resources :unclaimed_devices, only: %i[index show destroy] do
+          member { post :claim }
+        end
+
         resources :node_instances do
           member do
             post :start
@@ -58,7 +69,8 @@ Rails.application.routes.draw do
           end
         end
         resources :node_architectures
-        resources :node_platforms
+        # node_platforms moved to top of namespace + extended with
+        # the disk_image member action (claim-flow operator download).
         resources :node_scripts
         resources :node_mount_points
 
@@ -174,6 +186,13 @@ Rails.application.routes.draw do
 
         # === Node API (instance-token-authenticated running instances) ===
         namespace :node_api do
+          # Physical-device claim polling — anonymous, used BEFORE the
+          # device has a bootstrap token. Devices flashed from a generic
+          # disk image poll here while waiting for an operator to bind
+          # them to a NodeInstance via the Unclaimed Devices UI panel.
+          # See docs/plans/wondrous-yawning-anchor.md.
+          post :claim, to: "claim#create"
+
           # Enrollment — bootstrap-token-authenticated; pre-mTLS path used by
           # freshly-booted nodes presenting a single-use bootstrap token.
           post :enroll, to: "enrollment#create"

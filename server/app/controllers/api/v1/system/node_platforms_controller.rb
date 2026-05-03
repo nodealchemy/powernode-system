@@ -51,6 +51,59 @@ module Api
           end
         end
 
+        # GET /api/v1/system/node_platforms/:id/disk_image
+        # Returns a signed download URL for the generic disk image
+        # built by CI for this platform. Operators flash the .img onto
+        # an SD card / USB stick to provision physical devices via the
+        # claim flow. See plan wondrous-yawning-anchor.md.
+        def disk_image
+          require_permission("system.platforms.read")
+          @platform = @account.system_node_platforms.find(params[:id])
+
+          if @platform.disk_image_file_object_id.blank?
+            return render_error(
+              "No disk image built for this platform yet. Trigger the build-disk-image workflow first.",
+              :not_found
+            )
+          end
+
+          file_object = ::FileManagement::Object.find_by(id: @platform.disk_image_file_object_id)
+          return render_not_found("disk image file object") unless file_object
+
+          url = ::FileStorageService.new(@account).file_url(
+            file_object, signed: true, expires_in: 1.hour, disposition: "attachment"
+          )
+
+          # Audit-log every download via FleetEvent so the operator dashboard
+          # has visibility into who pulled what (these images carry the
+          # platform's CA bundle and become first-boot trust anchors).
+          if defined?(::System::Fleet::EventBroadcaster)
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: @account,
+              kind: "system.disk_image_downloaded",
+              severity: :low,
+              source: "operator_ui",
+              payload: {
+                platform_id:   @platform.id,
+                platform_name: @platform.name,
+                by_user_id:    current_user&.id,
+                sha256:        @platform.disk_image_sha256
+              }
+            )
+          end
+
+          render_success(
+            url: url,
+            expires_at: 1.hour.from_now,
+            sha256: @platform.disk_image_sha256,
+            size_bytes: @platform.disk_image_size_bytes,
+            built_at: @platform.disk_image_built_at,
+            filename: "powernode-#{@platform.name}.img"
+          )
+        rescue ActiveRecord::RecordNotFound
+          render_not_found("Node Platform")
+        end
+
         private
 
         def set_platform

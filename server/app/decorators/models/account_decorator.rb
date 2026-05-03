@@ -32,6 +32,11 @@ Account.class_eval do
   has_many :system_node_modules, class_name: "System::NodeModule", dependent: :restrict_with_error
   has_many :system_node_module_categories, class_name: "System::NodeModuleCategory", dependent: :restrict_with_error
 
+  # Physical-device claim queue (Path C provisioning, plan wondrous-yawning-anchor.md).
+  # destroy_all is safe here — UnclaimedDevice rows are ephemeral (24h default TTL,
+  # auto-reaped by ExpireUnclaimedDevicesJob) and carry no cloud-resource state.
+  has_many :system_unclaimed_devices, class_name: "System::UnclaimedDevice", dependent: :destroy
+
   # Provider catalog
   has_many :system_providers, class_name: "System::Provider", dependent: :restrict_with_error
   has_many :system_provider_connections, class_name: "System::ProviderConnection", dependent: :restrict_with_error
