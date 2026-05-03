@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { DiskImageHistoryTab } from './DiskImageHistoryTab';
 import type { SystemNodePlatform, SystemNodeArchitecture } from '@system/features/system/types/system.types';
 
 interface PlatformFormModalProps {
@@ -175,7 +176,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
       <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={onClose} />
 
       <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
+        <div className={`relative w-full ${isEditMode ? 'max-w-4xl' : 'max-w-2xl'} bg-theme-surface rounded-lg shadow-xl`}>
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
               <Layers className="w-6 h-6 text-theme-accent" />
@@ -405,6 +406,18 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/*
+                Disk-image publication history tab — only meaningful in
+                edit mode (a brand-new platform has no history). Live-
+                updates via SystemFleetChannel inside the component.
+                Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 4).
+              */}
+              {isEditMode && editPlatform && (
+                <div className="border-t border-theme pt-4 mt-2">
+                  <DiskImageHistoryTab platform={editPlatform} />
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3 p-4 border-t border-theme">
