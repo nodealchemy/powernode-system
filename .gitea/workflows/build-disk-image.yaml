@@ -66,7 +66,11 @@ jobs:
           sudo apt-get update
           # cosign + oras aren't in apt — fetch released binaries.
           # buildah/podman are in apt on Ubuntu 24.04.
+          # util-linux is the canonical home of sfdisk; install explicitly
+          # because some minimal runner images strip it. fdisk package is
+          # the alternate provider on newer Ubuntu (split out in 24.04).
           sudo apt-get install -y \
+            util-linux fdisk \
             dosfstools e2fsprogs gdisk \
             mtools \
             buildah podman \
@@ -77,6 +81,20 @@ jobs:
           # offset (already in e2fsprogs >= 1.42) handles the ext4 partition
           # similarly. Together they let us produce a flashable image on an
           # unprivileged runner.
+
+          # Tool-availability diagnostic — make the next failure debuggable
+          # without grovelling through full step logs. PATH is augmented
+          # because Gitea runners strip /usr/sbin from non-root PATH.
+          export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+          echo "Tool availability:"
+          for tool in sfdisk losetup mkfs.fat mkfs.ext4 mformat mcopy mdir cosign oras buildah curl jq zstd; do
+            if path=$(command -v "$tool"); then
+              echo "  ✓ $tool → $path"
+            else
+              echo "  ✗ $tool MISSING"
+            fi
+          done
+          echo "Effective PATH: $PATH"
 
           # Install cosign v2.4 from upstream (apt's cosign pkg doesn't
           # exist on Ubuntu 24.04 base + we want a known-good version

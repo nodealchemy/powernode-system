@@ -26,6 +26,13 @@
 # this script accepts a --firmware-dir flag pointing at the unpacked module.
 set -euo pipefail
 
+# Ensure standard sbin paths are searchable. Gitea Actions runners commonly
+# strip /usr/sbin and /sbin from non-root user PATH, hiding sfdisk, losetup,
+# mkfs.fat, mkfs.ext4 — all of which we need. Prepending unconditionally is
+# safe (idempotent) and matches the behavior of every distro's interactive
+# root shell.
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+
 ARCH="arm64"           # RPi 4 is arm64-only (32-bit Pi support deferred)
 OUTPUT=""
 SIZE_GB="${SIZE_GB:-4}"
@@ -88,16 +95,15 @@ truncate -s "${SIZE_GB}G" "$OUTPUT"
 
 # MBR via sfdisk: more scriptable than fdisk and ubiquitous. parted's MBR
 # support exists but its scripting interface is fragile.
+# **Fail hard** if sfdisk is missing — silent placeholder emission was
+# masking real CI failures (a 238-byte placeholder file was getting pushed
+# to OCI + ingested by the platform as if it were a valid disk image).
+# If you want a placeholder for tests, use --output-mode=placeholder (TODO).
 if ! command -v sfdisk >/dev/null 2>&1; then
-  log "WARN: sfdisk not installed — emitting placeholder image"
-  cat >"$OUTPUT" <<EOF
-powernode-disk-image-rpi4-placeholder
-size_gb=${SIZE_GB}
-platform_url=${PLATFORM_URL}
-firmware_dir=${FIRMWARE_DIR:-<unset>}
-kernel_initrd_dir=${KERNEL_INITRD_DIR}
-EOF
-  exit 0
+  log "ERROR: sfdisk not installed (PATH=$PATH)"
+  log "ERROR: install util-linux (Debian/Ubuntu) or fdisk (split package on newer distros)"
+  log "ERROR: refusing to emit placeholder image — that masks the real issue"
+  exit 1
 fi
 
 # MBR layout: P1 = 512MB FAT32 boot (bootable), P2 = remainder ext4 persist.

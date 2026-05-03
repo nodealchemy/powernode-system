@@ -19,6 +19,10 @@
 # claim-flow Path C) without polluting the more-general raw build.
 set -euo pipefail
 
+# Ensure /usr/sbin etc. are searchable — same fix as build-disk-image-rpi4.sh
+# (Gitea Actions runners strip sbin paths from non-root user PATH).
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+
 ARCH="arm64"
 OUTPUT=""
 SIZE_GB="${SIZE_GB:-4}"

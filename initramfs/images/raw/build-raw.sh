@@ -15,6 +15,10 @@
 # Reference: Golden Eclipse plan M3 — images/raw.
 set -euo pipefail
 
+# Ensure standard sbin paths are searchable (Gitea Actions runners strip
+# /usr/sbin from non-root user PATH).
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+
 ARCH=""
 OUTPUT=""
 SIZE_GB="${SIZE_GB:-8}"
