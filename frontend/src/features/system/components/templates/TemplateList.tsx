@@ -188,6 +188,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
               <tr className="bg-theme-background border-b border-theme">
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Template</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Platform</th>
+                <th className="text-left py-3 px-4 font-medium text-theme-primary">Modules</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Visibility</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Status</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Nodes</th>
@@ -220,6 +221,23 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                     <span className="text-theme-secondary">
                       {template.node_platform_name || '-'}
                     </span>
+                  </td>
+
+                  <td className="py-3 px-4">
+                    {template.modules && template.modules.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 max-w-xs">
+                        {template.modules.slice(0, 4).map((m) => (
+                          <span key={m.id} title={`priority ${m.priority}`}>
+                            <Badge variant="secondary" size="xs">{m.name}</Badge>
+                          </span>
+                        ))}
+                        {template.modules.length > 4 && (
+                          <Badge variant="secondary" size="xs">+{template.modules.length - 4}</Badge>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-theme-tertiary text-sm">none</span>
+                    )}
                   </td>
 
                   <td className="py-3 px-4">
@@ -446,6 +464,18 @@ export const TemplateList: React.FC<TemplateListProps> = ({
               {template.node_platform_name && (
                 <div className="text-xs text-theme-secondary">
                   Platform: {template.node_platform_name}
+                </div>
+              )}
+
+              {/* Modules */}
+              {template.modules && template.modules.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {template.modules.slice(0, 6).map((m) => (
+                    <Badge key={m.id} variant="secondary" size="xs">{m.name}</Badge>
+                  ))}
+                  {template.modules.length > 6 && (
+                    <Badge variant="secondary" size="xs">+{template.modules.length - 6}</Badge>
+                  )}
                 </div>
               )}
             </div>

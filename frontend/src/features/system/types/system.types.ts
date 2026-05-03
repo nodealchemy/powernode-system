@@ -78,6 +78,14 @@ export interface SystemDiskImage {
   filename: string;
 }
 
+export interface SystemNodeTemplateModuleSummary {
+  id: string;
+  name: string;
+  variety: string;
+  priority: number;
+  template_module_id: string;
+}
+
 export interface SystemNodeTemplate {
   id: string;
   name: string;
@@ -89,6 +97,11 @@ export interface SystemNodeTemplate {
   node_platform_id?: string;
   node_platform_name?: string;
   node_count?: number;
+  // Lightweight module summary embedded by NodeTemplateSerializer so the
+  // list page can render module chips without an N+1 fetch. The full
+  // NodeModule payload is still fetched on-demand by TemplateDetailModal.
+  module_count?: number;
+  modules?: SystemNodeTemplateModuleSummary[];
   created_at: string;
   updated_at: string;
 }

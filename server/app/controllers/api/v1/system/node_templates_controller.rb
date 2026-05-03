@@ -5,11 +5,14 @@ module Api
     module System
       class NodeTemplatesController < BaseController
         before_action :set_account
-        before_action :set_template, only: [:show, :update, :destroy, :export]
+        before_action :set_template, only: %i[show update destroy export modules]
 
         def index
           require_permission("system.templates.read")
-          templates = @account.system_node_templates.includes(:node_platform)
+          templates = @account.system_node_templates.includes(
+            :node_platform,
+            template_modules: { node_module: :category }
+          )
           templates = apply_filters(templates)
           templates = paginate(templates)
           render_success(node_templates: serialize_collection(templates), meta: pagination_meta)
@@ -18,6 +21,20 @@ module Api
         def show
           require_permission("system.templates.read")
           render_success(node_template: serialize_template(@template))
+        end
+
+        # GET /api/v1/system/node_templates/:id/modules
+        # Returns the NodeModule rows assigned to this template, ordered by
+        # the join row's priority (matches operator's compose order).
+        # Frontend's TemplateDetailModal hits this on open.
+        def modules
+          require_permission("system.templates.read")
+          mods = @template.template_modules
+                          .includes(node_module: %i[category current_version node_platform])
+                          .order(:priority)
+                          .map(&:node_module)
+                          .compact
+          render_success(node_modules: mods.map { |m| ::System::NodeModuleSerializer.new(m).as_json })
         end
 
         def create

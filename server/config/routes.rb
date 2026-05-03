@@ -59,7 +59,12 @@ Rails.application.routes.draw do
         resources :module_puppet_assignments, only: %i[show update destroy]
 
         resources :node_templates do
-          member { get :export }
+          member do
+            get :export
+            # Returns NodeModule rows assigned via TemplateModule join,
+            # priority-ordered. TemplateDetailModal calls this on open.
+            get :modules
+          end
           collection do
             # The action lives on this same NodeTemplatesController. Earlier
             # versions pointed at a non-existent `templates` controller,
