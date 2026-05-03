@@ -5,9 +5,10 @@ follow-ups. Updated after substantial work; the parent platform's plan
 file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
-**Last updated:** 2026-05-02
-**Spec coverage:** 1262 examples / 0 failures / 1 conditional-pending
+**Last updated:** 2026-05-03
+**Spec coverage:** 1430 examples / 0 failures / 1 conditional-pending
 **Frontend:** TS clean across all session-touched files
+**Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
 
 ---
 
@@ -33,20 +34,20 @@ local) carries the long-form roadmap.
 
 ## Track C — Frontend / Operator UX
 
-| Milestone | Status | Notes |
-|---|---|---|
-| M-FE-1 — Visual Template Composer | ✅ done | TemplateComposerPage with split-view, SaveTemplateModal, conflict detection, footprint estimate, save flow with module attach |
-| M-FE-2 — Module Marketplace | ⬜ not started |  |
-| M-FE-3 — Fleet Dashboard + Live Boot Replay | ✅ partial | FleetDashboardPage with live event feed, correlation chain viewer, HoneypotCanaryTile, AttributionFeedbackButton; Boot Replay viewer pending |
-| M-FE-4 — Conversational Provisioning Concierge | ⬜ not started |  |
+| Milestone | Status | Notes | Owner / Blocker |
+|---|---|---|---|
+| M-FE-1 — Visual Template Composer | ✅ done | TemplateComposerPage with split-view, SaveTemplateModal, conflict detection, footprint estimate, save flow with module attach | — |
+| M-FE-2 — Module Marketplace | 🟡 in sweep | Active sweep P7.2 — browse-side skeleton (catalog + filters + trust tier badges + add-to-template). Submission/review queue out of scope. | Active sweep (Phase 7) |
+| M-FE-3 — Fleet Dashboard + Live Boot Replay | 🟡 in sweep | Live event feed, correlation chains, honeypot tile shipped. Active sweep P7.1 adds Boot Replay viewer. | Active sweep (Phase 7) |
+| M-FE-4 — Conversational Provisioning Concierge | 🟡 in sweep | Active sweep P7.3 — slide-out chat panel reusing existing Conversation/ConversationAiGeneration with system-context flag. | Active sweep (Phase 7) |
 
 ## Track D — Day-2 ops
 
-| Milestone | Status | Notes |
-|---|---|---|
-| M-D2-1 — Audit, compliance, SBOM reports | ✅ partial | ComplianceSnapshotService + retention sweep worker; PDF/JSON export pending |
-| M-D2-2 — CVE response pipeline | ✅ partial | Cve + CveExposure models, FeedIngestService (NVD), ExposureCalculator, CveResponseExecutor reads persisted exposures, hourly worker job |
-| M-D2-3 — GitOps reconciliation | ⬜ not started |  |
+| Milestone | Status | Notes | Owner / Blocker |
+|---|---|---|---|
+| M-D2-1 — Audit, compliance, SBOM reports | ✅ partial | ComplianceSnapshotService + retention sweep worker; PDF/JSON export pending | Future — operator demand-driven |
+| M-D2-2 — CVE response pipeline | 🟡 in sweep | Cve + CveExposure models, FeedIngestService (NVD), ExposureCalculator, CveResponseExecutor reads persisted exposures, hourly worker job. Active sweep P4 replaces v0 keyword-overlap stub with SBOM-aware matching (ecosystem-version range comparators). | Active sweep (Phase 4) |
+| M-D2-3 — GitOps reconciliation | 🟡 in sweep | Active sweep P5 — RepoSyncService, DesiredStateParser, DiffEngine, Reconciler, GitopsRepository/SyncRun models, 5min cron, operator UI. | Active sweep (Phase 5) |
 
 ## Track E — Marketplace + onboarding
 
@@ -57,14 +58,14 @@ local) carries the long-form roadmap.
 
 ## Track F — Advanced + creative
 
-| Item | Status | Notes |
-|---|---|---|
-| F-3 — NodeInstance-as-Agent | ⬜ not started | Plumbing exists but not wired |
-| F-4 — Module-as-Skill | ✅ done | ModuleSkillRegistrar parses manifest.yaml#skills, trust-tier gate (community → SkillProposal, verified-publisher → direct) |
-| F-6 — Honeypot canary modules | ✅ done | CanaryModuleService + HoneypotAccessSensor + dashboard tile + mark/unmark UI |
-| F-11 — Live module diff preview | ✅ done | ModuleDiffService computes rsync_spec deltas + package changes via fingerprints |
-| F-16 — AI-Generated Runbooks | ✅ done | RunbookGenerateExecutor walks SBOM + KG anchors + relevant learnings |
-| F-19 — Per-module SELinux/AppArmor | ✅ done | Loaded by Go agent's internal/security/mac.go on module attach |
+| Item | Status | Notes | Owner / Blocker |
+|---|---|---|---|
+| F-3 — NodeInstance-as-Agent | 🟡 in sweep | Active sweep P6 — Go agent peer registrar, /node_api/peer/announce endpoint, Ai::Executors::NodeRemoteExecutor, workspace mention picker integration, trust + consent budget. | Active sweep (Phase 6) |
+| F-4 — Module-as-Skill | ✅ done | ModuleSkillRegistrar parses manifest.yaml#skills, trust-tier gate (community → SkillProposal, verified-publisher → direct) | — |
+| F-6 — Honeypot canary modules | ✅ done | CanaryModuleService + HoneypotAccessSensor + dashboard tile + mark/unmark UI | — |
+| F-11 — Live module diff preview | ✅ done | ModuleDiffService computes rsync_spec deltas + package changes via fingerprints | — |
+| F-16 — AI-Generated Runbooks | ✅ done | RunbookGenerateExecutor walks SBOM + KG anchors + relevant learnings | — |
+| F-19 — Per-module SELinux/AppArmor | ✅ done | Loaded by Go agent's internal/security/mac.go on module attach | — |
 
 ---
 
@@ -97,6 +98,25 @@ local) carries the long-form roadmap.
 7. **Frontend nav route registration in parent platform** — `extensions/system/
    register.ts` adds `/system/fleet` and `/system/templates/compose` routes;
    verify nav appears post-extraction.
+
+---
+
+## Active stabilization sweep — May 2026
+
+Comprehensive 9-phase sweep targeting end-to-end functional stability.
+**48 new specs passing across the sweep's surface area**; Go agent vet + build clean; TypeScript clean.
+
+| Phase | Scope | Status |
+|---|---|---|
+| P1 — Doc hygiene | TASKS.md sync, system_review_and_plan refresh, initramfs README, threat model, credential-restoration doc | ✅ done |
+| P2 — Backend gaps | CloudSyncService schedule (per-account fan-out), NodeModuleAssignment toggle endpoints | ✅ done — 16 specs pass |
+| P3 — Encryption keys | Per-account Vault transit pepper, AccountEncryptionKeyService, ProviderConnection migration | ✅ done — 13 specs pass |
+| P4 — M-D2-2 SBOM CVE | sbom_packages_data column, ecosystem version matcher, ExposureCalculator upgrade | ✅ done — 13 matcher specs pass |
+| P5 — M-D2-3 GitOps | RepoSyncService → DesiredStateParser → DiffEngine → Reconciler → Ai::AgentProposal + worker job + 5min cron | ✅ done — 6 parser specs pass |
+| P6 — F-3 NodeInstance-as-Agent | agent_peer/registrar.go (Go) + AgentPeeringService + node_api/peer endpoint + operator delegation API | ✅ done — Go agent_peer tests pass |
+| P7 — UI features | Boot Replay viewer (timeline + detail), Marketplace skeleton (list + card + detail modal), AI Concierge panel | ✅ done — TypeScript clean |
+| P8 — Quality polish | Full verification (rspec + go + tsc) | ✅ done — RuboCop autocorrect deferred |
+| P9 — Submodule + parent | Dual-remote push (Gitea + GitHub mirror), parent pointer bump, MCP knowledge contributions | 🟡 commits deferred to operator decision |
 
 ---
 

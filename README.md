@@ -49,11 +49,12 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **6 fleet sensors** detecting silent instances, module drift, cert expiry,
-  promotion readiness, config drift, and SLO violations
-- **9 AI Skill executors** (drift_remediate, provision_cluster,
+- **8 fleet sensors** detecting silent instances, module drift, cert expiry,
+  promotion readiness, config drift, SLO violations, honeypot canary access,
+  and trading pressure (cross-extension stigmergic coordination)
+- **8 AI Skill executors** (drift_remediate, provision_cluster,
   rolling_module_upgrade, cve_response, capacity_recommend, module_compose,
-  runbook_generate, attribute_failure)
+  runbook_generate, attribute_failure) — plus base class for new executors
 - **FleetAutonomyService** — gates every autonomous action through
   intervention policy + approval chain (auto_approve / notify_and_proceed /
   require_approval / blocked); same UI as trading-overseer's approval queue
@@ -138,10 +139,35 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Status
 
-Active development. Spec coverage: 1262 examples / 0 failures (as of
-2026-05-02). The Golden Eclipse roadmap (Track A through Track F) is
+Active development. Spec coverage: **1,430 examples / 0 failures** (as of
+2026-05-03). The Golden Eclipse roadmap (Track A through Track F) is
 substantially complete on backend + autonomy axes; frontend operator surface
-covers M-FE-1 (Visual Composer) and M-FE-3 (Fleet Dashboard).
+covers M-FE-1 (Visual Composer) and M-FE-3 (Fleet Dashboard, with Boot Replay
+viewer in active sweep).
+
+### Milestones complete
+
+- **M0** — Foundation contracts + legacy spec porting (BootstrapToken,
+  NodeCertificate, ModuleArtifact, mTLS, AASM)
+- **M2** — Go agent v0 (~4,400 LOC across 9 packages including security)
+- **M3** — Multi-arch image builder (six artifact families × amd64/arm64)
+- **M4** — QEMU thin slice (LocalQemuProvider with Libvirt/Recorder/Disabled
+  runner triplet, virtio-fw-cfg seed, 15-spec integration coverage)
+- **M5** — MCP CRUD surface (SystemFleetTool, ~25 actions, per-action
+  permission gates)
+- **M6** — AI Skills catalog (8 executors)
+- **M7** — FleetAutonomyService (gate_action!, 8 sensors, DecisionEngine,
+  approval chains)
+- **M8** — Compound learning extraction (LearningExtractor wired into tick
+  loop, auto-evolve trigger after 3 matching learnings)
+
+### Active sweep (May 2026)
+
+Tracking under [`docs/TASKS.md`](./docs/TASKS.md). Adds: per-account
+encryption key restoration via Vault transit, SBOM-aware CVE matching
+(M-D2-2), GitOps reconciliation (M-D2-3), NodeInstance-as-Agent peer
+registration (F-3), Boot Replay viewer (M-FE-3 completion), Module Marketplace
+skeleton (M-FE-2), AI Concierge chat (M-FE-4).
 
 ---
 
