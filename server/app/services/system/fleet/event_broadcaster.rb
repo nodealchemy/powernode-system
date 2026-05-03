@@ -48,6 +48,13 @@ module System
           )
 
           broadcast!(event)
+          # Surface to AS::Notifications so System::Metrics::Subscriber can
+          # aggregate fleet event counts alongside dispatch metrics. Cheap +
+          # in-process; no external dependency. (Phase 10.5.)
+          ActiveSupport::Notifications.instrument(
+            "system.fleet.event",
+            account_id: account.id, kind: kind, severity: severity_str, source: source
+          )
           event
         rescue ActiveRecord::RecordInvalid => e
           Rails.logger.warn("[FleetEventBroadcaster] persist failed: #{e.message}")

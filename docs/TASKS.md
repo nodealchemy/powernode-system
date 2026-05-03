@@ -6,10 +6,10 @@ file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
 **Last updated:** 2026-05-03
-**Spec coverage:** 1578 examples / 0 failures / 1 conditional-pending
+**Spec coverage:** 1603 examples / 0 failures / 1 conditional-pending
 **Frontend:** TS clean across all session-touched files
 **Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-**Phase 10:** 2 of 7 subphases done (10.1 RuboCop, 10.2 syft SBOM ingestion) — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
+**Phase 10:** 3 of 7 subphases done (10.1 RuboCop, 10.2 SBOM ingestion, 10.5 metrics v1) — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
 
 ---
 
@@ -131,7 +131,7 @@ under "Phase 10 — Deferred Item Roadmap". Summary:
 | 10.2 | `syft` SBOM ingestion in module CI | ~2d | ✅ done — webhook ingestion (HMAC-auth, not worker_api per plan deviation), CycloneDxParser, retry-on-race in build CI |
 | 10.3 | AI Concierge production conversation routing | ~3d | ⬜ pending — depends on chat extension |
 | 10.4 | Workspace mention picker for peers | ~1.5d | ⬜ pending — depends on chat extension |
-| 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ⬜ pending — approach revised: subscribe to existing instrumentation rather than add tagged-logger calls |
+| 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ✅ done — Aggregator (Rails.cache counter, per-min buckets) + Subscriber (idempotent AS::Notifications listener) + GET /system/metrics/dispatch endpoint; frontend tile deferred to 10.7 |
 | 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
 | 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | ⬜ slow-day work |
 
@@ -144,6 +144,15 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-03 — Phase 10.5 metrics v1: `Metrics::Aggregator` (Rails.cache
+  counter aggregator, per-minute buckets, 65min TTL, 1h max window) +
+  `Metrics::Subscriber` (idempotent AS::Notifications listener for
+  `system.dispatch.*`, `system.fleet.event`, `system.cloud_sync.*`) +
+  operator endpoint `GET /system/metrics/dispatch` gated on
+  `system.metrics.read`; one-line `AS::Notifications.instrument` added to
+  `Fleet::EventBroadcaster.emit!` so fleet events flow through the same
+  collector; 25 new specs (10 aggregator + 10 subscriber + 5 controller);
+  frontend dashboard tile defers to 10.7 polish list
 - 2026-05-03 — Phase 10.2 syft SBOM ingestion: `Sbom::CycloneDxParser`
   service (33 specs) + `webhooks/module_sbom_controller#create` (11 specs)
   HMAC-authenticated via per-module `webhook_secret` (mirrors existing

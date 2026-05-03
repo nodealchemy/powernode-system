@@ -73,5 +73,15 @@ module PowernodeSystem
         Rails.logger.warn "[PowernodeSystem] Could not register feature flags: #{e.message}"
       end
     end
+
+    # Subscribe the Phase 10.5 metrics collector to AS::Notifications.
+    # Idempotent — safe across Rails reloader cycles in dev.
+    initializer "powernode_system.metrics_subscriber", after: :load_config_initializers do
+      config.after_initialize do
+        ::System::Metrics::Subscriber.subscribe!
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register metrics subscriber: #{e.message}"
+      end
+    end
   end
 end

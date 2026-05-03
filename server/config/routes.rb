@@ -155,6 +155,11 @@ Rails.application.routes.draw do
           end
         end
 
+        # === Metrics (operator-facing; aggregated counters) ===
+        # Action is `#index` because `dispatch` collides with
+        # ActionController::Metal#dispatch.
+        get "metrics/dispatch", to: "metrics#index"
+
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
           post "gitea/module", to: "gitea_module#handle"
