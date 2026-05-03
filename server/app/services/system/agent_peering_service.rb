@@ -48,7 +48,10 @@ module System
       emit_event(account: account, peer: peer, created: created)
       Result.new(ok?: true, peer: peer, created: created)
     rescue StandardError => e
-      Rails.logger.error("[AgentPeeringService] announce failed for instance=#{node_instance&.id}: #{e.class}: #{e.message}")
+      # Use respond_to? not safe-nav — `&.id` raises NoMethodError on String
+      # in Ruby 3+ (String doesn't respond to #id).
+      instance_descriptor = node_instance.respond_to?(:id) ? node_instance.id : node_instance.class
+      Rails.logger.error("[AgentPeeringService] announce failed for instance=#{instance_descriptor}: #{e.class}: #{e.message}")
       Result.new(ok?: false, error: e.message)
     end
 
