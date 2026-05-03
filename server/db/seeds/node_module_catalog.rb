@@ -47,6 +47,15 @@ arch = System::NodeArchitecture.find_or_create_by!(account: account, name: "amd6
 end
 puts "    ✓ NodeArchitecture: amd64 (id=#{arch.id})"
 
+# arm64 architecture for physical-device support (RPi 4 + generic UEFI SBCs).
+# Plan: wondrous-yawning-anchor.md — Phase 1 hardware scope.
+arch_arm64 = System::NodeArchitecture.find_or_create_by!(account: account, name: "arm64") do |a|
+  a.kernel_options = "console=serial0,115200 console=tty1 powernode.boot=1 ro"
+  a.enabled = true
+  a.public  = true
+end
+puts "    ✓ NodeArchitecture: arm64 (id=#{arch_arm64.id})"
+
 platform = System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04-lts") do |p|
   p.node_architecture = arch
   p.enabled       = true
@@ -56,6 +65,34 @@ platform = System::NodePlatform.find_or_create_by!(account: account, name: "ubun
   p.sync_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent sync\n"
 end
 puts "    ✓ NodePlatform: ubuntu-24.04-lts (id=#{platform.id})"
+
+# Raspberry Pi 4 platform — MBR + FAT32 boot partition with /boot/firmware/
+# layout. Operators flash the disk image onto an SD card, plug the Pi in,
+# the agent boots and polls /node_api/claim until the operator confirms.
+# See plan wondrous-yawning-anchor.md §3 for the build pipeline + §5 for
+# the claim flow.
+platform_rpi4 = System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04-rpi4") do |p|
+  p.node_architecture = arch_arm64
+  p.enabled       = true
+  p.public        = true
+  p.build_script  = "#!/bin/bash\nset -euo pipefail\nexec mmdebstrap --variant=minbase --architectures=arm64 noble \"$@\"\n"
+  p.init_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent boot\n"
+  p.sync_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent sync\n"
+end
+puts "    ✓ NodePlatform: ubuntu-24.04-rpi4 (id=#{platform_rpi4.id})"
+
+# Generic arm64 UEFI platform — Pi 5 with UEFI Pi firmware, Ampere boards,
+# Lenovo ThinkSystem arm64, etc. Uses the existing GPT layout via the
+# images/raw/ build script.
+platform_arm64_uefi = System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04-arm64-uefi") do |p|
+  p.node_architecture = arch_arm64
+  p.enabled       = true
+  p.public        = true
+  p.build_script  = "#!/bin/bash\nset -euo pipefail\nexec mmdebstrap --variant=minbase --architectures=arm64 noble \"$@\"\n"
+  p.init_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent boot\n"
+  p.sync_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent sync\n"
+end
+puts "    ✓ NodePlatform: ubuntu-24.04-arm64-uefi (id=#{platform_arm64_uefi.id})"
 
 # ── Provider catalog (local_qemu) ───────────────────────────────────────────
 
@@ -126,7 +163,15 @@ cat_web = System::NodeModuleCategory.find_or_create_by!(account: account, name: 
   c.variety  = "subscription"
   c.enabled  = true
 end
-puts "    ✓ NodeModuleCategory: base, security, time, web"
+# Hardware-specific firmware sits between system-base (priority 10) and the
+# security floor (priority 20) so the boot partition is established before
+# any policy is applied. Per plan wondrous-yawning-anchor.md.
+cat_firmware = System::NodeModuleCategory.find_or_create_by!(account: account, name: "firmware") do |c|
+  c.position = 15
+  c.variety  = "subscription"
+  c.enabled  = true
+end
+puts "    ✓ NodeModuleCategory: base, firmware, security, time, web"
 
 # ── Modules + versions ──────────────────────────────────────────────────────
 
@@ -221,6 +266,25 @@ module_specs = [
     mask:         %w[/var/cache/apt/** /var/lib/apt/lists/** /usr/share/doc/** /usr/share/man/** /var/log/nginx/**],
     protected_spec: [],
     digest_seed:  "nginx-v1"
+  },
+  {
+    # RPi 4 firmware module — ships GPU bootloader + DTBs + config.txt /
+    # cmdline.txt templates into the FAT32 boot partition. Sourced at CI
+    # build time from upstream raspberrypi/firmware repo (per Broadcom
+    # redistribution license, NOT committed to this repo).
+    name: "rpi4-firmware",
+    description: "Raspberry Pi 4 firmware (start4.elf, fixup4.dat, bcm2711-rpi-4-b.dtb, overlays, config.txt, cmdline.txt). Required for booting the RPi 4 from a Powernode disk image.",
+    category: cat_firmware,
+    priority: 15,
+    package_spec: [],
+    # All paths land in /boot/firmware/ — the FAT32 boot partition mount
+    # point used by the rpi4 disk-image builder.
+    file_spec:    %w[/boot/firmware/start4.elf /boot/firmware/fixup4.dat /boot/firmware/bcm2711-rpi-4-b.dtb /boot/firmware/overlays/** /boot/firmware/config.txt /boot/firmware/cmdline.txt],
+    mask:         %w[/var/cache/apt/** /var/lib/apt/lists/** /usr/share/doc/**],
+    # Hardware boot path is non-negotiable — no other module may shadow
+    # firmware files (a misconfigured overlay would brick the device).
+    protected_spec: %w[/boot/firmware/start4.elf /boot/firmware/fixup4.dat /boot/firmware/bcm2711-rpi-4-b.dtb /boot/firmware/config.txt],
+    digest_seed:  "rpi4-firmware-v1"
   }
 ]
 
@@ -282,18 +346,29 @@ end
 # ── Templates ───────────────────────────────────────────────────────────────
 
 template_specs = [
-  { name: "base", modules: %w[system-base], description: "Bare node — system-base only" },
+  { name: "base", modules: %w[system-base], description: "Bare node — system-base only", platform: platform },
   { name: "hardened", modules: %w[system-base security-hardening chrony],
-    description: "Hardened baseline — system-base + sysctl/AppArmor floor + chrony time sync, no service tier" },
+    description: "Hardened baseline — system-base + sysctl/AppArmor floor + chrony time sync, no service tier",
+    platform: platform },
   { name: "web-apache", modules: %w[system-base security-hardening chrony apache],
-    description: "Hardened web node with apache" },
+    description: "Hardened web node with apache", platform: platform },
   { name: "web-nginx",  modules: %w[system-base security-hardening chrony nginx],
-    description: "Hardened web node with nginx" }
+    description: "Hardened web node with nginx", platform: platform },
+  # Physical-device templates (Phase 1 hardware scope, plan wondrous-yawning-anchor.md).
+  { name: "rpi4-base", modules: %w[system-base rpi4-firmware],
+    description: "Raspberry Pi 4 baseline — system-base + RPi firmware. Flash to SD card, plug Pi in, claim via UI.",
+    platform: platform_rpi4 },
+  { name: "rpi4-hardened", modules: %w[system-base rpi4-firmware security-hardening chrony],
+    description: "Hardened Raspberry Pi 4 — base + hardening floor + time sync.",
+    platform: platform_rpi4 },
+  { name: "arm64-uefi-base", modules: %w[system-base],
+    description: "Generic arm64 UEFI baseline — Pi 5 with UEFI Pi firmware, Ampere boards, etc.",
+    platform: platform_arm64_uefi }
 ]
 
 template_specs.each do |spec|
   t = System::NodeTemplate.find_or_create_by!(account: account, name: spec[:name]) do |tmpl|
-    tmpl.node_platform = platform
+    tmpl.node_platform = spec[:platform] || platform
     tmpl.enabled       = true
     tmpl.public        = false
     tmpl.admin_user    = "ubuntu"

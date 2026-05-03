@@ -121,6 +121,10 @@ Rails.application.routes.draw do
           post "module_publications/process",
                to: "module_publications#process_publication"
 
+          # UnclaimedDevice reaper — daily cron from System::ExpireUnclaimedDevicesJob.
+          post "unclaimed_devices/expire",
+               to: "unclaimed_devices#expire"
+
           resources :tasks, only: %i[index show] do
             collection do
               get :pending
