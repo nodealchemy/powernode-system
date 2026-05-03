@@ -24,7 +24,7 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci"
+readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci,disk-image-rpi4,disk-image-arm64-uefi"
 readonly DEFAULT_BASE_IMAGE="ubuntu@sha256:placeholder-pin-via-ci-input"
 
 ARCH=""
@@ -200,6 +200,47 @@ build_qcow2() {
   log "qcow2 ✓ at ${out}"
 }
 
+# ── Variant: disk-image-rpi4 (RPi 4 SD card, MBR + FAT32 boot) ─────────────
+# Plan: docs/plans/wondrous-yawning-anchor.md §3.
+# Operator flashes onto SD, Pi boots, agent polls /node_api/claim.
+# arm64-only (Pi 4 is arm64; 32-bit Pi support deferred).
+build_disk_image_rpi4() {
+  if [[ "$ARCH" != "arm64" ]]; then
+    log "disk-image-rpi4 is arm64-only — skipping for $ARCH"
+    return 0
+  fi
+  log "Building RPi 4 disk image…"
+  local out="${ARCH_OUT}/disk-image-rpi4"
+  mkdir -p "${out}"
+  KERNEL_INITRD_DIR="${ARCH_OUT}/kernel-initrd" \
+    bash "${SCRIPT_DIR}/images/disk-image-rpi4/build-disk-image-rpi4.sh" \
+      --output "${out}/powernode-rpi4.img" \
+      ${PLATFORM_URL:+--platform-url "$PLATFORM_URL"} \
+      ${CA_PEM_FILE:+--ca-pem-file "$CA_PEM_FILE"} \
+      ${RPI4_FIRMWARE_DIR:+--firmware-dir "$RPI4_FIRMWARE_DIR"}
+  sha256sum "${out}/powernode-rpi4.img" >"${out}/SHA256SUMS" 2>/dev/null || true
+  log "disk-image-rpi4 ✓ at ${out}"
+}
+
+# ── Variant: disk-image-arm64-uefi (Pi 5 / Ampere / generic UEFI arm64) ────
+# Plan: docs/plans/wondrous-yawning-anchor.md §3.
+# Wraps build-raw.sh + layers identity.cfg + ca.pem onto EFI partition.
+build_disk_image_arm64_uefi() {
+  if [[ "$ARCH" != "arm64" ]]; then
+    log "disk-image-arm64-uefi is arm64-only — skipping for $ARCH"
+    return 0
+  fi
+  log "Building generic arm64 UEFI disk image…"
+  local out="${ARCH_OUT}/disk-image-arm64-uefi"
+  mkdir -p "${out}"
+  bash "${SCRIPT_DIR}/images/disk-image-arm64-uefi/build-disk-image-arm64-uefi.sh" \
+    --output "${out}/powernode-arm64-uefi.img" \
+    ${PLATFORM_URL:+--platform-url "$PLATFORM_URL"} \
+    ${CA_PEM_FILE:+--ca-pem-file "$CA_PEM_FILE"}
+  sha256sum "${out}/powernode-arm64-uefi.img" >"${out}/SHA256SUMS" 2>/dev/null || true
+  log "disk-image-arm64-uefi ✓ at ${out}"
+}
+
 # ── Variant: OCI image (bootc-compatible) ──────────────────────────────────
 build_oci() {
   log "Building OCI bootc image…"
@@ -224,13 +265,15 @@ log "Starting build (variants: ${VARIANTS})"
 IFS=',' read -ra VARIANT_LIST <<<"${VARIANTS}"
 for v in "${VARIANT_LIST[@]}"; do
   case "$v" in
-    kernel-initrd) build_kernel_initrd ;;
-    raw)           build_raw ;;
-    iso)           build_iso ;;
-    ipxe)          build_ipxe ;;
-    qcow2)         build_qcow2 ;;
-    oci)           build_oci ;;
-    *)             log "WARN: unknown variant '$v' — skipped" ;;
+    kernel-initrd)            build_kernel_initrd ;;
+    raw)                      build_raw ;;
+    iso)                      build_iso ;;
+    ipxe)                     build_ipxe ;;
+    qcow2)                    build_qcow2 ;;
+    oci)                      build_oci ;;
+    disk-image-rpi4)          build_disk_image_rpi4 ;;
+    disk-image-arm64-uefi)    build_disk_image_arm64_uefi ;;
+    *)                        log "WARN: unknown variant '$v' — skipped" ;;
   esac
 done
 

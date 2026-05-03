@@ -70,17 +70,26 @@ type Resolver struct {
 // in the recommended priority order:
 //  1. CmdlineStrategy           — fastest, no network
 //  2. FwCfgStrategy             — virtio-fw-cfg (libvirt/QEMU)
-//  3. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
-//  4. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
+//  3. ClaimStrategy             — physical disk-image flow (boot partition)
+//  4. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
+//  5. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
 //
 // Cloud strategies are deliberately ordered after the no-network paths so
 // a QEMU node booting locally doesn't waste seconds probing cloud
-// metadata services that aren't there.
+// metadata services that aren't there. ClaimStrategy sits between fw-cfg
+// and the cloud probes so a Pi 4 booted from a generic disk image doesn't
+// pay 4×1.5s for cloud metadata that isn't there — its BootIdentityStrategy
+// helper reads /boot/identity.cfg in <1ms; if absent (cloud VM, no boot
+// partition), ClaimStrategy returns ErrNotFound and the chain falls
+// through to cloud strategies naturally.
+//
+// Plan: docs/plans/wondrous-yawning-anchor.md §4.
 func DefaultResolver() *Resolver {
 	return &Resolver{
 		Strategies: []Strategy{
 			&CmdlineStrategy{},
 			&FwCfgStrategy{},
+			&ClaimStrategy{},
 			&CloudStrategy{Client: &AwsMetadataClient{}},
 			&CloudStrategy{Client: &GcpMetadataClient{}},
 			&CloudStrategy{Client: &AzureMetadataClient{}},

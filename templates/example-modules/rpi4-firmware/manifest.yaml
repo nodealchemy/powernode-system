@@ -1,0 +1,77 @@
+schema_version: 1
+
+name: rpi4-firmware
+display_name: "Raspberry Pi 4 GPU firmware"
+description: >
+  Broadcom GPU firmware files (start4.elf, fixup4.dat, bootcode.bin,
+  device tree blobs, overlays) required for a Raspberry Pi 4 to boot.
+  Sourced at CI time from the upstream raspberrypi/firmware GitHub
+  repo at a pinned commit — never committed to this repo (Broadcom
+  redistribution license requires upstream sourcing).
+
+  This module is consumed by the disk-image-rpi4 build variant: the
+  CI pipeline unpacks the rootfs and passes its boot/firmware path
+  to build-disk-image-rpi4.sh via --firmware-dir. The result is an
+  SD-card-flashable .img with a complete boot partition.
+
+# License notes — the firmware blobs themselves are governed by
+# Broadcom's redistribution license; this module's manifest + build
+# tooling is MIT.
+license: "MIT (manifest); Broadcom (firmware blobs — see LICENCE.broadcom in rootfs)"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# All firmware lands under /boot/firmware (RPi convention since 22.04).
+# init-powernode.sh's mount fallback chain doesn't see this path directly —
+# the disk-image build flattens it onto the FAT32 boot partition root, so
+# the GPU bootloader finds start4.elf at /start4.elf.
+file_spec:
+  - "/boot/firmware/**"
+
+# RPi firmware is foundational hardware enablement — no neighbor module
+# should override these blobs. Anything that does is asking for a brick.
+protected_spec:
+  - "/boot/firmware/start*.elf"
+  - "/boot/firmware/fixup*.dat"
+  - "/boot/firmware/bootcode.bin"
+  - "/boot/firmware/bcm*-rpi-*.dtb"
+
+# Empty package_spec — these are not Debian packages. The build system
+# fetches via Containerfile (see Containerfile in this dir).
+package_spec: []
+
+dependencies:
+  requires: []
+  provides:
+    - hardware.rpi4
+    - boot.firmware
+
+# No init: firmware is loaded by the GPU bootloader before Linux runs;
+# nothing for systemd to start.
+init:
+  start: ""
+  stop: ""
+  restart: ""
+
+reboot_required: true
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+# Build pinning. firmware_ref is the raspberrypi/firmware repo commit
+# the build pulls from. Bump this only when verifying against current
+# RPi 4 silicon — older Pi 4s with non-current firmware can fail to
+# boot newer kernels and vice versa.
+build:
+  ubuntu_digest: null   # not a debootstrap module
+  apt_snapshot: null
+  firmware_repo: "https://github.com/raspberrypi/firmware"
+  firmware_ref:  "1.20240306"

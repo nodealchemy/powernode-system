@@ -1,0 +1,62 @@
+# Builds the rpi4-firmware module rootfs by fetching Broadcom GPU
+# firmware blobs from the upstream raspberrypi/firmware repo at a
+# pinned ref. Output: /rootfs/boot/firmware/* containing the firmware
+# files needed for a Pi 4 to boot.
+#
+# Plan: docs/plans/wondrous-yawning-anchor.md §3.
+#
+# Why we don't commit binaries: Broadcom's firmware redistribution
+# license requires sourcing from upstream rather than mirroring blobs
+# in arbitrary repos. CI pulls fresh on every build at the pinned ref.
+#
+# Output is consumed by:
+#   - extensions/system/initramfs/images/disk-image-rpi4/build-disk-image-rpi4.sh
+#     via the --firmware-dir flag pointing at /rootfs/boot/firmware
+
+FROM debian:bookworm-slim AS fetch
+
+# FIRMWARE_REF must be passed via --build-arg from CI. The manifest's
+# build.firmware_ref field is the source of truth for the pin; CI reads
+# it and passes it here.
+ARG FIRMWARE_REF=1.20240306
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl tar && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /firmware
+
+# Fetch only the boot/ subdir of the pinned ref. The full firmware repo
+# is several GB (kernel sources + everything); we only need ~50MB of
+# boot blobs. The github archive API serves a tarball at the ref.
+RUN curl -fsSL \
+      "https://github.com/raspberrypi/firmware/archive/refs/tags/${FIRMWARE_REF}.tar.gz" \
+      -o firmware.tar.gz && \
+    tar -xzf firmware.tar.gz \
+      "firmware-${FIRMWARE_REF}/boot/start4.elf" \
+      "firmware-${FIRMWARE_REF}/boot/fixup4.dat" \
+      "firmware-${FIRMWARE_REF}/boot/start.elf" \
+      "firmware-${FIRMWARE_REF}/boot/fixup.dat" \
+      "firmware-${FIRMWARE_REF}/boot/bootcode.bin" \
+      "firmware-${FIRMWARE_REF}/boot/bcm2711-rpi-4-b.dtb" \
+      "firmware-${FIRMWARE_REF}/boot/bcm2711-rpi-400.dtb" \
+      "firmware-${FIRMWARE_REF}/boot/bcm2711-rpi-cm4.dtb" \
+      "firmware-${FIRMWARE_REF}/boot/overlays" \
+      2>/dev/null && \
+    mkdir -p /rootfs/boot/firmware && \
+    cp -r "firmware-${FIRMWARE_REF}/boot/." /rootfs/boot/firmware/ && \
+    cd / && rm -rf /firmware
+
+# Capture the source ref + LICENCE for audit trail. Operators can
+# inspect this to verify which firmware version is on a given device.
+RUN echo "Raspberry Pi firmware ${FIRMWARE_REF}" >/rootfs/boot/firmware/POWERNODE_FIRMWARE_VERSION && \
+    curl -fsSL \
+      "https://raw.githubusercontent.com/raspberrypi/firmware/${FIRMWARE_REF}/boot/LICENCE.broadcom" \
+      -o /rootfs/boot/firmware/LICENCE.broadcom 2>/dev/null || \
+    echo "LICENCE.broadcom unavailable at ref ${FIRMWARE_REF}" >/rootfs/boot/firmware/LICENCE.broadcom
+
+# Final stage: tiny scratch with only /rootfs — the module publication
+# pipeline imports this layer's filesystem directly.
+FROM scratch AS rootfs
+COPY --from=fetch /rootfs /rootfs

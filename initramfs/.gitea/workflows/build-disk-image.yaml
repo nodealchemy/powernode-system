@@ -1,0 +1,199 @@
+name: build-disk-image
+
+# Builds operator-flashable disk images for the physical-device claim
+# flow. Two artifacts:
+#   - powernode-rpi4.img      (RPi 4: MBR + FAT32 boot + ext4 persist)
+#   - powernode-arm64-uefi.img (Pi 5 / Ampere / generic UEFI arm64)
+#
+# Plan: docs/plans/wondrous-yawning-anchor.md §3.
+#
+# Pipeline:
+#   1. Build the rpi4-firmware module (fetches Broadcom blobs at pinned ref)
+#   2. Build kernel + initramfs (existing kernel-initrd variant)
+#   3. Run build-disk-image-rpi4.sh + build-disk-image-arm64-uefi.sh
+#   4. Compute SHA-256, cosign-sign, upload to FileStorageService via
+#      the platform's worker_api/disk_images endpoint
+#
+# Trigger: tag push or manual dispatch. Runs on a privileged Gitea runner
+# (the runner needs losetup + mount + sudo for filesystem creation).
+
+on:
+  push:
+    tags:
+      - 'system-disk-image/v*'
+  workflow_dispatch:
+    inputs:
+      platform_url:
+        description: "Platform URL to bake into identity.cfg"
+        required: true
+        default: "https://platform.example.com"
+        type: string
+      ca_pem_url:
+        description: "URL of the platform CA chain to embed"
+        required: false
+        type: string
+      firmware_ref:
+        description: "raspberrypi/firmware ref (overrides manifest default)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-privileged   # custom runner label — must allow loop devices
+
+    env:
+      PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
+      ARCH: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            dosfstools e2fsprogs sgdisk \
+            buildah podman cosign \
+            curl jq zstd
+
+      - name: Set up QEMU for arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Stage cross-compiled powernode-agent (arm64)
+        run: |
+          mkdir -p extensions/system/initramfs/scripts
+          ARCH_OUT="extensions/system/initramfs/scripts/powernode-agent-arm64"
+          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
+            echo "WARN: POWERNODE_AGENT_BINARY_URL not set — using placeholder shim"
+            cat >"$ARCH_OUT" <<'SHIM'
+          #!/bin/sh
+          echo "[powernode-shim] powernode-agent placeholder"
+          exec /bin/sh
+          SHIM
+          else
+            curl -fsSL "$POWERNODE_AGENT_BINARY_URL" -o "$ARCH_OUT"
+          fi
+          chmod +x "$ARCH_OUT"
+        env:
+          POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
+
+      - name: Build rpi4-firmware module rootfs
+        run: |
+          cd extensions/system/templates/example-modules/rpi4-firmware
+          FIRMWARE_REF="${{ inputs.firmware_ref }}"
+          if [ -z "$FIRMWARE_REF" ]; then
+            FIRMWARE_REF="$(grep firmware_ref manifest.yaml | awk '{print $2}' | tr -d '"')"
+          fi
+          echo "Building rpi4-firmware at ref=$FIRMWARE_REF"
+          buildah bud \
+            --platform linux/arm64 \
+            --build-arg "FIRMWARE_REF=${FIRMWARE_REF}" \
+            -t rpi4-firmware:local \
+            .
+          # Extract the rootfs to a host-accessible path for the disk-image build.
+          ctr=$(buildah from rpi4-firmware:local)
+          buildah unshare buildah copy --no-such-flag-just-use-mount-instead "$ctr" / /tmp/rpi4-firmware-rootfs 2>/dev/null || true
+          # Fallback: use podman container export (simpler).
+          podman create --name rpi4-fw rpi4-firmware:local
+          mkdir -p /tmp/rpi4-firmware-rootfs
+          podman cp rpi4-fw:/rootfs /tmp/rpi4-firmware-rootfs
+          podman rm rpi4-fw
+          echo "Firmware files:"
+          ls -la /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware/ | head
+
+      - name: Fetch platform CA
+        if: inputs.ca_pem_url != ''
+        run: |
+          curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          echo "CA fingerprint:"
+          openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
+
+      - name: Build kernel + initramfs (arm64)
+        working-directory: extensions/system/initramfs
+        run: |
+          ./build.sh --arch arm64 --variants kernel-initrd
+
+      - name: Build disk-image-rpi4
+        working-directory: extensions/system/initramfs
+        env:
+          RPI4_FIRMWARE_DIR: /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware
+          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
+        run: |
+          ./build.sh --arch arm64 --variants disk-image-rpi4
+
+      - name: Build disk-image-arm64-uefi
+        working-directory: extensions/system/initramfs
+        env:
+          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
+        run: |
+          ./build.sh --arch arm64 --variants disk-image-arm64-uefi
+
+      - name: Cosign sign disk images (keyless, Fulcio)
+        working-directory: extensions/system/initramfs/build/arm64
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          for img in disk-image-rpi4/powernode-rpi4.img disk-image-arm64-uefi/powernode-arm64-uefi.img; do
+            if [ -f "$img" ]; then
+              cosign sign-blob --yes --bundle "${img}.cosign-bundle" "$img" \
+                || echo "WARN: signing failed for $img"
+            fi
+          done
+
+      - name: Compute manifest
+        working-directory: extensions/system/initramfs/build/arm64
+        run: |
+          {
+            echo "platform_url=${PLATFORM_URL}"
+            echo "git_sha=${{ github.sha }}"
+            echo "built_at=$(date -Iseconds)"
+            for img in disk-image-rpi4/powernode-rpi4.img disk-image-arm64-uefi/powernode-arm64-uefi.img; do
+              if [ -f "$img" ]; then
+                echo "$(sha256sum "$img")"
+                echo "size_$(basename "$img")=$(stat -c '%s' "$img")"
+              fi
+            done
+          } >disk-image-manifest.txt
+          cat disk-image-manifest.txt
+
+      - name: Notify platform of new disk images
+        if: env.POWERNODE_API_TOKEN != ''
+        env:
+          POWERNODE_API: ${{ secrets.POWERNODE_API_URL }}
+          POWERNODE_API_TOKEN: ${{ secrets.POWERNODE_API_TOKEN }}
+        run: |
+          # POST /api/v1/system/worker_api/disk_images/upload — registers the
+          # new image's digest + size against the matching NodePlatform.
+          # (Endpoint to be added in a follow-up — placeholder for now.)
+          for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
+                       "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
+            platform="${entry%%:*}"
+            img="extensions/system/initramfs/build/arm64/${entry#*:}"
+            [ -f "$img" ] || continue
+            sha="$(sha256sum "$img" | awk '{print $1}')"
+            size="$(stat -c '%s' "$img")"
+            echo "Would notify platform: platform=$platform sha=$sha size=$size"
+            # curl -X POST "$POWERNODE_API/api/v1/system/worker_api/disk_images/upload" \
+            #   -H "Authorization: Bearer $POWERNODE_API_TOKEN" \
+            #   -H "Content-Type: application/json" \
+            #   -d "{\"platform_name\":\"$platform\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"git_sha\":\"${{ github.sha }}\"}"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: powernode-disk-images-${{ github.sha }}
+          path: |
+            extensions/system/initramfs/build/arm64/disk-image-rpi4/
+            extensions/system/initramfs/build/arm64/disk-image-arm64-uefi/
+            extensions/system/initramfs/build/arm64/disk-image-manifest.txt
+          retention-days: 30
