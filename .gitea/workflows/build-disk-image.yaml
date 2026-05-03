@@ -44,7 +44,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-privileged   # custom runner label — must allow loop devices
+    # ubuntu-24.04 with the act-runner default privilege level. losetup
+    # is not available, so build-disk-image-rpi4.sh / -arm64-uefi.sh
+    # fall back to placeholder mode — they emit a valid partition table
+    # but skip mkfs.fat/mkfs.ext4 (require loop devices). The .img is
+    # downloadable + verifiable end-to-end via the platform UI; full
+    # bootable images need a runner with /dev/loop-control access (operator
+    # provisions a privileged runner labelled "ubuntu-24.04-privileged"
+    # and changes this back).
+    runs-on: ubuntu-24.04
 
     env:
       PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
