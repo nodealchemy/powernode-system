@@ -403,7 +403,13 @@ jobs:
           done
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4 is GHES-only; the Gitea Actions
+        # runtime here doesn't support v4. The OCI push above is the
+        # primary distribution channel anyway — the platform pulls from
+        # the registry, not from CI artifacts. continue-on-error so a
+        # missing v4 backend doesn't fail the whole workflow.
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
         with:
           name: powernode-disk-images-${{ github.sha }}
           path: |
