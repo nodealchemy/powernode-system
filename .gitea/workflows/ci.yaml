@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
-          token: ${{ secrets.GITEA_PLATFORM_READ_TOKEN }}
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
           submodules: false
 
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: powernode/powernode-platform
-          token: ${{ secrets.GITEA_PLATFORM_READ_TOKEN }}
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
           path: powernode-platform
 
       - name: Mount extension into parent
