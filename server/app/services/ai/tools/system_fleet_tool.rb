@@ -51,6 +51,7 @@ module Ai
         # Audit + AI skills surfaces
         "system_compliance_snapshot"    => "system.fleet.autonomy",
         "system_runbook_generate"       => "system.modules.read",
+        "system_cve_runbook_generate"   => "system.modules.read",
         "system_cve_triage"             => "system.modules.read",
 
         # Observability + attribution
@@ -207,6 +208,15 @@ module Ai
             }
           },
 
+          # === CVE remediation runbook (Phase 10.7) ===
+          "system_cve_runbook_generate" => {
+            description: "Generate a markdown remediation runbook for a CVE — exposed modules, recommended steps, verification commands. Reads System::CveExposure for the current account.",
+            parameters: {
+              cve_id: { type: "string", required: true },
+              persist_as_page: { type: "boolean", required: false }
+            }
+          },
+
           # === CVE triage (M-D2-2 partial) ===
           "system_cve_triage" => {
             description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted.",
@@ -278,6 +288,7 @@ module Ai
         when "system_module_diff"              then module_diff(params)
         when "system_compliance_snapshot"      then compliance_snapshot(params)
         when "system_runbook_generate"         then runbook_generate(params)
+        when "system_cve_runbook_generate"     then cve_runbook_generate(params)
         when "system_cve_triage"               then cve_triage(params)
         when "system_recent_signals"           then recent_signals(params)
         when "system_attribute_failure"        then attribute_failure(params)
@@ -534,6 +545,20 @@ module Ai
         )
         result = executor.execute(
           template_id: params[:template_id],
+          persist_as_page: params[:persist_as_page] || false
+        )
+        return error_result(result[:error]) unless result[:success]
+        success_result(result[:data])
+      end
+
+      # === CVE remediation runbook (Phase 10.7) ===
+
+      def cve_runbook_generate(params)
+        executor = ::System::Ai::Skills::CveRunbookGenerateExecutor.new(
+          account: @account, agent: @agent, user: @user
+        )
+        result = executor.execute(
+          cve_id: params[:cve_id],
           persist_as_page: params[:persist_as_page] || false
         )
         return error_result(result[:error]) unless result[:success]
