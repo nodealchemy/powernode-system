@@ -45,6 +45,11 @@ const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 // Phase B.2 — Catalog hub. Consolidates Templates, Modules, Puppet
 // Modules, Scripts, Architectures, Platforms, and Marketplace.
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
+// Phase B.3 — Operations hub. Consolidates Fleet Dashboard, Tasks,
+// CI Workers, and CI Webhooks. Named OperationsHubPage to avoid
+// colliding with the existing OperationsPage (legacy /system/tasks
+// page that becomes the Tasks tab).
+const OperationsHubPage = lazyPage(() => import('./pages/app/system/OperationsHubPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -88,6 +93,9 @@ export function register(): void {
     // Scripts / Architectures / Platforms / Marketplace consolidated
     // under one tabbed page with path-based tabs.
     { path: '/system/catalog/*', component: CatalogPage },
+    // Phase B.3 — Operations hub: Fleet Dashboard / Tasks / CI Workers /
+    // CI Webhooks consolidated under one tabbed page.
+    { path: '/system/operations/*', component: OperationsHubPage },
     // Slice 3 of the SDWAN plan.
     { path: '/system/sdwan', component: SdwanNetworksPage },
     // Slice 6: federation lives at a fixed sub-path; must register
@@ -121,6 +129,9 @@ export function register(): void {
         // Phase B.2 — Catalog hub (consolidates Templates/Modules/
         // Puppet/Scripts/Architectures/Platforms/Marketplace).
         { label: 'Catalog', path: '/app/system/catalog', icon: 'Boxes', order: 2.6 },
+        // Phase B.3 — Operations hub (consolidates Fleet Dashboard /
+        // Tasks / CI Workers / CI Webhooks).
+        { label: 'Operations', path: '/app/system/operations', icon: 'Activity', order: 2.7 },
         { label: 'Nodes', path: '/app/system/nodes', icon: 'Server', order: 3 },
         // Physical-device claim queue (plan wondrous-yawning-anchor.md).
         { label: 'Unclaimed Devices', path: '/app/system/unclaimed-devices', icon: 'Cpu', order: 3.5 },
