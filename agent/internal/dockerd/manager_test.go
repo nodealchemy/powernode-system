@@ -439,6 +439,67 @@ func TestReconcile_ModulesError_Recorded(t *testing.T) {
 	}
 }
 
+// Empty OverlayAddress while a daemon-start would otherwise fire
+// should record a non-fatal "waiting" error and skip the start.
+// Cert-request can still proceed because it doesn't depend on the
+// listen address.
+func TestReconcile_NoOverlay_DefersStart(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}, Running: false}
+	fp := newFakePlatform(t)
+	defer fp.close()
+	m := NewManager(fp.client(), &stubModulesAPI{Modules: []string{"docker-engine"}}, a,
+		"node-1", "", func(string, error) {}) // empty overlay
+
+	m.Reconcile(context.Background())
+
+	if a.StartCalls > 0 {
+		t.Fatalf("expected start deferred when overlay empty, got starts=%d", a.StartCalls)
+	}
+	if m.LastError() == nil || m.LastError().Error() != "waiting for SDWAN overlay address" {
+		t.Fatalf("expected waiting_overlay error, got %v", m.LastError())
+	}
+}
+
+func TestReconcile_NoOverlay_AllowsCertRequest(t *testing.T) {
+	a := &stubApplier{} // no cert, no daemon
+	fp := newFakePlatform(t)
+	defer fp.close()
+	m := NewManager(fp.client(), &stubModulesAPI{Modules: []string{"docker-engine"}}, a,
+		"node-1", "", func(string, error) {}) // empty overlay
+
+	m.Reconcile(context.Background())
+
+	if fp.WantsCert != 1 {
+		t.Fatalf("expected cert request despite empty overlay, got %d", fp.WantsCert)
+	}
+}
+
+func TestSetOverlayAddress_PromotesNextReconcile(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}, Running: false}
+	fp := newFakePlatform(t)
+	defer fp.close()
+	m := NewManager(fp.client(), &stubModulesAPI{Modules: []string{"docker-engine"}}, a,
+		"node-1", "", func(string, error) {})
+
+	// First tick: overlay empty → no start.
+	m.Reconcile(context.Background())
+	if a.StartCalls != 0 {
+		t.Fatalf("T1: expected no start, got %d", a.StartCalls)
+	}
+
+	// SDWAN reconciles, populates overlay address.
+	m.SetOverlayAddress("fd00::42")
+
+	// Second tick: overlay now populated → start fires.
+	m.Reconcile(context.Background())
+	if a.StartCalls != 1 {
+		t.Fatalf("T2: expected start after overlay set, got %d", a.StartCalls)
+	}
+	if a.Config.ListenAddress != "tcp://[fd00::42]:2376" {
+		t.Fatalf("expected updated listen address, got %q", a.Config.ListenAddress)
+	}
+}
+
 // Missing NodeID is a config error — should record and bail without
 // touching anything else.
 func TestReconcile_MissingNodeID_Errors(t *testing.T) {

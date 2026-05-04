@@ -244,6 +244,29 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	m.mu.Unlock()
 }
 
+// FirstOverlayAddress returns the /128 (without prefix length) of the
+// first network the agent is a peer in. Used by sibling reconcilers
+// (e.g. dockerd) that need to bind a daemon to the SDWAN overlay.
+// Returns "" when no SDWAN reconcile has succeeded yet — callers should
+// treat empty as "wait for the next tick" rather than fail-fast, since
+// the SDWAN reconciler runs first in the PostSend ordering and will
+// populate this within ~30s of agent boot.
+func (m *Manager) FirstOverlayAddress() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastDesired == nil || len(m.lastDesired.Networks) == 0 {
+		return ""
+	}
+	addr := m.lastDesired.Networks[0].Interface.Address
+	// `address` is stored in CIDR form (`<v6>/128`); strip the prefix.
+	for i := 0; i < len(addr); i++ {
+		if addr[i] == '/' {
+			return addr[:i]
+		}
+	}
+	return addr
+}
+
 // HeartbeatStatuses returns the per-interface status block to embed in
 // the next HeartbeatPayload. Snapshot-style — safe to call concurrently
 // with Reconcile.

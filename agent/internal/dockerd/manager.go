@@ -108,6 +108,12 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		return
 	}
 
+	// Guard branches that bind to a listen address. If sdwan hasn't
+	// populated OverlayAddress yet, defer those transitions to the
+	// next tick. Cert request + cleanup paths are address-independent
+	// and can still proceed.
+	hasOverlay := m.OverlayAddress != ""
+
 	switch {
 	case !desired && running:
 		m.transitionStop(ctx)
@@ -115,9 +121,11 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		m.transitionCleanupCert(ctx)
 	case desired && !hasCert:
 		m.transitionRequestCert(ctx)
-	case desired && hasCert && !running:
+	case desired && hasCert && !running && hasOverlay:
 		m.transitionStart(ctx)
-	case desired && running:
+	case desired && hasCert && !running && !hasOverlay:
+		m.recordError("waiting_overlay", errWaitingOverlay)
+	case desired && running && hasOverlay:
 		m.transitionReportReady(ctx)
 	}
 	// fallthrough → steady state, nothing to do
@@ -241,11 +249,29 @@ func (m *Manager) LastError() error {
 	return m.lastError
 }
 
+// SetOverlayAddress updates the daemon listen address that
+// transitionStart / transitionReportReady will use. service.Run()
+// calls this each tick (after the SDWAN reconciler has had a chance
+// to populate the address) so the docker reconciler always sees
+// fresh state. Safe to call concurrently with Reconcile — guarded
+// by the same mutex.
+func (m *Manager) SetOverlayAddress(addr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.OverlayAddress = addr
+}
+
 // errMissingNodeID is the sentinel for misconfiguration — the agent
 // should never construct a Manager without a NodeID, but defense in
 // depth catches the bug at reconcile time instead of at first
 // platform call.
 var errMissingNodeID = sentinelError("dockerd Manager: NodeID required")
+
+// errWaitingOverlay is recorded (non-fatal) when transitionStart would
+// run but no overlay address is known yet. SDWAN reconciler runs
+// ahead of dockerd in the PostSend chain, so this clears within one
+// tick of SDWAN successfully fetching its config.
+var errWaitingOverlay = sentinelError("waiting for SDWAN overlay address")
 
 type sentinelError string
 

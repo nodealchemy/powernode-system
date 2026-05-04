@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/powernode/platform/extensions/system/agent/internal/dockerd"
 	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
 	"github.com/powernode/platform/extensions/system/agent/internal/identity"
 	"github.com/powernode/platform/extensions/system/agent/internal/mount"
@@ -81,6 +82,22 @@ func (s *Service) Run(ctx context.Context) error {
 	// channel; failures don't stop the heartbeat.
 	sdwanMgr := sdwan.NewManager(client, nil, s.cfg.OnError)
 
+	// Phase B docker daemon reconciler — same shape as SDWAN. Inherits
+	// the heartbeat's cadence, mTLS auth, and OnError surface. Sourcing
+	// the overlay address from sdwanMgr means we don't need a second
+	// /config/sdwan fetch — the docker tick reuses what SDWAN already
+	// has in memory. Empty address on first boot is expected; the
+	// docker manager defers daemon startup transitions until SDWAN
+	// populates it (errWaitingOverlay is a soft signal).
+	dockerMgr := dockerd.NewManager(
+		dockerd.NewClient(client),
+		dockerd.NewHTTPModulesClient(client),
+		dockerd.NewShellApplier(),
+		client.InstanceID,
+		"", // populated by SetOverlayAddress() each tick
+		s.cfg.OnError,
+	)
+
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -92,6 +109,12 @@ func (s *Service) Run(ctx context.Context) error {
 				s.cfg.OnError("authorized_keys", err)
 			}
 			sdwanMgr.Reconcile(ctx)
+			// Order matters: SDWAN must reconcile FIRST so the docker
+			// reconciler sees a fresh overlay address. The address is
+			// snapshotted into dockerMgr each tick so multi-network
+			// rebalancing (Phase 2 K8s) just falls out.
+			dockerMgr.SetOverlayAddress(sdwanMgr.FirstOverlayAddress())
+			dockerMgr.Reconcile(ctx)
 		},
 	}
 
