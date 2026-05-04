@@ -147,8 +147,12 @@ Rails.application.routes.draw do
         # Comprehensive stabilization sweep P6.
         resources :node_instance_peers, only: %i[index show] do
           collection do
-            # Lightweight prefix-search for the workspace mention picker
+            # Lightweight prefix-search for operators inspecting peers directly
             get :searchable
+            # Peer-mirror Ai::Agents in MentionMember shape for the workspace
+            # mention picker (parent platform's AgentConversationComponent).
+            # Phase 10.7.
+            get :mentionable
           end
           member do
             post :activate

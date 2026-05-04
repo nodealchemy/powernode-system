@@ -14,9 +14,9 @@ RSpec.describe Sdwan::TopologyCompiler, type: :service do
 
   # Two NodeInstances under the same account so peers can attach. We
   # bypass full instance setup and just stub the minimum.
-  let!(:node) { ::System::Node.create!(account: account, name: "compile-node-#{SecureRandom.hex(4)}") }
-  let!(:hub_instance)   { ::System::NodeInstance.create!(node: node, name: "hub-#{SecureRandom.hex(2)}") }
-  let!(:spoke_instance) { ::System::NodeInstance.create!(node: node, name: "spoke-#{SecureRandom.hex(2)}") }
+  let!(:node) { create(:system_node, account: account, name: "compile-node-#{SecureRandom.hex(4)}") }
+  let!(:hub_instance)   { create(:system_node_instance, node: node, name: "hub-#{SecureRandom.hex(2)}") }
+  let!(:spoke_instance) { create(:system_node_instance, node: node, name: "spoke-#{SecureRandom.hex(2)}") }
 
   describe "hub-and-spoke topology" do
     let!(:hub_peer) do

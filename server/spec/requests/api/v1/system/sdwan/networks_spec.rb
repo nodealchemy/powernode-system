@@ -49,7 +49,11 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
            params: { network: { name: "duplicate" } }.to_json,
            headers: headers.merge("Content-Type" => "application/json")
       expect(response).to have_http_status(:unprocessable_entity)
-      expect(json_response["errors"].to_s).to include("has already been taken")
+      # render_validation_error places full_messages under details.errors;
+      # message line surfaces at top-level "message".
+      details = json_response.dig("details", "errors") || []
+      expect(details.join(" ") + " " + json_response["message"].to_s)
+        .to include("has already been taken")
     end
   end
 

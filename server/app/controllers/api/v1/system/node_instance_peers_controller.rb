@@ -46,6 +46,28 @@ module Api
           render_success(peers: peers.map { |p| serialize_searchable(p) }, count: peers.size)
         end
 
+        # GET /api/v1/system/node_instance_peers/mentionable
+        #
+        # Returns peer-mirror Ai::Agents in MentionMember shape so the
+        # parent platform's workspace mention picker can include them
+        # alongside workspace team members. Account-scoped via the agent
+        # row's account_id. No permission gate beyond authentication —
+        # mention picker is a UI affordance, not a privilege escalation
+        # surface (the LLM still gates write actions through skill
+        # approval). Phase 10.7.
+        def mentionable
+          mirrors = ::Ai::Agent
+            .where(account_id: @account.id, agent_type: "assistant", status: "active")
+            .where("metadata ->> 'kind' = ?", "system_node_peer")
+            .order(:name)
+            .limit(200)
+
+          render_success(
+            members: mirrors.map { |a| serialize_mention_member(a) },
+            count: mirrors.size
+          )
+        end
+
         def activate
           require_permission("system.peers.activate")
           if @peer.update(enabled: true, status: "active")
@@ -117,6 +139,17 @@ module Api
 
         def render_accepted(payload)
           render json: { success: true, data: payload }, status: :accepted
+        end
+
+        def serialize_mention_member(agent)
+          {
+            id: agent.id,
+            name: agent.name,
+            role: "node_peer",
+            agent_type: "node_peer",
+            peer_id: agent.metadata["peer_id"],
+            node_instance_id: agent.metadata["node_instance_id"]
+          }
         end
 
         def serialize_searchable(peer)

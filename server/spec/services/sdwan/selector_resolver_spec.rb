@@ -38,8 +38,8 @@ RSpec.describe Sdwan::SelectorResolver, type: :service do
         Sdwan::Network.where(account_id: account.id).delete_all
         Sdwan::Network.create!(account_id: account.id, name: "sel-net-#{SecureRandom.hex(4)}")
       end
-      let(:node) { ::System::Node.create!(account: account, name: "sel-node-#{SecureRandom.hex(4)}") }
-      let(:instance) { ::System::NodeInstance.create!(node: node, name: "sel-inst-#{SecureRandom.hex(2)}") }
+      let(:node) { create(:system_node, account: account, name: "sel-node-#{SecureRandom.hex(4)}") }
+      let(:instance) { create(:system_node_instance, node: node, name: "sel-inst-#{SecureRandom.hex(2)}") }
 
       it "compiles a peer_id selector to that peer's /128 address" do
         peer = Sdwan::PeerEnroller.call(network: network, node_instance: instance)
