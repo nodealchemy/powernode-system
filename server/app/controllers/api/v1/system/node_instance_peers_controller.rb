@@ -49,6 +49,11 @@ module Api
         def activate
           require_permission("system.peers.activate")
           if @peer.update(enabled: true, status: "active")
+            # Phase 10.7 — mirror the peer as a first-class Ai::Agent so the
+            # platform's agent infrastructure (trust, audit, future mention
+            # surfaces) treats peers uniformly. Best-effort; failure here
+            # logs but does not fail the activate.
+            ::System::PeerAgentMirror.mirror_for_peer!(@peer, creator: current_user)
             render_success(peer: serialize_peer(@peer.reload), message: "Peer activated")
           else
             render_validation_error(@peer)
@@ -58,6 +63,7 @@ module Api
         def deactivate
           require_permission("system.peers.activate")
           if @peer.update(enabled: false, status: "registered")
+            ::System::PeerAgentMirror.archive_for_peer!(@peer)
             render_success(peer: serialize_peer(@peer.reload), message: "Peer deactivated")
           else
             render_validation_error(@peer)
