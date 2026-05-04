@@ -6,11 +6,10 @@ file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
 **Last updated:** 2026-05-04
-**Spec coverage:** 1763 examples / 12 pre-existing SDWAN fixture failures / 1 conditional-pending; 1750 passing
+**Spec coverage:** 1772 examples / 0 failures / 1 conditional-pending — full green suite
 **Frontend:** TS clean across all touched files; 38 component tests across 6 suites
-**Known fixture drift:** SDWAN specs fail because `System::Node.create!` now requires `node_template` (pre-existing, not introduced today) — see follow-up #4
 **Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-**Phase 10:** 6 of 7 subphases done (10.1, 10.2, 10.3, 10.5 fully; 10.4 backend + peer-as-Agent mirror groundwork; 10.7 polish list ~7 items shipped). 10.4 mention picker surface integration + 10.6 metric-gated remain.
+**Phase 10:** 7 of 7 subphases functionally delivered (10.1 RuboCop, 10.2 SBOM ingestion, 10.3 Concierge, 10.4 backend + peer-as-Agent mirror + mention picker surface, 10.5 metrics v1, 10.6 metric-gated, 10.7 polish list — substantial coverage)
 
 ---
 
@@ -101,21 +100,21 @@ local) carries the long-form roadmap.
    register.ts` adds `/system/fleet` and `/system/templates/compose` routes;
    verify nav appears post-extraction.
 
-8. **SDWAN spec fixture drift** — 12 pre-existing failures in
-   `spec/services/sdwan/` and `spec/requests/api/v1/system/sdwan/` because
-   `System::Node.create!` validates presence of `node_template`. SDWAN
-   specs construct nodes without one. Root cause: model validation added
-   after the SDWAN spec set was authored. Fix: thread a `node_template:`
-   into each spec's `let(:node)` declaration. ~0.5d cleanup.
+8. ~~**SDWAN spec fixture drift**~~ — ✅ closed 2026-05-04. Root cause was
+   actually the VaultCredential concern lacking a default `credentials=`
+   accessor — making the DB-fallback path raise `CredentialError` on
+   every test run. Fixed by adding default getter/setter to the concern;
+   3+ SDWAN models (PeerKey, UserDevice, FederationPeer) now get DB
+   fallback for free, plus any future VaultCredential user. Also fixed
+   networks_spec json path drift (read errors from details.errors).
+   All 12 failures resolved.
 
-9. **Mention picker surface for peer-as-Agent** — peer-mirror agents
-   created on activate (Phase 10.7) need surface integration into the
-   parent's mention picker. Three viable paths:
-   (a) add peer-mirrors as members of a "System Fleet" workspace,
-   (b) extend `AgentConversationComponent.refreshWorkspaceMembers` to
-       merge in account-wide agents-with-`metadata.kind=system_node_peer`,
-   (c) add a parallel /peers endpoint to the picker.
-   None shipped; deserves a focused decision + implementation session.
+9. ~~**Mention picker surface for peer-as-Agent**~~ — ✅ closed 2026-05-04
+   via path (c) — parallel-fetch in parent's AgentConversationComponent.
+   `GET /api/v1/system/node_instance_peers/mentionable` returns
+   peer-mirror Ai::Agents in MentionMember shape; parent platform
+   merges via `Promise.allSettled` so a 404 from a missing extension
+   gracefully falls back to workspace-only members.
 
 ---
 
@@ -147,7 +146,7 @@ under "Phase 10 — Deferred Item Roadmap". Summary:
 | 10.1 | RuboCop autocorrect sweep | ~0.5d | ✅ done — 1127 → 0 offenses; 154 files autocorrected; CI rubocop job added |
 | 10.2 | `syft` SBOM ingestion in module CI | ~2d | ✅ done — webhook ingestion (HMAC-auth, not worker_api per plan deviation), CycloneDxParser, retry-on-race in build CI |
 | 10.3 | AI Concierge production conversation routing | ~3d | ✅ done — System Concierge agent (db/seeds) + FleetContextBuilder + concierge_controller#start; reuses platform's Ai::ConciergeService; ConciergeToolBridge gained metadata-driven tool filter (parent platform change); ConciergePanel wired |
-| 10.4 | Workspace mention picker for peers | ~1.5d | 🟡 partial — searchable endpoint shipped; frontend wire-up gated on parent-platform coupling decision (extension hook vs registry) |
+| 10.4 | Workspace mention picker for peers | ~1.5d | ✅ done — searchable endpoint + peer-as-Agent mirror service + parent platform AgentConversationComponent parallel-fetch + new `mentionable` endpoint exposing peer-mirror agents in MentionMember shape |
 | 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ✅ done — Aggregator (Rails.cache counter, per-min buckets) + Subscriber (idempotent AS::Notifications listener) + GET /system/metrics/dispatch endpoint; frontend tile deferred to 10.7 |
 | 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
 | 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | 🟡 in-flight — 7 items shipped (dispatch tile, FleetContext SDWAN expansion, concierge controller spec, searchable peers spec, CVE runbook full path, frontend Jest infra + 5 component test suites, peer-as-Agent mirror, fleet runbook Pages bug fix). Remaining: peer activation queue UI (~1d), GitOps per-repo fan-out (~0.5d), hardware verification (blocked) |
@@ -161,6 +160,14 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-04 — Comprehensive verification + fixes pass — all 12
+  pre-existing SDWAN spec failures resolved (root cause was
+  VaultCredential concern missing a default `credentials=` accessor;
+  added defaults so DB fallback works for any model that includes the
+  concern); mention picker surface integration shipped (peer-mirror
+  agents now appear in workspace mention picker via parallel-fetch in
+  parent's AgentConversationComponent); 5 new specs for the new
+  `mentionable` endpoint. Spec count 1763 → 1772, all green.
 - 2026-05-04 — Phase 10.7 batch (7 items) — frontend Jest infra
   established (`extensions/system/frontend/jest.config.js`) extending the
   parent's config; 38 component tests across 6 suites (ConciergeMessage,
