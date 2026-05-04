@@ -144,6 +144,12 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-04 — Phase 10.7 (item 1) — Dispatch latency frontend tile:
+  `metricsApi.dispatch()` + `DispatchLatencyTile` rendered in
+  `FleetDashboardPage` below the existing counters strip. Polls
+  `/api/v1/system/metrics/dispatch` every 30s with a 5min window;
+  shows count + rate per metric (claimed/started/completed/failed/fleet
+  events) and computes failure-rate % across completed+failed.
 - 2026-05-03 — Phase 10.3 AI Concierge backend wiring: System Concierge
   `Ai::Agent` seed, `System::Concierge::FleetContextBuilder`,
   `concierge_controller#start`, `ConciergePanel` wired to platform's

@@ -8,6 +8,7 @@ import { wsManager } from '@/shared/services/WebSocketManager';
 import { useAuth } from '@/shared/hooks/useAuth';
 import { fleetApi, type FleetEvent } from '@system/features/system/services/api/fleetApi';
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
+import { DispatchLatencyTile } from './DispatchLatencyTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
 
 // Severity levels in increasing-urgency order. Used by the severity
@@ -210,6 +211,11 @@ export function FleetDashboardPage(): React.JSX.Element {
         <Counter icon={<Cpu size={16} />} label="Buffer" value={`${counters.bufferSize}/${MAX_EVENT_BUFFER}`} />
         {/* Track F-6 honeypot canary status — alerts on any access in last 24h. */}
         <HoneypotCanaryTile />
+      </div>
+
+      {/* Phase 10.7 polish — dispatch pipeline metrics tile (Phase 10.5 backend). */}
+      <div className="px-4">
+        <DispatchLatencyTile />
       </div>
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 p-4 overflow-hidden">
