@@ -1,8 +1,10 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
@@ -13,11 +15,24 @@ import { BgpSessionsTable } from '@system/features/system/components/sdwan/routi
 import { RoutePoliciesList } from '@system/features/system/components/sdwan/routing/RoutePoliciesList';
 import { RoutePolicyEditModal } from '@system/features/system/components/sdwan/routing/RoutePolicyEditModal';
 
+// Phase B.1 (also slice 9d2 follow-up) — path-based tabs match the
+// canonical AdminSettingsPage pattern. Each tab is a child route under
+// /app/system/sdwan/routing/<slug>.
+
 type TabKey = 'overview' | 'sessions' | 'policies';
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'sessions', label: 'BGP Sessions' },
+  { key: 'policies', label: 'Route Policies' },
+];
+
+const BASE_PATH = '/app/system/sdwan/routing';
 
 const SdwanRoutingPage: React.FC = () => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const location = useLocation();
   const canManage = hasPermission('sdwan.routing.manage');
   const canRead = hasPermission('sdwan.routing.read');
   const canManagePolicies = hasPermission('sdwan.route_policies.manage');
@@ -25,10 +40,14 @@ const SdwanRoutingPage: React.FC = () => {
   const [data, setData] = useState<SdwanRoutingOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabKey>('overview');
   const [refreshKey, setRefreshKey] = useState(0);
   const [policyToEdit, setPolicyToEdit] = useState<SdwanRoutePolicy | null | undefined>(undefined);
   const [policyToDelete, setPolicyToDelete] = useState<SdwanRoutePolicy | null>(null);
+
+  const activeTab = useMemo<TabKey>(() => {
+    const match = TABS.find((t) => location.pathname.endsWith(`/${t.key}`));
+    return match?.key ?? 'overview';
+  }, [location.pathname]);
 
   const load = useCallback(async () => {
     try {
@@ -84,16 +103,15 @@ const SdwanRoutingPage: React.FC = () => {
     );
   }
 
-  // Slice 9d2 — actions live in PageContainer.actions, not inline.
-  // The "New policy" button only appears when the policies tab is
-  // active (and the user has manage permission).
-  const pageActions = (() => {
-    const a: { label: string; onClick: () => void; variant: 'primary' | 'secondary'; icon: typeof Plus }[] = [];
-    if (tab === 'policies' && canManagePolicies) {
-      a.push({ label: 'New policy', onClick: () => setPolicyToEdit(null), variant: 'primary', icon: Plus });
-    }
-    return a;
-  })();
+  const pageActions: PageAction[] = [];
+  if (activeTab === 'policies' && canManagePolicies) {
+    pageActions.push({
+      label: 'New policy',
+      onClick: () => setPolicyToEdit(null),
+      variant: 'primary',
+      icon: Plus,
+    });
+  }
 
   return (
     <PageContainer
@@ -102,8 +120,6 @@ const SdwanRoutingPage: React.FC = () => {
       actions={pageActions}
     >
       <div className="space-y-5">
-        {/* description moved to PageContainer */}
-
         {loading && !data ? (
           <div className="p-4 text-theme-secondary">Loading routing overview…</div>
         ) : error ? (
@@ -117,51 +133,42 @@ const SdwanRoutingPage: React.FC = () => {
             />
 
             <div className="border-b border-theme flex gap-2">
-              <button
-                type="button"
-                onClick={() => setTab('overview')}
-                className={`px-3 py-2 text-sm font-medium border-b-2 ${
-                  tab === 'overview'
-                    ? 'border-theme-accent text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary'
-                }`}
-              >
-                Overview
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('sessions')}
-                className={`px-3 py-2 text-sm font-medium border-b-2 ${
-                  tab === 'sessions'
-                    ? 'border-theme-accent text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary'
-                }`}
-              >
-                BGP Sessions
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('policies')}
-                className={`px-3 py-2 text-sm font-medium border-b-2 ${
-                  tab === 'policies'
-                    ? 'border-theme-accent text-theme-primary'
-                    : 'border-transparent text-theme-secondary hover:text-theme-primary'
-                }`}
-              >
-                Route Policies
-              </button>
+              {TABS.map((t) => {
+                const active = activeTab === t.key;
+                return (
+                  <Link
+                    key={t.key}
+                    to={`${BASE_PATH}/${t.key}`}
+                    className={
+                      'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
+                      (active
+                        ? 'border-theme-focus text-theme-primary'
+                        : 'border-transparent text-theme-secondary hover:text-theme-primary')
+                    }
+                  >
+                    {t.label}
+                  </Link>
+                );
+              })}
             </div>
 
-            {tab === 'overview' && <RoutingOverviewPanel data={data} />}
-            {tab === 'sessions' && <BgpSessionsTable refreshKey={refreshKey} />}
-            {tab === 'policies' && (
-              <RoutePoliciesList
-                refreshKey={refreshKey}
-                onEdit={canManagePolicies ? (p) => setPolicyToEdit(p) : undefined}
-                onDelete={canManagePolicies ? (p) => setPolicyToDelete(p) : undefined}
-                onToggle={canManagePolicies ? handleTogglePolicy : undefined}
+            <Routes>
+              <Route index element={<Navigate to="overview" replace />} />
+              <Route path="overview" element={<RoutingOverviewPanel data={data} />} />
+              <Route path="sessions" element={<BgpSessionsTable refreshKey={refreshKey} />} />
+              <Route
+                path="policies"
+                element={
+                  <RoutePoliciesList
+                    refreshKey={refreshKey}
+                    onEdit={canManagePolicies ? (p) => setPolicyToEdit(p) : undefined}
+                    onDelete={canManagePolicies ? (p) => setPolicyToDelete(p) : undefined}
+                    onToggle={canManagePolicies ? handleTogglePolicy : undefined}
+                  />
+                }
               />
-            )}
+              <Route path="*" element={<Navigate to="overview" replace />} />
+            </Routes>
 
             {policyToEdit !== undefined && (
               <RoutePolicyEditModal

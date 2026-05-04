@@ -73,10 +73,14 @@ export function register(): void {
     { path: '/system/marketplace', component: MarketplacePage },
     { path: '/system/boot-replay/:instance_id', component: BootReplayPage },
     // Phase B.1 — Compute hub: Nodes / Unclaimed Devices / Volumes /
-    // Providers / Networks consolidated under one tabbed page. Old
-    // standalone routes (above) still work; sidebar cleanup happens
-    // in Phase B.5.
-    { path: '/system/compute', component: ComputePage },
+    // Providers / Networks consolidated under one tabbed page. The
+    // wildcard /* delegates path matching to ComputePage's nested
+    // <Routes>, so each tab gets its own URL
+    // (/app/system/compute/nodes, /app/system/compute/volumes, etc.)
+    // matching the canonical platform tab pattern from
+    // AdminSettingsPage. Old standalone routes (above) still work;
+    // sidebar cleanup happens in Phase B.5.
+    { path: '/system/compute/*', component: ComputePage },
     // Slice 3 of the SDWAN plan.
     { path: '/system/sdwan', component: SdwanNetworksPage },
     // Slice 6: federation lives at a fixed sub-path; must register
@@ -84,7 +88,8 @@ export function register(): void {
     // segment matches first.
     { path: '/system/sdwan/federation', component: SdwanFederationPage },
     // Slice 9d: account-level routing dashboard. Must precede /:id.
-    { path: '/system/sdwan/routing', component: SdwanRoutingPage },
+    // Wildcard /* enables path-based tabs (overview, sessions, policies).
+    { path: '/system/sdwan/routing/*', component: SdwanRoutingPage },
     { path: '/system/sdwan/:id', component: SdwanNetworkDetailPage },
   ]);
 
