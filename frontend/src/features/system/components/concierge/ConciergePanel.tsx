@@ -40,6 +40,15 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
     await concierge.send(trimmed);
   };
 
+  // Inline CVE runbook chip — dispatches a natural-language request the
+  // Concierge LLM picks up and routes to system_cve_runbook_generate.
+  const handleCveRunbookRequest = async (cveId: string) => {
+    if (concierge.pending) return;
+    await concierge.send(
+      `Generate a remediation runbook for ${cveId} and persist it as a Page so I can share it with the team.`
+    );
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -92,7 +101,11 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
 
       <div className="flex-1 overflow-auto p-4 space-y-3">
         {displayMessages.map((msg) => (
-          <ConciergeMessage key={msg.id} message={msg} />
+          <ConciergeMessage
+            key={msg.id}
+            message={msg}
+            onCveRunbookRequest={handleCveRunbookRequest}
+          />
         ))}
         {concierge.pending && (
           <div className="text-xs text-theme-text-muted italic">Concierge is thinking...</div>

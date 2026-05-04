@@ -1,4 +1,5 @@
 import { FC } from 'react';
+import { FileText } from 'lucide-react';
 
 export interface ConciergeChatMessage {
   id: string;
@@ -14,11 +15,26 @@ export interface ConciergeChatMessage {
 
 interface Props {
   message: ConciergeChatMessage;
+  onCveRunbookRequest?: (cveId: string) => void;
 }
 
-export const ConciergeMessage: FC<Props> = ({ message }) => {
+const CVE_PATTERN = /CVE-\d{4}-\d{4,}/g;
+
+function extractCveIds(content: string): string[] {
+  const matches = content.match(CVE_PATTERN);
+  if (!matches) return [];
+  return Array.from(new Set(matches));
+}
+
+export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest }) => {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
+
+  // Detect CVE references only on assistant messages — operator's own
+  // typing isn't a useful action affordance.
+  const cveIds = !isUser && !isTool && !message.toolCall && onCveRunbookRequest
+    ? extractCveIds(message.content)
+    : [];
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -53,6 +69,23 @@ export const ConciergeMessage: FC<Props> = ({ message }) => {
         ) : (
           <div className="whitespace-pre-wrap">{message.content}</div>
         )}
+
+        {cveIds.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5" data-testid="cve-runbook-actions">
+            {cveIds.map((cveId) => (
+              <button
+                key={cveId}
+                type="button"
+                onClick={() => onCveRunbookRequest?.(cveId)}
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-theme-bg-card border border-theme-border-default hover:border-theme-primary"
+              >
+                <FileText className="h-3 w-3" />
+                <span>Runbook: {cveId}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="text-xs opacity-60 mt-1 text-right">
           {new Date(message.timestamp).toLocaleTimeString()}
         </div>
