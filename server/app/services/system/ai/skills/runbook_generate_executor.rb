@@ -244,12 +244,23 @@ module System
 
         def persist_runbook_page(template, markdown)
           return nil unless defined?(::Page)
+          # `pages.author_id` is NOT NULL — without a user we can't persist.
+          # `pages.tags` is not a column — stash classifiers under metadata.
+          # `pages.slug` is NOT NULL + unique — build a deterministic slug.
+          # Same fix pattern as CveRunbookGenerateExecutor (Phase 10.7).
+          unless @user&.id
+            Rails.logger.info("[RunbookGenerateExecutor] persist_as_page skipped — no user context")
+            return nil
+          end
+
           page = ::Page.create!(
             account: @account,
+            author_id: @user.id,
             title: "Runbook: #{template[:name]}",
+            slug: "runbook-#{template[:id]}-#{SecureRandom.hex(4)}",
             content: markdown,
             status: "published",
-            tags: [ "runbook", "fleet", "template:#{template[:id]}" ]
+            metadata: { "tags" => [ "runbook", "fleet", "template:#{template[:id]}" ] }
           )
           page.id
         rescue StandardError => e
