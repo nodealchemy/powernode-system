@@ -223,6 +223,45 @@ to `system.instance_terminate` (`require_approval`).
 Operator dashboard: `HoneypotCanaryTile` shows 24h + 7d access counts
 with alert badge when 24h > 0.
 
+### 8. Container runtimes (Phase 1 Docker, Phase 2 K3s, Phase 3 kubeadm)
+
+Operator-managed container workloads on NodeInstances. Three runtime
+modules in the catalog: `docker-engine`, `k3s-server`, `k3s-agent`.
+
+- **Auto-registration**: assigning a runtime module to a Node triggers
+  the agent to install the daemon, generate cert material (Docker) or
+  capture k3s-generated state, and POST `runtime/handshake`. Platform
+  creates the corresponding `Devops::DockerHost` (1:1 with NodeInstance)
+  or `Devops::KubernetesCluster` (1:N — multiple NodeInstances per
+  cluster via `Devops::KubernetesNode`).
+
+- **Network binding**: all daemon API traffic flows over the SDWAN
+  overlay `/128`. No public daemon sockets — encrypted by default.
+  Docker binds `tcp://[<sdwan-/128>]:2376`; K3s binds
+  `https://[<sdwan-/128>]:6443`.
+
+- **Trust model**:
+  - Docker — platform issues mTLS material via
+    `System::InternalCaService` (90-day cert TTL); `Devops::DockerHost
+    .encrypted_tls_credentials` stores client cert+key.
+  - K3s — k3s ships its own CA + signs its own certs; platform
+    captures the kubeconfig + tokens via the agent's `bootstrap`
+    handshake phase. Operators download kubeconfig from the platform
+    UI for kubectl access.
+
+- **Dedicated agent**: `Runtime Manager` (monitor-type AI agent) owns
+  container runtime autonomy with 8 intervention policies — separate
+  trust score + approval queue from Fleet Autonomy. Allows
+  per-domain policy tuning (e.g. auto-rotate `docker_daemon_tls`
+  certs while keeping `kubernetes_cluster_decommission` gated).
+
+- **Phase 3 kubeadm** uses the same shape — extends `RUNTIME_MODULES`
+  in the runtime/handshake controller, adds parallel kubeadm
+  provisioner service. Both flavors share the
+  `Devops::KubernetesCluster` model with a `flavor` enum.
+
+See `CONTAINER_RUNTIMES.md` for the operator workflow.
+
 ---
 
 ## API surfaces
