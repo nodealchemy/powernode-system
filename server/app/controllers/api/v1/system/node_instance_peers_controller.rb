@@ -26,6 +26,26 @@ module Api
           render_success(peer: serialize_peer(@peer))
         end
 
+        # GET /api/v1/system/node_instance_peers/searchable
+        #
+        # Lightweight scope for the workspace mention picker — returns
+        # only enabled peers in the operator's account, with a small
+        # serialization (handle, status, node_instance_id, addresses) so
+        # the autocomplete dropdown stays snappy with 100s of peers.
+        # Filtered by handle prefix via `q` param. Phase 10.4.
+        def searchable
+          require_permission("system.peers.read")
+
+          peers = @account.system_node_instance_peers.enabled.includes(:node_instance)
+          if params[:q].present?
+            prefix = params[:q].to_s.sub(/\A@/, "").downcase
+            peers = peers.where("LOWER(handle) LIKE ?", "#{prefix}%")
+          end
+          peers = peers.order(:handle).limit(50)
+
+          render_success(peers: peers.map { |p| serialize_searchable(p) }, count: peers.size)
+        end
+
         def activate
           require_permission("system.peers.activate")
           if @peer.update(enabled: true, status: "active")
@@ -91,6 +111,17 @@ module Api
 
         def render_accepted(payload)
           render json: { success: true, data: payload }, status: :accepted
+        end
+
+        def serialize_searchable(peer)
+          {
+            id: peer.id,
+            handle: peer.handle,
+            status: peer.status,
+            node_instance_id: peer.node_instance_id,
+            node_name: peer.node_instance&.node&.name,
+            addresses: peer.addresses
+          }
         end
 
         def serialize_peer(peer)

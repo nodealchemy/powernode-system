@@ -6,10 +6,10 @@ file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
 **Last updated:** 2026-05-03
-**Spec coverage:** 1603 examples / 0 failures / 1 conditional-pending
+**Spec coverage:** 1611 examples / 0 failures / 1 conditional-pending
 **Frontend:** TS clean across all session-touched files
 **Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-**Phase 10:** 3 of 7 subphases done (10.1 RuboCop, 10.2 SBOM ingestion, 10.5 metrics v1) — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
+**Phase 10:** 4 of 7 subphases done (10.1 RuboCop, 10.2 SBOM ingestion, 10.3 Concierge backend wiring, 10.5 metrics v1); 10.4 backend done, frontend pending coupling decision — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
 
 ---
 
@@ -129,8 +129,8 @@ under "Phase 10 — Deferred Item Roadmap". Summary:
 |---|---|---|---|
 | 10.1 | RuboCop autocorrect sweep | ~0.5d | ✅ done — 1127 → 0 offenses; 154 files autocorrected; CI rubocop job added |
 | 10.2 | `syft` SBOM ingestion in module CI | ~2d | ✅ done — webhook ingestion (HMAC-auth, not worker_api per plan deviation), CycloneDxParser, retry-on-race in build CI |
-| 10.3 | AI Concierge production conversation routing | ~3d | ⬜ pending — depends on chat extension |
-| 10.4 | Workspace mention picker for peers | ~1.5d | ⬜ pending — depends on chat extension |
+| 10.3 | AI Concierge production conversation routing | ~3d | ✅ done — System Concierge agent (db/seeds) + FleetContextBuilder + concierge_controller#start; reuses platform's Ai::ConciergeService; ConciergeToolBridge gained metadata-driven tool filter (parent platform change); ConciergePanel wired |
+| 10.4 | Workspace mention picker for peers | ~1.5d | 🟡 partial — searchable endpoint shipped; frontend wire-up gated on parent-platform coupling decision (extension hook vs registry) |
 | 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ✅ done — Aggregator (Rails.cache counter, per-min buckets) + Subscriber (idempotent AS::Notifications listener) + GET /system/metrics/dispatch endpoint; frontend tile deferred to 10.7 |
 | 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
 | 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | ⬜ slow-day work |
@@ -144,6 +144,21 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-03 — Phase 10.3 AI Concierge backend wiring: System Concierge
+  `Ai::Agent` seed, `System::Concierge::FleetContextBuilder`,
+  `concierge_controller#start`, `ConciergePanel` wired to platform's
+  existing AI conversation flow. Metadata-driven tool filter added to
+  `Ai::ConciergeToolBridge` (parent platform) — extension agents declare
+  their tool surface via `agent.metadata["concierge_tool_filter"]`,
+  avoiding hardcoded extension knowledge in the bridge. 13 specs (8 builder
+  + 5 filter); all green. SystemFleetTool action coverage: 25 wired
+  (compliance_snapshot, runbook_generate, cve_triage, recent_signals,
+  attribute_failure, inspect_correlation now wired in upstream sweep).
+- 2026-05-03 — Phase 10.4 (partial) — `node_instance_peers#searchable`
+  endpoint for workspace mention picker; lightweight peer serialization
+  filterable by handle prefix. Frontend wire-up paused: requires either
+  parent-platform coupling or a mention-picker plugin registry (not in v1
+  scope without operator decision).
 - 2026-05-03 — Phase 10.5 metrics v1: `Metrics::Aggregator` (Rails.cache
   counter aggregator, per-minute buckets, 65min TTL, 1h max window) +
   `Metrics::Subscriber` (idempotent AS::Notifications listener for

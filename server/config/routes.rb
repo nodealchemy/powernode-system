@@ -146,6 +146,10 @@ Rails.application.routes.draw do
         # Operator-side: list/show + activate/deactivate + delegate task.
         # Comprehensive stabilization sweep P6.
         resources :node_instance_peers, only: %i[index show] do
+          collection do
+            # Lightweight prefix-search for the workspace mention picker
+            get :searchable
+          end
           member do
             post :activate
             post :deactivate
@@ -216,6 +220,12 @@ Rails.application.routes.draw do
         # Action is `#index` because `dispatch` collides with
         # ActionController::Metal#dispatch.
         get "metrics/dispatch", to: "metrics#index"
+
+        # === System Concierge bootstrap (Phase 10.3) ===
+        # Returns or creates the operator's active Concierge conversation
+        # against the System Concierge agent. Subsequent message exchange
+        # uses the standard /api/v1/ai/conversations/:id/messages endpoint.
+        post "concierge/start", to: "concierge#start"
 
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
