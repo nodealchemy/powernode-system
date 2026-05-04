@@ -29,7 +29,15 @@ const TABS: { key: TabKey; label: string }[] = [
 
 const BASE_PATH = '/app/system/sdwan/routing';
 
-const SdwanRoutingPage: React.FC = () => {
+// Phase B.4 — when rendered as a tab inside SdwanHubPage, skip the
+// outer PageContainer wrapper and the AS-allocation banner header
+// row (the hub provides its own chrome). Standalone route at
+// /app/system/sdwan/routing keeps the full chrome.
+interface SdwanRoutingPageProps {
+  embedded?: boolean;
+}
+
+const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
   const location = useLocation();
@@ -94,13 +102,12 @@ const SdwanRoutingPage: React.FC = () => {
   };
 
   if (!canRead) {
-    return (
-      <PageContainer title="SDWAN Routing">
-        <div className="p-4 bg-theme-danger text-theme-danger rounded text-sm">
-          You don't have permission to view SDWAN routing.
-        </div>
-      </PageContainer>
+    const denied = (
+      <div className="p-4 bg-theme-danger text-theme-danger rounded text-sm">
+        You don't have permission to view SDWAN routing.
+      </div>
     );
+    return embedded ? denied : <PageContainer title="SDWAN Routing">{denied}</PageContainer>;
   }
 
   const pageActions: PageAction[] = [];
@@ -113,13 +120,17 @@ const SdwanRoutingPage: React.FC = () => {
     });
   }
 
-  return (
-    <PageContainer
-      title="SDWAN Routing"
-      description="Account-level routing dashboard. AS allocation, BGP sessions, and learned routes across every iBGP-enabled SDWAN network in this account."
-      actions={pageActions}
-    >
+  const body = (
       <div className="space-y-5">
+        {/* In embedded mode the parent hub renders the page chrome,
+            so we add an inline "New policy" button when applicable. */}
+        {embedded && activeTab === 'policies' && canManagePolicies && (
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={() => setPolicyToEdit(null)}>
+              <Plus size={16} /> New policy
+            </Button>
+          </div>
+        )}
         {loading && !data ? (
           <div className="p-4 text-theme-secondary">Loading routing overview…</div>
         ) : error ? (
@@ -201,6 +212,19 @@ const SdwanRoutingPage: React.FC = () => {
           </>
         ) : null}
       </div>
+  );
+
+  if (embedded) {
+    return body;
+  }
+
+  return (
+    <PageContainer
+      title="SDWAN Routing"
+      description="Account-level routing dashboard. AS allocation, BGP sessions, and learned routes across every iBGP-enabled SDWAN network in this account."
+      actions={pageActions}
+    >
+      {body}
     </PageContainer>
   );
 };

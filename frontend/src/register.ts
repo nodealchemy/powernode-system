@@ -32,13 +32,13 @@ const CiWorkersPage = lazyPage(() => import('./pages/app/system/CiWorkersPage'))
 const MarketplacePage = lazyPage(() => import('./pages/app/system/MarketplacePage'));
 // Comprehensive stabilization sweep P7.1 — Boot Replay viewer (M-FE-3 completion).
 const BootReplayPage = lazyPage(() => import('./pages/app/system/BootReplayPage'));
-// Slice 3 of the SDWAN plan.
-const SdwanNetworksPage = lazyPage(() => import('./pages/app/system/SdwanNetworksPage'));
+// SdwanNetworkDetailPage is the per-network drill-down (own
+// PageContainer + 7 internal tabs). The list, federation, and
+// routing pages were absorbed into SdwanHubPage as tab content
+// (Phase B.4) — those page files still exist on disk because
+// SdwanHubPage / its tab orchestrators import the underlying
+// components, but they are no longer top-level routed.
 const SdwanNetworkDetailPage = lazyPage(() => import('./pages/app/system/SdwanNetworkDetailPage'));
-// Slice 6 of the SDWAN plan — federation peers + governance scan.
-const SdwanFederationPage = lazyPage(() => import('./pages/app/system/SdwanFederationPage'));
-// Slice 9d of the SDWAN plan — account-level routing dashboard.
-const SdwanRoutingPage = lazyPage(() => import('./pages/app/system/SdwanRoutingPage'));
 // Phase B.1 — Compute hub. Consolidates Nodes, Unclaimed Devices,
 // Volumes, Providers, and Networks into a single tabbed page.
 const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
@@ -50,6 +50,11 @@ const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
 // colliding with the existing OperationsPage (legacy /system/tasks
 // page that becomes the Tasks tab).
 const OperationsHubPage = lazyPage(() => import('./pages/app/system/OperationsHubPage'));
+// Phase B.4 — SDWAN hub. Consolidates Networks list, Routing, and
+// Federation. Per-network detail (peers/firewall/topology) lives at
+// the sibling route /sdwan/networks/:id/* (registered first so React
+// Router matches the more specific path before the hub catch-all).
+const SdwanHubPage = lazyPage(() => import('./pages/app/system/SdwanHubPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -96,16 +101,16 @@ export function register(): void {
     // Phase B.3 — Operations hub: Fleet Dashboard / Tasks / CI Workers /
     // CI Webhooks consolidated under one tabbed page.
     { path: '/system/operations/*', component: OperationsHubPage },
-    // Slice 3 of the SDWAN plan.
-    { path: '/system/sdwan', component: SdwanNetworksPage },
-    // Slice 6: federation lives at a fixed sub-path; must register
-    // before the catch-all /:id route so the literal "federation"
-    // segment matches first.
-    { path: '/system/sdwan/federation', component: SdwanFederationPage },
-    // Slice 9d: account-level routing dashboard. Must precede /:id.
-    // Wildcard /* enables path-based tabs (overview, sessions, policies).
-    { path: '/system/sdwan/routing/*', component: SdwanRoutingPage },
-    { path: '/system/sdwan/:id', component: SdwanNetworkDetailPage },
+    // Phase B.4 — SDWAN hub at /system/sdwan/* with 3 tabs (networks,
+    // routing, federation). The detail page registers FIRST as a more
+    // specific sibling so /sdwan/networks/:id/topology routes to the
+    // detail page (which has its own PageContainer + 7 internal tabs)
+    // rather than into the hub. Standalone SDWAN page routes from the
+    // pre-B.4 era are removed; their imports below remain because they
+    // are still referenced by the legacy sidebar entries that B.5
+    // cleanup will remove together.
+    { path: '/system/sdwan/networks/:id/*', component: SdwanNetworkDetailPage },
+    { path: '/system/sdwan/*', component: SdwanHubPage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -151,12 +156,11 @@ export function register(): void {
         { label: 'CI Workers', path: '/app/system/ci-workers', icon: 'Bot', order: 16 },
         // Module Marketplace (P7.2 / M-FE-2 — comprehensive stabilization sweep).
         { label: 'Marketplace', path: '/app/system/marketplace', icon: 'Store', order: 17 },
-        // Slice 3 of the SDWAN plan.
+        // Phase B.4 — consolidated SDWAN hub. Networks list, Routing
+        // dashboard, and Federation peers all become tabs of one hub
+        // page. The previous separate "SDWAN Federation" and "SDWAN
+        // Routing" sidebar entries are removed.
         { label: 'SDWAN', path: '/app/system/sdwan', icon: 'ShieldCheck', order: 18 },
-        // Slice 6: federation peers + governance scan.
-        { label: 'SDWAN Federation', path: '/app/system/sdwan/federation', icon: 'Globe2', order: 19 },
-        // Slice 9d: SDWAN routing dashboard (account-level iBGP control plane).
-        { label: 'SDWAN Routing', path: '/app/system/sdwan/routing', icon: 'Route', order: 19.5 },
       ],
     },
   ]);
