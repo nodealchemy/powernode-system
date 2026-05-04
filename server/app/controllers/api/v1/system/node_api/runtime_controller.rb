@@ -30,17 +30,29 @@ module Api
         # endpoint per state-machine transition rather than per daemon type.
         class RuntimeController < BaseController
           # Maps the runtime identifier the agent sends to the NodeModule
-          # name that authorizes it. Adding K3s/kubeadm in Phase 2/3 only
-          # touches this constant + the per-runtime branches below.
+          # name that authorizes it. Phase 3 will add kubeadm_*; the
+          # controller itself stays generic, only this constant changes.
           RUNTIME_MODULES = {
-            "docker" => "docker-engine"
+            "docker"     => "docker-engine",
+            "k3s_server" => "k3s-server",
+            "k3s_agent"  => "k3s-agent"
           }.freeze
 
-          PHASES = %w[wants_cert ready stopped].freeze
+          # Per-runtime allowed phases. Docker uses CSR-issuance flow
+          # (wants_cert → ready → stopped); K3s ships its own CA so it
+          # uses bootstrap/join_request instead. The dispatcher gates
+          # on (runtime, phase) pairs.
+          ALLOWED_PHASES = {
+            "docker"     => %w[wants_cert ready stopped].freeze,
+            "k3s_server" => %w[bootstrap ready stopped].freeze,
+            "k3s_agent"  => %w[join_request ready stopped].freeze
+          }.freeze
 
-          # Server cert TTL for daemon-side mTLS. Matches the platform's
-          # client cert TTL chosen by DockerDaemonProvisionerService — keeps
-          # both halves on the same rotation cadence.
+          # Server cert TTL for Docker daemon-side mTLS. Matches the
+          # platform's client cert TTL chosen by
+          # DockerDaemonProvisionerService — keeps both halves on the
+          # same rotation cadence. Not used for K3s (k3s manages its
+          # own PKI).
           DAEMON_CERT_TTL_SECONDS = 90 * 24 * 3600
 
           # POST /api/v1/system/node_api/runtime/handshake
@@ -51,8 +63,12 @@ module Api
             unless RUNTIME_MODULES.key?(runtime)
               return render_error("unsupported runtime: #{runtime}", :unprocessable_entity)
             end
-            unless PHASES.include?(phase)
-              return render_error("invalid phase: #{phase}", :unprocessable_entity)
+            unless ALLOWED_PHASES[runtime].include?(phase)
+              return render_error(
+                "phase '#{phase}' not valid for runtime '#{runtime}' " \
+                "(allowed: #{ALLOWED_PHASES[runtime].join(', ')})",
+                :unprocessable_entity
+              )
             end
             unless module_assigned?(runtime)
               return render_error(
@@ -63,9 +79,11 @@ module Api
             end
 
             case phase
-            when "wants_cert" then handle_wants_cert(runtime)
-            when "ready"      then handle_ready(runtime)
-            when "stopped"    then handle_stopped(runtime)
+            when "wants_cert"   then handle_wants_cert(runtime)
+            when "bootstrap"    then handle_bootstrap(runtime)
+            when "join_request" then handle_join_request(runtime)
+            when "ready"        then handle_ready(runtime)
+            when "stopped"      then handle_stopped(runtime)
             end
           end
 
@@ -125,6 +143,28 @@ module Api
           end
 
           def handle_ready(runtime)
+            case runtime
+            when "docker"
+              handle_docker_ready
+            when "k3s_server", "k3s_agent"
+              handle_k3s_ready
+            end
+          end
+
+          def handle_stopped(runtime)
+            case runtime
+            when "docker"
+              handle_docker_stopped
+            when "k3s_server", "k3s_agent"
+              handle_k3s_stopped
+            end
+          end
+
+          # ────────────────────────────────────────────────────────────
+          # Docker-specific handlers
+          # ────────────────────────────────────────────────────────────
+
+          def handle_docker_ready
             host = managed_docker_host_for_current_instance
             unless host
               return render_error(
@@ -138,9 +178,6 @@ module Api
               .new(docker_host: host, account: current_instance.account)
               .mark_daemon_ready!(host: host, docker_version: params[:version])
 
-            # `status:` is a render_success keyword arg (HTTP status code), so
-            # the response payload has to live behind the explicit `data:`
-            # key — otherwise Rails tries to set HTTP status to "connected".
             render_success(data: {
               host_id: host.id,
               host_status: host.reload.status,
@@ -148,7 +185,7 @@ module Api
             })
           end
 
-          def handle_stopped(_runtime)
+          def handle_docker_stopped
             host = managed_docker_host_for_current_instance
             host&.update!(status: "disconnected")
             render_success(data: { acknowledged: true, host_id: host&.id })
@@ -156,6 +193,88 @@ module Api
 
           def managed_docker_host_for_current_instance
             ::Devops::DockerHost.managed.find_by(node_instance_id: current_instance.id)
+          end
+
+          # ────────────────────────────────────────────────────────────
+          # K3s-specific handlers
+          # ────────────────────────────────────────────────────────────
+
+          # phase=bootstrap (k3s_server only) — agent reports cluster up.
+          # Body: { kubeconfig, server_token, agent_token, k8s_version }.
+          # Idempotent: re-bootstrapping refreshes credentials.
+          def handle_bootstrap(_runtime)
+            kubeconfig = params[:kubeconfig].to_s
+            server_token = params[:server_token].to_s
+            if kubeconfig.blank? || server_token.blank?
+              return render_error(
+                "kubeconfig and server_token required for phase=bootstrap",
+                :unprocessable_entity
+              )
+            end
+
+            cluster = ::System::KubernetesClusterProvisionerService.bootstrap!(
+              node_instance: current_instance,
+              kubeconfig: kubeconfig,
+              server_token: server_token,
+              agent_token: params[:agent_token].to_s.presence || server_token,
+              k8s_version: params[:k8s_version].to_s
+            )
+
+            render_success(data: {
+              cluster_id: cluster.id,
+              cluster_status: cluster.status,
+              api_endpoint: cluster.api_endpoint
+            })
+          rescue ::System::KubernetesClusterProvisionerService::MissingSdwanPeerError => e
+            render_error(e.message, :unprocessable_entity)
+          end
+
+          # phase=join_request (k3s_agent only) — agent asks for the
+          # cluster's api_endpoint + agent_token so it can run
+          # `k3s agent --server <api> --token <token>`.
+          def handle_join_request(_runtime)
+            payload = ::System::KubernetesClusterProvisionerService.join_request!(
+              node_instance: current_instance
+            )
+            render_success(data: payload)
+          rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
+            render_error(e.message, :unprocessable_entity)
+          end
+
+          # Generic K3s ready handler — applies to both server (HA
+          # additional control-plane joining) and agent (worker
+          # joining).
+          def handle_k3s_ready
+            role = params[:role].to_s.presence ||
+                   (params[:runtime] == "k3s_server" ? "server" : "agent")
+
+            # First time we see this NodeInstance ready, register the
+            # join (if not already). Idempotent.
+            ::System::KubernetesClusterProvisionerService.register_node_join!(
+              node_instance: current_instance,
+              role: role,
+              k8s_version: params[:version].to_s.presence || params[:k8s_version].to_s.presence
+            )
+            node = ::System::KubernetesClusterProvisionerService.mark_node_ready!(
+              node_instance: current_instance,
+              k8s_version: params[:version].to_s.presence || params[:k8s_version].to_s.presence
+            )
+
+            render_success(data: {
+              node_id: node.id,
+              cluster_id: node.kubernetes_cluster_id,
+              node_status: node.status,
+              role: node.role
+            })
+          rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
+            render_error(e.message, :unprocessable_entity)
+          end
+
+          def handle_k3s_stopped
+            node = ::System::KubernetesClusterProvisionerService.mark_node_stopped!(
+              node_instance: current_instance
+            )
+            render_success(data: { acknowledged: true, node_id: node&.id })
           end
         end
       end

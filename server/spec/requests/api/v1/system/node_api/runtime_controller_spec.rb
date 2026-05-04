@@ -54,9 +54,9 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
     end
   end
   let!(:docker_assignment) do
-    ::System::NodeModuleAssignment.create!(
-      node: node, node_module: docker_module, enabled: true
-    )
+    ::System::NodeModuleAssignment.find_or_create_by!(node: node, node_module: docker_module) do |a|
+      a.enabled = true
+    end
   end
 
   let(:agent_keypair) { OpenSSL::PKey.generate_key("ED25519") }
@@ -163,6 +163,113 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       end
     end
 
+    context "phase=bootstrap (k3s_server)" do
+      let!(:k3s_server_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s server test seed")
+        end
+      end
+      let!(:k3s_server_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_server_module, enabled: true)
+      end
+
+      let(:bootstrap_params) do
+        {
+          runtime: "k3s_server", phase: "bootstrap",
+          kubeconfig: "fake-kubeconfig-yaml",
+          server_token: "K10server-token",
+          agent_token: "K10agent-token",
+          k8s_version: "v1.30.4+k3s1"
+        }
+      end
+
+      it "creates a Devops::KubernetesCluster + bootstrap KubernetesNode" do
+        expect {
+          post url, params: bootstrap_params, as: :json
+        }.to change { ::Devops::KubernetesCluster.count }.by(1)
+
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "cluster_id")).to be_present
+        expect(body.dig("data", "cluster_status")).to eq("bootstrapping")
+        expect(body.dig("data", "api_endpoint")).to start_with("https://[")
+      end
+
+      it "rejects bootstrap missing kubeconfig" do
+        post url, params: bootstrap_params.merge(kubeconfig: ""), as: :json
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(JSON.parse(response.body)["error"]).to include("kubeconfig and server_token required")
+      end
+    end
+
+    context "phase=join_request (k3s_agent)" do
+      let!(:k3s_server_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s server test seed")
+        end
+      end
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:k3s_agent_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_agent_module, enabled: true)
+      end
+
+      it "fails with 422 when no cluster exists yet" do
+        post url, params: { runtime: "k3s_agent", phase: "join_request" }, as: :json
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(JSON.parse(response.body)["error"]).to include("no Kubernetes cluster")
+      end
+
+      it "returns api_endpoint + agent_token when a cluster exists" do
+        # Bootstrap a cluster so the agent has something to join.
+        ::System::KubernetesClusterProvisionerService.bootstrap!(
+          node_instance: node_instance,
+          kubeconfig: "kc-yaml", server_token: "tok-srv",
+          agent_token: "tok-agt", k8s_version: "v1.30.4+k3s1"
+        )
+
+        post url, params: { runtime: "k3s_agent", phase: "join_request" }, as: :json
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "api_endpoint")).to start_with("https://[")
+        expect(body.dig("data", "agent_token")).to eq("tok-agt")
+      end
+    end
+
+    context "phase per-runtime gating" do
+      let!(:k3s_server_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s server test seed")
+        end
+      end
+      let!(:k3s_server_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_server_module, enabled: true)
+      end
+
+      it "rejects wants_cert against k3s_server (Docker-only phase)" do
+        post url, params: { runtime: "k3s_server", phase: "wants_cert", csr_pem: "x" }, as: :json
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(JSON.parse(response.body)["error"]).to include("phase 'wants_cert' not valid for runtime 'k3s_server'")
+      end
+
+      it "rejects bootstrap against docker (k3s-only phase)" do
+        post url, params: { runtime: "docker", phase: "bootstrap" }, as: :json
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(JSON.parse(response.body)["error"]).to include("phase 'bootstrap' not valid for runtime 'docker'")
+      end
+    end
+
     context "authorization guards" do
       it "returns 403 when the docker-engine module is not assigned" do
         docker_assignment.destroy!
@@ -177,10 +284,10 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
         expect(JSON.parse(response.body)["error"]).to include("unsupported runtime")
       end
 
-      it "returns 422 when phase is invalid" do
+      it "returns 422 when phase is invalid for the runtime" do
         post url, params: { runtime: "docker", phase: "magic" }, as: :json
         expect(response).to have_http_status(:unprocessable_entity)
-        expect(JSON.parse(response.body)["error"]).to include("invalid phase")
+        expect(JSON.parse(response.body)["error"]).to include("phase 'magic' not valid for runtime 'docker'")
       end
     end
   end
