@@ -72,15 +72,34 @@ module System
         peer_total = ::Sdwan::Peer.where(account_id: @account.id).count
         access_grant_count = ::Sdwan::AccessGrant.where(account_id: @account.id).count if defined?(::Sdwan::AccessGrant)
         vip_count = ::Sdwan::VirtualIp.where(account_id: @account.id).count if defined?(::Sdwan::VirtualIp)
+        firewall_rule_count = ::Sdwan::FirewallRule.where(account_id: @account.id).count if defined?(::Sdwan::FirewallRule)
+        federation_peer_count = ::Sdwan::FederationPeer.where(account_id: @account.id).count if defined?(::Sdwan::FederationPeer)
+        established_bgp_count = sdwan_established_bgp_count
 
         lines = [
           "## SDWAN snapshot",
           "- Networks: #{network_count}",
           "- Peers: #{peer_total}"
         ]
-        lines << "- Active access grants: #{access_grant_count}" if access_grant_count
-        lines << "- Virtual IPs: #{vip_count}" if vip_count
+        lines << "- Firewall rules: #{firewall_rule_count}" if firewall_rule_count&.positive?
+        lines << "- Active access grants: #{access_grant_count}" if access_grant_count&.positive?
+        lines << "- Virtual IPs: #{vip_count}" if vip_count&.positive?
+        lines << "- Established BGP sessions: #{established_bgp_count}" if established_bgp_count&.positive?
+        lines << "- Federation peers: #{federation_peer_count}" if federation_peer_count&.positive?
         lines.join("\n")
+      rescue StandardError
+        nil
+      end
+
+      # Looks up only "established" BGP sessions, scoped via Sdwan::Network
+      # to keep the per-account isolation property.
+      def sdwan_established_bgp_count
+        return nil unless defined?(::Sdwan::BgpSession) && defined?(::Sdwan::Network)
+
+        ::Sdwan::BgpSession
+          .joins(:network)
+          .where(sdwan_networks: { account_id: @account.id }, state: "established")
+          .count
       rescue StandardError
         nil
       end
