@@ -11,6 +11,13 @@ module System
     SSH_KEY_TYPES = %w[ed25519 rsa].freeze
     RSA_KEY_BITS = 2048
 
+    # Phase 2.5 hardening — lifecycle_class disambiguates "long-lived
+    # vs ephemeral" so the platform + agent can short-circuit
+    # expensive bootstrap for short-lived instances. See migration
+    # 20260505000500_add_lifecycle_class_to_system_nodes.rb.
+    LIFECYCLE_CLASSES = %w[persistent ephemeral spot].freeze
+    validates :lifecycle_class, inclusion: { in: LIFECYCLE_CLASSES }, allow_nil: false
+
     # Encryption for sensitive fields
     encrypts :ssh_key
     encrypts :ssh_host_key

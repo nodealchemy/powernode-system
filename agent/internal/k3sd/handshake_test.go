@@ -104,7 +104,7 @@ func TestJoinRequest_HappyPath(t *testing.T) {
 	})
 	defer srv.Close()
 
-	payload, err := c.JoinRequest(context.Background())
+	payload, err := c.JoinRequest(context.Background(), "")
 	if err != nil {
 		t.Fatalf("JoinRequest: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestJoinRequest_NoCluster_PropagatesError(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := c.JoinRequest(context.Background())
+	_, err := c.JoinRequest(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error on 422")
 	}

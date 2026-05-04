@@ -232,9 +232,16 @@ module Api
           # phase=join_request (k3s_agent only) — agent asks for the
           # cluster's api_endpoint + agent_token so it can run
           # `k3s agent --server <api> --token <token>`.
+          #
+          # Multi-cluster awareness (Phase 2.5): the agent may include
+          # target_cluster_id to disambiguate when the account has
+          # more than one cluster. Without it, behavior falls back to
+          # auto-selecting the most recent active cluster (single-
+          # cluster v1 contract).
           def handle_join_request(_runtime)
             payload = ::System::KubernetesClusterProvisionerService.join_request!(
-              node_instance: current_instance
+              node_instance: current_instance,
+              target_cluster_id: params[:target_cluster_id].presence
             )
             render_success(data: payload)
           rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e

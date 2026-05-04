@@ -48,7 +48,9 @@ module System
     K3S_API_PORT = 6443
 
     def self.bootstrap!(**kwargs) = new(**kwargs).bootstrap!
-    def self.join_request!(node_instance:) = new(node_instance: node_instance).join_request!
+    def self.join_request!(node_instance:, target_cluster_id: nil)
+      new(node_instance: node_instance, target_cluster_id: target_cluster_id).join_request!
+    end
 
     def self.register_node_join!(node_instance:, role:, k8s_version: nil)
       new(node_instance: node_instance, role: role, k8s_version: k8s_version)
@@ -64,13 +66,15 @@ module System
     end
 
     def initialize(node_instance: nil, kubeconfig: nil, server_token: nil,
-                   agent_token: nil, k8s_version: nil, role: nil)
+                   agent_token: nil, k8s_version: nil, role: nil,
+                   target_cluster_id: nil)
       @node_instance = node_instance
       @kubeconfig = kubeconfig
       @server_token = server_token
       @agent_token = agent_token
       @k8s_version = k8s_version
       @role = role
+      @target_cluster_id = target_cluster_id
     end
 
     # ──────────────────────────────────────────────────────────────────
@@ -144,15 +148,32 @@ module System
 
       account = @node_instance.account
 
-      # Find the most recent active cluster in the account. v1 only
-      # supports one cluster per account; multi-cluster is a Phase 3
-      # extension (operators will pick which cluster to join when
-      # there are multiple).
-      cluster = ::Devops::KubernetesCluster
-                  .where(account_id: account.id)
-                  .where.not(status: "error")
-                  .order(created_at: :desc)
-                  .first
+      # Multi-cluster awareness (Phase 2.5): when target_cluster_id is
+      # provided, resolve to that specific cluster. Otherwise fall
+      # back to single-cluster behavior (most recent active cluster
+      # in the account).
+      cluster = if @target_cluster_id.present?
+        c = ::Devops::KubernetesCluster
+              .where(account_id: account.id, id: @target_cluster_id)
+              .first
+        unless c
+          raise NoClusterAvailableError,
+                "target cluster #{@target_cluster_id} not found in account #{account.id} — " \
+                "verify cluster_id, or omit target_cluster_id to auto-select most recent"
+        end
+        if c.status == "error"
+          raise NoClusterAvailableError,
+                "target cluster #{@target_cluster_id} is in error state; refusing to join"
+        end
+        c
+      else
+        ::Devops::KubernetesCluster
+          .where(account_id: account.id)
+          .where.not(status: "error")
+          .order(created_at: :desc)
+          .first
+      end
+
       unless cluster
         raise NoClusterAvailableError,
               "no Kubernetes cluster available in account #{account.id} — " \

@@ -77,7 +77,8 @@ const (
 //
 // Fields are a superset of the K3s phases — bootstrap uses
 // Kubeconfig/ServerToken/AgentToken/K8sVersion; join_request uses
-// none of them; ready uses Version + Role.
+// optionally TargetClusterID for multi-cluster disambiguation;
+// ready uses Version + Role.
 type HandshakeRequest struct {
 	Runtime RuntimeKind `json:"runtime"`
 	Phase   Phase       `json:"phase"`
@@ -87,6 +88,14 @@ type HandshakeRequest struct {
 	ServerToken string `json:"server_token,omitempty"`
 	AgentToken  string `json:"agent_token,omitempty"`
 	K8sVersion  string `json:"k8s_version,omitempty"`
+
+	// Join request field (k3s_agent, phase=join_request)
+	// Optional — when omitted, platform auto-selects most recent
+	// active cluster. Operators with multi-cluster setups MUST
+	// supply this via the k3s-agent module assignment's
+	// `metadata.target_cluster_id` to avoid the join_request
+	// footgun (joining the wrong cluster).
+	TargetClusterID string `json:"target_cluster_id,omitempty"`
 
 	// Ready fields (both, phase=ready)
 	Version string `json:"version,omitempty"`
@@ -198,10 +207,16 @@ func (c *Client) Bootstrap(ctx context.Context, kubeconfig, serverToken, agentTo
 // JoinRequest (k3s_agent only) asks the platform for the cluster's
 // api_endpoint + agent_token. Returned token feeds directly into
 // `k3s agent --server <api> --token <token>`.
-func (c *Client) JoinRequest(ctx context.Context) (*JoinRequestPayload, error) {
+//
+// targetClusterID is optional — pass empty for single-cluster
+// auto-select; pass a specific cluster UUID for multi-cluster
+// disambiguation. The agent normally reads this from the k3s-agent
+// module assignment's metadata.target_cluster_id.
+func (c *Client) JoinRequest(ctx context.Context, targetClusterID string) (*JoinRequestPayload, error) {
 	req := HandshakeRequest{
-		Runtime: RuntimeK3sAgent,
-		Phase:   PhaseJoinRequest,
+		Runtime:         RuntimeK3sAgent,
+		Phase:           PhaseJoinRequest,
+		TargetClusterID: targetClusterID,
 	}
 	var payload JoinRequestPayload
 	if err := c.do(ctx, req, &payload); err != nil {

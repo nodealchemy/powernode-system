@@ -164,6 +164,63 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         }.to raise_error(described_class::NoClusterAvailableError, /no Kubernetes cluster/)
       end
     end
+
+    # Phase 2.5 — multi-cluster awareness via target_cluster_id
+    context "with multiple clusters in the account" do
+      let(:server_inst_2) { sdwan_test_node_instance(node: node, name: "i-server-2") }
+      let!(:server_peer_2) {
+        ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                              node_instance: server_inst_2, publicly_reachable: false)
+      }
+
+      before do
+        server_peer
+        @cluster_a = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc-A", server_token: "tok-A",
+          agent_token: "agent-A", k8s_version: "v1.30"
+        )
+        @cluster_b = described_class.bootstrap!(
+          node_instance: server_inst_2,
+          kubeconfig: "kc-B", server_token: "tok-B",
+          agent_token: "agent-B", k8s_version: "v1.30"
+        )
+      end
+
+      it "auto-selects most recent when target_cluster_id is omitted (single-cluster legacy contract)" do
+        result = described_class.join_request!(node_instance: agent_instance)
+        expect(result[:cluster_id]).to eq(@cluster_b.id) # most recent
+        expect(result[:agent_token]).to eq("agent-B")
+      end
+
+      it "joins the specified cluster when target_cluster_id matches" do
+        result = described_class.join_request!(
+          node_instance: agent_instance,
+          target_cluster_id: @cluster_a.id
+        )
+        expect(result[:cluster_id]).to eq(@cluster_a.id)
+        expect(result[:agent_token]).to eq("agent-A")
+      end
+
+      it "raises when target_cluster_id is unknown to the account" do
+        expect {
+          described_class.join_request!(
+            node_instance: agent_instance,
+            target_cluster_id: "00000000-0000-0000-0000-000000000000"
+          )
+        }.to raise_error(described_class::NoClusterAvailableError, /target cluster/)
+      end
+
+      it "refuses to join a target cluster in error state" do
+        @cluster_a.update!(status: "error")
+        expect {
+          described_class.join_request!(
+            node_instance: agent_instance,
+            target_cluster_id: @cluster_a.id
+          )
+        }.to raise_error(described_class::NoClusterAvailableError, /error state/)
+      end
+    end
   end
 
   describe ".register_node_join!" do
