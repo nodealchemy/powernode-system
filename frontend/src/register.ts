@@ -42,6 +42,9 @@ const SdwanRoutingPage = lazyPage(() => import('./pages/app/system/SdwanRoutingP
 // Phase B.1 — Compute hub. Consolidates Nodes, Unclaimed Devices,
 // Volumes, Providers, and Networks into a single tabbed page.
 const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
+// Phase B.2 — Catalog hub. Consolidates Templates, Modules, Puppet
+// Modules, Scripts, Architectures, Platforms, and Marketplace.
+const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -81,6 +84,10 @@ export function register(): void {
     // AdminSettingsPage. Old standalone routes (above) still work;
     // sidebar cleanup happens in Phase B.5.
     { path: '/system/compute/*', component: ComputePage },
+    // Phase B.2 — Catalog hub: Templates / Modules / Puppet Modules /
+    // Scripts / Architectures / Platforms / Marketplace consolidated
+    // under one tabbed page with path-based tabs.
+    { path: '/system/catalog/*', component: CatalogPage },
     // Slice 3 of the SDWAN plan.
     { path: '/system/sdwan', component: SdwanNetworksPage },
     // Slice 6: federation lives at a fixed sub-path; must register
@@ -111,6 +118,9 @@ export function register(): void {
         // Providers/Networks). Standalone entries below remain for
         // direct access until Phase B.5 cleanup.
         { label: 'Compute', path: '/app/system/compute', icon: 'Server', order: 2.5 },
+        // Phase B.2 — Catalog hub (consolidates Templates/Modules/
+        // Puppet/Scripts/Architectures/Platforms/Marketplace).
+        { label: 'Catalog', path: '/app/system/catalog', icon: 'Boxes', order: 2.6 },
         { label: 'Nodes', path: '/app/system/nodes', icon: 'Server', order: 3 },
         // Physical-device claim queue (plan wondrous-yawning-anchor.md).
         { label: 'Unclaimed Devices', path: '/app/system/unclaimed-devices', icon: 'Cpu', order: 3.5 },
