@@ -27,7 +27,7 @@ export const ConciergeMessage: FC<Props> = ({ message }) => {
           isUser
             ? 'bg-theme-primary text-theme-primary-text'
             : isTool
-              ? 'bg-theme-info-bg text-theme-info border border-theme-info'
+              ? 'bg-theme-info text-theme-info border border-theme-info'
               : 'bg-theme-bg-hover text-theme-text-primary'
         }`}
       >

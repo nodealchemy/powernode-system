@@ -43,7 +43,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
     return <div className="p-8 text-center text-theme-secondary">Loading networks…</div>;
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger-bg text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
   }
   if (networks.length === 0) {
     return (
@@ -60,7 +60,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
-        <thead className="bg-theme-tertiary text-theme-secondary text-sm">
+        <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
             <th className="text-left p-3">Name</th>
             <th className="text-left p-3">Status</th>
@@ -101,7 +101,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
                       e.stopPropagation();
                       onDelete(n);
                     }}
-                    className="text-theme-danger hover:bg-theme-danger-bg p-1 rounded"
+                    className="text-theme-danger hover:bg-theme-danger p-1 rounded"
                     aria-label={`Delete ${n.name}`}
                     data-testid={`delete-network-${n.id}`}
                   >
@@ -121,14 +121,14 @@ function statusBadgeClass(status: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (status) {
     case 'active':
-      return `${base} bg-theme-success-bg text-theme-success`;
+      return `${base} bg-theme-success text-theme-success`;
     case 'registered':
-      return `${base} bg-theme-info-bg text-theme-info`;
+      return `${base} bg-theme-info text-theme-info`;
     case 'suspended':
-      return `${base} bg-theme-warning-bg text-theme-warning`;
+      return `${base} bg-theme-warning text-theme-warning`;
     case 'archived':
-      return `${base} bg-theme-tertiary text-theme-secondary`;
+      return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:
-      return `${base} bg-theme-tertiary text-theme-secondary`;
+      return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

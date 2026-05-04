@@ -41,7 +41,7 @@ export const SdwanTopology: React.FC<SdwanTopologyProps> = ({ networkId, refresh
   const { nodes, edges } = useMemo(() => buildFlow(data), [data]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading topology…</div>;
-  if (error)   return <div className="p-3 bg-theme-danger-bg text-theme-danger rounded text-sm">{error}</div>;
+  if (error)   return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
   if (!data || data.peer_count === 0) {
     return (
       <div className="p-12 text-center text-theme-secondary text-sm">

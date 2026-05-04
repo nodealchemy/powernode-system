@@ -40,7 +40,7 @@ export const BootstrapUrlModal: React.FC<BootstrapUrlModalProps> = ({ isOpen, re
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={`Bootstrap URL — ${result.user_device.label}`}>
       <div className="space-y-4">
-        <div className="p-3 bg-theme-warning-bg border border-theme-warning rounded text-sm">
+        <div className="p-3 bg-theme-warning border border-theme-warning rounded text-sm">
           <strong className="text-theme-warning">Single-use, expires {new Date(result.bootstrap.expires_at).toLocaleString()}.</strong>
           <p className="text-theme-secondary mt-1">
             Send this URL to the user via any channel (Slack, email, signed message). The server returns

@@ -51,12 +51,12 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
         </Button>
       </div>
 
-      {error && <div className="p-2 bg-theme-danger-bg text-theme-danger rounded text-sm">{error}</div>}
+      {error && <div className="p-2 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
 
       {findings === null ? (
         <div className="text-sm text-theme-secondary">Click "Re-scan" to run governance checks.</div>
       ) : findings.length === 0 ? (
-        <div className="p-3 bg-theme-success-bg text-theme-success rounded text-sm">
+        <div className="p-3 bg-theme-success text-theme-success rounded text-sm">
           No governance findings. Federation peers look healthy.
         </div>
       ) : (
@@ -85,9 +85,9 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
 function severityClass(s: SdwanFederationFindingSeverity): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium uppercase';
   switch (s) {
-    case 'critical': return `${base} bg-theme-danger-bg text-theme-danger`;
-    case 'high':     return `${base} bg-theme-warning-bg text-theme-warning`;
-    case 'medium':   return `${base} bg-theme-info-bg text-theme-info`;
-    default:         return `${base} bg-theme-tertiary text-theme-secondary`;
+    case 'critical': return `${base} bg-theme-danger text-theme-danger`;
+    case 'high':     return `${base} bg-theme-warning text-theme-warning`;
+    case 'medium':   return `${base} bg-theme-info text-theme-info`;
+    default:         return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

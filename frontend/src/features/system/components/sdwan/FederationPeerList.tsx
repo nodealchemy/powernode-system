@@ -44,7 +44,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
   useEffect(() => { load(); }, [load, refreshKey, localKey]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading federation peers…</div>;
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
 
   if (peers.length === 0) {
     return (
@@ -61,7 +61,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
-        <thead className="bg-theme-tertiary text-theme-secondary text-sm">
+        <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
             <th className="text-left p-3">Remote instance</th>
             <th className="text-left p-3">Prefix</th>
@@ -94,14 +94,14 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
               <td className="p-3 text-right">
                 {canManage && p.status !== 'revoked' && (
                   <button type="button" onClick={() => setRevokeConfirm(p)}
-                          className="text-theme-warning hover:bg-theme-warning-bg p-1 rounded mr-1"
+                          className="text-theme-warning hover:bg-theme-warning p-1 rounded mr-1"
                           aria-label={`Revoke peer ${p.remote_instance_url}`}>
                     <Ban size={16} />
                   </button>
                 )}
                 {canManage && (
                   <button type="button" onClick={() => setDeleteConfirm(p)}
-                          className="text-theme-danger hover:bg-theme-danger-bg p-1 rounded"
+                          className="text-theme-danger hover:bg-theme-danger p-1 rounded"
                           aria-label={`Delete peer ${p.remote_instance_url}`}>
                     <Trash2 size={16} />
                   </button>
@@ -171,11 +171,11 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
 function statusClass(s: SdwanFederationStatus): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (s) {
-    case 'proposed':  return `${base} bg-theme-info-bg text-theme-info`;
-    case 'accepted':  return `${base} bg-theme-success-bg text-theme-success`;
-    case 'active':    return `${base} bg-theme-success-bg text-theme-success`;
-    case 'suspended': return `${base} bg-theme-warning-bg text-theme-warning`;
-    case 'revoked':   return `${base} bg-theme-danger-bg text-theme-danger`;
-    default:          return `${base} bg-theme-tertiary text-theme-secondary`;
+    case 'proposed':  return `${base} bg-theme-info text-theme-info`;
+    case 'accepted':  return `${base} bg-theme-success text-theme-success`;
+    case 'active':    return `${base} bg-theme-success text-theme-success`;
+    case 'suspended': return `${base} bg-theme-warning text-theme-warning`;
+    case 'revoked':   return `${base} bg-theme-danger text-theme-danger`;
+    default:          return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

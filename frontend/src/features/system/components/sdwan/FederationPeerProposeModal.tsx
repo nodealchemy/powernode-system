@@ -57,7 +57,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
   return (
     <Modal isOpen={isOpen} onClose={() => !submitting && (reset(), onClose())} title="Propose federation peer">
       <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="p-3 bg-theme-info-bg border border-theme-info rounded text-xs text-theme-info">
+        <div className="p-3 bg-theme-info border border-theme-info rounded text-xs text-theme-info">
           v1 stores the proposal as data only — cross-CA verification, prefix routing, and
           tunnel establishment arrive in a future federation slice. The governance scanner
           will flag prefix overlaps with this install's address space.

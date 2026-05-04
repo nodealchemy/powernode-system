@@ -33,7 +33,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
   }, [load, refreshKey]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading peers…</div>;
-  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
 
   if (peers.length === 0) {
     return (
@@ -46,7 +46,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
-        <thead className="bg-theme-tertiary text-theme-secondary text-sm">
+        <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
             <th className="text-left p-3">Role</th>
             <th className="text-left p-3">Address</th>
@@ -99,7 +99,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                   <button
                     type="button"
                     onClick={() => onDetach(p)}
-                    className="text-theme-danger hover:bg-theme-danger-bg p-1 rounded"
+                    className="text-theme-danger hover:bg-theme-danger p-1 rounded"
                     aria-label={`Detach peer ${p.assigned_address}`}
                   >
                     <Trash2 size={16} />
@@ -117,10 +117,10 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
 function peerStatusClass(status: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (status) {
-    case 'active': return `${base} bg-theme-success-bg text-theme-success`;
-    case 'degraded': return `${base} bg-theme-warning-bg text-theme-warning`;
-    case 'pending': return `${base} bg-theme-info-bg text-theme-info`;
-    case 'disconnected': return `${base} bg-theme-danger-bg text-theme-danger`;
-    default: return `${base} bg-theme-tertiary text-theme-secondary`;
+    case 'active': return `${base} bg-theme-success text-theme-success`;
+    case 'degraded': return `${base} bg-theme-warning text-theme-warning`;
+    case 'pending': return `${base} bg-theme-info text-theme-info`;
+    case 'disconnected': return `${base} bg-theme-danger text-theme-danger`;
+    default: return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

@@ -19,7 +19,22 @@ Rails.application.routes.draw do
           member { post :cancel }
         end
 
-        resources :nodes
+        # NodeInstancesController#set_node uses params[:node_id], so node_instances
+        # MUST be nested under nodes — every frontend caller already uses
+        # /api/v1/system/nodes/:node_id/node_instances/.... A flat
+        # `resources :node_instances` would 404 because set_node always runs.
+        resources :nodes do
+          resources :node_instances do
+            member do
+              post :start
+              post :stop
+              post :reboot
+              post :terminate
+              post :associate_public_ip
+              post :disassociate_public_ip
+            end
+          end
+        end
         resources :node_platforms, only: %i[index show create update destroy] do
           member do
             get :disk_image
@@ -49,16 +64,7 @@ Rails.application.routes.draw do
           member { post :claim }
         end
 
-        resources :node_instances do
-          member do
-            post :start
-            post :stop
-            post :reboot
-            post :terminate
-            post :associate_public_ip
-            post :disassociate_public_ip
-          end
-        end
+        # node_instances now nested under :nodes (see above) — flat resource removed.
         resources :node_modules do
           member do
             get :dependencies

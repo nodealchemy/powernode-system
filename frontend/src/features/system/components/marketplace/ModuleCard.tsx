@@ -7,9 +7,9 @@ interface Props {
 }
 
 const TRUST_TIER_STYLES: Record<string, string> = {
-  internal: 'bg-theme-success-bg text-theme-success border-theme-success',
-  'verified-publisher': 'bg-theme-info-bg text-theme-info border-theme-info',
-  community: 'bg-theme-warning-bg text-theme-warning border-theme-warning',
+  internal: 'bg-theme-success text-theme-success border-theme-success',
+  'verified-publisher': 'bg-theme-info text-theme-info border-theme-info',
+  community: 'bg-theme-warning text-theme-warning border-theme-warning',
 };
 
 export const ModuleCard: FC<Props> = ({ module, onClick }) => {
