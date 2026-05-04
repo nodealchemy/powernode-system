@@ -67,10 +67,11 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/ARCHITECTURE.md` — 8 subsystems + 4 API surfaces + security architecture
 - `docs/TASKS.md` — milestone status (auto-generated)
 - `docs/SMOKE_TEST.md` — integration test checklist
-- `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide (NEW)
-- `docs/SKILL_EXECUTORS.md` — 14 executor reference (NEW)
-- `docs/FLEET_SENSORS.md` — 13 sensor reference (NEW)
-- `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow (NEW)
+- `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide
+- `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
+- `docs/SKILL_EXECUTORS.md` — 14 executor reference
+- `docs/FLEET_SENSORS.md` — 13 sensor reference
+- `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/threat-model.md` — security review
 - `docs/agent-peering.md` — NodeInstance-as-Agent pattern (in sweep)
 - `docs/credential-restoration.md` — Vault credential lifecycle
