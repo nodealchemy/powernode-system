@@ -155,6 +155,57 @@ Rails.application.routes.draw do
           end
         end
 
+        # === SDWAN overlay (Slice 1 of we-are-continuing-development-spicy-bear.md) ===
+        # Operator-side: networks CRUD + nested peer management + topology preview.
+        # Node-side endpoints (config pull + status report) live in the node_api
+        # block below as `config/sdwan` and `status/sdwan`.
+        namespace :sdwan do
+          resources :networks do
+            member do
+              get :topology
+            end
+            resources :peers
+            # Slice 2: declarative network firewall.
+            resources :firewall_rules
+            # Slice 4: user VPN clients.
+            resources :access_grants do
+              member { post :revoke }
+              resources :user_devices, only: %i[index show create destroy] do
+                member { post :revoke }
+              end
+            end
+            # Slice 9b: virtual IPs.
+            resources :virtual_ips do
+              member { post :failover }
+            end
+            # Slice 7b: hub DNAT port mappings.
+            resources :port_mappings
+          end
+          # Anonymous bootstrap endpoint — token IS the auth. Fetched
+          # exactly once per device; subsequent attempts 410 Gone.
+          get "bootstrap/:token", to: "bootstrap#show",
+              constraints: { token: /[^\/]+/ }
+
+          # Slice 6: federation scaffold (data-only in v1).
+          resources :federation_peers do
+            member { post :revoke }
+          end
+
+          # Slice 9c: account-level routing/iBGP control plane.
+          # Routing controller owns AS allocation, mode introspection,
+          # and the live BGP-session matrix.
+          get  "routing",         to: "routing#show"
+          post "routing/bgp",     to: "routing#allocate_as"
+          get  "routing/sessions", to: "routing#sessions"
+
+          # Slice 9e: route policies — account-scoped CRUD with a
+          # per-peer compile endpoint for "what does this look like in
+          # FRR?" debugging.
+          resources :route_policies do
+            member { get :compile }
+          end
+        end
+
         # === Metrics (operator-facing; aggregated counters) ===
         # Action is `#index` because `dispatch` collides with
         # ActionController::Metal#dispatch.
@@ -286,6 +337,10 @@ Rails.application.routes.draw do
           # Ai::AgentProposal for each diff. Comprehensive stabilization
           # sweep P5; Golden Eclipse M-D2-3.
           post "gitops/reconcile", to: "gitops#reconcile"
+
+          # Slice 5 (deferred reaper) of the SDWAN plan — daily 90-day
+          # audit retention sweep over revoked Sdwan::UserDevice rows.
+          post "sdwan/reap_user_devices", to: "sdwan#reap_user_devices"
         end
 
         # === Node API (instance-token-authenticated running instances) ===
@@ -306,11 +361,21 @@ Rails.application.routes.draw do
           get "config/authorized_keys", to: "config#authorized_keys"
           get "config/host_keys", to: "config#host_keys"
           get "config/network", to: "config#network"
+          # SDWAN desired-state pull (the architectural pivot — the agent reads
+          # per-peer config on each heartbeat tick instead of waiting for a
+          # task-lease push). Slice 1.
+          get "config/sdwan", to: "sdwan#config"
 
           # Status, heartbeat, and assigned tasks
           get :status, to: "status#show"
           post :status, to: "status#report"
           post "status/heartbeat", to: "status#heartbeat"
+          # SDWAN actual-state report — the agent pushes observed peer
+          # handshake state here on each heartbeat. Slice 1.
+          post "status/sdwan", to: "sdwan#report"
+          # Slice 9f — agent reports observed iBGP session state; platform
+          # upserts Sdwan::BgpSession rows so the dashboard shows live data.
+          post "status/bgp", to: "sdwan#report_bgp"
           get "status/tasks", to: "status#tasks"
           post "status/tasks/:id/acknowledge", to: "status#acknowledge_task"
           post "status/tasks/:id/complete", to: "status#complete_task"

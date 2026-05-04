@@ -32,6 +32,13 @@ const CiWorkersPage = lazyPage(() => import('./pages/app/system/CiWorkersPage'))
 const MarketplacePage = lazyPage(() => import('./pages/app/system/MarketplacePage'));
 // Comprehensive stabilization sweep P7.1 — Boot Replay viewer (M-FE-3 completion).
 const BootReplayPage = lazyPage(() => import('./pages/app/system/BootReplayPage'));
+// Slice 3 of the SDWAN plan.
+const SdwanNetworksPage = lazyPage(() => import('./pages/app/system/SdwanNetworksPage'));
+const SdwanNetworkDetailPage = lazyPage(() => import('./pages/app/system/SdwanNetworkDetailPage'));
+// Slice 6 of the SDWAN plan — federation peers + governance scan.
+const SdwanFederationPage = lazyPage(() => import('./pages/app/system/SdwanFederationPage'));
+// Slice 9d of the SDWAN plan — account-level routing dashboard.
+const SdwanRoutingPage = lazyPage(() => import('./pages/app/system/SdwanRoutingPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -62,6 +69,15 @@ export function register(): void {
     { path: '/system/ci-workers', component: CiWorkersPage },
     { path: '/system/marketplace', component: MarketplacePage },
     { path: '/system/boot-replay/:instance_id', component: BootReplayPage },
+    // Slice 3 of the SDWAN plan.
+    { path: '/system/sdwan', component: SdwanNetworksPage },
+    // Slice 6: federation lives at a fixed sub-path; must register
+    // before the catch-all /:id route so the literal "federation"
+    // segment matches first.
+    { path: '/system/sdwan/federation', component: SdwanFederationPage },
+    // Slice 9d: account-level routing dashboard. Must precede /:id.
+    { path: '/system/sdwan/routing', component: SdwanRoutingPage },
+    { path: '/system/sdwan/:id', component: SdwanNetworkDetailPage },
   ]);
 
   // Top-level "System" nav section. Label, section ID, namespace, route
@@ -97,6 +113,12 @@ export function register(): void {
         { label: 'CI Workers', path: '/app/system/ci-workers', icon: 'Bot', order: 16 },
         // Module Marketplace (P7.2 / M-FE-2 — comprehensive stabilization sweep).
         { label: 'Marketplace', path: '/app/system/marketplace', icon: 'Store', order: 17 },
+        // Slice 3 of the SDWAN plan.
+        { label: 'SDWAN', path: '/app/system/sdwan', icon: 'ShieldCheck', order: 18 },
+        // Slice 6: federation peers + governance scan.
+        { label: 'SDWAN Federation', path: '/app/system/sdwan/federation', icon: 'Globe2', order: 19 },
+        // Slice 9d: SDWAN routing dashboard (account-level iBGP control plane).
+        { label: 'SDWAN Routing', path: '/app/system/sdwan/routing', icon: 'Route', order: 19.5 },
       ],
     },
   ]);

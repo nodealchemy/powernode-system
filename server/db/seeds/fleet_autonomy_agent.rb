@@ -102,7 +102,37 @@ fleet_policies = {
   "system.fleet_rolling_upgrade"   => "require_approval",
   "system.cve_remediate"           => "require_approval",
   "system.region_expansion"        => "require_approval",
-  "system.capacity_resize"         => "require_approval"
+  "system.capacity_resize"         => "require_approval",
+
+  # SDWAN (slice 5 of the SDWAN plan).
+  #   peer_remediate    — re-issue config + bounce wg interface; reversible
+  #                       enough to notify rather than block.
+  #   key_rotate        — periodic per-peer rotation; mirrors cert_rotate's
+  #                       hands-off posture for routine reversible work.
+  #   failover          — promotes a backup hub; changes the network's
+  #                       reachability story → operators want eyes.
+  #   user_device_revoke — sensitive (cuts off a user); always reviewed.
+  "system.sdwan_peer_remediate"    => "notify_and_proceed",
+  "system.sdwan_key_rotate"        => "auto_approve",
+  "system.sdwan_failover"          => "require_approval",
+  "system.sdwan_user_device_revoke" => "require_approval",
+  # Slice 9f — iBGP session remediation is planning-only in v1
+  # (the executor returns a triage plan; restart is operator-initiated),
+  # so notify_and_proceed is safe — no actual side effects until the
+  # operator runs the recommended command.
+  "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
+  # VIP failover for single-holder VIPs flips holder_peer_ids order
+  # and writes an assignment row — visible to operators, requires
+  # explicit approval.
+  "system.sdwan_vip_failover"      => "require_approval",
+  # Route-policy hygiene audits surface findings (no side effects);
+  # auto_approve so the report lands in the operator UI without a
+  # pending approval blocking the queue.
+  "system.sdwan_route_policy_audit" => "auto_approve",
+  # Stale BGP observations are pure observation — no remediation; the
+  # `observation` action_category collects them for dashboards without
+  # entering the approval pipeline.
+  "system.observation"             => "auto_approve"
 }
 
 count = upsert_fleet_policies!(admin_account, fleet_agent, fleet_policies)

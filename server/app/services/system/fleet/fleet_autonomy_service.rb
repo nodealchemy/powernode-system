@@ -98,7 +98,13 @@ module System
         ::System::Fleet::Sensors::ConfigDriftSensor,
         ::System::Fleet::Sensors::SloViolationSensor,
         ::System::Fleet::Sensors::HoneypotAccessSensor,
-        ::System::Fleet::Sensors::TradingPressureSensor
+        ::System::Fleet::Sensors::TradingPressureSensor,
+        # Slice 5 of the SDWAN plan.
+        ::System::Fleet::Sensors::SdwanDriftSensor,
+        ::System::Fleet::Sensors::SdwanReachabilitySensor,
+        # Slice 9f of the SDWAN plan: routing observability + autonomy.
+        ::System::Fleet::Sensors::SdwanBgpSessionHealthSensor,
+        ::System::Fleet::Sensors::SdwanVipReachabilitySensor
       ].freeze
 
       def permitted_actions
@@ -201,6 +207,24 @@ module System
           key_value(metadata, "template_id")
         when "system.cve_remediate"
           key_value(metadata, "cve_id")
+        # Slice 5 of the SDWAN plan: per-peer dedup for remediation/rotation/
+        # failover; per-device for revocation. Without these, repeat sensor
+        # firings would queue duplicate ApprovalRequests every tick.
+        when "system.sdwan_peer_remediate",
+             "system.sdwan_key_rotate",
+             "system.sdwan_failover"
+          key_value(metadata, "peer_id") || key_value(metadata, "network_id")
+        when "system.sdwan_user_device_revoke"
+          key_value(metadata, "user_device_id")
+        # Slice 9f — iBGP session remediation dedup'd on (peer, neighbor)
+        # pair so a flapping single session doesn't create N approvals
+        # per tick. VIP failover dedup'd on the VIP id.
+        when "system.sdwan_bgp_session_remediate"
+          key_value(metadata, "neighbor_address") || key_value(metadata, "peer_id")
+        when "system.sdwan_vip_failover"
+          key_value(metadata, "virtual_ip_id")
+        when "system.sdwan_route_policy_audit"
+          key_value(metadata, "route_policy_id")
         end
       end
 

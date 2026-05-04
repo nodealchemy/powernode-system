@@ -50,6 +50,35 @@ module System
           # actions when trading load is high.
           skill: nil,
           action_category: "system.observation"
+        },
+        # Slice 5 + 5.5 of the SDWAN plan. peer_drift gets the auto-execute
+        # path (notify_and_proceed → SdwanPeerRemediateExecutor rotates the
+        # keypair). hub_unreachable stays plan-only (require_approval →
+        # SdwanFailoverExecutor returns candidate spokes; operator promotes).
+        "system.sdwan_peer_drift" => {
+          skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
+          action_category: "system.sdwan_peer_remediate"
+        },
+        "system.sdwan_hub_unreachable" => {
+          skill: ::System::Ai::Skills::SdwanFailoverExecutor,
+          action_category: "system.sdwan_failover"
+        },
+        # Slice 9f — iBGP session remediation, VIP failover, route-policy
+        # audit. Session remediation auto-fires (notify_and_proceed) since
+        # restarting FRR via systemctl is low blast radius. VIP failover
+        # is approval-gated by default (it's a holder-promotion, visible).
+        "system.sdwan_bgp_session_unhealthy" => {
+          skill: ::System::Ai::Skills::SdwanBgpSessionRemediateExecutor,
+          action_category: "system.sdwan_bgp_session_remediate"
+        },
+        "system.sdwan_bgp_session_stale" => {
+          # Stale = no observation. Notification only; no auto-action.
+          skill: nil,
+          action_category: "system.observation"
+        },
+        "system.sdwan_vip_unreachable" => {
+          skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
+          action_category: "system.sdwan_vip_failover"
         }
       }.freeze
 

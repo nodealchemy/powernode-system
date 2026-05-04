@@ -6,10 +6,12 @@
 package transport
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -58,6 +60,12 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 			MinVersion:   tls.VersionTLS13,
 		},
 		ResponseHeaderTimeout: 10 * time.Second,
+		// Slice 7d: prefer IPv6 when the platform URL hostname has
+		// both AAAA and A records. The default Go resolver doesn't
+		// guarantee v6 ordering — we do it explicitly so agent →
+		// platform polling stays on the v6 wire whenever possible,
+		// falling through to v4 on dial failure.
+		DialContext: v6PreferredDialContext,
 	}
 
 	httpClient := &http.Client{
@@ -77,6 +85,56 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 		InstanceID:    instanceID,
 		InstanceToken: trimSpace(string(tokenBytes)),
 	}, nil
+}
+
+// v6PreferredDialContext resolves the host's IPs, orders v6 before v4,
+// and dials in that order. Each attempt has a short timeout so the
+// fallback to v4 fires fast on v6 connectivity failure (the typical
+// cause of v6→v4 fallback is "v6 path is broken at some hop," not
+// "the destination is offline" — give it ~3 seconds and move on).
+//
+// Slice 7d of the SDWAN plan.
+func v6PreferredDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	// If host is already a literal IP, no resolution; default Dialer.
+	if ip := net.ParseIP(host); ip != nil {
+		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+	}
+
+	resolver := net.DefaultResolver
+	ips, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", host, err)
+	}
+
+	v6 := make([]net.IP, 0, len(ips))
+	v4 := make([]net.IP, 0, len(ips))
+	for _, ipa := range ips {
+		if ipa.IP.To4() == nil {
+			v6 = append(v6, ipa.IP)
+		} else {
+			v4 = append(v4, ipa.IP)
+		}
+	}
+
+	dialer := &net.Dialer{Timeout: 3 * time.Second} // short per-attempt timeout
+	var lastErr error
+	for _, ip := range append(v6, v4...) {
+		target := net.JoinHostPort(ip.String(), port)
+		conn, derr := dialer.DialContext(ctx, network, target)
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no addresses resolved for %s", host)
+	}
+	return nil, lastErr
 }
 
 // trimSpace removes leading/trailing whitespace without pulling strings.

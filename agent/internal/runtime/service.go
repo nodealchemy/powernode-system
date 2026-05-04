@@ -16,6 +16,7 @@ import (
 	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
 	"github.com/powernode/platform/extensions/system/agent/internal/identity"
 	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/powernode/platform/extensions/system/agent/internal/sdwan"
 	"github.com/powernode/platform/extensions/system/agent/internal/transport"
 )
 
@@ -74,16 +75,23 @@ func (s *Service) Run(ctx context.Context) error {
 	bootID := generateBootID()
 	startedAt := time.Now()
 
+	// SDWAN reconciler — runs synchronously inside the heartbeat tick
+	// (PostSend hook) so the cadence stays unified with module-digest +
+	// authorized_keys propagation. Errors surface via the same OnError
+	// channel; failures don't stop the heartbeat.
+	sdwanMgr := sdwan.NewManager(client, nil, s.cfg.OnError)
+
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
 		BuildPayload: func() HeartbeatPayload {
-			return s.buildHeartbeat(bootID)
+			return s.buildHeartbeat(bootID, sdwanMgr)
 		},
 		PostSend: func() {
 			if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
 				s.cfg.OnError("authorized_keys", err)
 			}
+			sdwanMgr.Reconcile(ctx)
 		},
 	}
 
@@ -107,7 +115,7 @@ func (s *Service) Run(ctx context.Context) error {
 // buildHeartbeat snapshots current runtime state into a HeartbeatPayload.
 // Reads agent state from disk so the heartbeat reflects what's actually
 // mounted right now, not just the agent's last in-memory action.
-func (s *Service) buildHeartbeat(bootID string) HeartbeatPayload {
+func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) HeartbeatPayload {
 	st, err := mount.LoadState(s.cfg.StatePath)
 	if err != nil {
 		s.cfg.OnError("load_state", err)
@@ -121,13 +129,17 @@ func (s *Service) buildHeartbeat(bootID string) HeartbeatPayload {
 	if st.UnionMounted {
 		mountState = "mounted"
 	}
-	return HeartbeatPayload{
+	payload := HeartbeatPayload{
 		BootID:        bootID,
 		AgentVersion:  s.cfg.AgentVersion,
 		Architecture:  runtime.GOARCH,
 		ModuleDigests: digests,
 		MountState:    mountState,
 	}
+	if sdwanMgr != nil {
+		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
+	}
+	return payload
 }
 
 // bootstrap ensures mTLS material exists at PKIDir. On first boot (no
