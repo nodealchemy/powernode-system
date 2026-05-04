@@ -15,7 +15,7 @@ module Api
           categories = paginate(categories.includes(:parent, :children).by_position)
 
           render_success(
-            categories: categories.map { |c| ::System::NodeModuleCategorySerializer.new(c).as_json },
+            node_module_categories: categories.map { |c| ::System::NodeModuleCategorySerializer.new(c).as_json },
             meta: pagination_meta
           )
         end
