@@ -29,7 +29,7 @@ module Api
           agent = find_concierge_agent
           return render_error("System Concierge agent not seeded; run rails db:seed", status: :precondition_failed) unless agent
 
-          ::Ai::ProviderAvailabilityService.validate_agent_provider!(agent)
+          ::ProviderAvailabilityService.validate_agent_provider!(agent)
           conversation = find_or_create_conversation(agent)
           snapshot = ::System::Concierge::FleetContextBuilder.build(account: @account)
 
@@ -39,7 +39,7 @@ module Api
             agent_name: agent.name,
             snapshot: snapshot
           )
-        rescue ::Ai::ProviderAvailabilityService::ProviderUnavailableError => e
+        rescue ::ProviderAvailabilityService::ProviderUnavailableError => e
           render_error(e.message, status: :precondition_failed)
         end
 
