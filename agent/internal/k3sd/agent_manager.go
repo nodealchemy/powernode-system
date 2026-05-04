@@ -32,10 +32,19 @@ const AgentModuleName = "k3s-agent"
 // the join_request → write config → start sequence runs across
 // multiple ticks.
 type AgentManager struct {
-	Client  *Client
-	Modules ModulesAPI
-	Applier AgentApplier
-	NodeID  string
+	Client    *Client
+	Modules   ModulesAPI
+	Applier   AgentApplier
+	NodeID    string
+	StatePath string // JSON state cache; defaults to DefaultAgentStatePath
+
+	// TargetClusterID is the cluster UUID to join when the account has
+	// multiple clusters. Read from the k3s-agent module assignment's
+	// metadata.target_cluster_id at agent boot. Empty = auto-select
+	// most recent (single-cluster v1 contract; safe for accounts
+	// with one cluster).
+	TargetClusterID string
+
 	OnError func(stage string, err error)
 
 	mu              sync.Mutex
@@ -64,13 +73,16 @@ func NewAgentManager(client *Client, modules ModulesAPI, applier AgentApplier,
 	if onError == nil {
 		onError = func(string, error) {}
 	}
-	return &AgentManager{
-		Client:  client,
-		Modules: modules,
-		Applier: applier,
-		NodeID:  nodeID,
-		OnError: onError,
+	m := &AgentManager{
+		Client:    client,
+		Modules:   modules,
+		Applier:   applier,
+		NodeID:    nodeID,
+		StatePath: DefaultAgentStatePath,
+		OnError:   onError,
 	}
+	m.loadState()
+	return m
 }
 
 func (m *AgentManager) Reconcile(ctx context.Context) {
@@ -136,7 +148,7 @@ func (m *AgentManager) transitionInstall(ctx context.Context) {
 }
 
 func (m *AgentManager) transitionJoinRequest(ctx context.Context) {
-	payload, err := m.Client.JoinRequest(ctx)
+	payload, err := m.Client.JoinRequest(ctx, m.TargetClusterID)
 	if err != nil {
 		// NoClusterAvailable is the common case during the first
 		// minute of a fresh deployment — server hasn't bootstrapped
@@ -157,6 +169,7 @@ func (m *AgentManager) transitionJoinRequest(ctx context.Context) {
 	}
 	m.state.joinedClusterID = payload.ClusterID
 	m.state.readyReportedFor = ""
+	m.persistState()
 }
 
 func (m *AgentManager) transitionStart(ctx context.Context) {
@@ -180,6 +193,7 @@ func (m *AgentManager) transitionReportReady(ctx context.Context) {
 		return
 	}
 	m.state.readyReportedFor = version
+	m.persistState()
 }
 
 func (m *AgentManager) transitionStop(ctx context.Context) {
@@ -196,6 +210,7 @@ func (m *AgentManager) transitionStop(ctx context.Context) {
 	m.state.stoppedReportedAt = time.Now()
 	m.state.readyReportedFor = ""
 	m.state.joinedClusterID = ""
+	m.persistState()
 }
 
 func (m *AgentManager) transitionCleanup(ctx context.Context) {
@@ -206,6 +221,7 @@ func (m *AgentManager) transitionCleanup(ctx context.Context) {
 	m.state.joinedClusterID = ""
 	m.state.readyReportedFor = ""
 	m.state.stoppedReportedAt = time.Time{}
+	m.persistState()
 }
 
 func (m *AgentManager) recordError(stage string, err error) {

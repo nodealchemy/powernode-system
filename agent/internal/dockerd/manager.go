@@ -27,6 +27,7 @@ type Manager struct {
 	NodeID       string        // System::NodeInstance UUID, used as CN suffix
 	OverlayAddress string      // SDWAN /128 the daemon should bind, no brackets
 	Paths        DaemonPaths   // on-disk layout — defaults to DefaultPaths
+	StatePath    string        // JSON state cache path; defaults to DefaultStatePath
 	OnError      func(stage string, err error)
 
 	mu              sync.Mutex
@@ -48,7 +49,9 @@ type managedState struct {
 }
 
 // NewManager constructs a Manager with sensible defaults. Paths
-// defaults to DefaultPaths if zero-valued.
+// defaults to DefaultPaths; StatePath defaults to DefaultStatePath.
+// Loads persisted state from disk so the reconciler doesn't lose its
+// ready-reported / stopped-reported memory across agent restarts.
 func NewManager(client *Client, modules ModulesAPI, applier DaemonApplier,
 	nodeID, overlayAddress string, onError func(string, error)) *Manager {
 	if onError == nil {
@@ -61,8 +64,10 @@ func NewManager(client *Client, modules ModulesAPI, applier DaemonApplier,
 		NodeID:         nodeID,
 		OverlayAddress: overlayAddress,
 		Paths:          DefaultPaths,
+		StatePath:      DefaultStatePath,
 		OnError:        onError,
 	}
+	m.loadState()
 	return m
 }
 
@@ -198,6 +203,7 @@ func (m *Manager) transitionReportReady(ctx context.Context) {
 		return
 	}
 	m.state.readyReportedFor = version
+	m.persistState()
 }
 
 func (m *Manager) transitionStop(ctx context.Context) {
@@ -216,6 +222,7 @@ func (m *Manager) transitionStop(ctx context.Context) {
 	}
 	m.state.stoppedReportedAt = time.Now()
 	m.state.readyReportedFor = ""
+	m.persistState()
 }
 
 func (m *Manager) transitionCleanupCert(ctx context.Context) {
@@ -225,6 +232,7 @@ func (m *Manager) transitionCleanupCert(ctx context.Context) {
 	}
 	m.state.readyReportedFor = ""
 	m.state.stoppedReportedAt = time.Time{}
+	m.persistState()
 }
 
 func (m *Manager) recordError(stage string, err error) {

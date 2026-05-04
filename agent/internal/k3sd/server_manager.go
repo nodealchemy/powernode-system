@@ -29,11 +29,12 @@ const ServerModuleName = "k3s-server"
 //      yet ack'd ready → ReportReady
 //   7. Otherwise (steady state) → no-op
 type ServerManager struct {
-	Client  *Client
-	Modules ModulesAPI
-	Applier ServerApplier
-	NodeID  string
-	OnError func(stage string, err error)
+	Client    *Client
+	Modules   ModulesAPI
+	Applier   ServerApplier
+	NodeID    string
+	StatePath string // JSON state cache; defaults to DefaultServerStatePath
+	OnError   func(stage string, err error)
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
@@ -60,18 +61,23 @@ type serverState struct {
 }
 
 // NewServerManager constructs a ServerManager with sensible defaults.
+// Loads persisted state from DefaultServerStatePath so the reconciler
+// doesn't re-bootstrap on every agent restart.
 func NewServerManager(client *Client, modules ModulesAPI, applier ServerApplier,
 	nodeID string, onError func(string, error)) *ServerManager {
 	if onError == nil {
 		onError = func(string, error) {}
 	}
-	return &ServerManager{
-		Client:  client,
-		Modules: modules,
-		Applier: applier,
-		NodeID:  nodeID,
-		OnError: onError,
+	m := &ServerManager{
+		Client:    client,
+		Modules:   modules,
+		Applier:   applier,
+		NodeID:    nodeID,
+		StatePath: DefaultServerStatePath,
+		OnError:   onError,
 	}
+	m.loadState()
+	return m
 }
 
 // Reconcile runs a single tick. Errors surface via OnError but the
@@ -168,6 +174,7 @@ func (m *ServerManager) transitionBootstrap(ctx context.Context) {
 	// Clear ready cache so the next tick re-fires ReportReady for
 	// the now-known cluster.
 	m.state.readyReportedFor = ""
+	m.persistState()
 }
 
 func (m *ServerManager) transitionReportReady(ctx context.Context) {
@@ -184,6 +191,7 @@ func (m *ServerManager) transitionReportReady(ctx context.Context) {
 		return
 	}
 	m.state.readyReportedFor = version
+	m.persistState()
 }
 
 func (m *ServerManager) transitionStop(ctx context.Context) {
@@ -201,6 +209,7 @@ func (m *ServerManager) transitionStop(ctx context.Context) {
 	m.state.stoppedReportedAt = time.Now()
 	m.state.readyReportedFor = ""
 	m.state.bootstrappedFor = ""
+	m.persistState()
 }
 
 func (m *ServerManager) transitionCleanup(ctx context.Context) {
@@ -211,6 +220,7 @@ func (m *ServerManager) transitionCleanup(ctx context.Context) {
 	m.state.bootstrappedFor = ""
 	m.state.readyReportedFor = ""
 	m.state.stoppedReportedAt = time.Time{}
+	m.persistState()
 }
 
 func (m *ServerManager) recordError(stage string, err error) {
