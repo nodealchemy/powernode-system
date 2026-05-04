@@ -401,6 +401,13 @@ Rails.application.routes.draw do
           post "status/tasks/:id/complete", to: "status#complete_task"
           post "status/tasks/:id/fail", to: "status#fail_task"
 
+          # Phase B — runtime daemon handshake (Docker today; K3s/kubeadm
+          # via the same endpoint in Phase 2/3). Agent posts CSR + ready
+          # signals here on the dockerd lifecycle. Single endpoint, three
+          # phases ('wants_cert' | 'ready' | 'stopped') keyed by
+          # `runtime` enum.
+          post "runtime/handshake", to: "runtime#handshake"
+
           # Modules + mount points (read-only from instance perspective)
           resources :modules, only: %i[index show]
           resources :mount_points, only: %i[index show]
