@@ -16,6 +16,7 @@ import (
 	"github.com/powernode/platform/extensions/system/agent/internal/dockerd"
 	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
 	"github.com/powernode/platform/extensions/system/agent/internal/identity"
+	"github.com/powernode/platform/extensions/system/agent/internal/k3sd"
 	"github.com/powernode/platform/extensions/system/agent/internal/mount"
 	"github.com/powernode/platform/extensions/system/agent/internal/sdwan"
 	"github.com/powernode/platform/extensions/system/agent/internal/transport"
@@ -98,6 +99,24 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.OnError,
 	)
 
+	// Phase 2 K3s reconcilers — server + agent run side-by-side. At
+	// most one of them will see its module assigned per-instance
+	// (k3s-server vs k3s-agent are mutually exclusive in practice),
+	// so the inactive manager just no-ops. Sharing the modules
+	// client + transport keeps tick overhead minimal. Reuses
+	// dockerd.HTTPModulesClient via Go's structural typing — no
+	// cross-package coupling beyond the ModulesAPI shape.
+	k3sModules := dockerd.NewHTTPModulesClient(client)
+	k3sClient := k3sd.NewClient(client)
+	k3sServerMgr := k3sd.NewServerManager(
+		k3sClient, k3sModules, k3sd.NewShellServerApplier(),
+		client.InstanceID, s.cfg.OnError,
+	)
+	k3sAgentMgr := k3sd.NewAgentManager(
+		k3sClient, k3sModules, k3sd.NewShellAgentApplier(),
+		client.InstanceID, s.cfg.OnError,
+	)
+
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -115,6 +134,13 @@ func (s *Service) Run(ctx context.Context) error {
 			// rebalancing (Phase 2 K8s) just falls out.
 			dockerMgr.SetOverlayAddress(sdwanMgr.FirstOverlayAddress())
 			dockerMgr.Reconcile(ctx)
+			// Phase 2 K3s — both managers run each tick; the one
+			// whose module isn't assigned no-ops in its first switch
+			// branch. Order doesn't matter for correctness; we run
+			// server before agent so a co-located deployment (rare)
+			// gets a slightly better convergence shape.
+			k3sServerMgr.Reconcile(ctx)
+			k3sAgentMgr.Reconcile(ctx)
 		},
 	}
 
