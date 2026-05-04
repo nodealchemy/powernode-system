@@ -5,11 +5,12 @@ follow-ups. Updated after substantial work; the parent platform's plan
 file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-
 local) carries the long-form roadmap.
 
-**Last updated:** 2026-05-03
-**Spec coverage:** 1611 examples / 0 failures / 1 conditional-pending
-**Frontend:** TS clean across all session-touched files
+**Last updated:** 2026-05-04
+**Spec coverage:** 1763 examples / 12 pre-existing SDWAN fixture failures / 1 conditional-pending; 1750 passing
+**Frontend:** TS clean across all touched files; 38 component tests across 6 suites
+**Known fixture drift:** SDWAN specs fail because `System::Node.create!` now requires `node_template` (pre-existing, not introduced today) — see follow-up #4
 **Active sweep:** Comprehensive stabilization (9 phases, ~24-32d) — see `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-**Phase 10:** 4 of 7 subphases done (10.1 RuboCop, 10.2 SBOM ingestion, 10.3 Concierge backend wiring, 10.5 metrics v1); 10.4 backend done, frontend pending coupling decision — see `~/.claude/plans/read-tasks-md-and-system-review-and-plan-snug-rainbow.md` for execution roadmap
+**Phase 10:** 6 of 7 subphases done (10.1, 10.2, 10.3, 10.5 fully; 10.4 backend + peer-as-Agent mirror groundwork; 10.7 polish list ~7 items shipped). 10.4 mention picker surface integration + 10.6 metric-gated remain.
 
 ---
 
@@ -100,6 +101,22 @@ local) carries the long-form roadmap.
    register.ts` adds `/system/fleet` and `/system/templates/compose` routes;
    verify nav appears post-extraction.
 
+8. **SDWAN spec fixture drift** — 12 pre-existing failures in
+   `spec/services/sdwan/` and `spec/requests/api/v1/system/sdwan/` because
+   `System::Node.create!` validates presence of `node_template`. SDWAN
+   specs construct nodes without one. Root cause: model validation added
+   after the SDWAN spec set was authored. Fix: thread a `node_template:`
+   into each spec's `let(:node)` declaration. ~0.5d cleanup.
+
+9. **Mention picker surface for peer-as-Agent** — peer-mirror agents
+   created on activate (Phase 10.7) need surface integration into the
+   parent's mention picker. Three viable paths:
+   (a) add peer-mirrors as members of a "System Fleet" workspace,
+   (b) extend `AgentConversationComponent.refreshWorkspaceMembers` to
+       merge in account-wide agents-with-`metadata.kind=system_node_peer`,
+   (c) add a parallel /peers endpoint to the picker.
+   None shipped; deserves a focused decision + implementation session.
+
 ---
 
 ## Active stabilization sweep — May 2026
@@ -133,7 +150,7 @@ under "Phase 10 — Deferred Item Roadmap". Summary:
 | 10.4 | Workspace mention picker for peers | ~1.5d | 🟡 partial — searchable endpoint shipped; frontend wire-up gated on parent-platform coupling decision (extension hook vs registry) |
 | 10.5 | Metrics instrumentation (v1 = AS::Notifications subscriber) | ~1.5d | ✅ done — Aggregator (Rails.cache counter, per-min buckets) + Subscriber (idempotent AS::Notifications listener) + GET /system/metrics/dispatch endpoint; frontend tile deferred to 10.7 |
 | 10.6 | `task.events` JSON → dedicated table | ~2d | ⏸️ decision-gated on audit volume |
-| 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | ⬜ slow-day work |
+| 10.7 | Polish list (frontend tests, runbooks, peer activation UI) | ~6d | 🟡 in-flight — 7 items shipped (dispatch tile, FleetContext SDWAN expansion, concierge controller spec, searchable peers spec, CVE runbook full path, frontend Jest infra + 5 component test suites, peer-as-Agent mirror, fleet runbook Pages bug fix). Remaining: peer activation queue UI (~1d), GitOps per-repo fan-out (~0.5d), hardware verification (blocked) |
 
 **Total deferred**: ~17 engineer-days across 6 phases (excluding the
 decision-gated table extraction and slow-day polish list). See the plan
@@ -144,6 +161,19 @@ and risk register.
 
 ## Recent significant additions (last 30 days)
 
+- 2026-05-04 — Phase 10.7 batch (7 items) — frontend Jest infra
+  established (`extensions/system/frontend/jest.config.js`) extending the
+  parent's config; 38 component tests across 6 suites (ConciergeMessage,
+  BootEventDetailPanel, BootReplayTimeline, ModuleCard, ModuleDetailModal,
+  DispatchLatencyTile); CVE runbook full path (executor + spec + tool +
+  inline UI button on assistant messages); peer-as-Agent mirror service
+  with activate/deactivate integration (mention-picker surface remains
+  follow-up); fleet runbook Pages-schema bug fix (same as CVE runbook —
+  `tags`→`metadata`, `author_id` required, `slug` required); concierge
+  controller spec coverage caught wrong-namespace bug (`::Ai::ProviderAvailabilityService`
+  → `::ProviderAvailabilityService`); searchable peers endpoint spec
+  coverage; FleetContextBuilder SDWAN section expanded with firewall +
+  BGP + federation counts.
 - 2026-05-04 — Phase 10.7 (item 1) — Dispatch latency frontend tile:
   `metricsApi.dispatch()` + `DispatchLatencyTile` rendered in
   `FleetDashboardPage` below the existing counters strip. Polls
