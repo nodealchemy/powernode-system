@@ -39,6 +39,7 @@ module Ai
         "system_sdwan_list_federation_peers"   => "sdwan.federation.read",
         "system_sdwan_get_federation_peer"     => "sdwan.federation.read",
         "system_sdwan_propose_federation_peer" => "sdwan.federation.manage",
+        "system_sdwan_accept_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_revoke_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_federation_scan"         => "sdwan.federation.read",
         # Slice 9a: routing layer (static subnet routing)
@@ -260,6 +261,13 @@ module Ai
               remote_instance_id: { type: "string", required: false },
               remote_account_id: { type: "string", required: false },
               remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" }
+            }
+          },
+          "system_sdwan_accept_federation_peer" => {
+            description: "Transition a proposed federation peer to accepted (drill-mode v1 — no cross-account auth handshake yet; future Phase 11b adds token round-trip). Sets signed_at + audit metadata. Returns the updated peer.",
+            parameters: {
+              federation_peer_id: { type: "string", required: true },
+              acceptance_token:   { type: "string", required: false, description: "Forward-compat: token from the proposing-account operator. v1 records its presence in metadata; v11b verifies." }
             }
           },
           "system_sdwan_revoke_federation_peer" => {
@@ -490,6 +498,7 @@ module Ai
         when "system_sdwan_list_federation_peers"   then list_federation_peers(params)
         when "system_sdwan_get_federation_peer"     then get_federation_peer(params)
         when "system_sdwan_propose_federation_peer" then propose_federation_peer(params)
+        when "system_sdwan_accept_federation_peer"  then accept_federation_peer(params)
         when "system_sdwan_revoke_federation_peer"  then revoke_federation_peer(params)
         when "system_sdwan_federation_scan"         then federation_scan(params)
         # Slice 9a routing actions
@@ -823,6 +832,26 @@ module Ai
         peer = account_federation_peers.find(params[:federation_peer_id])
         peer.revoke!(reason: params[:reason])
         success_result(federation_peer: serialize_federation_peer(peer.reload), revoked: true)
+      end
+
+      def accept_federation_peer(params)
+        peer = account_federation_peers.find(params[:federation_peer_id])
+
+        unless peer.can_transition_to?("accepted")
+          return error_result(
+            "peer #{peer.id} is in status=#{peer.status.inspect}; only 'proposed' peers can be accepted (transition matrix: #{::Sdwan::FederationPeer::V1_TRANSITIONS[peer.status].inspect})"
+          )
+        end
+
+        peer.accept!(
+          accepted_by_user: @user,
+          acceptance_token: params[:acceptance_token]
+        )
+
+        success_result(
+          federation_peer: serialize_federation_peer(peer.reload),
+          accepted: true
+        )
       end
 
       def federation_scan(_params)

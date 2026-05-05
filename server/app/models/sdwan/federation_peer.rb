@@ -66,6 +66,29 @@ module Sdwan
       )
     end
 
+    # Transitions a proposed peer to accepted. v1 (drill mode):
+    # operator-driven without cross-account auth — Account A and B
+    # operators coordinate out-of-band. Future Phase 11b adds a
+    # token-round-trip handshake; until then, accept! is allowed only
+    # for same-account drills + explicit operator confirmation.
+    #
+    # Sets signed_at to now (so FederationGovernance's
+    # stale_accepted_without_handshake check passes after slice 11b
+    # provides the real handshake).
+    def accept!(accepted_by_user: nil, acceptance_token: nil)
+      return false unless can_transition_to?("accepted")
+
+      update!(
+        status: "accepted",
+        signed_at: Time.current,
+        metadata: metadata.merge(
+          "accepted_by_user_id" => accepted_by_user&.id,
+          "acceptance_token_used" => acceptance_token.present?
+        )
+      )
+      true
+    end
+
     # Returns the /48 portion of remote_prefix_advertisement (or nil if
     # the prefix is wider). Used by FederationGovernance#scan to detect
     # overlap with the install's own prefix.

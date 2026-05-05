@@ -102,7 +102,17 @@ module Ai
         "system_provision_ci_worker"                 => "system.ci_workers.create",
         "system_terminate_ci_worker"                 => "system.ci_workers.delete",
         "system_list_ci_workers"                     => "system.ci_workers.read",
-        "system_list_disk_image_webhooks"            => "system.modules.read"
+        "system_list_disk_image_webhooks"            => "system.modules.read",
+
+        # === Missing-features slice 6a — GitOps reconciler MCP surface ===
+        "system_gitops_register_repository" => "system.modules.update",
+        "system_gitops_sync_repository"     => "system.modules.update",
+        "system_gitops_get_sync_run"        => "system.modules.read",
+        "system_gitops_get_drift_report"    => "system.modules.read",
+
+        # === Missing-features slice Vault DR-3 — pepper rotation ===
+        # Highest tier permission — rotation is a fleet-wide cryptographic op.
+        "system_rotate_vault_transit_pepper" => "system.fleet.autonomy"
       }.freeze
 
       def self.definition
@@ -454,6 +464,45 @@ module Ai
           "system_list_disk_image_webhooks" => {
             description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions).",
             parameters: {}
+          },
+
+          # === Missing-features slice 6a — GitOps reconciler MCP surface ===
+          "system_gitops_register_repository" => {
+            description: "Register a new GitopsRepository pointing at a git remote whose contents describe desired fleet state. The reconciler clones + pulls every 5 min by default; operator can trigger immediately via system_gitops_sync_repository.",
+            parameters: {
+              name:                  { type: "string",  required: true,  description: "Display name (must be unique within the account; max 64 chars)" },
+              repo_url:              { type: "string",  required: true,  description: "HTTPS or SSH URL. Inline credentials (user:pass@) rejected — use vault_credential_path." },
+              branch:                { type: "string",  required: false, description: "Default 'main'" },
+              vault_credential_path: { type: "string",  required: false, description: "Vault KV path with deploy-key + username/password" },
+              path_prefix:           { type: "string",  required: false, description: "Relative path within the repo where fleet.yaml lives (default: repo root)" },
+              auto_apply:            { type: "boolean", required: false, description: "When true, approved proposals auto-apply on next reconcile (Phase 6b). Default false." }
+            }
+          },
+          "system_gitops_sync_repository" => {
+            description: "Trigger an immediate reconcile run for a registered repository. Creates a GitopsSyncRun row + opens proposals for any diffs found. Returns the sync_run_id for polling.",
+            parameters: {
+              id: { type: "string", required: true, description: "GitopsRepository id" }
+            }
+          },
+          "system_gitops_get_sync_run" => {
+            description: "Fetch the result of a sync run — diff_count, proposal_ids, status, error_message, diff_summary.",
+            parameters: {
+              sync_run_id: { type: "string", required: true }
+            }
+          },
+          "system_gitops_get_drift_report" => {
+            description: "Compute current drift between a repository's desired state and live platform state — without opening proposals. Read-only diagnostic. Use before sync to preview what would change.",
+            parameters: {
+              id: { type: "string", required: true, description: "GitopsRepository id" }
+            }
+          },
+
+          # === Missing-features slice Vault DR-3 — pepper rotation ===
+          "system_rotate_vault_transit_pepper" => {
+            description: "Rotate the Vault transit pepper that wraps per-account encryption keys. Bumps the key version + walks all accounts with stale transit_key_version, re-wrapping each. Online operation. WARNING: cryptographic — review before invocation. Audit-logged.",
+            parameters: {
+              reencrypt_existing: { type: "boolean", required: false, description: "When false, only bumps the key version without walking accounts (operators may phase rotation manually). Default true." }
+            }
           }
         }
       end
@@ -523,6 +572,13 @@ module Ai
         when "system_terminate_ci_worker"           then terminate_ci_worker(params)
         when "system_list_ci_workers"               then list_ci_workers(params)
         when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
+        # Missing-features slice 6a — GitOps reconciler
+        when "system_gitops_register_repository"    then gitops_register_repository(params)
+        when "system_gitops_sync_repository"        then gitops_sync_repository(params)
+        when "system_gitops_get_sync_run"           then gitops_get_sync_run(params)
+        when "system_gitops_get_drift_report"       then gitops_get_drift_report(params)
+        # Missing-features slice Vault DR-3
+        when "system_rotate_vault_transit_pepper"   then rotate_vault_transit_pepper(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -1510,6 +1566,125 @@ module Ai
           last_received_at: wh.last_received_at&.iso8601,
           created_at: wh.created_at&.iso8601
         }
+      end
+
+      # === Missing-features slice 6a — GitOps reconciler MCP surface ===
+
+      def gitops_register_repository(params)
+        repo = ::System::GitopsRepository.create!(
+          account: @account,
+          name: params[:name],
+          repo_url: params[:repo_url],
+          branch: params[:branch].presence || "main",
+          vault_credential_path: params[:vault_credential_path],
+          path_prefix: params[:path_prefix].presence || "",
+          auto_apply: params[:auto_apply] == true,
+          last_status: "pending"
+        )
+
+        success_result(repository: serialize_gitops_repository(repo))
+      end
+
+      def gitops_sync_repository(params)
+        repo = ::System::GitopsRepository.where(account_id: @account.id).find(params[:id])
+        result = ::System::Gitops::Reconciler.reconcile!(repository: repo)
+
+        success_result(
+          repository_id: repo.id,
+          ok: result.ok?,
+          diff_count: result.diff_count,
+          proposal_ids: result.proposal_ids,
+          synced_revision: result.synced_revision,
+          diff_summary: result.diff_summary,
+          error: result.error
+        )
+      end
+
+      def gitops_get_sync_run(params)
+        run = ::System::GitopsSyncRun.for_account(@account).find(params[:sync_run_id])
+
+        success_result(
+          sync_run: {
+            id: run.id,
+            gitops_repository_id: run.gitops_repository_id,
+            status: run.status,
+            started_at: run.started_at&.iso8601,
+            completed_at: run.completed_at&.iso8601,
+            duration_seconds: run.duration_seconds,
+            diff_count: run.diff_count,
+            proposal_ids: run.proposal_ids,
+            synced_revision: run.synced_revision,
+            diff_summary: run.diff_summary,
+            error_message: run.error_message
+          }
+        )
+      end
+
+      def gitops_get_drift_report(params)
+        repo = ::System::GitopsRepository.where(account_id: @account.id).find(params[:id])
+
+        # Run the reconcile pipeline up through diff, but DO NOT open proposals.
+        # This gives operators a preview of what sync_repository would do.
+        repo_result = ::System::Gitops::RepoSyncService.sync!(repo)
+        return error_result("repo_sync failed: #{repo_result.error}") unless repo_result.ok?
+
+        parse_result = ::System::Gitops::DesiredStateParser.parse!(
+          work_tree_path: repo_result.work_tree_path,
+          path_prefix: repo.path_prefix
+        )
+        return error_result("parse failed: #{parse_result.error}") unless parse_result.ok?
+
+        diff_result = ::System::Gitops::DiffEngine.diff!(
+          account: @account, desired_state: parse_result.desired_state
+        )
+        return error_result("diff failed: #{diff_result.error}") unless diff_result.ok?
+
+        success_result(
+          repository_id: repo.id,
+          synced_revision: repo_result.commit_sha,
+          drift: diff_result.diffs.any?,
+          diff_count: diff_result.diffs.size,
+          diffs: diff_result.diffs.map { |d| d.respond_to?(:to_h) ? d.to_h : d }
+        )
+      end
+
+      def serialize_gitops_repository(repo)
+        {
+          id: repo.id,
+          name: repo.name,
+          repo_url: repo.repo_url,
+          branch: repo.branch,
+          path_prefix: repo.path_prefix,
+          auto_apply: repo.auto_apply,
+          enabled: repo.enabled,
+          last_status: repo.last_status,
+          last_synced_at: repo.last_synced_at&.iso8601,
+          last_synced_revision: repo.last_synced_revision,
+          last_diff_count: repo.last_diff_count,
+          last_error: repo.last_error,
+          created_at: repo.created_at&.iso8601
+        }
+      end
+
+      # === Missing-features slice Vault DR-3 — pepper rotation ===
+
+      def rotate_vault_transit_pepper(params)
+        result = ::Security::CredentialRestorationService.rotate_transit_pepper!(
+          reencrypt_existing: params.fetch(:reencrypt_existing, true) != false
+        )
+
+        if result.ok?
+          success_result(
+            rotated: true,
+            latest_version: result.latest_version,
+            rotated_count: result.rotated_count,
+            skipped_count: result.skipped_count,
+            failed_count: result.failed_count,
+            errors: result.errors
+          )
+        else
+          error_result(result.error || "rotation failed")
+        end
       end
     end
   end

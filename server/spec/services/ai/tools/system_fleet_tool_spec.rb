@@ -735,6 +735,200 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Missing-features slice 6a — GitOps reconciler MCP surface" do
+    describe "system_gitops_register_repository" do
+      it "creates a GitopsRepository for the account" do
+        r = call("system_gitops_register_repository",
+                 name: "fleet-config",
+                 repo_url: "https://example.com/fleet-config.git",
+                 branch: "main")
+        expect(r[:success]).to be true
+        expect(r[:data][:repository][:name]).to eq("fleet-config")
+        expect(::System::GitopsRepository.where(account_id: account.id, name: "fleet-config")).to exist
+      end
+
+      it "rejects URLs with inline credentials" do
+        r = call("system_gitops_register_repository",
+                 name: "bad-repo",
+                 repo_url: "https://user:pw@example.com/repo.git")
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("inline credentials")
+      end
+    end
+
+    describe "system_gitops_sync_repository" do
+      let!(:repo) do
+        ::System::GitopsRepository.create!(
+          account: account, name: "sync-test",
+          repo_url: "https://example.com/repo.git", branch: "main"
+        )
+      end
+
+      it "delegates to Reconciler.reconcile!" do
+        result = ::System::Gitops::Reconciler::Result.new(
+          ok?: true, diff_count: 0, proposal_ids: [],
+          synced_revision: "abc123", diff_summary: { templates: 0 }, error: nil
+        )
+        expect(::System::Gitops::Reconciler).to receive(:reconcile!)
+          .with(repository: instance_of(::System::GitopsRepository))
+          .and_return(result)
+
+        r = call("system_gitops_sync_repository", id: repo.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:diff_count]).to eq(0)
+        expect(r[:data][:synced_revision]).to eq("abc123")
+      end
+
+      it "scopes to current account" do
+        other_repo = ::System::GitopsRepository.create!(
+          account: create(:account), name: "other", repo_url: "https://example.com/other.git", branch: "main"
+        )
+        r = call("system_gitops_sync_repository", id: other_repo.id)
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_gitops_get_sync_run" do
+      let!(:repo) do
+        ::System::GitopsRepository.create!(
+          account: account, name: "get-test",
+          repo_url: "https://example.com/repo.git", branch: "main"
+        )
+      end
+
+      it "returns the sync_run details" do
+        proposal_uuids = 3.times.map { SecureRandom.uuid }
+        run = ::System::GitopsSyncRun.create!(
+          gitops_repository: repo,
+          started_at: 5.minutes.ago,
+          completed_at: 2.minutes.ago,
+          status: "success",
+          diff_count: 3,
+          proposal_ids: proposal_uuids
+        )
+
+        r = call("system_gitops_get_sync_run", sync_run_id: run.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:sync_run][:status]).to eq("success")
+        expect(r[:data][:sync_run][:diff_count]).to eq(3)
+        expect(r[:data][:sync_run][:proposal_ids]).to match_array(proposal_uuids)
+      end
+    end
+
+    describe "system_gitops_get_drift_report" do
+      let!(:repo) do
+        ::System::GitopsRepository.create!(
+          account: account, name: "drift-test",
+          repo_url: "https://example.com/repo.git", branch: "main"
+        )
+      end
+
+      it "runs the diff pipeline without opening proposals" do
+        repo_result = double(ok?: true, work_tree_path: "/tmp/repo", commit_sha: "abc123", error: nil)
+        parse_result = double(ok?: true, desired_state: double, error: nil)
+        diff_result = double(ok?: true, diffs: [], error: nil)
+
+        expect(::System::Gitops::RepoSyncService).to receive(:sync!).and_return(repo_result)
+        expect(::System::Gitops::DesiredStateParser).to receive(:parse!).and_return(parse_result)
+        expect(::System::Gitops::DiffEngine).to receive(:diff!).and_return(diff_result)
+        # Critically — Reconciler should NOT be invoked (no proposals opened)
+        expect(::System::Gitops::Reconciler).not_to receive(:reconcile!)
+
+        r = call("system_gitops_get_drift_report", id: repo.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:drift]).to be false
+        expect(r[:data][:synced_revision]).to eq("abc123")
+      end
+    end
+  end
+
+  describe "Missing-features slice Vault DR-3 — pepper rotation" do
+    it "delegates to CredentialRestorationService and returns counts" do
+      result = ::Security::CredentialRestorationService::Result.new(
+        ok?: true, rotated_count: 47, skipped_count: 0,
+        failed_count: 0, latest_version: "v3", errors: [], error: nil
+      )
+      expect(::Security::CredentialRestorationService).to receive(:rotate_transit_pepper!)
+        .with(reencrypt_existing: true)
+        .and_return(result)
+
+      r = call("system_rotate_vault_transit_pepper")
+      expect(r[:success]).to be true
+      expect(r[:data][:rotated]).to be true
+      expect(r[:data][:rotated_count]).to eq(47)
+      expect(r[:data][:latest_version]).to eq("v3")
+    end
+
+    it "honors reencrypt_existing: false (key bump only)" do
+      result = ::Security::CredentialRestorationService::Result.new(
+        ok?: true, rotated_count: 0, skipped_count: 0,
+        failed_count: 0, latest_version: "v4", errors: [], error: nil
+      )
+      expect(::Security::CredentialRestorationService).to receive(:rotate_transit_pepper!)
+        .with(reencrypt_existing: false)
+        .and_return(result)
+
+      r = call("system_rotate_vault_transit_pepper", reencrypt_existing: false)
+      expect(r[:success]).to be true
+      expect(r[:data][:rotated_count]).to eq(0)
+    end
+
+    it "returns an error when rotation fails" do
+      result = ::Security::CredentialRestorationService::Result.new(
+        ok?: false, rotated_count: 0, skipped_count: 0,
+        failed_count: 0, latest_version: nil, errors: [], error: "vault unreachable"
+      )
+      expect(::Security::CredentialRestorationService).to receive(:rotate_transit_pepper!).and_return(result)
+
+      r = call("system_rotate_vault_transit_pepper")
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("vault unreachable")
+    end
+  end
+
+  describe "Missing-features slice 11a — federation acceptance (via SdwanTool)" do
+    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account) }
+    let!(:proposed_peer) do
+      ::Sdwan::FederationPeer.create!(
+        account: account, status: "proposed",
+        remote_instance_url: "https://other.example.com",
+        remote_instance_id: SecureRandom.uuid
+      )
+    end
+
+    it "transitions proposed → accepted with signed_at populated" do
+      r = sdwan_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+      expect(r[:success]).to be true
+      expect(r[:data][:accepted]).to be true
+
+      proposed_peer.reload
+      expect(proposed_peer.status).to eq("accepted")
+      expect(proposed_peer.signed_at).to be_present
+    end
+
+    it "refuses transition for already-accepted peers" do
+      proposed_peer.accept!
+      r = sdwan_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id
+      })
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("only 'proposed'")
+    end
+
+    it "records acceptance_token usage in metadata when token provided" do
+      sdwan_tool.execute(params: {
+        action: "system_sdwan_accept_federation_peer",
+        federation_peer_id: proposed_peer.id,
+        acceptance_token: "abc123"
+      })
+      expect(proposed_peer.reload.metadata["acceptance_token_used"]).to be true
+    end
+  end
+
   describe "Unknown action" do
     it "returns an error_result" do
       r = call("system_definitely_not_real")
@@ -771,6 +965,16 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       %w[system_list_disk_image_publications system_set_default_disk_image_publication system_set_disk_image_retention system_provision_ci_worker system_terminate_ci_worker system_list_ci_workers system_list_disk_image_webhooks].each do |action|
         expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
       end
+    end
+
+    it "registers missing-features slice 6a + Vault DR-3 actions" do
+      %w[system_gitops_register_repository system_gitops_sync_repository system_gitops_get_sync_run system_gitops_get_drift_report system_rotate_vault_transit_pepper].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
+    end
+
+    it "registers missing-features slice 11a action via SdwanTool" do
+      expect(Ai::Tools::PlatformApiToolRegistry::TOOLS["system_sdwan_accept_federation_peer"]).to eq("Ai::Tools::SdwanTool")
     end
   end
 end
