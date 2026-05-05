@@ -66,27 +66,61 @@ module Sdwan
       )
     end
 
-    # Transitions a proposed peer to accepted. v1 (drill mode):
-    # operator-driven without cross-account auth — Account A and B
-    # operators coordinate out-of-band. Future Phase 11b adds a
-    # token-round-trip handshake; until then, accept! is allowed only
-    # for same-account drills + explicit operator confirmation.
+    # Transitions a proposed peer to accepted. Phase 11b adds token
+    # round-trip verification: when acceptance_token_digest is set on
+    # this peer, accept! requires the plaintext token to match.
+    #
+    # Phase 11a (drill mode) — peers without acceptance_token_digest
+    # accept any caller (no cross-account auth).
+    # Phase 11b (this) — peers with digest require matching token.
+    # Phase 11c (future) — cross-CA bridging for production federation.
     #
     # Sets signed_at to now (so FederationGovernance's
-    # stale_accepted_without_handshake check passes after slice 11b
-    # provides the real handshake).
+    # stale_accepted_without_handshake check passes).
     def accept!(accepted_by_user: nil, acceptance_token: nil)
       return false unless can_transition_to?("accepted")
+
+      # Phase 11b: token verification when digest is set
+      if acceptance_token_digest.present?
+        if acceptance_token.blank?
+          errors.add(:base, "acceptance_token required (peer has acceptance_token_digest set)")
+          return false
+        end
+        if acceptance_token_expires_at.present? && acceptance_token_expires_at < Time.current
+          errors.add(:base, "acceptance_token has expired (expired_at #{acceptance_token_expires_at.iso8601})")
+          return false
+        end
+        provided_digest = ::Digest::SHA256.hexdigest(acceptance_token.to_s)
+        unless ::ActiveSupport::SecurityUtils.secure_compare(provided_digest, acceptance_token_digest)
+          errors.add(:base, "acceptance_token does not match stored digest")
+          return false
+        end
+      end
 
       update!(
         status: "accepted",
         signed_at: Time.current,
+        # Clear the digest after successful use — tokens are single-use
+        acceptance_token_digest: nil,
+        acceptance_token_expires_at: nil,
         metadata: metadata.merge(
           "accepted_by_user_id" => accepted_by_user&.id,
           "acceptance_token_used" => acceptance_token.present?
         )
       )
       true
+    end
+
+    # Phase 11b — generates a high-entropy single-use acceptance token.
+    # Returns the plaintext token (must be shown to the operator EXACTLY
+    # ONCE — not recoverable). Stores only the digest + expiry.
+    def generate_acceptance_token!(ttl_seconds: 7.days.to_i)
+      plaintext = ::SecureRandom.urlsafe_base64(32)
+      update!(
+        acceptance_token_digest: ::Digest::SHA256.hexdigest(plaintext),
+        acceptance_token_expires_at: Time.current + ttl_seconds.seconds
+      )
+      plaintext
     end
 
     # Returns the /48 portion of remote_prefix_advertisement (or nil if

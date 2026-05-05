@@ -919,13 +919,99 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:error]).to include("only 'proposed'")
     end
 
-    it "records acceptance_token usage in metadata when token provided" do
+    it "records acceptance_token usage in metadata when token provided (no digest set, drill mode)" do
       sdwan_tool.execute(params: {
         action: "system_sdwan_accept_federation_peer",
         federation_peer_id: proposed_peer.id,
         acceptance_token: "abc123"
       })
       expect(proposed_peer.reload.metadata["acceptance_token_used"]).to be true
+    end
+  end
+
+  describe "Missing-features slice 11b — token round-trip handshake" do
+    let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account) }
+
+    describe "propose with generate_token" do
+      it "returns a one-time plaintext token + stores only the digest" do
+        r = sdwan_tool.execute(params: {
+          action: "system_sdwan_propose_federation_peer",
+          remote_instance_url: "https://b.example.com",
+          remote_instance_id: SecureRandom.uuid,
+          generate_token: true
+        })
+        expect(r[:success]).to be true
+        expect(r[:data][:acceptance_token_plaintext]).to be_present
+        expect(r[:data][:acceptance_token_expires_at]).to be_present
+        expect(r[:data][:note]).to include("EXACTLY ONCE")
+
+        peer = ::Sdwan::FederationPeer.find(r[:data][:federation_peer][:id])
+        # Stored as digest only, not plaintext
+        expect(peer.acceptance_token_digest).to be_present
+        expect(peer.acceptance_token_digest).not_to eq(r[:data][:acceptance_token_plaintext])
+        # Honors token_ttl_seconds
+        expect(peer.acceptance_token_expires_at).to be > 1.day.from_now
+      end
+    end
+
+    describe "accept with token verification" do
+      let(:propose_result) do
+        sdwan_tool.execute(params: {
+          action: "system_sdwan_propose_federation_peer",
+          remote_instance_url: "https://b.example.com",
+          remote_instance_id: SecureRandom.uuid,
+          generate_token: true,
+          token_ttl_seconds: 600
+        })
+      end
+      let(:peer_id) { propose_result[:data][:federation_peer][:id] }
+      let(:plaintext) { propose_result[:data][:acceptance_token_plaintext] }
+
+      it "accepts when correct plaintext token provided" do
+        r = sdwan_tool.execute(params: {
+          action: "system_sdwan_accept_federation_peer",
+          federation_peer_id: peer_id,
+          acceptance_token: plaintext
+        })
+        expect(r[:success]).to be true
+        expect(r[:data][:accepted]).to be true
+
+        peer = ::Sdwan::FederationPeer.find(peer_id)
+        expect(peer.status).to eq("accepted")
+        # Token cleared after single-use
+        expect(peer.acceptance_token_digest).to be_nil
+      end
+
+      it "rejects when token missing" do
+        r = sdwan_tool.execute(params: {
+          action: "system_sdwan_accept_federation_peer",
+          federation_peer_id: peer_id
+        })
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("required")
+      end
+
+      it "rejects when token does not match" do
+        r = sdwan_tool.execute(params: {
+          action: "system_sdwan_accept_federation_peer",
+          federation_peer_id: peer_id,
+          acceptance_token: "wrong-token"
+        })
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("does not match")
+      end
+
+      it "rejects when token expired" do
+        peer = ::Sdwan::FederationPeer.find(peer_id)
+        peer.update!(acceptance_token_expires_at: 1.minute.ago)
+        r = sdwan_tool.execute(params: {
+          action: "system_sdwan_accept_federation_peer",
+          federation_peer_id: peer_id,
+          acceptance_token: plaintext
+        })
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("expired")
+      end
     end
   end
 

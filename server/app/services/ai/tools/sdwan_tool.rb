@@ -255,12 +255,14 @@ module Ai
             parameters: { federation_peer_id: { type: "string", required: true } }
           },
           "system_sdwan_propose_federation_peer" => {
-            description: "Propose a new federation peer. v1 status is always 'proposed' — accept/active transitions arrive in the future federation slice",
+            description: "Propose a new federation peer. Status starts at 'proposed'. With generate_token: true (Phase 11b), generates a single-use acceptance token (plaintext returned ONCE) — Account A operator copies it out-of-band to Account B operator who pastes it into system_sdwan_accept_federation_peer.",
             parameters: {
               remote_instance_url: { type: "string", required: true },
               remote_instance_id: { type: "string", required: false },
               remote_account_id: { type: "string", required: false },
-              remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" }
+              remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" },
+              generate_token: { type: "boolean", required: false, description: "When true, generate a single-use acceptance token (Phase 11b token round-trip handshake). Plaintext returned ONCE — not recoverable." },
+              token_ttl_seconds: { type: "integer", required: false, description: "Token expiry window in seconds (default 7 days)" }
             }
           },
           "system_sdwan_accept_federation_peer" => {
@@ -825,7 +827,19 @@ module Ai
           remote_account_id: params[:remote_account_id],
           remote_prefix_advertisement: params[:remote_prefix_advertisement]
         )
-        success_result(federation_peer: serialize_federation_peer(peer))
+
+        response = { federation_peer: serialize_federation_peer(peer) }
+
+        # Phase 11b: optional token generation. Plaintext returned ONCE.
+        if params[:generate_token] == true
+          ttl = (params[:token_ttl_seconds] || 7.days.to_i).to_i
+          plaintext = peer.generate_acceptance_token!(ttl_seconds: ttl)
+          response[:acceptance_token_plaintext] = plaintext
+          response[:acceptance_token_expires_at] = peer.reload.acceptance_token_expires_at&.iso8601
+          response[:note] = "Store the acceptance token immediately — it is shown EXACTLY ONCE. Account B operator pastes this into system_sdwan_accept_federation_peer."
+        end
+
+        success_result(**response)
       end
 
       def revoke_federation_peer(params)
@@ -843,10 +857,16 @@ module Ai
           )
         end
 
-        peer.accept!(
+        success = peer.accept!(
           accepted_by_user: @user,
           acceptance_token: params[:acceptance_token]
         )
+
+        unless success
+          # accept! sets errors on the model and returns false (Phase 11b
+          # token verification path); surface to operator.
+          return error_result(peer.errors.full_messages.join("; "))
+        end
 
         success_result(
           federation_peer: serialize_federation_peer(peer.reload),
