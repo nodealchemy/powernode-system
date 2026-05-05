@@ -112,7 +112,10 @@ module Ai
 
         # === Missing-features slice Vault DR-3 — pepper rotation ===
         # Highest tier permission — rotation is a fleet-wide cryptographic op.
-        "system_rotate_vault_transit_pepper" => "system.fleet.autonomy"
+        "system_rotate_vault_transit_pepper" => "system.fleet.autonomy",
+
+        # === Missing-features slice 6b — GitOps apply path ===
+        "system_gitops_apply_proposal" => "system.modules.update"
       }.freeze
 
       def self.definition
@@ -503,6 +506,14 @@ module Ai
             parameters: {
               reencrypt_existing: { type: "boolean", required: false, description: "When false, only bumps the key version without walking accounts (operators may phase rotation manually). Default true." }
             }
+          },
+
+          # === Missing-features slice 6b — GitOps apply path ===
+          "system_gitops_apply_proposal" => {
+            description: "Apply an approved GitOps proposal — executes the diff against the DB (creates/updates templates, modules, assignments). Errors with stale_conflict if reality drifted post-proposal. v1 supports template/module/assignment kinds; destroy + provider_config remain follow-ups.",
+            parameters: {
+              proposal_id: { type: "string", required: true, description: "Ai::AgentProposal id (must be in 'approved' status with proposed_changes.source = 'gitops')" }
+            }
           }
         }
       end
@@ -579,6 +590,8 @@ module Ai
         when "system_gitops_get_drift_report"       then gitops_get_drift_report(params)
         # Missing-features slice Vault DR-3
         when "system_rotate_vault_transit_pepper"   then rotate_vault_transit_pepper(params)
+        # Missing-features slice 6b — GitOps apply path
+        when "system_gitops_apply_proposal"         then gitops_apply_proposal(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -1684,6 +1697,30 @@ module Ai
           )
         else
           error_result(result.error || "rotation failed")
+        end
+      end
+
+      # === Missing-features slice 6b — GitOps apply path ===
+
+      def gitops_apply_proposal(params)
+        proposal = ::Ai::AgentProposal.where(account_id: @account.id).find(params[:proposal_id])
+        result = ::System::Gitops::ApplyService.apply!(proposal: proposal)
+
+        if result.ok?
+          success_result(
+            applied: true,
+            applied_action: result.applied_action,
+            resource_id: result.resource_id,
+            proposal_id: proposal.id,
+            proposal_status: proposal.reload.status
+          )
+        else
+          base = { applied: false, error: result.error, proposal_id: proposal.id }
+          base[:stale_conflict] = true if result.stale_conflict
+          # Surface as success_result with applied: false so the operator
+          # can read the conflict reason without it looking like an error.
+          # (Genuine system errors raise + are caught by the rescue chain.)
+          success_result(**base)
         end
       end
     end

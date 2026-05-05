@@ -976,5 +976,116 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "registers missing-features slice 11a action via SdwanTool" do
       expect(Ai::Tools::PlatformApiToolRegistry::TOOLS["system_sdwan_accept_federation_peer"]).to eq("Ai::Tools::SdwanTool")
     end
+
+    it "registers missing-features slice 6b action" do
+      expect(Ai::Tools::PlatformApiToolRegistry::TOOLS["system_gitops_apply_proposal"]).to eq("Ai::Tools::SystemFleetTool")
+    end
+  end
+
+  describe "Missing-features slice 6b — GitOps apply path" do
+    let!(:gitops_repo) do
+      ::System::GitopsRepository.create!(
+        account: account, name: "apply-test",
+        repo_url: "https://example.com/apply-repo.git", branch: "main"
+      )
+    end
+
+    let(:agent) { create(:ai_agent, account: account) }
+
+    def make_proposal(diff:, status: "approved")
+      ::Ai::AgentProposal.create!(
+        account: account,
+        ai_agent_id: agent.id,
+        title: "GitOps: #{diff[:change]} #{diff[:kind]} #{diff[:name]}",
+        description: "Apply test",
+        proposal_type: "configuration",
+        status: status,
+        priority: "medium",
+        proposed_changes: {
+          diff: diff,
+          source: "gitops",
+          repository_id: gitops_repo.id,
+          commit_sha: "abc123"
+        }
+      )
+    end
+
+    it "applies a template create diff (looks up node_platform by name)" do
+      # Platform must exist in the account for the apply to resolve the name
+      platform_record # touch to ensure it's created
+      proposal = make_proposal(diff: {
+        kind: "template", change: "create", name: "edge-cdn-applied",
+        resource_id: nil, current: nil,
+        desired: { name: "edge-cdn-applied", node_platform: platform_record.name }
+      })
+
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be true
+      expect(::System::NodeTemplate.where(account_id: account.id, name: "edge-cdn-applied")).to exist
+      expect(proposal.reload.status).to eq("implemented")
+    end
+
+    it "errors when template create lacks node_platform reference" do
+      proposal = make_proposal(diff: {
+        kind: "template", change: "create", name: "no-platform",
+        resource_id: nil, current: nil, desired: { name: "no-platform" }
+      })
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be false
+      expect(r[:data][:error]).to include("node_platform")
+    end
+
+    it "applies a module create diff" do
+      proposal = make_proposal(diff: {
+        kind: "module", change: "create", name: "redis-applied",
+        resource_id: nil, current: nil,
+        desired: { name: "redis-applied", variety: "subscription" }
+      })
+
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:applied]).to be true
+      expect(::System::NodeModule.where(account_id: account.id, name: "redis-applied")).to exist
+    end
+
+    it "rejects non-approved proposals" do
+      proposal = make_proposal(diff: { kind: "template", change: "create", name: "x" }, status: "pending_review")
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be false
+      expect(r[:data][:error]).to include("only 'approved'")
+    end
+
+    it "rejects proposals with non-gitops source" do
+      proposal = ::Ai::AgentProposal.create!(
+        account: account, ai_agent_id: agent.id,
+        title: "manual proposal", description: "x",
+        proposal_type: "configuration", status: "approved", priority: "medium",
+        proposed_changes: { diff: {}, source: "manual" }
+      )
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be false
+      expect(r[:data][:error]).to include("source is not 'gitops'")
+    end
+
+    it "informational diffs are no-ops with success status" do
+      proposal = make_proposal(diff: {
+        kind: "provider_config", change: "informational", name: "managed-via-ui",
+        resource_id: nil, current: nil, desired: { note: "managed via UI" }
+      })
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be true
+      expect(r[:data][:applied_action]).to include("informational")
+    end
+
+    it "destroy diff returns unsupported (v1 conservative)" do
+      tmpl = create(:system_node_template, account: account)
+      proposal = make_proposal(diff: {
+        kind: "template", change: "destroy", name: tmpl.name,
+        resource_id: tmpl.id, current: { name: tmpl.name }, desired: nil
+      })
+      r = call("system_gitops_apply_proposal", proposal_id: proposal.id)
+      expect(r[:data][:applied]).to be false
+      expect(r[:data][:error]).to include("not yet implemented")
+    end
   end
 end
