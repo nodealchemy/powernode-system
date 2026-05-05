@@ -187,6 +187,135 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Gap remediation slice 1 — system_drain_instance" do
+    let(:node)     { create(:system_node, account: account, node_template: template, name: "drain") }
+    let(:instance) { create(:system_node_instance, :running, node: node) }
+
+    it "records drain intent on config + emits FleetEvent" do
+      r = call("system_drain_instance", instance_id: instance.id, timeout_seconds: 300)
+      expect(r[:success]).to be true
+      expect(r[:data][:drained]).to be true
+      expect(r[:data][:drain_initiated_at]).to be_present
+      expect(r[:data][:drain_timeout_seconds]).to eq(300)
+
+      instance.reload
+      expect(instance.config["drain_initiated_at"]).to be_present
+      expect(instance.config["drain_timeout_seconds"]).to eq(300)
+    end
+
+    it "defaults timeout_seconds to 600 when omitted" do
+      r = call("system_drain_instance", instance_id: instance.id)
+      expect(r[:data][:drain_timeout_seconds]).to eq(600)
+    end
+
+    it "emits a system.instance.drain_initiated FleetEvent if model present" do
+      skip "FleetEvent model not loaded" unless defined?(::System::FleetEvent)
+
+      expect {
+        call("system_drain_instance", instance_id: instance.id)
+      }.to change { ::System::FleetEvent.where(kind: "system.instance.drain_initiated", node_instance_id: instance.id).count }.by(1)
+    end
+
+    it "is idempotent — calling twice updates drain_initiated_at" do
+      call("system_drain_instance", instance_id: instance.id)
+      first_at = instance.reload.config["drain_initiated_at"]
+      sleep 1
+      call("system_drain_instance", instance_id: instance.id)
+      second_at = instance.reload.config["drain_initiated_at"]
+      expect(second_at).not_to eq(first_at)
+    end
+
+    it "scopes to current account — refuses to drain other-account instances" do
+      other_node = create(:system_node, account: create(:account), node_template: template, name: "other")
+      other = create(:system_node_instance, :running, node: other_node)
+      r = call("system_drain_instance", instance_id: other.id)
+      expect(r[:success]).to be false
+    end
+  end
+
+  describe "Gap remediation slice 1 — system_get_silent_instances" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "silent") }
+    let!(:silent_instance)  { create(:system_node_instance, :running, node: node, last_heartbeat_at: 10.minutes.ago) }
+    let!(:fresh_instance)   { create(:system_node_instance, :running, node: node, last_heartbeat_at: 30.seconds.ago) }
+    let!(:never_seen)       { create(:system_node_instance, :running, node: node, last_heartbeat_at: nil) }
+
+    it "returns instances with last_heartbeat_at older than threshold or null" do
+      r = call("system_get_silent_instances")
+      expect(r[:success]).to be true
+      ids = r[:data][:instances].map { |i| i[:id] }
+      expect(ids).to include(silent_instance.id, never_seen.id)
+      expect(ids).not_to include(fresh_instance.id)
+    end
+
+    it "honors custom threshold_seconds" do
+      r = call("system_get_silent_instances", threshold_seconds: 10) # 10 seconds
+      ids = r[:data][:instances].map { |i| i[:id] }
+      expect(ids).to include(silent_instance.id, fresh_instance.id, never_seen.id) # all are older than 10s
+    end
+
+    it "reports the cutoff timestamp + threshold" do
+      r = call("system_get_silent_instances", threshold_seconds: 60)
+      expect(r[:data][:threshold_seconds]).to eq(60)
+      expect(r[:data][:cutoff]).to be_present
+    end
+
+    it "scopes to current account" do
+      other_node = create(:system_node, account: create(:account), node_template: template, name: "other-silent")
+      other_silent = create(:system_node_instance, :running, node: other_node, last_heartbeat_at: 10.minutes.ago)
+      r = call("system_get_silent_instances")
+      ids = r[:data][:instances].map { |i| i[:id] }
+      expect(ids).not_to include(other_silent.id)
+      expect(ids).to include(silent_instance.id)
+    end
+  end
+
+  describe "Gap remediation slice 1 — system_validate_module_manifest" do
+    let!(:mod) do
+      create(:system_node_module,
+             account: account, category: category,
+             name: "redis", variety: "subscription")
+    end
+
+    it "returns valid: true for a well-formed manifest matching the module" do
+      yaml = <<~YML
+        schema_version: 1
+        name: redis
+        description: Redis 7.4
+        package_spec:
+          - redis-server
+        file_spec:
+          - "/etc/redis/**"
+      YML
+
+      r = call("system_validate_module_manifest", module_id: mod.id, manifest_yaml: yaml)
+      expect(r[:success]).to be true
+      expect(r[:data][:valid]).to be true
+      expect(r[:data][:validation_errors]).to be_empty
+    end
+
+    it "returns valid: false + errors when manifest.name does not match module" do
+      yaml = "schema_version: 1\nname: nginx\n"
+
+      r = call("system_validate_module_manifest", module_id: mod.id, manifest_yaml: yaml)
+      expect(r[:success]).to be true # tool returns success even when manifest is invalid (the result captures errors)
+      expect(r[:data][:valid]).to be false
+      expect(r[:data][:validation_errors].join(" ")).to include("does not match")
+    end
+
+    it "returns valid: false for malformed YAML" do
+      r = call("system_validate_module_manifest", module_id: mod.id, manifest_yaml: ":\n  - invalid\n  unbalanced")
+      expect(r[:data][:valid]).to be false
+    end
+
+    it "scopes to current account modules" do
+      other_mod = create(:system_node_module,
+                         account: create(:account), category: category,
+                         name: "other-redis")
+      r = call("system_validate_module_manifest", module_id: other_mod.id, manifest_yaml: "schema_version: 1\nname: other-redis\n")
+      expect(r[:success]).to be false
+    end
+  end
+
   describe "Unknown action" do
     it "returns an error_result" do
       r = call("system_definitely_not_real")
@@ -199,6 +328,12 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "is registered in PlatformApiToolRegistry::TOOLS" do
       mapped = Ai::Tools::PlatformApiToolRegistry::TOOLS["system_list_nodes"]
       expect(mapped).to eq("Ai::Tools::SystemFleetTool")
+    end
+
+    it "registers gap-remediation slice 1 actions" do
+      %w[system_drain_instance system_get_silent_instances system_validate_module_manifest].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
     end
   end
 end

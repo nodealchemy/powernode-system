@@ -75,6 +75,15 @@ module System
           version_changelog: version_changelog
         )
       end
+
+      # Pure validation — no DB writes, no file system access. Operator
+      # passes raw yaml + an existing NodeModule (to validate manifest.name
+      # matches). Returns a Result with validation_errors. Used by the MCP
+      # `system_validate_module_manifest` action so operators can lint a
+      # manifest before pushing to CI.
+      def validate_only(yaml:, node_module:)
+        new.send(:do_validate_only, yaml: yaml, node_module: node_module)
+      end
     end
 
     def import!(node_module:, yaml:, create_version: false, version_changelog: nil)
@@ -110,6 +119,22 @@ module System
     end
 
     private
+
+    def do_validate_only(yaml:, node_module:)
+      return failure("node_module required") unless node_module.is_a?(::System::NodeModule)
+      return failure("yaml content is blank") if yaml.blank?
+
+      parsed = parse_yaml(yaml)
+      return failure("manifest YAML parse failed: #{parsed[:error]}") unless parsed[:ok]
+
+      errors = validate(parsed[:data], node_module)
+      if errors.any?
+        Result.new(ok?: false, error: "manifest validation failed",
+                   validation_errors: errors, resolved_dependencies: [])
+      else
+        Result.new(ok?: true, validation_errors: [], resolved_dependencies: [])
+      end
+    end
 
     def failure(message, validation_errors: [])
       Result.new(ok?: false, error: message, validation_errors: validation_errors,

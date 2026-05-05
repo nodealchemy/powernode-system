@@ -6,27 +6,33 @@ Action catalog for the system extension's MCP surface. Lists every `system_*`, `
 
 ## Where actions are registered (architecture note)
 
-> **Important:** All MCP action registrations for the system extension live in the **parent platform's** `server/app/services/ai/tools/platform_api_tool_registry.rb` — *not* in the extension itself. The extension contributes Rails models + services + controllers + frontend; the parent platform owns the MCP tool registry and dispatches actions to extension services.
+> **Architecture:** The MCP **registry** (action-name → tool-class mapping) lives in the **parent platform** at `server/app/services/ai/tools/platform_api_tool_registry.rb`. The **tool class implementations** live in the **extension** at `extensions/system/server/app/services/ai/tools/`. Rails autoloading resolves the class names across both locations.
 
 ```
-┌─────────────────────────────────────────────────┐
-│ server/app/services/ai/tools/                   │  ← parent platform
-│   platform_api_tool_registry.rb                 │
-│   ├── "system_*"          → SystemFleetTool     │
-│   ├── "system_sdwan_*"    → SdwanTool           │
-│   ├── "system_provision_docker_runtime" → ...   │
-│   ├── "kubernetes_*"      → Kubernetes*Tool     │
-│   └── "docker_*"          → Docker*Tool         │
-└─────────────────────────────────────────────────┘
-                        │
-                        │ each tool class lives in:
-                        ▼
-┌─────────────────────────────────────────────────┐
-│ extensions/system/server/app/services/system/   │  ← system extension
-│   *_service.rb                                   │
-│   (the actual lifecycle / business logic)       │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ Parent platform                                         │
+│   server/app/services/ai/tools/                         │
+│     platform_api_tool_registry.rb                       │
+│       ├── "system_*"          → "Ai::Tools::SystemFleetTool"
+│       ├── "system_sdwan_*"    → "Ai::Tools::SdwanTool"   │
+│       ├── "kubernetes_*"      → "Ai::Tools::Kubernetes*Tool"
+│       └── "docker_*"          → "Ai::Tools::Docker*Tool" │
+└─────────────────────────┬───────────────────────────────┘
+                          │ class-name strings resolved by autoloader
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│ System extension                                         │
+│   extensions/system/server/app/services/ai/tools/        │
+│     system_fleet_tool.rb       (class Ai::Tools::SystemFleetTool)
+│     sdwan_tool.rb              (class Ai::Tools::SdwanTool)
+│     ...                                                   │
+│                                                           │
+│   extensions/system/server/app/services/system/          │
+│     *_service.rb               (lifecycle / business logic)
+└─────────────────────────────────────────────────────────┘
 ```
+
+To add a new MCP action: register the action-name → class-name mapping in the **parent's** registry file, then implement the action method in the corresponding tool class **inside the extension**. Both repos commit; bump the submodule pointer.
 
 To regenerate the parent's full tool catalog with parameter schemas:
 

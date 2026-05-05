@@ -66,7 +66,17 @@ module Ai
         "system_create_instance_pool"   => "system.instances.create",
         "system_drain_instance_pool"    => "system.instances.control",
         "system_acquire_pooled_instance" => "system.instances.create",
-        "system_replenish_instance_pool" => "system.instances.create"
+        "system_replenish_instance_pool" => "system.instances.create",
+
+        # === Gap remediation slice 1 (Phase 4 — operator-runbook-driven actions) ===
+        # system_drain_instance: graceful drain marker — operator opts into a
+        #   workload-relocation window before terminate. v1 records intent +
+        #   emits FleetEvent; future cordon/stop logic on the same handle.
+        # system_get_silent_instances: read-only view aligned with InstanceStatusSensor.
+        # system_validate_module_manifest: pure validation; no DB writes.
+        "system_drain_instance"           => "system.instances.control",
+        "system_get_silent_instances"     => "system.node_instances.read",
+        "system_validate_module_manifest" => "system.modules.read"
       }.freeze
 
       def self.definition
@@ -301,6 +311,28 @@ module Ai
           "system_replenish_instance_pool" => {
             description: "Manually trigger replenishment of a pool — provisions warming members up to target_size. Normally the reaper does this every 60s; this is for impatient operators.",
             parameters: { id: { type: "string", required: true } }
+          },
+
+          # === Gap remediation slice 1 (Phase 4) ===
+          "system_drain_instance" => {
+            description: "Initiate graceful drain on a NodeInstance: records drain intent + emits FleetEvent so observability tooling (and future autonomy reconcilers) can act. Workloads remain running; operator should call system_terminate_instance after relocation completes. Idempotent — calling twice updates drain_initiated_at.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              timeout_seconds: { type: "integer", required: false, description: "Suggested workload-relocation window (default 600 = 10 min). Stored in metadata for observability; does not auto-terminate." }
+            }
+          },
+          "system_get_silent_instances" => {
+            description: "List NodeInstances whose last_heartbeat_at is older than the SILENT_THRESHOLD (3 minutes), or null. Aligned with InstanceStatusSensor. Useful for fleet-health dashboards and pre-upgrade gates.",
+            parameters: {
+              threshold_seconds: { type: "integer", required: false, description: "Override the 3-minute default; useful for dashboards with custom alert thresholds" }
+            }
+          },
+          "system_validate_module_manifest" => {
+            description: "Validate a module manifest YAML against the schema (schema_version, name match, spec field types, init shape, reboot_required boolean) without committing to DB. Returns valid + validation_errors array. Use before pushing manifest changes to CI.",
+            parameters: {
+              module_id: { type: "string", required: true, description: "Existing NodeModule id to validate against (manifest.name must match)" },
+              manifest_yaml: { type: "string", required: true, description: "Raw manifest.yaml contents" }
+            }
           }
         }
       end
@@ -348,6 +380,10 @@ module Ai
         when "system_drain_instance_pool"      then drain_instance_pool(params)
         when "system_acquire_pooled_instance"  then acquire_pooled_instance(params)
         when "system_replenish_instance_pool"  then replenish_instance_pool(params)
+        # Gap remediation slice 1 (Phase 4)
+        when "system_drain_instance"           then drain_instance(params)
+        when "system_get_silent_instances"     then get_silent_instances(params)
+        when "system_validate_module_manifest" then validate_module_manifest(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -910,6 +946,90 @@ module Ai
         success_result(data: { pool: pool.reload.to_summary, replenish_result: result })
       rescue ::System::InstancePoolService::PoolError => e
         error_result(e.message)
+      end
+
+      # === Gap remediation slice 1 (Phase 4 — operator-runbook-driven actions) ===
+
+      # Records drain intent on a NodeInstance — emits a FleetEvent so
+      # observability tooling and (eventually) autonomy reconcilers can
+      # coordinate workload relocation. v1 is observation-only: workloads
+      # keep running; operator must call system_terminate_instance after
+      # relocation completes. Future versions will integrate K8s cordon
+      # + Docker container stop into this same handle.
+      def drain_instance(params)
+        instance = account_instances.find(params[:instance_id])
+        timeout = (params[:timeout_seconds] || 600).to_i
+        initiated_at = Time.current.iso8601
+
+        # NodeInstance has `config` (JSONB) but no dedicated `metadata` column.
+        # Drain state lives under `config["drain_*"]` keys. Future migration
+        # may promote these to a typed column when drain logic gains
+        # cordon/stop integration.
+        instance.config ||= {}
+        instance.config["drain_initiated_at"] = initiated_at
+        instance.config["drain_timeout_seconds"] = timeout
+        instance.save!
+
+        if defined?(::System::FleetEvent)
+          ::System::FleetEvent.create!(
+            account: @account,
+            kind: "system.instance.drain_initiated",
+            severity: "low",
+            node_instance_id: instance.id,
+            payload: {
+              "drain_timeout_seconds" => timeout,
+              "initiated_by" => @user&.id || "system"
+            },
+            correlation_id: SecureRandom.uuid
+          )
+        end
+
+        success_result(
+          drained: true,
+          instance: serialize_instance(instance.reload),
+          drain_initiated_at: initiated_at,
+          drain_timeout_seconds: timeout,
+          next_step: "operator should call system_terminate_instance after workloads relocate"
+        )
+      end
+
+      # Returns NodeInstances whose last_heartbeat_at is older than the
+      # silent threshold, or null. Aligned with InstanceStatusSensor
+      # (default 3 minutes; configurable via threshold_seconds).
+      def get_silent_instances(params)
+        threshold = (params[:threshold_seconds] || 180).to_i
+        cutoff = Time.current - threshold.seconds
+        scope = account_instances.where(
+          "last_heartbeat_at < ? OR last_heartbeat_at IS NULL", cutoff
+        )
+
+        success_result(
+          silent_count: scope.size,
+          threshold_seconds: threshold,
+          cutoff: cutoff.iso8601,
+          instances: scope.order(last_heartbeat_at: :asc).limit(200).map { |i| serialize_instance(i) }
+        )
+      end
+
+      # Pure-validation entry point for module manifest YAML — no DB writes.
+      # Operators lint manifests locally before pushing to CI; AI Concierge
+      # uses this to surface schema errors in chat.
+      def validate_module_manifest(params)
+        node_module = account_modules.find(params[:module_id])
+        result = ::System::ManifestImportService.validate_only(
+          yaml: params[:manifest_yaml],
+          node_module: node_module
+        )
+
+        if result.ok?
+          success_result(valid: true, validation_errors: [])
+        else
+          success_result(
+            valid: false,
+            error: result.error,
+            validation_errors: Array(result.validation_errors)
+          )
+        end
       end
     end
   end
