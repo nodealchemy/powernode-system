@@ -1,0 +1,333 @@
+# MCP API Reference
+
+Action catalog for the system extension's MCP surface. Lists every `system_*`, `system_sdwan_*`, `kubernetes_*`, and `docker_*` action callable via the Powernode MCP server.
+
+**Audience:** AI Concierge prompt authors, external operators integrating with the platform's MCP server, contributors adding new actions.
+
+## Where actions are registered (architecture note)
+
+> **Important:** All MCP action registrations for the system extension live in the **parent platform's** `server/app/services/ai/tools/platform_api_tool_registry.rb` — *not* in the extension itself. The extension contributes Rails models + services + controllers + frontend; the parent platform owns the MCP tool registry and dispatches actions to extension services.
+
+```
+┌─────────────────────────────────────────────────┐
+│ server/app/services/ai/tools/                   │  ← parent platform
+│   platform_api_tool_registry.rb                 │
+│   ├── "system_*"          → SystemFleetTool     │
+│   ├── "system_sdwan_*"    → SdwanTool           │
+│   ├── "system_provision_docker_runtime" → ...   │
+│   ├── "kubernetes_*"      → Kubernetes*Tool     │
+│   └── "docker_*"          → Docker*Tool         │
+└─────────────────────────────────────────────────┘
+                        │
+                        │ each tool class lives in:
+                        ▼
+┌─────────────────────────────────────────────────┐
+│ extensions/system/server/app/services/system/   │  ← system extension
+│   *_service.rb                                   │
+│   (the actual lifecycle / business logic)       │
+└─────────────────────────────────────────────────┘
+```
+
+To regenerate the parent's full tool catalog with parameter schemas:
+
+```bash
+cd server && bundle exec rails mcp:generate_tool_catalog
+# → writes to docs/platform/MCP_TOOL_CATALOG.md (gitignored)
+```
+
+This document is the **system-extension subset** of that catalog — manually curated, scannable for operator workflows.
+
+## Permission model
+
+Every action requires a permission grant on the calling user/agent. Permissions follow the schema `<resource>.<verb>` (e.g., `system.nodes.read`, `system.modules.write`). The mapping lives in `server/db/migrate/*_permissions.rb` (parent platform). Agents have permissions assigned via `Ai::AgentPermission`.
+
+## Action catalog
+
+### `system_*` — Fleet, lifecycle, modules (27 actions)
+
+Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerProvisioningTool` (managed Docker runtimes).
+
+#### Nodes + instances
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_list_nodes` | List Node rows (filter by status, lifecycle_class, etc.) | operator, agent |
+| `system_get_node` | Fetch a Node by id | operator, agent |
+| `system_create_node` | Create a Node row (no provider VM yet) | operator, agent |
+| `system_list_instances` | List NodeInstance rows | operator, agent |
+| `system_get_instance` | Fetch NodeInstance details (status, last_heartbeat, running modules) | operator, agent |
+| `system_provision_instance` | Trigger provider VM creation; creates Task; returns NodeInstance | operator, agent |
+| `system_terminate_instance` | Destroy provider VM; cascade-FK cleanup | operator, agent |
+| `system_drift_report` | Compare running module digests vs assigned modules | operator, agent |
+
+#### Templates + modules
+
+| Action | What it does |
+|---|---|
+| `system_list_templates` | List NodeTemplates |
+| `system_get_template` | Fetch a Template + its module assignments |
+| `system_assign_module_to_template` | Add a module to a Template (with optional metadata like `target_cluster_id`) |
+| `system_list_modules` | List NodeModules |
+| `system_get_module` | Fetch a Module + its categories + dependencies |
+| `system_list_module_versions` | List versions of a module |
+| `system_promote_module_version` | Move a version through lifecycle states (draft → staging → blessed → live) |
+
+#### Tasks
+
+| Action | What it does |
+|---|---|
+| `system_list_tasks` | List Tasks (filter by status, type) |
+| `system_cancel_task` | Cancel a pending or in-flight Task |
+
+#### Instance pools (slice 7)
+
+| Action | What it does |
+|---|---|
+| `system_list_instance_pools` | List InstancePools |
+| `system_get_instance_pool` | Fetch a pool + its members |
+| `system_create_instance_pool` | Create a new pool (target_size, min, max, region, type, template) |
+| `system_drain_instance_pool` | Stop replenishing + destroy/release members |
+| `system_acquire_pooled_instance` | Atomic claim of a `ready` member |
+| `system_replenish_instance_pool` | Manual trigger of the reaper for this pool |
+
+#### Container runtimes
+
+| Action | What it does |
+|---|---|
+| `system_provision_docker_runtime` | Phase 1 Docker daemon provisioning on a NodeInstance |
+| `system_decommission_docker_runtime` | Destroy managed DockerHost row + Vault TLS material |
+| `system_mark_docker_ready` | Agent-side ack endpoint (mostly internal) |
+| `system_list_managed_docker_hosts` | List Powernode-managed Docker hosts (excludes externally-registered) |
+
+### `system_sdwan_*` — SDWAN networking (52 actions)
+
+Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
+
+#### Networks
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_networks` | List Networks in account |
+| `system_sdwan_get_network` | Fetch a Network + its topology summary |
+| `system_sdwan_create_network` | Create a Network with prefix + routing_mode |
+| `system_sdwan_update_network` | Edit metadata (description, routing_mode toggle) |
+| `system_sdwan_delete_network` | Destroy a Network and all its peers/VIPs/rules |
+
+#### Peers
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_peers` | List Peers on a Network |
+| `system_sdwan_get_peer` | Fetch a Peer + its current handshake state |
+| `system_sdwan_attach_peer` | Add a NodeInstance as a Peer; allocates `/128` |
+| `system_sdwan_detach_peer` | Remove a Peer from a Network |
+| `system_sdwan_get_topology` | Network-wide reachability + handshake summary |
+
+#### Firewall rules
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_firewall_rules` | List rules on a Network |
+| `system_sdwan_get_firewall_rule` | Fetch a rule by id |
+| `system_sdwan_create_firewall_rule` | Create a rule (selector + action + protocol + port_range) |
+| `system_sdwan_update_firewall_rule` | Edit a rule |
+| `system_sdwan_delete_firewall_rule` | Remove a rule |
+
+#### Access grants + user devices
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_access_grants` | List active access grants |
+| `system_sdwan_create_access_grant` | Issue a single-use bootstrap URL for a user device (15-min default expiry) |
+| `system_sdwan_revoke_access_grant` | Invalidate an unused grant |
+| `system_sdwan_list_user_devices` | List active UserDevices on a Network |
+| `system_sdwan_issue_user_device` | Convert an access grant + user-side public key into a UserDevice |
+| `system_sdwan_revoke_user_device` | Remove a UserDevice (cuts off VPN access) |
+
+#### Federation peers (slice 11 acceptance flow in active sweep)
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_federation_peers` | List federation peers on a Network |
+| `system_sdwan_get_federation_peer` | Fetch a federation peer |
+| `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B |
+| `system_sdwan_revoke_federation_peer` | Cancel a federation relationship |
+| `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
+
+#### Routing + iBGP
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_set_peer_lan_subnets` | Declare LAN subnets a peer advertises over iBGP |
+| `system_sdwan_set_network_routing_mode` | Toggle network between `static` and `ibgp` |
+| `system_sdwan_list_subnet_advertisements` | List active subnet advertisements |
+| `system_sdwan_get_routing_summary` | Network-wide routing table summary |
+
+#### Virtual IPs (slice 3)
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_create_virtual_ip` | Allocate a VIP with primary + failover holders |
+| `system_sdwan_list_virtual_ips` | List VIPs on a Network |
+| `system_sdwan_get_virtual_ip` | Fetch a VIP + its assignments |
+| `system_sdwan_update_virtual_ip` | Edit VIP metadata (failover candidates, name) |
+| `system_sdwan_delete_virtual_ip` | Free a VIP back to the network |
+| `system_sdwan_failover_virtual_ip` | Promote next failover candidate (manual or scripted via skill) |
+| `system_sdwan_list_vip_assignments` | List assignment history (audit trail) |
+
+#### BGP
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_get_account_bgp` | Fetch per-account ASN + BGP global config |
+| `system_sdwan_set_account_as_number` | Set the account's ASN (private 64512–65534) |
+| `system_sdwan_get_bgp_sessions` | List iBGP sessions on a Network with their states |
+| `system_sdwan_get_bgp_config_for_peer` | Fetch FRR config snippet for a peer (debugging) |
+
+#### Route policies (slice 9)
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_route_policies` | List policies on a Network |
+| `system_sdwan_get_route_policy` | Fetch a policy by id |
+| `system_sdwan_create_route_policy` | Create a JSONB-statement policy |
+| `system_sdwan_update_route_policy` | Edit a policy |
+| `system_sdwan_delete_route_policy` | Remove a policy |
+| `system_sdwan_compile_route_policy` | Render the FRR route-map + aux objects (audit) |
+
+#### Port mappings
+
+| Action | What it does |
+|---|---|
+| `system_sdwan_list_port_mappings` | List port mappings on a Network |
+| `system_sdwan_get_port_mapping` | Fetch a mapping |
+| `system_sdwan_create_port_mapping` | Map an external `:port` → internal `[<peer-/128>]:port` |
+| `system_sdwan_update_port_mapping` | Edit a mapping |
+| `system_sdwan_delete_port_mapping` | Remove a mapping |
+
+### `kubernetes_*` — Phase 2 K3s clusters (5 actions)
+
+Backed by `Ai::Tools::KubernetesClusterTool` + `KubernetesProvisioningTool`. Phase 2 ships read + decommission + kubeconfig retrieval; cluster creation is implicit (assigning `k3s-server` module to a NodeInstance creates a cluster).
+
+| Action | What it does |
+|---|---|
+| `kubernetes_list_clusters` | List clusters in the account |
+| `kubernetes_get_cluster` | Fetch cluster details (status, flavor, api_endpoint, node count) |
+| `kubernetes_list_nodes` | List KubernetesNodes for a cluster (control-plane + workers) |
+| `kubernetes_decommission_cluster` | Cascade-delete cluster + its KubernetesNodes (NodeInstances NOT terminated) |
+| `kubernetes_get_kubeconfig` | Retrieve kubeconfig YAML + api_endpoint VIP |
+
+### `docker_*` — Docker daemon management (52 actions)
+
+Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerStackTool`, `DockerClusterTool`, `DockerHostTool`, `DockerImageTool`, `DockerNetworkVolumeTool`. Works on **both managed** (Powernode-provisioned) and **external** (operator-registered) hosts. Per memory `powernode.docker_mcp_tools`.
+
+#### Containers
+
+| Action | What it does |
+|---|---|
+| `docker_list_containers` | List containers on a host |
+| `docker_get_container` | Detailed info on one container |
+| `docker_create_container` | Create from an image |
+| `docker_start_container` / `docker_stop_container` / `docker_restart_container` | Lifecycle |
+| `docker_remove_container` | Remove (force flag available) |
+| `docker_container_logs` | Retrieve logs (tail + since filters) |
+| `docker_container_stats` | Live CPU/mem/network I/O stats |
+| `docker_container_exec` | Execute a command in a running container |
+
+#### Services (Swarm)
+
+| Action | What it does |
+|---|---|
+| `docker_list_services` / `docker_get_service` / `docker_create_service` / `docker_update_service` | Lifecycle |
+| `docker_scale_service` | Scale to N replicas |
+| `docker_rollback_service` | Rollback to previous version |
+| `docker_remove_service` | Remove a service |
+| `docker_service_logs` | Aggregated logs across all tasks |
+| `docker_service_tasks` | List tasks with status + node placement |
+
+#### Stacks (Swarm)
+
+| Action | What it does |
+|---|---|
+| `docker_list_stacks` / `docker_get_stack` | Inspection |
+| `docker_deploy_stack` | Deploy/redeploy from Compose YAML |
+| `docker_remove_stack` | Remove all services in a stack |
+| `docker_adopt_stack` | Adopt an externally-deployed stack into Powernode |
+
+#### Cluster (Swarm)
+
+| Action | What it does |
+|---|---|
+| `docker_list_clusters` / `docker_get_cluster` / `docker_cluster_health` | Inspection |
+| `docker_list_nodes` | List nodes with role + availability |
+| `docker_node_promote` / `docker_node_demote` | Worker ↔ manager |
+| `docker_node_drain` / `docker_node_activate` | Drain/resume scheduling |
+| `docker_list_secrets` / `docker_create_secret` / `docker_remove_secret` | Swarm secrets |
+| `docker_list_configs` / `docker_create_config` / `docker_remove_config` | Swarm configs |
+
+#### Hosts
+
+| Action | What it does |
+|---|---|
+| `docker_list_hosts` | List all Docker hosts (managed + external) |
+| `docker_get_host` | Detailed host info (OS, resources, Docker version) |
+| `docker_sync_host` | Refresh containers/images from daemon |
+| `docker_test_host` | Test connection to a host |
+
+#### Images
+
+| Action | What it does |
+|---|---|
+| `docker_list_images` | List images with tags + size |
+| `docker_pull_image` | Pull from registry |
+| `docker_remove_image` | Remove (force flag available) |
+| `docker_tag_image` | Tag with new repo + tag |
+
+#### Networks + volumes
+
+| Action | What it does |
+|---|---|
+| `docker_list_networks` / `docker_create_network` / `docker_remove_network` | Network lifecycle |
+| `docker_list_volumes` / `docker_create_volume` / `docker_remove_volume` | Volume lifecycle |
+
+## Known gaps (backlog)
+
+Per memory `project_system_mcp_gaps`, 16 actions referenced in operator runbooks (Phase 1) are **not yet registered**:
+
+- **Lifecycle**: `system_drain_instance`, `system_get_silent_instances`
+- **Disk image CI**: `system_list_disk_image_publications`, `system_set_default_disk_image_publication`, `system_set_disk_image_retention`, `system_provision_ci_worker`, `system_terminate_ci_worker`, `system_list_ci_workers`, `system_list_disk_image_webhooks`
+- **Module authoring**: `system_validate_module_manifest`
+- **Instance pools**: `system_return_pooled_instance`, `system_delete_instance_pool`
+- **CVE**: `system_create_cve`, `system_get_cve_exposure`, `system_get_cve`
+- **Vault**: `system_rotate_vault_transit_pepper`
+
+The runbooks that reference these document the *intended* operator UX. As these actions land, this reference will be updated.
+
+## How to add a new action
+
+1. Pick the right tool class in `server/app/services/ai/tools/` (parent) — extend if it fits a domain; create new if introducing a new resource family.
+2. Implement the action method on the tool class. Return a `{ success: bool, data: hash, error: string }` shape.
+3. Add an entry to `platform_api_tool_registry.rb` — `"my_new_action" => "Ai::Tools::MyTool"`.
+4. Add `action_definitions` for the new action describing `description`, `parameters`, `permission`. The MCP server uses these to advertise the tool to clients.
+5. Add a permission row in a migration (`db/migrate/<timestamp>_add_<name>_permission.rb`).
+6. Run `bundle exec rails mcp:generate_tool_catalog` — regenerates `docs/platform/MCP_TOOL_CATALOG.md` (gitignored).
+7. Update this `MCP_API_REFERENCE.md` with the new action — the manually-curated subset for operators.
+
+## Counts
+
+| Prefix | Action count | Tool classes |
+|---|---|---|
+| `system_*` (excl. sdwan) | 27 | `SystemFleetTool` + `DockerProvisioningTool` |
+| `system_sdwan_*` | 52 | `SdwanTool` |
+| `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
+| `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
+| **Total** | **136** | |
+
+Plus 16 backlog items per `project_system_mcp_gaps`.
+
+## Related docs
+
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — 14 skill executors (compose multiple MCP actions into orchestrations)
+- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — 12 sensors (signals → autonomy actions → MCP action invocation)
+- [`runbooks/`](./runbooks/) — operator runbooks (use these MCP actions in concrete workflows)
+- `server/app/services/ai/tools/platform_api_tool_registry.rb` (parent platform) — source of truth for action-to-tool mapping
