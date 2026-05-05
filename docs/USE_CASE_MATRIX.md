@@ -9,7 +9,7 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 | # | Use case | `lifecycle_class` | Modules | Status | Caveats |
 |---|---|---|---|---|---|
 | 1 | Long-lived edge gateway / SaaS tenant | `persistent` | `docker-engine` | ✅ Works | Don't terminate without backing up `/persist/var` |
-| 2 | Single-cluster K3s for app workloads | `persistent` | `k3s-server` + `k3s-agent` | ✅ Works | Don't terminate the bootstrap node (api_endpoint glued to its `/128`) |
+| 2 | Single-cluster K3s for app workloads | `persistent` | `k3s-server` + `k3s-agent` | ✅ Works | Slice 3 (shipped): api_endpoint uses an SDWAN VIP — bootstrap node loss triggers VIP failover to next k3s-server holder |
 | 3 | Multi-cluster K3s in one account | `persistent` | per cluster | ✅ Works | k3s-agent module assignment **MUST** carry `metadata.target_cluster_id` |
 | 4 | Bursty batch jobs (ML, data pipelines) | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Bootstrap latency = ~90s per instance; consider pre-baked image |
 | 5 | CI runner pool | `ephemeral` | `docker-engine` | ⚠️ Works with caveats | Image cache vaporizes on terminate; use a registry mirror |
@@ -74,7 +74,7 @@ platform.system_provision_instance({
 - kubectl works from anywhere on the SDWAN (api_endpoint = `https://[<bootstrap-node-/128>]:6443`)
 
 **What to watch**:
-- **Don't terminate the bootstrap node**. `KubernetesCluster.api_endpoint` is glued to its `/128`. Future hardening (Phase 2.5+) will move api_endpoint behind an SDWAN VIP for HA; until then, treat the bootstrap node as immortal.
+- **Bootstrap node terminates cleanly** (slice 3 hardening). `KubernetesCluster.api_endpoint` points at an `Sdwan::VirtualIp` allocated at cluster bootstrap time. The bootstrap peer is the VIP's primary holder; subsequent `k3s-server` joiners (HA control plane) get added as `failover_holder_peer_ids` candidates. When the primary peer goes silent, the `sdwan_vip_failover` skill (or operator manual `system_sdwan_failover_virtual_ip`) promotes the next holder. kubectl + workers' K3S_URL keep working through the transition because the VIP address doesn't change. **Caveat**: the VIP fallback only works if you have 2+ `k3s-server` NodeInstances. A single-server cluster still loses connectivity when its only server dies (standard K8s assumption — control plane HA requires multiple servers).
 - Pod-to-pod traffic uses flannel over the host primary NIC, NOT the SDWAN overlay. NetworkPolicy is your friend; physical isolation is not.
 - Local-path PVCs don't migrate when pods reschedule. Plan your stateful workloads accordingly.
 
@@ -207,7 +207,7 @@ Worker NodeInstances (N varies):
 
 | If you... | You'll see... | Do this instead |
 |---|---|---|
-| Terminate a K3s bootstrap node | Cluster api_endpoint dies; kubectl breaks | Don't. Wait for VIP-backed api_endpoint (Phase 2.5+) |
+| Terminate the *only* K3s server (single-server cluster) | Cluster has no remaining api server; kubectl breaks | Add a 2nd k3s-server first; VIP failover handles transition |
 | Run thousands of short-lived ephemeral instances | High bootstrap latency tax | Pre-bake disk image OR pre-warmed pool (Phase 2.5+) |
 | Expect pod traffic encrypted via SDWAN | Plain VXLAN over host NIC | Use NetworkPolicy + service mesh until pod_subnet_prefix lands |
 | Multi-cluster without `target_cluster_id` | k3s-agent joins the wrong cluster | Set `metadata.target_cluster_id` on the module assignment |
