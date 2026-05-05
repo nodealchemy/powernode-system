@@ -474,6 +474,267 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Gap remediation slice 3 — pool ops + canary marking" do
+    let(:provider_region) { create(:system_provider_region) }
+    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:pool) do
+      ::System::InstancePool.create!(
+        account: account, node_template: template,
+        name: "slice3-pool", target_size: 2, min_size: 0, max_size: 5,
+        lifecycle_class: "ephemeral", status: "active",
+        provider_region: provider_region,
+        provider_instance_type: provider_instance_type
+      )
+    end
+
+    let(:pool_node) do
+      create(:system_node, account: account, node_template: template,
+                            lifecycle_class: "ephemeral", name: "pool-mem")
+    end
+
+    describe "system_return_pooled_instance" do
+      let(:claimed_instance) do
+        create(:system_node_instance, :running, node: pool_node,
+               instance_pool_id: pool.id,
+               pool_state: "claimed",
+               pool_acquired_at: 2.minutes.ago,
+               provider_region: provider_region,
+               provider_instance_type: provider_instance_type)
+      end
+
+      it "transitions claimed → ready and clears pool_acquired_at" do
+        r = call("system_return_pooled_instance", instance_id: claimed_instance.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:returned]).to be true
+
+        claimed_instance.reload
+        expect(claimed_instance.pool_state).to eq("ready")
+        expect(claimed_instance.pool_acquired_at).to be_nil
+      end
+
+      it "errors when instance was never in a pool" do
+        unrelated_node = create(:system_node, account: account, node_template: template, name: "unrelated")
+        free_instance = create(:system_node_instance, :running, node: unrelated_node)
+        r = call("system_return_pooled_instance", instance_id: free_instance.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("never a pool member")
+      end
+
+      it "errors when instance is not in 'claimed' state" do
+        ready_instance = create(:system_node_instance, :running, node: pool_node,
+                                instance_pool_id: pool.id, pool_state: "ready",
+                                provider_region: provider_region,
+                                provider_instance_type: provider_instance_type)
+        r = call("system_return_pooled_instance", instance_id: ready_instance.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("can only return 'claimed'")
+      end
+    end
+
+    describe "system_delete_instance_pool" do
+      it "destroys an empty pool" do
+        empty_pool = ::System::InstancePool.create!(
+          account: account, node_template: template,
+          name: "empty-pool", target_size: 0, min_size: 0, max_size: 5,
+          lifecycle_class: "ephemeral", status: "archived",
+          provider_region: provider_region,
+          provider_instance_type: provider_instance_type
+        )
+        r = call("system_delete_instance_pool", id: empty_pool.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:deleted]).to be true
+        expect(::System::InstancePool.where(id: empty_pool.id)).to be_empty
+      end
+
+      it "errors when pool still has members" do
+        # Touch pool to ensure it's saved before adding members
+        create(:system_node_instance, :running, node: pool_node,
+               instance_pool_id: pool.id, pool_state: "ready",
+               provider_region: provider_region,
+               provider_instance_type: provider_instance_type)
+        r = call("system_delete_instance_pool", id: pool.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("drain first")
+      end
+
+      it "scopes to current account" do
+        other_account = create(:account)
+        other_pool = ::System::InstancePool.create!(
+          account: other_account, node_template: create(:system_node_template, account: other_account),
+          name: "other-pool", target_size: 0, min_size: 0, max_size: 5,
+          lifecycle_class: "ephemeral", status: "archived",
+          provider_region: provider_region,
+          provider_instance_type: provider_instance_type
+        )
+        r = call("system_delete_instance_pool", id: other_pool.id)
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_module_mark_canary" do
+      let!(:mod) do
+        create(:system_node_module, account: account, category: category,
+               name: "decoy-secrets-store", variety: "subscription")
+      end
+
+      it "marks the module as a canary via CanaryModuleService" do
+        r = call("system_module_mark_canary", module_id: mod.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:marked]).to be true
+        expect(r[:data][:canary]).to be true
+        expect(::System::Honeypot::CanaryModuleService.canary?(node_module: mod.reload)).to be true
+      end
+
+      it "is idempotent — re-marking returns success without error" do
+        2.times { call("system_module_mark_canary", module_id: mod.id) }
+        r = call("system_module_mark_canary", module_id: mod.id)
+        expect(r[:success]).to be true
+      end
+
+      it "honors lure_kind parameter" do
+        r = call("system_module_mark_canary", module_id: mod.id, lure_kind: "ssh_keys")
+        expect(r[:data][:lure_kind]).to eq("ssh_keys")
+        expect(mod.reload.config["honeypot"]["lure_kind"]).to eq("ssh_keys")
+      end
+
+      it "scopes to current account" do
+        other_mod = create(:system_node_module, account: create(:account),
+                           category: category, name: "other-decoy")
+        r = call("system_module_mark_canary", module_id: other_mod.id)
+        expect(r[:success]).to be false
+      end
+    end
+  end
+
+  describe "Gap remediation slice 5 — disk image CI" do
+    let!(:platform_record_for_pubs) { platform_record }
+
+    describe "system_list_disk_image_publications" do
+      let!(:pub_a) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "queued") }
+      let!(:pub_b) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "published") }
+
+      it "lists publications for the account" do
+        r = call("system_list_disk_image_publications")
+        expect(r[:success]).to be true
+        ids = r[:data][:publications].map { |p| p[:id] }
+        expect(ids).to include(pub_a.id, pub_b.id)
+      end
+
+      it "filters by status when provided" do
+        r = call("system_list_disk_image_publications", status: "published")
+        ids = r[:data][:publications].map { |p| p[:id] }
+        expect(ids).to include(pub_b.id)
+        expect(ids).not_to include(pub_a.id)
+      end
+    end
+
+    describe "system_set_default_disk_image_publication" do
+      let!(:published) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "published", oci_ref: "git.ipnode.org/test:abc", git_sha: "test-sha-promoted") }
+
+      it "copies oci_ref + git_sha onto the parent NodePlatform" do
+        r = call("system_set_default_disk_image_publication", publication_id: published.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:set_default]).to be true
+
+        platform_record_for_pubs.reload
+        expect(platform_record_for_pubs.disk_image_oci_ref).to eq("git.ipnode.org/test:abc")
+        expect(platform_record_for_pubs.disk_image_git_sha).to eq("test-sha-promoted")
+        expect(platform_record_for_pubs.disk_image_publication_status).to eq("published")
+      end
+
+      it "errors when publication is not in 'published' state" do
+        queued = create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "queued")
+        r = call("system_set_default_disk_image_publication", publication_id: queued.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("only 'published'")
+      end
+
+      it "scopes to current account" do
+        other_account = create(:account)
+        other_pub = create(:system_disk_image_publication, account: other_account, node_platform: create(:system_node_platform, account: other_account), status: "published")
+        r = call("system_set_default_disk_image_publication", publication_id: other_pub.id)
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_set_disk_image_retention" do
+      it "updates the retention count" do
+        r = call("system_set_disk_image_retention", node_platform_id: platform_record_for_pubs.id, retention_count: 10)
+        expect(r[:success]).to be true
+        expect(platform_record_for_pubs.reload.disk_image_retention_count).to eq(10)
+      end
+
+      it "rejects retention_count < 1" do
+        r = call("system_set_disk_image_retention", node_platform_id: platform_record_for_pubs.id, retention_count: 0)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("must be ≥1")
+      end
+
+      it "scopes to current account" do
+        other_platform = create(:system_node_platform, account: create(:account))
+        r = call("system_set_disk_image_retention", node_platform_id: other_platform.id, retention_count: 5)
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_provision_ci_worker / list / terminate" do
+      it "creates a ci_worker Worker + returns one-time token" do
+        r = call("system_provision_ci_worker", name: "build-runner-1")
+        expect(r[:success]).to be true
+        expect(r[:data][:ci_worker]).to be_present
+        expect(r[:data][:token_plaintext]).to be_present
+        expect(r[:data][:note]).to include("Not recoverable")
+        worker = ::Worker.find_by(name: "build-runner-1")
+        expect(worker.has_role?("ci_worker")).to be true
+      end
+
+      it "system_list_ci_workers returns only ci_worker-role Workers for the account" do
+        call("system_provision_ci_worker", name: "list-test-1")
+        # Create a non-ci worker in the same account using a valid account-worker role
+        ::Worker.create_worker!(name: "member-worker", account: account, roles: ["member"])
+        r = call("system_list_ci_workers")
+        expect(r[:success]).to be true
+        names = r[:data][:ci_workers].map { |w| w[:name] }
+        expect(names).to include("list-test-1")
+        expect(names).not_to include("member-worker")
+      end
+
+      it "system_terminate_ci_worker revokes the worker" do
+        provision_r = call("system_provision_ci_worker", name: "terminate-test-1")
+        worker_id = provision_r[:data][:ci_worker][:id]
+        r = call("system_terminate_ci_worker", worker_id: worker_id)
+        expect(r[:success]).to be true
+        expect(r[:data][:revoked]).to be true
+        expect(::Worker.find(worker_id).status).to eq("revoked")
+      end
+
+      it "system_terminate_ci_worker refuses to revoke non-ci workers" do
+        member_worker = ::Worker.create_worker!(name: "member-worker-2", account: account, roles: ["member"])
+        r = call("system_terminate_ci_worker", worker_id: member_worker.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("not a ci_worker")
+      end
+    end
+
+    describe "system_list_disk_image_webhooks" do
+      let!(:webhook) { create(:system_disk_image_webhook, account: account) }
+
+      it "lists webhooks for the account" do
+        r = call("system_list_disk_image_webhooks")
+        expect(r[:success]).to be true
+        ids = r[:data][:webhooks].map { |w| w[:id] }
+        expect(ids).to include(webhook.id)
+      end
+
+      it "scopes to current account" do
+        other_webhook = create(:system_disk_image_webhook, account: create(:account))
+        r = call("system_list_disk_image_webhooks")
+        ids = r[:data][:webhooks].map { |w| w[:id] }
+        expect(ids).not_to include(other_webhook.id)
+      end
+    end
+  end
+
   describe "Unknown action" do
     it "returns an error_result" do
       r = call("system_definitely_not_real")
@@ -496,6 +757,18 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
     it "registers gap-remediation slice 2 actions" do
       %w[system_get_cve system_get_cve_exposure system_create_cve system_delete_cve system_unassign_module_from_template].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
+    end
+
+    it "registers gap-remediation slice 3 actions" do
+      %w[system_return_pooled_instance system_delete_instance_pool system_module_mark_canary].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
+    end
+
+    it "registers gap-remediation slice 5 actions" do
+      %w[system_list_disk_image_publications system_set_default_disk_image_publication system_set_disk_image_retention system_provision_ci_worker system_terminate_ci_worker system_list_ci_workers system_list_disk_image_webhooks].each do |action|
         expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
       end
     end

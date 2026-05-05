@@ -86,7 +86,23 @@ module Ai
         "system_get_cve_exposure"              => "system.modules.read",
         "system_create_cve"                    => "system.fleet.autonomy",
         "system_delete_cve"                    => "system.fleet.autonomy",
-        "system_unassign_module_from_template" => "system.modules.update"
+        "system_unassign_module_from_template" => "system.modules.update",
+
+        # === Gap remediation slice 3 — pool ops + canary marking ===
+        "system_return_pooled_instance"        => "system.instances.control",
+        "system_delete_instance_pool"          => "system.instances.create",
+        "system_module_mark_canary"            => "system.fleet.autonomy",
+
+        # === Gap remediation slice 5 — disk image CI ===
+        # Read paths use the existing system.fleet.read pattern; mutate paths
+        # use the existing CI worker permission scheme (ci_workers.create/delete).
+        "system_list_disk_image_publications"        => "system.modules.read",
+        "system_set_default_disk_image_publication"  => "system.modules.update",
+        "system_set_disk_image_retention"            => "system.modules.update",
+        "system_provision_ci_worker"                 => "system.ci_workers.create",
+        "system_terminate_ci_worker"                 => "system.ci_workers.delete",
+        "system_list_ci_workers"                     => "system.ci_workers.read",
+        "system_list_disk_image_webhooks"            => "system.modules.read"
       }.freeze
 
       def self.definition
@@ -376,6 +392,68 @@ module Ai
               template_id: { type: "string", required: true },
               module_id:   { type: "string", required: true }
             }
+          },
+
+          # === Gap remediation slice 3 — pool ops + canary marking ===
+          "system_return_pooled_instance" => {
+            description: "Return a claimed instance back to its pool (rare — only safe for stateless workloads). Pool reaper picks the instance back up as a 'ready' member; pool member_count increments by 1.",
+            parameters: {
+              instance_id: { type: "string", required: true }
+            }
+          },
+          "system_delete_instance_pool" => {
+            description: "Destroy an empty InstancePool row. Errors when pool still has members — drain first via system_drain_instance_pool, then delete.",
+            parameters: { id: { type: "string", required: true } }
+          },
+          "system_module_mark_canary" => {
+            description: "Mark a NodeModule as a honeypot canary (config['honeypot']['canary'] = true). Canary modules are decoys — any access triggers a high-severity FleetEvent via honeypot_access_sensor. Idempotent — re-marking is a no-op.",
+            parameters: {
+              module_id: { type: "string", required: true },
+              lure_kind: { type: "string", required: false, description: "Display label for the canary (default 'credential_store')" }
+            }
+          },
+
+          # === Gap remediation slice 5 — disk image CI ===
+          "system_list_disk_image_publications" => {
+            description: "List DiskImagePublications for the account, optionally filtered by node_platform_id and/or status. Returns oldest-first by default.",
+            parameters: {
+              node_platform_id: { type: "string", required: false },
+              status: { type: "string", required: false, description: "queued|verifying|published|failed|retired" },
+              limit: { type: "integer", required: false, description: "Default 50" }
+            }
+          },
+          "system_set_default_disk_image_publication" => {
+            description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state.",
+            parameters: {
+              publication_id: { type: "string", required: true }
+            }
+          },
+          "system_set_disk_image_retention" => {
+            description: "Update the per-NodePlatform retention count (number of historical publications kept before the reaper purges).",
+            parameters: {
+              node_platform_id: { type: "string", required: true },
+              retention_count: { type: "integer", required: true, description: "Number of historical publications to retain (must be ≥1)" }
+            }
+          },
+          "system_provision_ci_worker" => {
+            description: "Provision a CI worker (a Worker with the 'ci_worker' role). Returns the worker plus a one-time-shown plaintext token. Token is NOT recoverable — operator must store immediately.",
+            parameters: {
+              name: { type: "string", required: true }
+            }
+          },
+          "system_terminate_ci_worker" => {
+            description: "Revoke a CI worker — destroys credentials + marks the worker as revoked. Operator can then unregister the corresponding Gitea Actions runner.",
+            parameters: {
+              worker_id: { type: "string", required: true }
+            }
+          },
+          "system_list_ci_workers" => {
+            description: "List CI workers (Workers with role='ci_worker') for the current account.",
+            parameters: {}
+          },
+          "system_list_disk_image_webhooks" => {
+            description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions).",
+            parameters: {}
           }
         }
       end
@@ -433,6 +511,18 @@ module Ai
         when "system_create_cve"                    then create_cve(params)
         when "system_delete_cve"                    then delete_cve(params)
         when "system_unassign_module_from_template" then unassign_module_from_template(params)
+        # Gap remediation slice 3 — pool ops + canary marking
+        when "system_return_pooled_instance"        then return_pooled_instance(params)
+        when "system_delete_instance_pool"          then delete_instance_pool(params)
+        when "system_module_mark_canary"            then module_mark_canary(params)
+        # Gap remediation slice 5 — disk image CI
+        when "system_list_disk_image_publications"  then list_disk_image_publications(params)
+        when "system_set_default_disk_image_publication" then set_default_disk_image_publication(params)
+        when "system_set_disk_image_retention"      then set_disk_image_retention(params)
+        when "system_provision_ci_worker"           then provision_ci_worker(params)
+        when "system_terminate_ci_worker"           then terminate_ci_worker(params)
+        when "system_list_ci_workers"               then list_ci_workers(params)
+        when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -1205,6 +1295,220 @@ module Ai
           ingested_at: cve.ingested_at&.iso8601,
           feed_source: cve.feed_source,
           metadata: cve.metadata
+        }
+      end
+
+      # === Gap remediation slice 3 — pool ops + canary marking ===
+
+      # Returns a claimed pool instance back to its origin pool. The instance's
+      # pool_state flips from 'claimed' → 'ready'; the next acquire! call can
+      # claim it again. Only safe for stateless workloads — most operators
+      # prefer system_terminate_instance to release.
+      def return_pooled_instance(params)
+        instance = account_instances.find(params[:instance_id])
+
+        unless instance.instance_pool_id
+          return error_result("instance #{instance.id} has no instance_pool_id — was never a pool member")
+        end
+
+        unless instance.pool_state == "claimed"
+          return error_result("instance #{instance.id} is in pool_state=#{instance.pool_state.inspect}, can only return 'claimed' instances")
+        end
+
+        pool = ::System::InstancePool.for_account(@account).find(instance.instance_pool_id)
+
+        instance.update!(pool_state: "ready", pool_acquired_at: nil)
+
+        success_result(
+          returned: true,
+          instance: serialize_instance(instance.reload),
+          pool: pool.reload.to_summary
+        )
+      end
+
+      # Destroys an InstancePool. Errors if the pool still has any members
+      # (operator must drain first). Idempotent: returns success when the pool
+      # is already drained + has zero members.
+      def delete_instance_pool(params)
+        pool = ::System::InstancePool.for_account(@account).find(params[:id])
+
+        member_count = pool.node_instances.count
+        if member_count.positive?
+          return error_result(
+            "pool #{pool.name} still has #{member_count} member(s) — drain first via system_drain_instance_pool"
+          )
+        end
+
+        pool_id = pool.id
+        pool_name = pool.name
+        pool.destroy!
+
+        success_result(deleted: true, pool_id: pool_id, pool_name: pool_name)
+      end
+
+      # Marks a NodeModule as a honeypot canary. Delegates to CanaryModuleService.
+      # Idempotent — re-marking is a no-op (CanaryModuleService.mark! returns
+      # without touching config).
+      def module_mark_canary(params)
+        node_module = account_modules.find(params[:module_id])
+        lure_kind = params[:lure_kind].presence || "credential_store"
+
+        ::System::Honeypot::CanaryModuleService.mark!(
+          node_module: node_module,
+          lure_kind: lure_kind
+        )
+
+        success_result(
+          marked: true,
+          module_id: node_module.id,
+          module_name: node_module.name,
+          lure_kind: lure_kind,
+          canary: ::System::Honeypot::CanaryModuleService.canary?(node_module: node_module.reload)
+        )
+      end
+
+      # === Gap remediation slice 5 — disk image CI ===
+
+      def list_disk_image_publications(params)
+        scope = ::System::DiskImagePublication.where(account_id: @account.id)
+        scope = scope.where(node_platform_id: params[:node_platform_id]) if params[:node_platform_id].present?
+        scope = scope.where(status: params[:status]) if params[:status].present?
+        scope = scope.order(created_at: :desc).limit((params[:limit] || 50).to_i)
+
+        success_result(
+          publications: scope.map { |p| serialize_disk_image_publication(p) },
+          count: scope.size
+        )
+      end
+
+      # "Default" = the publication whose facts are copied onto the parent
+      # NodePlatform's disk_image_oci_ref + disk_image_git_sha columns; that's
+      # what new instances boot from. Only published publications are eligible.
+      def set_default_disk_image_publication(params)
+        publication = ::System::DiskImagePublication.where(account_id: @account.id).find(params[:publication_id])
+
+        unless publication.status == "published"
+          return error_result(
+            "publication #{publication.id} is in status=#{publication.status.inspect}, only 'published' publications can be set as default"
+          )
+        end
+
+        platform = publication.node_platform
+        platform.update!(
+          disk_image_oci_ref: publication.oci_ref,
+          disk_image_git_sha: publication.git_sha,
+          disk_image_publication_status: "published",
+          disk_image_publication_error: nil
+        )
+
+        success_result(
+          set_default: true,
+          publication_id: publication.id,
+          node_platform_id: platform.id,
+          oci_ref: platform.disk_image_oci_ref,
+          git_sha: platform.disk_image_git_sha
+        )
+      end
+
+      def set_disk_image_retention(params)
+        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:node_platform_id])
+        retention_count = params[:retention_count].to_i
+
+        if retention_count < 1
+          return error_result("retention_count must be ≥1 (got #{retention_count})")
+        end
+
+        platform.update!(disk_image_retention_count: retention_count)
+
+        success_result(
+          updated: true,
+          node_platform_id: platform.id,
+          disk_image_retention_count: platform.disk_image_retention_count
+        )
+      end
+
+      def provision_ci_worker(params)
+        worker = ::Worker.create_worker!(
+          name: params[:name],
+          account: @account,
+          roles: ["ci_worker"]
+        )
+
+        success_result(
+          ci_worker: ::System::CiWorkerSerializer.new(worker).as_json,
+          # SHOWN EXACTLY ONCE — operator must store immediately
+          token_plaintext: worker.token,
+          note: "Store this token in your CI secrets as POWERNODE_CI_WORKER_TOKEN. Not recoverable — rotate to get a new one."
+        )
+      end
+
+      def terminate_ci_worker(params)
+        worker = ::Worker.where(account_id: @account.id).find(params[:worker_id])
+
+        unless worker.has_role?("ci_worker")
+          return error_result("worker #{worker.id} is not a ci_worker — refuses to revoke via this action")
+        end
+
+        # Worker doesn't have a `revoke!` method (the existing
+        # ci_workers_controller#destroy calls `revoke!` but it's
+        # undefined; that's a latent bug). Use the documented "revoked"
+        # status directly. Token digest is preserved for audit trail
+        # but is unusable since status != "active".
+        worker.update!(status: "revoked")
+
+        success_result(
+          revoked: true,
+          worker_id: worker.id
+        )
+      end
+
+      def list_ci_workers(_params)
+        # Worker.roles is a has_many :through (worker_roles → roles), not a
+        # Postgres array column — must join + filter on Role.name.
+        scope = ::Worker.where(account_id: @account.id)
+                        .joins(:roles)
+                        .where(roles: { name: "ci_worker" })
+                        .distinct
+
+        success_result(
+          ci_workers: scope.map { |w| ::System::CiWorkerSerializer.new(w).as_json },
+          count: scope.size
+        )
+      end
+
+      def list_disk_image_webhooks(_params)
+        scope = ::System::DiskImageWebhook.where(account_id: @account.id).order(created_at: :desc)
+
+        success_result(
+          webhooks: scope.map { |w| serialize_disk_image_webhook(w) },
+          count: scope.size
+        )
+      end
+
+      def serialize_disk_image_publication(pub)
+        {
+          id: pub.id,
+          node_platform_id: pub.node_platform_id,
+          status: pub.status,
+          arch: pub.arch,
+          git_sha: pub.git_sha,
+          oci_ref: pub.oci_ref,
+          sha256: pub.sha256,
+          size_bytes: pub.size_bytes,
+          published_at: pub.created_at&.iso8601,
+          retired_at: pub.retired_at&.iso8601
+        }
+      end
+
+      def serialize_disk_image_webhook(wh)
+        {
+          id: wh.id,
+          label: wh.label,
+          status: wh.status,
+          secret_preview: wh.secret_preview,
+          received_count: wh.received_count,
+          last_received_at: wh.last_received_at&.iso8601,
+          created_at: wh.created_at&.iso8601
         }
       end
     end
