@@ -124,17 +124,29 @@ Rails.application.routes.draw do
         resources :node_scripts
         resources :node_mount_points
 
-        resources :providers
+        # Provider catalog. Regions/availability_zones/instance_types are
+        # nested under :providers because the controllers' before_actions
+        # read params[:provider_id] (and AZ also params[:region_id]) — flat
+        # declarations 404 every request via #set_provider rescue.
+        # See docs/system/audit_2026-04-30.md S1.
+        resources :providers do
+          resources :regions, controller: "provider_regions" do
+            resources :availability_zones, controller: "provider_availability_zones"
+          end
+          resources :instance_types, controller: "provider_instance_types"
+        end
         resources :provider_connections do
           member do
             post :test
             post :sync_catalog
           end
         end
-        resources :provider_regions do
-          resources :provider_availability_zones
+        # Cross-provider/global instance type listing. The frontend calls
+        # /system/provider_instance_types when no provider filter is set
+        # and /system/provider_instance_types/for_region for region lookup.
+        resources :provider_instance_types, only: %i[index] do
+          collection { get :for_region }
         end
-        resources :provider_instance_types
         resources :provider_networks
         resources :provider_network_subnets
         resources :provider_volumes do

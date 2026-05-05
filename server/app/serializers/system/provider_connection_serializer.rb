@@ -22,9 +22,13 @@ module System
         last_tested_at: @connection.last_tested_at,
         last_test_status: @connection.last_test_status,
         last_test_message: @connection.last_test_message,
-        # Don't expose credentials
-        has_access_key: @connection.access_key_ciphertext.present?,
-        has_secret_key: @connection.secret_key_ciphertext.present?,
+        # Don't expose credentials. Read raw ciphertext column without
+        # triggering Rails-encrypts + Vault peppered decryption — listing
+        # N connections would otherwise force N Vault round-trips just to
+        # render boolean badges. Columns renamed by migration
+        # 20260430210000 (was `*_ciphertext`, now matches `encrypts` API).
+        has_access_key: @connection.read_attribute_before_type_cast(:access_key).present?,
+        has_secret_key: @connection.read_attribute_before_type_cast(:secret_key).present?,
         created_at: @connection.created_at,
         updated_at: @connection.updated_at
       }
