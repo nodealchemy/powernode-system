@@ -199,8 +199,342 @@ Workspace mission → spawn task → agent picks executor by name
 4. Re-run seeds: `cd server && bundle exec rails db:seed`.
 5. Verify discoverability: `platform.discover_skills query: "your task"` should return the new skill.
 
+## Example Inputs and Outputs
+
+Every executor returns `{ success: true, data: {...} }` on the happy path or `{ success: false, error: "..." }` on failure. The `data` shape per executor:
+
+### `attribute_failure`
+
+```json
+// Input
+{ "instance_id": "0193cdef-1234-7890-abcd-001122334455", "lookback_hours": 24 }
+
+// Output (success.data)
+{
+  "candidates": [
+    { "kind": "module_promotion", "module": "nginx", "from_version": "1.24.0", "to_version": "1.26.0",
+      "promoted_at": "2026-05-04T08:12:30Z", "score": 0.74,
+      "reason": "version promoted within 1.5h before instance went silent" },
+    { "kind": "module_assignment_change", "module": "tls-config", "action": "attached",
+      "changed_at": "2026-05-04T08:55:12Z", "score": 0.41 }
+  ],
+  "top_candidate": { "kind": "module_promotion", "module": "nginx", "score": 0.74 },
+  "confidence": "medium",
+  "reasoning": "Most recent change in lookback window: nginx 1.24→1.26 promoted at 08:12; instance silent at 09:30. Module-promote pattern with high recency."
+}
+```
+
+### `capacity_recommend`
+
+```json
+// Input
+{ "template_id": "tmpl-abc-7890", "target_min_active": 3 }
+
+// Output (success.data)
+{
+  "template_id": "tmpl-abc-7890",
+  "total_count": 5,
+  "active_count": 2,
+  "silent_count": 2,
+  "errored_count": 1,
+  "recommendation": { "action": "scale_up", "delta": 1, "rationale": "active=2 < target_min_active=3" },
+  "confidence": "low"
+}
+```
+
+`confidence: "low"` is the v0 default — real telemetry (M-D2-2) will lift this.
+
+### `cve_response`
+
+```json
+// Input
+{
+  "cve_id": "CVE-2026-12345",
+  "severity": "critical",
+  "affected_packages": [{ "name": "openssl", "version": "<3.1.4" }],
+  "summary": "Buffer overflow in OpenSSL TLS handshake"
+}
+
+// Output (success.data)
+{
+  "cve_id": "CVE-2026-12345",
+  "severity": "critical",
+  "risk_score": 85,
+  "exposed_modules": [
+    { "id": "mod-abc", "name": "system-base", "assignment_count": 12 },
+    { "id": "mod-def", "name": "nginx",        "assignment_count": 8 }
+  ],
+  "exposed_instance_count": 20,
+  "remediation_plan": {
+    "actions": [
+      { "module": "system-base", "from_version": "1.0.3", "to_version": "1.0.4", "instance_count": 12 },
+      { "module": "nginx",       "from_version": "1.24.0", "to_version": "1.26.0", "instance_count": 8 }
+    ],
+    "estimated_seconds": 2400
+  },
+  "requires_approval": true
+}
+```
+
+`requires_approval=true` because risk_score ≥ AUTO_GATE_RISK_THRESHOLD (50).
+
+### `cve_runbook_generate`
+
+```json
+// Input
+{ "cve_id": "CVE-2026-12345", "persist_as_page": true }
+
+// Output (success.data)
+{
+  "runbook_markdown": "# CVE-2026-12345 — Remediation Runbook\n\n## Exposure\n\n- 2 NodeModules affected (system-base, nginx)\n- 20 NodeInstances exposed\n\n## Steps\n\n1. ...\n",
+  "exposed_module_count": 2,
+  "exposed_instance_count": 20,
+  "risk_score": 85,
+  "requires_approval": true,
+  "persisted_page_id": "page-cve-2026-12345"
+}
+```
+
+### `docker_provision`
+
+```json
+// Input (live)
+{ "node_instance_id": "0193cdef-1234-7890-abcd-001122334455", "dry_run": false }
+
+// Output (success.data, live)
+{
+  "dry_run": false,
+  "host_id": "host-9876",
+  "host_status": "pending",
+  "api_endpoint": "tcp://[fd00:abcd:1::42]:2376",
+  "already_provisioned": false
+}
+
+// Output (success.data, dry_run)
+{
+  "dry_run": true,
+  "plan": {
+    "node_instance_id": "0193cdef-...",
+    "sdwan_peer_address": "fd00:abcd:1::42",
+    "actions": [
+      "Mint client mTLS cert via InternalCaService",
+      "Create Devops::DockerHost row (status=pending)",
+      "Wait for agent to install docker-ce + report phase=ready"
+    ]
+  }
+}
+```
+
+`already_provisioned: true` is returned (with no side effects) when a managed host already exists — idempotent.
+
+### `drift_remediate`
+
+```json
+// Input
+{ "instance_id": "0193cdef-1234-7890-abcd-001122334455", "max_disruption_pct": 20 }
+
+// Output (success.data, drift detected)
+{
+  "resolved": false,
+  "requires_approval": false,
+  "disruption_pct": 20,
+  "planned_actions": {
+    "attach": ["security-hardening"],
+    "detach": [],
+    "update": ["nginx (1.24.0 → 1.26.0)"]
+  },
+  "note": "auto-apply pending M7 reconciler",
+  "drift_report": { "/* full system_drift_report payload */": null }
+}
+
+// Output (success.data, no drift)
+{ "resolved": true, "requires_approval": false, "disruption_pct": 0, "planned_actions": { "attach": [], "detach": [], "update": [] }, "reason": "no drift" }
+```
+
+5 changes ≈ 100% disruption (linear v0 model). `requires_approval=true` when `disruption_pct > max_disruption_pct`.
+
+### `module_compose`
+
+```json
+// Input
+{ "description": "nginx with TLS termination + rate limiting", "platform_id": "platform-abc", "max_modules": 5 }
+
+// Output (success.data)
+{
+  "draft_template": {
+    "name_suggestion": "nginx-tls-rate-limited",
+    "modules": [
+      { "name": "system-base", "priority": 10, "reason": "always required" },
+      { "name": "security-hardening", "priority": 20, "reason": "TLS hardening baseline" },
+      { "name": "nginx", "priority": 50, "reason": "keyword match: nginx" }
+    ]
+  },
+  "conflicts": [],
+  "candidate_count": 3,
+  "reasoning": "Matched 'nginx' (nginx module), 'TLS' (security-hardening). Rate limiting requires custom config — recommend operator add a config-variety override module."
+}
+```
+
+### `provision_cluster`
+
+```json
+// Input (live)
+{
+  "template_id": "tmpl-k3s-template",
+  "count": 3,
+  "provider_region_id": "region-aws-us-east-1",
+  "provider_instance_type_id": "type-t3-medium",
+  "name_prefix": "k3s-prod",
+  "dry_run": false
+}
+
+// Output (success.data, live)
+{
+  "count": 3,
+  "created_nodes": ["node-1", "node-2", "node-3"],
+  "provisioned": 3,
+  "failures": [],
+  "partial": false
+}
+
+// Output (success.data, dry_run)
+{
+  "count": 3,
+  "plan": {
+    "actions": [
+      "Create 3 Node rows with name_prefix=k3s-prod",
+      "Provision 3 NodeInstances in region us-east-1, type t3.medium",
+      "First instance gets k3s-server module assignment; remaining get k3s-agent"
+    ],
+    "estimated_seconds": 600
+  }
+}
+```
+
+Hard-capped at 50 per call — larger fleets go through `rolling_module_upgrade`.
+
+### `rolling_module_upgrade`
+
+```json
+// Input
+{ "template_id": "tmpl-abc", "module_id": "mod-nginx", "target_version_id": "v-1.26.0",
+  "batch_pct": 20, "max_consecutive_failures": 2, "health_timeout_sec": 300 }
+
+// Output (success.data)
+{
+  "total_instances": 50,
+  "batch_size": 10,
+  "batch_count": 5,
+  "estimated_total_seconds": 1500,
+  "circuit_breaker": { "max_consecutive_failures": 2, "tripped_after_seconds": null },
+  "batches": [
+    { "index": 0, "instance_ids": ["..."], "phase": "pending" },
+    { "index": 1, "instance_ids": ["..."], "phase": "pending" }
+  ]
+}
+```
+
+The autonomy reconciler executes the plan batch-by-batch. Health checks between batches; trips circuit breaker after `max_consecutive_failures`.
+
+### `runbook_generate`
+
+```json
+// Input
+{ "template_id": "tmpl-abc", "persist_as_page": true }
+
+// Output (success.data)
+{
+  "runbook_markdown": "# nginx-tls Runbook\n\n## Boot order\n\n1. system-base\n2. security-hardening\n3. nginx\n\n## Common failure modes\n\n- ...\n",
+  "section_count": 6,
+  "persisted_page_id": "page-tmpl-abc-runbook",
+  "source_artifacts": ["module_manifest:system-base", "module_manifest:nginx"]
+}
+```
+
+### `sdwan_bgp_session_remediate`
+
+```json
+// Input
+{ "bgp_session_id": "bgp-sess-abc", "dry_run": true }
+
+// Output (success.data)
+{
+  "resolved": false,
+  "session_id": "bgp-sess-abc",
+  "state": "idle",
+  "likely_cause": "wrong AS number on neighbor (expected 65000, observed 65001)",
+  "recommended_action": "vtysh -c 'show ip bgp summary' on the holding peer to confirm; then `clear ip bgp <neighbor>` to force re-handshake"
+}
+```
+
+v1 is planning-only — never auto-restarts FRR. The recommended `clear ip bgp` command is operator-driven.
+
+### `sdwan_failover`
+
+```json
+// Input
+{ "network_id": "sdwan-net-abc", "dry_run": true }
+
+// Output (success.data)
+{
+  "resolved": false,
+  "network_id": "sdwan-net-abc",
+  "current_hub_count": 1,
+  "candidate_count": 2,
+  "candidates": [
+    { "peer_id": "peer-spoke-A", "last_handshake_at": "2026-05-04T09:30:12Z", "score": 0.92 },
+    { "peer_id": "peer-spoke-B", "last_handshake_at": "2026-05-04T09:28:55Z", "score": 0.84 }
+  ]
+}
+```
+
+### `sdwan_peer_remediate`
+
+```json
+// Input
+{ "peer_id": "peer-abc", "dry_run": false }
+
+// Output (success.data)
+{
+  "resolved": true,
+  "rotated_from_key_id": "key-old-abc",
+  "new_key_id": "key-new-def",
+  "new_public_key": "AbCd...EfGh="
+}
+```
+
+The agent picks up the new key on its next reconcile (~30 s) and re-establishes the WireGuard tunnel.
+
+### `sdwan_vip_failover`
+
+```json
+// Input (single-holder VIP, live)
+{ "virtual_ip_id": "vip-abc", "dry_run": false }
+
+// Output (success.data)
+{
+  "resolved": true,
+  "virtual_ip_id": "vip-abc",
+  "previous_holder_peer_id": "peer-old",
+  "new_holder_peer_id": "peer-new",
+  "anycast": false
+}
+
+// Output for anycast VIP
+{
+  "resolved": false,
+  "virtual_ip_id": "vip-abc",
+  "previous_holder_peer_id": null,
+  "new_holder_peer_id": null,
+  "anycast": true,
+  "note": "Anycast VIPs use routing for failover; this skill is informational only for anycast."
+}
+```
+
 ## Related Docs
 
 - `extensions/system/docs/CONTAINER_RUNTIMES.md` — `docker_provision` + `provision_cluster` integration
 - `extensions/system/docs/FLEET_SENSORS.md` — sensor signals that trigger autonomous skill invocation
 - `extensions/system/docs/ARCHITECTURE.md` — autonomy + decision engine subsystem
+- `extensions/system/docs/runbooks/cve-response.md` — CVE response operator runbook (uses `cve_response` + `cve_runbook_generate` + `rolling_module_upgrade`)
+- `extensions/system/docs/runbooks/sdwan-network-setup.md` — SDWAN runbook (uses `sdwan_failover` + `sdwan_peer_remediate` + `sdwan_vip_failover`)

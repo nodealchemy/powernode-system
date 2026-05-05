@@ -236,6 +236,80 @@ The bootstrap node has installed k3s but the agent hasn't captured + posted stat
 
 `encrypted_kubeconfig` is blank because the cluster is still bootstrapping. Wait for `cluster_status: active` before retrieving.
 
+### Docker daemon TLS verification fails
+
+Symptoms: `platform.docker_list_containers` returns `x509: certificate signed by unknown authority` or `tls: bad certificate`. Common causes:
+
+- Operator's local truststore isn't the issue — the platform manages mTLS internally; the API call from the platform to the daemon uses Vault-stored client certs.
+- Server cert was rotated but agent didn't pick it up: trigger `system.runtime_docker_tls_rotate` skill (auto-approved), then re-test after one heartbeat tick.
+- Server cert was minted by a different InternalCaService root than the platform now trusts (rare; only happens after CA replacement). Decommission via `system_decommission_docker_runtime` and re-provision; the new host gets a fresh cert from the current CA.
+- On the node itself: `journalctl -u docker.service | grep -i tls` shows the actual handshake error.
+
+### Docker daemon listens on the wrong address
+
+Symptoms: `system_provision_docker_runtime` succeeds but daemon connections fail. The `daemon.json` `hosts` array should contain `tcp://[<sdwan-/128>]:2376`. If it doesn't:
+
+- Check the agent's reconciler state cache: `cat /var/lib/powernode-agent/reconciler.json` on the node.
+- Verify the SDWAN peer is up: `wg show wg-pn` on the node should show a recent `latest handshake`.
+- The `Sdwan::Peer.host_address` is the source of truth — confirm it via `platform.system_sdwan_get_peer({ id: '<peer-id>' })`.
+
+### `daemon.json` overrides not applied (slice 10)
+
+Slice 10 introduced config-variety dockerd modules with per-node + per-instance overrides. If overrides aren't being picked up:
+
+- Verify the override module is **assigned to a higher-priority slot** than the base `docker-engine` module — overrides require greater `effective_priority` per the dependant-modules pattern.
+- After assignment, the agent re-renders `daemon.json` on its next reconcile tick (~30 s). To force immediate: `systemctl restart powernode-agent` on the node.
+- Layer ordering visible in `cat /etc/docker/daemon.json` after reconcile — keys present in the override module win over the base.
+
+### K3s agent can't join cluster
+
+Symptoms: agent posts `phase=join_request` but cluster fails to add it; agent log shows `K3S_URL connection refused` or `bad token`.
+
+- `api_endpoint` mismatch: K3s api_endpoint uses an SDWAN VIP (slice 3). If the worker isn't on the same SDWAN network as the bootstrap node, the VIP is unreachable. Confirm with `system_sdwan_list_peers` that both peers are on the same network.
+- Token mismatch (rare): platform regenerated the join token but the agent has a stale cache. Force re-fetch by removing the systemd drop-in `/etc/systemd/system/k3s-agent.service.d/override.conf` and restarting `powernode-agent`.
+- Multi-cluster confusion: if `metadata.target_cluster_id` is set on the agent module assignment, validation rejects join requests for any other cluster ID. Set the right ID via `platform.system_assign_module_to_template` or remove the metadata to fall back to "join most recent active cluster."
+
+### kubelet logs unavailable
+
+To retrieve kubelet logs for a managed K3s node:
+
+```bash
+# Via SSH (node must be reachable on SDWAN /128)
+journalctl -u k3s.service -n 200             # k3s-server
+journalctl -u k3s-agent.service -n 200        # k3s-agent
+```
+
+Or via the agent task channel (no SSH required):
+
+```javascript
+platform.system_execute_task({
+  node_instance_id: "...",
+  command: ["journalctl", "-u", "k3s-agent.service", "-n", "200"]
+})
+```
+
+The output streams back through the worker API and lands in the operator dashboard task pane.
+
+### Pod-to-pod networking is unencrypted (slice 9 caveat)
+
+K3s default flannel CNI uses VXLAN over the host's primary NIC, **not** the SDWAN overlay — pod-to-pod traffic between nodes is plaintext on the underlying network. This is a known gap (see `USE_CASE_MATRIX.md` use case 9). Workarounds until pod_subnet_prefix lands:
+
+- Use `NetworkPolicy` to restrict pod-to-pod cross-namespace traffic.
+- Layer a service mesh (Linkerd, Istio) for app-layer mTLS.
+- For sensitive workloads, run them on the same node (anti-affinity off, affinity on) until pod traffic over SDWAN ships.
+
+### Daemon can't pull from registry
+
+Symptoms: `docker pull` fails with timeout or `connection refused`.
+
+- Most operators use a registry mirror co-located on the SDWAN. Configure via dependant module override:
+  ```yaml
+  # daemon-json-override module
+  hosts: ["tcp://[<sdwan-/128>]:2376", "unix:///var/run/docker.sock"]
+  registry-mirrors: ["https://registry.<sdwan-domain>"]
+  ```
+- For pulls from `git.ipnode.org` (Powernode Gitea container registry), the agent injects credentials into `~/.docker/config.json` automatically when the node has a valid Vault token.
+
 ## Source Files
 
 **Backend (parent repo):**

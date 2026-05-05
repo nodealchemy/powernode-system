@@ -1,12 +1,12 @@
 # Fleet Sensors — System Extension Reference
 
-The system extension ships 13 sensors at `extensions/system/server/app/services/system/fleet/sensors/`. Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
+The system extension ships **12 concrete sensors** (plus a `BaseSensor` abstract class) at `extensions/system/server/app/services/system/fleet/sensors/`. Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
 
 ## Architecture (one-paragraph summary)
 
 The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.interval_seconds` on the Fleet Autonomy agent). Each tick:
 
-1. All 13 sensors run in series (cheap; per-sensor work is bounded by the data it inspects)
+1. All 12 sensors run in series (cheap; per-sensor work is bounded by the data it inspects)
 2. Each sensor emits zero or more `FleetEvent` signals with `kind`, `severity`, `payload`, `correlation_id`
 3. The DecisionEngine maps signals → action categories → intervention policy lookup
 4. Policy = `auto_approve` → executor runs immediately
@@ -152,8 +152,85 @@ If no `Fleet::SensorConfig` exists for an account, sensor defaults from constant
 4. Add an intervention policy entry in `fleet_autonomy_agent.rb` for the action category your sensor's recommendation maps to.
 5. Add a corresponding skill executor (if remediation is automatable) — see `SKILL_EXECUTORS.md`.
 
+## Intervention Policy Reference
+
+Two AI agents seed intervention policies (action_category → policy mapping). Sourced from `db/seeds/fleet_autonomy_agent.rb` (19 policies) + `db/seeds/system_runtime_manager_agent.rb` (8 policies) = **27 total**.
+
+**Policy semantics:**
+
+| Policy | Behavior |
+|---|---|
+| `auto_approve` | Skill executes immediately on the next reconciler tick. Reversible / routine work only. |
+| `notify_and_proceed` | Skill executes + operator notification fires. Operator opted in by upstream config. |
+| `require_approval` | `ApprovalRequest` queued; skill blocked until operator clicks Approve. Sensitive / destructive work. |
+| `blocked` | Action is disabled entirely. Reserved for incident response. |
+
+All policies decay to the agent's `trust_tier_minimum: monitored` condition — agents below trust threshold are auto-blocked regardless of policy.
+
+### Fleet Autonomy agent (19 policies)
+
+Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential).
+
+| Action category | Default policy | Why |
+|---|---|---|
+| `system.cert_rotate` | `auto_approve` | Routine + reversible (90-day mTLS rotation) |
+| `system.module_assign` | `notify_and_proceed` | Operator already opted-in by configuring template |
+| `system.instance_reboot` | `notify_and_proceed` | Reversible — instance returns within ~60 s |
+| `system.instance_reprovision` | `require_approval` | Destructive — wipes ephemeral state |
+| `system.instance_terminate` | `require_approval` | Destructive — releases provider VM, cascade-FK deletes managed rows |
+| `system.cert_revoke` | `require_approval` | Cuts active mTLS session |
+| `system.module_promote_to_live` | `require_approval` | Promotes module across the fleet |
+| `system.fleet_rolling_upgrade` | `require_approval` | Touches many instances; `rolling_module_upgrade` skill plans batches |
+| `system.cve_remediate` | `require_approval` | Composes `cve_response` + `rolling_module_upgrade` |
+| `system.region_expansion` | `require_approval` | Cost-bearing |
+| `system.capacity_resize` | `require_approval` | Cost-bearing; `capacity_recommend` skill emits the proposal |
+| `system.sdwan_peer_remediate` | `notify_and_proceed` | Reversible — re-issues config + bounces wg interface |
+| `system.sdwan_key_rotate` | `auto_approve` | Periodic per-peer rotation; mirrors `cert_rotate` posture |
+| `system.sdwan_failover` | `require_approval` | Promotes a backup hub; changes the network's reachability story |
+| `system.sdwan_user_device_revoke` | `require_approval` | Cuts a user's VPN access |
+| `system.sdwan_bgp_session_remediate` | `notify_and_proceed` | Slice 9f — planning-only in v1; no actual side effects until operator runs the recommended `vtysh` command |
+| `system.sdwan_vip_failover` | `require_approval` | Single-holder VIPs flip `holder_peer_ids` order; visible to operators |
+| `system.sdwan_route_policy_audit` | `auto_approve` | Surfaces findings (no side effects); auto-approves so report lands without a pending approval blocking the queue |
+| `system.observation` | `auto_approve` | Pure observation — no remediation; collects events for dashboards |
+
+### Runtime Manager agent (8 policies)
+
+Source: `db/seeds/system_runtime_manager_agent.rb`. Approval chain: `Runtime Manager Actions` (4-hour timeout, `*` approver, sequential, separate from Fleet Autonomy chain).
+
+| Action category | Default policy | Why |
+|---|---|---|
+| `system.runtime_docker_provision` | `notify_and_proceed` | Operator opted in by assigning `docker-engine` module; provisioning is the obvious follow-through |
+| `system.runtime_docker_decommission` | `require_approval` | Destructive — destroys managed `Devops::DockerHost` row + Vault TLS material |
+| `system.runtime_docker_tls_rotate` | `auto_approve` | Aligns with `system.cert_rotate` hands-off posture |
+| `system.runtime_k8s_cluster_bootstrap` | `notify_and_proceed` | Operator opted in by assigning `k3s-server` module |
+| `system.runtime_k8s_cluster_decommission` | `require_approval` | Destructive — cascade-deletes member node rows |
+| `system.runtime_k8s_node_join` | `notify_and_proceed` | Operator opted in by assigning `k3s-agent` module |
+| `system.runtime_k8s_node_drain` | `require_approval` | Affects running pods |
+| `system.runtime_k8s_runtime_upgrade` | `require_approval` | Affects workloads |
+
+### Override path
+
+Operators can override any policy per-account via the AI Agents UI or by editing `Ai::InterventionPolicy` directly:
+
+```javascript
+// Tighten a default-auto policy
+platform.update_intervention_policy({
+  agent_id: "<fleet-autonomy-agent-id>",
+  action_category: "system.cert_rotate",
+  policy: "require_approval"
+})
+```
+
+Policy changes take effect on the next reconciler tick (≤60 s).
+
+### Consent budget (per-module ceiling)
+
+In addition to per-policy gates, operators can set a per-module **consent budget** capping the daily count of autonomous decisions touching that module. Once exhausted, all autonomous actions on that module are forced to `require_approval` regardless of policy. See `app/services/system/fleet/consent_budget_service.rb`.
+
 ## Related Docs
 
 - `extensions/system/docs/SKILL_EXECUTORS.md` — remediation actions invoked by sensor signals
 - `extensions/system/docs/ARCHITECTURE.md` — autonomy + decision engine subsystem
 - `extensions/system/docs/CONTAINER_RUNTIMES.md` — runtime-specific monitoring (Runtime Manager agent has its own policies)
+- `extensions/system/docs/runbooks/cve-response.md` — operator runbook using `cve_remediate` policy chain
+- `extensions/system/docs/runbooks/sdwan-network-setup.md` — operator runbook covering SDWAN policies
