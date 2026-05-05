@@ -408,6 +408,12 @@ Rails.application.routes.draw do
           # `runtime` enum.
           post "runtime/handshake", to: "runtime#handshake"
 
+          # Slice 10 — per-tick agent fetch for daemon.json overrides
+          # (and forward-compat for k3s / kubeadm). Returns the merged
+          # config from any dependant config-variety NodeModules of the
+          # base runtime module.
+          get "runtime/:runtime/config", to: "runtime#runtime_config", as: :runtime_config
+
           # Modules + mount points (read-only from instance perspective)
           resources :modules, only: %i[index show]
           resources :mount_points, only: %i[index show]

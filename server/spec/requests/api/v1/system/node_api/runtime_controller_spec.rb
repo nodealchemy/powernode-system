@@ -80,6 +80,87 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       end
   end
 
+  describe "GET /api/v1/system/node_api/runtime/:runtime/config (slice 10)" do
+    let(:url) { "/api/v1/system/node_api/runtime/docker/config" }
+
+    it "returns empty overrides when no dependant config-variety modules exist" do
+      get url
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body.dig("data", "runtime")).to eq("docker")
+      expect(body.dig("data", "daemon_overrides")).to eq({})
+      expect(body.dig("data", "content_hash")).to be_present
+    end
+
+    it "returns merged overrides from dependant config-variety modules" do
+      ::System::NodeModule.create!(
+        account: account,
+        name: "docker-overrides-rt-test",
+        variety: "config",
+        enabled: true,
+        parent_module: docker_module,
+        node_instance: node_instance,
+        config: {
+          "daemon_overrides" => {
+            "log-driver" => "journald",
+            "registry-mirrors" => ["https://mirror.gcr.io"]
+          }
+        }
+      )
+
+      get url
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      overrides = body.dig("data", "daemon_overrides")
+      expect(overrides["log-driver"]).to eq("journald")
+      expect(overrides["registry-mirrors"]).to eq(["https://mirror.gcr.io"])
+      expect(body.dig("data", "content_hash")).to start_with(/[a-f0-9]/)
+    end
+
+    it "returns same content_hash when overrides are unchanged" do
+      ::System::NodeModule.create!(
+        account: account, name: "docker-stable-overrides", variety: "config", enabled: true,
+        parent_module: docker_module, node_instance: node_instance,
+        config: { "daemon_overrides" => { "log-driver" => "journald" } }
+      )
+
+      get url
+      first_hash = JSON.parse(response.body).dig("data", "content_hash")
+      get url
+      second_hash = JSON.parse(response.body).dig("data", "content_hash")
+      expect(second_hash).to eq(first_hash)
+    end
+
+    it "rejects unsupported runtimes" do
+      get "/api/v1/system/node_api/runtime/openshift/config"
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(JSON.parse(response.body)["error"]).to include("unsupported runtime")
+    end
+
+    it "rejects when module not assigned" do
+      docker_assignment.destroy!
+      get url
+      expect(response).to have_http_status(:forbidden)
+      expect(JSON.parse(response.body)["error"]).to include("not enabled")
+    end
+
+    it "k3s_server runtime returns empty for now (forward-compat)" do
+      ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Container Runtimes")
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100)
+      end
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: node,
+        node_module: ::System::NodeModule.find_by(account: account, name: "k3s-server")
+      ) { |a| a.enabled = true }
+
+      get "/api/v1/system/node_api/runtime/k3s_server/config"
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body.dig("data", "daemon_overrides")).to eq({})
+    end
+  end
+
   describe "POST /api/v1/system/node_api/runtime/handshake" do
     let(:url) { "/api/v1/system/node_api/runtime/handshake" }
 

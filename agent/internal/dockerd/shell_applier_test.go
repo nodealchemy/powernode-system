@@ -182,6 +182,103 @@ func TestShellApplier_WriteDaemonConfig_RendersValidJSON(t *testing.T) {
 	}
 }
 
+// Slice 10 — operator-supplied ExtraConfig (registry-mirrors,
+// log-driver, log-opts) is merged INTO the rendered daemon.json
+// alongside the platform-managed TLS+listen base.
+func TestShellApplier_WriteDaemonConfig_MergesOperatorOverrides(t *testing.T) {
+	a, _, _ := applierWithTmpPaths(t)
+	cfg := DaemonConfig{
+		ListenAddress: "tcp://[fd00::1]:2376",
+		TLSCAPath:     "/etc/docker/ca.pem",
+		TLSCertPath:   "/etc/docker/server-cert.pem",
+		TLSKeyPath:    "/etc/docker/server-key.pem",
+		ExtraConfig: map[string]any{
+			"registry-mirrors": []any{"https://mirror.gcr.io"},
+			"log-driver":       "journald",
+			"log-opts": map[string]any{
+				"max-size": "10m",
+				"max-file": "3",
+			},
+			"debug": true,
+		},
+	}
+	if err := a.WriteDaemonConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("WriteDaemonConfig: %v", err)
+	}
+	body, err := os.ReadFile(a.Paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	for _, want := range []string{
+		`"registry-mirrors"`, `"https://mirror.gcr.io"`,
+		`"log-driver": "journald"`,
+		`"log-opts"`, `"max-size": "10m"`,
+		`"debug": true`,
+		// Platform-managed keys still present + correct
+		`"tls": true`, `"tlsverify": true`,
+		`"hosts"`, `"tcp://[fd00::1]:2376"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("merged daemon.json missing %q\nbody:\n%s", want, body)
+		}
+	}
+}
+
+// Slice 10 — operator overrides for security-managed keys
+// (tls/tlsverify/tlscacert/tlscert/tlskey/hosts) are silently dropped.
+// The platform's resolver also strips them; this is defense in depth.
+func TestShellApplier_WriteDaemonConfig_StripsBlockedKeys(t *testing.T) {
+	a, _, _ := applierWithTmpPaths(t)
+	cfg := DaemonConfig{
+		ListenAddress: "tcp://[fd00::1]:2376",
+		TLSCAPath:     "/etc/docker/ca.pem",
+		TLSCertPath:   "/etc/docker/server-cert.pem",
+		TLSKeyPath:    "/etc/docker/server-key.pem",
+		ExtraConfig: map[string]any{
+			// Operator attempts to disable TLS — agent must override.
+			"tls":       false,
+			"tlsverify": false,
+			"tlscacert": "/tmp/attacker-ca.pem",
+			"tlskey":    "/tmp/attacker-key.pem",
+			"hosts":     []any{"tcp://0.0.0.0:2375"},
+			// Legitimate operator key — must still apply.
+			"log-driver": "json-file",
+		},
+	}
+	if err := a.WriteDaemonConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("WriteDaemonConfig: %v", err)
+	}
+	body, err := os.ReadFile(a.Paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	bodyStr := string(body)
+	// Platform values must win.
+	for _, want := range []string{
+		`"tls": true`,
+		`"tlsverify": true`,
+		`"tlscacert": "/etc/docker/ca.pem"`,
+		`"tlskey": "/etc/docker/server-key.pem"`,
+		`"tcp://[fd00::1]:2376"`,
+		`"log-driver": "json-file"`,
+	} {
+		if !strings.Contains(bodyStr, want) {
+			t.Fatalf("daemon.json missing %q after blocked-key strip\nbody:\n%s", want, bodyStr)
+		}
+	}
+	// Attacker-supplied values must NOT appear.
+	for _, forbidden := range []string{
+		`/tmp/attacker-ca.pem`,
+		`/tmp/attacker-key.pem`,
+		`tcp://0.0.0.0:2375`,
+		`"tls": false`,
+	} {
+		if strings.Contains(bodyStr, forbidden) {
+			t.Fatalf("daemon.json contains forbidden value %q\nbody:\n%s", forbidden, bodyStr)
+		}
+	}
+}
+
 func TestShellApplier_WriteDaemonConfig_NoOpOnMatch(t *testing.T) {
 	a, _, _ := applierWithTmpPaths(t)
 	cfg := DaemonConfig{ListenAddress: "tcp://[fd00::1]:2376"}

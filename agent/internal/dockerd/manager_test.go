@@ -518,3 +518,234 @@ func TestReconcile_MissingNodeID_Errors(t *testing.T) {
 		t.Fatal("expected NodeID guard to short-circuit before any applier call")
 	}
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Slice 10 — operator daemon.json overrides + restart-on-change
+// ────────────────────────────────────────────────────────────────────
+
+// stubOverridesAPI returns a fixed override map + content_hash. The
+// Calls counter lets tests assert how many fetches happened across
+// reconcile ticks.
+type stubOverridesAPI struct {
+	mu          sync.Mutex
+	Overrides   map[string]any
+	ContentHash string
+	Err         error
+	Calls       int
+}
+
+func (s *stubOverridesAPI) FetchOverrides(_ context.Context) (map[string]any, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Calls++
+	if s.Err != nil {
+		return nil, "", s.Err
+	}
+	return s.Overrides, s.ContentHash, nil
+}
+
+func (s *stubOverridesAPI) Set(o map[string]any, hash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Overrides = o
+	s.ContentHash = hash
+}
+
+// On daemon start, the manager fetches overrides and stamps lastConfigHash
+// for change detection on subsequent ticks. The DaemonConfig passed to
+// the applier carries the operator overrides as ExtraConfig.
+func TestReconcile_Slice10_StartFetchesOverrides(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}}
+	overrides := &stubOverridesAPI{
+		Overrides: map[string]any{
+			"registry-mirrors": []any{"https://mirror.gcr.io"},
+			"log-driver":       "journald",
+		},
+		ContentHash: "sha256-initial",
+	}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Overrides = overrides
+
+	m.Reconcile(context.Background())
+
+	if overrides.Calls != 1 {
+		t.Fatalf("expected 1 overrides fetch on start, got %d", overrides.Calls)
+	}
+	if a.Config == nil || a.Config.ExtraConfig == nil {
+		t.Fatal("expected ExtraConfig populated in DaemonConfig")
+	}
+	if a.Config.ExtraConfig["log-driver"] != "journald" {
+		t.Fatalf("ExtraConfig missing log-driver, got %v", a.Config.ExtraConfig)
+	}
+	if m.state.lastConfigHash != "sha256-initial" {
+		t.Fatalf("lastConfigHash not stamped: got %q", m.state.lastConfigHash)
+	}
+}
+
+// When overrides change in steady-state-running, the manager must
+// restart the daemon (Stop+Start) and write the new config.
+func TestReconcile_Slice10_OverrideChange_TriggersRestart(t *testing.T) {
+	a := &stubApplier{
+		Cert:    &CertMaterial{ServerCertPEM: "exists"},
+		Running: true,
+		Version: "25.0.3",
+	}
+	overrides := &stubOverridesAPI{
+		Overrides:   map[string]any{"log-driver": "json-file"},
+		ContentHash: "sha256-v1",
+	}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Overrides = overrides
+
+	// Prime: simulate a prior apply so lastConfigHash is set.
+	m.state.lastConfigHash = "sha256-v1"
+	m.state.readyReportedFor = "25.0.3"
+
+	// Operator changes overrides — new content_hash.
+	overrides.Set(map[string]any{"log-driver": "journald"}, "sha256-v2")
+
+	startBefore := a.StartCalls
+	stopBefore := a.StopCalls
+	cfgBefore := a.WriteCfgCalls
+
+	m.Reconcile(context.Background())
+
+	if a.StopCalls != stopBefore+1 {
+		t.Fatalf("expected StopDaemon once, got %d (before %d)", a.StopCalls, stopBefore)
+	}
+	if a.StartCalls != startBefore+1 {
+		t.Fatalf("expected StartDaemon once, got %d (before %d)", a.StartCalls, startBefore)
+	}
+	if a.WriteCfgCalls != cfgBefore+1 {
+		t.Fatalf("expected WriteDaemonConfig once, got %d (before %d)", a.WriteCfgCalls, cfgBefore)
+	}
+	if m.state.lastConfigHash != "sha256-v2" {
+		t.Fatalf("lastConfigHash not advanced: got %q", m.state.lastConfigHash)
+	}
+	if m.state.readyReportedFor != "" {
+		t.Fatalf("readyReportedFor should be cleared on config update, got %q", m.state.readyReportedFor)
+	}
+}
+
+// When the override hash matches lastConfigHash, no restart occurs;
+// the steady-state ReportReady path runs as usual.
+func TestReconcile_Slice10_NoChange_NoRestart(t *testing.T) {
+	a := &stubApplier{
+		Cert:    &CertMaterial{ServerCertPEM: "exists"},
+		Running: true,
+		Version: "25.0.3",
+	}
+	overrides := &stubOverridesAPI{
+		Overrides:   map[string]any{"log-driver": "journald"},
+		ContentHash: "sha256-stable",
+	}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Overrides = overrides
+
+	m.state.lastConfigHash = "sha256-stable"
+
+	m.Reconcile(context.Background())
+
+	if a.StartCalls != 0 {
+		t.Fatalf("expected no start (steady state), got %d", a.StartCalls)
+	}
+	if a.StopCalls != 0 {
+		t.Fatalf("expected no stop (steady state), got %d", a.StopCalls)
+	}
+	if a.WriteCfgCalls != 0 {
+		t.Fatalf("expected no config write (no change), got %d", a.WriteCfgCalls)
+	}
+	if fp.Ready != 1 {
+		t.Fatalf("expected ReportReady to run as usual, got %d", fp.Ready)
+	}
+}
+
+// First tick after agent boot — daemon is already running (state cache
+// missing or stale) but lastConfigHash="" because we don't know what was
+// applied. Manager MUST NOT restart on this tick; trust whatever's on
+// disk and stamp the hash for future change detection.
+func TestReconcile_Slice10_FirstTickAfterBoot_NoRestart(t *testing.T) {
+	a := &stubApplier{
+		Cert:    &CertMaterial{ServerCertPEM: "exists"},
+		Running: true,
+		Version: "25.0.3",
+	}
+	overrides := &stubOverridesAPI{
+		Overrides:   map[string]any{"log-driver": "journald"},
+		ContentHash: "sha256-platform-current",
+	}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Overrides = overrides
+
+	// lastConfigHash is empty (cold-boot or cache wipe).
+	if m.state.lastConfigHash != "" {
+		t.Fatalf("precondition: lastConfigHash should be empty, got %q", m.state.lastConfigHash)
+	}
+
+	m.Reconcile(context.Background())
+
+	if a.StopCalls != 0 || a.StartCalls != 0 {
+		t.Fatalf("expected NO restart on first tick (cold-boot guard), got stop=%d start=%d",
+			a.StopCalls, a.StartCalls)
+	}
+	if fp.Ready != 1 {
+		t.Fatalf("expected ReportReady to fire normally, got %d", fp.Ready)
+	}
+}
+
+// When the OverridesAPI errors transiently, the manager records the
+// error but proceeds with the steady-state path. Stale overrides are
+// better than no service.
+func TestReconcile_Slice10_OverridesError_FallsThrough(t *testing.T) {
+	a := &stubApplier{
+		Cert:    &CertMaterial{ServerCertPEM: "exists"},
+		Running: true,
+		Version: "25.0.3",
+	}
+	overrides := &stubOverridesAPI{
+		Err: errors.New("transient platform error"),
+	}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Overrides = overrides
+
+	m.state.lastConfigHash = "sha256-prior"
+
+	m.Reconcile(context.Background())
+
+	if a.StopCalls != 0 || a.StartCalls != 0 {
+		t.Fatal("expected no restart when overrides fetch fails")
+	}
+	if fp.Ready != 1 {
+		t.Fatalf("expected ReportReady to still fire, got %d", fp.Ready)
+	}
+	if m.LastError() == nil {
+		t.Fatal("expected error to be recorded")
+	}
+}
+
+// Backward compat — managers constructed without an Overrides API
+// (existing callers, agent code paths that haven't migrated yet) must
+// keep working as if no operator overrides existed.
+func TestReconcile_Slice10_NilOverridesAPI_Compat(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	// m.Overrides intentionally nil
+
+	m.Reconcile(context.Background())
+
+	if a.StartCalls != 1 {
+		t.Fatalf("expected start to fire normally with nil Overrides, got %d", a.StartCalls)
+	}
+	if a.Config.ExtraConfig == nil {
+		t.Fatal("expected empty ExtraConfig map (not nil) for cleaner downstream code")
+	}
+	if len(a.Config.ExtraConfig) != 0 {
+		t.Fatalf("expected empty ExtraConfig, got %v", a.Config.ExtraConfig)
+	}
+}

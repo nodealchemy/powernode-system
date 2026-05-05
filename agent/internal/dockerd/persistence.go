@@ -17,14 +17,20 @@ const DefaultStatePath = "/persist/var/lib/powernode/dockerd_state.json"
 // persistedState mirrors managedState (the in-memory cache) but with
 // JSON-serializable types. ReadyReportedFor was already a string;
 // StoppedReportedAt converts to ISO8601 for stable round-tripping.
+//
+// Schema version bumped to 2 in slice 10 to add LastConfigHash; the
+// loader ignores prior-version files and treats them as cold-boot
+// state, which is correct since hash detection should NOT trigger a
+// restart on first observation post-upgrade.
 type persistedState struct {
 	ReadyReportedFor   string    `json:"ready_reported_for,omitempty"`
 	StoppedReportedAt  time.Time `json:"stopped_reported_at,omitempty"`
+	LastConfigHash     string    `json:"last_config_hash,omitempty"`
 	WrittenAt          time.Time `json:"written_at"`
 	SchemaVersion      int       `json:"schema_version"`
 }
 
-const stateSchemaVersion = 1
+const stateSchemaVersion = 2
 
 // loadState reads the state file at path and applies it to the Manager's
 // in-memory cache. Silent on missing file (first boot) — returns
@@ -57,6 +63,7 @@ func (m *Manager) loadState() {
 	}
 	m.state.readyReportedFor = ps.ReadyReportedFor
 	m.state.stoppedReportedAt = ps.StoppedReportedAt
+	m.state.lastConfigHash = ps.LastConfigHash
 }
 
 // persistState writes the in-memory cache to disk. Called after every
@@ -70,6 +77,7 @@ func (m *Manager) persistState() {
 	ps := persistedState{
 		ReadyReportedFor:  m.state.readyReportedFor,
 		StoppedReportedAt: m.state.stoppedReportedAt,
+		LastConfigHash:    m.state.lastConfigHash,
 		WrittenAt:         time.Now().UTC(),
 		SchemaVersion:     stateSchemaVersion,
 	}

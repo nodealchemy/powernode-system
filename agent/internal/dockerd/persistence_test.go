@@ -98,7 +98,7 @@ func TestManager_PersistState_PersistsExpectedFields(t *testing.T) {
 	if !strings.Contains(bs, `"ready_reported_for":"v999"`) {
 		t.Fatalf("expected ready_reported_for=v999, got %s", bs)
 	}
-	if !strings.Contains(bs, `"schema_version":1`) {
-		t.Fatalf("expected schema_version=1, got %s", bs)
+	if !strings.Contains(bs, `"schema_version":2`) {
+		t.Fatalf("expected schema_version=2 (slice 10), got %s", bs)
 	}
 }

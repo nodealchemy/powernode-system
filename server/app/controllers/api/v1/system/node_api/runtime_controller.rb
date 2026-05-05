@@ -55,6 +55,59 @@ module Api
           # own PKI).
           DAEMON_CERT_TTL_SECONDS = 90 * 24 * 3600
 
+          # GET /api/v1/system/node_api/runtime/:runtime/config
+          #
+          # Slice 10 — returns the merged daemon.json overrides for this
+          # NodeInstance. Agent calls this per-tick when running and
+          # restarts dockerd if the merged config changed (hash diff).
+          #
+          # Currently scoped to runtime=docker; the path includes runtime
+          # as a positional segment so K3s + kubeadm config delivery can
+          # use the same surface in Phase 2/3 without redirecting.
+          #
+          # Action method is named `runtime_config` (not `config`) to
+          # avoid shadowing ActionController's framework `config` method
+          # — that collision causes infinite recursion through
+          # `render_success` → `render` → `config`.
+          def runtime_config
+            runtime = params[:runtime].to_s
+            unless RUNTIME_MODULES.key?(runtime)
+              return render_error("unsupported runtime: #{runtime}", :unprocessable_entity)
+            end
+            unless module_assigned?(runtime)
+              return render_error(
+                "module '#{RUNTIME_MODULES[runtime]}' not enabled for this node — assign it before " \
+                "the agent attempts a runtime config fetch",
+                :forbidden
+              )
+            end
+
+            case runtime
+            when "docker"
+              overrides = ::System::DockerDaemonOverridesResolver.resolve(
+                node_instance: current_instance
+              )
+              render_success(data: {
+                runtime: runtime,
+                daemon_overrides: overrides,
+                # ETag-style content hash — agent can short-circuit
+                # on-disk writes when nothing changed. Phase 2 may add
+                # If-None-Match handling for true 304 responses; for
+                # now agents handle the diff client-side.
+                content_hash: ::Digest::SHA256.hexdigest(overrides.to_json)
+              })
+            else
+              # K3s + kubeadm runtime config delivery is a follow-up;
+              # return an empty payload so the agent doesn't error out
+              # when probing newer endpoints from older runtimes.
+              render_success(data: {
+                runtime: runtime,
+                daemon_overrides: {},
+                content_hash: ::Digest::SHA256.hexdigest("{}")
+              })
+            end
+          end
+
           # POST /api/v1/system/node_api/runtime/handshake
           def handshake
             runtime = params[:runtime].to_s

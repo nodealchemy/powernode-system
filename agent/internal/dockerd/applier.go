@@ -77,10 +77,10 @@ type CertMaterial struct {
 }
 
 // DaemonConfig captures the salient subset of /etc/docker/daemon.json
-// the reconciler renders. Other operator-supplied keys (e.g.
-// log-driver, registry-mirrors) come from the sibling
-// `docker-engine-config` config-variety NodeModule and are merged at
-// render time.
+// the reconciler renders. Operator-supplied keys (log-driver,
+// registry-mirrors, storage-driver, etc.) come in via ExtraConfig
+// from the platform's runtime/<runtime>/config endpoint and are
+// merged with the base TLS+listen fields at render time.
 type DaemonConfig struct {
 	// ListenAddress is the tcp://[<v6>]:2376 binding the daemon should
 	// expose. Computed from the NodeInstance's SDWAN /128. Per Phase B
@@ -95,6 +95,15 @@ type DaemonConfig struct {
 	TLSCAPath   string
 	TLSCertPath string
 	TLSKeyPath  string
+
+	// ExtraConfig carries operator-supplied daemon.json overrides
+	// (slice 10). Resolved server-side from dependant config-variety
+	// NodeModules and shipped via the runtime/docker/config endpoint.
+	// Merged INTO the rendered daemon.json after the base TLS + listen
+	// fields. Security-blocked keys (tls/tlsverify/tlscacert/tlscert/
+	// tlskey/hosts) are stripped defensively at write time even though
+	// the server resolver also strips them — defense in depth.
+	ExtraConfig map[string]any
 }
 
 // DaemonPaths is the canonical on-disk layout. All shell-out

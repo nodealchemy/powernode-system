@@ -23,6 +23,7 @@ const ModuleName = "docker-engine"
 type Manager struct {
 	Client       *Client       // dockerd protocol client
 	Modules      ModulesAPI    // assigned-modules query
+	Overrides    OverridesAPI  // operator daemon.json overrides (slice 10; nil = no operator overrides)
 	Applier      DaemonApplier // file IO + systemctl
 	NodeID       string        // System::NodeInstance UUID, used as CN suffix
 	OverlayAddress string      // SDWAN /128 the daemon should bind, no brackets
@@ -46,6 +47,16 @@ type managedState struct {
 	// stoppedReportedAt is set when we've successfully called
 	// ReportStopped; cleared when the daemon comes back up.
 	stoppedReportedAt time.Time
+	// lastConfigHash is the platform-supplied content_hash of the
+	// daemon overrides we last applied to /etc/docker/daemon.json
+	// (slice 10). Used by Reconcile to detect when operator overrides
+	// have changed since the last apply, triggering a daemon restart.
+	// Empty string means "no prior apply known" — first tick after
+	// agent start should NOT trigger a restart even if overrides exist
+	// on the platform side; the daemon already runs with whatever is
+	// on disk, and the next genuine config change will trigger the
+	// restart correctly.
+	lastConfigHash string
 }
 
 // NewManager constructs a Manager with sensible defaults. Paths
@@ -119,6 +130,33 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// and can still proceed.
 	hasOverlay := m.OverlayAddress != ""
 
+	// Slice 10 — when steady-state running, fetch operator overrides
+	// to detect changes that warrant a daemon restart. We only fetch
+	// in the running branch (not on the start path; transitionStart
+	// fetches its own overrides directly).
+	var (
+		freshOverrides    map[string]any
+		freshContentHash  string
+		hasOverridesUpdate bool
+	)
+	if desired && running && hasOverlay && m.Overrides != nil {
+		ov, h, err := m.Overrides.FetchOverrides(ctx)
+		if err != nil {
+			// Stale overrides are better than no service — record but
+			// fall through to the report-ready branch.
+			m.recordError("fetch_overrides", err)
+		} else {
+			freshOverrides = ov
+			freshContentHash = h
+			// First-tick-after-start has lastConfigHash="" — don't
+			// trigger a restart on cold boot just because the platform
+			// has overrides; the daemon already runs with whatever's
+			// on disk.
+			hasOverridesUpdate = m.state.lastConfigHash != "" &&
+				freshContentHash != m.state.lastConfigHash
+		}
+	}
+
 	switch {
 	case !desired && running:
 		m.transitionStop(ctx)
@@ -130,6 +168,8 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		m.transitionStart(ctx)
 	case desired && hasCert && !running && !hasOverlay:
 		m.recordError("waiting_overlay", errWaitingOverlay)
+	case desired && running && hasOverlay && hasOverridesUpdate:
+		m.transitionApplyConfigUpdate(ctx, freshOverrides, freshContentHash)
 	case desired && running && hasOverlay:
 		m.transitionReportReady(ctx)
 	}
@@ -162,11 +202,13 @@ func (m *Manager) transitionRequestCert(ctx context.Context) {
 }
 
 func (m *Manager) transitionStart(ctx context.Context) {
+	overrides, contentHash := m.fetchOverridesOrEmpty(ctx)
 	cfg := DaemonConfig{
 		ListenAddress: "tcp://[" + m.OverlayAddress + "]:2376",
 		TLSCAPath:     m.Paths.CAFile,
 		TLSCertPath:   m.Paths.CertFile,
 		TLSKeyPath:    m.Paths.KeyFile,
+		ExtraConfig:   overrides,
 	}
 	if err := m.Applier.WriteDaemonConfig(ctx, cfg); err != nil {
 		m.recordError("write_daemon_config", err)
@@ -181,6 +223,68 @@ func (m *Manager) transitionStart(ctx context.Context) {
 	// here because the daemon may still be initializing — wait until
 	// the next tick confirms `IsDaemonRunning == true`.
 	m.state.stoppedReportedAt = time.Time{} // clear stale stopped marker
+	m.state.lastConfigHash = contentHash    // baseline for change detection
+	m.persistState()
+}
+
+// transitionApplyConfigUpdate fires when steady-state-running detects
+// that operator daemon.json overrides have changed (slice 10). Writes
+// the new merged config to disk and restarts dockerd to pick it up.
+//
+// Phase 1: full daemon restart on any change. Phase 2 may diff
+// hot-reloadable keys (registry-mirrors, debug, log-level) and SIGHUP
+// instead of stop+start to skip the ~3s restart window.
+func (m *Manager) transitionApplyConfigUpdate(ctx context.Context,
+	overrides map[string]any, contentHash string) {
+	cfg := DaemonConfig{
+		ListenAddress: "tcp://[" + m.OverlayAddress + "]:2376",
+		TLSCAPath:     m.Paths.CAFile,
+		TLSCertPath:   m.Paths.CertFile,
+		TLSKeyPath:    m.Paths.KeyFile,
+		ExtraConfig:   overrides,
+	}
+	if err := m.Applier.WriteDaemonConfig(ctx, cfg); err != nil {
+		m.recordError("write_daemon_config_update", err)
+		return
+	}
+	if err := m.Applier.StopDaemon(ctx); err != nil {
+		// Best-effort — if the daemon is already stopped, StartDaemon
+		// brings it back up. If it can't be stopped, StartDaemon
+		// will likely fail too and we'll record that error instead.
+		m.recordError("stop_daemon_for_config_update", err)
+	}
+	if err := m.Applier.StartDaemon(ctx); err != nil {
+		m.recordError("start_daemon_for_config_update", err)
+		return
+	}
+	m.state.lastConfigHash = contentHash
+	// Force re-report on next tick — version may not have changed but
+	// the platform should observe a fresh ready signal so operators
+	// see the config-update transition in the activity feed.
+	m.state.readyReportedFor = ""
+	m.persistState()
+}
+
+// fetchOverridesOrEmpty calls m.Overrides if configured, returning
+// empty values on any error so the caller can proceed with a base
+// daemon.json. Used by transitionStart where missing overrides should
+// not block daemon startup.
+func (m *Manager) fetchOverridesOrEmpty(ctx context.Context) (map[string]any, string) {
+	if m.Overrides == nil {
+		return map[string]any{}, ""
+	}
+	overrides, hash, err := m.Overrides.FetchOverrides(ctx)
+	if err != nil {
+		// Non-fatal — record but proceed with empty overrides. The
+		// next tick's running-state branch will re-fetch and pick up
+		// any overrides if the failure was transient.
+		m.recordError("fetch_overrides_on_start", err)
+		return map[string]any{}, ""
+	}
+	if overrides == nil {
+		overrides = map[string]any{}
+	}
+	return overrides, hash
 }
 
 func (m *Manager) transitionReportReady(ctx context.Context) {

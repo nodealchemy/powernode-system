@@ -140,41 +140,70 @@ func (s *ShellApplier) RemoveCert(_ context.Context) error {
 // daemon.json render
 // ──────────────────────────────────────────────────────────────────
 
-// daemonConfigJSON is the on-disk structure. Only the keys the
-// reconciler manages are listed — operator-supplied keys (log-driver,
-// registry-mirrors, etc.) come from the docker-engine-config
-// config-variety NodeModule via a layered render that's out of scope
-// for v1 (and currently the agent doesn't have a way to receive
-// per-host config either; that's the next step).
-//
-// Reference: https://docs.docker.com/reference/cli/dockerd/#daemon-configuration-file
-type daemonConfigJSON struct {
-	Hosts        []string `json:"hosts"`
-	TLS          bool     `json:"tls"`
-	TLSVerify    bool     `json:"tlsverify"`
-	TLSCACert    string   `json:"tlscacert"`
-	TLSCert      string   `json:"tlscert"`
-	TLSKey       string   `json:"tlskey"`
+// blockedConfigKeys are keys the agent NEVER lets operator overrides
+// touch — these are the platform-managed mTLS + listen address fields
+// that would break the daemon's identity if changed via daemon.json.
+// The server-side resolver strips the same set; this is defense in
+// depth.
+var blockedConfigKeys = map[string]struct{}{
+	"tls":       {},
+	"tlsverify": {},
+	"tlscacert": {},
+	"tlscert":   {},
+	"tlskey":    {},
+	"hosts":     {},
 }
 
-func (s *ShellApplier) WriteDaemonConfig(_ context.Context, cfg DaemonConfig) error {
-	doc := daemonConfigJSON{
-		// "fd://" keeps the systemd-managed unix socket so docker CLI
-		// on the node still works for operator debugging. The TCP
-		// listen on the SDWAN overlay is added alongside, not in
-		// place of.
-		Hosts:     []string{"fd://", cfg.ListenAddress},
-		TLS:       true,
-		TLSVerify: true,
-		TLSCACert: cfg.TLSCAPath,
-		TLSCert:   cfg.TLSCertPath,
-		TLSKey:    cfg.TLSKeyPath,
+// renderDaemonConfig builds the merged daemon.json bytes from the base
+// platform-managed fields plus operator-supplied ExtraConfig. Returns
+// the rendered bytes (with trailing newline) ready to write to disk.
+//
+// Merge precedence:
+//  1. Start with operator ExtraConfig as the base map (so all their
+//     keys land in the output).
+//  2. Strip any blocked keys the operator tried to set.
+//  3. Overwrite the platform-managed keys with the cfg.* values
+//     (agent's identity wins over operator intent).
+//
+// JSON is rendered with stable key ordering courtesy of MarshalIndent
+// on a map[string]any (Go's encoding/json sorts map keys
+// alphabetically), so byte-equality comparisons across reconcile
+// ticks are stable.
+func renderDaemonConfig(cfg DaemonConfig) ([]byte, error) {
+	merged := map[string]any{}
+
+	// Start with operator overrides (after security stripping).
+	for k, v := range cfg.ExtraConfig {
+		if _, blocked := blockedConfigKeys[k]; blocked {
+			continue
+		}
+		merged[k] = v
 	}
-	rendered, err := json.MarshalIndent(doc, "", "  ")
+
+	// Platform-managed keys — agent always wins for these.
+	// "fd://" keeps the systemd-managed unix socket so docker CLI on
+	// the node still works for operator debugging. The TCP listen on
+	// the SDWAN overlay is added alongside, not in place of.
+	merged["hosts"] = []string{"fd://", cfg.ListenAddress}
+	merged["tls"] = true
+	merged["tlsverify"] = true
+	merged["tlscacert"] = cfg.TLSCAPath
+	merged["tlscert"] = cfg.TLSCertPath
+	merged["tlskey"] = cfg.TLSKeyPath
+
+	rendered, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal daemon.json: %w", err)
+		return nil, fmt.Errorf("marshal daemon.json: %w", err)
 	}
-	rendered = append(rendered, '\n')
+	return append(rendered, '\n'), nil
+}
+
+// Reference: https://docs.docker.com/reference/cli/dockerd/#daemon-configuration-file
+func (s *ShellApplier) WriteDaemonConfig(_ context.Context, cfg DaemonConfig) error {
+	rendered, err := renderDaemonConfig(cfg)
+	if err != nil {
+		return err
+	}
 
 	// No-op if on-disk file already matches — avoids triggering an
 	// inotify watcher / reload daemon for nothing.

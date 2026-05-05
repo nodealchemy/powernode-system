@@ -124,4 +124,113 @@ else
   puts "    = Module 'docker-engine' already present (id=#{docker_module.id})"
 end
 
+# ── Config-variety template (slice 10) ─────────────────────────────────────
+# A "template" config-variety NodeModule that operators clone (via
+# NodeModuleAssignment#create_dependant! or direct NodeModule create with
+# parent_module_id=docker-engine.id + node_instance_id=<instance>) to ship
+# per-instance daemon.json overrides.
+#
+# This template carries the schema + reference docs in `description` and
+# stays unattached. Per-instance children are real dependant modules with
+# parent_module_id = docker-engine.id.
+#
+# Operator workflow:
+#   1. Read this template's description for the supported keys.
+#   2. Create a child NodeModule (variety="config", parent_module=docker-engine,
+#      node_instance=<target>, config={ "daemon_overrides" => {...} }).
+#   3. Agent picks up overrides on next reconcile via the
+#      runtime/docker/config endpoint and applies them to /etc/docker/daemon.json.
+#
+# Security: the resolver (System::DockerDaemonOverridesResolver) STRIPS
+# operator-supplied keys that conflict with platform-managed mTLS:
+# tls, tlsverify, tlscacert, tlscert, tlskey, hosts. The agent applies
+# the same defensive allow-list at write time.
+config_template_description = <<~DESC.strip
+  Template for the Docker daemon.json override module (config variety).
+  Per-instance dependant children of `docker-engine` carry their JSON
+  overrides in `config["daemon_overrides"]`.
+
+  Allowed override keys (curated subset of dockerd's daemon.json
+  reference — keys that are operator-meaningful and safe to ship from
+  the platform):
+    - registry-mirrors    : array of mirror URLs
+    - insecure-registries : array of registries to allow over HTTP
+    - log-driver          : json-file | journald | local | syslog | ...
+    - log-opts            : object of log-driver-specific options
+    - storage-driver      : overlay2 | btrfs | zfs | ...
+    - storage-opts        : array of storage-driver-specific options
+    - default-ulimits     : object of ulimit defaults for new containers
+    - debug               : boolean (enables daemon debug logging)
+    - data-root           : custom /var/lib/docker location
+    - exec-opts           : array of runtime exec options
+    - default-runtime     : runtime name (runc | crun | nvidia | ...)
+    - runtimes            : object mapping runtime names to OCI binaries
+    - bip                 : default bridge IP
+    - default-address-pools : array of subnet pools for bridge networks
+    - dns / dns-search / dns-opts : DNS resolution config
+    - features            : object enabling experimental features
+    - icc / iptables / ip-forward / ip-masq / userland-proxy : networking flags
+    - max-concurrent-downloads / max-concurrent-uploads : transfer limits
+    - default-shm-size    : default /dev/shm size for containers
+
+  Blocked keys (platform owns these — agent enforces over operator
+  intent if you try): tls, tlsverify, tlscacert, tlscert, tlskey, hosts.
+
+  Multiple dependant config-variety modules layered on the same
+  NodeInstance are merged by `effective_priority` (higher wins on
+  conflicting top-level keys; nested objects deep-merge).
+
+  Restart strategy: full daemon restart on any merged-config change
+  (signaled by a hash diff between current on-disk daemon.json and
+  newly-rendered output). SIGHUP-only paths for hot-reloadable keys
+  is a future optimization.
+DESC
+
+config_template_module = System::NodeModule.find_or_initialize_by(
+  account: account,
+  name: "docker-engine-config"
+)
+
+config_template_attrs = {
+  variety: "config",
+  category: container_runtimes_cat,
+  enabled: true,
+  public: true,
+  lock_spec: false,
+  priority: 100,
+  description: config_template_description
+}
+
+# Schema lives in `config["overrides_schema"]` so operators creating
+# dependant children can introspect supported keys via the same module
+# API the agent uses.
+config_template_attrs[:config] = {
+  "overrides_schema" => {
+    "supported_keys" => %w[
+      registry-mirrors insecure-registries
+      log-driver log-opts
+      storage-driver storage-opts
+      default-ulimits debug data-root
+      exec-opts default-runtime runtimes
+      bip default-address-pools
+      dns dns-search dns-opts
+      features icc iptables ip-forward ip-masq userland-proxy
+      max-concurrent-downloads max-concurrent-uploads
+      default-shm-size
+    ],
+    "blocked_keys" => %w[tls tlsverify tlscacert tlscert tlskey hosts],
+    "merge_strategy" => "deep_merge_by_effective_priority"
+  }
+}
+
+config_template_module.assign_attributes(config_template_attrs)
+config_template_module.save!
+
+if config_template_module.previously_new_record?
+  puts "    ✓ Created NodeModule 'docker-engine-config' template " \
+       "(config variety, Container Runtimes category)"
+else
+  puts "    = Module 'docker-engine-config' already present (id=#{config_template_module.id})"
+end
+
 puts "  Done seeding Docker runtime module."
