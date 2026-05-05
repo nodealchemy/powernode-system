@@ -104,7 +104,9 @@ module System
         ::System::Fleet::Sensors::SdwanReachabilitySensor,
         # Slice 9f of the SDWAN plan: routing observability + autonomy.
         ::System::Fleet::Sensors::SdwanBgpSessionHealthSensor,
-        ::System::Fleet::Sensors::SdwanVipReachabilitySensor
+        ::System::Fleet::Sensors::SdwanVipReachabilitySensor,
+        # Phase 6c — GitOps drift detection
+        ::System::Fleet::Sensors::GitopsDriftSensor
       ].freeze
 
       def permitted_actions
