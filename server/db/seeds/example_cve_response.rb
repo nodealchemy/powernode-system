@@ -2,7 +2,7 @@
 
 # Companion seed for docs/examples/05-cve-response-walkthrough.md.
 #
-# Drill-mode CVE response demonstration. Inserts a synthetic CVE-2026-DRILL-001
+# Drill-mode CVE response demonstration. Inserts a synthetic CVE-2026-99001
 # directly via ActiveRecord (since system_create_cve is in the MCP gap backlog),
 # computes exposure, runs cve_response skill, generates runbook.
 #
@@ -21,7 +21,7 @@ return puts("  ⚠️  No admin user — skipping") unless user
 
 # ── Insert synthetic CVE (drill) ──────────────────────────────────────────
 
-drill_cve_id = "CVE-2026-DRILL-001"
+drill_cve_id = "CVE-2026-99001"
 
 cve = ::System::Cve.find_or_initialize_by(cve_id: drill_cve_id)
 cve.assign_attributes(

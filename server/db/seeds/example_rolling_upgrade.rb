@@ -40,14 +40,14 @@ if nginx_module.new_record?
 end
 puts "  ✅ Module: #{nginx_module.name}"
 
-v_old = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_string: "1.24.0")
-v_old.assign_attributes(lifecycle_state: "live", composefs_digest: "sha256:demo-1-24-0") if v_old.new_record?
+v_old = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 1)
+v_old.assign_attributes(promotion_state: "live", changelog: "demo nginx 1.24.0") if v_old.new_record?
 v_old.save!
 
-v_new = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_string: "1.26.0")
-v_new.assign_attributes(lifecycle_state: "blessed", composefs_digest: "sha256:demo-1-26-0") if v_new.new_record?
+v_new = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 2)
+v_new.assign_attributes(promotion_state: "blessed", changelog: "demo nginx 1.26.0") if v_new.new_record?
 v_new.save!
-puts "  ✅ Versions: 1.24.0 (live), 1.26.0 (blessed)"
+puts "  ✅ Versions: v1 (live, conceptual nginx 1.24.0), v2 (blessed, conceptual nginx 1.26.0)"
 
 # ── Run the skill in plan mode ────────────────────────────────────────────
 

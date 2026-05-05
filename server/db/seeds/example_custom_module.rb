@@ -63,25 +63,23 @@ mod.assign_attributes(
 mod.save!
 puts "  ✅ NodeModule: #{mod.name} (#{mod.previously_new_record? ? 'created' : 'updated'})"
 
-# ── Create v0.1.0 in `draft` ──────────────────────────────────────────────
+# ── Create v1 in `built` ──────────────────────────────────────────────────
 
-v = ::System::NodeModuleVersion.find_or_initialize_by(node_module: mod, version_string: "0.1.0")
+v = ::System::NodeModuleVersion.find_or_initialize_by(node_module: mod, version_number: 1)
 v.assign_attributes(
-  lifecycle_state: "draft",
-  composefs_digest: "sha256:demo-redis-0-1-0",
-  artifact_uri: "git.ipnode.org/<account>/modules/my-redis-module:v0.1.0",
-  manifest: manifest
+  promotion_state: "built",
+  changelog: "demo my-redis 0.1.0 (conceptual)"
 )
 v.save!
-puts "  ✅ NodeModuleVersion: v0.1.0 (lifecycle_state=draft)"
+puts "  ✅ NodeModuleVersion: v1 (promotion_state=built, conceptual 0.1.0)"
 
-# ── Promote: draft → staging → blessed → live ────────────────────────────
+# ── Promote: built → staging → blessed → live ────────────────────────────
 
 %w[staging blessed live].each do |target_state|
-  next if v.lifecycle_state == target_state || v.lifecycle_state == "live"
+  next if v.promotion_state == target_state || v.promotion_state == "live"
 
-  v.update!(lifecycle_state: target_state, "promoted_to_#{target_state}_at": Time.current)
-  puts "  ✅ Promoted v0.1.0 → #{target_state}"
+  v.update!(promotion_state: target_state)
+  puts "  ✅ Promoted v1 → #{target_state}"
 end
 
 # ── Show current dependency resolution ────────────────────────────────────

@@ -76,7 +76,17 @@ module Ai
         # system_validate_module_manifest: pure validation; no DB writes.
         "system_drain_instance"           => "system.instances.control",
         "system_get_silent_instances"     => "system.node_instances.read",
-        "system_validate_module_manifest" => "system.modules.read"
+        "system_validate_module_manifest" => "system.modules.read",
+
+        # === Gap remediation slice 2 — CVE catalog + module assignment cleanup ===
+        # CVE actions touch the GLOBAL Cve table (not account-scoped); create/delete
+        # require system.fleet.autonomy elevated permission. Read paths are
+        # account-aware via CveExposure → NodeModuleVersion → NodeModule scoping.
+        "system_get_cve"                       => "system.modules.read",
+        "system_get_cve_exposure"              => "system.modules.read",
+        "system_create_cve"                    => "system.fleet.autonomy",
+        "system_delete_cve"                    => "system.fleet.autonomy",
+        "system_unassign_module_from_template" => "system.modules.update"
       }.freeze
 
       def self.definition
@@ -333,6 +343,39 @@ module Ai
               module_id: { type: "string", required: true, description: "Existing NodeModule id to validate against (manifest.name must match)" },
               manifest_yaml: { type: "string", required: true, description: "Raw manifest.yaml contents" }
             }
+          },
+
+          # === Gap remediation slice 2 — CVE catalog + module assignment cleanup ===
+          "system_get_cve" => {
+            description: "Fetch a Cve by its canonical id (e.g. CVE-2026-12345). Cves are global across accounts.",
+            parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits)" } }
+          },
+          "system_get_cve_exposure" => {
+            description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule.",
+            parameters: { cve_id: { type: "string", required: true } }
+          },
+          "system_create_cve" => {
+            description: "Manually inject a Cve row (typically for embargoed CVEs not yet in NVD, or for drill-mode runbooks). Idempotent via cve_id uniqueness — re-running updates fields. NOTE: Cve table is GLOBAL (not account-scoped) — created CVEs are visible to all accounts. Requires elevated system.fleet.autonomy permission.",
+            parameters: {
+              cve_id:            { type: "string", required: true,  description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits). Drills should use high-numeric ids like CVE-2026-99001." },
+              severity:          { type: "string", required: true,  description: "critical|high|medium|low|unknown" },
+              summary:           { type: "string", required: false },
+              affected_packages: { type: "array",  required: false, description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
+              published_at:      { type: "string", required: false, description: "ISO8601; defaults to now" },
+              reference_url:     { type: "string", required: false },
+              feed_source:       { type: "string", required: false, description: "nvd|ghsa|manual (default manual)" }
+            }
+          },
+          "system_delete_cve" => {
+            description: "Destroy a Cve row + cascade-delete its CveExposures. Used for drill cleanup. Cves are global; deletion affects all accounts. Requires elevated system.fleet.autonomy permission.",
+            parameters: { cve_id: { type: "string", required: true } }
+          },
+          "system_unassign_module_from_template" => {
+            description: "Remove a NodeModule from a NodeTemplate (destroys the TemplateModule join). Inverse of system_assign_module_to_template. Idempotent — returns success even when the join doesn't exist.",
+            parameters: {
+              template_id: { type: "string", required: true },
+              module_id:   { type: "string", required: true }
+            }
           }
         }
       end
@@ -384,6 +427,12 @@ module Ai
         when "system_drain_instance"           then drain_instance(params)
         when "system_get_silent_instances"     then get_silent_instances(params)
         when "system_validate_module_manifest" then validate_module_manifest(params)
+        # Gap remediation slice 2 — CVE catalog + module assignment cleanup
+        when "system_get_cve"                       then get_cve(params)
+        when "system_get_cve_exposure"              then get_cve_exposure(params)
+        when "system_create_cve"                    then create_cve(params)
+        when "system_delete_cve"                    then delete_cve(params)
+        when "system_unassign_module_from_template" then unassign_module_from_template(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -1030,6 +1079,133 @@ module Ai
             validation_errors: Array(result.validation_errors)
           )
         end
+      end
+
+      # === Gap remediation slice 2 — CVE catalog + module assignment cleanup ===
+
+      # Cves are GLOBAL (not account-scoped). All read/write actions on Cve
+      # rows operate on the shared catalog. Account-scoping for exposure
+      # lookups happens in get_cve_exposure via the CveExposure → NodeModuleVersion → NodeModule chain.
+
+      def get_cve(params)
+        cve = ::System::Cve.find_by(cve_id: params[:cve_id])
+        return error_result("CVE #{params[:cve_id]} not found") unless cve
+        success_result(cve: serialize_cve(cve))
+      end
+
+      def get_cve_exposure(params)
+        cve = ::System::Cve.find_by(cve_id: params[:cve_id])
+        return error_result("CVE #{params[:cve_id]} not found") unless cve
+
+        # Scope exposures to the current account via the NodeModule chain.
+        exposures = cve.cve_exposures
+                       .joins(node_module_version: :node_module)
+                       .where(system_node_modules: { account_id: @account.id })
+                       .includes(node_module_version: :node_module)
+
+        # Group by module for the operator-friendly aggregate shape.
+        by_module = exposures.group_by { |e| e.node_module_version.node_module }
+
+        exposed_modules = by_module.map do |mod, exps|
+          {
+            id: mod.id,
+            name: mod.name,
+            version_number: exps.first.node_module_version.version_number,
+            assignment_count: exps.size,
+            states: exps.group_by(&:state).transform_values(&:size)
+          }
+        end
+
+        success_result(
+          cve_id: cve.cve_id,
+          severity: cve.severity,
+          severity_weight: cve.severity_weight,
+          exposed_modules: exposed_modules,
+          exposed_module_count: exposed_modules.size,
+          exposed_instance_count: exposed_modules.sum { |m| m[:assignment_count] }
+        )
+      end
+
+      def create_cve(params)
+        cve = ::System::Cve.find_or_initialize_by(cve_id: params[:cve_id])
+        was_new = cve.new_record?
+
+        cve.assign_attributes(
+          severity: params[:severity],
+          summary: params[:summary],
+          affected_packages: Array(params[:affected_packages]),
+          feed_source: params[:feed_source].presence || "manual",
+          published_at: params[:published_at] || Time.current,
+          reference_url: params[:reference_url]
+        )
+        cve.save!
+
+        success_result(
+          created: was_new,
+          updated: !was_new,
+          cve: serialize_cve(cve)
+        )
+      end
+
+      def delete_cve(params)
+        cve = ::System::Cve.find_by(cve_id: params[:cve_id])
+        return error_result("CVE #{params[:cve_id]} not found") unless cve
+
+        cve_id_value = cve.cve_id
+        exposure_count = cve.cve_exposures.count
+        cve.destroy!
+
+        success_result(
+          deleted: true,
+          cve_id: cve_id_value,
+          cascaded_exposure_count: exposure_count
+        )
+      end
+
+      def unassign_module_from_template(params)
+        template = account_templates.find(params[:template_id])
+        node_module = account_modules.find(params[:module_id])
+
+        join = ::System::TemplateModule.where(
+          node_template: template,
+          node_module: node_module
+        ).first
+
+        unless join
+          # Idempotent — operator probably retrying after partial state
+          return success_result(
+            unassigned: false,
+            already_absent: true,
+            template_id: template.id,
+            module_id: node_module.id
+          )
+        end
+
+        join_id = join.id
+        join.destroy!
+
+        success_result(
+          unassigned: true,
+          template_module_id: join_id,
+          template_id: template.id,
+          module_id: node_module.id
+        )
+      end
+
+      def serialize_cve(cve)
+        {
+          id: cve.id,
+          cve_id: cve.cve_id,
+          severity: cve.severity,
+          severity_weight: cve.severity_weight,
+          summary: cve.summary,
+          reference_url: cve.reference_url,
+          affected_packages: cve.normalized_affected_packages,
+          published_at: cve.published_at&.iso8601,
+          ingested_at: cve.ingested_at&.iso8601,
+          feed_source: cve.feed_source,
+          metadata: cve.metadata
+        }
       end
     end
   end

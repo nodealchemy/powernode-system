@@ -316,6 +316,164 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Gap remediation slice 2 — CVE catalog actions" do
+    let(:cve_id) { "CVE-2026-99100" }
+
+    let!(:cve) do
+      ::System::Cve.create!(
+        cve_id: cve_id,
+        severity: "critical",
+        summary: "Test CVE",
+        affected_packages: [{ "name" => "openssl", "version" => "<3.1.4" }],
+        feed_source: "manual",
+        published_at: 1.day.ago
+      )
+    end
+
+    describe "system_get_cve" do
+      it "returns the CVE by canonical id" do
+        r = call("system_get_cve", cve_id: cve_id)
+        expect(r[:success]).to be true
+        expect(r[:data][:cve][:cve_id]).to eq(cve_id)
+        expect(r[:data][:cve][:severity]).to eq("critical")
+        expect(r[:data][:cve][:severity_weight]).to eq(100)
+      end
+
+      it "returns an error when CVE doesn't exist" do
+        r = call("system_get_cve", cve_id: "CVE-2026-99999")
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("not found")
+      end
+    end
+
+    describe "system_get_cve_exposure" do
+      let!(:mod) do
+        create(:system_node_module,
+               account: account, category: category,
+               name: "openssl-base", variety: "subscription")
+      end
+      let!(:version) { create(:system_node_module_version, node_module: mod) }
+      let!(:exposure) do
+        ::System::CveExposure.create!(
+          cve: cve, node_module_version: version,
+          package_name: "openssl", state: "open"
+        )
+      end
+
+      it "returns account-scoped exposure breakdown" do
+        r = call("system_get_cve_exposure", cve_id: cve_id)
+        expect(r[:success]).to be true
+        expect(r[:data][:cve_id]).to eq(cve_id)
+        expect(r[:data][:exposed_module_count]).to eq(1)
+        expect(r[:data][:exposed_modules].first[:name]).to eq("openssl-base")
+      end
+
+      it "scopes exposure to current account — excludes other accounts' exposures" do
+        other_account = create(:account)
+        other_mod = create(:system_node_module, account: other_account,
+                          category: create(:system_node_module_category, account: other_account),
+                          name: "openssl-other")
+        other_version = create(:system_node_module_version, node_module: other_mod)
+        ::System::CveExposure.create!(cve: cve, node_module_version: other_version,
+                                      package_name: "openssl", state: "open")
+
+        r = call("system_get_cve_exposure", cve_id: cve_id)
+        names = r[:data][:exposed_modules].map { |m| m[:name] }
+        expect(names).to include("openssl-base")
+        expect(names).not_to include("openssl-other")
+      end
+
+      it "returns zero exposures when CVE matches no account modules" do
+        ::System::CveExposure.where(cve_id: cve.id).destroy_all
+        r = call("system_get_cve_exposure", cve_id: cve_id)
+        expect(r[:data][:exposed_module_count]).to eq(0)
+      end
+    end
+
+    describe "system_create_cve" do
+      it "creates a new Cve with the given attributes" do
+        r = call("system_create_cve",
+                 cve_id: "CVE-2026-99200",
+                 severity: "high",
+                 summary: "Synthetic high-severity",
+                 affected_packages: [{ "name" => "redis" }])
+        expect(r[:success]).to be true
+        expect(r[:data][:created]).to be true
+        expect(r[:data][:cve][:cve_id]).to eq("CVE-2026-99200")
+        expect(::System::Cve.find_by(cve_id: "CVE-2026-99200")).to be_present
+      end
+
+      it "is idempotent — re-running updates fields without duplicate-key error" do
+        # First create
+        call("system_create_cve",
+             cve_id: "CVE-2026-99201", severity: "high", summary: "v1")
+        # Second call — same ID, different summary
+        r = call("system_create_cve",
+                 cve_id: "CVE-2026-99201", severity: "critical", summary: "v2")
+        expect(r[:success]).to be true
+        expect(r[:data][:updated]).to be true
+        expect(::System::Cve.find_by(cve_id: "CVE-2026-99201").summary).to eq("v2")
+      end
+
+      it "rejects malformed CVE ids" do
+        r = call("system_create_cve",
+                 cve_id: "CVE-DRILL-001", severity: "critical")
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("CVE-YYYY-NNNN")
+      end
+    end
+
+    describe "system_delete_cve" do
+      it "destroys the CVE and cascades to exposures" do
+        r = call("system_delete_cve", cve_id: cve_id)
+        expect(r[:success]).to be true
+        expect(r[:data][:deleted]).to be true
+        expect(::System::Cve.find_by(cve_id: cve_id)).to be_nil
+      end
+
+      it "returns error when CVE doesn't exist" do
+        r = call("system_delete_cve", cve_id: "CVE-2026-99999")
+        expect(r[:success]).to be false
+      end
+    end
+  end
+
+  describe "Gap remediation slice 2 — system_unassign_module_from_template" do
+    let!(:mod) do
+      create(:system_node_module,
+             account: account, category: category,
+             name: "remove-me", variety: "subscription")
+    end
+    let!(:join) do
+      ::System::TemplateModule.create!(node_template: template, node_module: mod)
+    end
+
+    it "destroys the TemplateModule join" do
+      r = call("system_unassign_module_from_template",
+               template_id: template.id, module_id: mod.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:unassigned]).to be true
+      expect(::System::TemplateModule.where(id: join.id)).to be_empty
+    end
+
+    it "is idempotent when join already absent" do
+      join.destroy!
+      r = call("system_unassign_module_from_template",
+               template_id: template.id, module_id: mod.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:unassigned]).to be false
+      expect(r[:data][:already_absent]).to be true
+    end
+
+    it "scopes templates + modules to current account" do
+      other_account = create(:account)
+      other_template = create(:system_node_template, account: other_account)
+      r = call("system_unassign_module_from_template",
+               template_id: other_template.id, module_id: mod.id)
+      expect(r[:success]).to be false
+    end
+  end
+
   describe "Unknown action" do
     it "returns an error_result" do
       r = call("system_definitely_not_real")
@@ -332,6 +490,12 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
     it "registers gap-remediation slice 1 actions" do
       %w[system_drain_instance system_get_silent_instances system_validate_module_manifest].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
+    end
+
+    it "registers gap-remediation slice 2 actions" do
+      %w[system_get_cve system_get_cve_exposure system_create_cve system_delete_cve system_unassign_module_from_template].each do |action|
         expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
       end
     end
