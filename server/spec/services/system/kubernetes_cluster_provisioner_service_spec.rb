@@ -28,6 +28,127 @@ RSpec.describe System::KubernetesClusterProvisionerService do
                           node_instance: agent_instance, publicly_reachable: false)
   end
 
+  describe ".bootstrap! VIP-backed api_endpoint (slice 3)" do
+    before { server_peer }
+
+    it "allocates an Sdwan::VirtualIp at bootstrap time" do
+      expect {
+        described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30"
+        )
+      }.to change { ::Sdwan::VirtualIp.where(account: account).count }.by(1)
+
+      vip = ::Sdwan::VirtualIp.where(account: account).order(:created_at).last
+      expect(vip.holder_peer_ids).to eq([ server_peer.id ])
+      expect(vip.failover_holder_peer_ids).to eq([])
+      # IPv6 zero compression may render the address as
+      # `fd...:dead:beef:0:abcd/128` (the explicit zero between
+      # beef and the suffix is the high 16 bits of the low-32
+      # selector, always 0 in our derivation).
+      expect(vip.cidr).to match(%r{\Afd[0-9a-f:]+:dead:beef:[0-9a-f:]+/128\z})
+    end
+
+    it "uses the VIP CIDR in cluster.api_endpoint, not the bootstrap peer's /128" do
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+      vip = ::Sdwan::VirtualIp.find(cluster.metadata["api_vip_id"])
+      vip_addr = vip.cidr.split("/").first
+      peer_addr = server_peer.assigned_address.split("/").first
+      expect(cluster.api_endpoint).to eq("https://[#{vip_addr}]:6443")
+      expect(cluster.api_endpoint).not_to include(peer_addr)
+    end
+
+    it "stores api_vip_id + api_vip_cidr in cluster metadata" do
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+      expect(cluster.metadata["api_vip_id"]).to be_present
+      expect(cluster.metadata["api_vip_cidr"]).to match(%r{/128\z})
+    end
+
+    it "is deterministic — re-bootstrap with same cluster name reuses VIP" do
+      c1 = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+      vip_id_1 = c1.metadata["api_vip_id"]
+      c2 = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc-rotated", server_token: "tok-rotated",
+        agent_token: "atok-rotated", k8s_version: "v1.30.1"
+      )
+      expect(c2.id).to eq(c1.id)
+      expect(c2.metadata["api_vip_id"]).to eq(vip_id_1)
+      expect(::Sdwan::VirtualIp.where(account: account).count).to eq(1)
+    end
+
+    it "VIP transitions to active state automatically (holder_peer_ids set)" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+      vip = ::Sdwan::VirtualIp.where(account: account).first
+      expect(vip.state).to eq("active")
+    end
+  end
+
+  describe ".register_node_join! HA failover candidates (slice 3)" do
+    before do
+      server_peer
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+    end
+
+    it "adds joining server peer to VIP failover_holder_peer_ids" do
+      ha_inst = sdwan_test_node_instance(node: node, name: "i-ha-#{SecureRandom.hex(3)}")
+      ha_peer = ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                                       node_instance: ha_inst, publicly_reachable: false)
+
+      described_class.register_node_join!(node_instance: ha_inst, role: "server",
+                                          k8s_version: "v1.30")
+
+      vip = ::Sdwan::VirtualIp.where(account: account).first
+      expect(vip.holder_peer_ids).to eq([ server_peer.id ])
+      expect(vip.failover_holder_peer_ids).to include(ha_peer.id)
+    end
+
+    it "does NOT add agent-role joiners (workers don't answer kube-apiserver)" do
+      worker_inst = sdwan_test_node_instance(node: node, name: "i-worker-#{SecureRandom.hex(3)}")
+      ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                             node_instance: worker_inst, publicly_reachable: false)
+
+      described_class.register_node_join!(node_instance: worker_inst, role: "agent",
+                                          k8s_version: "v1.30")
+
+      vip = ::Sdwan::VirtualIp.where(account: account).first
+      expect(vip.failover_holder_peer_ids).to eq([])
+    end
+
+    it "is idempotent — re-registering same server doesn't duplicate" do
+      ha_inst = sdwan_test_node_instance(node: node, name: "i-ha-idem-#{SecureRandom.hex(3)}")
+      ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                             node_instance: ha_inst, publicly_reachable: false)
+
+      described_class.register_node_join!(node_instance: ha_inst, role: "server")
+      described_class.register_node_join!(node_instance: ha_inst, role: "server")
+
+      vip = ::Sdwan::VirtualIp.where(account: account).first
+      expect(vip.failover_holder_peer_ids.size).to eq(1)
+    end
+  end
+
   describe ".bootstrap!" do
     context "with an SDWAN-attached server NodeInstance" do
       before { server_peer }

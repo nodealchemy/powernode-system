@@ -122,6 +122,31 @@ assert.call(cluster.flavor == "k3s", "flavor=k3s")
 assert.call(cluster.status == "bootstrapping", "initial status=bootstrapping")
 assert.call(cluster.k8s_version == "v1.30.4+k3s1", "k8s_version recorded")
 assert.call(cluster.api_endpoint.start_with?("https://["), "api_endpoint is bracketed IPv6")
+
+# ──────────────────────────────────────────────────────────────────
+# Slice 3 hardening — VIP-backed api_endpoint
+# Verify cluster.api_endpoint points at an Sdwan::VirtualIp, not the
+# bootstrap peer's /128, so termination of the bootstrap NodeInstance
+# becomes a VIP failover event rather than a cluster-destruction event.
+# ──────────────────────────────────────────────────────────────────
+step.call("Verify VIP-backed api_endpoint (slice 3)")
+
+vip_id = cluster.metadata["api_vip_id"]
+assert.call(vip_id.present?, "metadata.api_vip_id populated (got #{vip_id.inspect})")
+vip = ::Sdwan::VirtualIp.find_by(id: vip_id)
+assert.call(!vip.nil?, "Sdwan::VirtualIp row exists")
+assert.call(vip.holder_peer_ids == [ peer.id ], "bootstrap peer is the VIP primary holder")
+assert.call(vip.state == "active", "VIP state=active immediately on bootstrap")
+assert.call(vip.cidr.match?(%r{:dead:beef:[0-9a-f:]+/128\z}),
+            "VIP CIDR uses recognizable dead:beef pattern (got #{vip.cidr})")
+
+vip_addr = vip.cidr.split("/").first
+peer_addr = peer.assigned_address.split("/").first
+assert.call(cluster.api_endpoint == "https://[#{vip_addr}]:6443",
+            "api_endpoint uses VIP address: #{cluster.api_endpoint}")
+assert.call(!cluster.api_endpoint.include?(peer_addr),
+            "api_endpoint does NOT use bootstrap peer /128 — survives bootstrap-node loss")
+ok.call("VIP-backed api_endpoint verified end-to-end")
 assert.call(cluster.api_endpoint.end_with?(":6443"), "api_endpoint port=6443")
 assert.call(cluster.node_count == 1, "node_count=1 after bootstrap")
 assert.call(cluster.encrypted_kubeconfig.include?("apiVersion: v1"), "kubeconfig stored")
@@ -269,12 +294,20 @@ assert.call(stopped.status == "disconnected", "worker flipped to disconnected")
 
 step.call("MCP kubernetes_decommission_cluster")
 
+# Slice 3 — capture the VIP id BEFORE decommission so we can verify
+# the cleanup callback fires.
+vip_id_before_decom = cluster.metadata["api_vip_id"]
+
 decom_result = prov_tool.send(:call, action: "kubernetes_decommission_cluster", cluster_id: cluster.id)
 assert.call(decom_result[:success], "decommission returned success")
 assert.call(decom_result[:freed_node_count] == 2, "2 nodes freed")
 assert.call(::Devops::KubernetesCluster.where(id: cluster.id).none?, "cluster row destroyed")
 assert.call(::Devops::KubernetesNode.where(kubernetes_cluster_id: cluster.id).none?,
             "all member node rows cascaded")
+
+# Slice 3 — verify the before_destroy callback cleaned up the VIP.
+assert.call(::Sdwan::VirtualIp.where(id: vip_id_before_decom).none?,
+            "VIP row #{vip_id_before_decom[0,8]} cleaned up by before_destroy callback")
 
 # ────────────────────────────────────────────────────────────────────
 # Smoke 9: Negative — bootstrap without SDWAN peer

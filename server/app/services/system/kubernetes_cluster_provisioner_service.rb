@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
+require "ipaddr"
 
 module System
   # Phase 2 — Kubernetes (K3s) cluster auto-registration.
@@ -86,7 +88,8 @@ module System
       raise ArgumentError, "kubeconfig required for bootstrap" if @kubeconfig.blank?
       raise ArgumentError, "server_token required for bootstrap" if @server_token.blank?
 
-      account = @node_instance.account
+      @account = @node_instance.account
+      account = @account # local alias for readability in this method
       overlay_address = resolve_overlay_address!
 
       # Idempotent: if this NodeInstance is already a server in some
@@ -98,24 +101,59 @@ module System
         return existing_node.kubernetes_cluster
       end
 
+      # Phase 2.5 hardening (slice 3) — allocate a single-holder VIP
+      # so the cluster's api_endpoint survives bootstrap-node loss.
+      # When subsequent k3s-server NodeInstances join (HA control
+      # plane), they're added as VIP failover candidates. Bootstrap
+      # node loss becomes a vip.failover! event, not a cluster-
+      # destruction event.
+      bootstrap_peer = ::Sdwan::Peer
+                         .where(node_instance_id: @node_instance.id)
+                         .where.not(assigned_address: nil)
+                         .order(:created_at)
+                         .first
+      cluster_name = cluster_name_for(@node_instance)
+      api_vip = nil
+      api_endpoint_address = overlay_address
+      if bootstrap_peer&.network
+        api_vip = allocate_api_vip!(
+          network: bootstrap_peer.network,
+          bootstrap_peer: bootstrap_peer,
+          cluster_name: cluster_name
+        )
+        api_endpoint_address = api_vip.cidr.split("/").first
+      else
+        Rails.logger.warn(
+          "[KubernetesClusterProvisionerService] bootstrap peer has no " \
+          "Sdwan::Network — falling back to /128 api_endpoint for cluster " \
+          "#{cluster_name}; api_endpoint will not survive bootstrap-node loss"
+        )
+      end
+
+      metadata = {
+        "bootstrap_node_instance_id" => @node_instance.id,
+        "bootstrap_overlay_address" => overlay_address,
+        "bootstrapped_at" => Time.current.utc.iso8601
+      }
+      if api_vip
+        metadata["api_vip_id"] = api_vip.id
+        metadata["api_vip_cidr"] = api_vip.cidr
+      end
+
       cluster = nil
       ActiveRecord::Base.transaction do
         cluster = ::Devops::KubernetesCluster.create!(
           account: account,
-          name: cluster_name_for(@node_instance),
+          name: cluster_name,
           flavor: "k3s",
           environment: "production",
           status: "bootstrapping",
-          api_endpoint: "https://[#{overlay_address}]:#{K3S_API_PORT}",
+          api_endpoint: "https://[#{api_endpoint_address}]:#{K3S_API_PORT}",
           k8s_version: @k8s_version,
           encrypted_kubeconfig: @kubeconfig,
           encrypted_server_token: @server_token,
           encrypted_agent_token: @agent_token.presence || @server_token,
-          metadata: {
-            "bootstrap_node_instance_id" => @node_instance.id,
-            "bootstrap_overlay_address" => overlay_address,
-            "bootstrapped_at" => Time.current.utc.iso8601
-          }
+          metadata: metadata
         )
 
         ::Devops::KubernetesNode.create!(
@@ -134,7 +172,7 @@ module System
       Rails.logger.info(
         "[KubernetesClusterProvisionerService] bootstrapped cluster " \
         "cluster_id=#{cluster.id} node_instance_id=#{@node_instance.id} " \
-        "endpoint=#{cluster.api_endpoint}"
+        "endpoint=#{cluster.api_endpoint} vip_id=#{api_vip&.id || 'none'}"
       )
       cluster
     end
@@ -224,6 +262,14 @@ module System
         )
         cluster.increment!(:node_count)
       end
+
+      # Phase 2.5 (slice 3) — HA control plane awareness. When a
+      # second+ k3s-server joins, register it as a VIP failover
+      # candidate so cluster api_endpoint survives bootstrap node
+      # loss. Skip for agent role (workers don't answer
+      # kube-apiserver).
+      add_to_vip_failover_candidates!(cluster) if @role == "server"
+
       node
     end
 
@@ -293,6 +339,62 @@ module System
       attrs[:encrypted_server_token] = @server_token if @server_token.present?
       attrs[:encrypted_agent_token] = @agent_token if @agent_token.present?
       cluster.update!(attrs) if attrs.any? { |k, v| v.present? && cluster.send(k) != v }
+
+      # Phase 2.5 (slice 3) — keep VIP holder pointed at the current
+      # bootstrap peer. Rare in practice (re-bootstrap is usually on
+      # the same node), but covers the case where an operator
+      # re-bootstraps from a different NodeInstance + the original
+      # bootstrap node has been terminated.
+      refresh_vip_holder!(cluster)
+    end
+
+    def add_to_vip_failover_candidates!(cluster)
+      vip_id = (cluster.metadata || {})["api_vip_id"]
+      return if vip_id.blank?
+
+      vip = ::Sdwan::VirtualIp.find_by(id: vip_id)
+      return unless vip
+
+      joiner_peer = ::Sdwan::Peer
+                      .where(node_instance_id: @node_instance.id)
+                      .where.not(assigned_address: nil)
+                      .order(:created_at)
+                      .first
+      return unless joiner_peer
+
+      already_primary = Array(vip.holder_peer_ids).include?(joiner_peer.id)
+      already_failover = Array(vip.failover_holder_peer_ids).include?(joiner_peer.id)
+      return if already_primary || already_failover
+
+      vip.update!(
+        failover_holder_peer_ids: Array(vip.failover_holder_peer_ids) + [joiner_peer.id]
+      )
+    end
+
+    def refresh_vip_holder!(cluster)
+      vip_id = (cluster.metadata || {})["api_vip_id"]
+      return if vip_id.blank?
+
+      vip = ::Sdwan::VirtualIp.find_by(id: vip_id)
+      return unless vip
+
+      new_peer = ::Sdwan::Peer
+                   .where(node_instance_id: @node_instance.id)
+                   .where.not(assigned_address: nil)
+                   .order(:created_at)
+                   .first
+      return unless new_peer
+
+      current_primary = Array(vip.holder_peer_ids).first
+      return if current_primary == new_peer.id
+
+      old_failover = Array(vip.failover_holder_peer_ids)
+      new_failover = (old_failover + [current_primary].compact).uniq - [new_peer.id]
+
+      vip.update!(
+        holder_peer_ids: [new_peer.id],
+        failover_holder_peer_ids: new_failover
+      )
     end
 
     # Best-effort CA extraction from a kubeconfig YAML string. The
@@ -313,6 +415,57 @@ module System
 
     def kubelet_name_for(node_instance)
       node_instance.name.presence || "instance-#{node_instance.id[0, 8]}"
+    end
+
+    # Allocates a single-holder Sdwan::VirtualIp for the cluster's
+    # api_endpoint. Deterministic CIDR derivation from the network's
+    # /64 + a 16-bit hash of the cluster name — collision risk is
+    # acceptable across human-named clusters; re-bootstrapping the
+    # same name yields the same VIP (idempotent via
+    # find_or_create_by!).
+    #
+    # The VIP becomes immediately advertised:
+    #   - Static-routing networks: agent's vip_applier writes it to lo
+    #     on the holder peer (Sdwan::TopologyCompiler#vips_held_by)
+    #   - iBGP-routing networks: BGP config compiler adds the /128 to
+    #     the holder's network statements
+    def allocate_api_vip!(network:, bootstrap_peer:, cluster_name:)
+      vip_cidr = derive_vip_cidr(network: network, cluster_name: cluster_name)
+
+      ::Sdwan::VirtualIp.find_or_create_by!(
+        account_id: @account.id,
+        sdwan_network_id: network.id,
+        name: "#{cluster_name}-api"
+      ) do |vip|
+        vip.cidr = vip_cidr
+        vip.holder_peer_ids = [ bootstrap_peer.id ]
+        vip.failover_holder_peer_ids = []
+        # Explicit state — the model has no auto-transition callback;
+        # default is "pending". For our use case, the VIP is
+        # immediately routable as soon as the bootstrap peer is the
+        # primary holder, so go straight to "active".
+        vip.state = "active"
+        vip.description = "Kubernetes API endpoint for cluster #{cluster_name}"
+      end
+    end
+
+    # Derive a deterministic /128 VIP address inside the network's
+    # /64. Uses IPAddr arithmetic so the resulting address is always
+    # a normalized, validator-passing IPv6 string regardless of the
+    # input network's notation (`fd00::/64`, `fd00:0:0:0::/64`, etc.).
+    #
+    # Strategy: take the lower 64 bits of the host portion as
+    # `0xdeadbeef00000000 | (cluster_hash & 0xffff)` so VIPs are
+    # easily recognizable in packet captures (`dead:beef:0000:xxxx`)
+    # and human-debuggable.
+    def derive_vip_cidr(network:, cluster_name:)
+      base = ::IPAddr.new(network.cidr_64.to_s)
+      cluster_hash = ::Digest::SHA256.digest(cluster_name).bytes.first(2)
+      suffix_16 = (cluster_hash[0] << 8) | cluster_hash[1]
+      # Top 64 bits = network; bottom 64 bits = 0xdead_beef_0000_xxxx
+      host_low = 0xdead_beef_0000_0000 | (suffix_16 & 0xffff)
+      vip_int = (base.to_i & ((2**128 - 1) ^ ((1 << 64) - 1))) | host_low
+      "#{::IPAddr.new(vip_int, ::Socket::AF_INET6)}/128"
     end
   end
 end
