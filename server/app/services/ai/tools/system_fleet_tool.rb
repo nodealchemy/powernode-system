@@ -57,7 +57,16 @@ module Ai
         # Observability + attribution
         "system_recent_signals"         => "system.fleet.autonomy",
         "system_attribute_failure"      => "system.node_instances.read",
-        "system_inspect_correlation"    => "system.fleet.autonomy"
+        "system_inspect_correlation"    => "system.fleet.autonomy",
+
+        # === Slice 7 — instance pools ===
+        # Read paths fall under node_instances.read; mutate paths under instances.create/control.
+        "system_list_instance_pools"    => "system.node_instances.read",
+        "system_get_instance_pool"      => "system.node_instances.read",
+        "system_create_instance_pool"   => "system.instances.create",
+        "system_drain_instance_pool"    => "system.instances.control",
+        "system_acquire_pooled_instance" => "system.instances.create",
+        "system_replenish_instance_pool" => "system.instances.create"
       }.freeze
 
       def self.definition
@@ -253,6 +262,45 @@ module Ai
             parameters: {
               correlation_id: { type: "string", required: true }
             }
+          },
+
+          # === Slice 7 — pre-warmed instance pools ===
+          "system_list_instance_pools" => {
+            description: "List instance pools for the current account with size + occupancy stats",
+            parameters: {}
+          },
+          "system_get_instance_pool" => {
+            description: "Fetch a single instance pool with full member roster + counts",
+            parameters: { id: { type: "string", required: true } }
+          },
+          "system_create_instance_pool" => {
+            description: "Create a new pre-warmed instance pool. Reaper will provision target_size warming members on next tick.",
+            parameters: {
+              name: { type: "string", required: true },
+              template_id: { type: "string", required: true },
+              target_size: { type: "integer", required: true, description: "Target number of warm+ready members" },
+              min_size: { type: "integer", required: false, description: "Lower bound (default 0)" },
+              max_size: { type: "integer", required: false, description: "Upper bound (default target+10)" },
+              lifecycle_class: { type: "string", required: false, description: "ephemeral|spot (default ephemeral)" },
+              provider_region_id: { type: "string", required: false },
+              provider_instance_type_id: { type: "string", required: false }
+            }
+          },
+          "system_drain_instance_pool" => {
+            description: "Mark a pool draining: terminate ready members, halt replenishment. Claimed members keep running.",
+            parameters: { id: { type: "string", required: true } }
+          },
+          "system_acquire_pooled_instance" => {
+            description: "Atomically claim the oldest ready member from a pool. Returns the NodeInstance immediately (no provision wait).",
+            parameters: {
+              pool_name: { type: "string", required: false, description: "Specific pool to acquire from" },
+              pool_id: { type: "string", required: false, description: "Specific pool by ID" },
+              lifecycle_class: { type: "string", required: false, description: "Acquire from any matching pool when name/id absent (e.g. 'ephemeral')" }
+            }
+          },
+          "system_replenish_instance_pool" => {
+            description: "Manually trigger replenishment of a pool — provisions warming members up to target_size. Normally the reaper does this every 60s; this is for impatient operators.",
+            parameters: { id: { type: "string", required: true } }
           }
         }
       end
@@ -293,6 +341,13 @@ module Ai
         when "system_recent_signals"           then recent_signals(params)
         when "system_attribute_failure"        then attribute_failure(params)
         when "system_inspect_correlation"      then inspect_correlation(params)
+        # Slice 7 — instance pools
+        when "system_list_instance_pools"      then list_instance_pools(params)
+        when "system_get_instance_pool"        then get_instance_pool(params)
+        when "system_create_instance_pool"     then create_instance_pool(params)
+        when "system_drain_instance_pool"      then drain_instance_pool(params)
+        when "system_acquire_pooled_instance"  then acquire_pooled_instance(params)
+        when "system_replenish_instance_pool"  then replenish_instance_pool(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -768,6 +823,93 @@ module Ai
           created_at: t.created_at.iso8601,
           completed_at: t.completed_at&.iso8601
         }
+      end
+
+      # ────────────────────────────────────────────────────────────────
+      # Slice 7 — instance pool action handlers
+      # ────────────────────────────────────────────────────────────────
+
+      def list_instance_pools(_params)
+        pools = ::System::InstancePool.for_account(@account).order(:name)
+        success_result(data: {
+          pools: pools.map(&:to_summary),
+          count: pools.count
+        })
+      end
+
+      def get_instance_pool(params)
+        pool = ::System::InstancePool.for_account(@account).find(params[:id])
+        success_result(data: {
+          pool: pool.to_summary.merge(
+            members: pool.node_instances.order(:pool_state, :pool_warming_started_at).limit(50).map do |m|
+              {
+                id: m.id,
+                name: m.name,
+                pool_state: m.pool_state,
+                status: m.status,
+                pool_warming_started_at: m.pool_warming_started_at&.utc&.iso8601,
+                pool_acquired_at: m.pool_acquired_at&.utc&.iso8601
+              }
+            end
+          )
+        })
+      end
+
+      def create_instance_pool(params)
+        template = ::System::NodeTemplate.for_account(@account).find(params[:template_id])
+        pool = ::System::InstancePool.create!(
+          account: @account,
+          node_template: template,
+          name: params[:name],
+          target_size: params[:target_size],
+          min_size: params[:min_size] || 0,
+          max_size: params[:max_size] || (params[:target_size].to_i + 10),
+          lifecycle_class: params[:lifecycle_class] || "ephemeral",
+          provider_region_id: params[:provider_region_id],
+          provider_instance_type_id: params[:provider_instance_type_id]
+        )
+        success_result(data: { pool: pool.to_summary })
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("instance pool validation failed: #{e.message}")
+      end
+
+      def drain_instance_pool(params)
+        pool = ::System::InstancePool.for_account(@account).find(params[:id])
+        result = ::System::InstancePoolService.drain!(pool: pool)
+        success_result(data: { pool: pool.reload.to_summary, drain_result: result })
+      end
+
+      def acquire_pooled_instance(params)
+        instance = ::System::InstancePoolService.acquire!(
+          account: @account,
+          pool_name: params[:pool_name],
+          pool_id: params[:pool_id],
+          lifecycle_class: params[:lifecycle_class]
+        )
+        success_result(data: {
+          instance: {
+            id: instance.id,
+            name: instance.name,
+            status: instance.status,
+            pool_state: instance.pool_state,
+            instance_pool_id: instance.instance_pool_id,
+            pool_acquired_at: instance.pool_acquired_at&.utc&.iso8601,
+            private_ip_address: instance.private_ip_address,
+            public_ip_address: instance.public_ip_address
+          }
+        })
+      rescue ::System::InstancePoolService::NoReadyMembersError => e
+        error_result("no ready pool members: #{e.message}")
+      rescue ::System::InstancePoolService::PoolError => e
+        error_result(e.message)
+      end
+
+      def replenish_instance_pool(params)
+        pool = ::System::InstancePool.for_account(@account).find(params[:id])
+        result = ::System::InstancePoolService.replenish!(pool: pool)
+        success_result(data: { pool: pool.reload.to_summary, replenish_result: result })
+      rescue ::System::InstancePoolService::PoolError => e
+        error_result(e.message)
       end
     end
   end

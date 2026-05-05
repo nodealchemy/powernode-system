@@ -94,6 +94,15 @@ Rails.application.routes.draw do
           end
         end
 
+        # Slice 7 — instance pools.
+        resources :instance_pools do
+          member do
+            post :replenish
+            post :drain
+            post :recycle_stale
+          end
+        end
+
         resources :node_templates do
           member do
             get :export

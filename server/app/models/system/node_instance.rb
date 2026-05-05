@@ -9,6 +9,10 @@ module System
     STATUSES = %w[pending provisioning starting running stopping stopped rebooting terminated error].freeze
     MAC_ADDRESS_REGEX = /\A([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\z/
 
+    # Slice 7 — pre-warmed instance pool membership.
+    # NULL for non-pool instances (operator-owned, legacy path).
+    POOL_STATES = %w[warming ready claimed draining errored].freeze
+
     # Encryption for sensitive fields
     encrypts :key
 
@@ -16,6 +20,10 @@ module System
     belongs_to :node, class_name: "System::Node"
     belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
     belongs_to :provider_instance_type, class_name: "System::ProviderInstanceType", optional: true
+    # Slice 7 — optional pool membership.
+    belongs_to :instance_pool,
+               class_name: "System::InstancePool",
+               optional: true
 
     # Mount point associations (Release 3)
     has_many :instance_mount_points, class_name: "System::InstanceMountPoint", dependent: :destroy
@@ -114,9 +122,59 @@ module System
     scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
 
+    # Slice 7 — pool membership scopes
+    scope :pool_warming, -> { where(pool_state: "warming") }
+    scope :pool_ready, -> { where(pool_state: "ready") }
+    scope :pool_claimed, -> { where(pool_state: "claimed") }
+    scope :pool_draining, -> { where(pool_state: "draining") }
+    scope :pool_errored, -> { where(pool_state: "errored") }
+    scope :in_any_pool, -> { where.not(instance_pool_id: nil) }
+    scope :not_in_pool, -> { where(instance_pool_id: nil) }
+
     # Variety predicates
     VARIETIES.each do |variety_name|
       define_method("#{variety_name}?") { variety == variety_name }
+    end
+
+    # Slice 7 — pool state predicates
+    POOL_STATES.each do |pool_state_name|
+      define_method("pool_#{pool_state_name}?") { pool_state == pool_state_name }
+    end
+
+    def in_pool?
+      instance_pool_id.present?
+    end
+
+    # Idempotent transition: warming → ready (called from provisioning
+    # success callback / heartbeat success). Returns true if the
+    # transition succeeded, false if state didn't allow it (e.g. already
+    # ready, claimed, draining, etc.).
+    def mark_pool_ready!
+      return false unless in_pool?
+      return false unless pool_state == "warming"
+      update!(pool_state: "ready")
+      true
+    end
+
+    # Idempotent transition: any pool state → errored. Reaper recycles
+    # errored members into terminated state on the next tick.
+    def mark_pool_errored!
+      return false unless in_pool?
+      return false if %w[claimed draining].include?(pool_state)
+      update!(pool_state: "errored")
+      true
+    end
+
+    # Pool slot duration accessors used by the reaper to decide
+    # health-check + recycling cadence.
+    def pool_warming_duration
+      return nil unless pool_warming_started_at
+      (Time.current - pool_warming_started_at).to_i
+    end
+
+    def pool_idle_duration
+      return nil unless pool_state == "ready" && pool_warming_started_at
+      (Time.current - pool_warming_started_at).to_i
     end
 
     # Check if instance is active (not terminated or error)

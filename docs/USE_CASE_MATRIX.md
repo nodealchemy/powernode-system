@@ -131,7 +131,7 @@ platform.system_assign_module_to_template({
 **What to watch**:
 - 90s × 50 = 75 minutes of cumulative bootstrap latency. For short batches, this dominates total runtime.
 - **Workaround**: pre-bake a NodePlatform disk image with `docker-ce` already installed (Phase 1 disk image CI). Then bootstrap drops to ~30s.
-- **Future workaround** (Phase 2.5+): pre-warmed instance pool — pre-provision N instances kept in `paused` state; operator "claims" one for ~0s startup.
+- **Mitigation shipped (slice 7)**: pre-warmed instance pool — `System::InstancePool` keeps N warming/ready instances ready for atomic acquisition. Operators acquire via `system_acquire_pooled_instance` MCP action in <30s instead of 5-10min cold provision. Reaper auto-replenishes as members are claimed. See `system_create_instance_pool`, `system_acquire_pooled_instance`, `system_drain_instance_pool`.
 - `lifecycle_class=ephemeral` is the right hint to the agent, but the agent reconciler short-circuit (skip expensive bootstrap) is **not yet implemented** — column exists, behavior change pending.
 
 ### Use Case 5 — CI runner pool ⚠️
@@ -208,7 +208,7 @@ Worker NodeInstances (N varies):
 | If you... | You'll see... | Do this instead |
 |---|---|---|
 | Terminate the *only* K3s server (single-server cluster) | Cluster has no remaining api server; kubectl breaks | Add a 2nd k3s-server first; VIP failover handles transition |
-| Run thousands of short-lived ephemeral instances | High bootstrap latency tax | Pre-bake disk image OR pre-warmed pool (Phase 2.5+) |
+| Run thousands of short-lived ephemeral instances | High bootstrap latency tax | Pre-bake disk image OR pre-warmed pool via `system_create_instance_pool` (slice 7 shipped) |
 | Expect pod traffic encrypted via SDWAN | Plain VXLAN over host NIC | Use NetworkPolicy + service mesh until pod_subnet_prefix lands |
 | Multi-cluster without `target_cluster_id` | k3s-agent joins the wrong cluster | Set `metadata.target_cluster_id` on the module assignment |
 | SSH directly to managed Docker host and run containers | Platform sync imports them with `owner=operator` (advisory tag) | OK but track ownership via container labels |
