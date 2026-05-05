@@ -49,12 +49,17 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **8 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **12 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
-  and trading pressure (cross-extension stigmergic coordination)
-- **8 AI Skill executors** (drift_remediate, provision_cluster,
-  rolling_module_upgrade, cve_response, capacity_recommend, module_compose,
-  runbook_generate, attribute_failure) — plus base class for new executors
+  trading pressure (cross-extension stigmergic coordination), and SDWAN
+  health (peer reachability, BGP session, VIP reachability, drift)
+- **14 AI Skill executors**:
+  - 4 read-shape (capacity_recommend, attribute_failure, runbook_generate,
+    cve_runbook_generate) — bound to System Concierge for chat
+  - 8 fleet autonomy (drift_remediate, cve_response, sdwan_failover,
+    sdwan_peer_remediate, sdwan_bgp_session_remediate, sdwan_vip_failover,
+    module_compose, rolling_module_upgrade)
+  - 2 runtime (docker_provision, provision_cluster) — bound to Runtime Manager
 - **FleetAutonomyService** — gates every autonomous action through
   intervention policy + approval chain (auto_approve / notify_and_proceed /
   require_approval / blocked); same UI as trading-overseer's approval queue
@@ -82,11 +87,15 @@ To operate this extension you need a running Powernode platform installation.
 See [the parent platform repo][platform] for installation instructions.
 
 This extension contributes:
-- Rails models, services, controllers (~50 models, ~80 services, ~30 controllers)
-- React/TypeScript frontend components (~50 components)
-- Worker jobs (system_task_reaper, system_fleet_reconcile, system_cve_feed,
-  system_fleet_event_retention)
-- Database migrations (~30)
+- Rails models, services, controllers (62 models across `system::*` + `sdwan::*`,
+  ~136 service classes across 10 subdomains, ~77 controllers across operator API +
+  on-node API + worker API)
+- React/TypeScript frontend (~175 TS/TSX files including 9 page components +
+  ~50 reusable components + 4 custom hooks + 15+ API client services)
+- Worker jobs (7): `system_task_reaper`, `system_fleet_reconcile`,
+  `system_cve_feed`, `system_fleet_event_retention`, `system_cloud_sync`,
+  `system_execute_task`, `system_gitops_sync`
+- Database migrations (66)
 - Sidekiq cron schedule entries
 
 ---
@@ -102,8 +111,56 @@ extensions/system/
 ├── initramfs/              # Multi-arch boot artifact builder
 ├── templates/
 │   └── module-repo/        # Canonical module-source layout
-└── docs/                   # Architecture + operational guides
+└── docs/
+    ├── ARCHITECTURE.md     # Subsystem reference
+    ├── runbooks/           # Step-by-step operator guides
+    ├── examples/           # End-to-end use-case walkthroughs
+    └── …                   # Domain-specific reference (see Documentation)
 ```
+
+---
+
+## Documentation
+
+### Reference
+
+| Doc | What it covers |
+|---|---|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 8 subsystems, threat model, state machines, API surfaces |
+| [`docs/USE_CASE_MATRIX.md`](./docs/USE_CASE_MATRIX.md) | What works / doesn't / what to expect for 10 NodeInstance container scenarios — **READ FIRST when designing a deployment** |
+| [`docs/CONTAINER_RUNTIMES.md`](./docs/CONTAINER_RUNTIMES.md) | Phase 1 Docker + Phase 2 K3s lifecycle + operator troubleshooting |
+| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | All 14 skill executors with descriptors and example I/O |
+| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 12 fleet sensors + intervention policy reference table |
+| [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md) | Webhook + CI worker + OCI artifact pipeline |
+| [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md) | All `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions |
+
+### Operator runbooks
+
+| Runbook | Goal |
+|---|---|
+| [`docs/runbooks/node-provisioning.md`](./docs/runbooks/node-provisioning.md) | Full Node + NodeInstance lifecycle (create → enroll → drain → decommission) with per-AASM-state error recovery |
+| [`docs/runbooks/sdwan-network-setup.md`](./docs/runbooks/sdwan-network-setup.md) | SDWAN end-to-end: networks, peers, VIPs, firewall, route policies, BGP, federation |
+| [`docs/runbooks/module-authoring.md`](./docs/runbooks/module-authoring.md) | Author + register + sign + publish a new NodeModule |
+| [`docs/runbooks/cve-response.md`](./docs/runbooks/cve-response.md) | Full CVE response workflow with SBOM-aware matching |
+| [`docs/runbooks/instance-pool-tuning.md`](./docs/runbooks/instance-pool-tuning.md) | Pool sizing, reaping, draining, troubleshooting |
+| [`docs/runbooks/multi-cluster-k3s.md`](./docs/runbooks/multi-cluster-k3s.md) | Multi-cluster K3s with `target_cluster_id` + HA control plane |
+| [`docs/runbooks/disk-image-ci.md`](./docs/runbooks/disk-image-ci.md) | Disk image build + signing + publication operator workflow |
+| [`docs/runbooks/vault-credential-restoration.md`](./docs/runbooks/vault-credential-restoration.md) | DR runbook for credential restoration |
+
+### Use-case examples
+
+[`docs/examples/`](./docs/examples/) — 10 end-to-end walkthroughs (single-node QEMU, K3s + SDWAN, multi-tenant container farm, rolling upgrades, CVE response, instance pools, custom module authoring, honeypot canaries, federation, GitOps). Six have companion runnable seeds under `server/db/seeds/example_*.rb`.
+
+### Subsystem-specific
+
+- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — integration test checklist (LocalQemuProvider)
+- [`docs/credential-restoration.md`](./docs/credential-restoration.md) — Vault transit credential design
+- [`docs/agent-peering.md`](./docs/agent-peering.md) — NodeInstance-as-Agent design (in sweep)
+- [`docs/gitops.md`](./docs/gitops.md) — GitOps reconciler design (in sweep)
+- [`docs/TASKS.md`](./docs/TASKS.md) — milestone tracker
+- [`initramfs/README.md`](./initramfs/README.md) — multi-arch boot artifact builder
+- [`agent/README.md`](./agent/README.md) — Go agent layout + 13 subcommands
+- [`templates/module-repo/README.md`](./templates/module-repo/README.md) — canonical module-source layout
 
 ---
 
@@ -140,10 +197,30 @@ MIT — see [LICENSE](./LICENSE).
 ## Status
 
 Active development. Spec coverage: **1,430 examples / 0 failures** (as of
-2026-05-03). The Golden Eclipse roadmap (Track A through Track F) is
+2026-05-04). The Golden Eclipse roadmap (Track A through Track F) is
 substantially complete on backend + autonomy axes; frontend operator surface
 covers M-FE-1 (Visual Composer) and M-FE-3 (Fleet Dashboard, with Boot Replay
 viewer in active sweep).
+
+### Recent shipments (May 2026)
+
+- **Slice 3** — first-class `Sdwan::VirtualIp` with cluster `api_endpoint`
+  VIP failover (bootstrap-node loss → automatic VIP failover to next
+  `k3s-server` holder; kubectl + worker `K3S_URL` survive the transition)
+- **Slice 7** — pre-warmed `System::InstancePool` with atomic acquisition
+  + reaper auto-replenishment; cuts ephemeral provisioning latency from
+  5–10 min cold-boot to <30 s claim
+- **Slice 9 (a–f)** — static subnet routing, first-class VIPs, iBGP/FRR,
+  comprehensive frontend, observability/autonomy, route policies (JSONB
+  statements compiled to FRR route-map + prefix-list/as-path-list)
+- **Slice 10** — config-variety dockerd `daemon.json` overrides via
+  dependant module hierarchy (per-node + per-instance customization
+  without rebuilding the base module)
+- **Phase 2 K3s** — full container runtime stack: cluster provisioner,
+  agent reconciler state machine, module catalog seed, multi-cluster
+  `metadata.target_cluster_id` join validation
+- **Phase 1 Docker** — managed `Devops::DockerHost` with InternalCaService
+  TLS provisioning + cascade-FK decommission
 
 ### Milestones complete
 

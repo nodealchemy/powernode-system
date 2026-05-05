@@ -24,7 +24,7 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 The system extension seeds three AI agents with distinct trust scores + approval chains:
 
 - **System Concierge** (`assistant`, chat) — operator chat agent. `concierge_tool_filter` covers `system_*`, `docker_*`, `kubernetes_*`, plus `discover_skills`/`get_skill_context`/`request_confirmation`. 4 read-shape skills bound. Seeded by `db/seeds/system_concierge_agent.rb`.
-- **Fleet Autonomy** (`monitor`) — fleet-wide reconciler running every 60s. Cert rotation, SDWAN remediation, CVE response, drift remediation, module composition, rolling upgrades. 8 skills bound. 17 intervention policies. Seeded by `db/seeds/fleet_autonomy_agent.rb`.
+- **Fleet Autonomy** (`monitor`) — fleet-wide reconciler running every 60s. Cert rotation, SDWAN remediation, CVE response, drift remediation, module composition, rolling upgrades. 8 skills bound. 19 intervention policies. Seeded by `db/seeds/fleet_autonomy_agent.rb`.
 - **Runtime Manager** (`monitor`) — Phase 1 Docker + Phase 2 K3s lifecycle. 2 skills bound (`docker_provision`, `provision_cluster`). 8 intervention policies. Distinct approval chain so container runtime changes route separately. Seeded by `db/seeds/system_runtime_manager_agent.rb`.
 
 ## MCP Tools
@@ -62,18 +62,39 @@ This is a git submodule. Per root CLAUDE.md:
 
 ## Related Docs
 
+### Reference
+
 - `README.md` — extension overview
 - `CONTRIBUTING.md` — submodule + commit workflow
 - `docs/ARCHITECTURE.md` — 8 subsystems + 4 API surfaces + security architecture
 - `docs/TASKS.md` — milestone status (auto-generated)
 - `docs/SMOKE_TEST.md` — integration test checklist
-- `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide
+- `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
-- `docs/SKILL_EXECUTORS.md` — 14 executor reference
-- `docs/FLEET_SENSORS.md` — 13 sensor reference
+- `docs/SKILL_EXECUTORS.md` — 14 executor reference (with example I/O)
+- `docs/FLEET_SENSORS.md` — 12 sensor reference + intervention policy table
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
-- `docs/threat-model.md` — security review
+- `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
 - `docs/agent-peering.md` — NodeInstance-as-Agent pattern (in sweep)
 - `docs/credential-restoration.md` — Vault credential lifecycle
 - `docs/gitops.md` — GitOps reconciler design (in sweep)
 - `initramfs/README.md` — multi-arch boot builder
+
+### Operator runbooks (`docs/runbooks/`)
+
+- `node-provisioning.md` — full Node + NodeInstance lifecycle with per-state error recovery
+- `sdwan-network-setup.md` — SDWAN end-to-end (networks, peers, VIPs, firewall, BGP, federation)
+- `module-authoring.md` — author + register + sign + publish a new NodeModule
+- `cve-response.md` — full CVE response workflow (SBOM-aware matching, triage, remediation)
+- `instance-pool-tuning.md` — pool sizing + reaping (slice 7)
+- `multi-cluster-k3s.md` — multi-cluster K3s with `metadata.target_cluster_id` + HA control plane
+- `disk-image-ci.md` — disk image CI operator workflow
+- `vault-credential-restoration.md` — DR runbook for credential restoration
+
+### Use-case examples (`docs/examples/`)
+
+10 end-to-end walkthroughs (`01-single-node-qemu.md` through `10-gitops-fleet.md`). Six have companion runnable seeds at `server/db/seeds/example_*.rb`.
+
+### External references (live in parent platform)
+
+- `<parent>/docs/system/threat-model.md` — STRIDE threat analysis across 6 attack surfaces (operator API, worker API, node API, MCP tools, internal CA, GitHub mirror)
