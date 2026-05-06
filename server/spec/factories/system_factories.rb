@@ -468,7 +468,7 @@ FactoryBot.define do
     size_bytes { 10_485_760 } # 10 MB
     arch { "arm64" }
     firmware_ref { "1.20240306" }
-    oci_ref { "git.ipnode.org/powernode/disk-images/test:abc" }
+    oci_ref { "registry.example.com/powernode/disk-images/test:abc" }
     status { "queued" }
     payload { {} }
 

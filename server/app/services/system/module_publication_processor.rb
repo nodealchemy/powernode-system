@@ -72,7 +72,7 @@ module System
     end
 
     def build_oci_ref(node_module, tag)
-      registry = ENV.fetch("POWERNODE_OCI_REGISTRY", "git.ipnode.org")
+      registry = ENV.fetch("POWERNODE_OCI_REGISTRY", "registry.example.com")
       "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
     end
 

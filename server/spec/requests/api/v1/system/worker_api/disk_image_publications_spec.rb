@@ -22,8 +22,8 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
       .with("system.platforms.publish_disk_image").and_return(true)
 
     platform.update!(
-      cosign_identity_regexp: "https://git.ipnode.org/.+",
-      cosign_issuer_regexp:   "https://git.ipnode.org"
+      cosign_identity_regexp: "https://registry.example.com/.+",
+      cosign_issuer_regexp:   "https://registry.example.com"
     )
   end
 

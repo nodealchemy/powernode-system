@@ -21,7 +21,7 @@ RSpec.describe System::ModuleOciIngestService do
     )
   end
 
-  let(:oci_ref) { "git.ipnode.org/account/ingest-mod:v1.0.0" }
+  let(:oci_ref) { "registry.example.com/account/ingest-mod:v1.0.0" }
 
   describe ".ingest!" do
     it "creates one ModuleArtifact per architecture and denormalizes onto version" do

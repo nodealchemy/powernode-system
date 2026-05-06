@@ -141,8 +141,8 @@ puts "    ✓ NodePlatform: ubuntu-24.04-arm64-uefi (id=#{platform_arm64_uefi.id
 # operator overrides are preserved across seed reruns.
 [platform, platform_rpi4, platform_arm64_uefi].each do |p|
   attrs = {}
-  attrs[:cosign_identity_regexp] = "https://git.ipnode.org/powernode/.+" if p.cosign_identity_regexp.blank?
-  attrs[:cosign_issuer_regexp]   = "https://git.ipnode.org"              if p.cosign_issuer_regexp.blank?
+  attrs[:cosign_identity_regexp] = "https://registry.example.com/powernode/.+" if p.cosign_identity_regexp.blank?
+  attrs[:cosign_issuer_regexp]   = "https://registry.example.com"              if p.cosign_issuer_regexp.blank?
   next if attrs.empty?
   p.update!(attrs)
   puts "    ↻ NodePlatform: #{p.name} cosign trust policy seeded"

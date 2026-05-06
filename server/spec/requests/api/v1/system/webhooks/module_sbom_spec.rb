@@ -25,7 +25,7 @@ RSpec.describe "Api::V1::System::Webhooks::ModuleSbom", type: :request do
   let!(:artifact) do
     System::ModuleArtifact.create!(
       node_module_version: version,
-      oci_ref: "git.ipnode.org/ipnode-acme/nginx-mod:v1.2.3-amd64",
+      oci_ref: "registry.example.com/ipnode-acme/nginx-mod:v1.2.3-amd64",
       oci_digest: "sha256:#{SecureRandom.hex(32)}",
       media_type: "application/vnd.powernode.module.v1",
       architecture: "amd64",

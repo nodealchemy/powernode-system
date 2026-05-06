@@ -629,7 +629,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     describe "system_set_default_disk_image_publication" do
-      let!(:published) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "published", oci_ref: "git.ipnode.org/test:abc", git_sha: "test-sha-promoted") }
+      let!(:published) { create(:system_disk_image_publication, account: account, node_platform: platform_record_for_pubs, status: "published", oci_ref: "registry.example.com/test:abc", git_sha: "test-sha-promoted") }
 
       it "copies oci_ref + git_sha onto the parent NodePlatform" do
         r = call("system_set_default_disk_image_publication", publication_id: published.id)
@@ -637,7 +637,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         expect(r[:data][:set_default]).to be true
 
         platform_record_for_pubs.reload
-        expect(platform_record_for_pubs.disk_image_oci_ref).to eq("git.ipnode.org/test:abc")
+        expect(platform_record_for_pubs.disk_image_oci_ref).to eq("registry.example.com/test:abc")
         expect(platform_record_for_pubs.disk_image_git_sha).to eq("test-sha-promoted")
         expect(platform_record_for_pubs.disk_image_publication_status).to eq("published")
       end

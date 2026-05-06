@@ -96,7 +96,7 @@ end
 puts "  ℹ️  In production, the full flow is:"
 puts "       1. Operator pushes manifest.yaml + Containerfile + rootfs/ to a Gitea repo"
 puts "       2. .gitea/workflows/build.yaml runs the two-stage CI"
-puts "       3. Cosign signs; oras pushes to git.ipnode.org/<account>/modules/<name>"
+puts "       3. Cosign signs; oras pushes to registry.example.com/<account>/modules/<name>"
 puts "       4. ModuleOciIngestService polls + ingests; creates NodeModule + Version rows"
 puts "       5. Operator promotes via system_promote_module_version"
 puts "  Done. See docs/examples/07-build-custom-module.md and runbooks/module-authoring.md."

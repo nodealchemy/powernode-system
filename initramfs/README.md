@@ -66,7 +66,7 @@ runs on every push to the system extension's `main` branch. It:
 2. Builds all six variants × both archs in parallel.
 3. Computes per-artifact SHA-256 + fs-verity Merkle root hashes.
 4. Pushes the OCI bootc variant to the platform's container registry
-   (`git.ipnode.org`) with cosign signing via Sigstore Fulcio (no
+   (`registry.example.com`) with cosign signing via Sigstore Fulcio (no
    long-lived keys; ephemeral OIDC-bound certs).
 5. Uploads non-OCI variants as Gitea release artifacts.
 6. Fires the platform's disk-image-built webhook (`POST

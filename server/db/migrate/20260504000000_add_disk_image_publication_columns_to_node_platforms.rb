@@ -12,11 +12,11 @@ class AddDiskImagePublicationColumnsToNodePlatforms < ActiveRecord::Migration[8.
   def change
     change_table :system_node_platforms, bulk: true do |t|
       t.string :cosign_identity_regexp,
-               comment: "Sigstore Fulcio identity regexp the publication processor will accept (e.g. 'https://git.ipnode.org/powernode/.+')"
+               comment: "Sigstore Fulcio identity regexp the publication processor will accept (e.g. 'https://registry.example.com/powernode/.+')"
       t.string :cosign_issuer_regexp,
-               comment: "Sigstore Fulcio OIDC issuer regexp (e.g. 'https://git.ipnode.org')"
+               comment: "Sigstore Fulcio OIDC issuer regexp (e.g. 'https://registry.example.com')"
       t.string :disk_image_oci_ref,
-               comment: "Last-published OCI reference (e.g. git.ipnode.org/powernode/disk-images/ubuntu-24.04-rpi4:abc123)"
+               comment: "Last-published OCI reference (e.g. registry.example.com/powernode/disk-images/ubuntu-24.04-rpi4:abc123)"
       t.string :disk_image_git_sha,
                comment: "Git SHA of the source build that produced the active disk image"
       t.string :disk_image_publication_status,

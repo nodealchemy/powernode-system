@@ -14,7 +14,7 @@ ARG BASE_IMAGE_DIGEST=ubuntu@sha256:placeholder-pin-via-ci-input
 FROM ${BASE_IMAGE_DIGEST}
 
 ARG TARGETARCH
-LABEL org.opencontainers.image.source="https://git.ipnode.org/powernode/powernode-platform" \
+LABEL org.opencontainers.image.source="https://registry.example.com/powernode/powernode-platform" \
       org.opencontainers.image.description="Powernode bootc-compatible OS image" \
       org.opencontainers.image.licenses="proprietary" \
       org.powernode.boot.role="installer"

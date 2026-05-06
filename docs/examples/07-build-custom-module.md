@@ -7,18 +7,18 @@ End-to-end walkthrough: author + register + sign + publish + assign a custom Nod
 **Audience:** module authors, platform contributors, external developers consuming the system extension.
 
 **Prerequisites:**
-- Gitea account at `git.ipnode.org` with permission to create repos under your account
+- Gitea account at `registry.example.com` with permission to create repos under your account
 - `docker` + `oras` + `cosign` CLI installed locally
 - A NodePlatform you'll assign the module to (e.g., ubuntu-24.04-amd64)
 
 ## Step 1 — Clone the canonical template
 
 ```bash
-git clone git@git.ipnode.org:powernode/templates/module-repo.git my-redis-module
+git clone git@registry.example.com:powernode/templates/module-repo.git my-redis-module
 cd my-redis-module
 rm -rf .git
 git init
-git remote add origin git@git.ipnode.org:<account>/modules/my-redis-module.git
+git remote add origin git@registry.example.com:<account>/modules/my-redis-module.git
 ```
 
 ## Step 2 — Edit `manifest.yaml`
@@ -108,7 +108,7 @@ platform.list_gitea_workflow_runs({ owner: "<account>", repo: "modules/my-redis-
 
 The workflow:
 1. Runs the builder image with `manifest.yaml` + `rootfs/` → emits artifact tar at `dist/module.tar`
-2. Pushes to OCI: `oras push git.ipnode.org/<account>/modules/my-redis-module:v0.1.0 ./dist/module.tar:application/vnd.powernode.module.v1+tar`
+2. Pushes to OCI: `oras push registry.example.com/<account>/modules/my-redis-module:v0.1.0 ./dist/module.tar:application/vnd.powernode.module.v1+tar`
 3. Signs with Cosign (keyless via Sigstore Fulcio): `cosign sign --yes <artifact-ref>`
 
 After the workflow completes (~5 min), the platform's `ModuleOciIngestService` polls the registry and creates a `NodeModuleVersion` row in `lifecycle_state: draft`.

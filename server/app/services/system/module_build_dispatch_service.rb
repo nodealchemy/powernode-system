@@ -123,7 +123,7 @@ module System
     # as M1 follow-up).
     # ----------------------------------------------------------------------
     class GiteaDispatchAdapter
-      DEFAULT_BASE_URL = "https://git.ipnode.org"
+      DEFAULT_BASE_URL = "https://registry.example.com"
 
       def initialize(base_url: nil, token: nil)
         @base_url = base_url || ENV.fetch("POWERNODE_GITEA_BASE_URL", DEFAULT_BASE_URL)

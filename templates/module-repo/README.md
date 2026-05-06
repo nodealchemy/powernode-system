@@ -47,7 +47,7 @@ sit beside it in a particular template's union mount).
 
 | Var | Default | Purpose |
 |---|---|---|
-| `POWERNODE_OCI_REGISTRY` | `git.ipnode.org` | Where to push the artifact |
+| `POWERNODE_OCI_REGISTRY` | `registry.example.com` | Where to push the artifact |
 | `POWERNODE_WEBHOOK_URL` | `https://platform.example.com/api/v1/system/webhooks/gitea/module` | Where to notify on build completion |
 
 ## Multi-arch builds

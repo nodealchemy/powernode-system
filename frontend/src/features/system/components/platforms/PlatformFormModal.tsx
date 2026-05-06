@@ -362,7 +362,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                       type="text"
                       value={formData.cosign_identity_regexp}
                       onChange={handleChange}
-                      placeholder="https://git.ipnode.org/powernode/.+"
+                      placeholder="https://registry.example.com/powernode/.+"
                       className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm"
                     />
                   </div>
@@ -377,7 +377,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                       type="text"
                       value={formData.cosign_issuer_regexp}
                       onChange={handleChange}
-                      placeholder="https://git.ipnode.org"
+                      placeholder="https://registry.example.com"
                       className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm"
                     />
                   </div>

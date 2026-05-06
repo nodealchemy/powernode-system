@@ -125,7 +125,7 @@ curl "/api/v1/system/node_platforms/<id>/disk_image_publications" \
 ```
 
 Each publication carries:
-- `oci_ref` — fully-qualified registry path (e.g. `git.ipnode.org/account/disk-images@sha256:...`)
+- `oci_ref` — fully-qualified registry path (e.g. `registry.example.com/account/disk-images@sha256:...`)
 - `git_sha` — source commit
 - `built_at` — timestamp
 - `cosign_identity` — who signed (Gitea Actions OIDC identity)

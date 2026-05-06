@@ -45,7 +45,7 @@ permissions:
   packages: write      # oras push to Gitea registry
 
 env:
-  REGISTRY: ${{ vars.POWERNODE_OCI_REGISTRY || 'git.ipnode.org' }}
+  REGISTRY: ${{ vars.POWERNODE_OCI_REGISTRY || 'registry.example.com' }}
   COMPOSEFS_TOOLS_VERSION: "1.0.4"
 
 jobs:

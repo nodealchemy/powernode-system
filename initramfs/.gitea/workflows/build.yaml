@@ -11,7 +11,7 @@ name: build-initramfs
 #   - installer.iso
 #   - template.ipxe.erb
 #   - cloud.qcow2
-#   - powernode-bootc:<arch> OCI image (pushed to git.ipnode.org registry)
+#   - powernode-bootc:<arch> OCI image (pushed to registry.example.com registry)
 # All artifacts cosign-signed via Sigstore Fulcio (keyless, OIDC-bound).
 
 on:
@@ -46,6 +46,7 @@ jobs:
     env:
       BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest || 'ubuntu@sha256:placeholder-pin-via-ci-input' }}
       APT_SNAPSHOT:      ${{ inputs.apt_snapshot || '20260430T000000Z' }}
+      REGISTRY:          ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -129,9 +130,9 @@ jobs:
         working-directory: extensions/system/initramfs/build/${{ matrix.arch }}/oci
         run: |
           if command -v buildah >/dev/null 2>&1 && buildah images | grep -q powernode-bootc; then
-            buildah login -u "${GITEA_USER:-runner}" -p "${GITEA_TOKEN}" git.ipnode.org
+            buildah login -u "${GITEA_USER:-runner}" -p "${GITEA_TOKEN}" "${REGISTRY}"
             buildah push "powernode-bootc:${{ matrix.arch }}" \
-              "docker://git.ipnode.org/powernode/powernode-bootc:${{ github.ref_name }}-${{ matrix.arch }}"
+              "docker://${REGISTRY}/powernode/powernode-bootc:${{ github.ref_name }}-${{ matrix.arch }}"
           fi
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}

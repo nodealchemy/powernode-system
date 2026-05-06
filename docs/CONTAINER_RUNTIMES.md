@@ -308,7 +308,7 @@ Symptoms: `docker pull` fails with timeout or `connection refused`.
   hosts: ["tcp://[<sdwan-/128>]:2376", "unix:///var/run/docker.sock"]
   registry-mirrors: ["https://registry.<sdwan-domain>"]
   ```
-- For pulls from `git.ipnode.org` (Powernode Gitea container registry), the agent injects credentials into `~/.docker/config.json` automatically when the node has a valid Vault token.
+- For pulls from `registry.example.com` (Powernode Gitea container registry), the agent injects credentials into `~/.docker/config.json` automatically when the node has a valid Vault token.
 
 ## Source Files
 

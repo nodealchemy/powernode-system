@@ -26,7 +26,7 @@ Push to platform's image-build repo (or trigger via webhook)
 Cosign keyless signing (Sigstore Fulcio, ephemeral OIDC certs)
        │
        ▼
-oras push to git.ipnode.org/<account>/disk-images/<platform>:<version>
+oras push to registry.example.com/<account>/disk-images/<platform>:<version>
        │
        ▼
 DiskImageWebhook fires (POST /api/v1/system/webhooks/disk_image_built)
@@ -56,7 +56,7 @@ platform.system_provision_ci_worker({
 // → { instance: {...}, runner_token: "...", registration_url: "..." }
 ```
 
-The worker's `gitea-runner` module reads the token from systemd environment, registers with `git.ipnode.org`, and starts polling for jobs.
+The worker's `gitea-runner` module reads the token from systemd environment, registers with `registry.example.com`, and starts polling for jobs.
 
 **Verify:**
 

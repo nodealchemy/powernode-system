@@ -37,7 +37,7 @@ my-module/
         └── build.yaml             # two-stage CI: builder → composer
 ```
 
-Create a Gitea repository under `git.ipnode.org/<account>/modules/my-module` (private by default; public is allowed for community modules). Push the skeleton.
+Create a Gitea repository under `registry.example.com/<account>/modules/my-module` (private by default; public is allowed for community modules). Push the skeleton.
 
 ## Phase 2 — Author manifest.yaml ✅
 
@@ -53,7 +53,7 @@ identity:
   description: nginx 1.26 with TLS hardening + /healthz endpoint
 
   # Cosign trust pin: the platform rejects artifacts not signed by these
-  cosign_identity_regexp: '^https://git.ipnode.org/<account>/modules/my-nginx@.*$'
+  cosign_identity_regexp: '^https://registry.example.com/<account>/modules/my-nginx@.*$'
   cosign_issuer_regexp:   '^https://gitea\.ipnode\.org$'
 
 # Packages installed in the Containerfile builder stage via mmdebstrap.
@@ -185,12 +185,12 @@ jobs:
 
       - name: Push to OCI registry
         run: |
-          oras push git.ipnode.org/<account>/modules/my-nginx:${{ github.sha }} \
+          oras push registry.example.com/<account>/modules/my-nginx:${{ github.sha }} \
             ./dist/module.tar:application/vnd.powernode.module.v1+tar
 
       - name: Sign with Cosign (keyless)
         run: |
-          cosign sign --yes git.ipnode.org/<account>/modules/my-nginx:${{ github.sha }}
+          cosign sign --yes registry.example.com/<account>/modules/my-nginx:${{ github.sha }}
         env:
           COSIGN_EXPERIMENTAL: 1
 ```
@@ -200,7 +200,7 @@ jobs:
 1. **Builder stage**: mmdebstrap installs packages from `package_spec` into a clean Debian rootfs
 2. **Composer stage**: rsync applies your `rootfs/` tree per `file_spec` rules; mkcomposefs computes the fs-verity digest
 3. **Artifact emission**: tar of the composefs lower layer + manifest.json (parsed) + composefs digest
-4. **OCI push**: `oras` uploads the artifact to `git.ipnode.org`
+4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
 5. **Cosign signing**: keyless signing via Sigstore Fulcio (no long-lived signing keys; ephemeral OIDC-bound certs tied to the Gitea Actions OIDC issuer)
 
 The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature matching the manifest's `cosign_identity_regexp`, it creates a `NodeModuleVersion` row in `lifecycle_state: draft`.

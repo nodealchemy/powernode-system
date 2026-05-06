@@ -1,11 +1,11 @@
-// Package oci pulls module artifacts from the OCI registry (git.ipnode.org by
+// Package oci pulls module artifacts from the OCI registry (registry.example.com by
 // default) and verifies them before handoff to internal/mount.
 //
 // Each module artifact is a tar of the composefs lower layer + manifest.json.
 // The pull flow:
 //
 //   1. Resolve the artifact reference from the platform's module manifest
-//      (e.g., "git.ipnode.org/<account>/modules/nginx@sha256:...")
+//      (e.g., "registry.example.com/<account>/modules/nginx@sha256:...")
 //   2. oras pull — uses the agent's mTLS cert as registry credentials
 //   3. Cosign signature verification (see internal/verify) — checks identity
 //      regexp + issuer regexp from the module's NodeModuleVersion record

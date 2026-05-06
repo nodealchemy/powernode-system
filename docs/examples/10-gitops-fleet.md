@@ -99,7 +99,7 @@ platform.create_gitea_repository({                      // standard MCP tool
 
 ```javascript
 platform.system_gitops_register_repository({          // ⚠️ skill-level MCP gap
-  repo_url: "git@git.ipnode.org:<account>/fleet-config.git",
+  repo_url: "git@registry.example.com:<account>/fleet-config.git",
   branch: "main",
   ssh_credential_id: "<vault-cred-id>",
   reconcile_interval_seconds: 300                     // optional; default 60s

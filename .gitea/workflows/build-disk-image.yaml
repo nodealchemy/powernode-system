@@ -293,7 +293,7 @@ jobs:
       - name: Push disk images to OCI registry (cosign-signed + attested)
         if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'git.ipnode.org' }}
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
           POWERNODE_REGISTRY_USER: ${{ secrets.POWERNODE_REGISTRY_USER }}
           POWERNODE_REGISTRY_TOKEN: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
         run: |
@@ -363,7 +363,7 @@ jobs:
         env:
           POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
           POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'git.ipnode.org' }}
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
         run: |
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do

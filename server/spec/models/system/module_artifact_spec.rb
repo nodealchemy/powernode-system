@@ -25,7 +25,7 @@ RSpec.describe System::ModuleArtifact, type: :model do
   let(:default_attrs) do
     {
       node_module_version: version,
-      oci_ref: "git.ipnode.org/account/nginx-mod:v1.0.0",
+      oci_ref: "registry.example.com/account/nginx-mod:v1.0.0",
       oci_digest: "sha256:#{'a' * 64}",
       media_type: described_class::DEFAULT_MEDIA_TYPE,
       architecture: "amd64",

@@ -125,7 +125,7 @@ module System
         path = resolve_local_path(oci_ref)
 
         # If the path resolved isn't on disk, try oras pull as a smoke-mode
-        # fallback (ref like `git.ipnode.org/.../...:sha`). Skips cosign
+        # fallback (ref like `registry.example.com/.../...:sha`). Skips cosign
         # verify; still runs SHA-256 verify on the pulled bytes.
         unless File.exist?(path)
           if oci_ref.include?("/") && !oci_ref.start_with?("local:", "file:")

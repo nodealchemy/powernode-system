@@ -15,7 +15,7 @@ RSpec.describe "Disk image built webhook", type: :request do
       sha256:        "a" * 64,
       size_bytes:    10_485_760,
       git_sha:       "abc123",
-      oci_ref:       "git.ipnode.org/powernode/disk-images/test:abc123",
+      oci_ref:       "registry.example.com/powernode/disk-images/test:abc123",
       arch:          "arm64",
       firmware_ref:  "1.20240306"
     }
