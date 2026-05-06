@@ -480,6 +480,36 @@ if legacy_templates.any?
   puts "    🧹 Removed #{legacy_count} legacy smoke template(s): #{legacy_template_names.join(', ')}"
 end
 
+# ── Cleanup of legacy smoke-prefixed module categories ─────────────────────
+#
+# Categories `smoke.base` and `smoke.web` were created by earlier seed runs
+# under the smoke-test-scoped naming. They've been superseded by `base` and
+# `web` (created above). Re-point any modules to the canonical category and
+# remove the legacy row. Idempotent — finds nothing on second run.
+
+legacy_category_renames = {
+  "smoke.base" => "base",
+  "smoke.web"  => "web"
+}
+merged_categories = 0
+legacy_category_renames.each do |old_name, new_name|
+  legacy_cat = System::NodeModuleCategory.find_by(account: account, name: old_name)
+  next unless legacy_cat
+  canonical_cat = System::NodeModuleCategory.find_by(account: account, name: new_name)
+  if canonical_cat
+    affected = legacy_cat.node_modules.update_all(category_id: canonical_cat.id)
+    puts "    ↻ Re-pointed #{affected} module(s) from #{old_name} → #{new_name}" if affected.positive?
+    legacy_cat.destroy!
+    merged_categories += 1
+    puts "    🧹 Removed legacy NodeModuleCategory: #{old_name}"
+  else
+    legacy_cat.update!(name: new_name)
+    merged_categories += 1
+    puts "    ↻ Renamed NodeModuleCategory: #{old_name} → #{new_name}"
+  end
+end
+puts "    ✓ Module category cleanups: #{merged_categories} row(s) processed" if merged_categories.positive?
+
 # ── Optional: cleanup of legacy smoke-test nodes/instances ─────────────────
 #
 # Older smoke-test iterations left behind ~30 nodes (smoke-test-1,
