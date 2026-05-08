@@ -46,7 +46,16 @@ module Sdwan
     # Compiles all peers in a network at once — useful for the per-network
     # ActionCable broadcast and for previewing topology changes. Never
     # includes private-key material (this is the operator-facing path).
+    #
+    # Accepts un-persisted `Sdwan::Network` instances for dry-run rendering
+    # (M1 ProvisioningTool plan-review surface). When the network has not
+    # been saved, no peers exist yet — we skip the AR query and return an
+    # empty Array so callers (e.g. TopologyRendererService) can synthesize
+    # a hypothetical preview from the brief instead. No DB writes occur in
+    # either branch.
     def self.compile_for_network(network, federation_resolver: ->(_) { [] })
+      return [] unless network&.persisted?
+
       compiler = new(network, federation_resolver: federation_resolver, include_private_key: false)
       network.peers.includes(:keys).map { |peer| compiler.compile_peer_view(peer) }
     end
