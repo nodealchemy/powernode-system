@@ -52,7 +52,7 @@ module System
     # (ip_allocation_id, ip_association_id, netboot.enabled, ipmi.*) use
     # the explicit `config.merge` pattern at the call site and don't need
     # accessor declarations.
-    store_accessor :config, :cloud_instance_id
+    store_accessor :config, :cloud_instance_id, :admin_user
 
     # === State machine (AASM — platform standard) ===
     # Two-phase transitions: control actions ("start", "stop", "reboot",
@@ -109,6 +109,12 @@ module System
         transitions from: [ :pending, :provisioning, :starting, :running, :stopping, :rebooting ], to: :error
       end
     end
+
+    # M4 audit trail — `prepend` so our overrides take precedence over the
+    # bang methods AASM defines directly on the class. `super` inside our
+    # overrides resolves to AASM's implementation, which performs the
+    # actual state transition; we then write the audit row.
+    prepend System::LifecycleAuditable
 
     # Scopes
     scope :cloud, -> { where(variety: "cloud") }

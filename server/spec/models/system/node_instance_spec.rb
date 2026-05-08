@@ -253,4 +253,108 @@ RSpec.describe System::NodeInstance, type: :model do
       expect(instance.config['ip_info']['internal']).to eq('10.0.0.1')
     end
   end
+
+  # -----------------------------------------------------------------------
+  # M4 audit trail — System::LifecycleAuditable decorates AASM bang methods
+  # with AuditLog.log_action calls. Each transition writes one
+  # `system.node_instance.<event>` row.
+  # -----------------------------------------------------------------------
+  describe 'lifecycle audit logging (System::LifecycleAuditable)' do
+    let(:account)  { node.account }
+    let(:user)     { create(:user, account: account) }
+
+    before { Audit::Context.reset! }
+    after  { Audit::Context.reset! }
+
+    def audit_logs_for(instance, action: nil)
+      scope = AuditLog.where(
+        account_id: account.id,
+        resource_type: 'System::NodeInstance',
+        resource_id: instance.id
+      )
+      scope = scope.where(action: action) if action
+      scope.order(:created_at)
+    end
+
+    it 'writes an audit row on operator-initiated start!' do
+      instance = create(:system_node_instance, node: node, status: 'stopped')
+
+      expect {
+        Audit::Context.with(user: user, ip_address: '203.0.113.10', source: 'api') do
+          instance.start!
+        end
+      }.to change(AuditLog, :count).by(1)
+
+      log = audit_logs_for(instance, action: 'system.node_instance.start').last
+      expect(log).to be_present
+      expect(log.user_id).to eq(user.id)
+      expect(log.ip_address).to eq('203.0.113.10')
+      expect(log.source).to eq('api')
+      expect(log.old_values['status']).to eq('stopped')
+      expect(log.new_values['status']).to eq('starting')
+      expect(log.metadata['node_id']).to eq(node.id)
+      expect(instance.reload.status).to eq('starting')
+    end
+
+    it 'writes an audit row on stop!, reboot!, and terminate! transitions' do
+      instance = create(:system_node_instance, node: node, status: 'running')
+
+      expect { instance.stop! }.to change(AuditLog, :count).by(1)
+      expect(audit_logs_for(instance, action: 'system.node_instance.stop').count).to eq(1)
+      expect(audit_logs_for(instance).last.new_values['status']).to eq('stopping')
+
+      instance.update!(status: 'running')
+      expect { instance.reboot! }.to change(AuditLog, :count).by(1)
+      expect(audit_logs_for(instance, action: 'system.node_instance.reboot').count).to eq(1)
+
+      instance.update!(status: 'stopped')
+      expect { instance.terminate! }.to change(AuditLog, :count).by(1)
+      expect(audit_logs_for(instance, action: 'system.node_instance.terminate').count).to eq(1)
+    end
+
+    it 'writes an audit row on worker mark_provisioning! / mark_running! finalizers' do
+      instance = create(:system_node_instance, node: node, status: 'pending')
+
+      expect { instance.mark_provisioning! }.to change(AuditLog, :count).by(1)
+      log = audit_logs_for(instance, action: 'system.node_instance.mark_provisioning').last
+      expect(log.old_values['status']).to eq('pending')
+      expect(log.new_values['status']).to eq('provisioning')
+
+      expect { instance.mark_running! }.to change(AuditLog, :count).by(1)
+      log = audit_logs_for(instance, action: 'system.node_instance.mark_running').last
+      expect(log.old_values['status']).to eq('provisioning')
+      expect(log.new_values['status']).to eq('running')
+    end
+
+    it 'writes an audit row on mark_errored! finalizer' do
+      instance = create(:system_node_instance, node: node, status: 'starting')
+
+      expect { instance.mark_errored! }.to change(AuditLog, :count).by(1)
+      log = audit_logs_for(instance, action: 'system.node_instance.mark_errored').last
+      expect(log.old_values['status']).to eq('starting')
+      expect(log.new_values['status']).to eq('error')
+    end
+
+    it 'pulls correlation_id from Audit::Context when supplied' do
+      instance = create(:system_node_instance, node: node, status: 'pending')
+
+      Audit::Context.with(user: user, correlation_id: 'corr-abc-123', mission_id: 'mission-xyz') do
+        instance.mark_provisioning!
+      end
+
+      log = audit_logs_for(instance).last
+      expect(log.metadata['correlation_id']).to eq('corr-abc-123')
+      expect(log.metadata['mission_id']).to eq('mission-xyz')
+    end
+
+    it 'still transitions when audit logging fails (failure is swallowed)' do
+      instance = create(:system_node_instance, node: node, status: 'stopped')
+
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, 'boom')
+      expect(Rails.logger).to receive(:error).with(/Failed to write lifecycle audit/)
+
+      expect { instance.start! }.not_to raise_error
+      expect(instance.reload.status).to eq('starting')
+    end
+  end
 end
