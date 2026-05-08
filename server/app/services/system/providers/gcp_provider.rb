@@ -688,6 +688,87 @@ module System
         }
       end
 
+      # Cheap, side-effect-free authentication probe used by
+      # System::CredentialValidationService (M2 BYOC). Validates the
+      # service-account JSON shape, signs a JWT bearer assertion, and
+      # exchanges it for an OAuth2 access token at the GCP token URI.
+      # Doesn't require any GCE-scoped permissions — only proves the
+      # service account exists and the private key is intact.
+      def authenticate?
+        @last_authentication_error = nil
+
+        raw = auth_credential("service_account_json", "secret_key")
+        if raw.to_s.strip.empty?
+          @last_authentication_error = "missing service_account_json"
+          return false
+        end
+
+        parsed = raw.is_a?(String) ? JSON.parse(raw) : raw
+
+        client_email = parsed["client_email"]
+        private_key  = parsed["private_key"]
+        token_uri    = parsed["token_uri"] || "https://oauth2.googleapis.com/token"
+
+        missing = []
+        missing << "client_email" if client_email.to_s.strip.empty?
+        missing << "private_key"  if private_key.to_s.strip.empty?
+        if missing.any?
+          @last_authentication_error = "service_account_json missing #{missing.join(', ')}"
+          return false
+        end
+
+        now = Time.now.to_i
+        payload = {
+          iss:   client_email,
+          scope: "https://www.googleapis.com/auth/cloud-platform",
+          aud:   token_uri,
+          iat:   now,
+          exp:   now + 3600
+        }
+        rsa = ::OpenSSL::PKey::RSA.new(private_key)
+        assertion = ::JWT.encode(payload, rsa, "RS256")
+
+        token_conn = Faraday.new do |f|
+          f.adapter Faraday.default_adapter
+        end
+        response = token_conn.post(token_uri) do |req|
+          req.headers["Content-Type"] = "application/x-www-form-urlencoded"
+          req.body = URI.encode_www_form(
+            grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            assertion: assertion
+          )
+        end
+
+        if response.status == 200
+          body = JSON.parse(response.body.to_s)
+          if body["access_token"].to_s.empty?
+            @last_authentication_error = "token response missing access_token"
+            false
+          else
+            true
+          end
+        else
+          body = response.body.to_s
+          parsed_body = begin
+            JSON.parse(body)
+          rescue StandardError
+            nil
+          end
+          message = parsed_body.is_a?(Hash) ? (parsed_body["error_description"] || parsed_body["error"]) : nil
+          @last_authentication_error = message || "HTTP #{response.status}"
+          false
+        end
+      rescue JSON::ParserError => e
+        @last_authentication_error = "invalid service_account_json: #{e.message}"
+        false
+      rescue ::OpenSSL::PKey::RSAError => e
+        @last_authentication_error = "invalid private_key: #{e.message}"
+        false
+      rescue StandardError => e
+        @last_authentication_error = e.message
+        false
+      end
+
       protected
 
       def normalize_status(provider_status)
@@ -695,6 +776,26 @@ module System
       end
 
       private
+
+      # Resolve an auth-probe credential — transient creds (M2 BYOC test
+      # flow) win; otherwise fall back to the connection columns via the
+      # BaseProvider credential helper.
+      def auth_credential(*keys)
+        if @transient_credentials
+          keys.each do |key|
+            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
+            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+          end
+          return nil
+        end
+
+        return nil unless connection
+        keys.each do |key|
+          value = credential(column: key.to_sym, config_key: key.to_s)
+          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+        end
+        nil
+      end
 
       def instances_client
         @instances_client ||= Google::Cloud::Compute::V1::Instances::Rest::Client.new do |config|

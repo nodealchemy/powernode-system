@@ -62,6 +62,61 @@ module System
       # Connection / health
       # ===========================================
 
+      # Cheap, side-effect-free authentication probe used by
+      # System::CredentialValidationService (M2 BYOC). Performs a
+      # client-credentials OAuth2 grant against Azure AD using only the
+      # supplied tenant_id / client_id / client_secret — does NOT require
+      # subscription access (which `test_connection` does). Populates
+      # `last_authentication_error` on rejection so the onboarding UI
+      # can surface the AAD error description (typically AADSTS-prefixed).
+      def authenticate?
+        @last_authentication_error = nil
+
+        tenant         = auth_credential("tenant_id", "tenant")
+        client_id_val  = auth_credential("client_id", "access_key")
+        client_secret_val = auth_credential("client_secret", "secret_key")
+
+        missing = []
+        missing << "tenant_id"     if tenant.to_s.strip.empty?
+        missing << "client_id"     if client_id_val.to_s.strip.empty?
+        missing << "client_secret" if client_secret_val.to_s.strip.empty?
+        if missing.any?
+          @last_authentication_error = "missing #{missing.join(', ')}"
+          return false
+        end
+
+        login_conn = Faraday.new(url: LOGIN_BASE) do |f|
+          f.request :url_encoded
+          f.response :json, content_type: /\bjson$/
+          f.adapter Faraday.default_adapter
+        end
+
+        response = login_conn.post("/#{tenant}/oauth2/v2.0/token") do |req|
+          req.body = {
+            grant_type:    "client_credentials",
+            client_id:     client_id_val,
+            client_secret: client_secret_val,
+            scope:         "#{MGMT_BASE}/.default"
+          }
+        end
+
+        body = response.body
+        if response.success? && body.is_a?(Hash) && !body["access_token"].to_s.empty?
+          true
+        else
+          @last_authentication_error =
+            if body.is_a?(Hash)
+              body["error_description"] || body["error"] || "HTTP #{response.status}"
+            else
+              "HTTP #{response.status}"
+            end
+          false
+        end
+      rescue StandardError => e
+        @last_authentication_error = e.message
+        false
+      end
+
       # Test that credentials work and the subscription is reachable.
       def test_connection
         token = fetch_token!
@@ -686,6 +741,28 @@ module System
       private
 
       # ----- credentials + connection settings -----
+
+      # Resolve an auth-probe credential — transient creds (M2 BYOC test
+      # flow) win; otherwise fall back to the connection columns via the
+      # BaseProvider credential helper. Differs from `tenant_id` /
+      # `client_id` etc. (which raise when missing) by returning nil so
+      # the auth probe can compose a "missing X, Y, Z" error message.
+      def auth_credential(*keys)
+        if @transient_credentials
+          keys.each do |key|
+            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
+            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+          end
+          return nil
+        end
+
+        return nil unless connection
+        keys.each do |key|
+          value = credential(column: key.to_sym, config_key: key.to_s)
+          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+        end
+        nil
+      end
 
       def tenant_id
         credential(column: :tenant, required: true)

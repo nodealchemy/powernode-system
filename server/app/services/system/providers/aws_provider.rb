@@ -26,6 +26,13 @@ module System
       def create_instance(params)
         log_operation("create_instance", params: params.except(:user_data))
 
+        # M4 Enterprise polish — when ProvisioningService passes through
+        # an IP allowlist via :security_group_rules, materialize a
+        # dedicated EC2 Security Group with those rules and prepend its
+        # id to :security_group_ids. We append rather than replace so
+        # operators can still attach baseline SGs (VPC defaults, etc.).
+        params = ensure_allowlist_security_group(params)
+
         run_params = build_run_instance_params(params)
 
         begin
@@ -451,6 +458,41 @@ module System
         }
       end
 
+      # Cheap, side-effect-free authentication probe used by
+      # CredentialValidationService (M2 BYOC). Calls
+      # STS#GetCallerIdentity which works with any IAM principal — no
+      # EC2-scope permissions required, and never mutates state.
+      #
+      # Reads credentials from @transient_credentials when set (transient
+      # mode via `with_credentials`), otherwise falls back to the
+      # connection's typed columns via the BaseProvider credential helper.
+      def authenticate?
+        @last_authentication_error = nil
+
+        access_key_id     = auth_credential("access_key_id", "access_key")
+        secret_access_key = auth_credential("secret_access_key", "secret_key")
+        region_name       = auth_credential("region", "default_region") || "us-east-1"
+
+        if access_key_id.to_s.strip.empty?
+          @last_authentication_error = "missing access_key_id"
+          return false
+        end
+        if secret_access_key.to_s.strip.empty?
+          @last_authentication_error = "missing secret_access_key"
+          return false
+        end
+
+        sts_client = ::Aws::STS::Client.new(
+          region: region_name,
+          credentials: ::Aws::Credentials.new(access_key_id, secret_access_key)
+        )
+        sts_client.get_caller_identity
+        true
+      rescue StandardError => e
+        @last_authentication_error = e.message
+        false
+      end
+
       protected
 
       def normalize_status(provider_status)
@@ -458,6 +500,28 @@ module System
       end
 
       private
+
+      # Resolve a credential by key from transient creds (set by
+      # `with_credentials` for the BYOC test path) or fall back to the
+      # connection's typed columns via the BaseProvider helper. The first
+      # provided key wins; remaining keys are aliases (e.g., "access_key"
+      # is the connection-column alias of "access_key_id").
+      def auth_credential(*keys)
+        if @transient_credentials
+          keys.each do |key|
+            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
+            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+          end
+          return nil
+        end
+
+        return nil unless connection
+        keys.each do |key|
+          value = credential(column: key.to_sym, config_key: key.to_s)
+          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+        end
+        nil
+      end
 
       def ec2_client
         @ec2_client ||= Aws::EC2::Client.new(
@@ -498,6 +562,48 @@ module System
         )
       rescue Aws::EC2::Errors::InvalidInstanceIDNotFound
         build_error_response("Instance not found", code: "NotFound")
+      end
+
+      # Materialize an EC2 Security Group from a normalized rule set
+      # (see System::IpAllowlistService) and merge its id into
+      # params[:security_groups] so build_run_instance_params picks it up.
+      #
+      # No-op when :security_group_rules is missing or empty — the
+      # adapter falls back to whatever :security_groups the caller
+      # supplied (or the VPC default group).
+      def ensure_allowlist_security_group(params)
+        rules = Array(params[:security_group_rules])
+        return params if rules.empty?
+
+        sg_name = "powernode-allowlist-#{SecureRandom.hex(4)}"
+        sg_response = ec2_client.create_security_group(
+          group_name: sg_name,
+          description: "Powernode IP allowlist (auto-generated)"
+        )
+
+        ec2_client.authorize_security_group_ingress(
+          group_id: sg_response.group_id,
+          ip_permissions: rules.map { |rule|
+            {
+              ip_protocol: rule[:protocol] || "tcp",
+              from_port: rule[:port],
+              to_port: rule[:port],
+              ip_ranges: [ {
+                cidr_ip: rule[:source],
+                description: rule[:description].to_s.slice(0, 255)
+              } ]
+            }
+          }
+        )
+
+        merged_groups = Array(params[:security_groups]) + [ sg_response.group_id ]
+        params.merge(security_groups: merged_groups)
+      rescue Aws::EC2::Errors::ServiceError => e
+        # An allowlist SG creation failure must not block provisioning —
+        # log and let the caller continue with whatever default groups
+        # were already provided. Operators see this in CloudTrail too.
+        logger.warn("[AwsProvider] allowlist SG creation failed: #{e.class}: #{e.message}")
+        params
       end
 
       def build_run_instance_params(params)

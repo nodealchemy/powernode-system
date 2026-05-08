@@ -15,7 +15,8 @@ module System
         "azure" => "System::Providers::AzureProvider",
         "openstack" => "System::Providers::OpenStackProvider",
         "mock" => "System::Providers::MockProvider",
-        "local_qemu" => "System::Providers::LocalQemuProvider"
+        "local_qemu" => "System::Providers::LocalQemuProvider",
+        "pro_cloud" => "System::Providers::ProCloudProvider"
       }.freeze
 
       class << self
@@ -79,6 +80,21 @@ module System
           end
 
           self.for(connection, region: volume.provider_region)
+        end
+
+        # Look up the adapter class for a Provider record (or provider_type
+        # string). Used by System::CredentialValidationService — the BYOC
+        # onboarding flow needs the adapter class without instantiating it
+        # against a persisted ProviderConnection.
+        #
+        # @param provider [System::Provider, String, Symbol] Provider record
+        #   or provider_type identifier
+        # @return [Class, nil] The adapter class, or nil if unknown
+        def adapter_for(provider)
+          provider_type = provider.respond_to?(:provider_type) ? provider.provider_type : provider.to_s
+          class_name = PROVIDER_CLASSES[provider_type]
+          return nil unless class_name
+          class_name.constantize
         end
 
         # List available provider types

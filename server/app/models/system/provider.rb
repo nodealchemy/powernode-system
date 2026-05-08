@@ -5,7 +5,10 @@ module System
     include System::Base
 
     # Provider type constants
-    PROVIDER_TYPES = %w[aws openstack gcp azure digitalocean linode vultr custom mock local_qemu].freeze
+    # `pro_cloud` is the SaaS Self-Serve Pro Cloud type (M1 Self-Serve
+    # Hardening) — bootstrapped per-account by System::AccountBootstrapService.
+    # The actual cloud-API adapter lives in Slice B.
+    PROVIDER_TYPES = %w[aws openstack gcp azure digitalocean linode vultr custom mock local_qemu pro_cloud].freeze
 
     # Associations
     belongs_to :account

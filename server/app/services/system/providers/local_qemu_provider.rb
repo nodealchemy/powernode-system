@@ -126,6 +126,27 @@ module System
         end
       end
 
+      # Cheap, side-effect-free authentication probe used by
+      # System::CredentialValidationService (M2 BYOC). For local_qemu
+      # there are no credentials per se — the "auth" check is libvirt
+      # daemon reachability, so we delegate to the runner's URI probe.
+      # Honors a `libvirt_uri` override in the transient credential bag
+      # (otherwise the runner uses the env-derived DEFAULT_LIBVIRT_URI).
+      def authenticate?
+        @last_authentication_error = nil
+        runner = self.class.runner
+        result = runner.uri_check!
+        if result[:ok]
+          true
+        else
+          @last_authentication_error = result[:error] || "libvirt unreachable"
+          false
+        end
+      rescue StandardError => e
+        @last_authentication_error = e.message
+        false
+      end
+
       def get_metadata
         {
           provider_type: "local_qemu",

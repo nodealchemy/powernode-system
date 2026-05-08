@@ -517,6 +517,72 @@ module System
         }
       end
 
+      # Cheap, side-effect-free authentication probe used by
+      # System::CredentialValidationService (M2 BYOC). POSTs to Keystone
+      # v3 `/auth/tokens` with the password identity flow. Treats 200/201
+      # as success; everything else (401/403/timeout/etc.) as failure
+      # with the response body / error message surfaced via
+      # `last_authentication_error`.
+      def authenticate?
+        @last_authentication_error = nil
+
+        url      = auth_credential("auth_url", "endpoint_url")
+        username = auth_credential("username", "access_key")
+        password = auth_credential("password", "secret_key")
+        project  = auth_credential("project_name", "tenant")
+        domain   = auth_credential("domain_name") || "Default"
+
+        missing = []
+        missing << "auth_url" if url.to_s.strip.empty?
+        missing << "username" if username.to_s.strip.empty?
+        missing << "password" if password.to_s.strip.empty?
+        if missing.any?
+          @last_authentication_error = "missing #{missing.join(', ')}"
+          return false
+        end
+
+        identity = {
+          methods: [ "password" ],
+          password: {
+            user: {
+              name: username,
+              password: password,
+              domain: { name: domain }
+            }
+          }
+        }
+
+        request_body = { auth: { identity: identity } }
+        if project && !project.to_s.strip.empty?
+          request_body[:auth][:scope] = {
+            project: { name: project, domain: { name: domain } }
+          }
+        end
+
+        token_url = url.to_s.sub(%r{/+$}, "") + "/auth/tokens"
+        conn = Faraday.new do |f|
+          f.adapter Faraday.default_adapter
+        end
+        response = conn.post(token_url) do |req|
+          req.headers["Content-Type"] = "application/json"
+          req.body = request_body.to_json
+        end
+
+        case response.status
+        when 200, 201
+          true
+        when 401, 403
+          @last_authentication_error = parse_keystone_error(response) || "authentication rejected (HTTP #{response.status})"
+          false
+        else
+          @last_authentication_error = parse_keystone_error(response) || "HTTP #{response.status}"
+          false
+        end
+      rescue StandardError => e
+        @last_authentication_error = e.message
+        false
+      end
+
       protected
 
       def normalize_status(provider_status)
@@ -524,6 +590,37 @@ module System
       end
 
       private
+
+      # Resolve an auth-probe credential — transient creds (M2 BYOC test
+      # flow) win; otherwise fall back to the connection columns via the
+      # BaseProvider credential helper.
+      def auth_credential(*keys)
+        if @transient_credentials
+          keys.each do |key|
+            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
+            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+          end
+          return nil
+        end
+
+        return nil unless connection
+        keys.each do |key|
+          value = credential(column: key.to_sym, config_key: key.to_s)
+          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+        end
+        nil
+      end
+
+      # Pull a human-readable reason out of a Keystone error response.
+      # Bodies are JSON: { "error": { "message": "...", "code": 401 } }.
+      def parse_keystone_error(response)
+        body = response.body.to_s
+        return nil if body.empty?
+        parsed = JSON.parse(body)
+        parsed.dig("error", "message")
+      rescue JSON::ParserError
+        nil
+      end
 
       def compute_client
         @compute_client ||= Fog::OpenStack::Compute.new(fog_credentials)

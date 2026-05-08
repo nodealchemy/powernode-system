@@ -29,7 +29,7 @@ module System
         unknown: "unknown"
       }.freeze
 
-      attr_reader :connection, :region, :logger
+      attr_reader :connection, :region, :logger, :last_authentication_error
 
       # Initialize provider with connection credentials
       #
@@ -39,6 +39,40 @@ module System
         @connection = connection
         @region = region || connection.provider_regions.first
         @logger = Rails.logger
+      end
+
+      # Build a transient adapter instance carrying the supplied credential
+      # hash, without requiring a persisted ProviderConnection. Used by
+      # System::CredentialValidationService (M2 BYOC) to test credentials
+      # before persistence to System::ProviderCredential.
+      #
+      # The transient instance has @connection / @region nil — adapter
+      # subclasses that need additional ivar setup can override this method.
+      #
+      # @param credentials [Hash] Plaintext credential payload (string-keyed)
+      # @return [BaseProvider] Transient adapter instance
+      def self.with_credentials(credentials)
+        instance = allocate
+        normalized = (credentials || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+        instance.instance_variable_set(:@transient_credentials, normalized)
+        instance.instance_variable_set(:@logger, Rails.logger)
+        instance.instance_variable_set(:@connection, nil)
+        instance.instance_variable_set(:@region, nil)
+        instance.instance_variable_set(:@last_authentication_error, nil)
+        instance
+      end
+
+      # Cheap, side-effect-free authentication probe. Returns true when
+      # credentials are valid; false when they're rejected. On failure,
+      # populates `#last_authentication_error` with a human-readable
+      # message that the BYOC onboarding UI can surface.
+      #
+      # Each adapter MUST override this with a provider-specific probe
+      # (e.g., AWS: STS#get_caller_identity, Azure: AAD client_credentials
+      # token grant, GCP: service-account JWT exchange, OpenStack:
+      # Keystone v3 /auth/tokens, LocalQemu: libvirt URI reachability).
+      def authenticate?
+        raise NotImplementedError, "#{self.class} must implement #authenticate?"
       end
 
       # Provider type identifier
