@@ -79,6 +79,26 @@ module System
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover"
+        },
+        # M2 of the AI-driven provisioning conversation — adaptive evolution.
+        # Skills are intentionally `nil` because adaptation is multi-step:
+        # the engine creates a pending approval whose payload triggers
+        # AdaptationProposerService (in the parent platform), which composes
+        # a diff plan composed of one or more provisioning_skill steps.
+        # Routing is to the `project.adapt` / `project.cost_control` action
+        # categories — operator policies decide whether to auto-approve
+        # (notify_and_proceed) or block via require_approval.
+        "system.project_slo_violation" => {
+          skill: nil,
+          action_category: "project.adapt"
+        },
+        "system.project_drift" => {
+          skill: nil,
+          action_category: "project.adapt"
+        },
+        "system.project_cost_breach" => {
+          skill: nil,
+          action_category: "project.cost_control"
         }
       }.freeze
 

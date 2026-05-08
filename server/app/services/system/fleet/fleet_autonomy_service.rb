@@ -51,6 +51,12 @@ module System
           payload: { agent_id: agent.id }, source: "fleet_autonomy", correlation_id: tick_correlation
         )
 
+        # Sample fresh project metrics for every active infrastructure
+        # mission BEFORE the sensor pass so ProjectSloSensor sees a current
+        # snapshot. Per-mission rescue keeps one bad collection from
+        # breaking the entire tick.
+        collect_project_metrics!(correlation_id: tick_correlation)
+
         signals = collect_signals
         engine = DecisionEngine.new(autonomy_service: self)
         decisions = engine.decide_all(signals)
@@ -90,6 +96,32 @@ module System
         signals
       end
 
+      # Pre-sensor metrics sampling. Walks active infrastructure missions
+      # and writes a fresh batch of `System::ProjectMetric` rows so that
+      # `ProjectSloSensor.sense` reads current observations from the DB
+      # rather than the legacy `mission.configuration["latest_observations"]`
+      # test seam. Each mission's collection is rescued individually so a
+      # single bad mission can't crash the tick.
+      def collect_project_metrics!(correlation_id:)
+        return unless defined?(::System::ProjectMetricsCollector)
+
+        ::Ai::Mission
+          .where(account_id: account.id, mission_type: "infrastructure", status: "active")
+          .find_each do |mission|
+            ::System::ProjectMetricsCollector.collect!(
+              mission: mission,
+              correlation_id: correlation_id
+            )
+          rescue StandardError => e
+            Rails.logger.warn(
+              "[FleetAutonomy] project metrics collection failed for mission=#{mission.id}: " \
+              "#{e.class}: #{e.message}"
+            )
+          end
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] project metrics tick failed: #{e.class}: #{e.message}")
+      end
+
       SENSORS = [
         ::System::Fleet::Sensors::InstanceStatusSensor,
         ::System::Fleet::Sensors::ModuleDriftSensor,
@@ -106,7 +138,11 @@ module System
         ::System::Fleet::Sensors::SdwanBgpSessionHealthSensor,
         ::System::Fleet::Sensors::SdwanVipReachabilitySensor,
         # Phase 6c — GitOps drift detection
-        ::System::Fleet::Sensors::GitopsDriftSensor
+        ::System::Fleet::Sensors::GitopsDriftSensor,
+        # M2 of the AI-driven provisioning conversation — adaptive evolution.
+        # Watches active infrastructure missions for SLO violations, brief
+        # drift, and cost breaches. Emits project.* signals.
+        ::System::Fleet::Sensors::ProjectSloSensor
       ].freeze
 
       def permitted_actions
@@ -118,7 +154,7 @@ module System
       def self.all_fleet_actions(account)
         ::Ai::InterventionPolicy
           .where(account: account, scope: "agent", is_active: true)
-          .where("action_category LIKE 'system.%'")
+          .where("action_category LIKE 'system.%' OR action_category LIKE 'project.%'")
           .distinct
           .pluck(:action_category)
       end
@@ -227,6 +263,13 @@ module System
           key_value(metadata, "virtual_ip_id")
         when "system.sdwan_route_policy_audit"
           key_value(metadata, "route_policy_id")
+        # M2 of the AI-driven provisioning conversation. Project-scoped
+        # actions dedup on `mission_id` (the project identifier) so that
+        # repeat sensor firings for the same breaching mission collapse
+        # into a single ApprovalRequest per tick window.
+        when "project.adapt", "project.cost_control", "project.scale_horizontal",
+             "project.relocate", "project.schema_change", "project.security_change"
+          key_value(metadata, "mission_id")
         end
       end
 
