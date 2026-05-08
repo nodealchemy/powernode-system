@@ -141,6 +141,14 @@ Rails.application.routes.draw do
             post :sync_catalog
           end
         end
+
+        # M2 Self-Serve Hardening (BYOC) — per-account encrypted cloud
+        # credentials. ProviderConnection is the deployed/operational
+        # connection record; ProviderCredential is the bring-your-own
+        # cloud-cred bag the FirstRunWizard captures from the operator.
+        resources :provider_credentials, only: %i[index create destroy] do
+          collection { post :test }
+        end
         # Cross-provider/global instance type listing. The frontend calls
         # /system/provider_instance_types when no provider filter is set
         # and /system/provider_instance_types/for_region for region lookup.
