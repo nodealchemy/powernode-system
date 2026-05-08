@@ -1,10 +1,34 @@
-import React, { useState, useEffect } from 'react';
-import { X, Cloud, AlertCircle } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { X, Cloud, AlertCircle, KeyRound, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { apiClient } from '@/shared/services/apiClient';
+import { logger } from '@/shared/utils/logger';
+import {
+  PROVIDER_FIELD_SCHEMAS,
+  ProviderCredentialForm,
+  type CredentialTestStatus,
+  type OnboardingProviderType,
+  type ProviderCredentialValues,
+} from '@/features/onboarding/ProviderCredentialForm';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProvider } from '@system/features/system/types/system.types';
+
+type TabKey = 'general' | 'credentials';
+
+/**
+ * Map a SystemProvider.provider_type slug to the BYOC credential schema
+ * shipped with the FirstRunWizard. Returns `null` for provider types that
+ * don't yet have a credential schema (e.g. `openstack`, `custom`) so the
+ * Credentials tab can render a graceful explainer instead.
+ */
+const toOnboardingType = (providerType: string | undefined): OnboardingProviderType | null => {
+  if (!providerType) return null;
+  const slug = providerType.toLowerCase();
+  if (slug in PROVIDER_FIELD_SCHEMAS) return slug as OnboardingProviderType;
+  return null;
+};
 
 interface ProviderFormModalProps {
   isOpen: boolean;
@@ -44,8 +68,31 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabKey>('general');
+
+  // Credentials tab state — kept in this scope so switching tabs preserves entry.
+  const [credentialValues, setCredentialValues] = useState<ProviderCredentialValues>({});
+  const [credentialsValid, setCredentialsValid] = useState(false);
+  const [testStatus, setTestStatus] = useState<CredentialTestStatus>('idle');
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [credentialSaved, setCredentialSaved] = useState(false);
 
   const isEditMode = !!editProvider;
+
+  const onboardingType = useMemo(
+    () => toOnboardingType(formData.provider_type),
+    [formData.provider_type]
+  );
+
+  // Reset credentials tab whenever a different provider is being edited so the
+  // previous record's keys can't leak into the next save.
+  useEffect(() => {
+    setCredentialValues({});
+    setCredentialsValid(false);
+    setTestStatus('idle');
+    setCredentialSaved(false);
+    setActiveTab('general');
+  }, [editProvider?.id]);
 
   useEffect(() => {
     if (isOpen) {
@@ -174,7 +221,41 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     }
   };
 
+  const handleSaveCredentials = async () => {
+    if (!editProvider) return;
+    if (!credentialsValid) return;
+    setSavingCredentials(true);
+    try {
+      await apiClient.post('/system/provider_credentials', {
+        provider_id: editProvider.id,
+        provider_type: editProvider.provider_type,
+        credentials: credentialValues,
+      });
+      setCredentialSaved(true);
+      addNotification({
+        type: 'success',
+        message: `Credentials saved for ${editProvider.name}`,
+      });
+    } catch (error) {
+      logger.error('ProviderFormModal: failed to save credentials', error, {
+        providerId: editProvider.id,
+      });
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
+      addNotification({
+        type: 'error',
+        message: `Failed to save credentials: ${errorMessage}`,
+      });
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
   if (!isOpen) return null;
+
+  // Credentials tab is only meaningful once the provider record exists (we need
+  // its UUID to associate the credential record). For new providers we still
+  // show the tab disabled with a hint, so operators discover it after save.
+  const credentialsTabAvailable = isEditMode;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -194,6 +275,114 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
             </Button>
           </div>
 
+          {/* Tab strip */}
+          <div className="flex items-center gap-1 border-b border-theme px-4" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'general'}
+              onClick={() => setActiveTab('general')}
+              data-testid="provider-form-tab-general"
+              className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                activeTab === 'general'
+                  ? 'border-theme-interactive-primary text-theme-interactive-primary'
+                  : 'border-transparent text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              <Cloud className="h-4 w-4" />
+              General
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'credentials'}
+              onClick={() => credentialsTabAvailable && setActiveTab('credentials')}
+              disabled={!credentialsTabAvailable}
+              data-testid="provider-form-tab-credentials"
+              title={
+                credentialsTabAvailable
+                  ? 'Manage cloud credentials for this provider'
+                  : 'Save the provider first to add credentials'
+              }
+              className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                activeTab === 'credentials'
+                  ? 'border-theme-interactive-primary text-theme-interactive-primary'
+                  : 'border-transparent text-theme-secondary hover:text-theme-primary'
+              } ${credentialsTabAvailable ? '' : 'cursor-not-allowed opacity-50'}`}
+            >
+              <KeyRound className="h-4 w-4" />
+              Credentials
+            </button>
+          </div>
+
+          {activeTab === 'credentials' && credentialsTabAvailable && editProvider ? (
+            <div
+              className="p-4 space-y-4 max-h-[70vh] overflow-y-auto"
+              data-testid="provider-form-credentials-panel"
+            >
+              {onboardingType ? (
+                <>
+                  <ProviderCredentialForm
+                    providerType={onboardingType}
+                    providerId={editProvider.id}
+                    onChange={(values, valid) => {
+                      setCredentialValues(values);
+                      setCredentialsValid(valid);
+                      if (credentialSaved) setCredentialSaved(false);
+                    }}
+                    onTestStatusChange={setTestStatus}
+                  />
+                  <div className="flex flex-wrap items-center gap-3 border-t border-theme pt-3">
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={handleSaveCredentials}
+                      disabled={
+                        !credentialsValid ||
+                        savingCredentials ||
+                        (onboardingType !== 'localqemu' && testStatus !== 'valid')
+                      }
+                      data-testid="provider-form-save-credentials-btn"
+                    >
+                      {savingCredentials ? (
+                        <>
+                          <LoadingSpinner size="sm" className="mr-2" />
+                          Saving…
+                        </>
+                      ) : credentialSaved ? (
+                        'Saved'
+                      ) : (
+                        'Save credentials'
+                      )}
+                    </Button>
+                    {credentialSaved && (
+                      <span className="flex items-center gap-1 text-xs text-theme-success">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Credentials encrypted and stored.
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-theme bg-theme-warning/10 p-4 text-sm text-theme-secondary">
+                  <p className="font-medium text-theme-primary">
+                    No credential schema for {formData.provider_type}.
+                  </p>
+                  <p className="mt-1 text-xs">
+                    The BYOC credential entry form supports AWS, Hetzner, DigitalOcean, Vultr,
+                    GCP, Azure, and LocalQemu. For other provider types, use the legacy
+                    Configuration JSON on the General tab.
+                  </p>
+                </div>
+              )}
+              <div className="flex justify-end pt-2 border-t border-theme">
+                <Button type="button" variant="outline" onClick={onClose}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          ) : (
           <form onSubmit={handleSubmit}>
             <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
               {/* Name and Type */}
@@ -347,6 +536,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
               </Button>
             </div>
           </form>
+          )}
         </div>
       </div>
     </div>

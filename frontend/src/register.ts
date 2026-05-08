@@ -31,6 +31,7 @@ const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverv
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
 const BootReplayPage = lazyPage(() => import('./pages/app/system/BootReplayPage'));
 const SdwanNetworkDetailPage = lazyPage(() => import('./pages/app/system/SdwanNetworkDetailPage'));
+const InstancePoolsPage = lazyPage(() => import('./pages/app/system/InstancePoolsPage'));
 // Phase B hubs.
 const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
@@ -74,6 +75,7 @@ export function register(): void {
     // Drill-down pages routed standalone (no tab equivalent).
     { path: '/system/templates/compose', component: TemplateComposerPage },
     { path: '/system/boot-replay/:instance_id', component: BootReplayPage },
+    { path: '/system/instance-pools', component: InstancePoolsPage },
 
     // Phase B hubs — path-based tabs delegate to nested <Routes>.
     { path: '/system/compute/*', component: ComputePage },
@@ -101,11 +103,12 @@ export function register(): void {
       defaultExpanded: false,
       order: 8,
       items: [
-        { label: 'Overview',   path: '/app/system',            icon: 'LayoutDashboard', order: 1 },
-        { label: 'Compute',    path: '/app/system/compute',    icon: 'Server',          order: 2 },
-        { label: 'Catalog',    path: '/app/system/catalog',    icon: 'Boxes',           order: 3 },
-        { label: 'Operations', path: '/app/system/operations', icon: 'Activity',        order: 4 },
-        { label: 'SDWAN',      path: '/app/system/sdwan',      icon: 'ShieldCheck',     order: 5 },
+        { label: 'Overview',       path: '/app/system',                icon: 'LayoutDashboard', order: 1 },
+        { label: 'Compute',        path: '/app/system/compute',        icon: 'Server',          order: 2 },
+        { label: 'Catalog',        path: '/app/system/catalog',        icon: 'Boxes',           order: 3 },
+        { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 4 },
+        { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 5 },
+        { label: 'SDWAN',          path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 6 },
       ],
     },
   ]);
