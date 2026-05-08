@@ -21,6 +21,17 @@ module System
     def provision_instance(node:, provider_region_id:, provider_instance_type_id:, operation_id: nil, options: {})
       validate_node!(node)
 
+      # M1 Self-Serve Hardening — gate provisioning on the active subscription's
+      # plan limits. Surfaces a structured deny reason that propagates up through
+      # Runtime::Result.err and onto the caller's `requires_upgrade` payload.
+      if defined?(::Billing::ProvisioningQuotaGuard)
+        allow, reason = ::Billing::ProvisioningQuotaGuard.allow?(account: node.account)
+        unless allow
+          Rails.logger.info("[ProvisioningService] Quota guard denied provisioning: #{reason}")
+          return Runtime::Result.err(error: reason, data: { requires_upgrade: true, reason: reason })
+        end
+      end
+
       region = ::System::ProviderRegion.find_by(id: provider_region_id)
       instance_type = ::System::ProviderInstanceType.find_by(id: provider_instance_type_id)
 
@@ -44,8 +55,8 @@ module System
         status: "pending",
         provider_region: region,
         provider_instance_type: instance_type,
-        admin_user: options[:admin_user] || node.node_template&.admin_user || "ubuntu",
-        account: node.account
+        admin_user: options[:admin_user] || node.node_template&.admin_user || "ubuntu"
+        # account is delegated from :node; no `account=` setter exists on NodeInstance.
       )
 
       provider_params = build_provider_params(
@@ -69,6 +80,11 @@ module System
         if options[:allocate_public_ip] && cloud_result[:public_ip_address].blank?
           associate_public_ip(provider_adapter, instance, cloud_result[:cloud_instance_id])
         end
+
+        # M1 Self-Serve Hardening — emit a billing meter row for the
+        # `created` lifecycle event. Best-effort: a metering failure must
+        # never abort a successful provision.
+        record_meter_event(instance, "created")
 
         Runtime::Result.ok(data: {
           instance: instance,
@@ -115,6 +131,9 @@ module System
         # historically but isn't a valid NodeInstance status — the AASM
         # transition is single-step (running/stopped/error → terminated).
         instance.terminate! if instance.may_terminate?
+        # M1 Self-Serve Hardening — meter the terminate event so the rollup
+        # job can close out accrued hours for this instance.
+        record_meter_event(instance, "terminated")
         Runtime::Result.ok
       else
         Runtime::Result.err(error: result[:error])
@@ -148,19 +167,28 @@ module System
     def build_provider_params(region:, instance_type:, instance:, node:, options:)
       params = {
         name: instance.name,
+        instance: instance,        # LocalQemuProvider requires the AR record
+        node: node,                # adapters that need template/platform access
         instance_type: instance_type.name,
         image_id: region.machine_image,
         key_name: options[:key_name],
         security_groups: options[:security_groups],
         subnet_id: options[:subnet_id],
         network_id: options[:network_id],
-        availability_zone: options[:availability_zone]
+        availability_zone: options[:availability_zone],
+        options: options
       }
 
+      # NodeTemplate stores init_script under its `config` JSONB blob (no
+      # dedicated column). Honor an explicit user_data override first, then
+      # fall through to the template's stored init_script.
+      template_init = node.node_template&.config.is_a?(Hash) ?
+                      (node.node_template.config["init_script"] || node.node_template.config[:init_script]) :
+                      nil
       if options[:user_data].present?
         params[:user_data] = options[:user_data]
-      elsif node.node_template&.init_script.present?
-        params[:user_data] = node.node_template.init_script
+      elsif template_init.is_a?(String) && template_init.present?
+        params[:user_data] = template_init
       end
 
       if options[:root_volume_size]
@@ -181,7 +209,34 @@ module System
         "Name" => instance.name
       }.merge(options[:tags] || {})
 
+      # M4 Enterprise polish — when an account or delegation has an IP
+      # allowlist configured, surface the resolved security-group rules
+      # to the provider adapter. An empty result means "no allowlist
+      # configured" — the adapter then falls through to its default
+      # security_groups behavior, preserving pre-M4 semantics.
+      ip_rules = ip_allowlist_rules_for(node, options)
+      params[:security_group_rules] = ip_rules if ip_rules.any?
+
       params.compact
+    end
+
+    # Resolves the active IP allowlist for the provisioning context.
+    # `options[:delegation]` lets callers (e.g. the provisioning
+    # controller wired up to a delegated session) pass through the
+    # acting delegation; otherwise we operate on the account scope only.
+    def ip_allowlist_rules_for(node, options)
+      return [] unless defined?(::System::IpAllowlistService)
+      return [] unless node&.account
+
+      ::System::IpAllowlistService.security_group_rules_for(
+        account: node.account,
+        delegation: options[:delegation]
+      )
+    rescue StandardError => e
+      # An allowlist resolution failure must never abort a happy-path
+      # provision — log and fall through to default rules instead.
+      Rails.logger.warn("[ProvisioningService] ip_allowlist resolution failed: #{e.class}: #{e.message}")
+      []
     end
 
     def associate_public_ip(provider_adapter, instance, cloud_instance_id)
@@ -195,6 +250,16 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.warn("[ProvisioningService] Failed to associate IP: #{e.message}")
+    end
+
+    # M1 Self-Serve Hardening — emit a Billing::ProvisioningUsageRecord for
+    # one lifecycle event. Wrapped to swallow errors: meter failures must
+    # never break a provisioning happy-path.
+    def record_meter_event(instance, event)
+      return unless defined?(::Billing::ProvisioningMeterService)
+      ::Billing::ProvisioningMeterService.record_event(node_instance: instance, event: event)
+    rescue StandardError => e
+      Rails.logger.warn("[ProvisioningService] meter #{event} failed: #{e.class}: #{e.message}")
     end
 
     def normalize_status(status)
