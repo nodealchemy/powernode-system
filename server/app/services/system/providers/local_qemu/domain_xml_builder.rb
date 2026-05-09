@@ -39,6 +39,13 @@ module System
         end
 
         def build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:)
+          @instance = instance
+          # Persist the deterministic MAC on first generate so the rest of the
+          # platform (audit, lease lookups) can reference it without re-deriving.
+          if instance.respond_to?(:mac_address) && instance.mac_address.blank?
+            mac = stable_mac
+            instance.update_column(:mac_address, mac) if mac && instance.persisted?
+          end
           arch_str = arch.to_s == "arm64" ? "aarch64" : "x86_64"
           machine = arch_str == "aarch64" ? "virt" : "q35"
           emulator = arch_str == "aarch64" ? "/usr/bin/qemu-system-aarch64" : "/usr/bin/qemu-system-x86_64"
@@ -177,6 +184,7 @@ module System
           mode = provider_config_value("network_mode") ||
                  ENV["POWERNODE_NETWORK_MODE"] ||
                  default_network_mode
+          mac_xml = stable_mac ? "<mac address='#{stable_mac}'/>" : ""
           case mode
           when "bridge"
             bridge = provider_config_value("bridge_name") ||
@@ -185,6 +193,7 @@ module System
             <<~XML.strip
                 <interface type='bridge'>
                     <source bridge='#{escape(bridge)}'/>
+                    #{mac_xml}
                     <model type='virtio'/>
                   </interface>
             XML
@@ -209,12 +218,14 @@ module System
             <<~XML.strip
                 <interface type='bridge'>
                     <source bridge='#{escape(bridge)}'/>
+                    #{mac_xml}
                     <model type='virtio'/>
                   </interface>
             XML
           when "user"
             <<~XML.strip
                 <interface type='user'>
+                    #{mac_xml}
                     <model type='virtio'/>
                   </interface>
             XML
@@ -223,10 +234,23 @@ module System
             <<~XML.strip
                 <interface type='network'>
                     <source network='#{escape(net)}'/>
+                    #{mac_xml}
                     <model type='virtio'/>
                   </interface>
             XML
           end
+        end
+
+        # Stable MAC derived from instance.id — same VM always gets the same
+        # MAC across destroy/create cycles, so DHCP leases stick. Uses the
+        # KVM-reserved 52:54:00 OUI to avoid clashing with real hardware.
+        # First 3 bytes of SHA256(instance.id) provide the variable octets;
+        # 24 bits of namespace = ~16M unique MACs per OUI, collision-free
+        # against UUIDv7 instance IDs at platform scale.
+        def stable_mac
+          return nil unless @instance&.id
+          digest = ::Digest::SHA256.hexdigest(@instance.id.to_s)
+          "52:54:00:#{digest[0, 2]}:#{digest[2, 2]}:#{digest[4, 2]}"
         end
 
         # virtio-9p passthrough share for the dev-mode local-fs module loader.
