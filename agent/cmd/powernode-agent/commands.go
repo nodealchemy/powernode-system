@@ -591,15 +591,51 @@ func updateCmd() *cobra.Command {
 }
 
 func commitCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL string
+		pkiDir      string
+		changelog   string
+		pushPath    string
+		autoPush    bool
+		scanSecrets bool
+		jsonOut     bool
+		sourceRoot  string
+		stagingRoot string
+	)
+	c := &cobra.Command{
 		Use:   "commit <module-id>",
-		Short: "Capture live delta + push as new module version (legacy ipn -c)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Capture live delta + stage (or push) as new module version (legacy ipn -c)",
+		Long: `Default behavior is stage-only: captures the upper-dir delta to
+/persist/var/lib/powernode/commits/<id>/<ts>.tar.zst and prints the path. Operator
+inspects, then explicitly --push <path> to upload. Use --auto-push to capture +
+upload in one step (forces --scan-secrets ON).`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent commit %s] not yet implemented\n", args[0])
-			return nil
+			res, runErr := agentcli.RunCommit(cmd.Context(), agentcli.CommitOptions{
+				ModuleID:    args[0],
+				Changelog:   changelog,
+				PushPath:    pushPath,
+				AutoPush:    autoPush,
+				ScanSecrets: scanSecrets,
+				JSON:        jsonOut,
+				PlatformURL: platformURL,
+				PKIDir:      pkiDir,
+				SourceRoot:  sourceRoot,
+				StagingRoot: stagingRoot,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory")
+	c.Flags().StringVar(&changelog, "changelog", "", "operator-supplied description of what this commit captures")
+	c.Flags().StringVar(&pushPath, "push", "", "path to a previously-staged tarball to upload (skips capture)")
+	c.Flags().BoolVar(&autoPush, "auto-push", false, "capture + push in one step (forces --scan-secrets ON)")
+	c.Flags().BoolVar(&scanSecrets, "scan-secrets", false, "scan staged tree for credential patterns; refuse on hits")
+	c.Flags().StringVar(&sourceRoot, "source-root", "", "rsync source root (default /sysroot)")
+	c.Flags().StringVar(&stagingRoot, "staging-root", "", "where staged tarballs land (default /persist/var/lib/powernode/commits)")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output")
+	return c
 }
 
 // statusCmd prints which modules are present in the 9p share + which are
@@ -890,13 +926,47 @@ func puppetCmd() *cobra.Command {
 		Use:   "puppet",
 		Short: "Puppet integration (apply manifests fetched from platform)",
 	}
-	c.AddCommand(&cobra.Command{
+
+	var (
+		platformURL          string
+		pkiDir               string
+		noop                 bool
+		tags                 []string
+		timeout              time.Duration
+		allowChangesOver     int
+		allowIdentityChanges bool
+		jsonOut              bool
+	)
+	apply := &cobra.Command{
 		Use:   "apply",
-		Short: "Fetch /node_api/puppet/resources and run `puppet apply` (legacy ipn -p)",
+		Short: "Fetch + apply Puppet manifest with safety guards (legacy ipn -p)",
+		Long: `Always runs --noop first to compute the change set. Refuses to apply if
+changes exceed --allow-changes-over (default 50) OR if changes touch identity-
+bearing files (/etc/sudoers, /etc/passwd, /etc/ssh) without --allow-identity-changes.
+Maps puppet --detailed-exitcodes (0/2/4/6) to CLI exit codes (0/0/9/10).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent puppet apply] not yet implemented")
-			return nil
+			res, runErr := agentcli.RunPuppetApply(cmd.Context(), agentcli.PuppetApplyOptions{
+				Noop:                 noop,
+				Tags:                 tags,
+				Timeout:              timeout,
+				AllowChangesOver:     allowChangesOver,
+				AllowIdentityChanges: allowIdentityChanges,
+				JSON:                 jsonOut,
+				PlatformURL:          platformURL,
+				PKIDir:               pkiDir,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
-	})
+	}
+	apply.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	apply.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory")
+	apply.Flags().BoolVar(&noop, "noop", false, "run --noop only; do not apply")
+	apply.Flags().StringSliceVar(&tags, "tags", nil, "puppet --tags filter (comma-separated)")
+	apply.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "max puppet apply runtime")
+	apply.Flags().IntVar(&allowChangesOver, "allow-changes-over", 50, "refuse if --noop reports more than N changes")
+	apply.Flags().BoolVar(&allowIdentityChanges, "allow-identity-changes", false, "permit changes to /etc/sudoers, /etc/passwd, /etc/ssh")
+	apply.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output")
+
+	c.AddCommand(apply)
 	return c
 }

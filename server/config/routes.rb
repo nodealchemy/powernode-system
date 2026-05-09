@@ -458,6 +458,11 @@ Rails.application.routes.draw do
               # Phase 2 — server-rendered rsync filter for commit CLI.
               get :rsync_spec
             end
+            # Phase 4 — commit CLI uploads a new module version
+            # tarball; the platform creates a NodeModuleVersion at
+            # promotion_state: "built". Operators (or autonomy) then
+            # promote through the canary→staging→blessed→live chain.
+            resources :versions, only: %i[create], controller: "module_versions"
           end
           resources :mount_points, only: %i[index show]
 
