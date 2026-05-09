@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
 )
 
 // ShellApplier is the production DaemonApplier. Wraps os/exec for the
@@ -120,7 +122,7 @@ func (s *ShellApplier) WriteCert(_ context.Context, m CertMaterial) error {
 		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(f.path), err)
 		}
-		if err := atomicWrite(f.path, []byte(f.data), f.mode); err != nil {
+		if err := fsutil.AtomicWrite(f.path, []byte(f.data), f.mode); err != nil {
 			return fmt.Errorf("write %s: %w", f.path, err)
 		}
 	}
@@ -215,7 +217,7 @@ func (s *ShellApplier) WriteDaemonConfig(_ context.Context, cfg DaemonConfig) er
 	if err := os.MkdirAll(filepath.Dir(s.Paths.ConfigFile), 0o755); err != nil {
 		return err
 	}
-	return atomicWrite(s.Paths.ConfigFile, rendered, 0o644)
+	return fsutil.AtomicWrite(s.Paths.ConfigFile, rendered, 0o644)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -264,40 +266,6 @@ func (s *ShellApplier) DaemonVersion(ctx context.Context) (string, error) {
 // ──────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────
-
-// atomicWrite writes data to a sibling .tmp file and renames over
-// the target. On Linux this is atomic — readers either see the old
-// contents or the new, never a half-written file. Important for the
-// TLS key + cert files since dockerd watches them.
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".dockerd-applier-*")
-	if err != nil {
-		return err
-	}
-	cleanup := func() { _ = os.Remove(tmp.Name()) }
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
 
 // stringsEqual is a byte-slice equality check that's allocation-free
 // vs. converting to string. Used by WriteDaemonConfig to skip the

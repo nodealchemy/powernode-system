@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
 )
 
 // DefaultPaths is the canonical on-disk layout K3s uses. Centralized
@@ -301,7 +303,7 @@ Environment="K3S_TOKEN=%s"
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	if err := atomicWrite(s.Paths.AgentEnvFilePath, []byte(body), 0o600); err != nil {
+	if err := fsutil.AtomicWrite(s.Paths.AgentEnvFilePath, []byte(body), 0o600); err != nil {
 		return err
 	}
 	// Best-effort daemon-reload so the new env is visible before next
@@ -323,34 +325,3 @@ func (s *ShellAgentApplier) Cleanup(ctx context.Context) error {
 	return err
 }
 
-// atomicWrite writes data to a sibling .tmp file and renames over
-// the target. Same pattern as dockerd.ShellApplier.atomicWrite.
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".k3sd-applier-*")
-	if err != nil {
-		return err
-	}
-	cleanup := func() { _ = os.Remove(tmp.Name()) }
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}

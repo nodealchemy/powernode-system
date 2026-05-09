@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
 )
 
 // DefaultServerStatePath + DefaultAgentStatePath are where the Server
@@ -130,32 +132,13 @@ func (m *AgentManager) persistState() {
 // Shared atomic JSON write helper
 // ──────────────────────────────────────────────────────────────────
 
-// atomicWriteJSON writes the marshaled value to path via .tmp +
-// rename. Same atomicity guarantees as agent's other state files
-// (cert files, daemon.json) — readers either see the old contents
-// or the new, never half-written.
+// atomicWriteJSON wraps fsutil.AtomicWriteJSON with k3sd-specific
+// parent-directory creation. State files live under /persist which
+// is mounted read-write at boot, but the powernode/ subdir may not
+// exist on first run.
 func atomicWriteJSON(path string, v any) error {
-	body, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".k3sd-state-*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	cleanup := func() { _ = os.Remove(tmp.Name()) }
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.AtomicWriteJSON(path, v, 0o600)
 }
