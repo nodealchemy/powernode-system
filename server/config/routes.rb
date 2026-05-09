@@ -448,7 +448,14 @@ Rails.application.routes.draw do
           get "runtime/:runtime/config", to: "runtime#runtime_config", as: :runtime_config
 
           # Modules + mount points (read-only from instance perspective)
-          resources :modules, only: %i[index show]
+          resources :modules, only: %i[index show] do
+            member do
+              # Phase 1 — OCI manifest + download URL.
+              get :download
+              # Phase 2 — server-rendered rsync filter for commit CLI.
+              get :rsync_spec
+            end
+          end
           resources :mount_points, only: %i[index show]
 
           # Puppet manifests

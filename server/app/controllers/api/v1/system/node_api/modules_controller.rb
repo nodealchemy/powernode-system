@@ -63,6 +63,29 @@ module Api
             render_success(payload)
           end
 
+          # GET /api/v1/system/node_api/modules/:id/rsync_spec
+          # Returns the platform-rendered rsync filter file as plain
+          # text. The agent's commit CLI consumes this when capturing
+          # an upper-layer delta — server-side rendering centralizes
+          # the cross-neighbor effective_mask logic so the agent
+          # doesn't have to reimplement it.
+          #
+          # Phase 2 of the agent stub implementation plan; currently
+          # used by future commit CLI (Phase 4) but exposed in Phase
+          # 2 alongside the attach/detach surface so all module-
+          # lifecycle commands have a uniform metadata source.
+          def rsync_spec
+            render plain: @module.rsync_spec(target: current_instance),
+                   content_type: "text/plain"
+          rescue NoMethodError => e
+            # NodeModule#rsync_spec target: signature lands in the
+            # commit-CLI prep work; until then, fall back to the
+            # spec-only render if the model doesn't have the helper.
+            Rails.logger.warn("[ModulesController#rsync_spec] falling back: #{e.message}")
+            render plain: render_rsync_fallback(@module),
+                   content_type: "text/plain"
+          end
+
           # GET /api/v1/system/node_api/modules/:id/:resource
           # Get specific module resource
           def resource
@@ -155,6 +178,18 @@ module Api
           def module_download_url(mod)
             # Generate URL for file download
             "/api/v1/system/node_api/files/modules/#{mod.id}/#{mod.data_file_name}"
+          end
+
+          # render_rsync_fallback synthesizes a minimal rsync filter
+          # file from the module's mask + file_spec when the model's
+          # full rsync_spec helper isn't present (transitional —
+          # remove once the helper lands platform-wide).
+          def render_rsync_fallback(mod)
+            lines = []
+            Array(mod.mask).each       { |p| lines << "- #{p}" }
+            Array(mod.file_spec).each  { |p| lines << "+ #{p}" }
+            lines << "- *"
+            lines.join("\n") + "\n"
           end
 
           # preferred_artifact picks the ModuleArtifact whose architecture
