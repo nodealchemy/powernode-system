@@ -22,6 +22,8 @@ import (
 	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
 	"github.com/powernode/platform/extensions/system/agent/internal/mount"
 	"github.com/powernode/platform/extensions/system/agent/internal/oci"
+	"github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks"
+	"github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks/handlers"
 	"github.com/powernode/platform/extensions/system/agent/internal/sdwan"
 	"github.com/powernode/platform/extensions/system/agent/internal/transport"
 	"github.com/powernode/platform/extensions/system/agent/internal/verify"
@@ -251,10 +253,30 @@ func (s *Service) Run(ctx context.Context) error {
 		})
 	}
 
-	// TODO Phase 1.x: task lease goroutine spawns here. Follows the
-	// same shape — owns its loop, surfaces errors via OnError, exits
-	// when ctx is canceled. Depends on the /status/tasks/:id show
-	// endpoint for crash-recovery lookup.
+	// Phase 1 task lease loop. Polls /status/tasks every ~20s,
+	// dispatches each new task to a TaskHandler, persists inflight
+	// state for crash recovery. Concurrency=1 (matches legacy ipn —
+	// most node ops mutate state, parallelism risks deadlock matrices).
+	taskRegistry := tasks.NewRegistry()
+	handlers.RegisterDefaults(taskRegistry, tasks.Dependencies{
+		Transport:    swap,
+		MountRunner:  mount.ExecRunner{},
+		Reconciler:   reconciler,
+		AgentVersion: s.cfg.AgentVersion,
+	})
+	taskLoop, err := tasks.NewLoop(tasks.LoopConfig{
+		Client:      tasks.NewClient(swap),
+		Registry:    taskRegistry,
+		Concurrency: 1,
+		OnError:     s.cfg.OnError,
+	})
+	if err != nil {
+		s.cfg.OnError("task_lease_init", err)
+	} else {
+		spawn("task_lease", func() {
+			taskLoop.Run(ctx)
+		})
+	}
 
 	wg.Wait()
 	return nil
