@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // stubServerApplier is the in-memory ServerApplier used by all

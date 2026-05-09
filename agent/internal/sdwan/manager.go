@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // Manager owns the reconcile loop. One per agent process.

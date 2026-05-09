@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // mintCert returns a self-signed Ed25519 cert + key PEM with the

@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/oci"
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime"
-	"github.com/powernode/platform/extensions/system/agent/internal/verify"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
+	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 // BuildReconciler constructs a runtime.Reconciler wired to the

@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 func TestHTTPModulesClient_AssignedModules(t *testing.T) {

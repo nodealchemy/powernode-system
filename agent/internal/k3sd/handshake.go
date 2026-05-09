@@ -36,7 +36,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // HandshakePath is the agent → platform endpoint. Shared with the

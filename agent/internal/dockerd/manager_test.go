@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // stubApplier is the in-memory DaemonApplier used by all state-machine

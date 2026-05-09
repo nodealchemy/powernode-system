@@ -65,7 +65,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/node-provisioning.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/node-provisioning.md) in the system extension.
+      Full runbook: [`docs/runbooks/node-provisioning.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/node-provisioning.md) in the system extension.
     MD
   },
   {
@@ -97,7 +97,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/module-authoring.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/module-authoring.md).
+      Full runbook: [`docs/runbooks/module-authoring.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/module-authoring.md).
     MD
   },
   {
@@ -129,7 +129,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/sdwan-network-setup.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/sdwan-network-setup.md).
+      Full runbook: [`docs/runbooks/sdwan-network-setup.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/sdwan-network-setup.md).
     MD
   },
   {
@@ -151,7 +151,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/multi-cluster-k3s.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/multi-cluster-k3s.md).
+      Full runbook: [`docs/runbooks/multi-cluster-k3s.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/multi-cluster-k3s.md).
     MD
   },
   {
@@ -175,7 +175,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/cve-response.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/cve-response.md).
+      Full runbook: [`docs/runbooks/cve-response.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/cve-response.md).
     MD
   },
   {
@@ -200,7 +200,7 @@ articles = [
 
       ## Source
 
-      Full reference: [`docs/FLEET_SENSORS.md#intervention-policy-reference`](https://github.com/rett/powernode-system/blob/develop/docs/FLEET_SENSORS.md#intervention-policy-reference).
+      Full reference: [`docs/FLEET_SENSORS.md#intervention-policy-reference`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/FLEET_SENSORS.md#intervention-policy-reference).
     MD
   },
   {
@@ -226,7 +226,7 @@ articles = [
 
       ## Source
 
-      Full troubleshooting reference: [`docs/CONTAINER_RUNTIMES.md#troubleshooting`](https://github.com/rett/powernode-system/blob/develop/docs/CONTAINER_RUNTIMES.md#troubleshooting).
+      Full troubleshooting reference: [`docs/CONTAINER_RUNTIMES.md#troubleshooting`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/CONTAINER_RUNTIMES.md#troubleshooting).
     MD
   },
   {
@@ -260,7 +260,7 @@ articles = [
 
       ## Source
 
-      Full runbook: [`docs/runbooks/instance-pool-tuning.md`](https://github.com/rett/powernode-system/blob/develop/docs/runbooks/instance-pool-tuning.md).
+      Full runbook: [`docs/runbooks/instance-pool-tuning.md`](https://github.com/nodealchemy/powernode-system/blob/develop/docs/runbooks/instance-pool-tuning.md).
     MD
   }
 ]

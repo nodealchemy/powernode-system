@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks"
+import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 
 // RegisterDefaults wires the standard set of TaskHandlers the agent
 // supports in Phase 1. Volume / network / backup / module-build

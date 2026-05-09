@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/oci"
-	"github.com/powernode/platform/extensions/system/agent/internal/security"
-	"github.com/powernode/platform/extensions/system/agent/internal/systemd"
-	"github.com/powernode/platform/extensions/system/agent/internal/verify"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
+	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
+	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 // PullerAPI is the subset of *oci.Puller the reconciler depends on.

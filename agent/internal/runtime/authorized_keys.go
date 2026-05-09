@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // AuthorizedKeysOptions parameterizes FetchAuthorizedKeys. OnWarn is

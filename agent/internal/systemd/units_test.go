@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 func TestActionValidVerbs(t *testing.T) {

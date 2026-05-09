@@ -13,8 +13,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks"
-	"github.com/powernode/platform/extensions/system/agent/internal/systemd"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
+	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 )
 
 // LifecycleHandler dispatches start/stop/restart/reboot/terminate

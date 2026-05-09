@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 )
 
 // DefaultRoot is the canonical on-disk location for cached manifests.

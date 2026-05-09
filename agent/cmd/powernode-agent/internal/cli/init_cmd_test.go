@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // seedManifest writes a manifest.json to the cache root for a given

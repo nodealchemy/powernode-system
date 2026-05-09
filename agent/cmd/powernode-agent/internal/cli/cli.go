@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
-	"github.com/powernode/platform/extensions/system/agent/internal/fleetevent"
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/fleetevent"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // Context bundles the shared resources every CLI command may need:

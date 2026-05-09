@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 func TestHeartbeater_Send_HappyPath(t *testing.T) {

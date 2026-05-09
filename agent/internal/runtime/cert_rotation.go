@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // defaultRefreshAt is the fraction of cert lifetime past which the

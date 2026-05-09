@@ -3,7 +3,7 @@
 Thanks for your interest in improving this extension. This guide covers
 the development workflow, including the slightly-tricky submodule layout
 that exists because this extension is consumed by the parent
-[Powernode platform](https://github.com/rett/powernode-platform).
+[Powernode platform](https://github.com/nodealchemy/powernode-platform).
 
 ## Submodule context
 
@@ -27,7 +27,7 @@ powernode-platform/                  ← parent (separate repo)
 
 ```bash
 # Clone the parent platform with submodules
-git clone --recurse-submodules https://github.com/rett/powernode-platform.git
+git clone --recurse-submodules https://github.com/nodealchemy/powernode-platform.git
 cd powernode-platform
 
 # Or if already cloned without submodules:
@@ -131,7 +131,7 @@ PRs that touch FleetAutonomyService, the AI Skill executors, or anything in
 
 For bugs in the extension itself: open issues here on GitHub. For bugs in
 the parent platform's integration with this extension: open in
-[powernode-platform](https://github.com/rett/powernode-platform).
+[powernode-platform](https://github.com/nodealchemy/powernode-platform).
 
 ## License
 

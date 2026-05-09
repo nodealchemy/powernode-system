@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 func newK3sTestClient(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {

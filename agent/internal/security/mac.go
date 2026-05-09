@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // LoadSELinuxProfile installs a compiled SELinux policy module (.pp file)

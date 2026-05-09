@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 func TestPolicy_Apply_DropAllByDefault(t *testing.T) {

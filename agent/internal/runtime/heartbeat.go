@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/sdwan"
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // HeartbeatPayload is the body the agent POSTs to /status/heartbeat.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // KnownCapabilities is the canonical set of Linux capability names the

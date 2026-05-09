@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // OverridesPath is the agent → platform endpoint that returns the

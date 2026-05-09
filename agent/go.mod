@@ -1,4 +1,4 @@
-module github.com/powernode/platform/extensions/system/agent
+module github.com/nodealchemy/powernode-system/agent
 
 go 1.22
 

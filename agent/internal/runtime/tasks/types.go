@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // Task is the agent-side typed view of one pending operation. Mirrors

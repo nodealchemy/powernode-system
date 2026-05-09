@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 )
 
 // DefaultStatePath is where the loop persists its inflight task list

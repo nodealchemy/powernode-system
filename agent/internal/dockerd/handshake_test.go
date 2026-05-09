@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
 // All three phase tests stand up a real httptest server returning the

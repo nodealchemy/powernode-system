@@ -1,6 +1,6 @@
 [Unit]
 Description=Powernode: prepare overlay union + switch-root into module rootfs
-Documentation=https://github.com/powernode/platform
+Documentation=https://github.com/nodealchemy/powernode-platform
 ConditionKernelCommandLine=powernode.boot=1
 ConditionPathExists=/sbin/powernode-agent
 DefaultDependencies=no

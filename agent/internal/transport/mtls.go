@@ -17,7 +17,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 )
 
 // Client wraps an http.Client built from on-disk mTLS material.

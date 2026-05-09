@@ -8,7 +8,7 @@ This repository is mounted into the Powernode platform as a submodule at
 `extensions/system/`. It can be operated independently — the platform consumes
 it via the standard extension contract.
 
-[platform]: https://github.com/rett/powernode-platform
+[platform]: https://github.com/nodealchemy/powernode-platform
 
 ---
 

@@ -31,7 +31,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 )
 
 // Version is set at build time via -ldflags. The Gitea Actions workflow

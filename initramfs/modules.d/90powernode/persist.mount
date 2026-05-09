@@ -1,6 +1,6 @@
 [Unit]
 Description=Powernode persistent state tmpfs (/persist)
-Documentation=https://github.com/powernode/platform
+Documentation=https://github.com/nodealchemy/powernode-platform
 DefaultDependencies=no
 ConditionPathIsMountPoint=!/persist
 Before=powernode-agent.service powernode-mount.service local-fs.target

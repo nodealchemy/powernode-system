@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 )
 
 // SyncHandler drives the module reconciler synchronously. Used for

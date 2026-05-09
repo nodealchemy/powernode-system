@@ -21,10 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
-	agentcli "github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
-	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime"
+	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	agentcli "github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
 // renderCLI emits a CLI Result via the shared formatter and returns

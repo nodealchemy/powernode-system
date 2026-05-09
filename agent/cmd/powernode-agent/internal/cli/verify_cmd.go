@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/verify"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 // VerifyOptions drives `powernode-agent verify`. Local-only — operates

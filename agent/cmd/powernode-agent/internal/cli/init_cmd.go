@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/systemd"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 )
 
 // InitOptions controls the `powernode-agent init <module-id> <action>`

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
 // SyncOptions drives `powernode-agent sync` — verbose plan-vs-execute

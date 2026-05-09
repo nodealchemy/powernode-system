@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // Verifier is the interface the reconciler + CLI commands depend on

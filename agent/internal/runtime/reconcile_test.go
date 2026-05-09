@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
-	"github.com/powernode/platform/extensions/system/agent/internal/oci"
-	"github.com/powernode/platform/extensions/system/agent/internal/verify"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 var (

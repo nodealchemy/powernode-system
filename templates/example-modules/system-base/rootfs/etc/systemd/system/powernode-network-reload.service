@@ -1,6 +1,6 @@
 [Unit]
 Description=Restart systemd-networkd after switch-root to re-push DNS to resolved
-Documentation=https://github.com/powernode/platform
+Documentation=https://github.com/nodealchemy/powernode-platform
 After=systemd-networkd.service systemd-resolved.service
 Before=powernode-agent.service network-online.target
 

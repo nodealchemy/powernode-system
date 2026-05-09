@@ -361,7 +361,7 @@ in the parent platform.
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
 - [docs/TASKS.md](./TASKS.md) — active milestone tracker
-- [Parent platform's CLAUDE.md](https://github.com/rett/powernode-platform/blob/master/CLAUDE.md) — full platform context
+- [Parent platform's CLAUDE.md](https://github.com/nodealchemy/powernode-platform/blob/master/CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details
 - [initramfs/README.md](../initramfs/README.md) — boot artifact builder details
 

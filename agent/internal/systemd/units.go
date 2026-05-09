@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // Action is the verb passed to systemctl. The agent supports the

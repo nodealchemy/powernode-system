@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // Policy is the module-level security policy declared in manifest.yaml#security.

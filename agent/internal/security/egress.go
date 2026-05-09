@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
 // EgressTable is the nftables table name the agent uses for module-level

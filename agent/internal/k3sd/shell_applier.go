@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/fsutil"
+	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 )
 
 // DefaultPaths is the canonical on-disk layout K3s uses. Centralized

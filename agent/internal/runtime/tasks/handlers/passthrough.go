@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 
-	"github.com/powernode/platform/extensions/system/agent/internal/runtime/tasks"
+	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 )
 
 // PassthroughHandler acks and completes the task without doing any
