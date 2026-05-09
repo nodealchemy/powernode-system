@@ -389,6 +389,137 @@ func (r *Reconciler) LastReconcileAt() time.Time {
 	return r.lastReconcileAt
 }
 
+// AttachOne pulls + verifies + mounts a single module without
+// running a full reconcile cycle. Used by the `attach` CLI for
+// operator-driven hot-add of a debug module. Idempotent: if the
+// module is already attached at the same digest, returns ok with
+// status=already_attached.
+func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	mf, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, moduleID, 0)
+	if err != nil {
+		return "", fmt.Errorf("fetch manifest: %w", err)
+	}
+	if mf.Digest == "" {
+		return "", fmt.Errorf("module %s has no digest (not published)", moduleID)
+	}
+
+	unlock, err := mount.Lock(r.cfg.StatePath)
+	if err != nil {
+		return "", fmt.Errorf("acquire state lock: %w", err)
+	}
+	defer unlock()
+
+	current, err := mount.LoadState(r.cfg.StatePath)
+	if err != nil {
+		return "", fmt.Errorf("load state: %w", err)
+	}
+
+	for _, m := range current.AttachedModules {
+		if m.ID == moduleID && m.Digest == mf.Digest {
+			return "already_attached", nil
+		}
+	}
+
+	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority}
+	manifests := map[string]*manifest.Manifest{moduleID: mf}
+	if err := r.attachModule(ctx, mod, mf); err != nil {
+		return "", err
+	}
+
+	current.AttachedModules = append(current.AttachedModules, mod)
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		return "", fmt.Errorf("save state: %w", err)
+	}
+	_ = manifests
+	return "attached", nil
+}
+
+// DetachOne stops + unmounts a single module. Used by the `detach`
+// CLI. Idempotent: if the module isn't currently attached, returns
+// ok with status=already_detached.
+func (r *Reconciler) DetachOne(ctx context.Context, moduleID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	unlock, err := mount.Lock(r.cfg.StatePath)
+	if err != nil {
+		return "", fmt.Errorf("acquire state lock: %w", err)
+	}
+	defer unlock()
+
+	current, err := mount.LoadState(r.cfg.StatePath)
+	if err != nil {
+		return "", fmt.Errorf("load state: %w", err)
+	}
+
+	idx := -1
+	for i, m := range current.AttachedModules {
+		if m.ID == moduleID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return "already_detached", nil
+	}
+
+	manifests := map[string]*manifest.Manifest{}
+	if mf, _ := manifest.LoadFromDisk(r.cfg.ManifestRoot, moduleID); mf != nil {
+		manifests[moduleID] = mf
+	}
+	if err := r.detachModule(ctx, current, current.AttachedModules[idx], manifests); err != nil {
+		return "", err
+	}
+
+	current.AttachedModules = append(current.AttachedModules[:idx], current.AttachedModules[idx+1:]...)
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		return "", fmt.Errorf("save state: %w", err)
+	}
+	return "detached", nil
+}
+
+// FactoryConfig bundles the dependencies needed to build a Reconciler
+// outside the long-lived service.Run path. Used by the `update`,
+// `sync`, `attach`, `detach` CLIs which each construct a one-shot
+// reconciler scoped to a single command invocation.
+type FactoryConfig struct {
+	ModulesClient ModulesClient
+	ManifestClient manifest.Client
+	ManifestRoot  string
+	Puller        PullerAPI
+	Verifier      verify.Verifier
+	Fsverity      *verify.FsVerifier
+	MountRunner   mount.Runner
+	Layout        mount.Layout
+	StatePath     string
+	DryRun        bool
+	OnError       func(stage string, err error)
+}
+
+// NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI
+// invocations. Differs from NewReconciler only in defaulting policy
+// — CLIs typically want immediate-error-surfacing rather than
+// background-loop graceful-degradation.
+func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
+	return NewReconciler(ReconcilerConfig{
+		ModulesClient:  cfg.ModulesClient,
+		ManifestClient: cfg.ManifestClient,
+		ManifestRoot:   cfg.ManifestRoot,
+		Puller:         cfg.Puller,
+		Verifier:       cfg.Verifier,
+		Fsverity:       cfg.Fsverity,
+		MountRunner:    cfg.MountRunner,
+		Layout:         cfg.Layout,
+		StatePath:      cfg.StatePath,
+		Interval:       0, // not used for one-shot
+		DryRun:         cfg.DryRun,
+		OnError:        cfg.OnError,
+	})
+}
+
 // LastError returns the most recent reconcile-loop error (nil on
 // success).
 func (r *Reconciler) LastError() error {

@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,9 +21,35 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
+	agentcli "github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
 	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
 	"github.com/powernode/platform/extensions/system/agent/internal/runtime"
 )
+
+// renderCLI emits a CLI Result via the shared formatter and returns
+// runErr (a *cli.CommandError carrying the structured exit code) so
+// cobra propagates the error to main(). The cobra wrapper in main.go
+// inspects the error for *cli.CommandError to set os.Exit code; in
+// the absence of one the default exit code (1) is used.
+func renderCLI(cmd *cobra.Command, res cli.Result, runErr error, jsonOut bool) error {
+	mode := cli.OutputHuman
+	if jsonOut {
+		mode = cli.OutputJSON
+	}
+	out := cmd.OutOrStdout()
+	if err := cli.Render(out, mode, res); err != nil {
+		// Failure to render is a real error but shouldn't override the
+		// runErr if there is one.
+		if runErr == nil {
+			runErr = err
+		}
+	}
+	return runErr
+}
+
+var _ = errors.New // silence unused-import warnings on builds where
+// RunE branches don't reference errors directly.
 
 // --- boot --------------------------------------------------------------------
 func bootCmd() *cobra.Command {
@@ -292,15 +319,35 @@ func enrollCmd() *cobra.Command {
 
 // --- verify ------------------------------------------------------------------
 func verifyCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		bundlePath     string
+		digest         string
+		identityRegexp string
+		issuerRegexp   string
+		jsonOut        bool
+	)
+	c := &cobra.Command{
 		Use:   "verify <module-path>",
 		Short: "Verify cosign signature + fs-verity hash on a local module artifact",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent verify] not yet implemented (M2.D)")
-			return nil
+			res, runErr := agentcli.RunVerify(cmd.Context(), agentcli.VerifyOptions{
+				ModulePath:     args[0],
+				BundlePath:     bundlePath,
+				Digest:         digest,
+				IdentityRegexp: identityRegexp,
+				IssuerRegexp:   issuerRegexp,
+				JSON:           jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&bundlePath, "bundle", "", "cosign bundle path (default: <module>.cosign-bundle)")
+	c.Flags().StringVar(&digest, "digest", "", "expected fs-verity digest (sha256 hex)")
+	c.Flags().StringVar(&identityRegexp, "identity-regexp", "", "cosign cert identity regex (Sigstore Fulcio identity pinning)")
+	c.Flags().StringVar(&issuerRegexp, "issuer-regexp", "", "cosign cert OIDC issuer regex")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 // --- introspect --------------------------------------------------------------
@@ -447,39 +494,89 @@ func roundDuration(d time.Duration) time.Duration {
 
 // --- attach / detach ---------------------------------------------------------
 func attachCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL string
+		pkiDir      string
+		dryRun      bool
+		jsonOut     bool
+	)
+	c := &cobra.Command{
 		Use:   "attach <module-id>",
 		Short: "Mount a module into the union (legacy ipn -a)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent attach %s] not yet implemented (M2.D)\n", args[0])
-			return nil
+			res, runErr := agentcli.RunAttach(cmd.Context(), agentcli.AttachOptions{
+				ModuleID:    args[0],
+				PlatformURL: platformURL,
+				PKIDir:      pkiDir,
+				DryRun:      dryRun,
+				JSON:        jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print planned actions without executing")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 func detachCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL string
+		pkiDir      string
+		dryRun      bool
+		jsonOut     bool
+	)
+	c := &cobra.Command{
 		Use:   "detach <module-id>",
 		Short: "Unmount a module from the union (legacy ipn -d)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent detach %s] not yet implemented (M2.D)\n", args[0])
-			return nil
+			res, runErr := agentcli.RunDetach(cmd.Context(), agentcli.DetachOptions{
+				ModuleID:    args[0],
+				PlatformURL: platformURL,
+				PKIDir:      pkiDir,
+				DryRun:      dryRun,
+				JSON:        jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print planned actions without executing")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 // --- update / commit / status / exec / sync / init / volume-setup / puppet ---
 func updateCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL string
+		pkiDir      string
+		dryRun      bool
+		jsonOut     bool
+	)
+	c := &cobra.Command{
 		Use:   "update",
 		Short: "Reconcile assignments from /node_api/modules (legacy ipn -u)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent update] not yet implemented (M2.E)")
-			return nil
+			res, runErr := agentcli.RunUpdate(cmd.Context(), agentcli.UpdateOptions{
+				PlatformURL: platformURL,
+				PKIDir:      pkiDir,
+				DryRun:      dryRun,
+				JSON:        jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print planned actions without executing")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 func commitCmd() *cobra.Command {
@@ -661,26 +758,49 @@ func execCmd() *cobra.Command {
 }
 
 func syncCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL string
+		pkiDir      string
+		dryRun      bool
+		jsonOut     bool
+	)
+	c := &cobra.Command{
 		Use:   "sync",
-		Short: "One reconcile cycle: pull config + modules + run puppet (legacy ipn -S)",
+		Short: "One reconcile cycle: modules + authorized_keys (legacy ipn -S)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent sync] not yet implemented")
-			return nil
+			res, runErr := agentcli.RunSync(cmd.Context(), agentcli.SyncOptions{
+				PlatformURL: platformURL,
+				PKIDir:      pkiDir,
+				DryRun:      dryRun,
+				JSON:        jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print planned actions without executing")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	c := &cobra.Command{
 		Use:   "init <module-id> <action>",
-		Short: "Run a module's init action; action is start|stop|restart (legacy ipn -I)",
+		Short: "Run a module's init action; action is start|stop|restart|reload|status (legacy ipn -I)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent init %s %s] not yet implemented\n", args[0], args[1])
-			return nil
+			res, runErr := agentcli.RunInit(cmd.Context(), agentcli.InitOptions{
+				ModuleID: args[0],
+				Action:   args[1],
+				JSON:     jsonOut,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
 }
 
 func volumeSetupCmd() *cobra.Command {

@@ -25,10 +25,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/powernode/platform/extensions/system/agent/cmd/powernode-agent/internal/cli"
 )
 
 // Version is set at build time via -ldflags. The Gitea Actions workflow
@@ -73,6 +76,13 @@ See https://docs.powernode.org/agent for full documentation.`,
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "powernode-agent:", err)
+		// Honor structured exit codes from cli.CommandError. Lets
+		// shell scripts branch on specific failure classes (verify
+		// failed = 2, mount failed = 3, etc.). Falls back to 1.
+		var ce *cli.CommandError
+		if errors.As(err, &ce) && ce.Code != 0 {
+			os.Exit(ce.Code)
+		}
 		os.Exit(1)
 	}
 }
