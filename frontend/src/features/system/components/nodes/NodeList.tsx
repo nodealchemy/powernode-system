@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   Server,
   Search,
@@ -8,7 +8,9 @@ import {
   Power,
   PowerOff,
   MoreVertical,
-  Filter
+  Filter,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -119,6 +121,33 @@ export const NodeList: React.FC<NodeListProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedNodeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
+  // Arm-and-confirm pattern for destructive actions (delete). First click
+  // sets a 5s armed window with a visual cue; second click within window
+  // fires. Keyed by `${action}:${nodeId}` so distinct nodes arm separately.
+  const [armedAction, setArmedAction] = useState<string | null>(null);
+  const armActionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armOrFire = useCallback((key: string, fire: () => void) => {
+    if (armedAction === key) {
+      if (armActionTimeoutRef.current) clearTimeout(armActionTimeoutRef.current);
+      setArmedAction(null);
+      fire();
+      return;
+    }
+    setArmedAction(key);
+    if (armActionTimeoutRef.current) clearTimeout(armActionTimeoutRef.current);
+    armActionTimeoutRef.current = setTimeout(() => setArmedAction(null), 5000);
+  }, [armedAction]);
+
   return (
     <ResponsiveListContainer
       loading={loading}
@@ -173,6 +202,7 @@ export const NodeList: React.FC<NodeListProps> = ({
         <table className="w-full">
             <thead>
               <tr className="bg-theme-background border-b border-theme">
+                <th className="w-8 py-3 px-2"></th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Node</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Template</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Status</th>
@@ -182,8 +212,22 @@ export const NodeList: React.FC<NodeListProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-theme">
-              {filteredNodes.map((node) => (
-                <tr key={node.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
+              {filteredNodes.map((node) => {
+                const expanded = expandedNodeIds.has(node.id);
+                const deleteArmed = armedAction === `delete:${node.id}`;
+                return (
+                <React.Fragment key={node.id}>
+                <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                  <td className="py-3 px-2 align-middle">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(node.id)}
+                      className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </button>
+                  </td>
                   <td className="py-3 px-4">
                     <div>
                       <div className="flex items-center gap-2">
@@ -270,42 +314,120 @@ export const NodeList: React.FC<NodeListProps> = ({
 
                       {canDelete && onDelete && (
                         <Button
-                          variant="outline"
+                          variant={deleteArmed ? 'danger' : 'outline'}
                           size="sm"
-                          onClick={() => onDelete(node.id)}
-                          title="Delete Node"
+                          onClick={() => armOrFire(`delete:${node.id}`, () => onDelete(node.id))}
+                          title={deleteArmed ? 'Click again to confirm delete' : 'Delete Node'}
                         >
-                          <Trash2 className="w-4 h-4 text-theme-error" />
+                          {deleteArmed ? <span className="text-xs px-1">Confirm?</span> : <Trash2 className="w-4 h-4 text-theme-error" />}
                         </Button>
                       )}
                     </div>
                   </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr className="bg-theme-background border-b border-theme">
+                    <td></td>
+                    <td colSpan={6} className="py-3 px-4">
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                        {node.description && (
+                          <div className="col-span-full">
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                            <p className="text-theme-primary">{node.description}</p>
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                          <p className="text-theme-primary">{node.status || (node.enabled ? 'enabled' : 'disabled')}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Instances</label>
+                          <p className="text-theme-primary">{node.running_instances_count ?? 0} running of {node.instance_count ?? 0} total</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public IP Allocation</label>
+                          <p className="text-theme-primary">{node.allocate_public_ip ? 'Enabled' : 'Disabled'}</p>
+                        </div>
+                        {node.public_address && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public Address</label>
+                            <p className="text-theme-primary font-mono text-xs">{node.public_address}</p>
+                          </div>
+                        )}
+                        {node.node_template_name && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Template</label>
+                            <p className="text-theme-primary">{node.node_template_name}</p>
+                          </div>
+                        )}
+                        {node.worker_id && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Worker</label>
+                            <p className="text-theme-primary font-mono text-xs truncate" title={node.worker_id}>{node.worker_id}</p>
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Node ID</label>
+                          <p className="text-theme-primary font-mono text-xs truncate" title={node.id}>{node.id}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                          <p className="text-theme-primary text-xs">{new Date(node.created_at).toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                          <p className="text-theme-primary text-xs">{new Date(node.updated_at).toLocaleString()}</p>
+                        </div>
+                        {node.config && Object.keys(node.config).length > 0 && (
+                          <div className="col-span-full">
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Config</label>
+                            <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(node.config, null, 2)}</pre>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
       </ResponsiveListContainer.Desktop>
 
       <ResponsiveListContainer.Mobile>
-        {filteredNodes.map((node) => (
+        {filteredNodes.map((node) => {
+          const expanded = expandedNodeIds.has(node.id);
+          const deleteArmed = armedAction === `delete:${node.id}`;
+          return (
             <div key={node.id} className="p-4">
               {/* Header */}
               <div className="flex items-start justify-between mb-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Server className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
-                    <span
-                      className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
-                      onClick={() => onView?.(node)}
-                    >
-                      {node.name}
-                    </span>
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(node.id)}
+                    className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Server className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
+                      <span
+                        className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
+                        onClick={() => onView?.(node)}
+                      >
+                        {node.name}
+                      </span>
+                    </div>
+                    {node.description && (
+                      <p className="text-sm text-theme-secondary truncate">
+                        {node.description}
+                      </p>
+                    )}
                   </div>
-                  {node.description && (
-                    <p className="text-sm text-theme-secondary truncate">
-                      {node.description}
-                    </p>
-                  )}
                 </div>
 
                 <div className="relative">
@@ -371,13 +493,17 @@ export const NodeList: React.FC<NodeListProps> = ({
                         {canDelete && onDelete && (
                           <button
                             onClick={() => {
-                              onDelete(node.id);
-                              setDropdownOpen(null);
+                              armOrFire(`delete:${node.id}`, () => {
+                                onDelete(node.id);
+                                setDropdownOpen(null);
+                              });
                             }}
-                            className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                            className={`w-full text-left px-4 py-2 text-sm hover:bg-theme-surface-hover flex items-center gap-2 ${
+                              deleteArmed ? 'text-theme-error font-medium' : 'text-theme-error'
+                            }`}
                           >
                             <Trash2 className="w-4 h-4" />
-                            Delete Node
+                            {deleteArmed ? 'Click again to confirm' : 'Delete Node'}
                           </button>
                         )}
                       </div>
@@ -419,8 +545,51 @@ export const NodeList: React.FC<NodeListProps> = ({
                   Address: {node.public_address}
                 </div>
               )}
+
+              {/* Expanded body */}
+              {expanded && (
+                <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                    <p className="text-theme-primary">{node.status || (node.enabled ? 'enabled' : 'disabled')}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Running</label>
+                    <p className="text-theme-primary">{node.running_instances_count ?? 0} / {node.instance_count ?? 0}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public IP</label>
+                    <p className="text-theme-primary">{node.allocate_public_ip ? 'Allocated' : 'Disabled'}</p>
+                  </div>
+                  {node.worker_id && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Worker</label>
+                      <p className="text-theme-primary font-mono text-xs truncate" title={node.worker_id}>{node.worker_id}</p>
+                    </div>
+                  )}
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Node ID</label>
+                    <p className="text-theme-primary font-mono text-xs truncate" title={node.id}>{node.id}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                    <p className="text-theme-primary text-xs">{new Date(node.created_at).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                    <p className="text-theme-primary text-xs">{new Date(node.updated_at).toLocaleString()}</p>
+                  </div>
+                  {node.config && Object.keys(node.config).length > 0 && (
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Config</label>
+                      <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(node.config, null, 2)}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          ))}
+          );
+          })}
       </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );
