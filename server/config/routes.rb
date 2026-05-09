@@ -429,6 +429,7 @@ Rails.application.routes.draw do
           # upserts Sdwan::BgpSession rows so the dashboard shows live data.
           post "status/bgp", to: "sdwan#report_bgp"
           get "status/tasks", to: "status#tasks"
+          get "status/tasks/:id", to: "status#show_task"
           post "status/tasks/:id/acknowledge", to: "status#acknowledge_task"
           post "status/tasks/:id/complete", to: "status#complete_task"
           post "status/tasks/:id/fail", to: "status#fail_task"

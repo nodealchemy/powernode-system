@@ -88,6 +88,19 @@ module Api
             )
           end
 
+          # GET /api/v1/system/node_api/status/tasks/:id
+          # Show a single task by id. Used by the agent's task lease
+          # loop crash-recovery path: on restart, the agent walks its
+          # local inflight state file and queries the platform for
+          # each entry to decide whether to re-execute (non-terminal)
+          # or drop (complete/failed/cancelled).
+          def show_task
+            operation = current_instance.tasks.find(params[:id])
+            render_success(task: serialize_operation_full(operation))
+          rescue ActiveRecord::RecordNotFound
+            render_record_not_found("Operation")
+          end
+
           # POST /api/v1/system/node_api/status/operations/:id/ack
           # Acknowledge operation receipt
           def acknowledge_task
