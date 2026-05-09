@@ -8,10 +8,13 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -301,15 +304,145 @@ func verifyCmd() *cobra.Command {
 }
 
 // --- introspect --------------------------------------------------------------
+//
+// Diagnostic snapshot of the agent's own state — identity, enrolled
+// certificate, module mounts, agent binary version. Read-only; no platform
+// API call. Useful when SSH'd into a node to answer "what does this agent
+// think it is?" without trusting the platform's view.
 func introspectCmd() *cobra.Command {
-	return &cobra.Command{
+	var pkiDir string
+	c := &cobra.Command{
 		Use:   "introspect",
 		Short: "Print the agent's view of itself (identity, modules, certs, mounts)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent introspect] not yet implemented")
+			fmt.Printf("powernode-agent %s\n", Version)
+			fmt.Println()
+
+			fmt.Println("─── identity ───")
+			printIdentitySnapshot()
+			fmt.Println()
+
+			fmt.Println("─── PKI ───")
+			printPKISnapshot(pkiDir)
+			fmt.Println()
+
+			fmt.Println("─── modules ───")
+			printModulesSnapshot()
+			fmt.Println()
+
+			fmt.Println("─── relevant mounts ───")
+			printRelevantMounts()
 			return nil
 		},
 	}
+	c.Flags().StringVar(&pkiDir, "pki-dir", enroll.PKIDir, "directory containing node.crt/node.key/ca-bundle.crt")
+	return c
+}
+
+// printIdentitySnapshot reports the discovered identity fields. Reads
+// /etc/identity.cfg directly rather than re-running cloud probes — those
+// probes are expensive and the cached identity from boot is what the
+// service is actually using.
+func printIdentitySnapshot() {
+	candidates := []string{"/etc/identity.cfg", "/persist/etc/identity.cfg", "/boot/identity.cfg"}
+	var data []byte
+	var src string
+	for _, p := range candidates {
+		if b, err := os.ReadFile(p); err == nil {
+			data = b
+			src = p
+			break
+		}
+	}
+	if src == "" {
+		fmt.Println("  identity.cfg: (none found)")
+		return
+	}
+	fmt.Printf("  source:         %s\n", src)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"`)
+		// Redact the bootstrap token — it's single-use, but mirroring it to
+		// stdout still leaks an enrollment capability.
+		if strings.EqualFold(key, "bootstrap_token") || strings.EqualFold(key, "BOOTSTRAP_TOKEN") {
+			val = redact(val)
+		}
+		fmt.Printf("  %-15s %s\n", key+":", val)
+	}
+}
+
+// printPKISnapshot reads the enrolled cert (if present) and reports its
+// subject, issuer, validity window, and remaining lifetime. Does NOT decode
+// the private key — the file's existence is enough; reading it would risk
+// leaking material into a debug log.
+func printPKISnapshot(pkiDir string) {
+	paths := enroll.PathsUnder(pkiDir)
+	fmt.Printf("  pki-dir:        %s\n", pkiDir)
+
+	keyInfo, err := os.Stat(paths.Key)
+	if err == nil {
+		fmt.Printf("  node.key:       present (mode=%o, %d bytes)\n", keyInfo.Mode().Perm(), keyInfo.Size())
+	} else {
+		fmt.Println("  node.key:       (not found — agent has not enrolled)")
+	}
+
+	certPEM, err := os.ReadFile(paths.Cert)
+	if err != nil {
+		fmt.Println("  node.crt:       (not found — agent has not enrolled)")
+		return
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		fmt.Println("  node.crt:       present but PEM decode failed")
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		fmt.Printf("  node.crt:       parse error: %v\n", err)
+		return
+	}
+	now := time.Now()
+	fmt.Printf("  node.crt:\n")
+	fmt.Printf("    subject:      %s\n", cert.Subject.String())
+	fmt.Printf("    issuer:       %s\n", cert.Issuer.String())
+	fmt.Printf("    not_before:   %s\n", cert.NotBefore.UTC().Format(time.RFC3339))
+	fmt.Printf("    not_after:    %s\n", cert.NotAfter.UTC().Format(time.RFC3339))
+	switch {
+	case now.Before(cert.NotBefore):
+		fmt.Printf("    validity:     not yet valid (begins %s)\n", cert.NotBefore.UTC().Format(time.RFC3339))
+	case now.After(cert.NotAfter):
+		fmt.Printf("    validity:     EXPIRED %s ago\n", roundDuration(now.Sub(cert.NotAfter)))
+	default:
+		fmt.Printf("    validity:     valid (expires in %s)\n", roundDuration(cert.NotAfter.Sub(now)))
+	}
+}
+
+// redact returns a fixed-width mask, preserving the value's length-bucket
+// signal (so an empty token shows differently from a populated one).
+func redact(s string) string {
+	if s == "" {
+		return "(empty)"
+	}
+	return fmt.Sprintf("(redacted, %d chars)", len(s))
+}
+
+// roundDuration trims a Duration to second precision for log readability.
+func roundDuration(d time.Duration) time.Duration {
+	if d > 24*time.Hour {
+		return d.Round(time.Hour)
+	}
+	if d > time.Hour {
+		return d.Round(time.Minute)
+	}
+	return d.Round(time.Second)
 }
 
 // --- attach / detach ---------------------------------------------------------
@@ -361,14 +494,157 @@ func commitCmd() *cobra.Command {
 	}
 }
 
+// statusCmd prints which modules are present in the 9p share + which are
+// currently composed into the overlay union. "Attached" = the module's
+// rootfs is one of the overlay's lowerdirs (i.e. its files are visible in
+// the running root). "Available" = present in the share but not active.
+//
+// Read-only: walks /run/powernode/modules and parses /proc/mounts. Doesn't
+// hit the platform — answers "what's actually mounted right now" without
+// trusting the platform's expected-state view.
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Print attach/detach state of all modules (legacy ipn -s)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent status] not yet implemented")
+			printModulesSnapshot()
 			return nil
 		},
+	}
+}
+
+// printModulesSnapshot enumerates modules in the 9p share and marks each as
+// attached if it's in the overlay's lowerdir list.
+func printModulesSnapshot() {
+	const moduleRoot = "/run/powernode/modules"
+	entries, err := os.ReadDir(moduleRoot)
+	if err != nil {
+		fmt.Printf("  (cannot read %s: %v)\n", moduleRoot, err)
+		return
+	}
+
+	attached := overlayLowerdirs()
+	attachedSet := make(map[string]struct{}, len(attached))
+	for _, p := range attached {
+		// Each lowerdir entry is "<moduleRoot>/<name>/rootfs"; pull <name>.
+		rel, err := filepath.Rel(moduleRoot, p)
+		if err != nil {
+			continue
+		}
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) >= 1 && parts[0] != "" {
+			attachedSet[parts[0]] = struct{}{}
+		}
+	}
+
+	type modRow struct {
+		name     string
+		attached bool
+		rootfs   bool
+	}
+	var rows []modRow
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		rootfsExists := false
+		if _, err := os.Stat(filepath.Join(moduleRoot, e.Name(), "rootfs")); err == nil {
+			rootfsExists = true
+		}
+		_, ok := attachedSet[e.Name()]
+		rows = append(rows, modRow{name: e.Name(), attached: ok, rootfs: rootfsExists})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+
+	if len(rows) == 0 {
+		fmt.Printf("  (no modules in %s)\n", moduleRoot)
+		return
+	}
+	fmt.Printf("  %-30s %-10s %s\n", "MODULE", "STATE", "ROOTFS")
+	for _, r := range rows {
+		state := "available"
+		if r.attached {
+			state = "attached"
+		} else if !r.rootfs {
+			state = "no-rootfs"
+		}
+		rootfsMark := "yes"
+		if !r.rootfs {
+			rootfsMark = "no"
+		}
+		fmt.Printf("  %-30s %-10s %s\n", r.name, state, rootfsMark)
+	}
+}
+
+// overlayLowerdirs scans /proc/mounts for an overlay mounted at /sysroot
+// or /, parses the lowerdir option, and returns the path list.
+func overlayLowerdirs() []string {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		fsType, mp, opts := fields[2], fields[1], fields[3]
+		if fsType != "overlay" {
+			continue
+		}
+		if mp != "/" && mp != "/sysroot" {
+			continue
+		}
+		for _, opt := range strings.Split(opts, ",") {
+			if v, ok := strings.CutPrefix(opt, "lowerdir="); ok {
+				return strings.Split(v, ":")
+			}
+		}
+	}
+	return nil
+}
+
+// printRelevantMounts prints the powernode-related mountpoints from
+// /proc/mounts: the 9p share, the overlay union, and the persist volume.
+// Filters out the noise of /sys, /proc, /dev, etc.
+func printRelevantMounts() {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		fmt.Printf("  (cannot read /proc/mounts: %v)\n", err)
+		return
+	}
+	type row struct{ src, dst, fs, opts string }
+	var rows []row
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		src, dst, fs := f[0], f[1], f[2]
+		// Surface mounts that matter to the agent: 9p shares, the overlay
+		// union, the persist volume, anything under /run/powernode.
+		switch {
+		case fs == "9p":
+		case fs == "overlay":
+		case strings.HasPrefix(dst, "/run/powernode"):
+		case strings.HasPrefix(dst, "/persist"):
+		case dst == "/sysroot":
+		default:
+			continue
+		}
+		rows = append(rows, row{src: src, dst: dst, fs: fs, opts: f[3]})
+	}
+	if len(rows) == 0 {
+		fmt.Println("  (no relevant mounts)")
+		return
+	}
+	fmt.Printf("  %-12s %-30s %-10s %s\n", "FS", "MOUNTPOINT", "SOURCE", "OPTS")
+	for _, r := range rows {
+		opts := r.opts
+		if len(opts) > 80 {
+			opts = opts[:77] + "..."
+		}
+		fmt.Printf("  %-12s %-30s %-10s %s\n", r.fs, r.dst, r.src, opts)
 	}
 }
 
