@@ -463,6 +463,11 @@ Rails.application.routes.draw do
           # Comprehensive stabilization sweep P6.
           post "peer/announce", to: "peer#announce"
           post "peer/execute_result", to: "peer#execute_result"
+
+          # Fleet event ingestion — Phase 0 of agent stub plan. Lets
+          # the on-node Go agent batch-emit FleetEvent rows scoped to
+          # its current_instance + current_account.
+          post "fleet/events", to: "fleet#events"
         end
       end
     end
