@@ -53,8 +53,20 @@ type ServerApplier interface {
 // (no kubeconfig to upload) but more config to write (K3S_URL +
 // K3S_TOKEN env from the platform's join_request response).
 //
-// Phase 2 slice 8b will implement this; the type lives here so
-// Manager + state machine work for both modes.
+// Implemented by ShellAgentApplier (production) — Phase 1 finalization
+// confirmed: end-to-end coverage in shell_applier_test.go covers
+// install (TestShellAgentApplier_InstallShellsToAgentScript), join
+// config write (TestShellAgentApplier_WriteJoinConfig_RendersValidEnv,
+// _RejectsEmpty, _TrueAfterWrite), start (_StartUsesAgentUnit), and
+// cleanup (_Cleanup_RemovesEnvFile). State-machine integration is
+// covered by agent_manager_test.go.
+//
+// On the platform endpoint side: GET /runtime/k3s_agent/config returns
+// empty in v1 because the join state (K3S_URL + K3S_TOKEN) is delivered
+// inline in the join_request handshake response. Splitting it across a
+// second endpoint would duplicate state without operator benefit; future
+// per-runtime config overrides can land via that endpoint without
+// changing the join flow.
 type AgentApplier interface {
 	HasInstalled(ctx context.Context) (bool, error)
 	InstallK3sAgent(ctx context.Context) error

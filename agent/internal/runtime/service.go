@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +26,15 @@ import (
 	"github.com/powernode/platform/extensions/system/agent/internal/transport"
 	"github.com/powernode/platform/extensions/system/agent/internal/verify"
 )
+
+// pemDecode + x509ParseCertificate are package-level aliases so the
+// `readCertCN` helper isn't a magnet for accidental re-imports of
+// pem/x509 elsewhere — keeps the import surface obvious.
+var pemDecode = pem.Decode
+
+func x509ParseCertificate(der []byte) (*x509.Certificate, error) {
+	return x509.ParseCertificate(der)
+}
 
 // Config bundles the parameters that drive a long-lived service run.
 type Config struct {
@@ -199,6 +210,33 @@ func (s *Service) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Phase 1 cert rotation goroutine. Refreshes the agent's mTLS cert
+	// before NotAfter via POST /enroll/refresh authenticated by the
+	// existing cert. Subject is read from the on-disk cert's CN — the
+	// platform's IntervalCaService will preserve subject/CN across
+	// rotations so the same NodeInstance remains addressable.
+	//
+	// Wraps the bootstrap client in a SwappableClient so the rotator
+	// can publish a fresh transport after a successful refresh
+	// without coordinating with the heartbeat / reconciler loops.
+	swap := transport.NewSwappableClient(client)
+	subject := readCertCN(paths.Cert)
+	rotator, err := NewCertRotator(&CertRotator{
+		PKIPaths:     paths,
+		PlatformURL:  client.PlatformURL,
+		Transport:    swap,
+		Subject:      subject,
+		AgentVersion: s.cfg.AgentVersion,
+		OnError:      s.cfg.OnError,
+	})
+	if err != nil {
+		// A bad rotator config is not fatal — the agent can run
+		// indefinitely on the existing cert until NotAfter. Log and
+		// proceed without the rotation goroutine.
+		s.cfg.OnError("cert_rotation_init", err)
+		rotator = nil
+	}
+
 	spawn("heartbeat", func() {
 		heartbeat.Run(ctx, s.cfg.HeartbeatInterval, func(err error) {
 			s.cfg.OnError("heartbeat", err)
@@ -207,15 +245,38 @@ func (s *Service) Run(ctx context.Context) error {
 	spawn("reconciler", func() {
 		reconciler.Run(ctx)
 	})
+	if rotator != nil {
+		spawn("cert_rotation", func() {
+			rotator.Run(ctx)
+		})
+	}
 
-	// TODO Phase 1.x: task lease + cert rotation goroutines spawn here.
-	// Both follow the same shape — own their loop, surface errors via
-	// OnError, exit when ctx is canceled. Cert rotation depends on the
-	// /enroll/refresh server endpoint; task lease depends on the
-	// /status/tasks/:id show endpoint for crash-recovery lookup.
+	// TODO Phase 1.x: task lease goroutine spawns here. Follows the
+	// same shape — owns its loop, surfaces errors via OnError, exits
+	// when ctx is canceled. Depends on the /status/tasks/:id show
+	// endpoint for crash-recovery lookup.
 
 	wg.Wait()
 	return nil
+}
+
+// readCertCN parses the leaf cert at path and returns its CN. Returns
+// the empty string when the cert can't be read or parsed — the caller
+// (cert rotator) treats empty CN as a fatal init error.
+func readCertCN(path string) string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	block, _ := pemDecode(body)
+	if block == nil {
+		return ""
+	}
+	cert, err := x509ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	return cert.Subject.CommonName
 }
 
 // bearerHeader wraps a token for HTTP Authorization. Returns empty
