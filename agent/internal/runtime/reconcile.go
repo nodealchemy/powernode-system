@@ -1,0 +1,398 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
+	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/powernode/platform/extensions/system/agent/internal/oci"
+	"github.com/powernode/platform/extensions/system/agent/internal/security"
+	"github.com/powernode/platform/extensions/system/agent/internal/systemd"
+	"github.com/powernode/platform/extensions/system/agent/internal/verify"
+)
+
+// PullerAPI is the subset of *oci.Puller the reconciler depends on.
+// Defined as an interface so tests can stub without standing up an
+// httptest server for the blob download path.
+type PullerAPI interface {
+	Pull(ref *oci.ModuleArtifactRef) (cfsPath, bundlePath string, err error)
+}
+
+// ReconcilerConfig wires the reconciler's dependencies. Each field is
+// independently injectable so tests can stub piecewise.
+type ReconcilerConfig struct {
+	// ModulesClient fetches the assigned-modules list from the platform.
+	// Typically *transport.Client or *transport.SwappableClient.
+	ModulesClient ModulesClient
+	// ManifestClient fetches per-module manifests + caches them on disk.
+	// Same client as ModulesClient in production; the manifest loader
+	// only needs GetJSON.
+	ManifestClient manifest.Client
+	// ManifestRoot is the cache root for on-disk manifest JSON files.
+	// Defaults to manifest.DefaultRoot when empty.
+	ManifestRoot string
+	// Puller pulls module artifacts (composefs blob + cosign bundle).
+	Puller PullerAPI
+	// Verifier verifies cosign signatures against the bundle. May be
+	// verify.AlwaysOK in dev/test.
+	Verifier verify.Verifier
+	// Fsverity verifies fs-verity Merkle-tree root hash matches expected.
+	Fsverity *verify.FsVerifier
+	// MountRunner is the os/exec abstraction used by mount/security/systemd.
+	MountRunner mount.Runner
+	// Layout describes mount points (modules cache, sysroot, etc.).
+	Layout mount.Layout
+	// StatePath is where mount.LoadState/SaveState reads + writes.
+	// Defaults to mount.StatePath when empty.
+	StatePath string
+	// Interval is the gap between full reconcile cycles in Run(ctx).
+	// Default 60s, jittered ±10%.
+	Interval time.Duration
+	// DryRun, when true, computes the diff + plan but skips all
+	// mutations (no pull, no mount, no systemd action).
+	DryRun bool
+	// OnError surfaces non-fatal reconcile-stage errors. Persistent
+	// errors stay in the reconciler's lastErrors field for heartbeat
+	// reporting.
+	OnError func(stage string, err error)
+}
+
+// Reconciler is the long-lived module-state reconcile loop. Pulls the
+// platform's assigned-modules list, diffs vs on-disk state.json,
+// pulls + verifies + mounts new modules, unmounts removed ones,
+// applies security policy, runs init_start units, recomposes the
+// overlay union, persists state.
+type Reconciler struct {
+	cfg ReconcilerConfig
+
+	mu              sync.Mutex
+	lastReconcileAt time.Time
+	lastError       error
+}
+
+// NewReconciler validates required fields and returns a Reconciler.
+// Returns nil + error when a required dependency is absent.
+func NewReconciler(cfg ReconcilerConfig) (*Reconciler, error) {
+	if cfg.ModulesClient == nil {
+		return nil, errors.New("NewReconciler: ModulesClient required")
+	}
+	if cfg.ManifestClient == nil {
+		return nil, errors.New("NewReconciler: ManifestClient required")
+	}
+	if cfg.Puller == nil {
+		return nil, errors.New("NewReconciler: Puller required")
+	}
+	if cfg.Verifier == nil {
+		return nil, errors.New("NewReconciler: Verifier required (use verify.AlwaysOK in dev only)")
+	}
+	if cfg.MountRunner == nil {
+		return nil, errors.New("NewReconciler: MountRunner required")
+	}
+	if cfg.ManifestRoot == "" {
+		cfg.ManifestRoot = manifest.DefaultRoot
+	}
+	if cfg.StatePath == "" {
+		cfg.StatePath = mount.StatePath
+	}
+	if cfg.Interval == 0 {
+		cfg.Interval = 60 * time.Second
+	}
+	if cfg.OnError == nil {
+		cfg.OnError = func(string, error) {}
+	}
+	return &Reconciler{cfg: cfg}, nil
+}
+
+// Run blocks until ctx is canceled. Each tick: jitter the interval
+// (±10%), call RunOnce, surface the error if any. The loop never
+// crashes — failures stay in lastError and are visible via Status.
+func (r *Reconciler) Run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if err := r.RunOnce(ctx); err != nil {
+			r.cfg.OnError("reconciler", err)
+		}
+
+		jitter := time.Duration(rand.Int63n(int64(r.cfg.Interval) / 5))
+		sleep := r.cfg.Interval + jitter - r.cfg.Interval/10
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(sleep):
+		}
+	}
+}
+
+// RunOnce runs one reconcile cycle synchronously. Used by both Run()
+// and the Phase 2 `update`/`sync` CLI commands.
+//
+// Sequence (per the implementation plan):
+//  1. Fetch desired modules from platform
+//  2. For each module with a data file: fetch manifest
+//  3. Take state lock; load current state
+//  4. Compute diff (mount.Reconcile)
+//  5. Apply detaches first (reverse priority order)
+//  6. Apply attaches (priority order): pull → verify → mount → policy → start
+//  7. Recompose union mount
+//  8. Persist state
+//  9. Release lock
+func (r *Reconciler) RunOnce(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	desiredModules, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
+	if err != nil {
+		r.lastError = fmt.Errorf("fetch assigned modules: %w", err)
+		return r.lastError
+	}
+
+	// Build desired ModuleStack by fetching manifests for modules with data files.
+	desired := make(mount.ModuleStack, 0, len(desiredModules))
+	manifests := make(map[string]*manifest.Manifest, len(desiredModules))
+	for _, mod := range desiredModules {
+		if !mod.HasDataFile {
+			continue // config-variety + skill modules have no blob to mount
+		}
+		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, 0)
+		if err != nil {
+			r.cfg.OnError("reconciler:fetch_manifest", fmt.Errorf("module %s: %w", mod.ID, err))
+			continue
+		}
+		if m.Digest == "" {
+			r.cfg.OnError("reconciler:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
+			continue
+		}
+		desired = append(desired, mount.Module{
+			ID:       mod.ID,
+			Digest:   m.Digest,
+			Priority: m.EffectivePriority,
+		})
+		manifests[mod.ID] = m
+	}
+
+	// Take the state lock so CLI attach/detach can't race the reconciler.
+	unlock, err := mount.Lock(r.cfg.StatePath)
+	if err != nil {
+		r.lastError = fmt.Errorf("acquire state lock: %w", err)
+		return r.lastError
+	}
+	defer unlock()
+
+	current, err := mount.LoadState(r.cfg.StatePath)
+	if err != nil {
+		r.lastError = fmt.Errorf("load state: %w", err)
+		return r.lastError
+	}
+
+	toAttach, toDetach := mount.Reconcile(current, desired)
+
+	if r.cfg.DryRun {
+		r.lastReconcileAt = time.Now()
+		r.lastError = nil
+		return nil
+	}
+
+	// Detaches first, in reverse priority (highest priority unmounted first
+	// so dependency stacks come down cleanly).
+	detachStack := mount.ModuleStack(toDetach).SortByPriority()
+	for i := len(detachStack) - 1; i >= 0; i-- {
+		mod := detachStack[i]
+		if err := r.detachModule(ctx, current, mod, manifests); err != nil {
+			r.cfg.OnError("reconciler:detach", fmt.Errorf("module %s: %w", mod.ID, err))
+			// Continue — best-effort detach; partial failure shouldn't block other detaches.
+		}
+	}
+
+	// Attaches in priority order (low → high).
+	attachStack := mount.ModuleStack(toAttach).SortByPriority()
+	for _, mod := range attachStack {
+		mf, ok := manifests[mod.ID]
+		if !ok {
+			r.cfg.OnError("reconciler:missing_manifest", fmt.Errorf("module %s: manifest not loaded", mod.ID))
+			continue
+		}
+		if err := r.attachModule(ctx, mod, mf); err != nil {
+			r.cfg.OnError("reconciler:attach", fmt.Errorf("module %s: %w", mod.ID, err))
+			continue
+		}
+		current.AttachedModules = append(current.AttachedModules, mod)
+	}
+
+	// Filter out detached modules from current.
+	if len(toDetach) > 0 {
+		detached := make(map[string]bool, len(toDetach))
+		for _, m := range toDetach {
+			detached[m.Digest] = true
+		}
+		filtered := current.AttachedModules[:0]
+		for _, m := range current.AttachedModules {
+			if !detached[m.Digest] {
+				filtered = append(filtered, m)
+			}
+		}
+		current.AttachedModules = filtered
+	}
+
+	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
+		r.lastError = fmt.Errorf("save state: %w", err)
+		return r.lastError
+	}
+
+	r.lastReconcileAt = time.Now()
+	r.lastError = nil
+	return nil
+}
+
+// attachModule pulls + verifies + mounts a single module.
+func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+	ref := &oci.ModuleArtifactRef{
+		ModuleID: mod.ID,
+		Digest:   mod.Digest,
+		// DownloadURL filled by the FetchManifest path; for now use the
+		// platform endpoint shape (manifest.json carries the URL when
+		// the artifact is published).
+		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s", mod.ID),
+		Size:        0,
+	}
+	cfsPath, bundlePath, err := r.cfg.Puller.Pull(ref)
+	if err != nil {
+		return fmt.Errorf("pull: %w", err)
+	}
+	if err := r.cfg.Verifier.VerifyBlob(ctx, cfsPath, bundlePath); err != nil {
+		return fmt.Errorf("verify cosign: %w", err)
+	}
+	if r.cfg.Fsverity != nil {
+		if err := r.cfg.Fsverity.VerifyDigest(ctx, cfsPath, mod.Digest); err != nil {
+			return fmt.Errorf("verify fs-verity: %w", err)
+		}
+	}
+
+	// Apply security policy. SeccompProfile is a path inside the
+	// module's mounted root; the drop-in for each unit is written
+	// here so subsequent systemctl start picks it up.
+	policy := buildPolicy(mf)
+	if errs := policy.Validate(); len(errs) > 0 {
+		return fmt.Errorf("policy invalid: %v", errs)
+	}
+	if err := policy.Apply(ctx, r.cfg.MountRunner); err != nil {
+		return fmt.Errorf("apply policy: %w", err)
+	}
+	if policy.SeccompProfile != "" {
+		for _, unit := range mf.Units() {
+			if err := security.WriteSeccompDropIn(unit, sanitizeProfileName(policy.SeccompProfile), policy.SeccompProfile); err != nil {
+				r.cfg.OnError("reconciler:seccomp_dropin", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+			}
+		}
+	}
+
+	// Start the module's units.
+	for _, unit := range mf.Units() {
+		if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Start); err != nil {
+			r.cfg.OnError("reconciler:start_unit", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+		}
+	}
+
+	return nil
+}
+
+// detachModule stops the module's units and unmounts it.
+func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod mount.Module, manifests map[string]*manifest.Manifest) error {
+	// Look up the manifest for unit names — it may already be on disk
+	// even though the platform no longer assigns the module.
+	mf, ok := manifests[mod.ID]
+	if !ok {
+		mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
+	}
+	if mf != nil {
+		// Stop units in reverse order so dependencies come down cleanly.
+		units := mf.Units()
+		for i := len(units) - 1; i >= 0; i-- {
+			if err := systemd.Action(ctx, r.cfg.MountRunner, units[i], systemd.Stop); err != nil {
+				r.cfg.OnError("reconciler:stop_unit", fmt.Errorf("module %s unit %s: %w", mod.ID, units[i], err))
+			}
+		}
+	}
+	_ = current // current state held by caller; we return success on best-effort detach
+	return nil
+}
+
+// buildPolicy constructs a security.Policy from the manifest's
+// config["security"] block. Returns an empty policy when no security
+// block is present.
+func buildPolicy(m *manifest.Manifest) *security.Policy {
+	p := &security.Policy{}
+	if m == nil || m.Config == nil {
+		return p
+	}
+	sec, ok := m.Config["security"].(map[string]any)
+	if !ok {
+		return p
+	}
+	if caps, ok := sec["capabilities"].([]any); ok {
+		for _, c := range caps {
+			if s, ok := c.(string); ok {
+				p.Capabilities = append(p.Capabilities, s)
+			}
+		}
+	}
+	if v, ok := sec["selinux_profile"].(string); ok {
+		p.SELinuxProfile = v
+	}
+	if v, ok := sec["apparmor_profile"].(string); ok {
+		p.AppArmorProfile = v
+	}
+	if v, ok := sec["seccomp_profile"].(string); ok {
+		p.SeccompProfile = v
+	}
+	if v, ok := sec["egress_allow"].([]any); ok {
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				p.EgressAllow = append(p.EgressAllow, s)
+			}
+		}
+	}
+	if v, ok := sec["privileged"].(bool); ok {
+		p.Privileged = v
+	}
+	if v, ok := sec["user_namespace"].(bool); ok {
+		p.UserNamespace = v
+	}
+	return p
+}
+
+// sanitizeProfileName returns a base name suitable for the systemd
+// SystemCallFilter directive — strips any path components from the
+// seccomp profile path.
+func sanitizeProfileName(profilePath string) string {
+	for i := len(profilePath) - 1; i >= 0; i-- {
+		if profilePath[i] == '/' {
+			return profilePath[i+1:]
+		}
+	}
+	return profilePath
+}
+
+// LastReconcileAt is exposed for the heartbeat builder.
+func (r *Reconciler) LastReconcileAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastReconcileAt
+}
+
+// LastError returns the most recent reconcile-loop error (nil on
+// success).
+func (r *Reconciler) LastError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastError
+}

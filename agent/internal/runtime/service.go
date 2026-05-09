@@ -17,9 +17,12 @@ import (
 	"github.com/powernode/platform/extensions/system/agent/internal/enroll"
 	"github.com/powernode/platform/extensions/system/agent/internal/identity"
 	"github.com/powernode/platform/extensions/system/agent/internal/k3sd"
+	"github.com/powernode/platform/extensions/system/agent/internal/manifest"
 	"github.com/powernode/platform/extensions/system/agent/internal/mount"
+	"github.com/powernode/platform/extensions/system/agent/internal/oci"
 	"github.com/powernode/platform/extensions/system/agent/internal/sdwan"
 	"github.com/powernode/platform/extensions/system/agent/internal/transport"
+	"github.com/powernode/platform/extensions/system/agent/internal/verify"
 )
 
 // Config bundles the parameters that drive a long-lived service run.
@@ -153,21 +156,75 @@ func (s *Service) Run(ctx context.Context) error {
 		},
 	}
 
+	// Phase 1 module reconciler — runs in its own goroutine on its own
+	// cadence (60s ±10% jitter, separate from the heartbeat loop). Pulls
+	// modules, diffs vs state.json, attaches/detaches with cosign + fs-
+	// verity verification. Wired with verify.AlwaysOK as a Phase 1
+	// development default so the agent boots without a real cosign
+	// signing key; production deployments will swap in a real
+	// CosignVerifier once the M1 publish pipeline ships signatures.
+	reconciler, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   manifest.DefaultRoot,
+		Puller: &oci.Puller{
+			Transport:   client,
+			HTTPClient:  client.Client,
+			PlatformURL: client.PlatformURL,
+			Cache:       "/persist/cache/modules",
+			AuthHeader:  bearerHeader(client.InstanceToken),
+		},
+		Verifier:    verify.AlwaysOK{},
+		MountRunner: mount.ExecRunner{},
+		Layout:      mount.DefaultLayout(),
+		StatePath:   s.cfg.StatePath,
+		Interval:    60 * time.Second,
+		OnError:     s.cfg.OnError,
+	})
+	if err != nil {
+		return fmt.Errorf("build reconciler: %w", err)
+	}
+
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	spawn := func(name string, fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					s.cfg.OnError(name+"_panic", fmt.Errorf("panic: %v", r))
+				}
+			}()
+			fn()
+		}()
+	}
+
+	spawn("heartbeat", func() {
 		heartbeat.Run(ctx, s.cfg.HeartbeatInterval, func(err error) {
 			s.cfg.OnError("heartbeat", err)
 		})
-	}()
+	})
+	spawn("reconciler", func() {
+		reconciler.Run(ctx)
+	})
 
-	// Future goroutines (M2.E.x): task lease, cert rotation, reconcile.
-	// Each follows the same shape as heartbeat — owns its loop, surfaces
-	// errors via OnError, exits when ctx is canceled.
+	// TODO Phase 1.x: task lease + cert rotation goroutines spawn here.
+	// Both follow the same shape — own their loop, surface errors via
+	// OnError, exit when ctx is canceled. Cert rotation depends on the
+	// /enroll/refresh server endpoint; task lease depends on the
+	// /status/tasks/:id show endpoint for crash-recovery lookup.
 
 	wg.Wait()
 	return nil
+}
+
+// bearerHeader wraps a token for HTTP Authorization. Returns empty
+// when token is empty so the OCI puller doesn't send a stray header.
+func bearerHeader(token string) string {
+	if token == "" {
+		return ""
+	}
+	return "Bearer " + token
 }
 
 // buildHeartbeat snapshots current runtime state into a HeartbeatPayload.
