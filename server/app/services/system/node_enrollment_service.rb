@@ -26,6 +26,67 @@ module System
       )
     end
 
+    # Refresh the cert for an already-enrolled instance. Authenticated
+    # by the existing mTLS cert (caller passes current_instance from
+    # the controller chain). Bootstrap tokens are NOT used here —
+    # they are single-use by design.
+    #
+    # Re-issues with the same CN (instance.mtls_subject) so the agent's
+    # identity stays stable across rotations. The old NodeCertificate
+    # row is left in place; the platform's audit log keeps the full
+    # rotation history. In-flight requests on the old cert continue to
+    # work until that cert's NotAfter.
+    #
+    # Phase 1 of the agent stub implementation plan.
+    def self.refresh!(node_instance:, csr_pem:, agent_version: nil,
+                      ttl_seconds: DEFAULT_TTL_SECONDS)
+      new.refresh!(
+        node_instance: node_instance,
+        csr_pem: csr_pem,
+        agent_version: agent_version,
+        ttl_seconds: ttl_seconds
+      )
+    end
+
+    def refresh!(node_instance:, csr_pem:, agent_version: nil,
+                 ttl_seconds: DEFAULT_TTL_SECONDS)
+      return failure("node instance required") unless node_instance
+      return failure("csr_pem required") if csr_pem.blank?
+
+      common_name = node_instance.mtls_subject.presence || node_instance.id
+
+      issued = ::System::InternalCaService.issue_certificate(
+        csr_pem: csr_pem,
+        ttl_seconds: ttl_seconds,
+        common_name: common_name
+      )
+
+      cert_record = ::System::NodeCertificate.create!(
+        node_instance: node_instance,
+        serial: issued[:serial],
+        subject: issued[:subject] || "CN=#{common_name}",
+        not_before: issued[:not_before] || Time.current,
+        not_after:  issued[:not_after]  || (Time.current + ttl_seconds),
+        issuer_subject: parse_issuer(issued[:ca_chain_pem])
+      )
+
+      if agent_version.present?
+        node_instance.update!(agent_version: agent_version)
+      end
+
+      Result.new(
+        ok?: true,
+        node_certificate: cert_record,
+        cert_pem:     issued[:cert_pem],
+        ca_chain_pem: issued[:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem,
+        node_instance: node_instance
+      )
+    rescue ::System::InternalCaService::CaError, ::System::InternalCaService::CsrError => e
+      failure("CSR/CA failure: #{e.message}")
+    rescue ::ActiveRecord::RecordInvalid => e
+      failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}")
+    end
+
     def enroll!(bootstrap_token_plaintext:, csr_pem:, agent_version: nil,
                 dmi_uuid: nil, source_ip: nil, ttl_seconds: DEFAULT_TTL_SECONDS)
       token = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext)

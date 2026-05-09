@@ -404,6 +404,9 @@ Rails.application.routes.draw do
           # Enrollment — bootstrap-token-authenticated; pre-mTLS path used by
           # freshly-booted nodes presenting a single-use bootstrap token.
           post :enroll, to: "enrollment#create"
+          # Cert rotation — instance-cert-authenticated; consumed by the
+          # agent's CertRotator goroutine before NotAfter expiry.
+          post "enroll/refresh", to: "enrollment_refresh#refresh"
 
           # Config + key material
           get :config, to: "config#show"

@@ -28,20 +28,39 @@ module Api
           end
 
           # GET /api/v1/system/node_api/modules/:id/download
-          # Get module data file download info
+          # Get module data file download info, including the OCI
+          # registry coordinates when the M1 publish pipeline has
+          # produced an artifact.
+          #
+          # Phase 1 extension: oci block exposes the data the agent's
+          # internal/oci.Puller needs for streaming + sha256 verify
+          # (oci_ref, digest, architecture, fsverity_root_hash). Falls
+          # back to download_url-only when no artifact has been
+          # published yet (back-compat with pre-M1 modules).
           def download
             unless @module.data_file_name.present?
               return render_error("Module has no data file")
             end
 
-            render_success(
+            payload = {
               file: {
                 name: @module.data_file_name,
                 size: @module.data_file_size,
                 checksum: @module.data_checksum,
                 download_url: module_download_url(@module)
               }
-            )
+            }
+            if (artifact = preferred_artifact(@module))
+              payload[:oci] = {
+                ref: artifact.oci_ref,
+                digest: artifact.oci_digest,
+                architecture: artifact.architecture,
+                fsverity_root_hash: artifact.fsverity_root_hash,
+                size_bytes: artifact.size_bytes,
+                cosign_bundle_url: artifact.cosign_bundle.present? ? "/api/v1/system/node_api/files/modules/#{@module.id}/cosign-bundle" : nil
+              }.compact
+            end
+            render_success(payload)
           end
 
           # GET /api/v1/system/node_api/modules/:id/:resource
@@ -136,6 +155,21 @@ module Api
           def module_download_url(mod)
             # Generate URL for file download
             "/api/v1/system/node_api/files/modules/#{mod.id}/#{mod.data_file_name}"
+          end
+
+          # preferred_artifact picks the ModuleArtifact whose architecture
+          # matches the calling instance, falling back to any artifact
+          # if no arch-specific match exists. Returns nil when the
+          # module has no current_version or no artifacts yet.
+          def preferred_artifact(mod)
+            version = mod.current_version
+            return nil unless version
+
+            artifacts = version.module_artifacts
+            return nil if artifacts.blank?
+
+            arch = current_instance.architecture.presence
+            (arch && artifacts.find { |a| a.architecture == arch }) || artifacts.first
           end
 
           def serialize_module(mod)
