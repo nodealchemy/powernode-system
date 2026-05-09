@@ -50,13 +50,13 @@ func LoadAppArmorProfile(ctx context.Context, runner mount.Runner, path string) 
 	return runner.Run(ctx, "apparmor_parser", "-r", abs)
 }
 
-// ApplySeccompProfile is a placeholder for the seccomp filter install step.
-// True seccomp filters are typically applied per-process via prctl rather
-// than as a system-wide install; the kernel API is process-local. The
-// agent currently relies on systemd unit overrides (SystemCallFilter=
-// directive) that point at a JSON profile shipped in the module — so this
-// function's job is to write the profile into the systemd drop-in path
-// for the module's services.
+// ApplySeccompProfile validates that the seccomp profile file exists.
+// True seccomp filters are typically applied per-process via prctl
+// rather than as a system-wide install; the kernel API is process-local.
+// The agent relies on systemd unit overrides (SystemCallFilter=
+// directive) that point at a JSON profile shipped in the module —
+// callers should follow this validation with WriteSeccompDropIn for
+// each unit that should enforce the profile.
 func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profilePath string) error {
 	if profilePath == "" {
 		return errors.New("ApplySeccompProfile: empty path")
@@ -64,11 +64,52 @@ func ApplySeccompProfile(ctx context.Context, runner mount.Runner, profilePath s
 	if _, err := os.Stat(profilePath); err != nil {
 		return err
 	}
-	// systemd reads SystemCallFilter from drop-ins under
-	// /etc/systemd/system/<unit>.d/seccomp.conf. The module's services
-	// reference their profile via SystemCallFilter=@<profile>. We just
-	// validate the file exists; per-unit drop-in writing happens in
-	// internal/runtime/init_actions.go (M2.E.x follow-up).
+	return nil
+}
+
+// systemdDropInRoot is the canonical location systemd reads unit
+// overrides from. Variable so tests can redirect.
+var systemdDropInRoot = "/etc/systemd/system"
+
+// WriteSeccompDropIn renders a systemd drop-in that adds
+// `SystemCallFilter=@<profile>` to the named unit. The drop-in lands
+// at <root>/<unit>.d/seccomp.conf where <root> defaults to
+// /etc/systemd/system.
+//
+// The caller MUST run `systemctl daemon-reload` after a batch of
+// drop-in writes (use systemd.DaemonReload). systemd reads drop-ins
+// on next unit start anyway, but daemon-reload makes the change
+// observable to `systemctl cat` immediately.
+//
+// Path-traversal guard: rejects unit names containing `..`, `/`, or
+// any leading dash (which would parse as a flag). Defense in depth —
+// callers should already validate unit names before reaching here.
+func WriteSeccompDropIn(unit, profile, profilePath string) error {
+	if unit == "" {
+		return errors.New("WriteSeccompDropIn: empty unit")
+	}
+	if profile == "" {
+		return errors.New("WriteSeccompDropIn: empty profile")
+	}
+	if profilePath == "" {
+		return errors.New("WriteSeccompDropIn: empty profilePath")
+	}
+	if strings.ContainsAny(unit, "/\\\x00") || strings.Contains(unit, "..") {
+		return errors.New("WriteSeccompDropIn: invalid unit name (path traversal)")
+	}
+	if strings.HasPrefix(unit, "-") {
+		return errors.New("WriteSeccompDropIn: invalid unit name (leading dash)")
+	}
+
+	dropInDir := filepath.Join(systemdDropInRoot, unit+".d")
+	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		return errors.New("WriteSeccompDropIn: mkdir " + dropInDir + ": " + err.Error())
+	}
+	dropInPath := filepath.Join(dropInDir, "seccomp.conf")
+	body := "[Service]\nSystemCallFilter=@" + profile + "\nSystemCallErrorNumber=EPERM\n"
+	if err := os.WriteFile(dropInPath, []byte(body), 0o644); err != nil {
+		return errors.New("WriteSeccompDropIn: write " + dropInPath + ": " + err.Error())
+	}
 	return nil
 }
 
