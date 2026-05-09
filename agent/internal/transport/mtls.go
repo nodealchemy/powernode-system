@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -238,11 +239,9 @@ type byteReader struct {
 
 func (br *byteReader) Read(p []byte) (n int, err error) {
 	if br.i >= len(br.b) {
-		return 0, errEOF
+		return 0, io.EOF
 	}
 	n = copy(p, br.b[br.i:])
 	br.i += n
 	return n, nil
 }
-
-var errEOF = errors.New("EOF")
