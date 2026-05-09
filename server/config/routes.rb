@@ -413,6 +413,9 @@ Rails.application.routes.draw do
           get "config/authorized_keys", to: "config#authorized_keys"
           get "config/host_keys", to: "config#host_keys"
           get "config/network", to: "config#network"
+          # Phase 3 — LUKS passphrase derivation for volume-setup CLI.
+          get "config/luks/:partition_label", to: "luks#show",
+              constraints: { partition_label: /[a-zA-Z0-9_.-]{1,32}/ }
           # SDWAN desired-state pull (the architectural pivot — the agent reads
           # per-peer config on each heartbeat tick instead of waiting for a
           # task-lease push). Slice 1.

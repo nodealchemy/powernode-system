@@ -85,7 +85,37 @@ module Api
               id: current_node.id,
               name: current_node.name,
               allocate_public_ip: current_node.allocate_public_ip,
-              config: current_node.config
+              config: current_node.config,
+              # Phase 3 — disk_policy is consumed by the agent's
+              # volume-setup CLI to drive parted + mkfs sequencing.
+              # Stored on node.config as a free-form JSONB block; the
+              # platform's operator UI ensures the schema is sane,
+              # but the agent treats it as data.
+              disk_policy: current_node.config&.dig("disk_policy") || default_disk_policy
+            }
+          end
+
+          # default_disk_policy returns a conservative default profile
+          # used when a node has no explicit disk_policy configured.
+          # Single root partition, ext4, no LUKS — minimum viable for
+          # bare-metal nodes that don't need data partitions.
+          def default_disk_policy
+            {
+              "profiles" => {
+                "default" => {
+                  "layout" => [
+                    { "name" => "boot", "type" => "efi", "size_mb" => 512 },
+                    { "name" => "root", "type" => "linux", "size_mb" => -1 }
+                  ],
+                  "format" => {
+                    "boot" => { "fs" => "vfat", "label" => "EFI" },
+                    "root" => { "fs" => "ext4", "label" => "root" }
+                  },
+                  "mount" => {
+                    "boot" => { "path" => "/boot/efi", "opts" => "umask=0077,nofail" }
+                  }
+                }
+              }
             }
           end
 

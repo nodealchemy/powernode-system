@@ -7,7 +7,6 @@
 package main
 
 import (
-	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -23,7 +22,9 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	agentcli "github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/internal/boot"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
@@ -54,10 +55,11 @@ var _ = errors.New // silence unused-import warnings on builds where
 // --- boot --------------------------------------------------------------------
 func bootCmd() *cobra.Command {
 	var (
-		identityFile  string
-		caFile        string
-		bootstrapTok  string
-		dryRun        bool
+		identityFile string
+		caFile       string
+		bootstrapTok string
+		pkiDir       string
+		dryRun       bool
 	)
 	c := &cobra.Command{
 		Use:   "boot",
@@ -66,19 +68,28 @@ func bootCmd() *cobra.Command {
 the bootstrap token, pulls modules, mounts the composefs+overlayfs union, and
 switch_root's into the assembled rootfs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("[powernode-agent boot] not yet implemented (M2.B identity + M2.C enroll + M2.D mount)")
-			_ = identityFile
-			_ = caFile
-			_ = bootstrapTok
-			_ = dryRun
-			_ = context.Background()
-			return nil
+			_ = identityFile // reserved for future override path
+			_ = caFile       // reserved for future override path
+			_ = bootstrapTok // reserved for future override path
+
+			o := boot.Orchestrator{
+				Resolver:     identity.DefaultResolver(),
+				EnrollClient: &enroll.Client{},
+				PKIDir:       pkiDir,
+				AgentVersion: Version,
+				DryRun:       dryRun,
+				OnStage: func(stage, msg string) {
+					fmt.Fprintf(cmd.OutOrStdout(), "[boot:%s] %s\n", stage, msg)
+				},
+			}.Default()
+			return o.Boot(cmd.Context())
 		},
 	}
-	c.Flags().StringVar(&identityFile, "identity-file", "/etc/identity.cfg", "path to local identity config (fallback when no cloud metadata)")
-	c.Flags().StringVar(&caFile, "ca-file", "", "platform CA bundle (passed via initramfs)")
-	c.Flags().StringVar(&bootstrapTok, "bootstrap-token", "", "single-use enrollment token (overrides identity-file)")
-	c.Flags().BoolVar(&dryRun, "dry-run", false, "print plan without executing mounts")
+	c.Flags().StringVar(&identityFile, "identity-file", "/etc/identity.cfg", "path to local identity config (reserved)")
+	c.Flags().StringVar(&caFile, "ca-file", "", "platform CA bundle (reserved; passed via initramfs)")
+	c.Flags().StringVar(&bootstrapTok, "bootstrap-token", "", "single-use enrollment token (reserved override)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", enroll.PKIDir, "directory to persist enrollment PKI material")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "print plan without executing mounts or switch_root")
 	return c
 }
 
@@ -746,15 +757,43 @@ func printRelevantMounts() {
 }
 
 func execCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "exec <script-id>",
-		Short: "Fetch + run a NodeScript from /node_api/files/scripts/:id (legacy ipn -e)",
-		Args:  cobra.ExactArgs(1),
+	var (
+		platformURL   string
+		pkiDir        string
+		timeout       time.Duration
+		asUser        string
+		allowUnsigned bool
+		jsonOut       bool
+		allowlistPath string
+	)
+	c := &cobra.Command{
+		Use:   "exec <script-id> [args...]",
+		Short: "Fetch + run a NodeScript with privilege drop (legacy ipn -e)",
+		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent exec %s] not yet implemented\n", args[0])
-			return nil
+			res, runErr := agentcli.RunExec(cmd.Context(), agentcli.ExecOptions{
+				ScriptID:      args[0],
+				Args:          args[1:],
+				PlatformURL:   platformURL,
+				PKIDir:        pkiDir,
+				Timeout:       timeout,
+				AsUser:        asUser,
+				AllowUnsigned: allowUnsigned,
+				JSON:          jsonOut,
+				AllowlistPath: allowlistPath,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory")
+	c.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "max script runtime")
+	c.Flags().StringVar(&asUser, "as-user", "", "drop privileges to this user (overrides script policy)")
+	c.Flags().BoolVar(&allowUnsigned, "allow-unsigned", false, "skip signature requirement (DEV ONLY)")
+	c.Flags().StringVar(&allowlistPath, "allowlist", "/persist/var/lib/powernode/exec_allowlist.json",
+		"per-instance privileged-exec allowlist (operator-managed)")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output")
+	return c
 }
 
 func syncCmd() *cobra.Command {
@@ -804,15 +843,46 @@ func initCmd() *cobra.Command {
 }
 
 func volumeSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		platformURL       string
+		pkiDir            string
+		policyName        string
+		force             bool
+		confirmDeviceWipe string
+		dryRun            bool
+		jsonOut           bool
+	)
+	c := &cobra.Command{
 		Use:   "volume-setup <device>",
 		Short: "Partition + format a disk per node policy (legacy ipn -X)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Default behavior is dry-run — prints the planned parted + mkfs sequence
+without executing. To actually destroy data on the device, BOTH --force AND
+--confirm-device-wipe=<device> must be set, with --confirm-device-wipe
+matching <device> exactly. Refuses devices that are mounted or that look
+like the system root disk.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("[powernode-agent volume-setup %s] not yet implemented\n", args[0])
-			return nil
+			res, runErr := agentcli.RunVolumeSetup(cmd.Context(), agentcli.VolumeSetupOptions{
+				Device:            args[0],
+				PolicyName:        policyName,
+				Force:             force,
+				ConfirmDeviceWipe: confirmDeviceWipe,
+				DryRun:            dryRun,
+				JSON:              jsonOut,
+				PlatformURL:       platformURL,
+				PKIDir:            pkiDir,
+			})
+			return renderCLI(cmd, res, runErr, jsonOut)
 		},
 	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (defaults to identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory")
+	c.Flags().StringVar(&policyName, "policy", "default", "disk_policy profile name to apply")
+	c.Flags().BoolVar(&force, "force", false, "actually execute the plan (default = dry-run)")
+	c.Flags().StringVar(&confirmDeviceWipe, "confirm-device-wipe", "", "must match <device> exactly when --force is set")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "alias for default behavior — print plan only")
+	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output")
+	return c
 }
 
 func puppetCmd() *cobra.Command {
