@@ -93,20 +93,45 @@ module System
           /var/lib/misc/dnsmasq.leases
         ].freeze
 
+        # Walks dnsmasq lease files for the given MAC, returns the IP from
+        # the most-recently-leased entry. Multiple matches are common when
+        # a VM cycles through addresses across boots (e.g. .26 then .88) —
+        # picking by max expiry-time is the only correct disambiguation.
+        # Skips JSON-format files (libvirt's *.status uses JSON, not the
+        # space-separated lease format).
         def ip_from_dnsmasq_leases(mac)
           return nil if mac.blank?
           mac = mac.downcase
+          best = nil # [expiry_epoch, ip]
           lease_paths.each do |path|
             next unless File.exist?(path) && File.readable?(path)
+            first_byte = File.open(path, &:readbyte) rescue nil
+            next if [ "[".ord, "{".ord ].include?(first_byte) # JSON, not classic-format leases
             File.foreach(path) do |line|
               cols = line.split
               next unless cols.size >= 3
-              return cols[2] if cols[1].to_s.downcase == mac
+              next unless cols[1].to_s.downcase == mac
+              next unless valid_routable_ipv4?(cols[2])
+              expiry = cols[0].to_i
+              best = [ expiry, cols[2] ] if best.nil? || expiry > best[0]
             end
           rescue StandardError
             next
           end
-          nil
+          best&.last
+        end
+
+        # Reject 0.0.0.0, link-local 169.254.0.0/16, multicast, and loopback —
+        # leases for those slip through dnsmasq sometimes when DHCP collides
+        # with a duplicate-mac VM and we don't want to surface them as the
+        # "primary" instance IP.
+        def valid_routable_ipv4?(ip)
+          return false if ip.blank?
+          octets = ip.split(".").map(&:to_i)
+          return false unless octets.size == 4 && octets.all? { |o| o.between?(0, 255) }
+          return false if octets[0].zero? || octets[0] == 127 || octets[0] >= 224
+          return false if octets[0] == 169 && octets[1] == 254
+          true
         end
 
         def lease_paths
