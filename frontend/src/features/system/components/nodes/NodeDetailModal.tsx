@@ -444,132 +444,136 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         <div className="space-y-3">
           {instances.map(instance => {
             const expanded = expandedInstanceIds.has(instance.id);
+            const primaryIp = instance.public_ip_address || instance.private_ip_address || instance.vpn_ip_address;
             return (
             <div
               key={instance.id}
               className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-accent/50 transition-colors"
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(expandedInstanceIds, setExpandedInstanceIds, instance.id)}
+                  className="flex items-center gap-3 min-w-0 flex-1 text-left hover:opacity-90 transition-opacity"
+                >
+                  {expanded ? <ChevronDown className="w-4 h-4 text-theme-secondary flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-theme-secondary flex-shrink-0" />}
+                  <h4 className="font-medium text-theme-primary truncate">{instance.name}</h4>
+                  {getStatusBadge(instance.status)}
+                  <Badge variant="outline" size="xs">{instance.variety}</Badge>
+                  {primaryIp && (
+                    <code className="hidden md:inline text-xs text-theme-secondary font-mono truncate">{primaryIp}</code>
+                  )}
+                </button>
+                {/* Actions — compact icon buttons so the name has room to breathe */}
+                <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                  {canUpdateInstances && (
                     <button
                       type="button"
-                      onClick={() => toggleExpanded(expandedInstanceIds, setExpandedInstanceIds, instance.id)}
-                      className="p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                      title={expanded ? 'Collapse details' : 'Expand details'}
-                    >
-                      {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                    </button>
-                    <h4 className="font-medium text-theme-primary">{instance.name}</h4>
-                    {getStatusBadge(instance.status)}
-                    <Badge variant="outline" size="xs">{instance.variety}</Badge>
-                  </div>
-                  {/* IP Addresses with copy buttons */}
-                  <div className="mt-3 flex flex-wrap gap-3">
-                    {instance.private_ip_address && (
-                      <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                        <span className="text-xs text-theme-secondary">Private:</span>
-                        <code className="text-sm text-theme-primary font-mono">{instance.private_ip_address}</code>
-                        <button
-                          onClick={() => copyInstanceIp(instance.private_ip_address!, 'private', instance.id)}
-                          className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                          title="Copy IP"
-                        >
-                          {copiedField === `${instance.id}-private` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
-                        </button>
-                      </div>
-                    )}
-                    {instance.public_ip_address && (
-                      <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                        <span className="text-xs text-theme-secondary">Public:</span>
-                        <code className="text-sm text-theme-primary font-mono">{instance.public_ip_address}</code>
-                        <button
-                          onClick={() => copyInstanceIp(instance.public_ip_address!, 'public', instance.id)}
-                          className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                          title="Copy IP"
-                        >
-                          {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
-                        </button>
-                        {canControlInstances && instance.variety === 'cloud' && (
-                          <button
-                            onClick={() => handleIpAction(instance, 'disassociate')}
-                            disabled={ipActionInFlight !== null}
-                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-error rounded disabled:opacity-50"
-                            title="Release public IP"
-                          >
-                            {ipActionInFlight === `${instance.id}-disassociate`
-                              ? <Loader2 className="w-3 h-3 animate-spin" />
-                              : <Unlink className="w-3 h-3" />}
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {!instance.public_ip_address && instance.variety === 'cloud' && canControlInstances && (
-                      <button
-                        onClick={() => handleIpAction(instance, 'associate')}
-                        disabled={ipActionInFlight !== null}
-                        className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme text-xs text-theme-secondary hover:text-theme-primary hover:border-theme-info disabled:opacity-50"
-                        title="Allocate and associate a public IP"
-                      >
-                        {ipActionInFlight === `${instance.id}-associate`
-                          ? <Loader2 className="w-3 h-3 animate-spin" />
-                          : <Link2 className="w-3 h-3" />}
-                        <span>Associate Public IP</span>
-                      </button>
-                    )}
-                    {instance.vpn_ip_address && (
-                      <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
-                        <span className="text-xs text-theme-secondary">VPN:</span>
-                        <code className="text-sm text-theme-primary font-mono">{instance.vpn_ip_address}</code>
-                        <button
-                          onClick={() => copyInstanceIp(instance.vpn_ip_address!, 'vpn', instance.id)}
-                          className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
-                          title="Copy IP"
-                        >
-                          {copiedField === `${instance.id}-vpn` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
-                        </button>
-                      </div>
-                    )}
-                    {!instance.private_ip_address && !instance.public_ip_address && !instance.vpn_ip_address && (
-                      <span className="text-sm text-theme-tertiary italic">No IP addresses assigned</span>
-                    )}
-                  </div>
-                </div>
-                {/* Actions */}
-                <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                  {canUpdateInstances && (
-                    <Button
-                      variant="outline"
-                      size="sm"
                       onClick={() => setEditInstance(instance)}
                       title="Edit Instance"
+                      className="p-1.5 text-theme-secondary hover:text-theme-primary hover:bg-theme-surface rounded transition-colors"
                     >
                       <Edit className="w-4 h-4" />
-                    </Button>
+                    </button>
                   )}
                   {canDeleteInstances && (
-                    <Button
-                      variant="outline"
-                      size="sm"
+                    <button
+                      type="button"
                       onClick={() => setDeleteInstanceConfirm(instance)}
                       title="Delete Instance"
-                      className="text-theme-error hover:border-theme-danger"
+                      className="p-1.5 text-theme-secondary hover:text-theme-error hover:bg-theme-surface rounded transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
-                    </Button>
+                    </button>
                   )}
                   {canControlInstances && (
                     <NodeInstanceControls
                       instance={instance}
                       onActionComplete={handleInstanceActionComplete}
+                      compact
                     />
                   )}
                 </div>
               </div>
 
-              {/* Expanded body — agent runtime metadata, identity, audit */}
+              {/* Expanded body — IPs, agent runtime metadata, identity, audit */}
               {expanded && (
-                <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                <div className="mt-3 pt-3 border-t border-theme space-y-3">
+                  {/* IP Addresses with copy buttons + associate/disassociate */}
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Network</label>
+                    <div className="flex flex-wrap gap-2">
+                      {instance.private_ip_address && (
+                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
+                          <span className="text-xs text-theme-secondary">Private:</span>
+                          <code className="text-sm text-theme-primary font-mono">{instance.private_ip_address}</code>
+                          <button
+                            onClick={() => copyInstanceIp(instance.private_ip_address!, 'private', instance.id)}
+                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
+                            title="Copy IP"
+                          >
+                            {copiedField === `${instance.id}-private` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                        </div>
+                      )}
+                      {instance.public_ip_address && (
+                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
+                          <span className="text-xs text-theme-secondary">Public:</span>
+                          <code className="text-sm text-theme-primary font-mono">{instance.public_ip_address}</code>
+                          <button
+                            onClick={() => copyInstanceIp(instance.public_ip_address!, 'public', instance.id)}
+                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
+                            title="Copy IP"
+                          >
+                            {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                          {canControlInstances && instance.variety === 'cloud' && (
+                            <button
+                              onClick={() => handleIpAction(instance, 'disassociate')}
+                              disabled={ipActionInFlight !== null}
+                              className="ml-1 p-0.5 text-theme-secondary hover:text-theme-error rounded disabled:opacity-50"
+                              title="Release public IP"
+                            >
+                              {ipActionInFlight === `${instance.id}-disassociate`
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <Unlink className="w-3 h-3" />}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {!instance.public_ip_address && instance.variety === 'cloud' && canControlInstances && (
+                        <button
+                          onClick={() => handleIpAction(instance, 'associate')}
+                          disabled={ipActionInFlight !== null}
+                          className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme text-xs text-theme-secondary hover:text-theme-primary hover:border-theme-info disabled:opacity-50"
+                          title="Allocate and associate a public IP"
+                        >
+                          {ipActionInFlight === `${instance.id}-associate`
+                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                            : <Link2 className="w-3 h-3" />}
+                          <span>Associate Public IP</span>
+                        </button>
+                      )}
+                      {instance.vpn_ip_address && (
+                        <div className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme">
+                          <span className="text-xs text-theme-secondary">VPN:</span>
+                          <code className="text-sm text-theme-primary font-mono">{instance.vpn_ip_address}</code>
+                          <button
+                            onClick={() => copyInstanceIp(instance.vpn_ip_address!, 'vpn', instance.id)}
+                            className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
+                            title="Copy IP"
+                          >
+                            {copiedField === `${instance.id}-vpn` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                        </div>
+                      )}
+                      {!instance.private_ip_address && !instance.public_ip_address && !instance.vpn_ip_address && (
+                        <span className="text-sm text-theme-tertiary italic">No IP addresses assigned</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                   {instance.description && (
                     <div className="col-span-full">
                       <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
@@ -619,6 +623,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                   <div>
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
                     <p className="text-theme-primary text-xs">{new Date(instance.updated_at).toLocaleString()}</p>
+                  </div>
                   </div>
                 </div>
               )}
