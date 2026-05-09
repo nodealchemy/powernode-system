@@ -124,6 +124,11 @@ module System
 
       SENSORS = [
         ::System::Fleet::Sensors::InstanceStatusSensor,
+        # Provider-side state drift (e.g. libvirt domstate=shut-off while
+        # the model says status=running). Complementary to InstanceStatusSensor
+        # which watches heartbeat staleness. Together they distinguish
+        # agent-crashed-but-VM-up vs VM-itself-stopped.
+        ::System::Fleet::Sensors::InstanceStateDriftSensor,
         ::System::Fleet::Sensors::ModuleDriftSensor,
         ::System::Fleet::Sensors::CertificateExpirySensor,
         ::System::Fleet::Sensors::ModulePromotionSensor,
