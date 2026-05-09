@@ -398,6 +398,22 @@ export interface SystemNodeModule {
   puppet_modules_count?: number;
   created_at: string;
   updated_at: string;
+  // Latest version snapshot — populated when the module has at least one
+  // NodeModuleVersion row. nil for brand-new modules before publish.
+  latest_version?: SystemNodeModuleVersionSummary | null;
+}
+
+// Latest version snapshot returned by the node_module serializer's
+// `latest_version` field. Populated when the module has at least one
+// NodeModuleVersion row; nil for brand-new modules pre-publish.
+export interface SystemNodeModuleVersionSummary {
+  id: string;
+  version_number: string | null;
+  promotion_state: string | null;
+  oci_digest: string | null;
+  blessed_at: string | null;
+  live_at: string | null;
+  created_at: string;
 }
 
 export interface SystemNodeModuleCategory {

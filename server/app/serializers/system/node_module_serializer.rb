@@ -56,7 +56,32 @@ module System
         assignments_count: @node_module.node_module_assignments.count,
         templates_count: @node_module.template_modules.count,
         created_at: @node_module.created_at,
-        updated_at: @node_module.updated_at
+        updated_at: @node_module.updated_at,
+        # Latest version snapshot — used by the operator UI's per-node module
+        # detail view to surface version_number + promotion_state at a glance.
+        # Returns nil when the module has no versions yet (e.g. brand-new
+        # module before its first publish round-trip).
+        latest_version: latest_version_summary
+      }
+    end
+
+    private
+
+    def latest_version_summary
+      return nil unless defined?(::System::NodeModuleVersion)
+      v = ::System::NodeModuleVersion
+            .where(node_module_id: @node_module.id)
+            .order(created_at: :desc)
+            .first
+      return nil unless v
+      {
+        id: v.id,
+        version_number: v.version_number,
+        promotion_state: v.promotion_state,
+        oci_digest: v.oci_digest,
+        blessed_at: v.blessed_at,
+        live_at: v.live_at,
+        created_at: v.created_at
       }
     end
   end

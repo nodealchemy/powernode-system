@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2 } from 'lucide-react';
+import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -58,6 +58,19 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   const [showEditModal, setShowEditModal] = useState(false);
   const [showCreateInstanceModal, setShowCreateInstanceModal] = useState(false);
   const [editInstance, setEditInstance] = useState<SystemNodeInstance | null>(null);
+
+  // Click-to-expand state for the Modules and Instances tabs. Operator
+  // clicks a row to reveal the rest of the detail (version, lifecycle
+  // hooks, agent metadata, etc.) without opening a separate modal.
+  // Set<id> so multiple rows can be open at once.
+  const [expandedModuleIds, setExpandedModuleIds] = useState<Set<string>>(new Set());
+  const [expandedInstanceIds, setExpandedInstanceIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((set: Set<string>, setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) { next.delete(id); } else { next.add(id); }
+    setter(next);
+  }, []);
 
   // Permissions
   const canViewInstances = hasPermission('system.instances.read');
@@ -429,7 +442,9 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         </div>
       ) : (
         <div className="space-y-3">
-          {instances.map(instance => (
+          {instances.map(instance => {
+            const expanded = expandedInstanceIds.has(instance.id);
+            return (
             <div
               key={instance.id}
               className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-accent/50 transition-colors"
@@ -437,6 +452,14 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(expandedInstanceIds, setExpandedInstanceIds, instance.id)}
+                      className="p-0.5 text-theme-secondary hover:text-theme-primary rounded"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </button>
                     <h4 className="font-medium text-theme-primary">{instance.name}</h4>
                     {getStatusBadge(instance.status)}
                     <Badge variant="outline" size="xs">{instance.variety}</Badge>
@@ -543,8 +566,65 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Expanded body — agent runtime metadata, identity, audit */}
+              {expanded && (
+                <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                  {instance.description && (
+                    <div className="col-span-full">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                      <p className="text-theme-primary">{instance.description}</p>
+                    </div>
+                  )}
+                  {instance.agent_version && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Agent Version</label>
+                      <p className="text-theme-primary font-mono text-xs">{instance.agent_version}</p>
+                    </div>
+                  )}
+                  {instance.last_heartbeat_at && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Heartbeat</label>
+                      <p className="text-theme-primary text-xs">{new Date(instance.last_heartbeat_at).toLocaleString()}</p>
+                    </div>
+                  )}
+                  {instance.architecture && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Architecture</label>
+                      <p className="text-theme-primary font-mono">{instance.architecture}</p>
+                    </div>
+                  )}
+                  {instance.mac_address && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">MAC</label>
+                      <p className="text-theme-primary font-mono text-xs">{instance.mac_address}</p>
+                    </div>
+                  )}
+                  {instance.boot_id && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Boot ID</label>
+                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.boot_id}>{instance.boot_id}</p>
+                    </div>
+                  )}
+                  {instance.mtls_subject && (
+                    <div className="col-span-full">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">mTLS Subject</label>
+                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.mtls_subject}>{instance.mtls_subject}</p>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                    <p className="text-theme-primary text-xs">{new Date(instance.created_at).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                    <p className="text-theme-primary text-xs">{new Date(instance.updated_at).toLocaleString()}</p>
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 
@@ -587,28 +667,170 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         </div>
       ) : (
         <div className="space-y-2">
-          {modules.map(module => (
-            <div
-              key={module.id}
-              className="flex items-center justify-between p-3 bg-theme-surface-hover rounded-lg border border-theme"
-            >
-              <div className="flex items-center gap-3">
-                <Box className="w-5 h-5 text-theme-secondary" />
-                <div>
-                  <p className="font-medium text-theme-primary">{module.name}</p>
-                  {module.category_name && (
-                    <p className="text-sm text-theme-secondary">{module.category_name}</p>
-                  )}
-                </div>
+          {modules.map(module => {
+            const expanded = expandedModuleIds.has(module.id);
+            const v = module.latest_version;
+            return (
+              <div
+                key={module.id}
+                className="bg-theme-surface-hover rounded-lg border border-theme overflow-hidden"
+              >
+                {/* Header — clickable */}
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(expandedModuleIds, setExpandedModuleIds, module.id)}
+                  className="w-full flex items-center justify-between p-3 hover:bg-theme-surface transition-colors text-left"
+                >
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    {expanded ? <ChevronDown className="w-4 h-4 text-theme-secondary flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-theme-secondary flex-shrink-0" />}
+                    <Box className="w-5 h-5 text-theme-secondary flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-theme-primary truncate">{module.name}</p>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        {module.category_name && (
+                          <span className="text-xs text-theme-secondary">{module.category_name}</span>
+                        )}
+                        {module.parent_module_name && (
+                          <span className="text-xs text-theme-tertiary">↳ inherits from {module.parent_module_name}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {v?.version_number && (
+                      <Badge variant="outline" size="xs">v{v.version_number}</Badge>
+                    )}
+                    {v?.promotion_state && (
+                      <Badge variant={v.promotion_state === 'live' ? 'success' : v.promotion_state === 'blessed' ? 'info' : 'secondary'} size="xs">
+                        {v.promotion_state}
+                      </Badge>
+                    )}
+                    <Badge variant="outline" size="xs">{module.variety}</Badge>
+                    <Badge variant={module.enabled ? 'success' : 'secondary'} size="xs">
+                      {module.enabled ? 'Enabled' : 'Disabled'}
+                    </Badge>
+                  </div>
+                </button>
+                {/* Expanded body */}
+                {expanded && (
+                  <div className="px-4 pb-4 pt-2 border-t border-theme bg-theme-surface space-y-3">
+                    {module.description && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                        <p className="text-sm text-theme-primary">{module.description}</p>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Priority</label>
+                        <p className="text-theme-primary font-mono">{module.priority}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public</label>
+                        <p className="text-theme-primary">{module.public ? 'Yes' : 'No'}</p>
+                      </div>
+                      {module.node_platform_name && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
+                          <p className="text-theme-primary">{module.node_platform_name}</p>
+                        </div>
+                      )}
+                      {module.copy_path_name && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Copy Path</label>
+                          <p className="text-theme-primary">{module.copy_path_name}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Reboot Required</label>
+                        <p className="text-theme-primary">{module.reboot_required ? 'Yes' : 'No'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Locked</label>
+                        <p className="text-theme-primary">{module.lock_spec ? 'Yes' : 'No'}</p>
+                      </div>
+                    </div>
+
+                    {/* Lifecycle hooks */}
+                    {(module.init_start || module.init_stop || module.init_restart) && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Lifecycle Hooks</label>
+                        <div className="space-y-1 text-sm font-mono">
+                          {module.init_start && <div><span className="text-theme-tertiary">start:</span> <code className="text-theme-primary">{module.init_start}</code></div>}
+                          {module.init_stop && <div><span className="text-theme-tertiary">stop:</span> <code className="text-theme-primary">{module.init_stop}</code></div>}
+                          {module.init_restart && <div><span className="text-theme-tertiary">restart:</span> <code className="text-theme-primary">{module.init_restart}</code></div>}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Spec text fields — show only when populated */}
+                    {module.file_spec_text && module.file_spec_text.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">File Spec</label>
+                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.file_spec_text}</pre>
+                      </div>
+                    )}
+                    {module.package_spec_text && module.package_spec_text.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Package Spec</label>
+                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.package_spec_text}</pre>
+                      </div>
+                    )}
+                    {module.dependency_spec_text && module.dependency_spec_text.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Dependency Spec</label>
+                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.dependency_spec_text}</pre>
+                      </div>
+                    )}
+                    {module.protected_spec_text && module.protected_spec_text.length > 0 && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Protected Spec</label>
+                        <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap">{module.protected_spec_text}</pre>
+                      </div>
+                    )}
+
+                    {/* Version metadata */}
+                    {v && (
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        {v.version_number && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Version</label>
+                            <p className="text-theme-primary font-mono">v{v.version_number}</p>
+                          </div>
+                        )}
+                        {v.oci_digest && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">OCI Digest</label>
+                            <p className="text-theme-primary font-mono text-xs truncate" title={v.oci_digest}>{v.oci_digest}</p>
+                          </div>
+                        )}
+                        {v.blessed_at && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Blessed</label>
+                            <p className="text-theme-primary text-xs">{new Date(v.blessed_at).toLocaleString()}</p>
+                          </div>
+                        )}
+                        {v.live_at && (
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Live Since</label>
+                            <p className="text-theme-primary text-xs">{new Date(v.live_at).toLocaleString()}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Counts row */}
+                    <div className="flex items-center gap-4 pt-2 text-xs text-theme-secondary border-t border-theme">
+                      <span><span className="font-semibold">{module.assignments_count ?? 0}</span> assignment(s)</span>
+                      <span><span className="font-semibold">{module.dependencies_count ?? 0}</span> dependencies</span>
+                      <span><span className="font-semibold">{module.dependents_count ?? 0}</span> dependents</span>
+                      <span className="ml-auto">Updated {new Date(module.updated_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" size="xs">{module.variety}</Badge>
-                <Badge variant={module.enabled ? 'success' : 'secondary'} size="xs">
-                  {module.enabled ? 'Enabled' : 'Disabled'}
-                </Badge>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
