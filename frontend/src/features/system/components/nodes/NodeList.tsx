@@ -378,12 +378,6 @@ export const NodeList: React.FC<NodeListProps> = ({
                           <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
                           <p className="text-theme-primary text-xs">{new Date(node.updated_at).toLocaleString()}</p>
                         </div>
-                        {node.config && Object.keys(node.config).length > 0 && (
-                          <div className="col-span-full">
-                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Config</label>
-                            <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(node.config, null, 2)}</pre>
-                          </div>
-                        )}
                       </div>
                     </td>
                   </tr>
@@ -579,12 +573,6 @@ export const NodeList: React.FC<NodeListProps> = ({
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
                     <p className="text-theme-primary text-xs">{new Date(node.updated_at).toLocaleString()}</p>
                   </div>
-                  {node.config && Object.keys(node.config).length > 0 && (
-                    <div className="col-span-2">
-                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Config</label>
-                      <pre className="text-xs text-theme-primary bg-theme-surface-hover p-2 rounded border border-theme font-mono whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(node.config, null, 2)}</pre>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
