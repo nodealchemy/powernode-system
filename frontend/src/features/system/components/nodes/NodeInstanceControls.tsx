@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Play, Square, RotateCw, MoreVertical, Power, Search, XOctagon } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -48,23 +48,35 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
   // Terminate is allowed from running/stopped/error per backend `can_terminate?`
   const canTerminate = (isRunning || isStopped || isErrored) && !isTerminated;
 
-  // Two-click confirm pattern for terminate to prevent accidental destruction.
-  // First click sets a 5-second armed window; second click within that window fires.
-  const [terminateArmed, setTerminateArmed] = useState(false);
+  // Two-click confirm pattern for ALL destructive actions (stop, reboot,
+  // terminate) to prevent accidental disruption. First click arms the
+  // action with a 5-second window; second click within that window fires.
+  // Start is non-destructive — single click.
+  const [armedAction, setArmedAction] = useState<ControlAction | null>(null);
+  const armTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DESTRUCTIVE: ControlAction[] = ['stop', 'reboot', 'terminate'];
+  const isDestructive = (action: ControlAction) => DESTRUCTIVE.includes(action);
+  const isArmed = (action: ControlAction) => armedAction === action;
+  const terminateArmed = armedAction === 'terminate'; // back-compat alias for existing JSX
+  const armAction = (action: ControlAction) => {
+    setArmedAction(action);
+    if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current);
+    armTimeoutRef.current = setTimeout(() => setArmedAction(null), 5000);
+  };
 
   // Action handlers
   const handleAction = useCallback(async (action: ControlAction) => {
     if (!canControl) return;
 
-    if (action === 'terminate' && !terminateArmed) {
-      setTerminateArmed(true);
-      setTimeout(() => setTerminateArmed(false), 5000);
+    if (isDestructive(action) && !isArmed(action)) {
+      armAction(action);
       return;
     }
 
     setLoading(action);
     setShowMenu(false);
-    setTerminateArmed(false);
+    setArmedAction(null);
+    if (armTimeoutRef.current) clearTimeout(armTimeoutRef.current);
 
     try {
       switch (action) {
@@ -151,18 +163,30 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
                   <button
                     onClick={() => handleAction('stop')}
                     disabled={loading === 'stop'}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover disabled:opacity-50"
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-theme-surface-hover disabled:opacity-50 ${
+                      isArmed('stop') ? 'text-theme-error font-medium' : 'text-theme-primary'
+                    }`}
                   >
                     <Square className="w-4 h-4 text-theme-danger" />
-                    {loading === 'stop' ? 'Stopping...' : 'Stop'}
+                    {loading === 'stop'
+                      ? 'Stopping...'
+                      : isArmed('stop')
+                      ? 'Click again to confirm'
+                      : 'Stop'}
                   </button>
                   <button
                     onClick={() => handleAction('reboot')}
                     disabled={loading === 'reboot'}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover disabled:opacity-50"
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-theme-surface-hover disabled:opacity-50 ${
+                      isArmed('reboot') ? 'text-theme-warning font-medium' : 'text-theme-primary'
+                    }`}
                   >
                     <RotateCw className="w-4 h-4 text-theme-warning" />
-                    {loading === 'reboot' ? 'Rebooting...' : 'Reboot'}
+                    {loading === 'reboot'
+                      ? 'Rebooting...'
+                      : isArmed('reboot')
+                      ? 'Click again to confirm'
+                      : 'Reboot'}
                   </button>
                 </>
               )}
@@ -227,6 +251,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
             onClick={() => handleAction('stop')}
             disabled={loading !== null}
             className="flex items-center gap-1"
+            title={isArmed('stop') ? 'Click again to confirm stop' : 'Stop instance'}
           >
             {loading === 'stop' ? (
               <>
@@ -236,7 +261,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
             ) : (
               <>
                 <Square className="w-4 h-4" />
-                Stop
+                {isArmed('stop') ? 'Confirm?' : 'Stop'}
               </>
             )}
           </Button>
@@ -246,6 +271,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
             onClick={() => handleAction('reboot')}
             disabled={loading !== null}
             className="flex items-center gap-1"
+            title={isArmed('reboot') ? 'Click again to confirm reboot' : 'Reboot instance'}
           >
             {loading === 'reboot' ? (
               <>
@@ -255,7 +281,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
             ) : (
               <>
                 <RotateCw className="w-4 h-4" />
-                Reboot
+                {isArmed('reboot') ? 'Confirm?' : 'Reboot'}
               </>
             )}
           </Button>

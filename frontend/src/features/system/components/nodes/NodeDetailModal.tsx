@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
@@ -71,6 +71,24 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
     if (next.has(id)) { next.delete(id); } else { next.add(id); }
     setter(next);
   }, []);
+
+  // Arm-and-confirm pattern for destructive actions in this view (currently
+  // disassociate public IP). First click arms the action with a 5s window;
+  // second click within that window fires. Keyed by `${action}:${instanceId}`
+  // so multiple instances can be armed independently.
+  const [armedAction, setArmedAction] = useState<string | null>(null);
+  const armActionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armOrFire = useCallback((key: string, fire: () => void) => {
+    if (armedAction === key) {
+      if (armActionTimeoutRef.current) clearTimeout(armActionTimeoutRef.current);
+      setArmedAction(null);
+      fire();
+      return;
+    }
+    setArmedAction(key);
+    if (armActionTimeoutRef.current) clearTimeout(armActionTimeoutRef.current);
+    armActionTimeoutRef.current = setTimeout(() => setArmedAction(null), 5000);
+  }, [armedAction]);
 
   // Permissions
   const canViewInstances = hasPermission('system.instances.read');
@@ -527,18 +545,22 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                           >
                             {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
                           </button>
-                          {canControlInstances && instance.variety === 'cloud' && (
-                            <button
-                              onClick={() => handleIpAction(instance, 'disassociate')}
-                              disabled={ipActionInFlight !== null}
-                              className="ml-1 p-0.5 text-theme-secondary hover:text-theme-error rounded disabled:opacity-50"
-                              title="Release public IP"
-                            >
-                              {ipActionInFlight === `${instance.id}-disassociate`
-                                ? <Loader2 className="w-3 h-3 animate-spin" />
-                                : <Unlink className="w-3 h-3" />}
-                            </button>
-                          )}
+                          {canControlInstances && instance.variety === 'cloud' && (() => {
+                            const key = `disassociate:${instance.id}`;
+                            const armed = armedAction === key;
+                            return (
+                              <button
+                                onClick={() => armOrFire(key, () => handleIpAction(instance, 'disassociate'))}
+                                disabled={ipActionInFlight !== null}
+                                className={`ml-1 p-0.5 rounded disabled:opacity-50 ${armed ? 'text-theme-error font-medium' : 'text-theme-secondary hover:text-theme-error'}`}
+                                title={armed ? 'Click again to confirm release' : 'Release public IP'}
+                              >
+                                {ipActionInFlight === `${instance.id}-disassociate`
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : armed ? <span className="text-xs px-1">Confirm?</span> : <Unlink className="w-3 h-3" />}
+                              </button>
+                            );
+                          })()}
                         </div>
                       )}
                       {!instance.public_ip_address && instance.variety === 'cloud' && canControlInstances && (
