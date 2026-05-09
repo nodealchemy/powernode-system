@@ -125,7 +125,27 @@ module System
     scope :config_modules, -> { by_variety("config") }
     scope :instance_modules, -> { by_variety("instance") }
     scope :subscription_modules, -> { by_variety("subscription") }
-    scope :by_priority, -> { order(priority: :desc, name: :asc) }
+    # Display order: highest-priority FIRST. Reads as a top-down view of the
+    # overlay stack — config-tier overrides (highest priority, top of stack)
+    # appear at the top of the list, foundational system-tier modules
+    # (lowest priority, bottom of stack) sink to the bottom. This matches
+    # the operator's mental model when viewing a node's attached modules.
+    # The on-node agent's overlayfs `lowerdir=L1:L2:L3` argument also takes
+    # topmost-first, so this same order serializes cleanly into the mount.
+    scope :by_priority, -> {
+      left_outer_joins(:category)
+        .order(Arel.sql("system_node_module_categories.position DESC NULLS LAST, system_node_modules.priority DESC, system_node_modules.name ASC"))
+    }
+    # Restrict to modules attached to a specific Node via NodeModuleAssignment.
+    # Also ensures the categories join is present so callers can ORDER BY
+    # system_node_module_categories.position alongside the assignment-side
+    # priority. Order is left to the caller (the index controller switches
+    # between assignment-priority and catalog-priority sorts).
+    scope :for_node, ->(node_id) {
+      joins(:node_module_assignments)
+        .where(system_node_module_assignments: { node_id: node_id })
+        .left_outer_joins(:category)
+    }
     scope :by_name, -> { order(name: :asc) }
     scope :for_platform, ->(platform_id) { where(node_platform_id: platform_id) }
     scope :in_category, ->(category_id) { where(category_id: category_id) }

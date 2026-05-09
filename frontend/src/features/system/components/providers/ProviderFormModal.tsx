@@ -9,7 +9,7 @@ import {
   PROVIDER_FIELD_SCHEMAS,
   ProviderCredentialForm,
   type CredentialTestStatus,
-  type OnboardingProviderType,
+  type ProviderTypeSlug,
   type ProviderCredentialValues,
 } from '@/features/onboarding/ProviderCredentialForm';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -23,10 +23,13 @@ type TabKey = 'general' | 'credentials';
  * don't yet have a credential schema (e.g. `openstack`, `custom`) so the
  * Credentials tab can render a graceful explainer instead.
  */
-const toOnboardingType = (providerType: string | undefined): OnboardingProviderType | null => {
+const toOnboardingType = (providerType: string | undefined): ProviderTypeSlug | null => {
   if (!providerType) return null;
   const slug = providerType.toLowerCase();
-  if (slug in PROVIDER_FIELD_SCHEMAS) return slug as OnboardingProviderType;
+  // PROVIDER_FIELD_SCHEMAS is keyed by category first (ai/cloud/git). The
+  // ProviderFormModal lives in the system extension and only handles cloud
+  // providers, so we look up under the cloud bucket.
+  if (slug in PROVIDER_FIELD_SCHEMAS.cloud) return slug;
   return null;
 };
 
@@ -43,6 +46,7 @@ const providerTypes = [
   { value: 'gcp', label: 'Google Cloud Platform' },
   { value: 'azure', label: 'Microsoft Azure' },
   { value: 'digitalocean', label: 'DigitalOcean' },
+  { value: 'local_qemu', label: 'Local QEMU/KVM (libvirt)' },
   { value: 'custom', label: 'Custom Provider' }
 ];
 
@@ -64,7 +68,14 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     enabled: true,
     public: false,
     config: '{}',
-    capabilities: '{}'
+    capabilities: '{}',
+    // local_qemu-only convenience fields. When the form is submitted these
+    // get merged into the parsed `config` JSON so the backend stores them
+    // under System::Provider#config["network_mode"] / ["bridge_name"]. The
+    // raw Configuration JSON textarea below remains the source of truth
+    // for everything else.
+    network_mode: '' as '' | 'user' | 'network' | 'bridge' | 'routed',
+    bridge_name: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -97,6 +108,8 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       if (editProvider) {
+        const cfg = (editProvider.config || {}) as Record<string, unknown>;
+        const nm = typeof cfg.network_mode === 'string' ? cfg.network_mode : '';
         setFormData({
           name: editProvider.name,
           description: editProvider.description || '',
@@ -104,7 +117,9 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           enabled: editProvider.enabled,
           public: editProvider.public,
           config: JSON.stringify(editProvider.config || {}, null, 2),
-          capabilities: JSON.stringify(editProvider.capabilities || {}, null, 2)
+          capabilities: JSON.stringify(editProvider.capabilities || {}, null, 2),
+          network_mode: (['user', 'network', 'bridge', 'routed'].includes(nm) ? nm : '') as '' | 'user' | 'network' | 'bridge' | 'routed',
+          bridge_name: typeof cfg.bridge_name === 'string' ? cfg.bridge_name : '',
         });
       } else {
         setFormData({
@@ -114,7 +129,9 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           enabled: true,
           public: false,
           config: '{}',
-          capabilities: '{}'
+          capabilities: '{}',
+          network_mode: '',
+          bridge_name: '',
         });
       }
       setErrors({});
@@ -180,13 +197,30 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     setSubmitting(true);
 
     try {
+      // Merge the local_qemu convenience fields back into config. Only sets
+      // them when explicitly chosen (non-empty) so AWS/Azure/GCP submissions
+      // don't gain spurious keys.
+      const parsedConfig = JSON.parse(formData.config) as Record<string, unknown>;
+      if (formData.provider_type === 'local_qemu') {
+        if (formData.network_mode) {
+          parsedConfig.network_mode = formData.network_mode;
+        } else {
+          delete parsedConfig.network_mode;
+        }
+        if ((formData.network_mode === 'bridge' || formData.network_mode === 'routed') && formData.bridge_name.trim()) {
+          parsedConfig.bridge_name = formData.bridge_name.trim();
+        } else {
+          delete parsedConfig.bridge_name;
+        }
+      }
+
       const submitData = {
         name: formData.name,
         description: formData.description || undefined,
         provider_type: formData.provider_type,
         enabled: formData.enabled,
         public: formData.public,
-        config: JSON.parse(formData.config),
+        config: parsedConfig,
         capabilities: JSON.parse(formData.capabilities)
       };
 
@@ -323,6 +357,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
               {onboardingType ? (
                 <>
                   <ProviderCredentialForm
+                    category="cloud"
                     providerType={onboardingType}
                     providerId={editProvider.id}
                     onChange={(values, valid) => {
@@ -447,6 +482,59 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none"
                 />
               </div>
+
+              {/* local_qemu networking — convenience fields that merge into Configuration JSON below */}
+              {formData.provider_type === 'local_qemu' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <div>
+                    <label htmlFor="network_mode" className="block text-sm font-medium text-theme-primary mb-1">
+                      Network Mode
+                    </label>
+                    <select
+                      id="network_mode"
+                      name="network_mode"
+                      value={formData.network_mode}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                      data-testid="provider-form-network-mode"
+                    >
+                      <option value="">(default — derived from URI)</option>
+                      <option value="user">user — QEMU SLIRP, NAT-to-host</option>
+                      <option value="network">network — libvirt-managed virbr0 with NAT</option>
+                      <option value="bridge">bridge — joins LAN as a peer (real DHCP lease)</option>
+                      <option value="routed">routed — host-routed via pwnvbr0 (no NAT, SDWAN underlay)</option>
+                    </select>
+                    <p className="mt-1 text-xs text-theme-tertiary">
+                      Bridge mode requires a host bridge plus <code>/etc/qemu/bridge.conf</code> allowing it
+                      and <code>cap_net_admin</code> on <code>qemu-bridge-helper</code>.
+                    </p>
+                  </div>
+                  {(formData.network_mode === 'bridge' || formData.network_mode === 'routed') && (
+                    <div>
+                      <label htmlFor="bridge_name" className="block text-sm font-medium text-theme-primary mb-1">
+                        Bridge Name
+                      </label>
+                      <input
+                        id="bridge_name"
+                        type="text"
+                        name="bridge_name"
+                        value={formData.bridge_name}
+                        onChange={handleChange}
+                        placeholder={formData.network_mode === 'routed' ? 'pwnvbr0' : 'br0'}
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                        data-testid="provider-form-bridge-name"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        {formData.network_mode === 'routed' ? (
+                          <>Host-internal routed bridge (e.g. <code>pwnvbr0</code>). Default: <code>pwnvbr0</code>. Host needs IP forwarding enabled and the bridge in <code>/etc/qemu/bridge.conf</code>.</>
+                        ) : (
+                          <>Name of the host's Linux bridge interface (e.g. <code>br0</code>). Defaults to <code>br0</code>.</>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Configuration */}
               <div>

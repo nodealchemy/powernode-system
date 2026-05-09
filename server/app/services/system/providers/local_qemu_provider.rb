@@ -42,7 +42,12 @@ module System
           arch: params[:arch] || resolve_arch(instance_record),
           memory_mb: params[:memory_mb] || 2048,
           vcpus: params[:vcpus] || 2,
-          image_base: seed[:image_base]
+          image_base: seed[:image_base],
+          # Per-provider network_mode/bridge_name live in Provider#config and
+          # take precedence over POWERNODE_NETWORK_MODE/POWERNODE_BRIDGE_NAME
+          # env vars when set. The provider record is reachable through the
+          # instance's region; nil is fine when the chain isn't bound.
+          provider: instance_record.respond_to?(:provider_region) ? instance_record.provider_region&.provider : nil
         )
 
         runner = self.class.runner
@@ -59,6 +64,42 @@ module System
           public_ip: nil,
           libvirt_uri: DEFAULT_LIBVIRT_URI,
           bootstrap_token_id: seed[:bootstrap_token_id]
+        )
+      end
+
+      # Reconcile NodeInstance state from libvirt. Used by NodeInstancesController#index
+       # to refresh in-flight instances lazily on read, and by background reconcilers.
+       # Returns a Hash matching the BaseProvider build_instance_response shape so callers
+       # can apply it via NodeInstance.update! without translation.
+       LIBVIRT_STATE_TO_STATUS = {
+         "running"     => "running",
+         "idle"        => "running",
+         "shut off"    => "stopped",
+         "paused"      => "stopped",
+         "pmsuspended" => "stopped",
+         "in shutdown" => "stopping",
+         "crashed"     => "error"
+       }.freeze
+
+      def sync_status(instance_id)
+        log_operation("sync_status", domain: instance_id)
+        runner = self.class.runner
+        info = runner.dominfo!(name: instance_id)
+        unless info[:ok]
+          # `domain not found` — libvirt has no record. The instance was either
+          # never defined, or was undefined out of band. Treat as terminated.
+          if info[:error].to_s.include?("not found") || info[:error].to_s.include?("Domain not found")
+            return build_instance_response(cloud_id: instance_id, status: "terminated")
+          end
+          return build_error_response("dominfo failed: #{info[:error]}")
+        end
+
+        platform_status = LIBVIRT_STATE_TO_STATUS.fetch(info[:state].to_s.downcase.strip, "pending")
+        build_instance_response(
+          cloud_id: instance_id,
+          status: platform_status,
+          private_ip: info[:private_ip],
+          public_ip: nil
         )
       end
 

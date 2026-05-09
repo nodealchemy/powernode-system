@@ -46,6 +46,21 @@ module System
             entries["opt/com.powernode/agent_url"] = agent_url
           end
 
+          # SDWAN peer hint: when the NodeInstance has a Sdwan::Peer row
+          # bound to it (via Sdwan::PeerEnroller), surface the peer + network
+          # IDs so the agent (post-enrollment, with its issued mTLS cert)
+          # can call the node-API to fetch its WG config + the network's
+          # hub peer list. The peer's private key stays in Vault and is
+          # released only against the cert, never via fw-cfg directly.
+          if defined?(::Sdwan::Peer)
+            sdwan_peer = ::Sdwan::Peer.where(node_instance_id: instance.id).order(created_at: :desc).first
+            if sdwan_peer
+              entries["opt/com.powernode/sdwan_peer_id"]    = sdwan_peer.id
+              entries["opt/com.powernode/sdwan_network_id"] = sdwan_peer.sdwan_network_id
+              entries["opt/com.powernode/sdwan_overlay_ip"] = sdwan_peer.assigned_address.to_s
+            end
+          end
+
           # Stage each entry to disk. DomainXmlBuilder references these by
           # path so libvirt's apparmor/selinux policy doesn't complain about
           # large inline values (CA cert can exceed cmdline arg limits too).

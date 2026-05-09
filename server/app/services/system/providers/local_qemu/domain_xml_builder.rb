@@ -28,10 +28,14 @@ module System
         #   to the M3 build dir; e.g. "/var/lib/powernode/images" or
         #   "https://platform/.well-known/powernode/images"
         # @return [String] libvirt domain XML
-        def self.build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:)
-          new.build(instance: instance, domain_name: domain_name,
+        def self.build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:, provider: nil)
+          new(provider: provider).build(instance: instance, domain_name: domain_name,
                     fw_cfg_entries: fw_cfg_entries, arch: arch,
                     memory_mb: memory_mb, vcpus: vcpus, image_base: image_base)
+        end
+
+        def initialize(provider: nil)
+          @provider = provider
         end
 
         def build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:)
@@ -164,11 +168,44 @@ module System
         #                 VM's frames are dropped because their MAC differs
         #                 from the L1's
         #             Override the bridge name with POWERNODE_BRIDGE_NAME (default: br0).
+        # Resolution order (most specific → most general):
+        #   1. Provider#config["network_mode"]   — per-provider UI setting
+        #   2. ENV["POWERNODE_NETWORK_MODE"]      — global override
+        #   3. default_network_mode               — heuristic from URI
+        # Same chain for bridge_name (provider config → env → "br0").
         def network_xml
-          mode = ENV.fetch("POWERNODE_NETWORK_MODE", default_network_mode)
+          mode = provider_config_value("network_mode") ||
+                 ENV["POWERNODE_NETWORK_MODE"] ||
+                 default_network_mode
           case mode
           when "bridge"
-            bridge = ENV.fetch("POWERNODE_BRIDGE_NAME", "br0")
+            bridge = provider_config_value("bridge_name") ||
+                     ENV["POWERNODE_BRIDGE_NAME"] ||
+                     "br0"
+            <<~XML.strip
+                <interface type='bridge'>
+                    <source bridge='#{escape(bridge)}'/>
+                    <model type='virtio'/>
+                  </interface>
+            XML
+          when "routed"
+            # Routed mode: VM attaches to a host-internal bridge (`pwnvbr0`
+            # default) which has IP forwarding enabled but NO MASQUERADE.
+            # The host routes traffic in/out via the bridge IP. The VM gets
+            # a stable host-routable IP from the bridge's subnet (typically
+            # 192.168.250.0/24). This is the underlay for the platform's
+            # SDWAN overlay — WireGuard rides over this routed subnet to
+            # reach SDWAN gateways.
+            #
+            # Setup prereqs (one-time per host):
+            #   • bridge `pwnvbr0` must exist (`ip link add pwnvbr0 type bridge`)
+            #   • bridge must have an IP (e.g. 192.168.250.1/24) and be UP
+            #   • /etc/qemu/bridge.conf must contain `allow pwnvbr0`
+            #   • net.ipv4.ip_forward = 1 (sysctl) — host routes traffic
+            #   • iptables FORWARD rules permit traffic to/from the bridge
+            bridge = provider_config_value("bridge_name") ||
+                     ENV["POWERNODE_ROUTED_BRIDGE_NAME"] ||
+                     "pwnvbr0"
             <<~XML.strip
                 <interface type='bridge'>
                     <source bridge='#{escape(bridge)}'/>
@@ -222,6 +259,16 @@ module System
         def default_network_mode
           libvirt_uri = ENV.fetch("POWERNODE_LIBVIRT_URI", "qemu:///system")
           libvirt_uri.include?("session") ? "user" : "network"
+        end
+
+        # Read a key out of the provider's config JSONB (System::Provider#config).
+        # Returns nil when no provider was passed, the key is missing, or the
+        # value is blank — letting the caller fall through to env-var defaults.
+        def provider_config_value(key)
+          return nil unless @provider
+          cfg = @provider.respond_to?(:config) ? @provider.config : nil
+          val = cfg.is_a?(Hash) ? cfg[key.to_s] : nil
+          val.is_a?(String) && val.strip.empty? ? nil : val
         end
 
         def console_xml

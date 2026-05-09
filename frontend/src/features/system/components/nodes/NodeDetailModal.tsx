@@ -268,6 +268,9 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
     if (enabled === false) {
       return <Badge variant="secondary">Disabled</Badge>;
     }
+    // Status values come from System::NodeInstance::STATUSES:
+    //   pending | provisioning | starting | running | stopping | stopped |
+    //   rebooting | terminated | error
     switch (status) {
       case 'running':
         return <Badge variant="success" dot pulse>Running</Badge>;
@@ -275,6 +278,16 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         return <Badge variant="secondary">Stopped</Badge>;
       case 'pending':
         return <Badge variant="warning" dot pulse>Pending</Badge>;
+      case 'provisioning':
+        return <Badge variant="info" dot pulse>Provisioning</Badge>;
+      case 'starting':
+        return <Badge variant="info" dot pulse>Starting</Badge>;
+      case 'stopping':
+        return <Badge variant="warning" dot pulse>Stopping</Badge>;
+      case 'rebooting':
+        return <Badge variant="warning" dot pulse>Rebooting</Badge>;
+      case 'terminated':
+        return <Badge variant="secondary">Terminated</Badge>;
       case 'error':
       case 'failed':
         return <Badge variant="danger">Failed</Badge>;
