@@ -18,16 +18,40 @@ module Api
 
           private
 
-          # Authenticate worker via token
+          # Authenticate worker via token. Accepts BOTH formats:
+          #   1. JWT (preferred) — minted by `WorkerJwt.token` in the worker;
+          #      decode via `Security::JwtService.decode`, look up the Worker
+          #      by `payload[:sub]`. This is the modern path used by the
+          #      `Internal::*` controllers via `authenticate_service_token`.
+          #   2. Legacy opaque token — SHA256-digest comparison via
+          #      `Worker.authenticate(token)`. Fallback for any pre-JWT
+          #      worker still in the wild; can be retired once all workers
+          #      are confirmed on JWT.
+          #
+          # Prior to this fix, the controller only supported (2) and rejected
+          # all requests from the JWT-based worker — that's why the entire
+          # `/api/v1/system/worker_api/*` namespace was 401-ing in production
+          # while `Internal::*` worked.
           def authenticate_worker!
             token = extract_worker_token_from_request
             return render_unauthorized("Worker token required") unless token
 
-            @current_worker = ::Worker.authenticate(token)
+            @current_worker = authenticate_via_jwt(token) || ::Worker.authenticate(token)
             return render_unauthorized("Invalid or inactive worker token") unless @current_worker
 
-            # Record worker activity
+            # Record worker activity (JWT path doesn't auto-touch like the
+            # opaque-token path does, so do it explicitly here for both).
             @current_worker.touch(:last_seen_at)
+          end
+
+          def authenticate_via_jwt(token)
+            return nil unless token.include?(".")
+            payload = ::Security::JwtService.decode(token)
+            return nil unless payload[:type] == "worker"
+            worker = ::Worker.find_by(id: payload[:sub])
+            worker&.active? ? worker : nil
+          rescue StandardError
+            nil
           end
 
           # Extract token from X-Worker-Token header or Authorization Bearer
