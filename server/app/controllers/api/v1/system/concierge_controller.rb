@@ -67,7 +67,7 @@ module Api
           return existing if existing
 
           agent.conversations.create!(
-            conversation_id: SecureRandom.uuid,
+            conversation_id: UUID7.generate,
             user_id: current_user.id,
             account_id: @account.id,
             ai_provider_id: agent.ai_provider_id,
