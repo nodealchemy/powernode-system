@@ -34,6 +34,7 @@ module System
 
           entries = {
             "opt/com.powernode/instance_uuid" => instance.id,
+            "opt/com.powernode/instance_name" => instance.name.to_s,
             "opt/com.powernode/bootstrap_token" => plaintext,
             "opt/com.powernode/ca_pem" => ca_pem,
             "opt/com.powernode/platform_url" => platform_url

@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +68,15 @@ func (s *Service) Run(ctx context.Context) error {
 	client, err := s.bootstrap(ctx, paths)
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
+	}
+
+	// Apply operator-supplied hostname from fw-cfg. Best-effort: read-only
+	// rootfs (overlayfs lower) means /etc/hostname can't be persisted, so
+	// we use hostnamectl --transient (lasts the boot lifetime; agent re-
+	// applies on each boot). Skipped silently if instance_name is absent
+	// (e.g. running on a non-libvirt provider that hasn't been retrofitted).
+	if err := s.applyHostnameFromFwCfg(); err != nil {
+		s.cfg.OnError("hostname_apply", err)
 	}
 
 	// Fetch operator-supplied SSH keys from the platform once, immediately
@@ -349,6 +360,40 @@ func (s *Service) fetchAuthorizedKeys(ctx context.Context, client *transport.Cli
 	}
 	if err := os.Chown(path, uid, gid); err != nil {
 		s.cfg.OnError("authorized_keys_chown_file", err)
+	}
+	return nil
+}
+
+// applyHostnameFromFwCfg reads instance_name from virtio-fw-cfg and applies
+// it as the host's transient hostname (`hostnamectl set-hostname --transient`).
+// We use --transient because the modules root is overlayfs-mounted with the
+// lower layer read-only, so writing /etc/hostname directly fails. Calling
+// this on every agent boot keeps the hostname stable across reboots without
+// needing a writable upper-layer hostname file.
+//
+// Returns nil silently when the fw-cfg entry is absent (older provisioning
+// runs, non-libvirt providers, or instance.name was empty server-side).
+func (s *Service) applyHostnameFromFwCfg() error {
+	const fwcfgPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/instance_name/raw"
+	raw, err := os.ReadFile(fwcfgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // not a libvirt boot OR pre-instance_name fw-cfg seed
+		}
+		return fmt.Errorf("read instance_name fw-cfg: %w", err)
+	}
+	name := strings.TrimSpace(string(raw))
+	if name == "" {
+		return nil
+	}
+	// `hostnamectl set-hostname --transient` is best-effort. On a writable
+	// rootfs (e.g. cloud images), drop --transient to make it persistent;
+	// here we always use --transient because the platform's overlay-rootfs
+	// node images don't have a writable /etc.
+	cmd := exec.CommandContext(context.Background(), "hostnamectl", "set-hostname", "--transient", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hostnamectl set-hostname %q: %w (%s)", name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
