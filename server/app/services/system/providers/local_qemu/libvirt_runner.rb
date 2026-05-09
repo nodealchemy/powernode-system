@@ -48,12 +48,17 @@ module System
           info = run_virsh("dominfo", name)
           return info unless info[:ok]
           state = info[:stdout].lines.find { |l| l.start_with?("State:") }&.sub(/^State:\s*/, "")&.strip
-          ip_info = run_virsh("domifaddr", name, fail_silently: true)
-          ip = nil
-          if ip_info[:ok]
-            ip = ip_info[:stdout].lines.grep(/ipv4/).first&.split&.last&.split("/")&.first
-          end
-          info.merge(state: state, private_ip: ip)
+          info.merge(state: state, private_ip: lookup_private_ip(name))
+        end
+
+        # Multi-source IP discovery. virsh `domifaddr` only returns leases when
+        # libvirt itself is the DHCP server (libvirt-managed networks) OR when
+        # qemu-guest-agent is installed in the VM. For routed-mode networks
+        # (POWERNODE_LIBVIRT_NETWORK_MODE=routed with an external dnsmasq on
+        # pwnvbr0), neither holds — the lease lives in the dnsmasq leases file
+        # the operator configured. Try each source in order; first hit wins.
+        def lookup_private_ip(name)
+          ip_from_domifaddr(name) || ip_from_dnsmasq_leases(domain_mac(name))
         end
 
         def list_domains!
@@ -68,6 +73,67 @@ module System
         end
 
         private
+
+        def ip_from_domifaddr(name)
+          out = run_virsh("domifaddr", name, fail_silently: true)
+          return nil unless out[:ok]
+          out[:stdout].lines.grep(/ipv4/).first&.split&.last&.split("/")&.first
+        end
+
+        # Fallback: parse dnsmasq lease files by MAC. Standard dnsmasq lease
+        # format is space-separated: `<expiry-epoch> <mac> <ip> <hostname> <client_id>`.
+        # Configurable via POWERNODE_DNSMASQ_LEASES (colon-separated paths) for
+        # operators who run dnsmasq with a non-standard leasefile path; the
+        # default list covers the libvirt default network plus the platform's
+        # routed-mode bridge (pwnvbr0).
+        DEFAULT_DNSMASQ_LEASE_PATHS = %w[
+          /var/lib/libvirt/dnsmasq/default.leases
+          /var/lib/libvirt/dnsmasq/virbr0.status
+          /tmp/pwnvbr0-dnsmasq.leases
+          /var/lib/misc/dnsmasq.leases
+        ].freeze
+
+        def ip_from_dnsmasq_leases(mac)
+          return nil if mac.blank?
+          mac = mac.downcase
+          lease_paths.each do |path|
+            next unless File.exist?(path) && File.readable?(path)
+            File.foreach(path) do |line|
+              cols = line.split
+              next unless cols.size >= 3
+              return cols[2] if cols[1].to_s.downcase == mac
+            end
+          rescue StandardError
+            next
+          end
+          nil
+        end
+
+        def lease_paths
+          if (override = ENV["POWERNODE_DNSMASQ_LEASES"])
+            override.split(":").reject(&:empty?)
+          else
+            DEFAULT_DNSMASQ_LEASE_PATHS
+          end
+        end
+
+        # virsh domiflist output:
+        #   Interface   Type     Source     Model    MAC
+        #  -------------------------------------------------
+        #   vnet0       bridge   pwnvbr0    virtio   52:54:00:6c:ad:eb
+        # Returns the FIRST interface's MAC. VMs with multiple NICs are rare
+        # in this provider; if they show up we'd want a richer return shape.
+        def domain_mac(name)
+          out = run_virsh("domiflist", name, fail_silently: true)
+          return nil unless out[:ok]
+          out[:stdout].lines.drop(2).each do |line|
+            cols = line.split
+            next if cols.size < 5
+            mac = cols.last
+            return mac if mac.match?(/\A([0-9a-f]{2}:){5}[0-9a-f]{2}\z/i)
+          end
+          nil
+        end
 
         def run_virsh(*args, stdin: nil, fail_silently: false)
           cmd = [ "virsh", "-c", URI, *args ]
