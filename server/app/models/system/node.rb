@@ -6,6 +6,7 @@ require "base64"
 module System
   class Node < BaseRecord
     include System::Base
+    include OpensshKeyValidatable
 
     # === Constants ===
     SSH_KEY_TYPES = %w[ed25519 rsa].freeze
@@ -102,19 +103,29 @@ module System
 
     # Aggregated authorized_keys for SSH access to instances of this node.
     # Returns an array of public-key strings suitable for ~/.ssh/authorized_keys.
-    # Currently includes the node's own public key plus any operator-supplied
-    # keys from `config["authorized_keys"]`.
-    # CORE-MIGRATION pending: legacy node.rb:50-58 also aggregated permitted users'
-    # keys via Ability.can?(:control_node, self) and account_delegations.
-    # That requires a `User#authorized_keys` field which the platform User model
-    # does not yet have — restore as a separate core migration before adopting here.
+    # Pulls from three sources, in this order:
+    #   1. operator-supplied keys on `config["authorized_keys"]` (per-node)
+    #   2. operator-supplied keys on each active user in the owning account
+    #      (account-wide — replaces the legacy CanCan-based aggregation
+    #      from powernode-server's node.rb:50-58)
+    # Output is filtered to OpenSSH `authorized_keys`-format lines only —
+    # sshd silently drops PEM-PKIX or otherwise-malformed lines, so we
+    # drop them here too.
+    #
+    # The node's own identity public key (`ssh_public_key`) is intentionally
+    # excluded: it's a PEM-PKIX Ed25519 key used for mTLS and outbound
+    # signing, not an operator login credential.
     def authorized_keys
       keys = []
-      keys << ssh_public_key if ssh_public_key.present?
       if config.is_a?(Hash) && config["authorized_keys"].present?
         keys.concat(Array(config["authorized_keys"]))
       end
-      keys.compact.uniq
+      if account
+        account.users.active.find_each do |user|
+          keys.concat(Array(user.authorized_keys)) if user.authorized_keys.present?
+        end
+      end
+      keys.compact.uniq.select { |k| self.class.openssh_authorized_key?(k) }
     end
 
     # Newline-joined authorized_keys content. Returns "" when there are no keys.

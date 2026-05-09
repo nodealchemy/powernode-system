@@ -19,15 +19,17 @@ module Api
           end
 
           # GET /api/v1/system/node_api/config/authorized_keys
-          # Returns aggregated SSH authorized keys for the instance.
-          # Aggregation logic lives on System::Node#authorized_keys so it is testable
-          # and reusable from worker dispatch and operator UI.
+          # Returns aggregated SSH authorized keys for the instance plus the
+          # unix user whose ~/.ssh/authorized_keys file the on-node agent
+          # should manage. Aggregation logic lives on System::Node#authorized_keys
+          # so it is testable and reusable from worker dispatch and operator UI.
           def authorized_keys
             keys = current_node.authorized_keys
 
             render_success(
               authorized_keys: keys.join("\n"),
-              keys_count: keys.length
+              keys_count: keys.length,
+              target_user: target_admin_user
             )
           end
 
@@ -119,6 +121,17 @@ module Api
               name: region.name,
               region_code: region.region_code
             }
+          end
+
+          # The unix user whose ~/.ssh/authorized_keys the on-node agent
+          # should manage. Resolution order: instance-level override →
+          # node-level default → "root". Matches the cloud-init convention
+          # where AWS images use "ubuntu"/"ec2-user" while bare-metal
+          # bootstraps run as root.
+          def target_admin_user
+            current_instance.config&.dig("admin_user").presence ||
+              current_node.config&.dig("admin_user").presence ||
+              "root"
           end
         end
       end

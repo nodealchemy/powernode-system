@@ -20,11 +20,16 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
 
   describe "GET /api/v1/system/node_api/config/authorized_keys" do
     it "returns the aggregated authorized_keys text and count" do
+      operator_key = "ssh-ed25519 AAAAfixture operator@host"
+      node.update!(config: { "authorized_keys" => [ operator_key ] })
+
       get "/api/v1/system/node_api/config/authorized_keys", headers: headers
 
       expect(response).to have_http_status(:ok)
       json = JSON.parse(response.body)
-      expect(json.dig("data", "authorized_keys")).to include("PUBLIC KEY").or include(node.ssh_public_key.split("\n").last(2).first)
+      expect(json.dig("data", "authorized_keys")).to include(operator_key)
+      # The PEM-PKIX node identity public key MUST NOT leak into operator authorized_keys.
+      expect(json.dig("data", "authorized_keys")).not_to include("PUBLIC KEY")
       expect(json.dig("data", "keys_count")).to eq(node.authorized_keys.length)
     end
 
@@ -36,6 +41,25 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
 
       expect(response).to have_http_status(:ok)
       expect(JSON.parse(response.body).dig("data", "authorized_keys")).to include(operator_key)
+    end
+
+    it "defaults target_user to 'root' when no admin_user is configured" do
+      get "/api/v1/system/node_api/config/authorized_keys", headers: headers
+      expect(JSON.parse(response.body).dig("data", "target_user")).to eq("root")
+    end
+
+    it "honors instance-level admin_user override" do
+      instance.update!(config: (instance.config || {}).merge("admin_user" => "ubuntu"))
+
+      get "/api/v1/system/node_api/config/authorized_keys", headers: headers
+      expect(JSON.parse(response.body).dig("data", "target_user")).to eq("ubuntu")
+    end
+
+    it "falls back to node-level admin_user when instance has none" do
+      node.update!(config: (node.config || {}).merge("admin_user" => "deploy"))
+
+      get "/api/v1/system/node_api/config/authorized_keys", headers: headers
+      expect(JSON.parse(response.body).dig("data", "target_user")).to eq("deploy")
     end
 
     it "returns 401 without auth" do

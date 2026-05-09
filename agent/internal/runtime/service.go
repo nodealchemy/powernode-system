@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -276,8 +279,14 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 }
 
 // fetchAuthorizedKeys retrieves operator-supplied SSH keys from the platform's
-// /node_api/config/authorized_keys endpoint and writes them to /root/.ssh/
-// authorized_keys with the correct mode (0600 file, 0700 dir).
+// /node_api/config/authorized_keys endpoint and writes them to the configured
+// target user's ~/.ssh/authorized_keys with the correct mode (0600 file,
+// 0700 dir) and ownership.
+//
+// The target user is taken from the response's `target_user` field
+// (instance.config["admin_user"] → node.config["admin_user"] → "root" on
+// the platform side). When absent, defaults to "root" for back-compat
+// with pre-Golden-Eclipse-M0.H servers.
 //
 // Idempotent: writes only when the on-disk content differs from the platform
 // response. Safe to call on every heartbeat tick — propagates key rotation
@@ -298,16 +307,33 @@ func (s *Service) fetchAuthorizedKeys(ctx context.Context, client *transport.Cli
 		Data    struct {
 			AuthorizedKeys string `json:"authorized_keys"`
 			KeysCount      int    `json:"keys_count"`
+			TargetUser     string `json:"target_user"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &ak); err != nil {
 		return fmt.Errorf("decode authorized_keys: %w", err)
 	}
 
-	const dir = "/root/.ssh"
-	const path = "/root/.ssh/authorized_keys"
+	targetUser := ak.Data.TargetUser
+	if targetUser == "" {
+		targetUser = "root"
+	}
+
+	dir, uid, gid, err := resolveSSHDir(targetUser)
+	if err != nil {
+		return fmt.Errorf("resolve ssh dir for %q: %w", targetUser, err)
+	}
+	path := filepath.Join(dir, "authorized_keys")
+
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	// useradd creates $HOME with correct ownership but the .ssh dir (and
+	// later the file) is owned by whoever ran MkdirAll — root, in this
+	// case. sshd's StrictModes will refuse to read an authorized_keys
+	// file the target user doesn't own. Best-effort chown both.
+	if err := os.Chown(dir, uid, gid); err != nil && !os.IsNotExist(err) {
+		s.cfg.OnError("authorized_keys_chown_dir", err)
 	}
 
 	desired := ak.Data.AuthorizedKeys
@@ -318,7 +344,37 @@ func (s *Service) fetchAuthorizedKeys(ctx context.Context, client *transport.Cli
 	if string(current) == desired {
 		return nil
 	}
-	return os.WriteFile(path, []byte(desired), 0o600)
+	if err := os.WriteFile(path, []byte(desired), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		s.cfg.OnError("authorized_keys_chown_file", err)
+	}
+	return nil
+}
+
+// resolveSSHDir looks up the unix user named target and returns its
+// `~/.ssh` directory plus the user's uid/gid for downstream chown calls.
+// Returns an error if the user does not exist on the box — the caller
+// should not fall back to root in that case (silently writing to /root
+// would mask a misconfiguration the operator needs to see).
+func resolveSSHDir(target string) (string, int, int, error) {
+	u, err := user.Lookup(target)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("user.Lookup: %w", err)
+	}
+	if u.HomeDir == "" {
+		return "", 0, 0, fmt.Errorf("user %q has no home directory", target)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("parse uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
+	}
+	return filepath.Join(u.HomeDir, ".ssh"), uid, gid, nil
 }
 
 // generateBootID returns a fresh 64-bit random hex string used to

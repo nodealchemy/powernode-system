@@ -124,22 +124,67 @@ RSpec.describe System::Node, type: :model do
     let(:node_template) { create(:system_node_template, account: account) }
     let(:node) { create(:system_node, account: account, node_template: node_template) }
 
-    it "includes the node's own public key" do
-      expect(node.authorized_keys).to include(node.ssh_public_key)
+    it "does NOT include the node's own PEM-PKIX identity public key" do
+      # Node identity key is for mTLS / outbound signing, not operator SSH
+      # login. sshd cannot parse PEM-PKIX format and silently rejects it;
+      # leaking it through this method was a Golden Eclipse M0.H bug.
+      expect(node.authorized_keys).not_to include(node.ssh_public_key)
     end
 
-    it "includes operator-supplied keys from config['authorized_keys']" do
-      operator_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... operator@example.com"
+    it "includes operator-supplied OpenSSH-format keys from config['authorized_keys']" do
+      operator_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI operator@example.com"
       node.update!(config: { "authorized_keys" => [ operator_key ] })
 
       expect(node.authorized_keys).to include(operator_key)
-      expect(node.authorized_keys).to include(node.ssh_public_key)
+    end
+
+    it "filters out non-OpenSSH-format entries (PEM-PKIX, garbage, blanks)" do
+      pem_garbage = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAfake==\n-----END PUBLIC KEY-----"
+      operator_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI operator@example.com"
+      node.update!(config: { "authorized_keys" => [ pem_garbage, operator_key, "totally not a key", "" ] })
+
+      expect(node.authorized_keys).to eq([ operator_key ])
     end
 
     it "deduplicates entries" do
-      key = node.ssh_public_key
+      key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI dup@example.com"
       node.update!(config: { "authorized_keys" => [ key, key ] })
       expect(node.authorized_keys.count(key)).to eq(1)
+    end
+
+    it "accepts ssh-rsa and ecdsa-sha2-* algorithms" do
+      rsa_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQfake rsa@host"
+      ecdsa_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAfake ecdsa@host"
+      node.update!(config: { "authorized_keys" => [ rsa_key, ecdsa_key ] })
+      expect(node.authorized_keys).to contain_exactly(rsa_key, ecdsa_key)
+    end
+
+    context "with account-level user keys" do
+      it "aggregates active users' authorized_keys" do
+        admin_key = "ssh-ed25519 AAAA-admin admin@host"
+        teammate_key = "ssh-ed25519 AAAA-teammate teammate@host"
+        admin = create(:user, account: account, status: "active", authorized_keys: [ admin_key ])
+        create(:user, account: account, status: "active", authorized_keys: [ teammate_key ])
+        # Confirm node was created in the same account so the aggregation finds these.
+        node.update!(account: admin.account)
+
+        keys = node.authorized_keys
+        expect(keys).to include(admin_key)
+        expect(keys).to include(teammate_key)
+      end
+
+      it "does NOT include inactive users' keys" do
+        suspended_key = "ssh-ed25519 AAAA-suspended bad@host"
+        create(:user, account: account, status: "suspended", authorized_keys: [ suspended_key ])
+        expect(node.authorized_keys).not_to include(suspended_key)
+      end
+
+      it "does NOT include keys from users in other accounts" do
+        other_account = create(:account)
+        other_key = "ssh-ed25519 AAAA-other other@host"
+        create(:user, account: other_account, status: "active", authorized_keys: [ other_key ])
+        expect(node.authorized_keys).not_to include(other_key)
+      end
     end
   end
 
@@ -148,9 +193,14 @@ RSpec.describe System::Node, type: :model do
     let(:node) { create(:system_node, account: account, node_template: node_template) }
 
     it "joins keys with newlines and ends with a trailing newline" do
+      key1 = "ssh-ed25519 AAAAfixture-1 a@host"
+      key2 = "ssh-ed25519 AAAAfixture-2 b@host"
+      node.update!(config: { "authorized_keys" => [ key1, key2 ] })
+
       text = node.authorized_keys_text
       expect(text).to end_with("\n")
-      expect(text.lines.count).to be >= 1
+      expect(text.lines.count).to eq(2)
+      expect(text).to include(key1).and include(key2)
     end
 
     it "returns empty string when authorized_keys is empty" do
