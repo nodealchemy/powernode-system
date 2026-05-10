@@ -254,7 +254,13 @@ Rails.application.routes.draw do
           # operator UI can inspect the resulting rows.
           resources :host_bridges,     only: %i[index show]
           resources :ovn_deployments,  only: %i[index show]
-          resources :ipfix_collectors, only: %i[index show]
+          # Phase O6 follow-up: IPFIX flow ingest under the parent
+          # collector so each flow batch is attributed to a specific
+          # exporter target. Read-side index for operator inspection;
+          # POST create accepts batched JSON from sidecar collectors.
+          resources :ipfix_collectors, only: %i[index show] do
+            resources :flow_samples, only: %i[index create]
+          end
         end
 
         # === Metrics (operator-facing; aggregated counters) ===
