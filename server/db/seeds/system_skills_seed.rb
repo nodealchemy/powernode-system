@@ -273,6 +273,27 @@ SKILLS_DATA = [
       one. Auto-activates new switches and ports so the compiler emits
       them in the same call.
     PROMPT
+  },
+  {
+    name: "SDWAN Host Bridge Compose",
+    slug: "system-sdwan-host-bridge-compose",
+    description: "Allocate per-host SDWAN bridges (Linux for lightweight profile, OVS for heavyweight) for a set of NodeInstances. Composes Sdwan::HostBridgeAllocator. Idempotent.",
+    category: "devops",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanHostBridgeComposeExecutor",
+    tags: %w[sdwan bridges allocation profile-aware composition],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to allocate per-host SDWAN bridges for a set of
+      NodeInstances. Inputs: host_node_instance_ids (1-100), kind
+      (optional explicit override: linux | ovs — wins over the host's
+      network_profile when supplied), dry_run (default false). Returns
+      allocated bridge ids + per-host allocations
+      (bridge_name, kind, short_id, reused). Auto-selects OVS for
+      heavyweight-profile hosts and Linux bridge for lightweight ones, so
+      a mixed-profile fleet gets the right driver per host without
+      operator coordination. Idempotent — re-running with the same hosts
+      returns the existing bridges with reused=true.
+    PROMPT
   }
 ].freeze
 
