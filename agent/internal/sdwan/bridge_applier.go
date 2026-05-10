@@ -64,6 +64,30 @@ type DesiredBridge struct {
 	// surface a "did the user mean to set this" bit, and a drift on
 	// a bridge MTU breaks every tap iface attached to it.
 	MTU int `json:"mtu"`
+	// Ipfix is the optional IPFIX exporter config for this bridge.
+	// Nil means no IPFIX (LinuxBridgeApplier always ignores; OvsBridgeApplier
+	// clears any prior IPFIX on the bridge). Phase O5 — wired by the
+	// platform's TopologyCompiler when the host's account has an
+	// active Sdwan::IpfixCollector AND this bridge is ovs-kind.
+	Ipfix *DesiredIpfix `json:"ipfix,omitempty"`
+}
+
+// DesiredIpfix is the per-bridge IPFIX exporter intent. Linux
+// bridges ignore this field entirely (no kernel IPFIX hook without
+// OVS); only OvsBridgeApplier acts on it.
+type DesiredIpfix struct {
+	// CollectorID is the platform's Sdwan::IpfixCollector row id;
+	// carried for diagnostics + log lines, not consumed by ovs-vsctl.
+	CollectorID string `json:"collector_id"`
+	// Targets is the list of `host:port` strings ovs-vsctl writes
+	// into the IPFIX.targets column. Single-target is the common
+	// case in O5; multi-target is supported by OVS and the wire
+	// format leaves room for it.
+	Targets []string `json:"targets"`
+	// Sampling is the OVS IPFIX `sampling` field — emit one record
+	// per N packets. 1 means sample every packet; higher values trade
+	// fidelity for collector load.
+	Sampling int `json:"sampling"`
 }
 
 // BridgeApplier abstracts host-side bridge management so the manager

@@ -161,6 +161,9 @@ func (a *ShellOvsBridgeApplier) Apply(ctx context.Context, desired []DesiredBrid
 		if err := a.reconcileAddrs(ctx, name, b.Cidrs); err != nil {
 			return fmt.Errorf("reconcile addrs on %s: %w", name, err)
 		}
+		if err := a.reconcileIpfix(ctx, name, b.Ipfix); err != nil {
+			return fmt.Errorf("reconcile ipfix on %s: %w", name, err)
+		}
 	}
 
 	// Pass 2 — reap orphan `pwnbr-*` OVS bridges. Best-effort: OVS is
@@ -352,6 +355,76 @@ func (a *ShellOvsBridgeApplier) addAddr(ctx context.Context, ifname, cidr string
 func (a *ShellOvsBridgeApplier) delAddr(ctx context.Context, ifname, cidr string) error {
 	cmd := exec.CommandContext(ctx, a.ip(), "addr", "del", cidr, "dev", ifname)
 	_, _ = cmd.CombinedOutput()
+	return nil
+}
+
+// reconcileIpfix configures or clears the OVS IPFIX exporter on the
+// bridge. Phase O5 — wires per-bridge IPFIX based on the platform's
+// Sdwan::IpfixCollector.
+//
+// Two paths:
+//   - desired == nil: clear any existing IPFIX reference. OVS
+//     auto-garbage-collects orphan IPFIX rows after the last bridge
+//     stops referring to them.
+//   - desired != nil: create a new IPFIX row with the desired targets
+//     + sampling and atomically link it to the bridge in one
+//     transaction. This is the OVS idiom for "set or replace IPFIX
+//     config". `--may-exist` does NOT apply to create; we always
+//     create-and-link, which produces an identical OVSDB state if the
+//     same targets are already configured (OVS deduplicates) but does
+//     spawn an extra shell call per reconcile. For Phase O5 this is
+//     acceptable; a future refinement can read the current targets
+//     and skip the call when unchanged.
+func (a *ShellOvsBridgeApplier) reconcileIpfix(ctx context.Context, name string, desired *DesiredIpfix) error {
+	if desired == nil || len(desired.Targets) == 0 {
+		// Clear — idempotent on the OVS side; ovs-vsctl returns 0 even
+		// if no ipfix was set.
+		cmd := exec.CommandContext(ctx, a.ovsVsctl(), "clear", "Bridge", name, "ipfix")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("ovs-vsctl clear Bridge %s ipfix: %w; %s", name, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// Build the targets list as a JSON-ish OVSDB array literal:
+	//   targets='["host:port","host:port"]'
+	// ovs-vsctl uses its own list syntax; double-quoting each string
+	// is required because the values contain colons.
+	targetParts := make([]string, 0, len(desired.Targets))
+	for _, t := range desired.Targets {
+		if t == "" {
+			continue
+		}
+		// Escape any embedded double-quote (defensive — endpoints are
+		// host:port and shouldn't contain them, but the OVSDB literal
+		// would break if they did).
+		escaped := strings.ReplaceAll(t, `"`, `\"`)
+		targetParts = append(targetParts, `"`+escaped+`"`)
+	}
+	if len(targetParts) == 0 {
+		// All targets were empty strings; treat as clear.
+		return a.reconcileIpfix(ctx, name, nil)
+	}
+	targetsArg := "targets=[" + strings.Join(targetParts, ",") + "]"
+
+	sampling := desired.Sampling
+	if sampling < 1 {
+		sampling = 1
+	}
+	samplingArg := fmt.Sprintf("sampling=%d", sampling)
+
+	// Single ovs-vsctl transaction:
+	//   --id=@ipfix create IPFIX targets=[...] sampling=N
+	//   -- set Bridge <name> ipfix=@ipfix
+	cmd := exec.CommandContext(ctx, a.ovsVsctl(),
+		"--", "--id=@ipfix", "create", "IPFIX", targetsArg, samplingArg,
+		"--", "set", "Bridge", name, "ipfix=@ipfix",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ovs-vsctl create IPFIX + set Bridge %s ipfix: %w; %s", name, err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
