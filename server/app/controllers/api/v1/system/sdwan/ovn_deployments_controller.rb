@@ -38,7 +38,7 @@ module Api
             require_permission("sdwan.ovn.read")
 
             switches = @deployment.logical_switches
-                                  .includes(:ports)
+                                  .includes(:ports, :acls)
                                   .order(:name)
                                   .to_a
 
@@ -94,7 +94,22 @@ module Api
               state: s.state,
               activated_at: s.activated_at&.iso8601,
               removed_at: s.removed_at&.iso8601,
-              ports: s.ports.sort_by(&:name).map { |p| serialize_port(p) }
+              ports: s.ports.sort_by(&:name).map { |p| serialize_port(p) },
+              # Sorted (priority desc, name asc) to match OVN's
+              # evaluation order — same ordering the compiler emits.
+              acls: s.acls.sort_by { |a| [ -a.priority, a.name ] }.map { |a| serialize_acl(a) }
+            }
+          end
+
+          def serialize_acl(a)
+            {
+              id: a.id,
+              name: a.name,
+              direction: a.direction,
+              priority: a.priority,
+              match: a.match,
+              action: a.action,
+              state: a.state
             }
           end
 

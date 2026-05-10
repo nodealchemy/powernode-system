@@ -107,5 +107,28 @@ RSpec.describe "Api::V1::System::Sdwan::OvnDeployments", type: :request do
       get "/api/v1/system/sdwan/ovn_deployments/#{other_deployment.id}", headers: headers
       expect(response).to have_http_status(:not_found)
     end
+
+    it "includes nested ACLs sorted by (priority desc, name asc)" do
+      s = ::Sdwan::OvnLogicalSwitch.create!(
+        account_id: account.id, sdwan_ovn_deployment_id: deployment.id, name: "ls-acl"
+      )
+      s.mark_active!
+      # Create ACLs out-of-order to verify the sort is happening on the response.
+      a_low = ::Sdwan::OvnAcl.create!(account_id: account.id, sdwan_ovn_logical_switch_id: s.id,
+                                       name: "low-prio", direction: "to-lport", priority: 500,
+                                       match: "ip4.src == 1.1.1.1", action: "drop")
+      a_high = ::Sdwan::OvnAcl.create!(account_id: account.id, sdwan_ovn_logical_switch_id: s.id,
+                                       name: "high-prio", direction: "to-lport", priority: 2000,
+                                       match: "ip4.src == 2.2.2.2", action: "allow")
+      a_low.mark_active!
+      a_high.mark_active!
+
+      get "/api/v1/system/sdwan/ovn_deployments/#{deployment.id}", headers: headers
+      switch = json_response_data["ovn_deployment"]["logical_switches"].first
+      acl_names = switch["acls"].map { |a| a["name"] }
+      # high-prio (2000) sorts first; low-prio (500) second
+      expect(acl_names).to eq([ "high-prio", "low-prio" ])
+      expect(switch["acls"].first).to include("direction" => "to-lport", "action" => "allow")
+    end
   end
 end

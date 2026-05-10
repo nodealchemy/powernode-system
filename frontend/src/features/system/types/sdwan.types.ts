@@ -522,6 +522,20 @@ export interface SdwanOvnLogicalSwitchPort {
   removed_at?: string | null;
 }
 
+export type SdwanOvnAclDirection = 'from-lport' | 'to-lport';
+export type SdwanOvnAclAction    = 'allow' | 'drop' | 'reject' | 'allow-related';
+export type SdwanOvnAclState     = 'pending' | 'active' | 'removed';
+
+export interface SdwanOvnAcl {
+  id: string;
+  name: string;
+  direction: SdwanOvnAclDirection;
+  priority: number;
+  match: string;
+  action: SdwanOvnAclAction;
+  state: SdwanOvnAclState;
+}
+
 export interface SdwanOvnLogicalSwitch {
   id: string;
   name: string;
@@ -530,6 +544,7 @@ export interface SdwanOvnLogicalSwitch {
   activated_at?: string | null;
   removed_at?: string | null;
   ports: SdwanOvnLogicalSwitchPort[];
+  acls: SdwanOvnAcl[];
 }
 
 export interface SdwanOvnDeploymentSummary {
