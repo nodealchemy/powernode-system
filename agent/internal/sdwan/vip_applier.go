@@ -1,19 +1,36 @@
-// vip_applier.go — slice 9b: configure VIPs on the local loopback so the
-// kernel claims the VIP addresses (and any service bound to them
-// receives the traffic).
+// vip_applier.go — Phase N1a: configure VIP addresses on per-VRF
+// dummy interfaces so a host that holds a VIP claims the address inside
+// the right routing domain.
 //
-// Topology compiler arranges the *routing* (each other peer's [Peer]
-// section gets the VIP CIDR in AllowedIPs pointing at the holder); this
-// applier handles the *acceptance* on the holder side. Without it, the
-// holder's kernel sees an inbound packet for an address it doesn't
-// claim and drops it as "not for me."
+// Pre-N1a behaviour put every VIP on the global loopback (`lo`),
+// which worked when each host belonged to at most one iBGP network
+// because forwarding decisions all hit the kernel's main routing
+// table. With multi-VRF, a VIP installed on `lo` is unreachable from
+// VRF-bound BGP sessions because the source-address selection chooses
+// the wrong egress (or fails) and the FIB doesn't route to `lo` from
+// inside a non-default VRF. The fix: one dummy iface per VRF, bound
+// to the VRF master device, and the VIP installed there.
 //
-// Idempotency: we read `ip -o addr show dev lo`, diff against the
-// desired VIP set, add missing, remove orphans we previously managed.
-// We never touch the loopback defaults (127.0.0.1/8, ::1/128) — those
-// are kernel-managed and removing them breaks every loopback service.
+// Layout:
 //
-// Slice 9b of the SDWAN plan.
+//	d-sdwan-<network_handle>   type=dummy   master=sdwan-<handle>
+//	  ↳ <vip_cidr> (one or more, /128 for v6 or /32 for v4)
+//
+// The leading `d-` (instead of the wordier `dummy-`) is dictated by
+// Linux's IFNAMSIZ — 15 usable chars. With the platform's 6-char
+// network handle the VRF master is `sdwan-<6>` (12 chars); the
+// dummy is `d-sdwan-<6>` (14 chars). Wider prefixes overflow.
+//
+// Idempotency: we read `ip -j addr show` for every dummy iface we
+// own (matched by the "d-sdwan-" prefix), diff against the desired
+// set, add missing addresses, and remove orphans whose CIDRs are no
+// longer desired on that VRF. Dummy ifaces with no remaining
+// addresses are deleted. Dummy ifaces whose VRF is gone are reaped.
+//
+// The global loopback path is gone — VIP installation never touches
+// `lo` again.
+//
+// Phase N1a of the in-house encrypted mesh overlay roadmap.
 
 package sdwan
 
@@ -23,19 +40,28 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
-// VipApplier abstracts the loopback configuration step so the manager
-// is testable without touching kernel state.
+// DesiredVip extends the legacy VipConf with the VRF binding the
+// applier needs to install the address in the right routing domain.
+// The platform's topology compiler stamps VrfName onto each VIP entry
+// based on the network's HostVrfAssignment for the holder host.
+type DesiredVip struct {
+	Cidr    string
+	VrfName string // e.g. "sdwan-abc12345"
+}
+
+// VipApplier abstracts per-VRF VIP installation. ShellVipApplier is
+// the production implementation.
 type VipApplier interface {
 	ApplyVips(ctx context.Context, desired []VipConf) error
 }
 
-// ShellVipApplier shells out to `ip addr` — same pattern as
-// NftablesApplier shells out to `nft`. No new Go dependencies.
+// ShellVipApplier shells out to `ip` for dummy-iface and address
+// management.
 type ShellVipApplier struct {
-	// IpBin overrides the `ip` binary path for tests; defaults to "ip".
 	IpBin string
 }
 
@@ -43,69 +69,179 @@ func NewShellVipApplier() *ShellVipApplier {
 	return &ShellVipApplier{}
 }
 
+func (a *ShellVipApplier) ip() string {
+	if a.IpBin != "" {
+		return a.IpBin
+	}
+	return "ip"
+}
+
+// ApplyVips makes the kernel's per-VRF dummy ifaces match `desired`.
+// VipConf is sourced from the platform's TopologyCompiler; the new
+// `vrf_name` field on each entry tells the applier which dummy iface
+// the address belongs on.
+//
+// Steps:
+//  1. Group desired VIPs by VRF.
+//  2. For each VRF, ensure a `dummy-<vrfname>` dummy iface exists,
+//     is up, and is bound to the VRF master device (idempotent).
+//  3. Diff actual addresses on each dummy against desired; add
+//     missing, delete orphans.
+//  4. Reap dummy ifaces whose VRF is no longer present in desired.
+//
+// Tolerates a missing VrfName on a VipConf entry by skipping it with
+// a recorded best-effort warning — this lets the agent keep working
+// during the brief window between a network's creation and the
+// platform stamping its HostVrfAssignment onto the VIP payload.
 func (a *ShellVipApplier) ApplyVips(ctx context.Context, desired []VipConf) error {
-	desiredSet := make(map[string]VipConf, len(desired))
+	desiredByVRF := make(map[string]map[string]struct{})
 	for _, v := range desired {
+		vrfName := v.VrfName
+		if vrfName == "" {
+			// No VRF binding yet — skip rather than installing on `lo`
+			// (which the legacy path did). The next reconcile after
+			// the platform stamps vrf_name will pick it up.
+			continue
+		}
 		key, err := normalizeCidr(v.Cidr)
 		if err != nil {
 			continue
 		}
-		desiredSet[key] = v
+		if _, ok := desiredByVRF[vrfName]; !ok {
+			desiredByVRF[vrfName] = make(map[string]struct{})
+		}
+		desiredByVRF[vrfName][key] = struct{}{}
 	}
 
-	current, err := a.listLoopbackAddrs(ctx)
+	currentDummies, err := a.listDummies(ctx)
 	if err != nil {
-		return fmt.Errorf("list lo addrs: %w", err)
+		return fmt.Errorf("list dummies: %w", err)
 	}
 
-	// Phase 1 — add missing.
-	for key, v := range desiredSet {
-		if _, ok := current[key]; ok {
-			continue
+	// Pass 1 — ensure each desired VRF has its dummy iface configured
+	// and the desired addresses installed.
+	for vrfName, addrs := range desiredByVRF {
+		dummyName := dummyNameForVRF(vrfName)
+		if !linkExists(ctx, a.ip(), dummyName) {
+			if err := a.createDummy(ctx, dummyName); err != nil {
+				return fmt.Errorf("create dummy %s: %w", dummyName, err)
+			}
 		}
-		if err := a.addAddr(ctx, v.Cidr); err != nil {
-			return fmt.Errorf("add %s: %w", v.Cidr, err)
+		if err := a.bindToVRF(ctx, dummyName, vrfName); err != nil {
+			return fmt.Errorf("bind %s to %s: %w", dummyName, vrfName, err)
+		}
+		if err := a.bringUp(ctx, dummyName); err != nil {
+			return fmt.Errorf("bring up %s: %w", dummyName, err)
+		}
+
+		actual, err := a.listAddrs(ctx, dummyName)
+		if err != nil {
+			return fmt.Errorf("list addrs for %s: %w", dummyName, err)
+		}
+
+		// Add missing — desired keys not present in actual.
+		for key := range addrs {
+			if _, ok := actual[key]; ok {
+				continue
+			}
+			if err := a.addAddr(ctx, dummyName, key); err != nil {
+				return fmt.Errorf("add %s on %s: %w", key, dummyName, err)
+			}
+		}
+
+		// Remove orphan addresses — actual keys not present in desired.
+		for key, original := range actual {
+			if _, ok := addrs[key]; ok {
+				continue
+			}
+			_ = a.delAddr(ctx, dummyName, original)
 		}
 	}
 
-	// Phase 2 — remove orphans. We only delete addresses that look like
-	// VIP candidates (single-host /32 or /128 in non-loopback ranges).
-	// This conservative heuristic protects loopback from accidental
-	// removal when the desired set is empty (e.g. transient "no VIPs"
-	// state during pause/resume).
-	for key, cidr := range current {
-		if _, ok := desiredSet[key]; ok {
+	// Pass 2 — reap dummies whose VRF is no longer wanted. Their
+	// addresses are gone with them.
+	for _, dummyName := range currentDummies {
+		vrfName := vrfNameFromDummy(dummyName)
+		if vrfName == "" {
 			continue
 		}
-		if isLoopbackDefault(cidr) || !looksLikeVip(cidr) {
+		if _, want := desiredByVRF[vrfName]; want {
 			continue
 		}
-		_ = a.delAddr(ctx, cidr)
+		_ = a.deleteLink(ctx, dummyName)
 	}
+
 	return nil
 }
 
-// listLoopbackAddrs reads `ip -o addr show dev lo` and returns a map of
-// canonical-CIDR → original-CIDR. The canonical form is what we use for
-// set membership; the original form is what we hand back to `ip addr
-// del` (preserves whatever flags the kernel reports).
-func (a *ShellVipApplier) listLoopbackAddrs(ctx context.Context) (map[string]string, error) {
-	bin := a.IpBin
-	if bin == "" {
-		bin = "ip"
+// dummyNameForVRF maps "sdwan-abc123" → "d-sdwan-abc123". The `d-`
+// prefix is the shortest unambiguous marker that fits within Linux's
+// IFNAMSIZ (15 usable chars) when combined with the 12-char VRF name
+// (6-char network handle): "d-sdwan-abc123" is 14 chars. Wider
+// prefixes (e.g., `dummy-`) overflow.
+func dummyNameForVRF(vrfName string) string {
+	return "d-" + vrfName
+}
+
+// vrfNameFromDummy is the inverse mapping; returns "" for ifaces that
+// don't follow our naming convention.
+func vrfNameFromDummy(dummyName string) string {
+	if !strings.HasPrefix(dummyName, "d-sdwan-") {
+		return ""
 	}
-	cmd := exec.CommandContext(ctx, bin, "-o", "addr", "show", "dev", "lo")
+	return strings.TrimPrefix(dummyName, "d-")
+}
+
+func (a *ShellVipApplier) listDummies(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, a.ip(), "-o", "link", "show", "type", "dummy")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ip addr show: %w; stderr=%s", err, stderr.String())
+		// `ip` returns nonzero on some kernels when no dummy ifaces
+		// exist. Treat empty output as zero ifaces.
+		if stdout.Len() == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ip link show type dummy: %w; stderr=%s", err, stderr.String())
+	}
+
+	var names []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		// "1: dummy-sdwan-abc12345: <BROADCAST,NOARP> mtu 1500 ..."
+		parts := strings.SplitN(line, ": ", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		raw := strings.TrimSpace(parts[1])
+		// May carry an "@<lower>" suffix on linked devices; strip.
+		if i := strings.Index(raw, "@"); i >= 0 {
+			raw = raw[:i]
+		}
+		if !strings.HasPrefix(raw, "d-sdwan-") {
+			continue
+		}
+		names = append(names, raw)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (a *ShellVipApplier) listAddrs(ctx context.Context, ifname string) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, a.ip(), "-o", "addr", "show", "dev", ifname)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Iface may have been concurrently removed; tolerate.
+		if strings.Contains(stderr.String(), "does not exist") {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("ip addr show dev %s: %w; stderr=%s", ifname, err, stderr.String())
 	}
 	out := make(map[string]string)
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		fields := strings.Fields(line)
-		// "1: lo    inet 127.0.0.1/8 scope host lo ..."
-		// "1: lo    inet6 ::1/128 scope host ..."
 		for i, f := range fields {
 			if (f == "inet" || f == "inet6") && i+1 < len(fields) {
 				cidr := fields[i+1]
@@ -118,32 +254,78 @@ func (a *ShellVipApplier) listLoopbackAddrs(ctx context.Context) (map[string]str
 	return out, nil
 }
 
-func (a *ShellVipApplier) addAddr(ctx context.Context, cidr string) error {
-	bin := a.IpBin
-	if bin == "" {
-		bin = "ip"
-	}
-	cmd := exec.CommandContext(ctx, bin, "addr", "add", cidr, "dev", "lo")
+func (a *ShellVipApplier) createDummy(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "link", "add", name, "type", "dummy")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// "RTNETLINK answers: File exists" — already there, tolerate.
 		if strings.Contains(string(out), "File exists") {
 			return nil
 		}
-		return fmt.Errorf("ip addr add: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("ip link add %s type dummy: %w; %s", name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func (a *ShellVipApplier) delAddr(ctx context.Context, cidr string) error {
-	bin := a.IpBin
-	if bin == "" {
-		bin = "ip"
+func (a *ShellVipApplier) bindToVRF(ctx context.Context, ifname, vrfName string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "link", "set", ifname, "master", vrfName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// `ip` is silent when the master is already correctly set, so
+		// most calls return zero. When it errors, surface the message.
+		return fmt.Errorf("ip link set %s master %s: %w; %s", ifname, vrfName, err, strings.TrimSpace(string(out)))
 	}
-	cmd := exec.CommandContext(ctx, bin, "addr", "del", cidr, "dev", "lo")
+	return nil
+}
+
+func (a *ShellVipApplier) bringUp(ctx context.Context, ifname string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "link", "set", ifname, "up")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ip link set %s up: %w; %s", ifname, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *ShellVipApplier) addAddr(ctx context.Context, ifname, cidr string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "addr", "add", cidr, "dev", ifname)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "File exists") {
+			return nil
+		}
+		return fmt.Errorf("ip addr add %s dev %s: %w; %s", cidr, ifname, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *ShellVipApplier) delAddr(ctx context.Context, ifname, cidr string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "addr", "del", cidr, "dev", ifname)
 	_, _ = cmd.CombinedOutput()
 	return nil
 }
+
+func (a *ShellVipApplier) deleteLink(ctx context.Context, ifname string) error {
+	cmd := exec.CommandContext(ctx, a.ip(), "link", "delete", ifname)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "Cannot find device") {
+			return nil
+		}
+		return fmt.Errorf("ip link delete %s: %w; %s", ifname, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// linkExists is shared with vrf_applier — package-level helper.
+func linkExists(ctx context.Context, ipBin, name string) bool {
+	cmd := exec.CommandContext(ctx, ipBin, "link", "show", name)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+// ---- Helpers carried over from the loopback-era applier ----
 
 // normalizeCidr returns "<canonical-ip>/<mask>" — strips leading-zero
 // IPv6 forms, lowercases hex, and zero-prefix-fills so two valid
@@ -159,31 +341,4 @@ func normalizeCidr(c string) (string, error) {
 	}
 	ones, _ := ipnet.Mask.Size()
 	return fmt.Sprintf("%s/%d", ip.String(), ones), nil
-}
-
-func isLoopbackDefault(cidr string) bool {
-	c := strings.TrimSpace(cidr)
-	return c == "127.0.0.1/8" || c == "::1/128"
-}
-
-// looksLikeVip is a defensive heuristic — we only orphan-prune addresses
-// that look like single-host VIP candidates so we don't accidentally
-// delete operator-configured addresses on lo (rare, but possible for
-// service binding).
-func looksLikeVip(cidr string) bool {
-	parts := strings.SplitN(cidr, "/", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	ip := net.ParseIP(parts[0])
-	if ip == nil {
-		return false
-	}
-	switch parts[1] {
-	case "32":
-		return ip.To4() != nil
-	case "128":
-		return ip.To4() == nil
-	}
-	return false
 }

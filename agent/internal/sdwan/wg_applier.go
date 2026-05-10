@@ -91,6 +91,22 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 		}
 	}
 
+	// 1a. Phase N1a: bind the iface to its network's VRF master device.
+	// vrf_applier runs before wg_applier in the manager loop so the
+	// VRF exists at this point; we still tolerate an absent VRF
+	// (transient state during cutover) by surfacing the error in a way
+	// the manager records but does not fail the whole reconcile on.
+	//
+	// Re-binding is idempotent — the kernel accepts `ip link set X
+	// master Y` even when X is already mastered by Y. We always issue
+	// the command so a misconfigured iface (master pointing at the
+	// wrong VRF) self-corrects on the next tick.
+	if cfg.VrfName != "" {
+		if err := run(ctx, a.ip(), "link", "set", cfg.Name, "master", cfg.VrfName); err != nil {
+			return fmt.Errorf("ip link set %s master %s: %w", cfg.Name, cfg.VrfName, err)
+		}
+	}
+
 	// 2. MTU + state.
 	mtu := cfg.MTU
 	if mtu <= 0 {
