@@ -72,7 +72,16 @@ module Ai
         "system_sdwan_get_port_mapping"            => "sdwan.port_mappings.read",
         "system_sdwan_create_port_mapping"         => "sdwan.port_mappings.manage",
         "system_sdwan_update_port_mapping"         => "sdwan.port_mappings.manage",
-        "system_sdwan_delete_port_mapping"         => "sdwan.port_mappings.manage"
+        "system_sdwan_delete_port_mapping"         => "sdwan.port_mappings.manage",
+        # Phase O6 — host bridges (O1) + OVN deployment/switches/ports (O3) + IPFIX (O5)
+        "system_sdwan_create_host_bridge"          => "sdwan.host_bridges.manage",
+        "system_sdwan_list_host_bridges"           => "sdwan.host_bridges.read",
+        "system_sdwan_create_ovn_deployment"       => "sdwan.ovn.manage",
+        "system_sdwan_create_ovn_logical_switch"   => "sdwan.ovn.manage",
+        "system_sdwan_create_ovn_logical_switch_port" => "sdwan.ovn.manage",
+        "system_sdwan_compile_ovn_plan"            => "sdwan.ovn.read",
+        "system_sdwan_create_ipfix_collector"      => "sdwan.ipfix.manage",
+        "system_sdwan_list_ipfix_collectors"       => "sdwan.ipfix.read"
       }.freeze
 
       def self.definition
@@ -458,6 +467,71 @@ module Ai
           "system_sdwan_delete_port_mapping" => {
             description: "Delete a port mapping. Agent removes the corresponding nft DNAT rule on next reconcile.",
             parameters: { port_mapping_id: { type: "string", required: true } }
+          },
+          # ─── Phase O6 — host bridges (O1) ──────────────────────────────────
+          "system_sdwan_create_host_bridge" => {
+            description: "Allocate a HostBridge for a NodeInstance via Sdwan::HostBridgeAllocator. Idempotent — returns the existing bridge of the requested kind on this host if one already exists. When `kind` is omitted the allocator picks 'ovs' for heavyweight hosts and 'linux' for lightweight hosts based on the host's network_profile.",
+            parameters: {
+              node_instance_id: { type: "string", required: true },
+              kind: { type: "string", required: false, description: "linux | ovs (defaults to host's network_profile mapping)" }
+            }
+          },
+          "system_sdwan_list_host_bridges" => {
+            description: "List HostBridges for the current account. Optionally filter by node_instance_id.",
+            parameters: {
+              node_instance_id: { type: "string", required: false }
+            }
+          },
+          # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ──────
+          "system_sdwan_create_ovn_deployment" => {
+            description: "Create the per-account OVN control-plane deployment. One OvnDeployment per account (DB-enforced). Endpoints use OVN's standard `tcp:HOST:PORT` / `ssl:HOST:PORT` / `unix:PATH` form (defaults: NB 6641, SB 6642).",
+            parameters: {
+              nb_db_endpoint: { type: "string", required: true, description: "OVN Northbound DB endpoint, e.g. tcp:nb.example:6641" },
+              sb_db_endpoint: { type: "string", required: true, description: "OVN Southbound DB endpoint, e.g. tcp:sb.example:6642" },
+              northd_host: { type: "string", required: false, description: "Hostname (advisory) of the host running ovn-northd" },
+              settings: { type: "object", required: false, description: "Free-form settings hash" }
+            }
+          },
+          "system_sdwan_create_ovn_logical_switch" => {
+            description: "Create an OVN logical L2 switch under a deployment. Name is unique per deployment, max 63 chars, [letters/digits/_/-/.] only.",
+            parameters: {
+              deployment_id: { type: "string", required: true },
+              name: { type: "string", required: true },
+              cidr: { type: "string", required: false, description: "Optional subnet CIDR (sets up DHCP on the switch when present)" },
+              description: { type: "string", required: false },
+              settings: { type: "object", required: false }
+            }
+          },
+          "system_sdwan_create_ovn_logical_switch_port" => {
+            description: "Create an OVN logical switch port. `kind` drives compiler choices: vm | container = host-backed (host_node_instance_id required for proper placement); external = uplink/transit (no host required, gets lsp-set-type localnet by default). MAC is auto-generated (locally-administered `02:` prefix) when blank.",
+            parameters: {
+              logical_switch_id: { type: "string", required: true },
+              name: { type: "string", required: true },
+              kind: { type: "string", required: true, description: "vm | container | external" },
+              host_node_instance_id: { type: "string", required: false, description: "Required for vm/container ports; ignored for external" },
+              addresses: { type: "array", required: false, description: "Array of IPv4/IPv6 strings; appended to the OVN `addresses=` line" },
+              mac: { type: "string", required: false, description: "MAC in `xx:xx:xx:xx:xx:xx` form; auto-generated when blank" }
+            }
+          },
+          "system_sdwan_compile_ovn_plan" => {
+            description: "Compile the structured ovn-nbctl command plan for an OvnDeployment via Sdwan::OvnCompiler. Returns the full plan (deployment_id, plan: array of {cmd, args}, compiled_at). The compiler does NOT execute — it returns the plan as data for an executor or operator to replay against the NB DB.",
+            parameters: {
+              deployment_id: { type: "string", required: true }
+            }
+          },
+          # ─── Phase O6 — IPFIX collectors (O5) ──────────────────────────────
+          "system_sdwan_create_ipfix_collector" => {
+            description: "Create an IPFIX collector for the current account. When an active collector exists, the topology compiler stamps an `ipfix:` block on every ovs-kind HostBridge in the per-host payload. Linux-bridge hosts ignore IPFIX (no native OVS support).",
+            parameters: {
+              name: { type: "string", required: true, description: "Operator-chosen label (unique per account)" },
+              host: { type: "string", required: true, description: "Hostname or IP literal of the IPFIX collector" },
+              port: { type: "integer", required: false, description: "UDP port (default 4739, the IANA-assigned IPFIX port)" },
+              sampling_rate: { type: "integer", required: false, description: "1-in-N packet sampling (default 1 = sample every packet)" }
+            }
+          },
+          "system_sdwan_list_ipfix_collectors" => {
+            description: "List IPFIX collectors for the current account.",
+            parameters: {}
           }
         }
       end
@@ -534,6 +608,15 @@ module Ai
         when "system_sdwan_delete_virtual_ip"          then delete_virtual_ip(params)
         when "system_sdwan_failover_virtual_ip"        then failover_virtual_ip(params)
         when "system_sdwan_list_vip_assignments"       then list_vip_assignments(params)
+        # Phase O6 — host bridges (O1) + OVN (O3) + IPFIX (O5)
+        when "system_sdwan_create_host_bridge"             then create_host_bridge(params)
+        when "system_sdwan_list_host_bridges"              then list_host_bridges(params)
+        when "system_sdwan_create_ovn_deployment"          then create_ovn_deployment(params)
+        when "system_sdwan_create_ovn_logical_switch"      then create_ovn_logical_switch(params)
+        when "system_sdwan_create_ovn_logical_switch_port" then create_ovn_logical_switch_port(params)
+        when "system_sdwan_compile_ovn_plan"               then compile_ovn_plan(params)
+        when "system_sdwan_create_ipfix_collector"         then create_ipfix_collector(params)
+        when "system_sdwan_list_ipfix_collectors"          then list_ipfix_collectors(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ::Sdwan::UserDeviceIssuer::GrantError => e
@@ -543,6 +626,9 @@ module Ai
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
       rescue ::Sdwan::PeerEnroller::CrossAccountError => e
+        error_result(e.message)
+      rescue ::Sdwan::HostBridgeAllocator::CapacityExhausted,
+             ::Sdwan::HostBridgeAllocator::InvalidArguments => e
         error_result(e.message)
       end
 
@@ -1459,6 +1545,194 @@ module Ai
           last_compiled_at: p.last_compiled_at&.iso8601,
           created_at: p.created_at.iso8601
         )
+      end
+
+      # ─── Phase O6 — host bridges (O1) ──────────────────────────────────
+
+      def create_host_bridge(params)
+        host = ::System::NodeInstance.joins(:node)
+                                     .where(system_nodes: { account_id: @account.id })
+                                     .find(params[:node_instance_id])
+        bridge = ::Sdwan::HostBridgeAllocator.allocate!(
+          host: host,
+          kind: params[:kind].presence,
+          account: @account
+        )
+        success_result(host_bridge: serialize_host_bridge(bridge))
+      end
+
+      def list_host_bridges(params)
+        scope = ::Sdwan::HostBridge.where(account_id: @account.id)
+        scope = scope.where(node_instance_id: params[:node_instance_id]) if params[:node_instance_id].present?
+        bridges = scope.order(:node_instance_id, :short_id)
+        success_result(
+          host_bridges: bridges.map { |b| serialize_host_bridge(b) },
+          count: bridges.size
+        )
+      end
+
+      def serialize_host_bridge(b)
+        {
+          id: b.id,
+          account_id: b.account_id,
+          node_instance_id: b.node_instance_id,
+          short_id: b.short_id,
+          bridge_name: b.bridge_name,
+          kind: b.kind,
+          state: b.state,
+          ipv4_cidr: b.ipv4_cidr,
+          ipv6_cidr: b.ipv6_cidr,
+          applied_at: b.applied_at&.iso8601,
+          draining_at: b.draining_at&.iso8601,
+          removed_at: b.removed_at&.iso8601,
+          created_at: b.created_at&.iso8601
+        }
+      end
+
+      # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ──────
+
+      def create_ovn_deployment(params)
+        deployment = ::Sdwan::OvnDeployment.create!(
+          account: @account,
+          nb_db_endpoint: params[:nb_db_endpoint],
+          sb_db_endpoint: params[:sb_db_endpoint],
+          northd_host: params[:northd_host],
+          settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
+        )
+        success_result(ovn_deployment: serialize_ovn_deployment(deployment))
+      end
+
+      def create_ovn_logical_switch(params)
+        deployment = account_ovn_deployments.find(params[:deployment_id])
+        switch = deployment.logical_switches.create!(
+          account: @account,
+          name: params[:name],
+          cidr: params[:cidr],
+          description: params[:description],
+          settings: params[:settings].is_a?(Hash) ? params[:settings] : {}
+        )
+        success_result(ovn_logical_switch: serialize_ovn_logical_switch(switch))
+      end
+
+      def create_ovn_logical_switch_port(params)
+        switch = account_ovn_logical_switches.find(params[:logical_switch_id])
+
+        host = nil
+        if params[:host_node_instance_id].present?
+          host = ::System::NodeInstance.joins(:node)
+                                       .where(system_nodes: { account_id: @account.id })
+                                       .find(params[:host_node_instance_id])
+        end
+
+        port = switch.ports.new(
+          account: @account,
+          name: params[:name],
+          kind: params[:kind].to_s,
+          host_node_instance: host,
+          addresses: Array(params[:addresses]).map(&:to_s),
+          mac: params[:mac].presence
+        )
+        port.save!
+        success_result(ovn_logical_switch_port: serialize_ovn_logical_switch_port(port))
+      end
+
+      def compile_ovn_plan(params)
+        deployment = account_ovn_deployments.find(params[:deployment_id])
+        plan = ::Sdwan::OvnCompiler.compile_for_deployment(deployment)
+        success_result(plan: plan)
+      end
+
+      def account_ovn_deployments
+        ::Sdwan::OvnDeployment.where(account_id: @account.id)
+      end
+
+      def account_ovn_logical_switches
+        ::Sdwan::OvnLogicalSwitch.where(account_id: @account.id)
+      end
+
+      def serialize_ovn_deployment(d)
+        {
+          id: d.id,
+          account_id: d.account_id,
+          nb_db_endpoint: d.nb_db_endpoint,
+          sb_db_endpoint: d.sb_db_endpoint,
+          northd_host: d.northd_host,
+          status: d.status,
+          settings: d.settings,
+          bootstrapped_at: d.bootstrapped_at&.iso8601,
+          activated_at: d.activated_at&.iso8601,
+          degraded_at: d.degraded_at&.iso8601,
+          created_at: d.created_at&.iso8601
+        }
+      end
+
+      def serialize_ovn_logical_switch(s)
+        {
+          id: s.id,
+          account_id: s.account_id,
+          deployment_id: s.sdwan_ovn_deployment_id,
+          name: s.name,
+          cidr: s.cidr,
+          description: s.description,
+          settings: s.settings,
+          state: s.state,
+          activated_at: s.activated_at&.iso8601,
+          removed_at: s.removed_at&.iso8601,
+          created_at: s.created_at&.iso8601
+        }
+      end
+
+      def serialize_ovn_logical_switch_port(p)
+        {
+          id: p.id,
+          account_id: p.account_id,
+          logical_switch_id: p.sdwan_ovn_logical_switch_id,
+          name: p.name,
+          kind: p.kind,
+          host_node_instance_id: p.host_node_instance_id,
+          mac: p.mac,
+          addresses: Array(p.addresses),
+          state: p.state,
+          activated_at: p.activated_at&.iso8601,
+          removed_at: p.removed_at&.iso8601,
+          created_at: p.created_at&.iso8601
+        }
+      end
+
+      # ─── Phase O6 — IPFIX collectors (O5) ──────────────────────────────
+
+      def create_ipfix_collector(params)
+        collector = ::Sdwan::IpfixCollector.create!(
+          account: @account,
+          name: params[:name],
+          host: params[:host],
+          port: params[:port].present? ? params[:port].to_i : 4739,
+          sampling_rate: params[:sampling_rate].present? ? params[:sampling_rate].to_i : 1
+        )
+        success_result(ipfix_collector: serialize_ipfix_collector(collector))
+      end
+
+      def list_ipfix_collectors(_params)
+        collectors = ::Sdwan::IpfixCollector.where(account_id: @account.id).order(:name)
+        success_result(
+          ipfix_collectors: collectors.map { |c| serialize_ipfix_collector(c) },
+          count: collectors.size
+        )
+      end
+
+      def serialize_ipfix_collector(c)
+        {
+          id: c.id,
+          account_id: c.account_id,
+          name: c.name,
+          host: c.host,
+          port: c.port,
+          sampling_rate: c.sampling_rate,
+          state: c.state,
+          target_endpoint: c.target_endpoint,
+          settings: c.settings,
+          created_at: c.created_at&.iso8601
+        }
       end
     end
   end
