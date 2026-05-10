@@ -252,6 +252,27 @@ SKILLS_DATA = [
       holder. Anycast VIPs return informational responses only (failover handled
       by routing).
     PROMPT
+  },
+  {
+    name: "SDWAN OVN Compose Topology",
+    slug: "system-sdwan-ovn-compose-topology",
+    description: "Compose an OVN logical-network topology (deployment + logical switches + ports) for a heavyweight-profile account, then compile the ovn-nbctl plan",
+    category: "devops",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanOvnComposeTopologyExecutor",
+    tags: %w[sdwan ovn topology heavyweight composition],
+    system_prompt: <<~PROMPT.strip
+      Use this skill on heavyweight-profile accounts to compose an OVN
+      logical-network topology in one shot. Inputs: switches (array of
+      {name, cidr?, ports: [{name, kind, addresses?, host_node_instance_id?}]}),
+      nb_db_endpoint + sb_db_endpoint (required only when no Sdwan::OvnDeployment
+      exists for the account yet), northd_host (optional advisory hint),
+      dry_run (default false). Returns the compiled ovn-nbctl plan an
+      executor or operator can apply against the NB DB. Re-uses the
+      existing per-account OvnDeployment when present; otherwise creates
+      one. Auto-activates new switches and ports so the compiler emits
+      them in the same call.
+    PROMPT
   }
 ].freeze
 
