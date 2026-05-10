@@ -155,7 +155,7 @@ module System
           XML
         end
 
-        # Three networking modes selectable via POWERNODE_NETWORK_MODE:
+        # Four networking modes selectable via POWERNODE_NETWORK_MODE:
         #
         #   user    — QEMU slirp (10.0.2.15 + NAT-to-host). No host setup needed.
         #             Default under qemu:///session.
@@ -175,11 +175,22 @@ module System
         #                 VM's frames are dropped because their MAC differs
         #                 from the L1's
         #             Override the bridge name with POWERNODE_BRIDGE_NAME (default: br0).
-        # Resolution order (most specific → most general):
+        #   routed  — Platform-managed host-internal bridge for routed-mode VMs.
+        #             Phase O1: bridge name and lifecycle owned by
+        #             Sdwan::HostBridge; the on-node agent's BridgeApplier
+        #             reconciles host kernel state to match. The libvirt
+        #             host is identified by provider.config["host_node_instance_id"];
+        #             Sdwan::HostBridgeResolver looks up the active bridge
+        #             for that host. No env-based override path — allocate
+        #             a Sdwan::HostBridge first, then provision routed VMs.
+        #
+        # Resolution order for `mode` (most specific → most general):
         #   1. Provider#config["network_mode"]   — per-provider UI setting
         #   2. ENV["POWERNODE_NETWORK_MODE"]      — global override
         #   3. default_network_mode               — heuristic from URI
-        # Same chain for bridge_name (provider config → env → "br0").
+        # Same chain for the `bridge` mode's bridge_name (provider config →
+        # env → "br0"). The `routed` mode skips this chain entirely — its
+        # bridge name comes from Sdwan::HostBridge.
         def network_xml
           mode = provider_config_value("network_mode") ||
                  ENV["POWERNODE_NETWORK_MODE"] ||
@@ -198,23 +209,22 @@ module System
                   </interface>
             XML
           when "routed"
-            # Routed mode: VM attaches to a host-internal bridge (`pwnvbr0`
-            # default) which has IP forwarding enabled but NO MASQUERADE.
-            # The host routes traffic in/out via the bridge IP. The VM gets
-            # a stable host-routable IP from the bridge's subnet (typically
-            # 192.168.250.0/24). This is the underlay for the platform's
-            # SDWAN overlay — WireGuard rides over this routed subnet to
-            # reach SDWAN gateways.
+            # Routed mode: VM attaches to a platform-managed host-internal
+            # bridge with IP forwarding enabled but NO MASQUERADE. The host
+            # routes traffic in/out via the bridge IP. The VM gets a stable
+            # host-routable IP from the bridge's subnet. This is the underlay
+            # for the platform's SDWAN overlay — WireGuard rides over this
+            # routed subnet to reach SDWAN gateways.
             #
-            # Setup prereqs (one-time per host):
-            #   • bridge `pwnvbr0` must exist (`ip link add pwnvbr0 type bridge`)
-            #   • bridge must have an IP (e.g. 192.168.250.1/24) and be UP
-            #   • /etc/qemu/bridge.conf must contain `allow pwnvbr0`
-            #   • net.ipv4.ip_forward = 1 (sysctl) — host routes traffic
-            #   • iptables FORWARD rules permit traffic to/from the bridge
-            bridge = provider_config_value("bridge_name") ||
-                     ENV["POWERNODE_ROUTED_BRIDGE_NAME"] ||
-                     "pwnvbr0"
+            # Phase O1: bridge name + lifecycle are owned by Sdwan::HostBridge,
+            # reconciled by the on-node agent's BridgeApplier. The resolver
+            # is the SINGLE SOURCE OF TRUTH — passing a literal bridge name
+            # via env or provider config is no longer supported in routed
+            # mode. Operators (and the AI fleet) allocate a HostBridge per
+            # host once via Sdwan::HostBridgeAllocator before provisioning
+            # routed-mode VMs on that host.
+            host = routed_mode_host
+            bridge = ::Sdwan::HostBridgeResolver.bridge_name_for(host)
             <<~XML.strip
                 <interface type='bridge'>
                     <source bridge='#{escape(bridge)}'/>
@@ -293,6 +303,35 @@ module System
           cfg = @provider.respond_to?(:config) ? @provider.config : nil
           val = cfg.is_a?(Hash) ? cfg[key.to_s] : nil
           val.is_a?(String) && val.strip.empty? ? nil : val
+        end
+
+        # Resolve the host (NodeInstance) that this routed-mode VM is being
+        # placed on. Used by Sdwan::HostBridgeResolver to find the
+        # platform-managed bridge name.
+        #
+        # Resolution: provider.config["host_node_instance_id"] points at
+        # the NodeInstance that represents the libvirt host. This is set
+        # once per provider when the operator (or AI fleet) onboards the
+        # host. Without it, no clean way exists to know which host's
+        # HostBridge to consume — so we raise a clear error rather than
+        # silently fall back to a stale literal.
+        def routed_mode_host
+          host_id = provider_config_value("host_node_instance_id")
+          unless host_id
+            raise ::Sdwan::HostBridgeResolver::NoBridgeForHost,
+                  "routed mode requires a host context — set " \
+                  "provider.config['host_node_instance_id'] to the NodeInstance " \
+                  "id of the libvirt host, then allocate a Sdwan::HostBridge " \
+                  "for that host via Sdwan::HostBridgeAllocator.allocate!(host:)"
+          end
+
+          host = ::System::NodeInstance.find_by(id: host_id)
+          return host if host
+
+          raise ::Sdwan::HostBridgeResolver::NoBridgeForHost,
+                "provider config host_node_instance_id=#{host_id} does not " \
+                "match any System::NodeInstance — point this provider at a " \
+                "valid host instance before provisioning routed-mode VMs"
         end
 
         def console_xml
