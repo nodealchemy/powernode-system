@@ -316,6 +316,30 @@ SKILLS_DATA = [
       Idempotent on (account, name) — re-running with the same name
       returns the existing row without mutating host/port/sampling_rate.
     PROMPT
+  },
+  {
+    name: "SDWAN Compose Full Topology",
+    slug: "system-sdwan-compose-full-topology",
+    description: "Composer-of-composers — orchestrates HostBridge + OVN + IPFIX composition in one tool call. Delegates to the three SDWAN compose primitives and aggregates outputs. Rollback unwinds in reverse dependency order.",
+    category: "devops",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanComposeFullTopologyExecutor",
+    tags: %w[sdwan composition orchestration topology],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when an operator wants a complete SDWAN topology in
+      one tool call. Inputs: host_node_instance_ids (always required —
+      passed to host_bridge_compose), kind (optional bridge kind override
+      — passed through), ovn_topology (optional hash of {nb_db_endpoint,
+      sb_db_endpoint, northd_host?, switches} — runs ovn_compose_topology
+      when supplied), ipfix_collector (optional hash of {name, host, port,
+      sampling_rate?} — runs ipfix_collector_compose when supplied),
+      dry_run (default false). Always runs bridge composition; OVN and
+      IPFIX are opt-in. Returns each sub-skill's structured data nested
+      under outputs. Sub-failures are collected, never short-circuited —
+      operators may want to retry just the failing phase rather than
+      redo everything. Has a single-call rollback that delegates to each
+      sub-executor's rollback in reverse order.
+    PROMPT
   }
 ].freeze
 
