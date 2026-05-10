@@ -133,6 +133,13 @@ func (s *Service) Run(ctx context.Context) error {
 	// cross-package coupling beyond the ModulesAPI shape.
 	k3sModules := dockerd.NewHTTPModulesClient(client)
 	k3sClient := k3sd.NewClient(client)
+	// Phase O4 follow-up — agent-side BootstrapConfig fetcher. The
+	// platform's runtime/k3s_server/config endpoint emits per-host
+	// install knobs (cni_plugin today; future fields like cluster-cidr
+	// land in the same envelope). The PostSend loop fetches each tick
+	// and refreshes ServerManager.Bootstrap before Reconcile so the
+	// next K3s install picks up any operator-changed values.
+	k3sBootstrap := k3sd.NewHTTPBootstrapConfigClient(client)
 	k3sServerMgr := k3sd.NewServerManager(
 		k3sClient, k3sModules, k3sd.NewShellServerApplier(),
 		client.InstanceID, s.cfg.OnError,
@@ -159,6 +166,19 @@ func (s *Service) Run(ctx context.Context) error {
 			// rebalancing (Phase 2 K8s) just falls out.
 			dockerMgr.SetOverlayAddress(sdwanMgr.FirstOverlayAddress())
 			dockerMgr.Reconcile(ctx)
+			// Phase O4 follow-up — refresh K3s server BootstrapConfig
+			// from the platform before this tick's Reconcile. Stale
+			// config-on-error behavior matches dockerd's overrides
+			// pattern: if fetch fails, keep the previous Bootstrap
+			// value rather than blanking it. Lightweight hosts (or
+			// hosts with no K3s cluster yet) get a zero-valued
+			// BootstrapConfig from the platform's flannel default,
+			// which the manager treats as "K3s default install args".
+			if cfg, _, err := k3sBootstrap.FetchBootstrapConfig(ctx); err != nil {
+				s.cfg.OnError("k3s_bootstrap_fetch", err)
+			} else {
+				k3sServerMgr.Bootstrap = cfg
+			}
 			// Phase 2 K3s — both managers run each tick; the one
 			// whose module isn't assigned no-ops in its first switch
 			// branch. Order doesn't matter for correctness; we run
