@@ -144,7 +144,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       expect(JSON.parse(response.body)["error"]).to include("not enabled")
     end
 
-    it "k3s_server runtime returns empty for now (forward-compat)" do
+    it "k3s_server runtime returns bootstrap_config with cni_plugin (Phase O4)" do
       ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Container Runtimes")
       ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
         m.assign_attributes(variety: "subscription", enabled: true, priority: 100)
@@ -157,7 +157,11 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       get "/api/v1/system/node_api/runtime/k3s_server/config"
       expect(response).to have_http_status(:ok)
       body = JSON.parse(response.body)
-      expect(body.dig("data", "daemon_overrides")).to eq({})
+      # Phase O4: k3s_server now returns bootstrap_config carrying
+      # cni_plugin. Unenrolled hosts (no Devops::KubernetesNode link)
+      # default to "flannel" — safe K3s default.
+      expect(body.dig("data", "bootstrap_config")).to eq("cni_plugin" => "flannel")
+      expect(body.dig("data", "content_hash")).to be_a(String)
     end
   end
 
