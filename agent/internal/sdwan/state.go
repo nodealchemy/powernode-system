@@ -29,6 +29,11 @@ type DesiredConfig struct {
 	// list directly. Top-level because VRFs are host-level kernel state
 	// (one VRF per network this host has joined, not per peer).
 	VrfAssignments []DesiredVRF `json:"vrf_assignments"`
+	// Phase O1: per-host bridge intent. The bridge_applier consumes this
+	// list directly. Top-level (host-scoped) because bridges are
+	// host-level kernel state owned by the agent's chosen BridgeApplier
+	// backend (Linux today; OVS in Phase O2).
+	HostBridges []DesiredBridge `json:"host_bridges"`
 }
 
 // ConstellationTrust pairs a constellation handle with its Ed25519

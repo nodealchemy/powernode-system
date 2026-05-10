@@ -50,7 +50,11 @@ module Api
               # Phase N1a — per-host VRF assignment list, consumed
               # directly by vrf_applier. Includes only assignments in
               # compilable state (active or draining).
-              vrf_assignments: vrf_assignments_for(instance)
+              vrf_assignments: vrf_assignments_for(instance),
+              # Phase O1 — per-host bridge list, consumed directly by
+              # the agent's BridgeApplier. Includes only compilable
+              # rows (active or draining).
+              host_bridges: ::Sdwan::TopologyCompiler.host_bridges_for(instance)
             )
           end
 

@@ -60,6 +60,30 @@ module Sdwan
       network.peers.includes(:keys).map { |peer| compiler.compile_peer_view(peer) }
     end
 
+    # Phase O1 — per-host bridge list. One entry per platform-managed
+    # bridge (Sdwan::HostBridge) on the instance. The agent's BridgeApplier
+    # consumes this directly: each entry maps to one Linux (or, in Phase O2,
+    # OVS) bridge that should exist on the host. Includes only compilable
+    # rows (active or draining) so the agent doesn't apply pending plans
+    # or chase removed rows. Returns [] when no bridges exist for the host.
+    def self.host_bridges_for(instance)
+      ::Sdwan::HostBridge
+        .for_host(instance)
+        .compilable
+        .order(:short_id)
+        .map do |hb|
+          {
+            host_bridge_id: hb.id,
+            short_id: hb.short_id,
+            name: hb.bridge_name,
+            kind: hb.kind,
+            state: hb.state,
+            ipv4_cidr: hb.ipv4_cidr,
+            ipv6_cidr: hb.ipv6_cidr
+          }
+        end
+    end
+
     def initialize(network, federation_resolver:, include_private_key: false)
       @network = network
       @federation_resolver = federation_resolver
