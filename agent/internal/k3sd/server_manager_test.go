@@ -35,6 +35,11 @@ type stubServerApplier struct {
 	VersionCalls      int
 	CaptureCalls      int
 	CleanupCalls      int
+
+	// LastInstallConfig captures the BootstrapConfig the manager
+	// passed to InstallK3sServer on the most recent call. Tests use
+	// this to verify CNI plugin → install args plumbing.
+	LastInstallConfig BootstrapConfig
 }
 
 func (s *stubServerApplier) HasInstalled(_ context.Context) (bool, error) {
@@ -42,9 +47,10 @@ func (s *stubServerApplier) HasInstalled(_ context.Context) (bool, error) {
 	s.HasInstalledCalls++
 	return s.Installed, nil
 }
-func (s *stubServerApplier) InstallK3sServer(_ context.Context) error {
+func (s *stubServerApplier) InstallK3sServer(_ context.Context, cfg BootstrapConfig) error {
 	s.mu.Lock(); defer s.mu.Unlock()
 	s.InstallCalls++
+	s.LastInstallConfig = cfg
 	if s.InstallErr != nil {
 		return s.InstallErr
 	}
@@ -457,5 +463,68 @@ func TestServerReconcile_MissingNodeID_Errors(t *testing.T) {
 	}
 	if a.HasInstalledCalls > 0 {
 		t.Fatal("expected NodeID guard to short-circuit")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Phase O4 — BootstrapConfig threading. Verifies the manager passes
+// the configured CniPlugin into the applier on install AND falls
+// back to flannel + warning for unknown values rather than blocking
+// the install. End-to-end integration of the BootstrapConfig path.
+// ──────────────────────────────────────────────────────────────────
+
+func TestServerReconcile_Install_PassesBootstrapConfig(t *testing.T) {
+	a := &stubServerApplier{}
+	m, fp := newTestServerManager(t, []string{"k3s-server"}, a)
+	defer fp.close()
+
+	m.Bootstrap = BootstrapConfig{CniPlugin: CniPluginOvnKubernetes}
+	m.Reconcile(context.Background())
+
+	if a.InstallCalls != 1 {
+		t.Fatalf("expected Install once, got %d", a.InstallCalls)
+	}
+	if a.LastInstallConfig.CniPlugin != CniPluginOvnKubernetes {
+		t.Fatalf("expected applier to receive CniPlugin=%q, got %q",
+			CniPluginOvnKubernetes, a.LastInstallConfig.CniPlugin)
+	}
+}
+
+func TestServerReconcile_Install_UnknownCniFallsBackToFlannel(t *testing.T) {
+	a := &stubServerApplier{}
+	var stages []string
+	fp := newFakeK3sPlatform(t)
+	defer fp.close()
+	mods := &stubModulesAPI{Modules: []string{"k3s-server"}}
+	onErr := func(stage string, err error) {
+		stages = append(stages, stage)
+		t.Logf("[ServerManager] %s: %v", stage, err)
+	}
+	m := NewServerManager(fp.client(), mods, a, "node-1", onErr)
+	m.Bootstrap = BootstrapConfig{CniPlugin: "calico"} // unknown to the agent
+
+	m.Reconcile(context.Background())
+
+	// Install must still run (don't brick a cluster on a stale payload).
+	if a.InstallCalls != 1 {
+		t.Fatalf("expected Install once on unknown CNI, got %d", a.InstallCalls)
+	}
+	// The applier must have received the safe-default flannel config,
+	// NOT the unknown value — the manager owns the fallback decision.
+	if a.LastInstallConfig.CniPlugin != CniPluginFlannel {
+		t.Fatalf("expected fallback CniPlugin=%q, got %q",
+			CniPluginFlannel, a.LastInstallConfig.CniPlugin)
+	}
+	// Operator-visible warning must have fired so the activity feed
+	// surfaces the unrecognized value.
+	found := false
+	for _, s := range stages {
+		if s == "install_cni_unknown" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected install_cni_unknown stage in OnError, got %v", stages)
 	}
 }

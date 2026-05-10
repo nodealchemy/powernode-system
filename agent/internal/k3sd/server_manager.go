@@ -2,6 +2,7 @@ package k3sd
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -34,7 +35,18 @@ type ServerManager struct {
 	Applier   ServerApplier
 	NodeID    string
 	StatePath string // JSON state cache; defaults to DefaultServerStatePath
-	OnError   func(stage string, err error)
+
+	// Bootstrap holds the per-instance K3s server install knobs
+	// (CNI selection, etc.) the platform stamps in the runtime
+	// config payload. Zero-value safe — produces upstream K3s
+	// defaults (single-node, embedded Flannel). Set post-construction
+	// from runtime/service.go once the platform's runtime config
+	// fetch returns; safe to mutate between Reconcile ticks (only
+	// read inside transitionInstall, which holds the manager's
+	// mutex).
+	Bootstrap BootstrapConfig
+
+	OnError func(stage string, err error)
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
@@ -132,7 +144,21 @@ func (m *ServerManager) Reconcile(ctx context.Context) {
 // ──────────────────────────────────────────────────────────────────
 
 func (m *ServerManager) transitionInstall(ctx context.Context) {
-	if err := m.Applier.InstallK3sServer(ctx); err != nil {
+	cfg := m.Bootstrap
+	if _, ok := cfg.InstallArgs(); !ok {
+		// Unknown CniPlugin value (e.g., the platform stamped a CNI
+		// the agent doesn't yet understand after a partial rollout).
+		// Defensive fallback to flannel: surface a warning via
+		// OnError so operators see the rejection in the activity
+		// feed, then proceed with the safe default rather than
+		// blocking the install. Same anti-brick philosophy as the
+		// dockerd overrides path.
+		m.recordError("install_cni_unknown",
+			fmt.Errorf("unknown CniPlugin %q — falling back to flannel default",
+				cfg.CniPlugin))
+		cfg = BootstrapConfig{CniPlugin: CniPluginFlannel}
+	}
+	if err := m.Applier.InstallK3sServer(ctx, cfg); err != nil {
 		m.recordError("install", err)
 		return
 	}

@@ -11,6 +11,66 @@ type ModulesAPI interface {
 	AssignedModules(ctx context.Context) ([]string, error)
 }
 
+// CNI plugin identifiers accepted in BootstrapConfig.CniPlugin.
+//
+//   CniPluginFlannel       — K3s default. Embedded Flannel VXLAN +
+//                            kube-proxy NetworkPolicy (lightweight
+//                            profile). No extra install args.
+//
+//   CniPluginOvnKubernetes — Replace Flannel with OVN-Kubernetes
+//                            (heavyweight profile, Phase O4). Agent
+//                            installs K3s with `--flannel-backend=none
+//                            --disable-network-policy` so the K3s
+//                            server skips Flannel + kube-proxy
+//                            NetworkPolicy and the OVN-K8s manifests
+//                            (delivered separately at runtime) own
+//                            the pod network end-to-end.
+//
+// Empty string is treated as CniPluginFlannel — same default as K3s.
+// Unknown values fall back to flannel with a logged warning so a
+// stale platform payload can't brick a cluster bootstrap.
+const (
+	CniPluginFlannel       = "flannel"
+	CniPluginOvnKubernetes = "ovn_kubernetes"
+)
+
+// BootstrapConfig captures the per-instance K3s server bootstrap
+// knobs the platform stamps in the runtime config payload. Fields
+// are zero-value safe — an empty BootstrapConfig produces the
+// upstream K3s default install (single-node, embedded Flannel,
+// embedded etcd).
+//
+// CniPlugin selects the cluster's CNI driver. See the CniPlugin*
+// constants for accepted values. The agent does NOT install the
+// chosen CNI's manifests — that's a separate runtime step. Its job
+// here is solely to gate the K3s install so the right pieces are
+// or are not provisioned by K3s itself.
+type BootstrapConfig struct {
+	CniPlugin string
+}
+
+// InstallArgs returns the extra positional args that should be
+// appended after `sh -s -` in the K3s install command for this
+// bootstrap config. Returns (args, ok) — when ok is false, the
+// CniPlugin value is unrecognized and the caller should log a
+// warning and fall back to the flannel default (empty args).
+//
+// The K3s install script forwards everything after the `-s -`
+// delimiter into the systemd unit's ExecStart, which becomes the
+// `k3s server` invocation's argv. So `--flannel-backend=none
+// --disable-network-policy` here translates 1:1 to the running
+// daemon's flags.
+func (c BootstrapConfig) InstallArgs() (args []string, ok bool) {
+	switch c.CniPlugin {
+	case "", CniPluginFlannel:
+		return nil, true
+	case CniPluginOvnKubernetes:
+		return []string{"--flannel-backend=none", "--disable-network-policy"}, true
+	default:
+		return nil, false
+	}
+}
+
 // ServerApplier is the agent's local-side surface for the K3s server
 // daemon lifecycle. Production wraps `apt` + file IO + systemctl;
 // tests inject an in-memory stub. Implementations MUST be idempotent
@@ -20,7 +80,9 @@ type ModulesAPI interface {
 // slice) will:
 //   - HasInstalled: stat /usr/local/bin/k3s
 //   - InstallK3sServer: shell out to the k3s install script
-//                       (curl -sfL https://get.k3s.io | sh -s - server)
+//                       (curl -sfL https://get.k3s.io | sh -s - <args>)
+//                       where <args> are the BootstrapConfig-derived
+//                       flags (CNI selection, etc.).
 //   - IsRunning / Start / Stop: systemctl on k3s.service
 //   - Version: parse `k3s --version`
 //   - CaptureBootstrapState: read /etc/rancher/k3s/k3s.yaml
@@ -31,7 +93,15 @@ type ModulesAPI interface {
 //   - Cleanup: shell out to /usr/local/bin/k3s-uninstall.sh
 type ServerApplier interface {
 	HasInstalled(ctx context.Context) (bool, error)
-	InstallK3sServer(ctx context.Context) error
+
+	// InstallK3sServer runs the upstream K3s install script, baking
+	// the per-instance bootstrap config (CNI selection, etc.) into
+	// the resulting systemd unit's ExecStart. cfg.InstallArgs()
+	// translates the typed config into the positional install-script
+	// args; passing a zero-value BootstrapConfig is equivalent to
+	// the upstream K3s default (embedded Flannel, embedded etcd).
+	InstallK3sServer(ctx context.Context, cfg BootstrapConfig) error
+
 	IsRunning(ctx context.Context) (bool, error)
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error

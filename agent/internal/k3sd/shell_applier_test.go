@@ -100,7 +100,7 @@ func TestShellServerApplier_HasInstalled_TrueWhenBinaryExists(t *testing.T) {
 
 func TestShellServerApplier_InstallShellsToScript(t *testing.T) {
 	a, exec, _ := serverApplierWithTmpPaths(t)
-	if err := a.InstallK3sServer(context.Background()); err != nil {
+	if err := a.InstallK3sServer(context.Background(), BootstrapConfig{}); err != nil {
 		t.Fatalf("InstallK3sServer: %v", err)
 	}
 	if len(exec.calls) != 1 {
@@ -109,8 +109,14 @@ func TestShellServerApplier_InstallShellsToScript(t *testing.T) {
 	if exec.calls[0].name != "sh" {
 		t.Fatalf("expected sh, got %q", exec.calls[0].name)
 	}
-	if !strings.Contains(strings.Join(exec.calls[0].args, " "), "INSTALL_K3S_EXEC=server") {
+	joined := strings.Join(exec.calls[0].args, " ")
+	if !strings.Contains(joined, "INSTALL_K3S_EXEC=server") {
 		t.Fatalf("expected install script to set INSTALL_K3S_EXEC=server, got %v", exec.calls[0].args)
+	}
+	// Empty BootstrapConfig must NOT smuggle in CNI args (default
+	// flannel = upstream K3s default = no extra args).
+	if strings.Contains(joined, "--flannel-backend") || strings.Contains(joined, "--disable-network-policy") {
+		t.Fatalf("empty BootstrapConfig leaked CNI args: %v", exec.calls[0].args)
 	}
 }
 
@@ -328,5 +334,99 @@ func TestShellAgentApplier_Cleanup_RemovesEnvFile(t *testing.T) {
 	}
 	if _, err := os.Stat(a.Paths.AgentEnvFilePath); !os.IsNotExist(err) {
 		t.Fatalf("expected env file removed, got err=%v", err)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Phase O4 — CNI plugin selection (BootstrapConfig.CniPlugin →
+// install args). Covers the four cases the platform can stamp:
+// explicit flannel, empty (= flannel), ovn_kubernetes, and the
+// defensive unknown-value path. The unknown-value fallback warning
+// is exercised end-to-end in server_manager_test.go; here we only
+// verify the BootstrapConfig.InstallArgs() return value, since the
+// applier itself is intentionally mechanical (caller owns the
+// fallback decision).
+// ──────────────────────────────────────────────────────────────────
+
+func TestShellServerApplier_Install_FlannelExplicit_NoExtraArgs(t *testing.T) {
+	a, exec, _ := serverApplierWithTmpPaths(t)
+	cfg := BootstrapConfig{CniPlugin: CniPluginFlannel}
+	if err := a.InstallK3sServer(context.Background(), cfg); err != nil {
+		t.Fatalf("InstallK3sServer: %v", err)
+	}
+	joined := strings.Join(exec.calls[0].args, " ")
+	if strings.Contains(joined, "--flannel-backend") {
+		t.Fatalf("flannel explicit must not append --flannel-backend, got %v", exec.calls[0].args)
+	}
+	if strings.Contains(joined, "--disable-network-policy") {
+		t.Fatalf("flannel explicit must not append --disable-network-policy, got %v", exec.calls[0].args)
+	}
+	if !strings.Contains(joined, "INSTALL_K3S_EXEC=server") {
+		t.Fatalf("expected install script invocation, got %v", exec.calls[0].args)
+	}
+}
+
+func TestShellServerApplier_Install_EmptyCni_NoExtraArgs(t *testing.T) {
+	a, exec, _ := serverApplierWithTmpPaths(t)
+	cfg := BootstrapConfig{} // CniPlugin == "" → same as flannel
+	if err := a.InstallK3sServer(context.Background(), cfg); err != nil {
+		t.Fatalf("InstallK3sServer: %v", err)
+	}
+	joined := strings.Join(exec.calls[0].args, " ")
+	if strings.Contains(joined, "--flannel-backend") || strings.Contains(joined, "--disable-network-policy") {
+		t.Fatalf("empty CniPlugin must not append CNI args, got %v", exec.calls[0].args)
+	}
+}
+
+func TestShellServerApplier_Install_OvnKubernetes_AppendsBothFlags(t *testing.T) {
+	a, exec, _ := serverApplierWithTmpPaths(t)
+	cfg := BootstrapConfig{CniPlugin: CniPluginOvnKubernetes}
+	if err := a.InstallK3sServer(context.Background(), cfg); err != nil {
+		t.Fatalf("InstallK3sServer: %v", err)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("expected 1 exec call, got %d", len(exec.calls))
+	}
+	joined := strings.Join(exec.calls[0].args, " ")
+	if !strings.Contains(joined, "--flannel-backend=none") {
+		t.Fatalf("ovn_kubernetes must append --flannel-backend=none, got %v", exec.calls[0].args)
+	}
+	if !strings.Contains(joined, "--disable-network-policy") {
+		t.Fatalf("ovn_kubernetes must append --disable-network-policy, got %v", exec.calls[0].args)
+	}
+	if !strings.Contains(joined, "INSTALL_K3S_EXEC=server") {
+		t.Fatalf("expected install script invocation preserved, got %v", exec.calls[0].args)
+	}
+	// Both flags must land AFTER the `sh -s -` delimiter so the
+	// install script forwards them to the systemd unit's ExecStart.
+	idx := strings.Index(joined, "sh -s -")
+	if idx < 0 {
+		t.Fatalf("expected `sh -s -` delimiter in install script, got %q", joined)
+	}
+	if !strings.Contains(joined[idx:], "--flannel-backend=none") ||
+		!strings.Contains(joined[idx:], "--disable-network-policy") {
+		t.Fatalf("CNI args must appear after `sh -s -` delimiter, got %q", joined)
+	}
+}
+
+func TestBootstrapConfig_InstallArgs_UnknownReturnsNotOk(t *testing.T) {
+	cfg := BootstrapConfig{CniPlugin: "calico"} // not in the allow-list
+	args, ok := cfg.InstallArgs()
+	if ok {
+		t.Fatalf("expected ok=false for unknown CNI %q", cfg.CniPlugin)
+	}
+	if len(args) != 0 {
+		t.Fatalf("expected nil/empty args on unknown CNI, got %v", args)
+	}
+	// Sanity-check the known good values still succeed so the
+	// allow-list isn't accidentally inverted.
+	if _, ok := (BootstrapConfig{CniPlugin: CniPluginFlannel}).InstallArgs(); !ok {
+		t.Fatal("flannel InstallArgs() should return ok=true")
+	}
+	if _, ok := (BootstrapConfig{CniPlugin: CniPluginOvnKubernetes}).InstallArgs(); !ok {
+		t.Fatal("ovn_kubernetes InstallArgs() should return ok=true")
+	}
+	if _, ok := (BootstrapConfig{}).InstallArgs(); !ok {
+		t.Fatal("empty CniPlugin InstallArgs() should return ok=true")
 	}
 }
