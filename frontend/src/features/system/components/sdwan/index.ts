@@ -3,6 +3,9 @@
 export { NetworkList } from './NetworkList';
 export { NetworkCreateModal } from './NetworkCreateModal';
 export { NetworkEditModal } from './NetworkEditModal';
+// Phase O6 follow-up — modal-based detail view replacing row-click
+// page navigate; the page route stays for direct URL access.
+export { NetworkDetailModal } from './NetworkDetailModal';
 export { PeerList } from './PeerList';
 export { PeerAttachModal } from './PeerAttachModal';
 export { PeerEditModal } from './PeerEditModal';

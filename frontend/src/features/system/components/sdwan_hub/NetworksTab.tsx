@@ -1,10 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
-import { useNavigate } from 'react-router-dom';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
-import { NetworkList, NetworkCreateModal } from '@system/features/system/components/sdwan';
+import {
+  NetworkList,
+  NetworkCreateModal,
+  NetworkDetailModal,
+} from '@system/features/system/components/sdwan';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import type { SdwanNetwork } from '@system/features/system/types/sdwan.types';
 
@@ -15,11 +18,11 @@ interface NetworksTabProps {
 export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const navigate = useNavigate();
   const canManage = hasPermission('sdwan.networks.manage');
 
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<SdwanNetwork | null>(null);
+  const [detailNetwork, setDetailNetwork] = useState<SdwanNetwork | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -30,12 +33,13 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
     return () => onActionsReady?.(null);
   }, [onActionsReady]);
 
-  // Drill-down navigates to the new sibling route
-  // /app/system/sdwan/networks/:id/<tab>. The detail page renders
-  // outside the hub (its own PageContainer + 7 internal tabs).
-  const handleView = useCallback((n: SdwanNetwork) => {
-    navigate(`/app/system/sdwan/networks/${n.id}`);
-  }, [navigate]);
+  // Replaced page-navigate with modal-open. The detail page route still
+  // exists at /app/system/sdwan/networks/:id for direct URL access
+  // (bookmarking, deep-linking from external tools); list-row interaction
+  // is now expand-inline + detail modal.
+  const handleOpenDetails = useCallback((n: SdwanNetwork) => {
+    setDetailNetwork(n);
+  }, []);
 
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteConfirm) return;
@@ -58,7 +62,7 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
   return (
     <>
       <NetworkList
-        onView={handleView}
+        onOpenDetails={handleOpenDetails}
         onDelete={canManage ? setDeleteConfirm : undefined}
         refreshKey={refreshKey}
       />
@@ -67,6 +71,12 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
         isOpen={showCreate}
         onClose={() => setShowCreate(false)}
         onCreated={triggerRefresh}
+      />
+
+      <NetworkDetailModal
+        network={detailNetwork}
+        isOpen={detailNetwork !== null}
+        onClose={() => setDetailNetwork(null)}
       />
 
       <Modal

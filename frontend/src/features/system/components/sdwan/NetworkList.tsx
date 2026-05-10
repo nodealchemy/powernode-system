@@ -1,10 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Network as NetworkIcon, Trash2 } from 'lucide-react';
+import { Network as NetworkIcon, Trash2, ChevronRight, Eye } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
 interface NetworkListProps {
-  onView: (network: SdwanNetwork) => void;
+  // Opens the detail modal for the given network. Replaces the prior
+  // `onView` navigate-to-page behavior — the page route still exists
+  // for direct URL access (bookmarking, /app/system/sdwan/networks/:id),
+  // but list-row interaction is now expand-inline + modal-open.
+  onOpenDetails: (network: SdwanNetwork) => void;
   onDelete?: (network: SdwanNetwork) => void;
   refreshKey?: number;
 }
@@ -12,15 +16,20 @@ interface NetworkListProps {
 /**
  * NetworkList — operator-facing list of SDWAN networks.
  *
+ * Click a row to expand it inline showing basic details (CIDR slugs,
+ * peer counts, description, settings, timestamps). Click the eye icon
+ * in the actions column to open a richer detail modal that fetches
+ * peers + topology preview.
+ *
  * Slice 3 ships a flat-list rendering instead of useInfiniteResourceList
  * because the typical account has fewer than 50 networks; pagination/scroll
  * is overkill at this scale and obscures the at-a-glance fleet view.
- * Slice 5 adds infinite scroll if/when networks grow into the hundreds.
  */
-export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refreshKey }) => {
+export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelete, refreshKey }) => {
   const [networks, setNetworks] = useState<SdwanNetwork[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
@@ -38,6 +47,18 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
   useEffect(() => {
     load();
   }, [load, refreshKey]);
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   if (loading) {
     return <div className="p-8 text-center text-theme-secondary">Loading networks…</div>;
@@ -62,6 +83,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
+            <th className="text-left p-3 w-8"></th>
             <th className="text-left p-3">Name</th>
             <th className="text-left p-3">Status</th>
             <th className="text-left p-3">CIDR</th>
@@ -71,51 +93,126 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onView, onDelete, refr
           </tr>
         </thead>
         <tbody>
-          {networks.map((n) => (
-            <tr
-              key={n.id}
-              className="border-b border-theme-border hover:bg-theme-hover cursor-pointer"
-              onClick={() => onView(n)}
-            >
-              <td className="p-3">
-                <div className="flex items-center gap-2">
-                  <NetworkIcon size={16} className="text-theme-accent" />
-                  <span className="font-medium text-theme-primary">{n.name}</span>
-                </div>
-                <div className="text-xs text-theme-secondary">{n.slug}</div>
-              </td>
-              <td className="p-3">
-                <span className={statusBadgeClass(n.status)}>{n.status}</span>
-              </td>
-              <td className="p-3 font-mono text-xs text-theme-secondary">{n.cidr_64}</td>
-              <td className="p-3 text-theme-primary">{n.peer_count}</td>
-              <td className="p-3 text-theme-secondary text-sm">
-                {(n.hub_count ?? 0)} hub{(n.hub_count ?? 0) === 1 ? '' : 's'} ·{' '}
-                {(n.spoke_count ?? 0)} spoke{(n.spoke_count ?? 0) === 1 ? '' : 's'}
-              </td>
-              <td className="p-3 text-right">
-                {onDelete && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(n);
-                    }}
-                    className="text-theme-danger hover:bg-theme-danger p-1 rounded"
-                    aria-label={`Delete ${n.name}`}
-                    data-testid={`delete-network-${n.id}`}
-                  >
-                    <Trash2 size={16} />
-                  </button>
+          {networks.map((n) => {
+            const isExpanded = expandedIds.has(n.id);
+            return (
+              <React.Fragment key={n.id}>
+                <tr
+                  className="border-b border-theme-border hover:bg-theme-hover cursor-pointer"
+                  onClick={() => toggleExpanded(n.id)}
+                  data-testid={`network-row-${n.id}`}
+                >
+                  <td className="p-3">
+                    <ChevronRight
+                      size={16}
+                      className={
+                        'text-theme-secondary transition-transform ' +
+                        (isExpanded ? 'rotate-90' : '')
+                      }
+                    />
+                  </td>
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      <NetworkIcon size={16} className="text-theme-accent" />
+                      <span className="font-medium text-theme-primary">{n.name}</span>
+                    </div>
+                    <div className="text-xs text-theme-secondary">{n.slug}</div>
+                  </td>
+                  <td className="p-3">
+                    <span className={statusBadgeClass(n.status)}>{n.status}</span>
+                  </td>
+                  <td className="p-3 font-mono text-xs text-theme-secondary">{n.cidr_64}</td>
+                  <td className="p-3 text-theme-primary">{n.peer_count}</td>
+                  <td className="p-3 text-theme-secondary text-sm">
+                    {(n.hub_count ?? 0)} hub{(n.hub_count ?? 0) === 1 ? '' : 's'} ·{' '}
+                    {(n.spoke_count ?? 0)} spoke{(n.spoke_count ?? 0) === 1 ? '' : 's'}
+                  </td>
+                  <td className="p-3 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenDetails(n);
+                        }}
+                        className="text-theme-accent hover:bg-theme-hover p-1 rounded"
+                        aria-label={`View details for ${n.name}`}
+                        title="View details"
+                        data-testid={`open-network-${n.id}`}
+                      >
+                        <Eye size={16} />
+                      </button>
+                      {onDelete && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(n);
+                          }}
+                          className="text-theme-danger hover:bg-theme-danger p-1 rounded"
+                          aria-label={`Delete ${n.name}`}
+                          data-testid={`delete-network-${n.id}`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {isExpanded && (
+                  <tr className="bg-theme-background-secondary border-b border-theme-border">
+                    <td colSpan={7} className="p-4">
+                      <ExpandedRowDetails network={n} />
+                    </td>
+                  </tr>
                 )}
-              </td>
-            </tr>
-          ))}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 };
+
+interface ExpandedRowDetailsProps {
+  network: SdwanNetwork;
+}
+
+const ExpandedRowDetails: React.FC<ExpandedRowDetailsProps> = ({ network: n }) => (
+  <dl className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+    <DetailField label="Slug" value={n.slug} mono />
+    <DetailField label="CIDR" value={n.cidr_64} mono />
+    <DetailField label="Topology" value={(n.settings as { topology_strategy?: string })?.topology_strategy ?? '—'} />
+    {n.description && (
+      <DetailField label="Description" value={n.description} className="md:col-span-3" />
+    )}
+    <DetailField
+      label="Peer breakdown"
+      value={`${n.peer_count} total · ${n.hub_count ?? 0} hub${n.hub_count === 1 ? '' : 's'} · ${n.spoke_count ?? 0} spoke${n.spoke_count === 1 ? '' : 's'}`}
+    />
+    {n.created_at && (
+      <DetailField label="Created" value={new Date(n.created_at).toLocaleString()} />
+    )}
+    {n.updated_at && (
+      <DetailField label="Updated" value={new Date(n.updated_at).toLocaleString()} />
+    )}
+  </dl>
+);
+
+interface DetailFieldProps {
+  label: string;
+  value: string;
+  mono?: boolean;
+  className?: string;
+}
+
+const DetailField: React.FC<DetailFieldProps> = ({ label, value, mono, className }) => (
+  <div className={className}>
+    <dt className="text-theme-secondary text-xs uppercase tracking-wide">{label}</dt>
+    <dd className={'text-theme-primary mt-1 ' + (mono ? 'font-mono text-xs' : '')}>{value}</dd>
+  </div>
+);
 
 function statusBadgeClass(status: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
