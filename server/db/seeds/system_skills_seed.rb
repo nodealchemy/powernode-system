@@ -294,6 +294,28 @@ SKILLS_DATA = [
       operator coordination. Idempotent — re-running with the same hosts
       returns the existing bridges with reused=true.
     PROMPT
+  },
+  {
+    name: "SDWAN IPFIX Collector Compose",
+    slug: "system-sdwan-ipfix-collector-compose",
+    description: "Register an IPFIX collector for an account so the topology compiler stamps ipfix exporter config onto every heavyweight (ovs-kind) HostBridge. Idempotent on (account, name). Composes Sdwan::IpfixCollector.",
+    category: "devops",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanIpfixCollectorComposeExecutor",
+    tags: %w[sdwan ipfix telemetry heavyweight composition],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to register an IPFIX collector for an account.
+      Inputs: name (unique per account; reused on re-execution),
+      host (IPv4/IPv6/hostname — IPv6 brackets handled automatically),
+      port (1-65535), sampling_rate (default 1 = every flow),
+      dry_run (default false). Returns collector id + target_endpoint +
+      is_winning_collector (true iff this row is the one the topology
+      compiler will pick — only the oldest active collector per account
+      gets stamped on heavyweight host bridges). Heavyweight-profile
+      only in effect: lightweight hosts ignore the ipfix payload.
+      Idempotent on (account, name) — re-running with the same name
+      returns the existing row without mutating host/port/sampling_rate.
+    PROMPT
   }
 ].freeze
 
