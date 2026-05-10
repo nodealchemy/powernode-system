@@ -96,10 +96,24 @@ module Api
                 # now agents handle the diff client-side.
                 content_hash: ::Digest::SHA256.hexdigest(overrides.to_json)
               })
+            when "k3s_server"
+              # Phase O4 — K3s server bootstrap config. Currently carries
+              # cni_plugin (flannel | ovn_kubernetes) so k3sd knows
+              # whether to pass --flannel-backend=none --disable-network-policy
+              # at server install time. Future K3s knobs (cluster-cidr,
+              # service-cidr, etc.) belong in the same bootstrap_config
+              # envelope.
+              bootstrap_config = k3s_server_bootstrap_config(current_instance)
+              render_success(data: {
+                runtime: runtime,
+                bootstrap_config: bootstrap_config,
+                content_hash: ::Digest::SHA256.hexdigest(bootstrap_config.to_json)
+              })
             else
-              # K3s + kubeadm runtime config delivery is a follow-up;
-              # return an empty payload so the agent doesn't error out
-              # when probing newer endpoints from older runtimes.
+              # k3s_agent + kubeadm runtime config delivery is a
+              # follow-up; return an empty payload so the agent doesn't
+              # error out when probing newer endpoints from older
+              # runtimes.
               render_success(data: {
                 runtime: runtime,
                 daemon_overrides: {},
@@ -141,6 +155,21 @@ module Api
           end
 
           private
+
+          # Phase O4 — derive the k3s_server bootstrap_config payload.
+          # Looks up the cluster the host belongs to (via
+          # Devops::KubernetesNode) and pulls cni_plugin from there.
+          # Falls back to "flannel" (the K3s default, safe for any
+          # unenrolled host) when the host has no cluster yet.
+          def k3s_server_bootstrap_config(instance)
+            cluster = ::Devops::KubernetesNode
+                        .where(node_instance_id: instance.id)
+                        .joins(:kubernetes_cluster)
+                        .first
+                        &.kubernetes_cluster
+            cni_plugin = cluster&.cni_plugin || "flannel"
+            { cni_plugin: cni_plugin }
+          end
 
           # Defense-in-depth: even if a malicious agent had a valid mTLS
           # cert (one that's been rotated out, say) this guard prevents it
