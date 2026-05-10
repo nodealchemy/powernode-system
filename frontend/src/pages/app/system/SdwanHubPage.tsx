@@ -7,6 +7,9 @@ import { usePermissions } from '@/shared/hooks/usePermissions';
 import {
   NetworksTab,
   FederationTab,
+  HostBridgesTab,
+  OvnDeploymentsTab,
+  IpfixCollectorsTab,
 } from '@system/features/system/components/sdwan_hub';
 import SdwanRoutingPage from './SdwanRoutingPage';
 
@@ -20,12 +23,15 @@ import SdwanRoutingPage from './SdwanRoutingPage';
 // specific path first. Detail page keeps its own PageContainer + 7
 // internal tabs; clicking back returns to the hub's Networks tab.
 
-type TabKey = 'networks' | 'routing' | 'federation';
+type TabKey = 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
   { key: 'networks', label: 'Networks', permission: 'sdwan.networks.read' },
   { key: 'routing', label: 'Routing', permission: 'sdwan.routing.read' },
   { key: 'federation', label: 'Federation', permission: 'sdwan.federation.read' },
+  { key: 'host_bridges', label: 'Host Bridges', permission: 'sdwan.host_bridges.read' },
+  { key: 'ovn', label: 'OVN', permission: 'sdwan.ovn.read' },
+  { key: 'ipfix', label: 'IPFIX', permission: 'sdwan.ipfix.read' },
 ];
 
 const BASE_PATH = '/app/system/sdwan';
@@ -45,6 +51,9 @@ const SdwanHubPage: React.FC = () => {
     const path = location.pathname;
     if (path.includes('/sdwan/routing')) return 'routing';
     if (path.includes('/sdwan/federation')) return 'federation';
+    if (path.includes('/sdwan/host_bridges')) return 'host_bridges';
+    if (path.includes('/sdwan/ovn')) return 'ovn';
+    if (path.includes('/sdwan/ipfix')) return 'ipfix';
     if (path.includes('/sdwan/networks')) return 'networks';
     return (visibleTabs[0]?.key ?? 'networks') as TabKey;
   }, [location.pathname, visibleTabs]);
@@ -113,6 +122,9 @@ const SdwanHubPage: React.FC = () => {
         <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
         <Route path="routing/*" element={<SdwanRoutingPage embedded />} />
         <Route path="federation" element={<FederationTab onActionsReady={setFederationActions} />} />
+        <Route path="host_bridges" element={<HostBridgesTab />} />
+        <Route path="ovn" element={<OvnDeploymentsTab />} />
+        <Route path="ipfix" element={<IpfixCollectorsTab />} />
         <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
       </Routes>
     </PageContainer>

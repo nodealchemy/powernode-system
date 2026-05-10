@@ -34,7 +34,22 @@ import type {
   SdwanPortMapping,
   SdwanPortMappingCreate,
   SdwanPortMappingUpdate,
+  SdwanHostBridge,
+  SdwanOvnDeployment,
+  SdwanOvnDeploymentSummary,
+  SdwanOvnCompiledPlan,
+  SdwanIpfixCollector,
 } from '../../types/sdwan.types';
+
+export interface SdwanHostBridgeFilters {
+  node_instance_id?: string;
+  state?: string;
+  kind?: string;
+}
+
+export interface SdwanIpfixCollectorFilters {
+  state?: string;
+}
 
 export interface SdwanNetworkFilters extends PaginationParams {
   status?: string;
@@ -543,5 +558,53 @@ export const sdwanApi = {
       return acc;
     }, {});
     return { findings, severity_summary };
+  },
+
+  // -------- Phase O6: HostBridges (read-only) --------
+  getHostBridges: async (filters?: SdwanHostBridgeFilters): Promise<SdwanHostBridge[]> => {
+    const response = await apiClient.get<ApiEnvelope<{ host_bridges: SdwanHostBridge[] }>>(
+      '/system/sdwan/host_bridges',
+      { params: filters }
+    );
+    return extractData(response).host_bridges;
+  },
+
+  getHostBridge: async (id: string): Promise<SdwanHostBridge> => {
+    const response = await apiClient.get<ApiEnvelope<{ host_bridge: SdwanHostBridge }>>(
+      `/system/sdwan/host_bridges/${id}`
+    );
+    return extractData(response).host_bridge;
+  },
+
+  // -------- Phase O6: OVN Deployments (read-only) --------
+  getOvnDeployments: async (): Promise<SdwanOvnDeploymentSummary[]> => {
+    const response = await apiClient.get<ApiEnvelope<{ ovn_deployments: SdwanOvnDeploymentSummary[] }>>(
+      '/system/sdwan/ovn_deployments'
+    );
+    return extractData(response).ovn_deployments;
+  },
+
+  getOvnDeployment: async (id: string): Promise<{ deployment: SdwanOvnDeployment; compiled_plan: SdwanOvnCompiledPlan }> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{ ovn_deployment: SdwanOvnDeployment; compiled_plan: SdwanOvnCompiledPlan }>
+    >(`/system/sdwan/ovn_deployments/${id}`);
+    const data = extractData(response);
+    return { deployment: data.ovn_deployment, compiled_plan: data.compiled_plan };
+  },
+
+  // -------- Phase O6: IPFIX Collectors (read-only) --------
+  getIpfixCollectors: async (filters?: SdwanIpfixCollectorFilters): Promise<SdwanIpfixCollector[]> => {
+    const response = await apiClient.get<ApiEnvelope<{ ipfix_collectors: SdwanIpfixCollector[] }>>(
+      '/system/sdwan/ipfix_collectors',
+      { params: filters }
+    );
+    return extractData(response).ipfix_collectors;
+  },
+
+  getIpfixCollector: async (id: string): Promise<SdwanIpfixCollector> => {
+    const response = await apiClient.get<ApiEnvelope<{ ipfix_collector: SdwanIpfixCollector }>>(
+      `/system/sdwan/ipfix_collectors/${id}`
+    );
+    return extractData(response).ipfix_collector;
   },
 };

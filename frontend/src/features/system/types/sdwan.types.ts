@@ -481,3 +481,99 @@ export interface SdwanPortMappingCreate {
 }
 
 export type SdwanPortMappingUpdate = Partial<SdwanPortMappingCreate>;
+
+// ──────────────────────────────────────────────────────────────────
+// Phase O6 — OVS+OVN dual-profile networking
+// ──────────────────────────────────────────────────────────────────
+
+export type SdwanHostBridgeKind  = 'linux' | 'ovs';
+export type SdwanHostBridgeState = 'pending' | 'active' | 'draining' | 'removed';
+
+export interface SdwanHostBridge {
+  id: string;
+  node_instance_id: string;
+  node_instance_name?: string | null;
+  network_profile?: string | null;
+  short_id: number;
+  bridge_name: string;
+  kind: SdwanHostBridgeKind;
+  state: SdwanHostBridgeState;
+  applied_at?: string | null;
+  draining_at?: string | null;
+  removed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export type SdwanOvnDeploymentStatus = 'pending' | 'bootstrapping' | 'active' | 'degraded';
+export type SdwanOvnSwitchState     = 'pending' | 'active' | 'removed';
+export type SdwanOvnPortState       = 'pending' | 'active' | 'removed';
+export type SdwanOvnPortKind        = 'vm' | 'container' | 'external';
+
+export interface SdwanOvnLogicalSwitchPort {
+  id: string;
+  name: string;
+  kind: SdwanOvnPortKind;
+  state: SdwanOvnPortState;
+  mac: string;
+  addresses: string[];
+  host_node_instance_id?: string | null;
+  activated_at?: string | null;
+  removed_at?: string | null;
+}
+
+export interface SdwanOvnLogicalSwitch {
+  id: string;
+  name: string;
+  cidr?: string | null;
+  state: SdwanOvnSwitchState;
+  activated_at?: string | null;
+  removed_at?: string | null;
+  ports: SdwanOvnLogicalSwitchPort[];
+}
+
+export interface SdwanOvnDeploymentSummary {
+  id: string;
+  status: SdwanOvnDeploymentStatus;
+  nb_db_endpoint: string;
+  sb_db_endpoint: string;
+  northd_host?: string | null;
+  switch_count: number;
+  port_count: number;
+  bootstrapped_at?: string | null;
+  activated_at?: string | null;
+  degraded_at?: string | null;
+}
+
+export interface SdwanOvnDeployment extends SdwanOvnDeploymentSummary {
+  created_at?: string | null;
+  updated_at?: string | null;
+  logical_switches: SdwanOvnLogicalSwitch[];
+}
+
+export interface SdwanOvnCompiledPlanStep {
+  cmd: string;
+  args: string[];
+}
+
+export interface SdwanOvnCompiledPlan {
+  deployment_id?: string;
+  plan?: SdwanOvnCompiledPlanStep[];
+  compiled_at?: string;
+  error?: string;
+}
+
+export type SdwanIpfixState = 'active' | 'disabled';
+
+export interface SdwanIpfixCollector {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  target_endpoint: string;
+  sampling_rate: number;
+  state: SdwanIpfixState;
+  is_winning_collector: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
