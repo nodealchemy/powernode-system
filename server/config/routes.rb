@@ -247,6 +247,13 @@ Rails.application.routes.draw do
           resources :route_policies do
             member { get :compile }
           end
+
+          # Phase O6: read-only operator API for Sdwan::HostBridge.
+          # Allocation happens through Sdwan::HostBridgeAllocator (agent
+          # reconcile / SdwanHostBridgeComposeExecutor AI skill /
+          # system_sdwan_create_host_bridge MCP action); this surface
+          # exists so an operator UI can inspect the resulting rows.
+          resources :host_bridges, only: %i[index show]
         end
 
         # === Metrics (operator-facing; aggregated counters) ===
