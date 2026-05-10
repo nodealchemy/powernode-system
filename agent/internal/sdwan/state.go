@@ -18,9 +18,25 @@ import "time"
 // DesiredConfig is the response shape from GET /api/v1/system/node_api/config/sdwan.
 // Mirrors the Sdwan::TopologyCompiler#compile_for_peer Ruby return value.
 type DesiredConfig struct {
-	InstanceID string                  `json:"instance_id"`
-	Networks   []DesiredNetworkConfig  `json:"networks"`
-	CompiledAt string                  `json:"compiled_at"`
+	InstanceID string                 `json:"instance_id"`
+	Networks   []DesiredNetworkConfig `json:"networks"`
+	CompiledAt string                 `json:"compiled_at"`
+	// Phase N0: constellation public keys the host trusts for verifying
+	// MC envelopes. Top-level (host-scoped) because trust is shared
+	// across every network this host belongs to.
+	Constellations []ConstellationTrust `json:"constellations"`
+	// Phase N1a: per-host VRF assignments. The vrf_applier consumes this
+	// list directly. Top-level because VRFs are host-level kernel state
+	// (one VRF per network this host has joined, not per peer).
+	VrfAssignments []DesiredVRF `json:"vrf_assignments"`
+}
+
+// ConstellationTrust pairs a constellation handle with its Ed25519
+// public key (base64). The agent's MCVerifier uses these to validate
+// envelope signatures.
+type ConstellationTrust struct {
+	Handle       string `json:"handle"`
+	PublicKeyB64 string `json:"public_key_b64"`
 }
 
 // DesiredNetworkConfig is one network's worth of per-peer config.
@@ -35,6 +51,10 @@ type DesiredNetworkConfig struct {
 	VipsHeld      []VipConf      `json:"vips_held"`    // slice 9b — VIPs to configure on lo
 	Bgp           *BgpConf       `json:"bgp"`          // slice 9c — FRR config when routing_protocol=ibgp
 	Nat           *NatConf       `json:"nat"`          // slice 7b — DNAT rules when this peer is a hub with port mappings
+	// Phase N0: signed membership credential proving this peer's
+	// membership in this network. The Manager forwarding gate refuses
+	// to keep the WG tunnel up if this is missing or invalid.
+	MC            *MCWire        `json:"mc_envelope"`
 }
 
 // NatConf is the per-network nat-chain ruleset. The agent's nat_applier
@@ -49,11 +69,14 @@ type NatConf struct {
 	CompiledAt string `json:"compiled_at"`
 }
 
-// VipConf — one VIP this peer should configure on its loopback so the
-// kernel accepts packets destined to the VIP address. Slice 9b emits
-// these from Sdwan::TopologyCompiler#vips_held_by; slice 9c will add a
-// `routes_via_bgp` flag indicating whether FRR should also announce
-// the prefix.
+// VipConf — one VIP this peer should configure inside the right VRF
+// so the kernel accepts packets destined to the VIP address.
+//
+// Pre-Phase-N1a, VIPs were installed on the global loopback. Phase N1a
+// moves them to per-VRF dummy interfaces (`dummy-sdwan-<handle>`)
+// bound to the network's VRF master device. The `VrfName` field is
+// stamped by the platform's TopologyCompiler from the holder host's
+// Sdwan::HostVrfAssignment row.
 type VipConf struct {
 	VipID                string `json:"virtual_ip_id"`
 	Name                 string `json:"name"`
@@ -61,6 +84,11 @@ type VipConf struct {
 	Anycast              bool   `json:"anycast"`
 	AdvertisedMed        int    `json:"advertised_med"`
 	AdvertisedLocalPref  int    `json:"advertised_local_pref"`
+	// Phase N1a: kernel VRF master device the dummy iface backing
+	// this VIP must be bound to. Empty during the brief window
+	// between network creation and HostVrfAssignment activation —
+	// vip_applier.go skips entries with an empty VrfName.
+	VrfName              string `json:"vrf_name"`
 }
 
 // BgpConf — slice 9c: per-network BGP config for this peer when the
@@ -145,6 +173,13 @@ type InterfaceConf struct {
 	PrivateKeyRef *PrivateKeyRef `json:"private_key_ref"`  // metadata pointer
 	PublicKey     string         `json:"public_key"`       // for log/heartbeat
 	PrivateKey    string         `json:"private_key,omitempty"` // node-API only
+	// Phase N1a: name of the VRF master device this WG iface must be
+	// bound to (`ip link set <iface> master <vrfName>`). The platform
+	// derives it from the host's Sdwan::HostVrfAssignment row for the
+	// network this iface belongs to. Empty when the network is in
+	// static-only routing mode and no VRF has been allocated; in that
+	// case wg_applier leaves the iface in the default routing context.
+	VrfName       string         `json:"vrf_name,omitempty"`
 }
 
 // PrivateKeyRef points at the Sdwan::PeerKey row whose Vault entry holds

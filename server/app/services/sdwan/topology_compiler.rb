@@ -87,7 +87,13 @@ module Sdwan
         # agent disables FRR for this network. The frr_applier consumes
         # this block.
         bgp: ::Sdwan::Bgp::ConfigCompiler.compile_for_peer(peer),
-        federation: @federation_resolver.call(@network) # [] in v1
+        federation: @federation_resolver.call(@network), # [] in v1
+        # Phase N0 — signed membership credential. Carries the canonical
+        # JSON envelope, Ed25519 signature, constellation handle, and
+        # validity window. The agent verifies this every reconcile;
+        # missing or invalid MC = tunnel torn down for this tick.
+        # ensure_fresh! is idempotent within the refresh window.
+        mc_envelope: ::Sdwan::MembershipCredentialSigner.ensure_fresh!(peer: peer).to_wire
       }
     end
 
@@ -101,7 +107,13 @@ module Sdwan
         listen_port: peer.listen_port,
         mtu: @network.settings.fetch("mtu", DEFAULT_MTU),
         private_key_ref: key ? { peer_key_id: key.id } : nil,
-        public_key: key&.public_key
+        public_key: key&.public_key,
+        # Phase N1a — name of the VRF this iface should be bound to.
+        # Empty when the host has no active HostVrfAssignment for this
+        # network (transient state during enrollment); wg_applier
+        # tolerates an empty value by leaving the iface in the default
+        # routing context until the VRF lands on a later tick.
+        vrf_name: vrf_name_for(peer)
       }
       # Inline the private key only on the node-side path. The operator
       # topology endpoint never sets include_private_key — that path serves
@@ -112,8 +124,38 @@ module Sdwan
       block
     end
 
+    # Phase N1a — looks up the VRF the holder host is using for this
+    # network. Returns "" when no active assignment exists yet.
+    def vrf_name_for(peer)
+      host_vrf_assignment_for(peer)&.vrf_name.to_s
+    end
+
+    # Centralized HVA lookup so interface_name and vrf_name_for share
+    # the same source of truth. Cache per (host, network) per compiler
+    # instance — multiple peers on the same network resolve to the
+    # same HVA (one per host).
+    def host_vrf_assignment_for(peer)
+      return nil unless peer.node_instance_id
+      @hva_cache ||= {}
+      cache_key = [peer.node_instance_id, peer.sdwan_network_id]
+      return @hva_cache[cache_key] if @hva_cache.key?(cache_key)
+      @hva_cache[cache_key] = ::Sdwan::HostVrfAssignment.where(
+        node_instance_id: peer.node_instance_id,
+        sdwan_network_id: peer.sdwan_network_id,
+        state: %w[active draining]
+      ).first
+    end
+
     def interface_name(peer)
-      "wg-sdwan-#{@network.id.to_s.delete('-').first(8)}"
+      hva = host_vrf_assignment_for(peer)
+      # When a HostVrfAssignment exists (iBGP networks), derive the
+      # iface name from its short_id — single source of truth that's
+      # collision-free, IFNAMSIZ-safe, and stable across compiler runs.
+      return hva.wg_iface_name if hva
+
+      # Fallback for static-only networks where no HVA is allocated.
+      # Single network per host in this path means no collision risk.
+      "wg-sdwan-#{@network.network_handle}"
     end
 
     # Slice 9b — VIP CIDRs that THIS peer should advertise locally. Static
@@ -121,6 +163,10 @@ module Sdwan
     # The agent's vip_applier configures each CIDR on the local loopback.
     def vips_held_by(peer)
       return [] unless @network.respond_to?(:virtual_ips)
+
+      # Phase N1a — peer's host always uses the same VRF for this
+      # network's traffic, so we can resolve it once per call.
+      vrf_name = vrf_name_for(peer)
 
       @network.virtual_ips.where(state: %w[active pending]).filter_map do |vip|
         holders = Array(vip.holder_peer_ids)
@@ -135,7 +181,12 @@ module Sdwan
           cidr: vip.cidr,
           anycast: vip.anycast?,
           advertised_med: vip.advertised_med,
-          advertised_local_pref: vip.advertised_local_pref
+          advertised_local_pref: vip.advertised_local_pref,
+          # Phase N1a — tells vip_applier which per-VRF dummy iface to
+          # configure the VIP on (`dummy-sdwan-<handle>` bound to the
+          # VRF master). Empty value causes vip_applier to skip this
+          # entry rather than installing on the global loopback.
+          vrf_name: vrf_name
         }
       end
     end

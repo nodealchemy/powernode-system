@@ -40,7 +40,14 @@ type Manager struct {
 	VipApplier      VipApplier
 	FrrApplier      FrrApplier
 	FrrObserver     FrrObserver
-	OnError         func(string, error)
+	// Phase N1a: VRF master device manager. Runs BEFORE the per-network
+	// loop so each WG iface has its target VRF ready at creation time.
+	VRFApplier VRFApplier
+	// Phase N0: per-(peer, network) MC cache + Ed25519 trust store.
+	// The forwarding gate refuses to bring up tunnels without a valid
+	// cached MC.
+	MCVerifier *MCVerifier
+	OnError    func(string, error)
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
@@ -63,6 +70,8 @@ func NewManager(client *transport.Client, applier WgApplier, onError func(string
 		VipApplier:      NewShellVipApplier(),
 		FrrApplier:      NewShellFrrApplier(),
 		FrrObserver:     NewShellFrrObserver(),
+		VRFApplier:      NewShellVRFApplier(),
+		MCVerifier:      NewMCVerifier(),
 		OnError:         onError,
 	}
 }
@@ -79,6 +88,26 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		return
 	}
 
+	// Phase N0: trust every constellation pubkey the controller advertises.
+	// Idempotent; re-trusting an existing handle is a no-op.
+	if m.MCVerifier != nil {
+		for _, c := range desired.Constellations {
+			if err := m.MCVerifier.TrustConstellation(c.Handle, c.PublicKeyB64); err != nil {
+				m.recordError("trust_constellation:"+c.Handle, err)
+			}
+		}
+	}
+
+	// Phase N1a: ensure all per-host VRF master devices exist BEFORE the
+	// per-network loop runs — wg_applier needs the VRF to bind interfaces
+	// to. Errors are recorded but don't abort the loop; per-network
+	// applies will fail individually if their VRF is missing.
+	if m.VRFApplier != nil {
+		if err := m.VRFApplier.Apply(ctx, desired.VrfAssignments); err != nil {
+			m.recordError("apply_vrfs", err)
+		}
+	}
+
 	// Build the desired-interface set so we can identify orphans below.
 	desiredNames := make(map[string]struct{}, len(desired.Networks))
 	for _, n := range desired.Networks {
@@ -89,6 +118,23 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	// single bad network doesn't block the others.
 	var reports []PeerStatusReport
 	for _, net := range desired.Networks {
+		// Phase N0 forwarding gate: no MC, or invalid MC, means we tear
+		// down any existing interface and skip apply for this tick. The
+		// next config push from the controller will carry a fresh MC.
+		if m.MCVerifier != nil {
+			if net.MC == nil {
+				m.recordError("mc_missing:"+net.NetworkID, fmt.Errorf("no MC envelope in config push for peer %s", net.PeerID))
+				_ = m.Applier.RemoveInterface(ctx, net.Interface.Name)
+				m.MCVerifier.Forget(net.PeerID, net.NetworkID)
+				continue
+			}
+			if _, err := m.MCVerifier.Validate(net.PeerID, net.NetworkID, net.MC, time.Now()); err != nil {
+				m.recordError("mc_validate:"+net.NetworkID, err)
+				_ = m.Applier.RemoveInterface(ctx, net.Interface.Name)
+				continue
+			}
+		}
+
 		privateKey, err := m.privateKeyFor(net)
 		if err != nil {
 			m.recordError("private_key_lookup", err)
