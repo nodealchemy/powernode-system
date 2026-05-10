@@ -448,4 +448,171 @@ RSpec.describe System::KubernetesClusterProvisionerService do
       expect(described_class.mark_node_stopped!(node_instance: orphan)).to be_nil
     end
   end
+
+  # ────────────────────────────────────────────────────────────────────
+  # Phase O4 — cni_plugin auto-default + mixed-profile rejection
+  # ────────────────────────────────────────────────────────────────────
+
+  describe ".bootstrap! cni_plugin auto-default (Phase O4)" do
+    context "with a lightweight bootstrap NodeInstance" do
+      before do
+        server_instance.update!(network_profile: "lightweight")
+        server_peer
+      end
+
+      it "defaults the cluster's cni_plugin to flannel" do
+        cluster = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30"
+        )
+        expect(cluster.cni_plugin).to eq("flannel")
+      end
+    end
+
+    context "with a heavyweight bootstrap NodeInstance" do
+      before do
+        server_instance.update!(network_profile: "heavyweight")
+        server_peer
+      end
+
+      it "defaults the cluster's cni_plugin to ovn_kubernetes" do
+        cluster = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30"
+        )
+        expect(cluster.cni_plugin).to eq("ovn_kubernetes")
+      end
+    end
+
+    context "with an operator-explicit cni_plugin override" do
+      before { server_peer }
+
+      it "honours the explicit value when the host profile agrees" do
+        server_instance.update!(network_profile: "heavyweight")
+
+        cluster = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30",
+          cni_plugin: "flannel"  # downgrade — heavyweight host can run Flannel
+        )
+        expect(cluster.cni_plugin).to eq("flannel")
+      end
+
+      it "raises when the explicit value exceeds a lightweight host's hardware floor" do
+        server_instance.update!(network_profile: "lightweight")
+
+        expect {
+          described_class.bootstrap!(
+            node_instance: server_instance,
+            kubeconfig: "kc", server_token: "tok",
+            agent_token: "atok", k8s_version: "v1.30",
+            cni_plugin: "ovn_kubernetes"
+          )
+        }.to raise_error(described_class::CniProfileMismatchError, /heavyweight/)
+      end
+
+      it "raises when the explicit value isn't one of the allowed plugins" do
+        server_instance.update!(network_profile: "heavyweight")
+
+        expect {
+          described_class.bootstrap!(
+            node_instance: server_instance,
+            kubeconfig: "kc", server_token: "tok",
+            agent_token: "atok", k8s_version: "v1.30",
+            cni_plugin: "calico"
+          )
+        }.to raise_error(described_class::CniProfileMismatchError, /not one of/)
+      end
+    end
+
+    context "idempotent re-bootstrap" do
+      before do
+        server_instance.update!(network_profile: "heavyweight")
+        server_peer
+      end
+
+      it "leaves the existing cni_plugin in place (immutable past bootstrap)" do
+        first = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc-1", server_token: "tok-1",
+          agent_token: "atok-1", k8s_version: "v1.30"
+        )
+        # The cluster has now left `pending` (status=bootstrapping). The
+        # second call hits the idempotent path that only refreshes
+        # credentials — cni_plugin must NOT be touched.
+        second = described_class.bootstrap!(
+          node_instance: server_instance,
+          kubeconfig: "kc-2", server_token: "tok-2",
+          agent_token: "atok-2", k8s_version: "v1.30",
+          cni_plugin: "flannel"  # operator tries to flip it — silently ignored
+        )
+        expect(second.id).to eq(first.id)
+        expect(second.cni_plugin).to eq("ovn_kubernetes")
+      end
+    end
+  end
+
+  describe ".register_node_join! cni profile compatibility (Phase O4)" do
+    before do
+      server_instance.update!(network_profile: "heavyweight")
+      server_peer
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok",
+        agent_token: "atok", k8s_version: "v1.30"
+      )
+    end
+
+    it "allows a heavyweight worker to join an ovn_kubernetes cluster" do
+      agent_instance.update!(network_profile: "heavyweight")
+      agent_peer
+
+      expect {
+        described_class.register_node_join!(
+          node_instance: agent_instance, role: "agent"
+        )
+      }.not_to raise_error
+    end
+
+    it "rejects a lightweight worker joining an ovn_kubernetes cluster" do
+      agent_instance.update!(network_profile: "lightweight")
+      agent_peer
+
+      expect {
+        described_class.register_node_join!(
+          node_instance: agent_instance, role: "agent"
+        )
+      }.to raise_error(described_class::CniProfileMismatchError, /Mixed-profile/)
+    end
+
+    it "allows a heavyweight worker to join a flannel cluster (downgrade-safe)" do
+      # Build a flannel cluster off a heavyweight host that explicitly
+      # downgrades. Then have a heavyweight worker join — must succeed.
+      hw_server = sdwan_test_node_instance(node: node, name: "i-hw-flannel-#{SecureRandom.hex(3)}")
+      hw_server.update!(network_profile: "heavyweight")
+      ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                             node_instance: hw_server, publicly_reachable: false)
+      flannel_cluster = described_class.bootstrap!(
+        node_instance: hw_server,
+        kubeconfig: "kc-fl", server_token: "tok-fl",
+        agent_token: "atok-fl", k8s_version: "v1.30",
+        cni_plugin: "flannel"
+      )
+      expect(flannel_cluster.cni_plugin).to eq("flannel")
+
+      hw_worker = sdwan_test_node_instance(node: node, name: "i-hw-worker-#{SecureRandom.hex(3)}")
+      hw_worker.update!(network_profile: "heavyweight")
+      ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                             node_instance: hw_worker, publicly_reachable: false)
+
+      expect {
+        described_class.register_node_join!(
+          node_instance: hw_worker, role: "agent"
+        )
+      }.not_to raise_error
+    end
+  end
 end
