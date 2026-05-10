@@ -577,3 +577,18 @@ export interface SdwanIpfixCollector {
   created_at?: string | null;
   updated_at?: string | null;
 }
+
+export interface SdwanFlowSample {
+  id: string;
+  src_ip: string;
+  dst_ip: string;
+  src_port: number | null;
+  dst_port: number | null;
+  protocol: number;
+  protocol_label: string;
+  octet_count: number;
+  packet_count: number;
+  flow_start_at: string;
+  flow_end_at: string;
+  observed_at: string;
+}

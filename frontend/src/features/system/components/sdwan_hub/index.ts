@@ -9,3 +9,5 @@ export { FederationTab } from './FederationTab';
 export { HostBridgesTab } from './HostBridgesTab';
 export { OvnDeploymentsTab } from './OvnDeploymentsTab';
 export { IpfixCollectorsTab } from './IpfixCollectorsTab';
+// Phase O6 follow-up — IPFIX flow sample inspector.
+export { FlowSamplesTab } from './FlowSamplesTab';

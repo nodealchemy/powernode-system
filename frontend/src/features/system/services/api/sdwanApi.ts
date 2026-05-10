@@ -39,7 +39,15 @@ import type {
   SdwanOvnDeploymentSummary,
   SdwanOvnCompiledPlan,
   SdwanIpfixCollector,
+  SdwanFlowSample,
 } from '../../types/sdwan.types';
+
+export interface SdwanFlowSampleFilters {
+  since?: string;
+  until?: string;
+  protocol?: number;
+  limit?: number;
+}
 
 export interface SdwanHostBridgeFilters {
   node_instance_id?: string;
@@ -606,5 +614,17 @@ export const sdwanApi = {
       `/system/sdwan/ipfix_collectors/${id}`
     );
     return extractData(response).ipfix_collector;
+  },
+
+  // -------- Phase O6 follow-up: Flow Samples (read-only) --------
+  getFlowSamples: async (
+    collectorId: string,
+    filters?: SdwanFlowSampleFilters
+  ): Promise<{ samples: SdwanFlowSample[]; count: number }> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{ flow_samples: SdwanFlowSample[]; count: number }>
+    >(`/system/sdwan/ipfix_collectors/${collectorId}/flow_samples`, { params: filters });
+    const data = extractData(response);
+    return { samples: data.flow_samples, count: data.count };
   },
 };
