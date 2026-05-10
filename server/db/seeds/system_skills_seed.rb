@@ -340,6 +340,30 @@ SKILLS_DATA = [
       redo everything. Has a single-call rollback that delegates to each
       sub-executor's rollback in reverse order.
     PROMPT
+  },
+  {
+    name: "SDWAN OVN Apply ACL",
+    slug: "system-sdwan-ovn-apply-acl",
+    description: "Apply OVN ACLs (firewall rules) to a logical switch — heavyweight-profile only. Composes Sdwan::OvnAcl entries scoped to one switch and re-compiles the deployment plan. Idempotent on (switch, acl_name).",
+    category: "devops",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::SdwanOvnApplyAclExecutor",
+    tags: %w[sdwan ovn acl firewall heavyweight composition],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to apply OVN ACLs (firewall rules) to a logical
+      switch. Inputs: logical_switch_id (must belong to the executing
+      account), acls (array of {name, direction, priority?, match,
+      action}, 1-100), dry_run (default false). direction:
+      from-lport (egress from source) | to-lport (ingress to destination).
+      action: allow | drop | reject | allow-related. priority: 0-32767,
+      higher first, default 1000. match: OVN match expression like
+      `ip4.src == 10.0.0.0/8 && tcp.dst == 5432`. Returns ovn_acl_ids +
+      per-ACL allocations + the recompiled deployment plan with new
+      acl-add commands. Idempotent on (switch, name) — re-running with
+      the same name returns the existing ACL row without mutating its
+      match/action/priority. Heavyweight-profile only (lightweight
+      hosts use kube-proxy NetworkPolicy for the equivalent function).
+    PROMPT
   }
 ].freeze
 

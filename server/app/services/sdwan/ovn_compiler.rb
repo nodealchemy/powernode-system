@@ -55,7 +55,7 @@ module Sdwan
       # ordering rule one-line obvious; row counts are tiny vs DB load.
       @switches = @deployment.logical_switches
                              .compilable
-                             .includes(:ports)
+                             .includes(:ports, :acls)
                              .to_a
                              .sort_by(&:name)
     end
@@ -92,6 +92,16 @@ module Sdwan
         end
       end
 
+      # Phase 3 — emit ACLs after switches + ports. ACLs reference
+      # the switch by name and OVN rejects them if the switch doesn't
+      # exist yet, so order matters. ACLs at higher priority emit
+      # first to match OVN's evaluation order; ties broken by name.
+      @switches.each do |switch|
+        acls_for(switch).each do |acl|
+          entries << acl_entry(switch, acl)
+        end
+      end
+
       entries
     end
 
@@ -102,6 +112,28 @@ module Sdwan
       # We rely on the `includes(:ports)` from the constructor so this
       # is a pure in-memory filter; no extra queries.
       switch.ports.select { |p| p.state == "active" }.sort_by(&:name)
+    end
+
+    def acls_for(switch)
+      # Active ACLs only, sorted by (priority desc, name asc) so the
+      # compiled plan emits in OVN's evaluation order. In-memory filter
+      # via the constructor's includes(:acls) — no extra queries.
+      switch.acls
+            .select { |a| a.state == "active" }
+            .sort_by { |a| [ -a.priority, a.name ] }
+    end
+
+    # Emits the per-ACL command:
+    #   acl-add <switch> <direction> <priority> "<match>" <action>
+    #
+    # OVN expects the match expression as a single quoted string. The
+    # `cmd + args` shape leaves quoting to the consumer (executor /
+    # operator); the args list carries the unquoted parts.
+    def acl_entry(switch, acl)
+      {
+        cmd:  "acl-add",
+        args: [ switch.name, acl.direction, acl.priority.to_s, acl.match, acl.action ]
+      }
     end
 
     # Emits the per-port command sequence:

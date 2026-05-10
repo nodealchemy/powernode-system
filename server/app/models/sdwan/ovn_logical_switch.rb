@@ -41,6 +41,13 @@ module Sdwan
              dependent: :destroy,
              inverse_of: :logical_switch
 
+    # Phase O6 follow-up — OVN ACLs scoped to this switch.
+    has_many :acls,
+             class_name: "Sdwan::OvnAcl",
+             foreign_key: :sdwan_ovn_logical_switch_id,
+             dependent: :destroy,
+             inverse_of: :logical_switch
+
     validates :name, presence: true,
                      length: { maximum: NAME_MAX },
                      format: { with: NAME_FORMAT,

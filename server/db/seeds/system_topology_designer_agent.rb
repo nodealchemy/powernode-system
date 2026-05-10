@@ -203,6 +203,7 @@ compose_skills = %w[
   system-sdwan-ovn-compose-topology
   system-sdwan-ipfix-collector-compose
   system-sdwan-compose-full-topology
+  system-sdwan-ovn-apply-acl
 ]
 bound = 0
 compose_skills.each_with_index do |slug, i|
