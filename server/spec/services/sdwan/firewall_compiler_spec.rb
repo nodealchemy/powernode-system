@@ -16,8 +16,8 @@ RSpec.describe Sdwan::FirewallCompiler, type: :service do
     it "emits the table + chain scaffolding with the default accept policy" do
       result = described_class.new(network).compile
       expect(result[:table]).to eq("powernode_sdwan")
-      expect(result[:chain]).to eq("sdwan_#{network.id.to_s.delete('-').first(8)}")
-      expect(result[:interface]).to eq("wg-sdwan-#{network.id.to_s.delete('-').first(8)}")
+      expect(result[:chain]).to eq("sdwan_#{network.id.to_s.delete('-').first(6)}")
+      expect(result[:interface]).to eq("wg-sdwan-#{network.id.to_s.delete('-').first(6)}")
       expect(result[:policy]).to eq("accept")
       expect(result[:rule_count]).to eq(0)
       expect(result[:ruleset]).to include("add table inet powernode_sdwan")

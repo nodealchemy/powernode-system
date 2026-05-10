@@ -37,6 +37,12 @@ module Sdwan
              foreign_key: :sdwan_network_id, dependent: :destroy
     has_many :subnet_advertisements, class_name: "Sdwan::SubnetAdvertisement",
              foreign_key: :sdwan_network_id, dependent: :destroy
+    # Phase N1a — host-scoped VRF assignments. One row per (network, host)
+    # carries the per-host kernel routing-table id used to isolate this
+    # network's iBGP RIB and forwarding context from any other network
+    # the same host belongs to.
+    has_many :host_vrf_assignments, class_name: "Sdwan::HostVrfAssignment",
+             foreign_key: :sdwan_network_id, dependent: :destroy
 
     validates :name, presence: true, length: { maximum: 64 },
                      uniqueness: { scope: :account_id }
@@ -77,6 +83,27 @@ module Sdwan
     # needs to emit a peer's /128 with full host bits.
     def network_prefix_only
       cidr_64.to_s.sub(%r{/64\z}, "")
+    end
+
+    # Phase N1a — short, deterministic per-network handle. Used both as
+    # the WG iface short id (`wg-sdwan-<handle>`) and as the VRF master
+    # device name (`sdwan-<handle>`). 6 hex chars sourced from the UUID
+    # primary key — the budget is set by Linux's IFNAMSIZ (15 usable),
+    # and `wg-sdwan-` (9) + 6 = 15 is the tightest binding constraint.
+    # 24 bits of entropy gives ~16M unique handles per account.
+    def network_handle
+      id.to_s.delete("-").first(6)
+    end
+
+    # Phase N1a — render the VRF iface name for a host using
+    # vrf_name_template. Substitutes {handle} with the network handle.
+    # Hosts within an account share the template, so the same network
+    # has a single canonical VRF iface name; the per-host scope of
+    # Sdwan::HostVrfAssignment exists only because table_id allocation
+    # is per-host.
+    def vrf_name_for(_host = nil)
+      template = vrf_name_template.presence || "sdwan-{handle}"
+      template.gsub("{handle}", network_handle)
     end
 
     private

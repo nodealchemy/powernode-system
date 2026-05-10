@@ -68,7 +68,7 @@ module Sdwan
     end
 
     def network_short_id
-      @network.id.to_s.delete("-").first(8)
+      @network.network_handle
     end
 
     # nft DNAT rule. We bracket IPv6 addresses to disambiguate the port

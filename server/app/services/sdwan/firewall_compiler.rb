@@ -86,7 +86,7 @@ module Sdwan
     private
 
     def net_short_id
-      @network.id.to_s.delete("-").first(8)
+      @network.network_handle
     end
 
     def emit_nft_script
