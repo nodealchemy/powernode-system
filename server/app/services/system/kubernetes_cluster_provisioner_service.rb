@@ -46,8 +46,24 @@ module System
     class ProvisionError < StandardError; end
     class MissingSdwanPeerError < ProvisionError; end
     class NoClusterAvailableError < ProvisionError; end
+    # Phase O4 — raised when an operator-supplied cni_plugin disagrees
+    # with the bootstrap NodeInstance's network_profile, OR when a
+    # joining NodeInstance has a network_profile that conflicts with
+    # the existing cluster's CNI choice. Mixed-profile clusters are
+    # not supported because CNI is uniform per cluster.
+    class CniProfileMismatchError < ProvisionError; end
 
     K3S_API_PORT = 6443
+
+    # Phase O4 — auto-default mapping from a host's network_profile to
+    # the CNI plugin its cluster should boot with. heavyweight hosts
+    # have the headroom for OVN-controller + OVN-K8s; lightweight hosts
+    # do not, so they stay on K3s's bundled Flannel.
+    NETWORK_PROFILE_TO_CNI = {
+      "heavyweight" => "ovn_kubernetes",
+      "lightweight" => "flannel"
+    }.freeze
+    DEFAULT_CNI_PLUGIN = "flannel"
 
     def self.bootstrap!(**kwargs) = new(**kwargs).bootstrap!
     def self.join_request!(node_instance:, target_cluster_id: nil)
@@ -69,7 +85,7 @@ module System
 
     def initialize(node_instance: nil, kubeconfig: nil, server_token: nil,
                    agent_token: nil, k8s_version: nil, role: nil,
-                   target_cluster_id: nil)
+                   target_cluster_id: nil, cni_plugin: nil)
       @node_instance = node_instance
       @kubeconfig = kubeconfig
       @server_token = server_token
@@ -77,6 +93,9 @@ module System
       @k8s_version = k8s_version
       @role = role
       @target_cluster_id = target_cluster_id
+      # Operator-explicit CNI override. When nil, the auto-default is
+      # derived from the bootstrap NodeInstance's network_profile.
+      @cni_plugin = cni_plugin
     end
 
     # ──────────────────────────────────────────────────────────────────
@@ -140,6 +159,15 @@ module System
         metadata["api_vip_cidr"] = api_vip.cidr
       end
 
+      # Phase O4 — pick the CNI for this cluster. Operator-explicit
+      # always wins; otherwise auto-default from the bootstrap
+      # NodeInstance's network_profile (heavyweight → ovn_kubernetes,
+      # lightweight → flannel). The resolver also raises
+      # CniProfileMismatchError if the operator's explicit choice
+      # disagrees with the bootstrap host's profile, surfacing the
+      # contradiction loudly instead of silently misconfiguring K3s.
+      resolved_cni_plugin = resolve_bootstrap_cni_plugin!(@node_instance, @cni_plugin)
+
       cluster = nil
       ActiveRecord::Base.transaction do
         cluster = ::Devops::KubernetesCluster.create!(
@@ -148,6 +176,7 @@ module System
           flavor: "k3s",
           environment: "production",
           status: "bootstrapping",
+          cni_plugin: resolved_cni_plugin,
           api_endpoint: "https://[#{api_endpoint_address}]:#{K3S_API_PORT}",
           k8s_version: @k8s_version,
           encrypted_kubeconfig: @kubeconfig,
@@ -172,7 +201,8 @@ module System
       Rails.logger.info(
         "[KubernetesClusterProvisionerService] bootstrapped cluster " \
         "cluster_id=#{cluster.id} node_instance_id=#{@node_instance.id} " \
-        "endpoint=#{cluster.api_endpoint} vip_id=#{api_vip&.id || 'none'}"
+        "endpoint=#{cluster.api_endpoint} vip_id=#{api_vip&.id || 'none'} " \
+        "cni_plugin=#{cluster.cni_plugin}"
       )
       cluster
     end
@@ -241,6 +271,16 @@ module System
                   .order(created_at: :desc)
                   .first
       raise NoClusterAvailableError, "no cluster to register against" unless cluster
+
+      # Phase O4 — refuse to add a node whose network_profile mismatches
+      # the cluster's CNI. CNI is uniform per cluster (the K3s server
+      # boots with one and only one CNI install-flag set), so a
+      # heavyweight host trying to join a Flannel cluster — or vice
+      # versa — would either install the wrong agent-side networking
+      # stack or fail to cordon at the kube-proxy boundary. Reject at
+      # the API layer so the operator gets a clear error before the
+      # agent commits to an inconsistent runtime state.
+      enforce_cni_profile_compatibility!(cluster, @node_instance)
 
       node = ::Devops::KubernetesNode.find_by(node_instance_id: @node_instance.id)
       if node
@@ -331,6 +371,70 @@ module System
               "bootstrapping a k3s cluster"
       end
       peer.assigned_address.to_s.split("/").first
+    end
+
+    # Phase O4 — pick the CNI for a brand-new cluster from the
+    # bootstrap NodeInstance's network_profile. When the operator
+    # supplies an explicit cni_plugin, validate it and use it directly.
+    # When the operator supplies one that disagrees with the bootstrap
+    # host's profile, raise CniProfileMismatchError so the contradiction
+    # surfaces before the K3s server boots with mismatched flags.
+    #
+    # Returns one of Devops::KubernetesCluster::CNI_PLUGINS.
+    def resolve_bootstrap_cni_plugin!(node_instance, explicit_plugin)
+      profile = node_instance.respond_to?(:network_profile) ? node_instance.network_profile.to_s : ""
+      profile_default = NETWORK_PROFILE_TO_CNI.fetch(profile, DEFAULT_CNI_PLUGIN)
+
+      if explicit_plugin.present?
+        explicit = explicit_plugin.to_s
+        unless ::Devops::KubernetesCluster::CNI_PLUGINS.include?(explicit)
+          raise CniProfileMismatchError,
+                "cni_plugin '#{explicit}' is not one of " \
+                "#{::Devops::KubernetesCluster::CNI_PLUGINS.inspect}"
+        end
+
+        # Cross-check: explicit choice must agree with the bootstrap
+        # host's profile. Operators promoting a heavyweight host can
+        # still pick flannel deliberately (downgrade path), but going
+        # the other way (lightweight host + ovn_kubernetes) would
+        # exceed the host's hardware floor for OVN-controller, so
+        # reject loudly.
+        if explicit == "ovn_kubernetes" && profile == "lightweight"
+          raise CniProfileMismatchError,
+                "cni_plugin 'ovn_kubernetes' is not compatible with bootstrap " \
+                "NodeInstance #{node_instance.id} (network_profile=lightweight). " \
+                "OVN-Kubernetes requires the heavyweight network_profile (≥4GB " \
+                "RAM headroom for ovn-controller + ovn-northd). Promote the host " \
+                "to heavyweight first, or pick cni_plugin: 'flannel'."
+        end
+
+        return explicit
+      end
+
+      profile_default
+    end
+
+    # Phase O4 — refuse to add a node whose network_profile is
+    # incompatible with the cluster's CNI. Specifically: a lightweight-
+    # profile host cannot join an `ovn_kubernetes` cluster because the
+    # OVN-controller daemon will not fit on the host. Heavyweight hosts
+    # joining a `flannel` cluster ARE allowed (downgrade path is safe —
+    # they just don't run the OVS+OVN stack). Hosts with no profile
+    # information default to lightweight semantics, which is the safe
+    # interpretation.
+    def enforce_cni_profile_compatibility!(cluster, node_instance)
+      cluster_cni = cluster.cni_plugin.to_s
+      profile     = node_instance.respond_to?(:network_profile) ? node_instance.network_profile.to_s : ""
+
+      return unless cluster_cni == "ovn_kubernetes"
+      return unless profile == "lightweight"
+
+      raise CniProfileMismatchError,
+            "NodeInstance #{node_instance.id} (network_profile=lightweight) " \
+            "cannot join cluster #{cluster.id} (cni_plugin=ovn_kubernetes). " \
+            "Mixed-profile clusters are not supported because CNI is uniform " \
+            "per cluster — promote the NodeInstance to network_profile=" \
+            "heavyweight first, or join a cni_plugin=flannel cluster."
     end
 
     def update_credentials!(cluster)
