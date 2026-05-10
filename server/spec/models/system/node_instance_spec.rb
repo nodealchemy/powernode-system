@@ -357,4 +357,177 @@ RSpec.describe System::NodeInstance, type: :model do
       expect(instance.reload.status).to eq('starting')
     end
   end
+
+  # ----------------------------------------------------------------------
+  # Phase O2 — network_profile column + suggester
+  # ----------------------------------------------------------------------
+  describe 'network_profile' do
+    it 'exposes the allowed values via NETWORK_PROFILES' do
+      expect(described_class::NETWORK_PROFILES).to eq(%w[lightweight heavyweight])
+    end
+
+    it 'defaults to lightweight when not specified' do
+      instance = create(:system_node_instance, node: node)
+      expect(instance.network_profile).to eq('lightweight')
+    end
+
+    it 'persists heavyweight when set explicitly' do
+      instance = create(:system_node_instance, node: node, network_profile: 'heavyweight')
+      expect(instance.reload.network_profile).to eq('heavyweight')
+    end
+
+    it 'rejects unknown profile values' do
+      instance = build(:system_node_instance, node: node, network_profile: 'turbo')
+      expect(instance).not_to be_valid
+      expect(instance.errors[:network_profile]).to be_present
+    end
+
+    it 'rejects nil profile values' do
+      instance = build(:system_node_instance, node: node)
+      instance.network_profile = nil
+      expect(instance).not_to be_valid
+      expect(instance.errors[:network_profile]).to be_present
+    end
+
+    describe '.lightweight_profile / .heavyweight_profile scopes' do
+      let!(:lw) { create(:system_node_instance, node: node, name: 'lw-host') }
+      let!(:hw) { create(:system_node_instance, node: node, name: 'hw-host', network_profile: 'heavyweight') }
+
+      it '.lightweight_profile returns only lightweight rows' do
+        expect(described_class.lightweight_profile).to include(lw)
+        expect(described_class.lightweight_profile).not_to include(hw)
+      end
+
+      it '.heavyweight_profile returns only heavyweight rows' do
+        expect(described_class.heavyweight_profile).to include(hw)
+        expect(described_class.heavyweight_profile).not_to include(lw)
+      end
+    end
+  end
+
+  describe '#suggest_network_profile' do
+    let(:account) { node.account }
+
+    # Helper — build (don't persist) a NodeInstance with the hardware
+    # signature we want, bypassing the factory's provider_instance_type
+    # default so we can pin the value precisely. We use #build here
+    # because suggest_network_profile is a pure function of the row's
+    # in-memory state — no persistence needed.
+    def hw(architecture:, memory_mb: nil, hardware_model: nil)
+      pit = nil
+      if memory_mb
+        pit = build_stubbed(:system_provider_instance_type,
+                            account: account, memory_mb: memory_mb)
+      end
+      cfg = {}
+      cfg['hardware_model'] = hardware_model if hardware_model
+      build_stubbed(:system_node_instance,
+                    node: node,
+                    architecture: architecture,
+                    provider_instance_type: pit,
+                    config: cfg)
+    end
+
+    context 'on amd64 / x86_64' do
+      it 'returns heavyweight when memory >= 4GB' do
+        expect(hw(architecture: 'amd64', memory_mb: 4096).suggest_network_profile)
+          .to eq('heavyweight')
+      end
+
+      it 'returns heavyweight at the upper end (16GB)' do
+        expect(hw(architecture: 'amd64', memory_mb: 16_384).suggest_network_profile)
+          .to eq('heavyweight')
+      end
+
+      it 'returns lightweight when memory < 4GB' do
+        expect(hw(architecture: 'amd64', memory_mb: 2048).suggest_network_profile)
+          .to eq('lightweight')
+      end
+
+      it 'returns lightweight when memory is unknown (no provider_instance_type, no config hint)' do
+        expect(hw(architecture: 'amd64').suggest_network_profile).to eq('lightweight')
+      end
+
+      it 'recognises x86_64 as a synonym for amd64' do
+        expect(hw(architecture: 'x86_64', memory_mb: 8192).suggest_network_profile)
+          .to eq('heavyweight')
+      end
+    end
+
+    context 'on aarch64 / arm64' do
+      it 'returns heavyweight for a Pi 5 regardless of memory' do
+        expect(hw(architecture: 'arm64', hardware_model: 'raspberry_pi_5', memory_mb: 4096)
+                 .suggest_network_profile).to eq('heavyweight')
+        expect(hw(architecture: 'arm64', hardware_model: 'rpi5', memory_mb: 8192)
+                 .suggest_network_profile).to eq('heavyweight')
+      end
+
+      it 'returns heavyweight for a Pi 4 with 8GB+ RAM' do
+        expect(hw(architecture: 'arm64', hardware_model: 'raspberry_pi_4', memory_mb: 8192)
+                 .suggest_network_profile).to eq('heavyweight')
+      end
+
+      it 'returns lightweight for a Pi 4 with 4GB RAM' do
+        expect(hw(architecture: 'arm64', hardware_model: 'raspberry_pi_4', memory_mb: 4096)
+                 .suggest_network_profile).to eq('lightweight')
+      end
+
+      it 'returns lightweight for a Pi 4 with no memory information' do
+        expect(hw(architecture: 'arm64', hardware_model: 'raspberry_pi_4')
+                 .suggest_network_profile).to eq('lightweight')
+      end
+
+      it 'returns lightweight for an unknown aarch64 board with no hardware hint' do
+        expect(hw(architecture: 'arm64', memory_mb: 8192).suggest_network_profile)
+          .to eq('lightweight')
+      end
+
+      it 'recognises aarch64 as a synonym for arm64' do
+        expect(hw(architecture: 'aarch64', hardware_model: 'pi5').suggest_network_profile)
+          .to eq('heavyweight')
+      end
+    end
+
+    context 'when hardware fields are missing entirely (safe default)' do
+      it 'returns lightweight when architecture is nil' do
+        instance = build_stubbed(:system_node_instance, node: node, architecture: nil)
+        expect(instance.suggest_network_profile).to eq('lightweight')
+      end
+
+      it 'returns lightweight on an unknown architecture' do
+        # The DB CHECK constraint blocks this on save, but the suggester
+        # is called against in-memory rows during provisioning so it
+        # must defend against any string getting through.
+        instance = hw(architecture: 'riscv64', memory_mb: 65_536)
+        expect(instance.suggest_network_profile).to eq('lightweight')
+      end
+    end
+
+    it 'is a pure function — does not mutate the row or persist anything' do
+      instance = hw(architecture: 'amd64', memory_mb: 8192)
+      original_profile = instance.network_profile
+
+      expect { instance.suggest_network_profile }.not_to change { instance.network_profile }
+      expect(instance.network_profile).to eq(original_profile)
+      expect(instance).not_to be_changed
+    end
+
+    it 'reads memory from config["memory_mb"] when provider_instance_type is absent' do
+      instance = build_stubbed(:system_node_instance,
+                               node: node,
+                               architecture: 'amd64',
+                               provider_instance_type: nil,
+                               config: { 'memory_mb' => 8192 })
+      expect(instance.suggest_network_profile).to eq('heavyweight')
+    end
+
+    it 'returns lightweight when config["memory_mb"] is non-numeric garbage' do
+      instance = build_stubbed(:system_node_instance,
+                               node: node,
+                               architecture: 'amd64',
+                               provider_instance_type: nil,
+                               config: { 'memory_mb' => 'plenty' })
+      expect(instance.suggest_network_profile).to eq('lightweight')
+    end
+  end
 end

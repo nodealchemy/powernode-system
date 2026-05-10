@@ -13,6 +13,32 @@ module System
     # NULL for non-pool instances (operator-owned, legacy path).
     POOL_STATES = %w[warming ready claimed draining errored].freeze
 
+    # Phase O2 — OVS+OVN dual-profile network selector.
+    # Picks which on-node BridgeApplier (and downstream CNI) the agent
+    # runs. `lightweight` = Linux bridge only; `heavyweight` = OVS bridge
+    # + OVN-controller + OVN-K8s CNI in later phases. Default is
+    # `lightweight` because it imposes no daemon overhead and works on
+    # every supported host (including Pi 4 ≤4GB / Pi Zero 2W). Operator
+    # promotes to `heavyweight` deliberately, or autonomy/provisioning
+    # consults #suggest_network_profile and acts on the recommendation.
+    NETWORK_PROFILES = %w[lightweight heavyweight].freeze
+
+    # Memory floor (MB) under which the heavyweight profile is unsafe.
+    # Sourced from the OVS+OVN footprint analysis (~150-200MB RAM for
+    # the three additional daemons + headroom for the host kernel).
+    HEAVYWEIGHT_MIN_MEMORY_MB = 4096
+
+    # Pi 4 needs the 8GB SKU specifically — the 1/2/4GB SKUs cannot run
+    # OVS+OVN+OVN-K8s reliably alongside K3s and the other workload pods.
+    HEAVYWEIGHT_PI4_MIN_MEMORY_MB = 8192
+
+    # Hardware-model hints persisted in `config["hardware_model"]` (or
+    # discovery DMI metadata) that the suggester recognises. The full
+    # list is intentionally narrow — anything outside the known-capable
+    # set falls through to the safe `lightweight` default.
+    HEAVYWEIGHT_PI_MODELS = %w[raspberry_pi_5 rpi5 pi5].freeze
+    PI4_HARDWARE_MODELS   = %w[raspberry_pi_4 rpi4 pi4].freeze
+
     # Encryption for sensitive fields
     encrypts :key
 
@@ -42,6 +68,7 @@ module System
     validates :name, presence: true, uniqueness: { scope: :node_id }
     validates :variety, presence: true, inclusion: { in: VARIETIES }
     validates :status, presence: true, inclusion: { in: STATUSES }
+    validates :network_profile, presence: true, inclusion: { in: NETWORK_PROFILES }
     validates :mac_address, format: { with: MAC_ADDRESS_REGEX, message: "must be a valid MAC address" }, allow_nil: true
     validates :latitude, numericality: { greater_than_or_equal_to: -90, less_than_or_equal_to: 90 }, allow_nil: true
     validates :longitude, numericality: { greater_than_or_equal_to: -180, less_than_or_equal_to: 180 }, allow_nil: true
@@ -127,6 +154,12 @@ module System
     scope :terminated, -> { where(status: "terminated") }
     scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
+
+    # Phase O2 — network profile scopes (used by FleetAutonomyService and
+    # the heavyweight-host dashboards to filter the fleet by which
+    # BridgeApplier the agent runs).
+    scope :lightweight_profile, -> { where(network_profile: "lightweight") }
+    scope :heavyweight_profile, -> { where(network_profile: "heavyweight") }
 
     # Slice 7 — pool membership scopes
     scope :pool_warming, -> { where(pool_state: "warming") }
@@ -247,6 +280,46 @@ module System
       update!(private_netboot: false)
     end
 
+    # === Network profile suggestion (Phase O2) ===
+    #
+    # Pure function — reads only this row's hardware fields and returns
+    # the recommended `network_profile` value. Does NOT mutate state and
+    # does NOT consult the persisted `network_profile` column (callers
+    # already know what's persisted; this answers "what *should* it be").
+    #
+    # Operators / FleetAutonomyService / the provisioning service call
+    # this to decide whether to promote a host to the heavyweight stack.
+    # The persisted column is the source of truth — this is advisory.
+    #
+    # Recommendation rules (mirror Part 7 of the dual-profile plan):
+    #   1. amd64 with ≥4GB RAM → heavyweight
+    #   2. arm64 + Pi 5 hardware hint (any RAM) → heavyweight
+    #   3. arm64 + Pi 4 hardware hint with ≥8GB RAM → heavyweight
+    #   4. Anything else (Pi 4 ≤4GB, Pi Zero 2W, Alpine aarch64,
+    #      hardware fields not available, etc.) → lightweight
+    #
+    # The "hardware fields not available" branch is the safety net: when
+    # we can't prove the host has headroom for the OVS+OVN daemons, we
+    # default to lightweight because the lightweight profile works on
+    # every supported host.
+    def suggest_network_profile
+      arch = (architecture || "").downcase
+      mb   = available_memory_mb
+      hw   = hardware_model_hint
+
+      case arch
+      when "amd64", "x86_64"
+        return "heavyweight" if mb && mb >= HEAVYWEIGHT_MIN_MEMORY_MB
+      when "arm64", "aarch64"
+        return "heavyweight" if HEAVYWEIGHT_PI_MODELS.include?(hw)
+        if PI4_HARDWARE_MODELS.include?(hw) && mb && mb >= HEAVYWEIGHT_PI4_MIN_MEMORY_MB
+          return "heavyweight"
+        end
+      end
+
+      "lightweight"
+    end
+
     # === Runtime telemetry (Golden Eclipse M0.M) ===
     # Used by powernode-agent heartbeat path (M0.O / M0.P / M2). Maintains
     # last_heartbeat_at, agent_version, boot_id, and the running_module_digests
@@ -295,6 +368,40 @@ module System
     # "waiting for device to come online" banner when this is true.
     def awaiting_claim?
       physical? && claimed_at.nil?
+    end
+
+    private
+
+    # Best-effort memory lookup used by #suggest_network_profile. Reads
+    # from provider_instance_type when the instance has one (cloud
+    # variety / templated physical), then falls back to a
+    # `config["memory_mb"]` hint that the agent can report at heartbeat
+    # time. Returns nil when nothing is known — callers MUST treat nil
+    # as "unknown, assume too small" so the suggester defaults to the
+    # safe `lightweight` profile.
+    def available_memory_mb
+      type_mb = provider_instance_type&.memory_mb
+      return type_mb if type_mb
+
+      raw = config && config["memory_mb"]
+      return nil if raw.nil?
+      Integer(raw)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    # Best-effort hardware-model lookup, normalised to a lowercase
+    # snake_case token. Reads from `config["hardware_model"]` (or the
+    # legacy `config["board_model"]` alias) — operator-asserted at row
+    # creation or filled in by the on-node agent's DMI scrape. Returns
+    # nil when nothing is known — the suggester then falls through to
+    # lightweight via the safe default. The `discovered_dmi_uuid`
+    # column is intentionally skipped here (DMI UUID is opaque and not
+    # a model discriminator).
+    def hardware_model_hint
+      raw = config && (config["hardware_model"] || config["board_model"])
+      return nil if raw.nil? || raw.to_s.strip.empty?
+      raw.to_s.downcase.strip.gsub(/[\s-]+/, "_")
     end
   end
 end

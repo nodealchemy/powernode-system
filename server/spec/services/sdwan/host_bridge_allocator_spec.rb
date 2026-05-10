@@ -113,6 +113,52 @@ RSpec.describe Sdwan::HostBridgeAllocator, type: :service do
       new_hb = described_class.allocate!(host: host_a, kind: "linux")
       expect(new_hb.short_id).to eq(1)
     end
+
+    # ------------------------------------------------------------------
+    # Phase O2 — profile-aware kind defaulting
+    # ------------------------------------------------------------------
+    describe "profile-aware kind defaulting" do
+      it "defaults kind to 'linux' for a lightweight-profile host" do
+        host_a.update!(network_profile: "lightweight")
+
+        hb = described_class.allocate!(host: host_a)
+        expect(hb.kind).to eq("linux")
+      end
+
+      it "defaults kind to 'ovs' for a heavyweight-profile host" do
+        host_a.update!(network_profile: "heavyweight")
+
+        hb = described_class.allocate!(host: host_a)
+        expect(hb.kind).to eq("ovs")
+      end
+
+      it "honours an explicit kind: even when it disagrees with the host profile" do
+        # Operator overrides during a staged rollout / recovery — a
+        # heavyweight host can be temporarily forced onto a Linux
+        # bridge, and the allocator must respect that.
+        host_a.update!(network_profile: "heavyweight")
+
+        hb = described_class.allocate!(host: host_a, kind: "linux")
+        expect(hb.kind).to eq("linux")
+      end
+
+      it "honours kind: 'ovs' on a lightweight host (operator override path)" do
+        host_a.update!(network_profile: "lightweight")
+
+        hb = described_class.allocate!(host: host_a, kind: "ovs")
+        expect(hb.kind).to eq("ovs")
+      end
+
+      it "falls back to 'linux' when the host has no recognisable profile" do
+        # network_profile defaults to lightweight at insert time, but
+        # we belt-and-suspenders the resolver anyway. Stub instead of
+        # writing an unsupported value (the column has a CHECK).
+        allow(host_a).to receive(:network_profile).and_return(nil)
+
+        hb = described_class.allocate!(host: host_a)
+        expect(hb.kind).to eq("linux")
+      end
+    end
   end
 
   describe ".release!" do

@@ -36,10 +36,21 @@ module Sdwan
     SHORT_ID_MIN = ::Sdwan::HostBridge::SHORT_ID_MIN
     SHORT_ID_MAX = ::Sdwan::HostBridge::SHORT_ID_MAX
 
+    # Phase O2 — when callers do not specify `kind:`, the allocator
+    # picks the bridge implementation from the host's network_profile:
+    # heavyweight hosts get an `ovs` bridge, lightweight hosts get a
+    # `linux` bridge. Operators can still override by passing `kind:`
+    # explicitly — the explicit value always wins.
+    PROFILE_TO_KIND = {
+      "heavyweight" => "ovs",
+      "lightweight" => "linux"
+    }.freeze
+    DEFAULT_KIND = "linux"
+
     class CapacityExhausted < StandardError; end
     class InvalidArguments < StandardError; end
 
-    def self.allocate!(host:, kind: "linux", account: nil)
+    def self.allocate!(host:, kind: nil, account: nil)
       new(host: host, kind: kind, account: account).allocate!
     end
 
@@ -48,13 +59,21 @@ module Sdwan
         .release!(bridge, force: force)
     end
 
-    def initialize(host:, kind: "linux", account: nil)
+    def initialize(host:, kind: nil, account: nil)
       raise InvalidArguments, "host is required" if host.nil?
-      raise InvalidArguments, "kind must be one of #{::Sdwan::HostBridge::KINDS.inspect}" \
-        unless ::Sdwan::HostBridge::KINDS.include?(kind.to_s)
 
       @host = host
-      @kind = kind.to_s
+      # Profile-aware kind defaulting: when the caller does not pin a
+      # kind, look at the host's network_profile to pick OVS for
+      # heavyweight hosts and Linux bridge for lightweight ones. When
+      # the caller does pin a kind, that wins — operators retain full
+      # control even on a profile-mismatched host (useful for staged
+      # rollouts and recovery scenarios).
+      @kind = resolve_kind(kind, host)
+
+      raise InvalidArguments, "kind must be one of #{::Sdwan::HostBridge::KINDS.inspect}" \
+        unless ::Sdwan::HostBridge::KINDS.include?(@kind)
+
       # Bridges are scoped to the host's account by default. Callers can
       # pass an explicit account for cross-account bridge creation
       # (federation paths) — not used in Phase O1 but supported.
@@ -149,6 +168,19 @@ module Sdwan
         return candidate unless used_ids.include?(candidate)
       end
       nil
+    end
+
+    # Resolves the bridge kind for this allocation request. Explicit
+    # caller-supplied kinds win; otherwise we consult the host's
+    # network_profile. Falls back to DEFAULT_KIND ("linux") when the
+    # host has no usable profile or carries an unknown profile value
+    # (defensive — the model validates network_profile on save, so
+    # this branch only fires if a row was hand-crafted in tests).
+    def resolve_kind(explicit_kind, host)
+      return explicit_kind.to_s if explicit_kind
+
+      profile = host.respond_to?(:network_profile) ? host.network_profile.to_s : ""
+      PROFILE_TO_KIND.fetch(profile, DEFAULT_KIND)
     end
   end
 end
