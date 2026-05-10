@@ -55,6 +55,11 @@ type Manager struct {
 	// heavyweight = ovs-only payload), so on lightweight hosts the OVS
 	// applier is a no-op (and ovs-vsctl need not even be installed).
 	BridgeAppliers []BridgeApplier
+	// Phase O3: per-host OVN-controller daemon + OVS encap-config
+	// manager. nil-tolerant — lightweight hosts get a nil
+	// DesiredOvnControl and the applier short-circuits without
+	// touching OVS or systemctl.
+	OvnControllerApplier OvnControllerApplier
 	// Phase N0: per-(peer, network) MC cache + Ed25519 trust store.
 	// The forwarding gate refuses to bring up tunnels without a valid
 	// cached MC.
@@ -87,7 +92,8 @@ func NewManager(client *transport.Client, applier WgApplier, onError func(string
 			NewLinuxBridgeApplier(),
 			NewOvsBridgeApplier(),
 		},
-		MCVerifier:      NewMCVerifier(),
+		OvnControllerApplier: NewOvnControllerApplier(),
+		MCVerifier:           NewMCVerifier(),
 		OnError:         onError,
 	}
 }
@@ -137,6 +143,19 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		}
 		if err := applier.Apply(ctx, desired.HostBridges); err != nil {
 			m.recordError(fmt.Sprintf("apply_bridges[%d]", i), err)
+		}
+	}
+
+	// Phase O3: align local ovn-controller state with the per-host
+	// intent. nil DesiredConfig.OvnControl means lightweight host or
+	// no OVN deployment — the applier no-ops without touching OVS or
+	// systemctl. Errors are recorded but don't abort the loop.
+	// Runs AFTER bridges (ovn-controller programs flows into OVS, so
+	// OVS must be initialized) and BEFORE the per-network loop (so
+	// the daemon is ready when traffic starts flowing).
+	if m.OvnControllerApplier != nil {
+		if err := m.OvnControllerApplier.Apply(ctx, desired.OvnControl); err != nil {
+			m.recordError("apply_ovn_control", err)
 		}
 	}
 

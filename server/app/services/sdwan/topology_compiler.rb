@@ -84,6 +84,51 @@ module Sdwan
         end
     end
 
+    # Phase O3 — per-host OVN control payload. The on-host
+    # ovn-controller daemon connects to the deployment's SB DB; this
+    # returns the endpoints it needs (plus the NB endpoint for operator
+    # tooling). Returns nil for lightweight hosts or accounts with no
+    # active OVN deployment — the agent treats nil as "OVN not enabled,
+    # skip the OVN reconcile step".
+    def self.ovn_control_for(instance)
+      return nil unless instance.network_profile == "heavyweight"
+
+      deployment = ::Sdwan::OvnDeployment
+                     .where(account_id: instance.account_id, status: "active")
+                     .first
+      return nil unless deployment
+
+      {
+        deployment_id: deployment.id,
+        nb_db_endpoint: deployment.nb_db_endpoint,
+        sb_db_endpoint: deployment.sb_db_endpoint,
+        northd_host: deployment.northd_host,
+        settings: deployment.settings,
+        # The agent's DesiredOvnControl wire fields. EncapIp is the
+        # host's SDWAN /128 — derived from any Sdwan::Peer the host
+        # already has; if none yet, leave blank and the agent skips
+        # ovn-controller startup until the next reconcile after a peer
+        # exists.
+        encap_type: "geneve",
+        encap_ip: derive_sdwan_encap_ip(instance),
+        chassis_name: instance.id
+      }
+    end
+
+    # Derives the host's SDWAN overlay address (the /128 without prefix
+    # length) for use as the OVN Geneve tunnel endpoint. Returns "" when
+    # the host has no SDWAN peers yet — the agent's OvnControllerApplier
+    # validates this and skips ovn-controller startup until populated.
+    def self.derive_sdwan_encap_ip(instance)
+      first_peer = ::Sdwan::Peer
+                     .where(node_instance_id: instance.id)
+                     .order(:created_at)
+                     .first
+      return "" unless first_peer&.assigned_address
+
+      first_peer.assigned_address.to_s.split("/").first.to_s
+    end
+
     def initialize(network, federation_resolver:, include_private_key: false)
       @network = network
       @federation_resolver = federation_resolver

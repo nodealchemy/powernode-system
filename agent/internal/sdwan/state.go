@@ -34,6 +34,12 @@ type DesiredConfig struct {
 	// host-level kernel state owned by the agent's chosen BridgeApplier
 	// backend (Linux today; OVS in Phase O2).
 	HostBridges []DesiredBridge `json:"host_bridges"`
+	// Phase O3: per-host OVN-controller intent. Nil for lightweight
+	// hosts or accounts with no active Sdwan::OvnDeployment; populated
+	// for heavyweight hosts that need to participate in the OVN logical
+	// network. The OvnControllerApplier shells out to systemctl +
+	// ovs-vsctl to align local ovn-controller state with this intent.
+	OvnControl *DesiredOvnControl `json:"ovn_control"`
 }
 
 // ConstellationTrust pairs a constellation handle with its Ed25519

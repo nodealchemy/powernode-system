@@ -54,7 +54,12 @@ module Api
               # Phase O1 — per-host bridge list, consumed directly by
               # the agent's BridgeApplier. Includes only compilable
               # rows (active or draining).
-              host_bridges: ::Sdwan::TopologyCompiler.host_bridges_for(instance)
+              host_bridges: ::Sdwan::TopologyCompiler.host_bridges_for(instance),
+              # Phase O3 — OVN control-plane endpoints for heavyweight
+              # hosts whose account has an active OvnDeployment. nil
+              # for lightweight hosts; agent's manager.go treats nil
+              # as "OVN not enabled, skip the OVN reconcile step".
+              ovn_control: ::Sdwan::TopologyCompiler.ovn_control_for(instance)
             )
           end
 
