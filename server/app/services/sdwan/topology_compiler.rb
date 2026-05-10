@@ -67,12 +67,13 @@ module Sdwan
     # rows (active or draining) so the agent doesn't apply pending plans
     # or chase removed rows. Returns [] when no bridges exist for the host.
     def self.host_bridges_for(instance)
+      ipfix_payload = ipfix_payload_for(instance)
       ::Sdwan::HostBridge
         .for_host(instance)
         .compilable
         .order(:short_id)
         .map do |hb|
-          {
+          entry = {
             host_bridge_id: hb.id,
             short_id: hb.short_id,
             name: hb.bridge_name,
@@ -81,7 +82,31 @@ module Sdwan
             ipv4_cidr: hb.ipv4_cidr,
             ipv6_cidr: hb.ipv6_cidr
           }
+          # Phase O5 — only OVS bridges support IPFIX. Linux bridges
+          # ignore the field (their applier filters on Kind anyway).
+          entry[:ipfix] = ipfix_payload if hb.kind == "ovs" && ipfix_payload
+          entry
         end
+    end
+
+    # Phase O5 — per-host IPFIX collector intent. Returns the
+    # exporter config the OvsBridgeApplier wires onto each ovs-kind
+    # bridge, or nil when the account has no active IpfixCollector.
+    # All ovs bridges on the same host export to the same collector
+    # for now; multi-collector fan-out is a later refinement.
+    def self.ipfix_payload_for(instance)
+      collector = ::Sdwan::IpfixCollector
+                    .for_account(instance.account)
+                    .active
+                    .order(:created_at)
+                    .first
+      return nil unless collector
+
+      {
+        collector_id: collector.id,
+        targets: [collector.target_endpoint],
+        sampling: collector.sampling_rate
+      }
     end
 
     # Phase O3 — per-host OVN control payload. The on-host
