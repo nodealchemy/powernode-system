@@ -46,7 +46,7 @@ const (
 // here is solely to gate the K3s install so the right pieces are
 // or are not provisioned by K3s itself.
 type BootstrapConfig struct {
-	CniPlugin string
+	CniPlugin string `json:"cni_plugin"`
 }
 
 // InstallArgs returns the extra positional args that should be
