@@ -18,7 +18,14 @@ module Api
           # GET /api/v1/system/node_api/config/sdwan
           # Returns one compiled-peer-view per network this instance belongs to.
           # The agent applies these via wgctrl-go on each heartbeat tick.
-          def config
+          #
+          # NOTE: action MUST NOT be named `config`. AbstractController::Logger
+          # delegates `controller.logger` → `controller.config.logger`, and
+          # an action method named `config` shadows that delegate, sending
+          # the controller into infinite recursion the moment Rails tries to
+          # log anything during render. Route maps GET /config/sdwan → this
+          # action via routes.rb.
+          def show_config
             instance = current_instance
             peers = ::Sdwan::Peer.includes(:network, :keys)
                                  .where(node_instance_id: instance.id)
@@ -35,7 +42,15 @@ module Api
             render_success(
               instance_id: instance.id,
               networks: views,
-              compiled_at: Time.current.iso8601
+              compiled_at: Time.current.iso8601,
+              # Phase N0 — Ed25519 public keys the agent will accept when
+              # verifying MC envelopes. Scoped to constellations belonging
+              # to this instance's account.
+              constellations: trusted_constellations_for(instance),
+              # Phase N1a — per-host VRF assignment list, consumed
+              # directly by vrf_applier. Includes only assignments in
+              # compilable state (active or draining).
+              vrf_assignments: vrf_assignments_for(instance)
             )
           end
 
@@ -105,6 +120,47 @@ module Api
             Time.parse(raw.to_s)
           rescue ArgumentError
             Time.current
+          end
+
+          # Phase N0 — trusted constellation pubkeys for this instance.
+          # Currently scoped to the instance's account; cross-account
+          # federation trust will extend this in N2 when constellations
+          # become first-class.
+          def trusted_constellations_for(instance)
+            ::Sdwan::ConstellationSigningKey
+              .where(account_id: instance.account_id)
+              .map do |key|
+                {
+                  handle: key.handle,
+                  public_key_b64: key.public_key_b64
+                }
+              end
+          end
+
+          # Phase N1a — per-host VRF assignments, one entry per network
+          # this instance has joined. The agent's vrf_applier consumes
+          # this list directly; ordering is irrelevant.
+          def vrf_assignments_for(instance)
+            ::Sdwan::HostVrfAssignment
+              .where(node_instance_id: instance.id, state: %w[active draining])
+              .includes(:network)
+              .map do |hva|
+                net = hva.network
+                local_addrs = net.peers
+                                 .where(node_instance_id: instance.id)
+                                 .pluck(:assigned_address)
+                                 .map { |a| a.to_s.split("/").first }
+                {
+                  vrf_name: hva.vrf_name,
+                  table_id: hva.table_id,
+                  network_handle: net.network_handle,
+                  # Phase N1a follow-up — derive bound_iface from the
+                  # HVA's short_id (single source of truth) so the
+                  # WG iface name matches the disambiguated VRF name.
+                  bound_iface: hva.wg_iface_name,
+                  source_addrs: local_addrs
+                }
+              end
           end
         end
       end

@@ -419,7 +419,12 @@ Rails.application.routes.draw do
           # SDWAN desired-state pull (the architectural pivot — the agent reads
           # per-peer config on each heartbeat tick instead of waiting for a
           # task-lease push). Slice 1.
-          get "config/sdwan", to: "sdwan#config"
+          # NOTE: action is `show_config` (not `config`) because Rails
+          # delegates `controller.config` → `controller.config.logger`
+          # via AbstractController::Logger; an action named `config`
+          # would shadow that delegate and trigger infinite recursion
+          # the moment Rails tried to log anything during render.
+          get "config/sdwan", to: "sdwan#show_config"
 
           # Status, heartbeat, and assigned tasks
           get :status, to: "status#show"
