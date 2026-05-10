@@ -43,12 +43,18 @@ type Manager struct {
 	// Phase N1a: VRF master device manager. Runs BEFORE the per-network
 	// loop so each WG iface has its target VRF ready at creation time.
 	VRFApplier VRFApplier
-	// Phase O1: host-side bridge manager. Runs BEFORE the per-network
+	// Phase O1+O2: host-side bridge managers. Runs BEFORE the per-network
 	// loop so any bridge a libvirt domain expects to attach a tap iface
-	// to exists by the time the WG iface is created. Strategy interface;
-	// LinuxBridgeApplier today, OvsBridgeApplier in Phase O2 selected
-	// per host's network_profile.
-	BridgeApplier BridgeApplier
+	// to exists by the time the WG iface is created.
+	//
+	// Slice rather than single applier because the strategy partition is
+	// by DesiredBridge.Kind: LinuxBridgeApplier handles `linux`-kind
+	// bridges, OvsBridgeApplier handles `ovs`-kind. Both always run; each
+	// filters by Kind. The platform compiler stamps Kind per host based
+	// on the host's network_profile (lightweight = linux-only payload,
+	// heavyweight = ovs-only payload), so on lightweight hosts the OVS
+	// applier is a no-op (and ovs-vsctl need not even be installed).
+	BridgeAppliers []BridgeApplier
 	// Phase N0: per-(peer, network) MC cache + Ed25519 trust store.
 	// The forwarding gate refuses to bring up tunnels without a valid
 	// cached MC.
@@ -77,7 +83,10 @@ func NewManager(client *transport.Client, applier WgApplier, onError func(string
 		FrrApplier:      NewShellFrrApplier(),
 		FrrObserver:     NewShellFrrObserver(),
 		VRFApplier:      NewShellVRFApplier(),
-		BridgeApplier:   NewLinuxBridgeApplier(),
+		BridgeAppliers: []BridgeApplier{
+			NewLinuxBridgeApplier(),
+			NewOvsBridgeApplier(),
+		},
 		MCVerifier:      NewMCVerifier(),
 		OnError:         onError,
 	}
@@ -115,13 +124,19 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		}
 	}
 
-	// Phase O1: ensure all host-side bridges exist BEFORE the per-network
-	// loop runs. Errors are recorded but don't abort the loop; per-bridge
-	// failures are best-effort (e.g. a bridge with attached tap interfaces
-	// can't be deleted, but the next reconcile after detach will succeed).
-	if m.BridgeApplier != nil {
-		if err := m.BridgeApplier.Apply(ctx, desired.HostBridges); err != nil {
-			m.recordError("apply_bridges", err)
+	// Phase O1+O2: ensure all host-side bridges exist BEFORE the
+	// per-network loop runs. Errors are recorded but don't abort the
+	// loop; per-bridge failures are best-effort (e.g. a bridge with
+	// attached tap interfaces can't be deleted, but the next reconcile
+	// after detach will succeed). Each registered BridgeApplier filters
+	// by DesiredBridge.Kind, so iterating the full slice with the full
+	// payload is safe — they partition the work, never duplicate it.
+	for i, applier := range m.BridgeAppliers {
+		if applier == nil {
+			continue
+		}
+		if err := applier.Apply(ctx, desired.HostBridges); err != nil {
+			m.recordError(fmt.Sprintf("apply_bridges[%d]", i), err)
 		}
 	}
 
