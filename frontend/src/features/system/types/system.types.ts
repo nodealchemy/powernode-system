@@ -584,6 +584,18 @@ export interface SystemOverviewStats {
     resources: number;
     assignments: number;
   };
+  sdwan?: {
+    networks: number;
+    host_bridges: number;
+    bridges_by_kind: {
+      linux: number;
+      ovs: number;
+    };
+    ovn_deployments: number;
+    ovn_active: number;
+    ipfix_collectors: number;
+    ipfix_active: number;
+  };
   volumes: {
     total: number;
     total_size_gb: number;

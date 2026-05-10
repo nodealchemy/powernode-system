@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   Server, Package, FileText, Settings, Activity, Boxes,
   Play, CheckCircle, XCircle, Clock,
-  RefreshCw, ArrowRight, Layers, Globe
+  RefreshCw, ArrowRight, Layers, Globe,
+  Network as NetworkIcon, Shield as ShieldIcon, Gauge
 } from 'lucide-react';
 import { Card, MetricCard } from '@/shared/components/ui/Card';
 import { Button } from '@/shared/components/ui/Button';
@@ -186,6 +187,64 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
             onClick={() => navigate('/app/system/tasks')}
           />
         </div>
+
+        {/* SDWAN Overview — Phase O6 follow-up. Hidden when the operator
+            lacks SDWAN read permissions (overviewApi softFetches return
+            zeros + the `sdwan` block stays optional in the types so the
+            section vanishes cleanly rather than rendering an empty row). */}
+        {stats.sdwan && (
+          stats.sdwan.networks > 0 ||
+          stats.sdwan.host_bridges > 0 ||
+          stats.sdwan.ovn_deployments > 0 ||
+          stats.sdwan.ipfix_collectors > 0
+        ) && (
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-theme-primary">SDWAN</h3>
+              <Button variant="outline" size="sm" onClick={() => navigate('/app/system/sdwan')}>
+                Open SDWAN <ArrowRight className="w-4 h-4 ml-1" />
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <MetricCard
+                title="SDWAN Networks"
+                value={stats.sdwan.networks}
+                icon={<NetworkIcon className="w-5 h-5" />}
+                description="IPv6 overlay networks"
+                onClick={() => navigate('/app/system/sdwan/networks')}
+              />
+              <MetricCard
+                title="Host Bridges"
+                value={stats.sdwan.host_bridges}
+                icon={<Layers className="w-5 h-5" />}
+                description={`${stats.sdwan.bridges_by_kind.linux} Linux, ${stats.sdwan.bridges_by_kind.ovs} OVS`}
+                onClick={() => navigate('/app/system/sdwan/host_bridges')}
+              />
+              <MetricCard
+                title="OVN Deployments"
+                value={stats.sdwan.ovn_deployments}
+                icon={<ShieldIcon className="w-5 h-5" />}
+                description={
+                  stats.sdwan.ovn_deployments === 0
+                    ? 'Heavyweight profile only'
+                    : `${stats.sdwan.ovn_active} active`
+                }
+                onClick={() => navigate('/app/system/sdwan/ovn')}
+              />
+              <MetricCard
+                title="IPFIX Collectors"
+                value={stats.sdwan.ipfix_collectors}
+                icon={<Gauge className="w-5 h-5" />}
+                description={
+                  stats.sdwan.ipfix_collectors === 0
+                    ? 'Flow telemetry export'
+                    : `${stats.sdwan.ipfix_active} active`
+                }
+                onClick={() => navigate('/app/system/sdwan/ipfix')}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Operations Status & Module Distribution */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

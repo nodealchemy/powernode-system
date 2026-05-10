@@ -10,8 +10,26 @@ import type {
   SystemOverviewStats,
   SystemRecentActivity,
 } from '../../types/system.types';
+import type {
+  SdwanNetwork,
+  SdwanHostBridge,
+  SdwanOvnDeploymentSummary,
+  SdwanIpfixCollector,
+} from '../../types/sdwan.types';
 import { extractData } from './helpers';
 import type { ApiEnvelope, PaginatedEnvelope } from './types';
+
+// Promise wrapper that swallows API errors and returns the supplied
+// default. Used for SDWAN endpoints in the overview aggregator so a
+// missing permission (operator without sdwan.*.read) returns 0 counts
+// rather than blowing up the whole overview page.
+async function softFetch<T>(promise: Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await promise;
+  } catch {
+    return fallback;
+  }
+}
 
 // Aggregator endpoint: parallel fetch the catalog summaries to populate the
 // overview dashboard. Each individual call uses the typed envelope so the
@@ -26,6 +44,10 @@ export const overviewApi = {
       modulesRes,
       operationsRes,
       puppetModulesRes,
+      sdwanNetworksRes,
+      sdwanHostBridgesRes,
+      sdwanOvnDeploymentsRes,
+      sdwanIpfixCollectorsRes,
     ] = await Promise.all([
       apiClient.get<PaginatedEnvelope<{ nodes: SystemNode[] }>>('/system/nodes'),
       apiClient.get<PaginatedEnvelope<{ node_templates: SystemNodeTemplate[] }>>('/system/node_templates'),
@@ -34,6 +56,25 @@ export const overviewApi = {
       apiClient.get<PaginatedEnvelope<{ node_modules: SystemNodeModule[] }>>('/system/node_modules'),
       apiClient.get<PaginatedEnvelope<{ tasks: SystemTask[] }>>('/system/tasks'),
       apiClient.get<PaginatedEnvelope<{ puppet_modules: SystemPuppetModule[] }>>('/system/puppet_modules'),
+      // SDWAN endpoints — permission-gated. softFetch swallows 403s so an
+      // operator who can see the rest of the system but lacks SDWAN
+      // permissions still gets a working overview (SDWAN counts read 0).
+      softFetch(
+        apiClient.get<PaginatedEnvelope<{ networks: SdwanNetwork[] }>>('/system/sdwan/networks'),
+        { data: { data: { networks: [] }, meta: { total_count: 0, total_pages: 0, current_page: 1, per_page: 0 } } } as never
+      ),
+      softFetch(
+        apiClient.get<ApiEnvelope<{ host_bridges: SdwanHostBridge[] }>>('/system/sdwan/host_bridges'),
+        { data: { data: { host_bridges: [] } } } as never
+      ),
+      softFetch(
+        apiClient.get<ApiEnvelope<{ ovn_deployments: SdwanOvnDeploymentSummary[] }>>('/system/sdwan/ovn_deployments'),
+        { data: { data: { ovn_deployments: [] } } } as never
+      ),
+      softFetch(
+        apiClient.get<ApiEnvelope<{ ipfix_collectors: SdwanIpfixCollector[] }>>('/system/sdwan/ipfix_collectors'),
+        { data: { data: { ipfix_collectors: [] } } } as never
+      ),
     ]);
 
     const nodes = extractData(nodesRes).nodes ?? [];
@@ -43,6 +84,11 @@ export const overviewApi = {
     const modules = extractData(modulesRes).node_modules ?? [];
     const operations = extractData(operationsRes).tasks ?? [];
     const puppetModules = extractData(puppetModulesRes).puppet_modules ?? [];
+
+    const sdwanNetworks = extractData(sdwanNetworksRes).networks ?? [];
+    const sdwanHostBridges = extractData(sdwanHostBridgesRes).host_bridges ?? [];
+    const sdwanOvnDeployments = extractData(sdwanOvnDeploymentsRes).ovn_deployments ?? [];
+    const sdwanIpfixCollectors = extractData(sdwanIpfixCollectorsRes).ipfix_collectors ?? [];
 
     return {
       nodes: {
@@ -100,6 +146,18 @@ export const overviewApi = {
       },
       networks: {
         total: 0,
+      },
+      sdwan: {
+        networks: sdwanNetworks.length,
+        host_bridges: sdwanHostBridges.length,
+        bridges_by_kind: {
+          linux: sdwanHostBridges.filter(b => b.kind === 'linux').length,
+          ovs: sdwanHostBridges.filter(b => b.kind === 'ovs').length,
+        },
+        ovn_deployments: sdwanOvnDeployments.length,
+        ovn_active: sdwanOvnDeployments.filter(d => d.status === 'active').length,
+        ipfix_collectors: sdwanIpfixCollectors.length,
+        ipfix_active: sdwanIpfixCollectors.filter(c => c.state === 'active').length,
       },
     };
   },
