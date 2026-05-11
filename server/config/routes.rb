@@ -75,8 +75,19 @@ Rails.application.routes.draw do
             # this module. Used by the operator UI's "import" button and
             # by the Gitea webhook ingest path.
             post :import_manifest
+            # Roll a module's spec back to a prior NodeModuleVersion. Body
+            # may carry target_version_id + changelog. Defaults to the
+            # previous version when target_version_id omitted.
+            post :rollback
           end
           resources :module_puppet_assignments, only: %i[index create]
+        end
+
+        # NodeModuleVersion lifecycle — operator-driven AASM transitions
+        # through built → staging → blessed → live → retired. Body:
+        # { target_state: "<state>" }. See NodeModuleVersion::PROMOTION_TRANSITIONS.
+        resources :node_module_versions, only: [] do
+          member { post :promote }
         end
         resources :node_module_categories
         resources :module_dependencies
