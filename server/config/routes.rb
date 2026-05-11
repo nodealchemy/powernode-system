@@ -104,6 +104,13 @@ Rails.application.routes.draw do
         # to any account, mutations require system.package_repositories.manage_shared.
         resources :package_repositories do
           post :sync, on: :member
+          # Stale-link audit + cleanup. Stale = auto_generated transitive
+          # links whose NodeModule is no longer referenced by any template
+          # or assignment. clean_stale_links destroys link + module
+          # (cascade) — required before destroying a repo since the FK
+          # is on_delete: :restrict.
+          get :stale_links, on: :member
+          post :clean_stale_links, on: :member
         end
 
         # Browse + materialize endpoints over the synced package catalog.

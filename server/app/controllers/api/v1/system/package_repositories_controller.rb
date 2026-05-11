@@ -13,7 +13,7 @@ module Api
       #   - system.package_repositories.manage_shared (required for shared repos)
       class PackageRepositoriesController < BaseController
         before_action :set_account
-        before_action :set_repository, only: %i[show update destroy sync]
+        before_action :set_repository, only: %i[show update destroy sync stale_links clean_stale_links]
 
         def index
           require_permission("system.package_repositories.view")
@@ -101,6 +101,59 @@ module Api
             obsoleted:     result.obsoleted,
             package_count: result.package_count,
             error:         result.error
+          )
+        end
+
+        # GET /api/v1/system/package_repositories/:id/stale_links
+        # Lists "stale" PackageModuleLink rows — transitive links whose
+        # NodeModule is no longer referenced by any template or assignment.
+        # Operators use this to audit cruft before destroying a repo (the
+        # destroy FK constraint is on_delete: :restrict and fails when
+        # any link exists).
+        def stale_links
+          require_permission("system.package_repositories.view")
+
+          stale = ::System::PackageRepositoryStaleLinkService
+                    .find_stale(repository: @repository)
+                    .includes(:node_module).to_a
+
+          render_success(
+            package_repository_id: @repository.id,
+            stale_count: stale.size,
+            stale_links: stale.map { |link|
+              {
+                id: link.id,
+                package_name: link.package_name,
+                package_version: link.package_version,
+                architecture: link.architecture,
+                node_module_id: link.node_module_id,
+                node_module_name: link.node_module&.name,
+                last_synced_at: link.last_synced_at
+              }
+            }
+          )
+        end
+
+        # POST /api/v1/system/package_repositories/:id/clean_stale_links
+        # Body: { force: bool, dry_run: bool }
+        # Destroys the stale links + their auto-generated NodeModules
+        # (cascade hits links, versions, module_artifacts). force defaults
+        # to false — without force the call is treated as dry_run.
+        def clean_stale_links
+          require_permission("system.package_repositories.delete")
+
+          force   = ActiveModel::Type::Boolean.new.cast(params[:force])
+          dry_run = ActiveModel::Type::Boolean.new.cast(params[:dry_run])
+
+          result = ::System::PackageRepositoryStaleLinkService.clean!(
+            repository: @repository, force: force, dry_run: dry_run
+          )
+
+          render_success(
+            package_repository_id: @repository.id,
+            destroyed: result.destroyed,
+            kept: result.kept,
+            dry_run: result.dry_run
           )
         end
 
