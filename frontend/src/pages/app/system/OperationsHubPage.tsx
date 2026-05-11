@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, Settings } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -10,6 +10,7 @@ import {
   CiWorkersTab,
   CiWebhooksTab,
 } from '@system/features/system/components/operations';
+import { SystemSettingsPanel } from '@system/features/system/components/settings/SystemSettingsPanel';
 
 // Phase B.3 — Operations hub. Consolidates Fleet Dashboard, Tasks
 // (formerly /system/tasks "Operations"), CI Workers, and CI Webhooks
@@ -44,11 +45,16 @@ const OperationsHubPage: React.FC = () => {
 
   const [ciWorkersActions, setCiWorkersActions] = useState<{ openCreate: () => void } | null>(null);
   const [ciWebhooksActions, setCiWebhooksActions] = useState<{ openCreate: () => void } | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const canCreateCiWorkers = hasPermission('system.ci_workers.create');
   const canCreateCiWebhooks = hasPermission('system.disk_image_webhooks.create');
+  const canViewSettings = hasPermission('system.infra_tasks.read');
 
   const pageActions: PageAction[] = [];
+  if (canViewSettings) {
+    pageActions.push({ label: 'Settings', onClick: () => setShowSettings(true), variant: 'secondary', icon: Settings });
+  }
   if (activeTabKey === 'ci-workers' && canCreateCiWorkers && ciWorkersActions) {
     pageActions.push({ label: 'New CI worker', onClick: ciWorkersActions.openCreate, variant: 'primary', icon: Plus });
   } else if (activeTabKey === 'ci-webhooks' && canCreateCiWebhooks && ciWebhooksActions) {
@@ -107,6 +113,8 @@ const OperationsHubPage: React.FC = () => {
         <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
         <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
       </Routes>
+
+      <SystemSettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </PageContainer>
   );
 };
