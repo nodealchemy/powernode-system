@@ -18,11 +18,11 @@ import SdwanRoutingPage from './SdwanRoutingPage';
 // SDWAN Federation, SDWAN Routing) into one tabbed page following the
 // canonical AdminSettingsPage pattern.
 //
-// Architecture note: per-network detail (SdwanNetworkDetailPage) lives
-// at the SIBLING route /app/system/sdwan/networks/:id/* — registered
-// BEFORE this hub in register.ts so React Router matches the more
-// specific path first. Detail page keeps its own PageContainer + 7
-// internal tabs; clicking back returns to the hub's Networks tab.
+// Architecture note: per-network detail surfaces as a modal triggered
+// from the Networks tab (eye icon on each row). NetworkDetailModal
+// hosts the full management UX (7 tabs: topology, peers, firewall,
+// access, VIPs, routing, port mappings) so operators stay in the hub
+// throughout. No standalone per-network page exists.
 
 type TabKey = 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix' | 'flows';
 

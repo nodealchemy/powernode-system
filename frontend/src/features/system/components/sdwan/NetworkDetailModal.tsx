@@ -44,22 +44,19 @@ const TAB_LABELS: Record<TabKey, string> = {
 };
 
 /**
- * NetworkDetailModal — full SDWAN network management surface as a
- * modal (replaces the prior standalone /app/system/sdwan/networks/:id
- * page). Hosts the same 7 tabs the page did:
+ * NetworkDetailModal — full SDWAN network management surface. The
+ * canonical detail + management UX for an SDWAN network. Hosts 7 tabs:
  *
  *   topology · peers · firewall · access · vips · routing · port_mappings
  *
- * Per-tab action buttons render in the modal header (mirrors the page's
- * PageContainer.actions pattern). Nested modals (PeerAttachModal,
- * FirewallRuleCreateModal, PeerEditModal, etc.) stack on top via the
- * Modal component's portal — z-index handled by the portal layer.
+ * Per-tab action buttons render in the modal header (operator clicks
+ * Edit network / Attach peer / Add rule / etc.). Nested modals
+ * (PeerAttachModal, FirewallRuleCreateModal, PeerEditModal, etc.)
+ * stack on top via the Modal component's portal — z-index handled by
+ * the portal layer.
  *
- * Direct URL access at /app/system/sdwan/networks/:id is preserved by
- * SdwanNetworkDetailPage, which is now a thin wrapper that renders
- * this modal in `isOpen` state with a close handler that navigates to
- * the networks list. List-row interaction in NetworksTab opens the
- * modal directly without changing routes.
+ * No standalone page equivalent — operators reach this exclusively
+ * through the SDWAN hub Networks tab (eye icon on each row).
  */
 export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
   network,

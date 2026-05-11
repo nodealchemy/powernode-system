@@ -33,10 +33,9 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
     return () => onActionsReady?.(null);
   }, [onActionsReady]);
 
-  // Replaced page-navigate with modal-open. The detail page route still
-  // exists at /app/system/sdwan/networks/:id for direct URL access
-  // (bookmarking, deep-linking from external tools); list-row interaction
-  // is now expand-inline + detail modal.
+  // Modal-first: the eye icon on a list row opens NetworkDetailModal,
+  // which hosts the full management surface (7 tabs). No standalone
+  // detail page exists.
   const handleOpenDetails = useCallback((n: SdwanNetwork) => {
     setDetailNetwork(n);
   }, []);

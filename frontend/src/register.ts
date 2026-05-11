@@ -29,8 +29,6 @@ const redirectTo = (to: string): ComponentType<unknown> =>
 const SystemOverviewPage = lazyPage(() => import('./pages/app/system/SystemOverviewPage'));
 // Drill-down pages still routed standalone (no tab equivalent).
 const TemplateComposerPage = lazyPage(() => import('./pages/app/system/TemplateComposerPage'));
-const BootReplayPage = lazyPage(() => import('./pages/app/system/BootReplayPage'));
-const SdwanNetworkDetailPage = lazyPage(() => import('./pages/app/system/SdwanNetworkDetailPage'));
 const InstancePoolsPage = lazyPage(() => import('./pages/app/system/InstancePoolsPage'));
 // Phase B hubs.
 const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
@@ -74,7 +72,6 @@ export function register(): void {
 
     // Drill-down pages routed standalone (no tab equivalent).
     { path: '/system/templates/compose', component: TemplateComposerPage },
-    { path: '/system/boot-replay/:instance_id', component: BootReplayPage },
     { path: '/system/instance-pools', component: InstancePoolsPage },
 
     // Phase B hubs — path-based tabs delegate to nested <Routes>.
@@ -82,11 +79,8 @@ export function register(): void {
     { path: '/system/catalog/*', component: CatalogPage },
     { path: '/system/operations/*', component: OperationsHubPage },
 
-    // SDWAN — per-network detail registers FIRST as a more specific
-    // sibling so /sdwan/networks/:id/topology routes to the detail page
-    // (which has its own chrome + 7 internal tabs) rather than into
-    // the hub.
-    { path: '/system/sdwan/networks/:id/*', component: SdwanNetworkDetailPage },
+    // SDWAN — single hub route. Network detail surfaces as a modal
+    // triggered from the Networks tab; no standalone detail page.
     { path: '/system/sdwan/*', component: SdwanHubPage },
   ]);
 

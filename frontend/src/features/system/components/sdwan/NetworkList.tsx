@@ -4,10 +4,8 @@ import { sdwanApi } from '../../services/api/sdwanApi';
 import type { SdwanNetwork } from '../../types/sdwan.types';
 
 interface NetworkListProps {
-  // Opens the detail modal for the given network. Replaces the prior
-  // `onView` navigate-to-page behavior — the page route still exists
-  // for direct URL access (bookmarking, /app/system/sdwan/networks/:id),
-  // but list-row interaction is now expand-inline + modal-open.
+  // Opens the detail modal for the given network. The modal is the
+  // canonical detail + management UX — there is no standalone page.
   onOpenDetails: (network: SdwanNetwork) => void;
   onDelete?: (network: SdwanNetwork) => void;
   refreshKey?: number;
