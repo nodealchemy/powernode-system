@@ -81,7 +81,10 @@ module Ai
         "system_sdwan_create_ovn_logical_switch_port" => "sdwan.ovn.manage",
         "system_sdwan_compile_ovn_plan"            => "sdwan.ovn.read",
         "system_sdwan_create_ipfix_collector"      => "sdwan.ipfix.manage",
-        "system_sdwan_list_ipfix_collectors"       => "sdwan.ipfix.read"
+        "system_sdwan_list_ipfix_collectors"       => "sdwan.ipfix.read",
+        # Phase O6 follow-up — OVN ACLs (multi-tenant isolation)
+        "system_sdwan_create_ovn_acl"              => "sdwan.ovn.manage",
+        "system_sdwan_list_ovn_acls"               => "sdwan.ovn.read"
       }.freeze
 
       def self.definition
@@ -532,6 +535,25 @@ module Ai
           "system_sdwan_list_ipfix_collectors" => {
             description: "List IPFIX collectors for the current account.",
             parameters: {}
+          },
+          # ─── Phase O6 follow-up — OVN ACLs ──────────────────────────────
+          "system_sdwan_create_ovn_acl" => {
+            description: "Create an OVN ACL (firewall rule) on a logical switch. ACLs operate at the intra-host / logical-network scope (compiled to OVS OpenFlow via OVN's logical-flow translation) — distinct from SDWAN nftables firewall rules which operate at inter-peer scope. Heavyweight-profile only in effect.",
+            parameters: {
+              logical_switch_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitch id this ACL applies to" },
+              name: { type: "string", required: true, description: "Operator-chosen name (unique per switch, max 63 chars, [letters/digits/_/-/.] only)" },
+              direction: { type: "string", required: true, description: "from-lport (egress from source pod/VM) | to-lport (ingress to destination)" },
+              priority: { type: "integer", required: false, description: "0-32767, higher first; default 1000. Ties broken by lexicographic match-string order." },
+              match: { type: "string", required: true, description: "OVN match expression, e.g. `ip4.src == 10.0.0.0/8 && tcp.dst == 5432`. Raw OVN syntax — OVN's parser rejects bad values at apply time." },
+              action: { type: "string", required: true, description: "allow | drop | reject | allow-related" }
+            }
+          },
+          "system_sdwan_list_ovn_acls" => {
+            description: "List OVN ACLs for the current account. Optionally filter by logical_switch_id (per-switch scope) or sdwan_ovn_deployment_id (per-deployment scope). With no filter, returns every active ACL across every switch in every deployment.",
+            parameters: {
+              logical_switch_id: { type: "string", required: false, description: "Restrict to ACLs on this switch" },
+              sdwan_ovn_deployment_id: { type: "string", required: false, description: "Restrict to ACLs on switches under this deployment" }
+            }
           }
         }
       end
@@ -615,6 +637,8 @@ module Ai
         when "system_sdwan_create_ovn_logical_switch"      then create_ovn_logical_switch(params)
         when "system_sdwan_create_ovn_logical_switch_port" then create_ovn_logical_switch_port(params)
         when "system_sdwan_compile_ovn_plan"               then compile_ovn_plan(params)
+        when "system_sdwan_create_ovn_acl"                 then create_ovn_acl(params)
+        when "system_sdwan_list_ovn_acls"                  then list_ovn_acls(params)
         when "system_sdwan_create_ipfix_collector"         then create_ipfix_collector(params)
         when "system_sdwan_list_ipfix_collectors"          then list_ipfix_collectors(params)
         else error_result("Unknown action: #{params[:action]}")
@@ -1732,6 +1756,62 @@ module Ai
           target_endpoint: c.target_endpoint,
           settings: c.settings,
           created_at: c.created_at&.iso8601
+        }
+      end
+
+      # ─── Phase O6 follow-up — OVN ACLs ──────────────────────────────
+
+      def create_ovn_acl(params)
+        switch = account_ovn_logical_switches.find(params[:logical_switch_id])
+        acl = switch.acls.create!(
+          account: @account,
+          name: params[:name],
+          direction: params[:direction].to_s,
+          priority: params[:priority].present? ? params[:priority].to_i : ::Sdwan::OvnAcl::DEFAULT_PRIORITY,
+          match: params[:match],
+          action: params[:action].to_s
+        )
+        # Auto-activate so the compiler emits in the same call. Mirrors
+        # the SdwanOvnApplyAclExecutor skill's auto-activate step.
+        acl.mark_active!
+        success_result(ovn_acl: serialize_ovn_acl(acl))
+      end
+
+      def list_ovn_acls(params)
+        scope = ::Sdwan::OvnAcl.where(account_id: @account.id)
+        scope = scope.where(sdwan_ovn_logical_switch_id: params[:logical_switch_id]) if params[:logical_switch_id].present?
+        if params[:sdwan_ovn_deployment_id].present?
+          switch_ids = account_ovn_logical_switches
+                         .where(sdwan_ovn_deployment_id: params[:sdwan_ovn_deployment_id])
+                         .pluck(:id)
+          scope = scope.where(sdwan_ovn_logical_switch_id: switch_ids)
+        end
+        # Compiler order: priority desc, name asc.
+        acls = scope.order(priority: :desc, name: :asc).to_a
+        success_result(
+          ovn_acls: acls.map { |a| serialize_ovn_acl(a) },
+          count: acls.size,
+          filters: {
+            logical_switch_id: params[:logical_switch_id],
+            sdwan_ovn_deployment_id: params[:sdwan_ovn_deployment_id]
+          }.compact
+        )
+      end
+
+      def serialize_ovn_acl(a)
+        {
+          id: a.id,
+          account_id: a.account_id,
+          logical_switch_id: a.sdwan_ovn_logical_switch_id,
+          name: a.name,
+          direction: a.direction,
+          priority: a.priority,
+          match: a.match,
+          action: a.action,
+          state: a.state,
+          activated_at: a.activated_at&.iso8601,
+          removed_at: a.removed_at&.iso8601,
+          created_at: a.created_at&.iso8601
         }
       end
     end
