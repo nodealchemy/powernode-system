@@ -38,7 +38,7 @@ RSpec.describe System::NodeEnrollmentService do
         source_ip: "10.1.2.3"
       )
 
-      expect(result.ok?).to be true
+      expect(result.success?).to be true
       expect(result.cert_pem).to include("BEGIN CERTIFICATE")
       expect(result.ca_chain_pem).to include("BEGIN CERTIFICATE")
       expect(result.node_instance).to eq(instance)
@@ -71,7 +71,7 @@ RSpec.describe System::NodeEnrollmentService do
       result = described_class.enroll!(
         bootstrap_token_plaintext: "not-a-real-token", csr_pem: csr_pem
       )
-      expect(result.ok?).to be false
+      expect(result.success?).to be false
       expect(result.error).to match(/invalid or expired/)
     end
 
@@ -79,7 +79,7 @@ RSpec.describe System::NodeEnrollmentService do
       result = described_class.enroll!(
         bootstrap_token_plaintext: token_plaintext, csr_pem: "this is not a real CSR"
       )
-      expect(result.ok?).to be false
+      expect(result.success?).to be false
       expect(result.error).to match(/CSR\/CA failure/)
     end
 
@@ -90,7 +90,7 @@ RSpec.describe System::NodeEnrollmentService do
       replay = described_class.enroll!(
         bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem
       )
-      expect(replay.ok?).to be false
+      expect(replay.success?).to be false
       expect(replay.error).to match(/invalid or expired/)
     end
   end

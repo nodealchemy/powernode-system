@@ -7,7 +7,7 @@ module System
   #
   # Reference: Golden Eclipse plan — node_api Contract (POST /enroll); M0.O.
   class NodeEnrollmentService
-    Result = Struct.new(:ok?, :error, :node_certificate, :cert_pem, :ca_chain_pem,
+    Result = Struct.new(:success?, :error, :node_certificate, :cert_pem, :ca_chain_pem,
                         :node_instance, keyword_init: true)
 
     class EnrollmentError < StandardError; end
@@ -75,7 +75,7 @@ module System
       end
 
       Result.new(
-        ok?: true,
+        success?: true,
         node_certificate: cert_record,
         cert_pem:     issued[:cert_pem],
         ca_chain_pem: issued[:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem,
@@ -122,7 +122,7 @@ module System
       end
 
       Result.new(
-        ok?: true,
+        success?: true,
         node_certificate: cert_record,
         cert_pem:     issued[:cert_pem],
         ca_chain_pem: issued[:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem,
@@ -163,7 +163,7 @@ module System
     end
 
     def failure(message)
-      Result.new(ok?: false, error: message)
+      Result.new(success?: false, error: message)
     end
   end
 end
