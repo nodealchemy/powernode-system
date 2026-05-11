@@ -53,13 +53,19 @@ FactoryBot.define do
     specs { {} }
   end
 
-  # System::NodeArchitecture
+  # System::NodeArchitecture — platform-wide catalog (no account scoping).
   factory :system_node_architecture, class: "System::NodeArchitecture" do
-    association :account
-    sequence(:name) { |n| "Architecture #{n}" }
+    sequence(:name) { |n| "test_arch_#{n}" }
+    family { "other" }
+    is_canonical { false }
     kernel_options { "" }
     enabled { true }
     public { false }
+
+    trait :canonical do
+      is_canonical { true }
+      family { "x86" }
+    end
 
     trait :with_checksums do
       kernel_checksum { Digest::SHA256.hexdigest("kernel_data") }

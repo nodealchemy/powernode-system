@@ -6,7 +6,7 @@ module System
 
     # Associations
     belongs_to :account
-    belongs_to :node_architecture, class_name: "System::NodeArchitecture"
+    belongs_to :node_architecture, class_name: "System::NodeArchitecture", counter_cache: :node_platform_count
     has_many :node_templates, class_name: "System::NodeTemplate", dependent: :restrict_with_error
 
     # Disk-image publication history (Phase 2 — Chunk 1).
