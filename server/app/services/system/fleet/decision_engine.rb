@@ -99,6 +99,21 @@ module System
         "system.project_cost_breach" => {
           skill: nil,
           action_category: "project.cost_control"
+        },
+        # CVE Responder bindings (2026-05-11 wiring completion). The
+        # binding's skill is CveResponseExecutor — a side-effect-free
+        # triage planner whose output lands in the approval request's
+        # metadata for require_approval flows. The actual orchestrator
+        # (CveRemediationOrchestrationExecutor) runs separately at
+        # gate-time via CveResponderService#dispatch_inline for
+        # notify_and_proceed, keeping invoke_skill side-effect-free.
+        "system.cve_critical_published" => {
+          skill: ::System::Ai::Skills::CveResponseExecutor,
+          action_category: "system.cve_remediate"
+        },
+        "system.module_critical_upgrade_ready" => {
+          skill: ::System::Ai::Skills::CveResponseExecutor,
+          action_category: "system.module_critical_upgrade_ready"
         }
       }.freeze
 
@@ -211,12 +226,47 @@ module System
         case skill_class.name
         when "System::Ai::Skills::DriftRemediateExecutor"
           executor.execute(instance_id: signal.dig(:payload, "instance_id"))
+        when "System::Ai::Skills::CveResponseExecutor"
+          invoke_cve_response(executor, signal)
         else
           nil
         end
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] skill invocation failed: #{e.class}: #{e.message}")
         { success: false, error: e.message }
+      end
+
+      # Side-effect-free triage so the resulting plan lands in approval
+      # request metadata for operator review. The CveResponderService
+      # handles the actual dispatch separately at gate-time so this
+      # method stays pure (in line with the "DecisionEngine.invoke_skill
+      # produces a plan, doesn't act" contract).
+      #
+      # Handles two signal payload shapes:
+      #   - cve_critical_published: payload.cve_id (singular)
+      #   - module_critical_upgrade_ready: payload.cve_ids (plural — same
+      #     module may carry multiple open exposures; triage the first as
+      #     a representative plan for the approval/notification).
+      def invoke_cve_response(executor, signal)
+        payload = signal.payload || {}
+        cve_id = payload["cve_id"].presence || Array(payload["cve_ids"]).first
+        return nil if cve_id.blank?
+
+        # Pull affected_packages from the signal payload (CvePublishedSensor
+        # includes them) or fall back to the persisted Cve row.
+        affected = Array(payload["affected_packages"]).map { |n| { name: n.to_s } }
+        if affected.empty? && defined?(::System::Cve)
+          cve = ::System::Cve.find_by(cve_id: cve_id)
+          affected = cve&.normalized_affected_packages.to_a
+        end
+        return nil if affected.empty?
+
+        executor.execute(
+          cve_id: cve_id,
+          severity: payload["cve_severity"] || signal.severity.to_s,
+          affected_packages: affected,
+          summary: payload["cve_summary"]
+        )
       end
 
       def skill_metadata_payload(signal, skill_result)

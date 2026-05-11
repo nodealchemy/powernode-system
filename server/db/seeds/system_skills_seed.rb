@@ -104,6 +104,25 @@ SKILLS_DATA = [
     PROMPT
   },
   {
+    name: "CVE Remediation Orchestration",
+    slug: "system-cve-remediation-orchestration",
+    description: "Chain the full CVE → exposure → package refresh → rolling upgrade flow for one CVE",
+    category: "security",
+    subdomain: "cve",
+    executor: "System::Ai::Skills::CveRemediationOrchestrationExecutor",
+    tags: %w[cve security remediation orchestration autonomy],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when the CVE Responder agent has decided to act on a
+      CVE (either inline for critical-severity notify_and_proceed, or after
+      operator approval for require_approval). Inputs: cve_id (required),
+      severity (optional), affected_module_ids (optional), exposure_ids
+      (optional). Triages via CveResponseExecutor, dispatches
+      PackageModuleRefreshExecutor for each linked module, plans rolling
+      upgrades for any module that already has a newer blessed version, and
+      transitions named CveExposure rows to remediating state.
+    PROMPT
+  },
+  {
     name: "Docker Provision",
     slug: "system-docker-provision",
     description: "Provision a managed Docker daemon on a NodeInstance — auto-registers as a Devops::DockerHost on the SDWAN overlay",
@@ -485,12 +504,13 @@ else
   puts "    = System Concierge not seeded yet — skipping concierge bindings"
 end
 
-# Fleet Autonomy — broad autonomous: drift_remediate, cve_response, all 4 SDWAN, module_compose, rolling_module_upgrade
+# Fleet Autonomy — broad autonomous: drift_remediate, all 4 SDWAN, module_compose,
+# rolling_module_upgrade, package_repository/module ops. CVE bindings moved to
+# CVE Responder agent block (2026-05-11) as part of the 5-agent split.
 fleet_autonomy = ::Ai::Agent.where(account: account).find_by(name: "Fleet Autonomy")
 if fleet_autonomy
-  %w[
+  fleet_autonomy_slugs = %w[
     system-drift-remediate
-    system-cve-response
     system-sdwan-failover
     system-sdwan-peer-remediate
     system-sdwan-bgp-session-remediate
@@ -500,7 +520,9 @@ if fleet_autonomy
     system-package-repository-sync
     system-package-module-create
     system-package-module-refresh
-  ].each_with_index do |slug, i|
+  ]
+
+  fleet_autonomy_slugs.each_with_index do |slug, i|
     skill = ::Ai::Skill.find_by(slug: slug)
     next unless skill
 
@@ -510,9 +532,49 @@ if fleet_autonomy
     binding.assign_attributes(priority: 100 + i, is_active: true)
     binding.save!
   end
-  puts "    ✓ Bound 11 autonomous-action skills to Fleet Autonomy"
+  puts "    ✓ Bound #{fleet_autonomy_slugs.size} autonomous-action skills to Fleet Autonomy"
+
+  # Clean up the legacy `system-cve-response` binding now that ownership
+  # moved to the CVE Responder agent. Idempotent — destroy_all returns 0
+  # rows after the first run.
+  cve_response_skill = ::Ai::Skill.find_by(slug: "system-cve-response")
+  if cve_response_skill
+    removed = ::Ai::AgentSkill
+      .where(ai_agent_id: fleet_autonomy.id, ai_skill_id: cve_response_skill.id)
+      .destroy_all
+    puts "    🧹 Removed #{removed.size} legacy CVE bindings from Fleet Autonomy" if removed.any?
+  end
 else
   puts "    = Fleet Autonomy not seeded yet — skipping fleet bindings"
+end
+
+# CVE Responder — security-focused autonomous: cve_response, cve_remediation_orchestration,
+# rolling_module_upgrade, package_module_refresh. Added 2026-05-11 to complete
+# the 5-agent split — the CVE Responder agent was seeded 2026-05-10 with policies
+# but no skill bindings; this block finishes the wiring.
+cve_responder = ::Ai::Agent.where(account: account).find_by(name: "CVE Responder")
+if cve_responder
+  cve_responder_slugs = %w[
+    system-cve-response
+    system-cve-remediation-orchestration
+    system-cve-runbook-generate
+    system-rolling-module-upgrade
+    system-package-module-refresh
+  ]
+
+  cve_responder_slugs.each_with_index do |slug, i|
+    skill = ::Ai::Skill.find_by(slug: slug)
+    next unless skill
+
+    binding = ::Ai::AgentSkill.find_or_initialize_by(
+      ai_agent_id: cve_responder.id, ai_skill_id: skill.id
+    )
+    binding.assign_attributes(priority: 100 + i, is_active: true)
+    binding.save!
+  end
+  puts "    ✓ Bound #{cve_responder_slugs.size} security skills to CVE Responder"
+else
+  puts "    = CVE Responder not seeded yet — skipping CVE Responder bindings"
 end
 
 puts "  Done seeding System extension AI skills."

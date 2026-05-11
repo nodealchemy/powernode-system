@@ -59,6 +59,23 @@
     queue: system
     description: "Fleet: ingest CVE feed entries + recompute exposures"
 
+  # CVE Responder autonomy reconcile tick (2026-05-11 wiring completion).
+  # Runs every minute. Hits POST /api/v1/system/worker_api/cve_responder/reconcile
+  # which dispatches to System::CveOps::CveResponderService.tick! per active
+  # account: sensors (CvePublishedSensor, CriticalUpgradeAvailableSensor) →
+  # DecisionEngine → inline dispatch (notify_and_proceed for critical
+  # severity) or ApprovalRequest creation (require_approval) →
+  # CveOps::LearningExtractor.
+  #
+  # Concurrency: Redis lock `system:cve_responder:reconcile:lock` (90s TTL).
+  # Distinct from fleet's lock so the two ticks can interleave without
+  # blocking each other.
+  system_cve_responder_reconcile:
+    cron: "* * * * *"
+    class: "SystemCveResponderReconcileJob"
+    queue: system
+    description: "CVE Responder: scan exposures, decide, dispatch or queue approval"
+
   # FleetEvent retention sweep — nightly at 4:30 AM UTC.
   # Drops routine events older than POWERNODE_FLEET_EVENT_RETENTION_DAYS
   # (default 90); high/critical kept for POWERNODE_FLEET_EVENT_CRITICAL_RETENTION_DAYS

@@ -69,10 +69,18 @@ ensure_cve_trust_score!(admin_account, cve_agent)
 puts "  ✅ CVE Responder agent: #{cve_agent.previously_new_record? ? 'created' : 'updated'}"
 
 cve_policies = {
-  "system.cve_remediate"      => "require_approval",   # patch strategy needs operator review
-  "system.cve_sbom_ingest"    => "auto_approve",       # importing inventory is read-shape
-  "system.cve_exposure_scan"  => "auto_approve",       # scanning produces findings, no mutations
-  "system.cve_auto_remediate" => "block"               # off by default; operators opt in per-policy
+  "system.cve_remediate"               => "require_approval",   # patch strategy needs operator review
+  "system.cve_sbom_ingest"             => "auto_approve",       # importing inventory is read-shape
+  "system.cve_exposure_scan"           => "auto_approve",       # scanning produces findings, no mutations
+  "system.cve_auto_remediate"          => "block",              # off by default; operators opt in per-policy
+  # Fires only when CriticalUpgradeAvailableSensor sees the intersection
+  # of (a) drift on a package-derived module AND (b) an open CveExposure
+  # on that module. The patched upstream version *already exists* — the
+  # only thing left to do is materialize it locally and roll it out. This
+  # is the "proactively upgrade critical modules" path: notify operators
+  # and dispatch the orchestrator inline. Use the system.cve_auto_remediate
+  # kill-switch to force this back to block/require_approval per-account.
+  "system.module_critical_upgrade_ready" => "notify_and_proceed"
 }
 
 count = upsert_cve_policies!(admin_account, cve_agent, cve_policies)

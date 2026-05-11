@@ -429,6 +429,13 @@ Rails.application.routes.draw do
           # CVE feed ingest tick — invoked hourly by SystemCveFeedJob.
           post "cve/ingest", to: "cve#ingest"
 
+          # CVE Responder autonomy reconcile tick — invoked every 60s by
+          # SystemCveResponderReconcileJob. Runs CVE-domain sensors,
+          # routes via DecisionEngine, dispatches inline for
+          # notify_and_proceed (critical severity), creates approvals
+          # otherwise.
+          post "cve_responder/reconcile", to: "cve_responder#reconcile"
+
           # Fleet event ingestion (agent-side telemetry batches).
           post "fleet/events", to: "fleet#events"
 
