@@ -5,7 +5,7 @@ module Api
     module System
       class NodeTemplatesController < BaseController
         before_action :set_account
-        before_action :set_template, only: %i[show update destroy export modules]
+        before_action :set_template, only: %i[show update destroy export modules clone]
 
         def index
           require_permission("system.templates.read")
@@ -106,6 +106,21 @@ module Api
             warnings: Array(resolution.warnings).map { |w| w.is_a?(Hash) ? w[:message] : w.to_s },
             errors:   Array(resolution.errors).map  { |e| e.is_a?(Hash) ? e[:message] : e.to_s }
           )
+        end
+
+        # POST /api/v1/system/node_templates/:id/clone
+        # Deep-clones a template + its TemplateModule rows (priorities,
+        # enabled flags, per-module config, recommends_override all
+        # preserved). Body: { name?: "..." } — defaults to "<source>-copy".
+        def clone
+          require_permission("system.templates.create")
+
+          new_template = ::System::TemplateCloneService.new(@template).clone!(
+            new_name: params[:name].presence
+          )
+          render_success(node_template: serialize_template(new_template), status: :created)
+        rescue ::System::TemplateCloneService::CloneError => e
+          render_error(e.message, status: :unprocessable_entity)
         end
 
         # GET /api/v1/system/node_templates/:id/export

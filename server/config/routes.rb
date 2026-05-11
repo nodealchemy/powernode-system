@@ -137,6 +137,9 @@ Rails.application.routes.draw do
             # Returns NodeModule rows assigned via TemplateModule join,
             # priority-ordered. TemplateDetailModal calls this on open.
             get :modules
+            # Deep-clone a template + its module assignments. Body:
+            # { name?: "..." } — defaults to "<source name>-copy".
+            post :clone
           end
           collection do
             # The action lives on this same NodeTemplatesController. Earlier
