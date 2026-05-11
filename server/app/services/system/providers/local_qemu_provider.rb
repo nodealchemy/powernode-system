@@ -117,6 +117,17 @@ module System
 
       def start_instance(instance_id)
         runner = self.class.runner
+
+        # Regenerate the libvirt domain XML before starting so any fwcfg
+        # keys (e.g., instance_name → hostname) added to CloudSeed after
+        # the original provision get picked up, and so the agent has a
+        # fresh BootstrapToken to enroll with (the previous one was
+        # consumed at the prior boot's enroll). Idempotent. Skipped
+        # silently when the instance can't be resolved (test runners
+        # may pass a bare cloud_id without a matching DB row).
+        instance_record = resolve_instance_by_cloud_id(instance_id)
+        regenerate_domain_xml!(instance_record) if instance_record
+
         result = runner.start_domain!(name: instance_id)
         return build_error_response(result[:error]) unless result[:ok]
         build_instance_response(cloud_id: instance_id, status: "starting")
@@ -211,6 +222,42 @@ module System
       end
 
       private
+
+      # Looks up the NodeInstance whose cloud_instance_id matches the
+      # libvirt domain name. cloud_instance_id is a store_accessor on
+      # NodeInstance#config, so the query targets the JSONB column.
+      def resolve_instance_by_cloud_id(domain_name)
+        return nil if domain_name.blank?
+
+        ::System::NodeInstance.where("config->>'cloud_instance_id' = ?", domain_name).first
+      end
+
+      # Idempotently regenerates the domain XML from current platform
+      # state and redefines the libvirt domain. The fresh fwcfg entries
+      # come from CloudSeed (which also issues a new BootstrapToken,
+      # since the prior token was consumed at the previous boot's
+      # enroll). Memory + vcpus come from the bound ProviderInstanceType
+      # when available; otherwise fall back to the same defaults
+      # create_instance uses.
+      def regenerate_domain_xml!(instance_record)
+        seed = LocalQemu::CloudSeed.build(instance: instance_record)
+        memory_mb = instance_record.provider_instance_type&.memory_mb || 2048
+        vcpus     = instance_record.provider_instance_type&.vcpus     || 2
+        domain_name = instance_record.cloud_instance_id.presence || instance_record.name
+
+        xml = LocalQemu::DomainXmlBuilder.build(
+          instance: instance_record,
+          domain_name: domain_name,
+          fw_cfg_entries: seed[:fw_cfg_entries],
+          arch: resolve_arch(instance_record),
+          memory_mb: memory_mb,
+          vcpus: vcpus,
+          image_base: seed[:image_base],
+          provider: instance_record.respond_to?(:provider_region) ? instance_record.provider_region&.provider : nil
+        )
+
+        self.class.runner.define_domain!(xml: xml, name: domain_name)
+      end
 
       def resolve_arch(instance)
         arch_name = instance.architecture ||

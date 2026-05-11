@@ -123,6 +123,23 @@ RSpec.describe System::Providers::LocalQemuProvider do
       methods = runner.invocations.map { |i| i[:method] }
       expect(methods).to eq(%i[start_domain! shutdown_domain! destroy_domain! reboot_domain!])
     end
+
+    it "regenerates domain XML before start when the instance is resolvable" do
+      # An instance whose cloud_instance_id matches the domain name argument
+      # gets its libvirt XML redefined from current platform state before
+      # start. Closes the gap where fwcfg keys added to CloudSeed after
+      # the original provision would otherwise stay missing across reboots.
+      instance.update!(config: instance.config.merge("cloud_instance_id" => "d-resolvable"))
+
+      provider.start_instance("d-resolvable")
+
+      methods = runner.invocations.map { |i| i[:method] }
+      expect(methods).to eq(%i[define_domain! start_domain!])
+
+      define_call = runner.invocations.find { |i| i[:method] == :define_domain! }
+      expect(define_call[:args][:name]).to eq("d-resolvable")
+      expect(define_call[:args][:xml]).to include("opt/com.powernode/instance_name")
+    end
   end
 
   describe "#get_instance" do

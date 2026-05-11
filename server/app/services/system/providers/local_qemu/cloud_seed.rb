@@ -18,6 +18,8 @@ module System
       class CloudSeed
         Result = Struct.new(:bootstrap_token_id, :fw_cfg_entries, :image_base, keyword_init: true)
 
+        class EnrollmentSeedError < StandardError; end
+
         def self.build(instance:, options: {})
           new.build(instance: instance, options: options)
         end
@@ -118,9 +120,47 @@ module System
             "/var/lib/powernode/images"
         end
 
+        # Resolution order:
+        #   1. ENV (set by systemd from /etc/powernode/backend-default.conf in
+        #      production; this is the canonical value)
+        #   2. The existing fwcfg file (preserves a previously-staged value
+        #      across re-seeds — avoids the foot-gun where running CloudSeed
+        #      from a shell without the env clobbers a working platform URL)
+        #   3. Test default — only allowed in test env
+        #
+        # In production-shaped invocations without env, we raise instead of
+        # silently defaulting: a wrong URL bricks every newly-booted VM, so a
+        # loud failure at seed time is preferable to a quiet 5-second
+        # connection-refused crash loop on the guest.
         def platform_url
-          ENV["POWERNODE_PLATFORM_URL"] ||
-            (Rails.env.production? ? "https://platform.local" : "http://localhost:3000")
+          env_value = ENV["POWERNODE_PLATFORM_URL"].presence
+          return env_value if env_value
+
+          on_disk = read_existing_platform_url
+          return on_disk if on_disk
+
+          if Rails.env.test?
+            "http://localhost:3000"
+          else
+            raise EnrollmentSeedError,
+                  "POWERNODE_PLATFORM_URL is not set and no existing fwcfg " \
+                  "platform_url file is present at #{File.join(FWCFG_DIR, 'opt_com.powernode_platform_url')}. " \
+                  "Set the env var (sourced from /etc/powernode/backend-default.conf in production) before " \
+                  "calling CloudSeed.build."
+          end
+        end
+
+        def read_existing_platform_url
+          path = File.join(FWCFG_DIR, "opt_com.powernode_platform_url")
+          return nil unless File.exist?(path)
+
+          value = File.read(path).strip
+          return nil if value.empty?
+          return nil if value == "http://localhost:3000" && !Rails.env.test? # known-bad sentinel from prior bad seeds
+
+          value
+        rescue StandardError
+          nil
         end
 
         # Write each fw-cfg entry to disk so DomainXmlBuilder's
