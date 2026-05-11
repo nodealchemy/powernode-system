@@ -24,7 +24,7 @@ module System
       end
     end
 
-    attr_reader :available_modules, :options
+    attr_reader :available_modules, :options, :recommends_predicate
 
     # Initialize with available modules and options
     # @param available_modules [Array<System::NodeModule>] modules available for resolution
@@ -32,14 +32,25 @@ module System
     # @option options [Boolean] :include_optional (true) whether to include optional dependencies
     # @option options [Boolean] :fail_on_missing (false) whether to raise on missing dependencies
     # @option options [Boolean] :detect_conflicts (true) whether to detect module conflicts
-    def initialize(available_modules, options = {})
+    # @param recommends_predicate [Proc] optional callable invoked per non-required
+    #   (recommends/optional) edge to decide inclusion. Signature:
+    #     ->(from_module:, to_module:) { Boolean }
+    #   When nil (default), the existing :include_optional boolean governs
+    #   inclusion. When set, an edge is followed only if (a) :include_optional
+    #   is true AND (b) the predicate returns true. Used by TemplateExpansionService
+    #   to apply per-template recommends overrides.
+    def initialize(available_modules, options_or_legacy = {}, recommends_predicate: nil, **kwargs)
+      # Backward-compat: original API was (available_modules, options_hash).
+      # New API: (available_modules, **opts, recommends_predicate:).
+      legacy_opts = options_or_legacy.is_a?(Hash) ? options_or_legacy : {}
       @available_modules = available_modules.to_a
       @available_module_ids = Set.new(@available_modules.map(&:id))
       @options = {
         include_optional: true,
         fail_on_missing: false,
         detect_conflicts: true
-      }.merge(options)
+      }.merge(legacy_opts).merge(kwargs)
+      @recommends_predicate = recommends_predicate
     end
 
     # Resolve dependencies for a set of requested modules
@@ -158,7 +169,15 @@ module System
         dependency = dep_record.dependency
 
         # Skip optional dependencies if configured
-        next if !dep_record.required? && !options[:include_optional]
+        if !dep_record.required?
+          next unless options[:include_optional]
+
+          # Per-edge recommends override (set by TemplateExpansionService)
+          if @recommends_predicate
+            keep = @recommends_predicate.call(from_module: node_module, to_module: dependency)
+            next unless keep
+          end
+        end
 
         if @available_module_ids.include?(dependency.id)
           resolve_module(dependency, depth + 1)

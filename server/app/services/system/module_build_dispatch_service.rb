@@ -39,6 +39,23 @@ module System
         )
       end
 
+      # Dispatch a closure-batched build for a set of NodeModules materialized
+      # from a single PackageRepository. Unlike dispatch_build! (which fires
+      # one workflow per module via gitea_repo_full_name), this fires ONE
+      # workflow per architecture that mmdebstraps the whole closure into
+      # one chroot, then carves N module tarballs using each module's
+      # rsync_spec. The workflow callback path is the new
+      # PackageBuildWebhookController, NOT manifest_import_service.
+      #
+      # Returns Array<{dispatch_id:, architecture:, ok:, error:}> — one entry
+      # per architecture dispatched.
+      def dispatch_closure(repository:, modules:, architectures:, requested_by: nil)
+        new.dispatch_closure(
+          repository: repository, modules: modules,
+          architectures: architectures, requested_by: requested_by
+        )
+      end
+
       private
 
       def build_adapter
@@ -89,7 +106,85 @@ module System
       failure("dispatch raised: #{e.message}")
     end
 
+    PACKAGE_BUILD_WORKFLOW   = "build-package-module.yaml"
+    PACKAGE_BUILD_DEFAULT_REPO = "system/package-build" # configurable via env
+
+    def dispatch_closure(repository:, modules:, architectures:, requested_by: nil)
+      raise DispatchError, "modules required" if Array(modules).empty?
+      raise DispatchError, "architectures required" if Array(architectures).empty?
+
+      package_build_repo = ENV.fetch("POWERNODE_PACKAGE_BUILD_REPO", PACKAGE_BUILD_DEFAULT_REPO)
+      closure_id = compute_closure_id(modules)
+      webhook_secret = generate_webhook_secret(closure_id)
+      modules_payload = modules.map do |m|
+        link = m.package_module_link
+        {
+          module_id:        m.id,
+          package_name:     link&.package_name || m.name,
+          architecture:     link&.architecture,
+          mask:             m.decode_spec_text(m.mask),
+          file_spec_source: link&.file_spec_source || "package_query"
+        }
+      end
+
+      Array(architectures).map do |arch|
+        dispatch_id = "closure-#{closure_id}-#{arch}-#{SecureRandom.hex(4)}"
+        payload = {
+          repository: package_build_repo,
+          workflow:   PACKAGE_BUILD_WORKFLOW,
+          ref:        DEFAULT_REF,
+          inputs: {
+            closure_id:        closure_id,
+            architecture:      arch,
+            package_repo_url:  repository.base_url,
+            package_repo_kind: repository.kind,
+            package_repo_id:   repository.id,
+            apt_suite:         repository.kind == "apt" ? repository.suite : nil,
+            apt_components:    repository.kind == "apt" ? repository.components.join(",") : nil,
+            rpm_releasever:    repository.kind != "apt" ? repository.releasever : nil,
+            gpg_key_armor:     repository.signing_key_armor,
+            modules_payload:   modules_payload.to_json,
+            webhook_url:       webhook_callback_url,
+            webhook_secret:    webhook_secret,
+            requested_by:      requested_by&.id
+          }
+        }
+        result = self.class.adapter.dispatch(payload)
+        {
+          dispatch_id:  result[:dispatch_id] || dispatch_id,
+          architecture: arch,
+          ok:           result[:ok],
+          error:        result[:error]
+        }
+      end
+    end
+
     private
+
+    def compute_closure_id(modules)
+      key = modules.map(&:id).sort.join("|")
+      Digest::SHA256.hexdigest(key)[0, 16]
+    end
+
+    def generate_webhook_secret(closure_id)
+      # HMAC the closure_id with a server-side secret. The CI workflow
+      # will sign its webhook with this same secret so the controller can
+      # verify the callback is genuine. The secret persists for the
+      # duration of the build (the controller validates the HMAC, not
+      # the secret value itself).
+      OpenSSL::HMAC.hexdigest(
+        "SHA256",
+        ENV.fetch("POWERNODE_PACKAGE_BUILD_HMAC_KEY", "dev-package-build-secret"),
+        closure_id
+      )
+    end
+
+    def webhook_callback_url
+      ENV.fetch(
+        "POWERNODE_PACKAGE_BUILD_WEBHOOK_URL",
+        "http://localhost:3000/api/v1/system/webhooks/package_build"
+      )
+    end
 
     def failure(msg)
       Result.new(ok?: false, error: msg)
