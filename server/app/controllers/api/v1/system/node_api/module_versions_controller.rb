@@ -31,7 +31,7 @@ module Api
               committer_instance: current_instance
             )
 
-            unless result.ok?
+            unless result.success?
               Rails.logger.warn("[ModuleVersionsController] commit failed: #{result.error}")
               return render_error(result.error, :unprocessable_entity)
             end

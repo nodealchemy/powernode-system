@@ -20,7 +20,7 @@ module Api
               fixture_path: params[:fixture_path].presence
             )
 
-            unless ingest_result.ok?
+            unless ingest_result.success?
               return render_error("CVE ingest failed: #{ingest_result.error}", 422)
             end
 
@@ -53,7 +53,7 @@ module Api
             Account.find_each do |account|
               recent.find_each do |cve|
                 result = ::System::CveOps::ExposureCalculator.calculate!(cve: cve, account: account)
-                total_updated += result.exposures_created + result.exposures_updated if result.ok?
+                total_updated += result.exposures_created + result.exposures_updated if result.success?
               end
             end
 

@@ -39,7 +39,7 @@ module System
       publication.start_verifying!
 
       ingest = run_ingest!(publication)
-      return mark_failed!(publication, ingest.error) unless ingest.ok?
+      return mark_failed!(publication, ingest.error) unless ingest.success?
 
       file_object = upload_to_storage!(publication, ingest.local_path)
       publish!(publication, file_object, ingest)

@@ -25,7 +25,7 @@ module Api
               addresses: params[:addresses] || []
             )
 
-            if result.ok?
+            if result.success?
               render_success(
                 peer: serialize_peer(result.peer),
                 created: result.created

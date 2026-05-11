@@ -36,7 +36,7 @@ module Api
               tag: tag
             )
 
-            if result.ok?
+            if result.success?
               render_success(
                 node_module_version_id: result.node_module_version.id,
                 version_number: result.node_module_version.version_number,

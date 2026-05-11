@@ -44,7 +44,7 @@ module System
         oci_ref: oci_ref
       )
 
-      if ingest.ok?
+      if ingest.success?
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, ingest.module_artifacts, tag)
         Result.new(
@@ -105,7 +105,7 @@ module System
       return [] unless yaml.present?
 
       result = ::System::ManifestImportService.import!(node_module: node_module, yaml: yaml)
-      unless result.ok?
+      unless result.success?
         Rails.logger.warn "[ModulePublicationProcessor] manifest re-import failed at tag #{tag}: #{result.error}"
         return []
       end
@@ -118,7 +118,7 @@ module System
     def register_skills_for(node_module)
       return unless defined?(::System::ModuleSkillRegistrar)
       result = ::System::ModuleSkillRegistrar.register_for_module!(node_module: node_module)
-      unless result.ok?
+      unless result.success?
         Rails.logger.warn "[ModulePublicationProcessor] skill registration failed: #{result.error}"
       end
     rescue StandardError => e

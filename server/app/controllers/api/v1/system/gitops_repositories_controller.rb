@@ -72,7 +72,7 @@ module Api
 
           render_success(
             sync_run: serialize_run(run.reload),
-            ok: result.ok?,
+            ok: result.success?,
             diff_count: result.diff_count,
             proposal_ids: result.proposal_ids
           )

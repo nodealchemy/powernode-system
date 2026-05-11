@@ -103,7 +103,7 @@ module System
           # Try to read persisted exposures.
           if cve_record
             calc = ::System::CveOps::ExposureCalculator.calculate!(cve: cve_record, account: @account)
-            if calc.ok?
+            if calc.success?
               exposures = ::System::CveExposure
                 .where(cve: cve_record, state: %w[open remediating])
                 .joins(node_module_version: :node_module)

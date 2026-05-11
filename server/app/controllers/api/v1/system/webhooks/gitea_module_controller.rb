@@ -129,7 +129,7 @@ module Api
               tag: tag
             )
 
-            if result.ok?
+            if result.success?
               version = result.node_module_version
               "Ingested module=#{node_module.name} version=#{version.version_number} tag=#{tag} " \
                 "arches=#{Array(result.artifacts).map(&:architecture).join(',')}"

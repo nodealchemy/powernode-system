@@ -28,7 +28,7 @@ module Api
               source_ip:     request.remote_ip
             )
 
-            unless result.ok?
+            unless result.success?
               Rails.logger.warn("[EnrollmentController] enroll failed: #{result.error}")
               return render_error(result.error, 422)
             end

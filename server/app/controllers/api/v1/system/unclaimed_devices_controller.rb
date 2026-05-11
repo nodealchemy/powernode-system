@@ -58,7 +58,7 @@ module Api
             by_user:       current_user
           )
 
-          if result.ok?
+          if result.success?
             render_success(
               unclaimed_device: serialize(@unclaimed_device.reload),
               node_instance_id: instance.id,

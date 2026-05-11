@@ -36,7 +36,7 @@ module System
 
         # Step 1: clone/pull
         repo_result = ::System::Gitops::RepoSyncService.sync!(@repository)
-        return finalize(sync_run, status: "failed", error: repo_result.error) unless repo_result.ok?
+        return finalize(sync_run, status: "failed", error: repo_result.error) unless repo_result.success?
 
         # Step 2: parse desired state
         parse_result = ::System::Gitops::DesiredStateParser.parse!(
@@ -44,7 +44,7 @@ module System
           path_prefix: @repository.path_prefix
         )
         return finalize(sync_run, status: "failed", error: parse_result.error,
-                        synced_revision: repo_result.commit_sha) unless parse_result.ok?
+                        synced_revision: repo_result.commit_sha) unless parse_result.success?
 
         # Step 3: diff against live state
         diff_result = ::System::Gitops::DiffEngine.diff!(
@@ -52,7 +52,7 @@ module System
           desired_state: parse_result.desired_state
         )
         return finalize(sync_run, status: "failed", error: diff_result.error,
-                        synced_revision: repo_result.commit_sha) unless diff_result.ok?
+                        synced_revision: repo_result.commit_sha) unless diff_result.success?
 
         diffs = diff_result.diffs
 

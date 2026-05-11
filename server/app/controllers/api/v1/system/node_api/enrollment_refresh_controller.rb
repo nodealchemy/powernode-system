@@ -26,7 +26,7 @@ module Api
               agent_version: params[:agent_version]
             )
 
-            unless result.ok?
+            unless result.success?
               Rails.logger.warn("[EnrollmentRefreshController] refresh failed: #{result.error}")
               return render_error(result.error, :unprocessable_entity)
             end

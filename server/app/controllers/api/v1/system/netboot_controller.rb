@@ -29,7 +29,7 @@ module Api
             purpose: "netboot"
           )
 
-          if result.ok?
+          if result.success?
             response.set_header("Cache-Control", "no-store")
             response.set_header("X-Powernode-Token-Id", result.token_id.to_s)
             render plain: result.script, content_type: "text/plain"

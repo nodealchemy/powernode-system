@@ -54,7 +54,7 @@ module System
 
         ::ActiveRecord::Base.transaction do
           result = apply_diff(kind: kind, change: change, diff: diff)
-          mark_implemented! if result.ok?
+          mark_implemented! if result.success?
           result
         end
       rescue StaleConflictError => e

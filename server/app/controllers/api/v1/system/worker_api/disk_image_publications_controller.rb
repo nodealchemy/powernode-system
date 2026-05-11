@@ -43,7 +43,7 @@ module Api
 
             result = ::System::DiskImagePublicationProcessor.process!(publication: publication)
 
-            if result.ok?
+            if result.success?
               render_success(data: {
                 publication_id:     publication.id,
                 file_object_id:     result.file_object&.id,
@@ -147,7 +147,7 @@ module Api
             publication.update_columns(triggered_by_worker_id: current_worker.id, updated_at: Time.current)
             result = ::System::DiskImagePublicationProcessor.process!(publication: publication)
 
-            if result.ok?
+            if result.success?
               render_success(data: {
                 publication_id:     publication.id,
                 file_object_id:     result.file_object&.id,
