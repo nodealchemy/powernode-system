@@ -17,7 +17,11 @@ module Api
       class InstancePoolsController < ApplicationController
         include ::System::GatedActions
 
-        before_action :authenticate_user_or_service!
+        # ApplicationController.include Authentication already runs
+        # authenticate_request as a global before_action — operator JWT auth
+        # is covered. Worker-callable replenish/drain go through the
+        # worker_api namespace (which has its own worker-token auth);
+        # there's no dual-auth path on this operator-facing controller.
         before_action :set_pool, only: [:show, :update, :destroy, :replenish, :drain, :recycle_stale]
 
         # GET /api/v1/system/instance_pools
@@ -135,17 +139,19 @@ module Api
           )
         end
 
+        # No service-account branch — service accounts call the worker_api
+        # namespace, never this operator-facing controller. The phantom
+        # `service_account?` method on User was undefined and would 500 on
+        # any non-permission-holder request.
         def authorize_read!
-          unless current_user.has_permission?("system.node_instances.read") ||
-                 current_user&.service_account?
+          unless current_user.has_permission?("system.node_instances.read")
             render_error("permission denied: system.node_instances.read", :forbidden) and return
           end
         end
 
         def authorize_write!
           unless current_user.has_permission?("system.instances.create") ||
-                 current_user.has_permission?("system.instances.control") ||
-                 current_user&.service_account?
+                 current_user.has_permission?("system.instances.control")
             render_error("permission denied: system.instances.create or .control", :forbidden) and return
           end
         end
