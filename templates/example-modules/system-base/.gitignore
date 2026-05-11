@@ -1,0 +1,5 @@
+# The agent binary is built by the Makefile from extensions/system/agent/
+# and staged into rootfs/usr/sbin/powernode-agent at module build time.
+# Never commit it — the build artifact is reproducible from source.
+rootfs/usr/sbin/powernode-agent
+dist/

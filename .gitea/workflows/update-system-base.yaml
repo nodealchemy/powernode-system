@@ -1,0 +1,145 @@
+name: update-system-base
+
+# Rebuilds the system-base module any time the agent source changes so the
+# /usr/sbin/powernode-agent binary in the module's rootfs stays in lockstep
+# with extensions/system/agent/. The agent is the one piece of system-base
+# that isn't installed from a Debian package — it's cross-compiled from Go
+# and dropped into the rootfs at build time. Without this workflow, the
+# on-rootfs binary drifts (e.g., the May-1 binary still running in field
+# VMs even though the agent source has multiple commits since).
+#
+# Trigger: push to develop/master touching agent/** OR the module sources.
+# Output: a signed tarball under dist/, uploaded as a workflow artifact
+# AND attached to a `system-base/agent-<short-sha>-<arch>` release tag for
+# the platform's module-ingest webhook (POST /api/v1/system/webhooks/gitea/module)
+# to pull from.
+
+on:
+  push:
+    branches: [develop, master]
+    paths:
+      - 'agent/**'
+      - 'templates/example-modules/system-base/**'
+      - '.gitea/workflows/update-system-base.yaml'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Target architecture (amd64 or arm64)"
+        required: false
+        default: "amd64"
+        type: choice
+        options:
+          - amd64
+          - arm64
+          - both
+
+permissions:
+  contents: write   # tag + release creation
+  packages: write   # OCI artifact push (future — currently unused)
+
+jobs:
+  build-amd64:
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.arch == 'amd64' ||
+      github.event.inputs.arch == 'both'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for `git describe` in the Makefile
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: agent/go.sum
+
+      - name: Stage agent + build tarball
+        working-directory: templates/example-modules/system-base
+        run: |
+          make stage-agent-amd64
+          make tarball ARCH=amd64
+
+      - name: Compute artifact metadata
+        id: meta
+        working-directory: templates/example-modules/system-base
+        run: |
+          TARBALL=$(ls dist/system-base-*-amd64.tar.gz | head -1)
+          SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=system-base/agent-${GITHUB_SHA:0:8}-amd64" >> "$GITHUB_OUTPUT"
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: system-base-amd64
+          path: templates/example-modules/system-base/dist/*
+          retention-days: 30
+
+      # Tag + release on push to develop/master; skipped on workflow_dispatch
+      # so manual reruns don't pollute the tag history.
+      - name: Tag + create Gitea release
+        if: github.event_name == 'push'
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        working-directory: templates/example-modules/system-base
+        run: |
+          set -e
+          TAG="${{ steps.meta.outputs.tag }}"
+          TARBALL="${{ steps.meta.outputs.tarball }}"
+          SHA="${{ steps.meta.outputs.sha256 }}"
+          BODY="system-base module rebuilt with fresh agent binary.\n\nAgent commit: ${GITHUB_SHA}\nSHA256: ${SHA}"
+
+          # Create lightweight tag against the commit that triggered this build.
+          git config user.email "ci@powernode.local"
+          git config user.name "powernode-ci"
+          git tag "$TAG" "${GITHUB_SHA}"
+          git push origin "$TAG"
+
+          # Create the release with the tarball attached. The platform's
+          # gitea_module_controller webhook will fire on the tag push and
+          # pull the tarball via the OCI ingest flow.
+          curl -fsS -X POST \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
+            -d "$(jq -n --arg tag "$TAG" --arg body "$BODY" \
+                  '{tag_name:$tag, name:$tag, body:$body, prerelease:false}')" \
+            -o /tmp/release.json
+          RELEASE_ID=$(jq -r .id /tmp/release.json)
+
+          curl -fsS -X POST \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -F "attachment=@${TARBALL}" \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$(basename ${TARBALL})"
+
+  build-arm64:
+    if: |
+      github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.arch == 'arm64' ||
+        github.event.inputs.arch == 'both'
+      )
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: agent/go.sum
+
+      - name: Stage agent + build tarball
+        working-directory: templates/example-modules/system-base
+        run: |
+          make stage-agent-arm64
+          make tarball ARCH=arm64
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: system-base-arm64
+          path: templates/example-modules/system-base/dist/*
+          retention-days: 30
