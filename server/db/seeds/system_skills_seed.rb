@@ -364,6 +364,56 @@ SKILLS_DATA = [
       match/action/priority. Heavyweight-profile only (lightweight
       hosts use kube-proxy NetworkPolicy for the equivalent function).
     PROMPT
+  },
+  # ─── Package repository skills ─────────────────────────────────────
+  {
+    name: "Package Repository Sync",
+    slug: "system-package-repository-sync",
+    description: "Sync upstream apt/rpm metadata for one package repository",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::PackageRepositorySyncExecutor",
+    tags: %w[packages apt rpm sync catalog],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to refresh the synced apt/rpm package metadata for one
+      PackageRepository. Inputs: repository_id (required). Returns upserted
+      count + obsoleted (soft-deleted) count + new package_count. Cheap to
+      run frequently; daily cron triggers a fleet-wide sweep automatically.
+    PROMPT
+  },
+  {
+    name: "Package Module Create",
+    slug: "system-package-module-create",
+    description: "Materialize an apt/rpm package + transitive deps as NodeModule rows + ModuleDependency edges, then dispatch a CI build",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::PackageModuleCreateExecutor",
+    tags: %w[packages modules build closure supply-chain],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to turn an apt/rpm package into a NodeModule. Inputs:
+      repository_id, package_name (both required), architectures (optional,
+      defaults to repo.architectures), recommends_selected (optional list
+      of recommends package names to opt in), category_id (optional).
+      Creates the top-level NodeModule + transitive dependency NodeModules
+      (auto_generated=true) + ModuleDependency edges + dispatches CI build.
+      REQUIRES HUMAN APPROVAL — supply-chain critical.
+    PROMPT
+  },
+  {
+    name: "Package Module Refresh",
+    slug: "system-package-module-refresh",
+    description: "Re-materialize a package-sourced NodeModule when upstream package version drifts",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::PackageModuleRefreshExecutor",
+    tags: %w[packages modules refresh drift cve],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when PackageDriftSensor flags a module whose upstream
+      version has bumped beyond the locally-materialized version. Replays
+      persisted recommends_chosen for deterministic refreshes. Inputs:
+      package_module_link_id (required), force (optional). CVE-flagged
+      drifts auto-approve; non-CVE drifts require human approval.
+    PROMPT
   }
 ].freeze
 
@@ -447,6 +497,9 @@ if fleet_autonomy
     system-sdwan-vip-failover
     system-module-compose
     system-rolling-module-upgrade
+    system-package-repository-sync
+    system-package-module-create
+    system-package-module-refresh
   ].each_with_index do |slug, i|
     skill = ::Ai::Skill.find_by(slug: slug)
     next unless skill
@@ -457,7 +510,7 @@ if fleet_autonomy
     binding.assign_attributes(priority: 100 + i, is_active: true)
     binding.save!
   end
-  puts "    ✓ Bound 8 autonomous-action skills to Fleet Autonomy"
+  puts "    ✓ Bound 11 autonomous-action skills to Fleet Autonomy"
 else
   puts "    = Fleet Autonomy not seeded yet — skipping fleet bindings"
 end

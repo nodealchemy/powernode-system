@@ -106,7 +106,16 @@ fleet_policies = {
   # Stale BGP observations are pure observation — no remediation; the
   # `observation` action_category collects them for dashboards without
   # entering the approval pipeline.
-  "system.observation"             => "auto_approve"
+  "system.observation"             => "auto_approve",
+
+  # Package repository ingestion. Sync is routine + reversible (just
+  # refreshes cached metadata); module creation is supply-chain critical
+  # (operator audits each new package entering the fleet); refresh requires
+  # approval for non-CVE drifts (intervention policy splits CVE-flagged
+  # refresh out into auto-approve via the executor's payload metadata).
+  "system.package_repository.sync" => "auto_approve",
+  "system.package_module.create"   => "require_approval",
+  "system.package_module.refresh"  => "require_approval"
 
   # NOTE: SDWAN policies moved to system_sdwan_manager_agent.rb (2026-05-10).
   # NOTE: CVE policies moved to system_cve_responder_agent.rb (2026-05-10).

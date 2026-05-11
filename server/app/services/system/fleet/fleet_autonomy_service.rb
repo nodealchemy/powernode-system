@@ -21,6 +21,8 @@ module System
         system.module_promote_to_live
         system.fleet_rolling_upgrade
         system.region_expansion
+        system.package_module.create
+        system.package_module.refresh
       ].freeze
 
       SOURCE_TYPE = "system_fleet"
@@ -275,6 +277,16 @@ module System
         when "project.adapt", "project.cost_control", "project.scale_horizontal",
              "project.relocate", "project.schema_change", "project.security_change"
           key_value(metadata, "mission_id")
+        # Package repository ingestion — dedup at the natural granularity:
+        # per-repo for syncs, per (repo, package) for create, per-link for refresh.
+        when "system.package_repository.sync"
+          key_value(metadata, "package_repository_id")
+        when "system.package_module.create"
+          repo = metadata&.dig("package_repository_id") || metadata&.dig(:package_repository_id)
+          pkg  = metadata&.dig("package_name") || metadata&.dig(:package_name)
+          repo.present? && pkg.present? ? ["package_create_key", "#{repo}:#{pkg}"] : nil
+        when "system.package_module.refresh"
+          key_value(metadata, "package_module_link_id")
         end
       end
 

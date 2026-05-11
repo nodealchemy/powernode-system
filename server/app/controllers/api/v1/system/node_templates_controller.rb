@@ -79,16 +79,32 @@ module Api
           ids = Array(params[:module_ids])
           return render_error("module_ids: required", status: :unprocessable_entity) if ids.empty?
 
-          modules = @account.system_node_modules
-                       .where(id: ids)
-                       .includes(:current_version, :category, :node_platform)
-          return render_error("no matching modules", status: :not_found) if modules.empty?
+          requested = @account.system_node_modules
+                              .where(id: ids)
+                              .includes(:current_version, :category, :node_platform,
+                                        :module_dependencies, :dependencies, :package_module_link)
+          return render_error("no matching modules", status: :not_found) if requested.empty?
+
+          # Walk ModuleDependency edges to compute the full closure. This is
+          # the new behavior: the response includes BOTH the operator's
+          # explicit picks AND the transitive requires/recommends pulled
+          # in by closure expansion.
+          resolver = ::System::DependencyResolutionService.new(
+            @account.system_node_modules.enabled
+              .includes(:module_dependencies, :dependencies, :package_module_link).to_a
+          )
+          resolution = resolver.resolve(requested.to_a)
+
+          all_modules = resolution.modules
+          explicit_ids = requested.map(&:id).to_set
 
           render_success(
-            modules: modules.map { |m| compose_serialize_module(m) },
-            conflicts: compose_detect_conflicts(modules),
-            footprint: compose_footprint(modules),
-            dependency_graph: compose_dependency_graph(modules)
+            modules: all_modules.map { |m| compose_serialize_module(m, auto_resolved: !explicit_ids.include?(m.id)) },
+            conflicts: compose_detect_conflicts(all_modules),
+            footprint: compose_footprint(all_modules),
+            dependency_graph: compose_dependency_graph(all_modules, explicit_ids: explicit_ids),
+            warnings: Array(resolution.warnings).map { |w| w.is_a?(Hash) ? w[:message] : w.to_s },
+            errors:   Array(resolution.errors).map  { |e| e.is_a?(Hash) ? e[:message] : e.to_s }
           )
         end
 
@@ -116,7 +132,8 @@ module Api
 
         # === Compose-preview helpers (M-FE-1) ===
 
-        def compose_serialize_module(m)
+        def compose_serialize_module(m, auto_resolved: false)
+          link = m.respond_to?(:package_module_link) ? m.package_module_link : nil
           {
             id: m.id,
             name: m.name,
@@ -124,6 +141,12 @@ module Api
             priority: m.priority,
             effective_priority: m.respond_to?(:effective_priority) ? m.effective_priority : m.priority,
             category_id: m.category_id,
+            auto_resolved: auto_resolved,
+            auto_generated: m.respond_to?(:auto_generated) ? m.auto_generated : false,
+            package_source: link.present? ? { repository_id: link.package_repository_id,
+                                              package_name: link.package_name,
+                                              package_version: link.package_version,
+                                              architecture: link.architecture } : nil,
             current_version: m.current_version&.then do |v|
               { id: v.id, version_number: v.version_number, oci_digest: v.try(:oci_digest) }
             end
@@ -132,6 +155,29 @@ module Api
 
         def compose_detect_conflicts(modules)
           conflicts = []
+          module_ids = modules.map(&:id).to_set
+
+          # Hard conflict: explicit ModuleDependency rows of type "conflicts"
+          # where both modules ended up in the closure. This catches the
+          # apt/rpm `Conflicts:` semantics for package-driven modules.
+          modules.each do |m|
+            next unless m.respond_to?(:module_dependencies)
+
+            m.module_dependencies.conflicts.each do |conflict_dep|
+              other_id = conflict_dep.dependency_id
+              next unless module_ids.include?(other_id)
+
+              conflicts << {
+                kind: "module_dependency_conflict",
+                severity: "error",
+                source_id: m.id,
+                source_name: m.name,
+                target_id: other_id,
+                target_name: conflict_dep.dependency&.name,
+                detail: "#{m.name} declares a Conflicts: relation against #{conflict_dep.dependency&.name}"
+              }
+            end
+          end
 
           # Hard conflict: two instance-variety modules in the same category.
           # Only one instance can ship per category; the second would silently
@@ -218,14 +264,47 @@ module Api
           }
         end
 
-        def compose_dependency_graph(modules)
+        def compose_dependency_graph(modules, explicit_ids: Set.new)
           ids = modules.map(&:id).to_set
-          {
-            nodes: modules.map { |m| { id: m.id, name: m.name, variety: m.variety } },
-            edges: modules.filter_map do |m|
-              next unless m.respond_to?(:parent_module_id) && m.parent_module_id && ids.include?(m.parent_module_id)
-              { source: m.parent_module_id, target: m.id, type: "depends_on" }
+
+          # Layer 1: parent_module hierarchy (config/instance dependant children)
+          parent_edges = modules.filter_map do |m|
+            next unless m.respond_to?(:parent_module_id) && m.parent_module_id && ids.include?(m.parent_module_id)
+
+            { source: m.parent_module_id, target: m.id, type: "depends_on" }
+          end
+
+          # Layer 2: ModuleDependency edges (requires/recommends from the new
+          # package-driven materializer + any operator-authored dependencies).
+          # Only include edges where BOTH endpoints are in the resolved closure.
+          dep_edges = []
+          modules.each do |m|
+            next unless m.respond_to?(:module_dependencies)
+
+            m.module_dependencies.each do |md|
+              next unless ids.include?(md.dependency_id)
+
+              dep_edges << {
+                source: m.id,
+                target: md.dependency_id,
+                type:   md.dependency_type,        # "requires" | "recommends" | "conflicts" | "provides"
+                required: md.required?,
+                version_constraint: md.version_constraint
+              }
             end
+          end
+
+          {
+            nodes: modules.map do |m|
+              {
+                id: m.id,
+                name: m.name,
+                variety: m.variety,
+                explicit: explicit_ids.include?(m.id),
+                auto_resolved: !explicit_ids.include?(m.id)
+              }
+            end,
+            edges: parent_edges + dep_edges
           }
         end
 

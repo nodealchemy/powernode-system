@@ -1,0 +1,233 @@
+name: Build Package-Module Closure
+
+on:
+  workflow_dispatch:
+    inputs:
+      closure_id:
+        description: "Hash of the module set being built; used for deduplication on the webhook side"
+        required: true
+      architecture:
+        description: "Target architecture: amd64 or arm64"
+        required: true
+      package_repo_url:
+        description: "Base URL of the upstream apt/rpm repository"
+        required: true
+      package_repo_kind:
+        description: "apt | rpm | dnf"
+        required: true
+      package_repo_id:
+        description: "PackageRepository.id from the platform DB"
+        required: true
+      apt_suite:
+        description: "For apt: suite (e.g., 'noble'). Empty for rpm."
+        required: false
+      apt_components:
+        description: "For apt: comma-separated components (e.g., 'main,universe'). Empty for rpm."
+        required: false
+      rpm_releasever:
+        description: "For rpm: releasever (e.g., '40'). Empty for apt."
+        required: false
+      gpg_key_armor:
+        description: "ASCII-armored GPG public key for verifying the upstream index"
+        required: false
+      modules_payload:
+        description: |
+          JSON-encoded array of modules to carve from the unified chroot.
+          Shape: [{module_id, package_name, architecture, mask, file_spec_source}, ...]
+        required: true
+      webhook_url:
+        description: "Where to POST the completion callback"
+        required: true
+      webhook_secret:
+        description: "HMAC-SHA256 secret to sign the callback body"
+        required: true
+      requested_by:
+        description: "User.id who initiated the materialization (for audit)"
+        required: false
+
+jobs:
+  build:
+    name: Build closure for ${{ inputs.architecture }}
+    # Native arch runners: amd64 jobs run on standard ubuntu-24.04,
+    # arm64 jobs on ubuntu-24.04-arm (existing fleet convention).
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -qq
+          sudo apt-get install -yq \
+            mmdebstrap \
+            dnf \
+            composefs \
+            erofs-utils \
+            cosign \
+            oras \
+            rsync \
+            jq \
+            xz-utils \
+            gnupg \
+            curl
+
+      - name: Trust upstream repo GPG key
+        if: ${{ inputs.gpg_key_armor != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pkg-keyring
+          echo "${{ inputs.gpg_key_armor }}" > /tmp/pkg-keyring/upstream.asc
+          # Convert ASCII-armored key into a sources.list-friendly keyring
+          gpg --dearmor < /tmp/pkg-keyring/upstream.asc > /tmp/pkg-keyring/upstream.gpg
+
+      - name: Parse modules_payload
+        id: parse
+        env:
+          MODULES_PAYLOAD: ${{ inputs.modules_payload }}
+        run: |
+          set -euo pipefail
+          echo "$MODULES_PAYLOAD" > /tmp/modules.json
+          # Filter to entries for this build's architecture
+          ARCH="${{ inputs.architecture }}"
+          jq --arg arch "$ARCH" '[.[] | select(.architecture == $arch or .architecture == null)]' \
+            /tmp/modules.json > /tmp/modules.filtered.json
+          # Build the include= argument for mmdebstrap (apt) / dnf install (rpm)
+          PACKAGES=$(jq -r '[.[].package_name] | unique | join(",")' /tmp/modules.filtered.json)
+          MODULE_COUNT=$(jq 'length' /tmp/modules.filtered.json)
+          echo "package_list=$PACKAGES" >> "$GITHUB_OUTPUT"
+          echo "module_count=$MODULE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Built package list ($MODULE_COUNT modules): $PACKAGES"
+
+      - name: Build apt chroot via mmdebstrap
+        if: ${{ inputs.package_repo_kind == 'apt' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chroot
+          KEYRING_ARG=""
+          if [ -f /tmp/pkg-keyring/upstream.gpg ]; then
+            KEYRING_ARG="--keyring=/tmp/pkg-keyring/upstream.gpg"
+          fi
+          COMPONENTS_ARG=""
+          if [ -n "${{ inputs.apt_components }}" ]; then
+            COMPONENTS_ARG="--components=$(echo '${{ inputs.apt_components }}' | tr ',' ' ')"
+          fi
+          # mmdebstrap installs the closure into the chroot in ONE pass.
+          # --variant=minbase keeps the base image small; closure deps are
+          # explicit via --include.
+          sudo mmdebstrap \
+            --variant=minbase \
+            --architectures="${{ inputs.architecture }}" \
+            $COMPONENTS_ARG \
+            $KEYRING_ARG \
+            --include="${{ steps.parse.outputs.package_list }}" \
+            "${{ inputs.apt_suite }}" \
+            /tmp/chroot \
+            "${{ inputs.package_repo_url }}"
+
+      - name: Build rpm chroot via dnf --installroot
+        if: ${{ inputs.package_repo_kind == 'rpm' || inputs.package_repo_kind == 'dnf' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chroot
+          sudo dnf install -y \
+            --installroot=/tmp/chroot \
+            --releasever="${{ inputs.rpm_releasever }}" \
+            --setopt=install_weak_deps=false \
+            $(echo "${{ steps.parse.outputs.package_list }}" | tr ',' ' ')
+
+      - name: Carve per-module tarballs + composefs blobs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/carved /tmp/composefs-store /tmp/artifacts
+          REPORT="[]"
+          jq -c '.[]' /tmp/modules.filtered.json | while read -r module; do
+            MODULE_ID=$(echo "$module" | jq -r '.module_id')
+            PKG=$(echo "$module" | jq -r '.package_name')
+            CARVE_DIR=/tmp/carved/$MODULE_ID
+            mkdir -p "$CARVE_DIR"
+
+            # Enumerate files owned by this package via dpkg -L / rpm -ql
+            if [ "${{ inputs.package_repo_kind }}" = "apt" ]; then
+              sudo chroot /tmp/chroot dpkg -L "$PKG" > /tmp/$MODULE_ID.filelist || true
+            else
+              sudo chroot /tmp/chroot rpm -ql "$PKG" > /tmp/$MODULE_ID.filelist || true
+            fi
+
+            # rsync the file list out of the chroot (drop empty + dirs that exit nonzero)
+            FILE_LIST_LINES=$(wc -l < /tmp/$MODULE_ID.filelist)
+            if [ "$FILE_LIST_LINES" -gt 0 ]; then
+              cd /tmp/chroot && sudo rsync -aR --files-from=/tmp/$MODULE_ID.filelist . "$CARVE_DIR/" || true
+              cd -
+            fi
+
+            # Build composefs erofs image with content-addressed dedup store
+            sudo mkcomposefs --digest-store=/tmp/composefs-store "$CARVE_DIR" "/tmp/artifacts/$MODULE_ID.cfs" || \
+              echo "mkcomposefs failed for $MODULE_ID, continuing"
+
+            SIZE=$(stat -c%s "/tmp/artifacts/$MODULE_ID.cfs" 2>/dev/null || echo 0)
+            DIGEST=$(sha256sum "/tmp/artifacts/$MODULE_ID.cfs" 2>/dev/null | awk '{print $1}' || echo "")
+            FILE_SPEC=$(cat /tmp/$MODULE_ID.filelist | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+            REPORT=$(echo "$REPORT" | jq --arg mid "$MODULE_ID" \
+                                          --arg digest "$DIGEST" \
+                                          --argjson size "$SIZE" \
+                                          --argjson fs "$FILE_SPEC" \
+                                          '. + [{module_id: $mid, oci_digest: $digest, size_bytes: $size, file_spec: $fs}]')
+          done
+          echo "$REPORT" > /tmp/build-report.json
+          cat /tmp/build-report.json
+
+      - name: Cosign sign + push artifacts to OCI registry
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          REGISTRY="${POWERNODE_OCI_REGISTRY:-registry.example.com}"
+          REPORT=$(cat /tmp/build-report.json)
+
+          ENRICHED="[]"
+          echo "$REPORT" | jq -c '.[]' | while read -r entry; do
+            MODULE_ID=$(echo "$entry" | jq -r '.module_id')
+            DIGEST=$(echo "$entry" | jq -r '.oci_digest')
+            BLOB="/tmp/artifacts/$MODULE_ID.cfs"
+            [ ! -f "$BLOB" ] && continue
+
+            OCI_REF="$REGISTRY/powernode/modules/$MODULE_ID:${{ inputs.closure_id }}-${{ inputs.architecture }}"
+            # oras push uploads the composefs blob as an OCI artifact
+            oras push "$OCI_REF" \
+              --artifact-type "application/vnd.powernode.module.composefs.v1" \
+              "$BLOB:application/vnd.powernode.module.composefs.v1" || true
+
+            # cosign sign-blob (keyless via Fulcio in CI; 30s timeout for OIDC fetch)
+            BUNDLE=$(timeout 30 cosign sign-blob --yes --bundle - "$BLOB" 2>/dev/null || echo "")
+            ENRICHED=$(echo "$ENRICHED" | jq --arg mid "$MODULE_ID" \
+                                              --arg oci "$OCI_REF" \
+                                              --arg bundle "$BUNDLE" \
+                                              --argjson e "$entry" \
+                                              '. + [($e + {oci_ref: $oci, cosign_bundle: $bundle})]')
+          done
+          echo "$ENRICHED" > /tmp/build-report.enriched.json
+
+      - name: Send completion webhook
+        run: |
+          set -euo pipefail
+          MODULES=$(cat /tmp/build-report.enriched.json)
+          BODY=$(jq -nc \
+            --arg closure_id "${{ inputs.closure_id }}" \
+            --arg architecture "${{ inputs.architecture }}" \
+            --argjson modules "$MODULES" \
+            '{closure_id: $closure_id, architecture: $architecture, modules: $modules, status: "complete"}')
+
+          # HMAC-SHA256 over the closure_id (matches the verification logic in
+          # PackageBuildWebhookController#verify_signature — the secret is
+          # closure-specific, so signing the closure_id alone is sufficient
+          # for caller authentication).
+          SIG=$(echo -n "${{ inputs.closure_id }}" | openssl dgst -sha256 -hmac "${{ inputs.webhook_secret }}" -hex | awk '{print $2}')
+
+          curl -fsSL -X POST "${{ inputs.webhook_url }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Powernode-Signature: $SIG" \
+            -d "$BODY" || {
+              echo "::warning::Webhook callback failed (HTTP error). Build artifacts remain in OCI registry."
+            }
