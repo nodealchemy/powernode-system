@@ -5,7 +5,9 @@ module System
     include System::Base
 
     # === Constants ===
-    MOUNT_TYPES = %w[nfs cifs tmpfs bind efs ebs custom].freeze
+    # Synthetic-only mount types. Storage-backed mounts (nfs|cifs|efs|ebs|s3fs)
+    # are owned by System::StorageAssignment as of Phase S2.
+    MOUNT_TYPES = %w[tmpfs bind custom].freeze
 
     # === Associations ===
     belongs_to :account
@@ -25,21 +27,9 @@ module System
     scope :auto_mount, -> { where(auto_mount: true) }
     scope :manual_mount, -> { where(auto_mount: false) }
     scope :by_type, ->(type) { where(mount_type: type) }
-    scope :nfs_mounts, -> { by_type("nfs") }
-    scope :cifs_mounts, -> { by_type("cifs") }
-    scope :efs_mounts, -> { by_type("efs") }
-    scope :ebs_mounts, -> { by_type("ebs") }
     scope :by_name, -> { order(name: :asc) }
 
     # === Methods ===
-    def nfs?
-      mount_type == "nfs"
-    end
-
-    def cifs?
-      mount_type == "cifs"
-    end
-
     def tmpfs?
       mount_type == "tmpfs"
     end
@@ -48,24 +38,19 @@ module System
       mount_type == "bind"
     end
 
-    def efs?
-      mount_type == "efs"
-    end
-
-    def ebs?
-      mount_type == "ebs"
-    end
-
     def custom?
       mount_type == "custom"
     end
 
+    # Retained for backwards compat with the serializer; after Phase S2 these
+    # always return false because storage-backed types now live on
+    # System::StorageAssignment.
     def cloud_storage?
-      %w[efs ebs].include?(mount_type)
+      false
     end
 
     def network_storage?
-      %w[nfs cifs efs].include?(mount_type)
+      false
     end
 
     def fstab_entry

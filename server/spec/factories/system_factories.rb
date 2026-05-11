@@ -115,13 +115,20 @@ FactoryBot.define do
 
   # System::NodeInstance
   factory :system_node_instance, class: "System::NodeInstance" do
-    association :node, factory: :system_node
+    # `account` is a transient so callers can write
+    #   create(:system_node_instance, account: account)
+    # and have it routed through the node (NodeInstance has no account_id
+    # column — account flows through node).
+    transient { account { nil } }
+
     association :provider_region, factory: :system_provider_region
     association :provider_instance_type, factory: :system_provider_instance_type
     sequence(:name) { |n| "Instance #{n}" }
     variety { "cloud" }
     status { "pending" }
     config { {} }
+
+    node { build(:system_node, account: account || create(:account)) }
 
     trait :running do
       status { "running" }
@@ -388,14 +395,15 @@ FactoryBot.define do
     progress { 100 }
   end
 
-  # System::NodeMountPoint
+  # System::NodeMountPoint — Phase S2: storage-backed types (nfs/cifs/efs/ebs/
+  # s3fs) moved to System::StorageAssignment. Only synthetic types remain.
   factory :system_node_mount_point, class: "System::NodeMountPoint" do
     association :account
     sequence(:name) { |n| "Mount #{n}" }
     mount_path { "/mnt/data" }
-    mount_type { "nfs" }
-    source { "server:/share" }
-    options { { options: "defaults" } }
+    mount_type { "tmpfs" }
+    source { "tmpfs" }
+    options { { options: "size=64m" } }
     enabled { true }
     auto_mount { true }
   end
@@ -406,6 +414,40 @@ FactoryBot.define do
     association :mount_point, factory: :system_node_mount_point
     enabled { true }
     config { {} }
+  end
+
+  # Sdwan::Network — Phase S2 needs this to be createable from system specs
+  # for storage-assignment integration. Mirrors the network model's slice-1
+  # required fields (name, slug, cidr_64, routing_protocol, status).
+  factory :sdwan_network, class: "Sdwan::Network" do
+    association :account
+    sequence(:name) { |n| "network-#{n}" }
+    sequence(:slug) { |n| "network-#{n}" }
+    sequence(:cidr_64) { |n| "fd00:abcd:#{format('%04x', n)}::/64" }
+    routing_protocol { "static" }
+    status { "registered" }
+  end
+
+  # System::StorageAssignment — Phase S2 join object (file_storage × instance).
+  factory :system_storage_assignment, class: "System::StorageAssignment" do
+    association :account
+    association :node_instance, factory: :system_node_instance
+    file_storage_id { SecureRandom.uuid } # caller usually overrides with a real :file_storage row
+    mount_path { "/mnt/data" }
+    encryption_mode { "inherit" }
+    status { "pending" }
+    enabled { true }
+    auto_mount { true }
+    read_only { false }
+  end
+
+  # System::StorageCredential — VaultCredential-backed per-instance access cred.
+  factory :system_storage_credential, class: "System::StorageCredential" do
+    association :storage_assignment, factory: :system_storage_assignment
+    association :node_instance, factory: :system_node_instance
+    kind { "peer_ip_acl" }
+    status { "issued" }
+    metadata { { peer_ip: "fd00::1" } }
   end
 
   # System::ModulePuppetAssignment
