@@ -95,7 +95,38 @@ artifact per architecture.
 
 **Promotion lifecycle** (`NodeModuleVersion#promote_to!`):
 `built → staging → blessed → live → retired`, gated by `PromotionCriteria`
-(N successful instances run version V for ≥ M minutes).
+(N successful instances run version V for ≥ M minutes). Exposed to
+operators via `POST /api/v1/system/node_module_versions/:id/promote`
+(body: `target_state`) and rollback via
+`POST /api/v1/system/node_modules/:id/rollback` (body: optional
+`target_version_id`, `changelog`).
+
+**Module assignment materialization** — how `NodeModule` rows end up
+assigned to a `Node`. There are three live paths today, plus one
+documented gap:
+
+| Path | Trigger | Service | Sets `source_template_module` |
+|---|---|---|---|
+| On-node commit | `powernode-agent commit ... --push` | `ModuleCommitService#materialize_assignment!` (find_or_create_by!) | No |
+| GitOps reconcile | `fleet.yaml` change → diff engine | `Gitops::ApplyService` | No |
+| Operator UI | Manual "assign module to node" action | direct `NodeModuleAssignment.create!` | No |
+| _Gap — not wired_ | Template apply to a Node | `TemplateExpansionService` exists but no caller wires it to `NodeModuleAssignment.create!` | Would be `source_template_module: tm` |
+
+`TemplateExpansionService` (`app/services/system/template_expansion_service.rb`)
+is infrastructure ready for a future automated template-apply flow:
+it computes the closure (modules + transitive `requires`/`recommends`)
+with per-`TemplateModule.recommends_override` honored, and returns a
+`source_template_module_for` map for back-reference. It is not yet
+called by any controller or service. The `NodeTemplatesController#compose_preview`
+endpoint uses `DependencyResolutionService` directly (one layer below
+`TemplateExpansionService`) so the preview path doesn't depend on the
+unwired apply path.
+
+If you need to populate assignments from a template today, do it
+manually or via GitOps. The `NodeModuleAssignment.source_template_module_id`
+column is reserved for the future flow — leave it `NULL` on hand-
+authored rows so the eventual auto-cleaner doesn't mistake them for
+template-derived rows.
 
 ### 2. On-node runtime (`powernode-agent`)
 
