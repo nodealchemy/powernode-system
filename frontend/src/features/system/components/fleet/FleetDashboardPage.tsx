@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle, Clock, Cpu, GitBranch, Package, PlayCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -10,6 +9,7 @@ import { fleetApi, type FleetEvent } from '@system/features/system/services/api/
 import { HoneypotCanaryTile } from './HoneypotCanaryTile';
 import { DispatchLatencyTile } from './DispatchLatencyTile';
 import { AttributionFeedbackButton } from './AttributionFeedbackButton';
+import { BootReplayModal } from './boot-replay/BootReplayModal';
 
 // Severity levels in increasing-urgency order. Used by the severity
 // quick-filter chips below.
@@ -57,6 +57,10 @@ export function FleetDashboardPage(): React.JSX.Element {
   // visible.
   const [selectedEvent, setSelectedEvent] = useState<FleetEvent | null>(null);
   const selectedCorrelation = selectedEvent?.correlation_id ?? null;
+  // Boot replay modal — opens with the selected event's NodeInstance +
+  // (optional) correlation_id when the operator clicks "Boot Replay".
+  // null instanceId keeps the modal closed.
+  const [bootReplay, setBootReplay] = useState<{ instanceId: string; correlationId?: string } | null>(null);
 
   // Initial backlog
   const refreshBacklog = useCallback(async () => {
@@ -322,21 +326,24 @@ export function FleetDashboardPage(): React.JSX.Element {
                       />
                     </div>
                   )}
-                  {/* Boot Replay link — when the selected event references a
-                      NodeInstance, link to the dedicated boot timeline for
-                      that instance. Filtered to this event's correlation_id
-                      if present, so the timeline scopes to the same boot
-                      session. M-FE-3 completion. */}
+                  {/* Boot Replay — when the selected event references a
+                      NodeInstance, opens the boot timeline modal for
+                      that instance, scoped to this event's correlation_id
+                      if present. */}
                   {selectedEvent.node_instance_id && (
                     <div className="pt-2">
-                      <Link
-                        to={`/app/system/boot-replay/${selectedEvent.node_instance_id}${selectedEvent.correlation_id ? `?correlation_id=${selectedEvent.correlation_id}` : ''}`}
+                      <button
+                        type="button"
+                        onClick={() => setBootReplay({
+                          instanceId: selectedEvent.node_instance_id!,
+                          correlationId: selectedEvent.correlation_id ?? undefined,
+                        })}
                         className="inline-flex items-center gap-1 text-xs text-theme-link hover:underline"
                         title="View boot timeline for this instance"
                       >
                         <PlayCircle size={12} />
                         Boot Replay
-                      </Link>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -370,6 +377,12 @@ export function FleetDashboardPage(): React.JSX.Element {
           </div>
         </section>
       </div>
+
+      <BootReplayModal
+        instanceId={bootReplay?.instanceId ?? null}
+        correlationId={bootReplay?.correlationId}
+        onClose={() => setBootReplay(null)}
+      />
     </div>
   );
 }
