@@ -115,7 +115,15 @@ module Ai
         "system_rotate_vault_transit_pepper" => "system.fleet.autonomy",
 
         # === Missing-features slice 6b — GitOps apply path ===
-        "system_gitops_apply_proposal" => "system.modules.update"
+        "system_gitops_apply_proposal" => "system.modules.update",
+
+        # === Provider catalog (per-account) ===
+        # Routed-mode QEMU provisioning needs provider.config to carry
+        # host_node_instance_id; without these MCP actions operators had
+        # to drop to rails runner to inspect/edit provider rows.
+        "system_list_providers"        => "system.providers.read",
+        "system_get_provider"          => "system.providers.read",
+        "system_update_provider"       => "system.providers.update"
       }.freeze
 
       def self.definition
@@ -514,6 +522,27 @@ module Ai
             parameters: {
               proposal_id: { type: "string", required: true, description: "Ai::AgentProposal id (must be in 'approved' status with proposed_changes.source = 'gitops')" }
             }
+          },
+
+          # === Provider catalog ===
+          "system_list_providers" => {
+            description: "List providers for the current account with id, name, type, enabled, config.",
+            parameters: {}
+          },
+          "system_get_provider" => {
+            description: "Fetch a single provider with full config hash (used to inspect routed-mode host_node_instance_id wiring etc.).",
+            parameters: {
+              id: { type: "string", required: true, description: "System::Provider id" }
+            }
+          },
+          "system_update_provider" => {
+            description: "Update a provider — supports name + enabled + config. Config is merge-updated (existing keys preserved unless explicitly nilled). Use this to set host_node_instance_id on a routed-mode QEMU provider, swap the bridge_name, etc.",
+            parameters: {
+              id: { type: "string", required: true, description: "System::Provider id" },
+              name: { type: "string", required: false },
+              enabled: { type: "boolean", required: false },
+              config: { type: "object", required: false, description: "Hash of config keys to merge. nil values delete the corresponding key." }
+            }
           }
         }
       end
@@ -592,6 +621,10 @@ module Ai
         when "system_rotate_vault_transit_pepper"   then rotate_vault_transit_pepper(params)
         # Missing-features slice 6b — GitOps apply path
         when "system_gitops_apply_proposal"         then gitops_apply_proposal(params)
+        # Provider catalog
+        when "system_list_providers"                then list_providers(params)
+        when "system_get_provider"                  then get_provider(params)
+        when "system_update_provider"               then update_provider(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -1722,6 +1755,55 @@ module Ai
           # (Genuine system errors raise + are caught by the rescue chain.)
           success_result(**base)
         end
+      end
+
+      # === Provider catalog ===
+
+      def list_providers(_params)
+        providers = ::System::Provider.where(account_id: @account.id).order(:name)
+        success_result(
+          providers: providers.map { |p| serialize_provider(p) },
+          count: providers.size
+        )
+      end
+
+      def get_provider(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:id])
+        success_result(provider: serialize_provider(provider))
+      end
+
+      # Config is merge-updated: existing keys are preserved unless the
+      # caller passes a key with an explicit nil value, in which case
+      # that key is deleted from the stored config. This keeps callers
+      # from having to re-send the entire config on every update.
+      def update_provider(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:id])
+
+        attrs = {}
+        attrs[:name]    = params[:name]    if params.key?(:name)
+        attrs[:enabled] = params[:enabled] unless params[:enabled].nil?
+
+        if params[:config].is_a?(Hash)
+          merged = (provider.config || {}).merge(params[:config].transform_keys(&:to_s))
+          merged.delete_if { |_, v| v.nil? }
+          attrs[:config] = merged
+        end
+
+        provider.update!(attrs)
+        success_result(provider: serialize_provider(provider.reload))
+      end
+
+      def serialize_provider(p)
+        {
+          id: p.id,
+          account_id: p.account_id,
+          name: p.name,
+          provider_type: p.provider_type,
+          enabled: p.enabled,
+          config: p.config,
+          created_at: p.created_at&.iso8601,
+          updated_at: p.updated_at&.iso8601
+        }
       end
     end
   end
