@@ -67,6 +67,7 @@ module Ai
         "system_drain_instance_pool"    => "system.instances.control",
         "system_acquire_pooled_instance" => "system.instances.create",
         "system_replenish_instance_pool" => "system.instances.create",
+        "system_recycle_pool"            => "system.instances.control",
 
         # === Gap remediation slice 1 (Phase 4 — operator-runbook-driven actions) ===
         # system_drain_instance: graceful drain marker — operator opts into a
@@ -359,6 +360,10 @@ module Ai
             description: "Manually trigger replenishment of a pool — provisions warming members up to target_size. Normally the reaper does this every 60s; this is for impatient operators.",
             parameters: { id: { type: "string", required: true } }
           },
+          "system_recycle_pool" => {
+            description: "Recycle stale members of a pool: warming members past warming_timeout_seconds become errored, ready members past ready_ttl_seconds become draining. Returns counts of transitions made. Normally the reaper does this every 60s before replenish; this is for impatient operators or for unwedging a pool that's stuck with zombie warming members blocking the deficit calculation.",
+            parameters: { id: { type: "string", required: true } }
+          },
 
           # === Gap remediation slice 1 (Phase 4) ===
           "system_drain_instance" => {
@@ -590,6 +595,7 @@ module Ai
         when "system_drain_instance_pool"      then drain_instance_pool(params)
         when "system_acquire_pooled_instance"  then acquire_pooled_instance(params)
         when "system_replenish_instance_pool"  then replenish_instance_pool(params)
+        when "system_recycle_pool"             then recycle_pool(params)
         # Gap remediation slice 1 (Phase 4)
         when "system_drain_instance"           then drain_instance(params)
         when "system_get_silent_instances"     then get_silent_instances(params)
@@ -1179,6 +1185,16 @@ module Ai
         error_result("no ready pool members: #{e.message}")
       rescue ::System::InstancePoolService::PoolError => e
         error_result(e.message)
+      end
+
+      # Manual recycle trigger — same call the worker reaper makes every
+      # 60s in its 2-phase tick. Lets impatient operators (or AI agents
+      # diagnosing a wedged pool) force the recycle phase without
+      # waiting for the next tick.
+      def recycle_pool(params)
+        pool = ::System::InstancePool.where(account_id: @account.id).find(params[:id])
+        result = ::System::InstancePoolService.recycle_stale_members!(pool: pool)
+        success_result(pool: pool.reload.to_summary, recycle_result: result)
       end
 
       def replenish_instance_pool(params)

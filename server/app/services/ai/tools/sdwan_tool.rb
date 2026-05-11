@@ -76,6 +76,8 @@ module Ai
         # Phase O6 — host bridges (O1) + OVN deployment/switches/ports (O3) + IPFIX (O5)
         "system_sdwan_create_host_bridge"          => "sdwan.host_bridges.manage",
         "system_sdwan_list_host_bridges"           => "sdwan.host_bridges.read",
+        "system_sdwan_activate_host_bridge"        => "sdwan.host_bridges.manage",
+        "system_sdwan_release_host_bridge"         => "sdwan.host_bridges.manage",
         "system_sdwan_create_ovn_deployment"       => "sdwan.ovn.manage",
         "system_sdwan_create_ovn_logical_switch"   => "sdwan.ovn.manage",
         "system_sdwan_create_ovn_logical_switch_port" => "sdwan.ovn.manage",
@@ -479,6 +481,19 @@ module Ai
               kind: { type: "string", required: false, description: "linux | ovs (defaults to host's network_profile mapping)" }
             }
           },
+          "system_sdwan_activate_host_bridge" => {
+            description: "Mark a HostBridge as `active` so the topology compiler picks it up. Newly allocated bridges land in `pending`; the resolver only sees active bridges. Use this after create_host_bridge when the agent isn't yet reporting back its applied state.",
+            parameters: {
+              id: { type: "string", required: true, description: "Sdwan::HostBridge id" }
+            }
+          },
+          "system_sdwan_release_host_bridge" => {
+            description: "Release a HostBridge via Sdwan::HostBridgeAllocator.release!. Default `force: false` transitions the bridge to `draining` (preserves the short_id during in-flight tap teardown). Pass `force: true` to mark the bridge `removed` immediately, releasing the short_id back to the pool.",
+            parameters: {
+              id: { type: "string", required: true, description: "Sdwan::HostBridge id" },
+              force: { type: "boolean", required: false, description: "When true, skip the draining grace window and mark removed immediately (default false)" }
+            }
+          },
           "system_sdwan_list_host_bridges" => {
             description: "List HostBridges for the current account. Optionally filter by node_instance_id.",
             parameters: {
@@ -633,6 +648,8 @@ module Ai
         # Phase O6 — host bridges (O1) + OVN (O3) + IPFIX (O5)
         when "system_sdwan_create_host_bridge"             then create_host_bridge(params)
         when "system_sdwan_list_host_bridges"              then list_host_bridges(params)
+        when "system_sdwan_activate_host_bridge"           then activate_host_bridge(params)
+        when "system_sdwan_release_host_bridge"            then release_host_bridge(params)
         when "system_sdwan_create_ovn_deployment"          then create_ovn_deployment(params)
         when "system_sdwan_create_ovn_logical_switch"      then create_ovn_logical_switch(params)
         when "system_sdwan_create_ovn_logical_switch_port" then create_ovn_logical_switch_port(params)
@@ -1593,6 +1610,29 @@ module Ai
           host_bridges: bridges.map { |b| serialize_host_bridge(b) },
           count: bridges.size
         )
+      end
+
+      # Mark a HostBridge as `active`. The compiler's `compilable` scope
+      # (`active|draining`) only emits active+draining bridges, so a
+      # bridge stuck in `pending` is invisible to provisioning. Without
+      # this MCP action operators had to drop to `rails runner` to
+      # invoke `bridge.mark_active!` after create_host_bridge.
+      def activate_host_bridge(params)
+        bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
+        bridge.mark_active!
+        success_result(host_bridge: serialize_host_bridge(bridge.reload))
+      end
+
+      # Release a HostBridge via the allocator. Default `force: false`
+      # keeps the short_id reserved during the draining grace window
+      # (lets in-flight taps drain without short_id collision); `force:
+      # true` releases immediately. Operators using this from the UI
+      # generally want force: true since the UI's arm-and-confirm gate
+      # is the equivalent safety net.
+      def release_host_bridge(params)
+        bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
+        ::Sdwan::HostBridgeAllocator.release!(bridge, force: params[:force] == true)
+        success_result(host_bridge: serialize_host_bridge(bridge.reload))
       end
 
       def serialize_host_bridge(b)
