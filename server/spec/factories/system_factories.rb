@@ -549,4 +549,86 @@ FactoryBot.define do
       retired_at { Time.current }
     end
   end
+
+  # === Package repository ingestion factories (Phase 11) ===
+
+  factory :system_package_repository, class: "System::PackageRepository" do
+    association :account
+    association :created_by, factory: :user
+    sequence(:name) { |n| "test-repo-#{n}" }
+    kind { "apt" }
+    visibility { "account" }
+    base_url { "https://archive.example.com/ubuntu" }
+    architectures { ["amd64"] }
+    apt_config { { "suite" => "noble", "components" => ["main"] } }
+    rpm_config { {} }
+    enabled { true }
+    sync_status { "idle" }
+    package_count { 0 }
+    priority { 100 }
+
+    trait :rpm do
+      kind { "rpm" }
+      apt_config { {} }
+      rpm_config { { "releasever" => "40", "gpgcheck" => false } }
+    end
+
+    trait :shared do
+      account { nil }
+      visibility { "shared" }
+    end
+
+    trait :synced do
+      sync_status { "idle" }
+      last_synced_at { Time.current }
+      package_count { 10 }
+    end
+  end
+
+  factory :system_package, class: "System::Package" do
+    association :package_repository, factory: :system_package_repository
+    sequence(:name) { |n| "test-pkg-#{n}" }
+    version { "1.0.0" }
+    architecture { "amd64" }
+    section_or_group { "utils" }
+    summary { "Test package summary" }
+    description { "Test package description" }
+    installed_size_bytes { 100_000 }
+    download_size_bytes { 50_000 }
+    depends { [] }
+    pre_depends { [] }
+    recommends { [] }
+    suggests { [] }
+    conflicts { [] }
+    provides { [] }
+    replaces { [] }
+    breaks { [] }
+    raw_metadata { {} }
+
+    # Convenient builder for the AND-of-OR shape: pass plain package names.
+    transient do
+      depends_on { [] }
+      recommends_packages { [] }
+      provides_caps { [] }
+    end
+
+    after(:build) do |pkg, ev|
+      pkg.depends = Array(ev.depends_on).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.depends_on.any?
+      pkg.recommends = Array(ev.recommends_packages).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.recommends_packages.any?
+      pkg.provides = Array(ev.provides_caps).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.provides_caps.any?
+    end
+  end
+
+  factory :system_package_module_link, class: "System::PackageModuleLink" do
+    association :node_module, factory: :system_node_module
+    association :package_repository, factory: :system_package_repository
+    sequence(:package_name) { |n| "pkg-#{n}" }
+    package_version { "1.0.0" }
+    architecture { "amd64" }
+    file_spec_source { "package_query" }
+    alternatives_chosen { {} }
+    recommends_chosen { [] }
+    auto_generated { true }
+    last_synced_at { Time.current }
+  end
 end
