@@ -1,4 +1,6 @@
 import { FC, useEffect, useState } from 'react';
+import { Modal } from '@/shared/components/ui/Modal';
+import { Button } from '@/shared/components/ui/Button';
 import {
   marketplaceApi,
   type MarketplaceModuleDetail,
@@ -45,90 +47,82 @@ export const ModuleDetailModal: FC<Props> = ({ moduleId, onClose }) => {
   }, [moduleId]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div
-        className="bg-theme-bg-card max-w-2xl w-full max-h-[80vh] overflow-auto rounded-lg p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {loading && <div className="text-sm text-theme-text-muted">Loading...</div>}
-        {error && <div className="text-sm text-theme-error">{error}</div>}
+    <Modal
+      isOpen
+      onClose={onClose}
+      variant="centered"
+      size="2xl"
+      title={detail?.name || 'Module'}
+      subtitle={detail?.description}
+      footer={
+        <div className="flex justify-end">
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      }
+    >
+      {loading && <div className="text-sm text-theme-tertiary">Loading...</div>}
+      {error && <div className="text-sm text-theme-danger">{error}</div>}
 
-        {detail && (
-          <div className="space-y-4">
+      {detail && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 text-sm">
             <div>
-              <h2 className="text-xl font-semibold">{detail.name}</h2>
-              {detail.description && (
-                <p className="text-theme-text-secondary mt-1">{detail.description}</p>
-              )}
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary">Trust Tier</div>
+              <div className="text-theme-primary">{detail.trust_tier}</div>
             </div>
-
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted">Trust Tier</div>
-                <div>{detail.trust_tier}</div>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted">Variety</div>
-                <div>{detail.variety}</div>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted">Category</div>
-                <div>{detail.category || '—'}</div>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted">Platform</div>
-                <div>{detail.platform || '—'}</div>
-              </div>
+            <div>
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary">Variety</div>
+              <div className="text-theme-primary">{detail.variety}</div>
             </div>
-
-            {versions.length > 0 && (
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted mb-2">
-                  Recent versions
-                </div>
-                <ul className="space-y-1 text-sm">
-                  {versions.map((v) => (
-                    <li key={v.id} className="flex justify-between">
-                      <span>v{v.version_number}</span>
-                      <span className="text-theme-text-muted text-xs">
-                        {new Date(v.created_at).toLocaleDateString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {dependencies.length > 0 && (
-              <div>
-                <div className="text-xs uppercase tracking-wider text-theme-text-muted mb-2">
-                  Dependencies
-                </div>
-                <ul className="space-y-1 text-sm">
-                  {dependencies.map((d) => (
-                    <li key={d.id}>
-                      {d.required_module_name || d.required_module_id}
-                      {d.required_version && (
-                        <span className="text-theme-text-muted"> @ {d.required_version}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-theme-border-default">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-3 py-1.5 text-sm rounded border border-theme-border-default hover:bg-theme-bg-hover"
-              >
-                Close
-              </button>
+            <div>
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary">Category</div>
+              <div className="text-theme-primary">{detail.category || '—'}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary">Platform</div>
+              <div className="text-theme-primary">{detail.platform || '—'}</div>
             </div>
           </div>
-        )}
-      </div>
-    </div>
+
+          {versions.length > 0 && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary mb-2">
+                Recent versions
+              </div>
+              <ul className="space-y-1 text-sm">
+                {versions.map((v) => (
+                  <li key={v.id} className="flex justify-between text-theme-primary">
+                    <span>v{v.version_number}</span>
+                    <span className="text-theme-tertiary text-xs">
+                      {new Date(v.created_at).toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {dependencies.length > 0 && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-theme-tertiary mb-2">
+                Dependencies
+              </div>
+              <ul className="space-y-1 text-sm">
+                {dependencies.map((d) => (
+                  <li key={d.id} className="text-theme-primary">
+                    {d.required_module_name || d.required_module_id}
+                    {d.required_version && (
+                      <span className="text-theme-tertiary"> @ {d.required_version}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 };
