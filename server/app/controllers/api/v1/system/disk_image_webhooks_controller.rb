@@ -7,6 +7,8 @@ module Api
       # Returns plaintext secret EXACTLY ONCE (on create + rotate).
       # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 3).
       class DiskImageWebhooksController < BaseController
+        include ::Ai::GatedActions
+
         before_action :set_account
         before_action :set_webhook, only: %i[show destroy rotate_secret]
 
@@ -42,21 +44,51 @@ module Api
           render_validation_error(e.record)
         end
 
+        # Soft-revoke the webhook (status flip). Gated through AutonomyGate
+        # so revoking an active CI integration goes through the same
+        # audit + optional approval flow as other infrastructure changes.
         def destroy
           require_permission("system.disk_image_webhooks.delete")
-          @webhook.update!(status: "revoked")
-          render_success(message: "Webhook revoked")
+          id = @webhook.id
+          label = @webhook.label
+          gate!(
+            action_category: "system.disk_image_webhook_revoke",
+            executor_class: "System::Executors::DiskImage::TriggerWebhook",
+            params: { webhook_id: id, action: "revoke" },
+            source_type: "System::DiskImageWebhook",
+            source_id: id,
+            description: "Revoke disk image webhook '#{label}'",
+            on_proceed: ->(_r) {
+              @webhook.update!(status: "revoked") if @webhook.status != "revoked"
+              render_success(message: "Webhook revoked")
+            }
+          )
         end
 
         # POST /api/v1/system/disk_image_webhooks/:id/rotate_secret
+        # Rotating invalidates the old secret immediately — any in-flight CI
+        # job using the old secret 401s on next push. Gated to give operators
+        # an optional approval step before disrupting active builds.
         def rotate_secret
           require_permission("system.disk_image_webhooks.rotate_secret")
-          new_secret = @webhook.rotate_secret!
-          emit_rotated_event(@webhook)
-          render_success(
-            disk_image_webhook: ::System::DiskImageWebhookSerializer.new(@webhook).as_json,
-            secret_plaintext: new_secret,
-            note: "Save this secret now — old secret is revoked. Update CI immediately."
+          id = @webhook.id
+          label = @webhook.label
+          gate!(
+            action_category: "system.disk_image_webhook_rotate_secret",
+            executor_class: "System::Executors::DiskImage::TriggerWebhook",
+            params: { webhook_id: id, action: "rotate_secret" },
+            source_type: "System::DiskImageWebhook",
+            source_id: id,
+            description: "Rotate secret for disk image webhook '#{label}'",
+            on_proceed: ->(_r) {
+              new_secret = @webhook.rotate_secret!
+              emit_rotated_event(@webhook)
+              render_success(
+                disk_image_webhook: ::System::DiskImageWebhookSerializer.new(@webhook).as_json,
+                secret_plaintext: new_secret,
+                note: "Save this secret now — old secret is revoked. Update CI immediately."
+              )
+            }
           )
         end
 

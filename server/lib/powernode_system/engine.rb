@@ -128,6 +128,7 @@ module PowernodeSystem
         categories.concat(%w[
           system.disk_image_publication_promote system.disk_image_publication_rollback
           system.disk_image_retention_update system.disk_image_webhook_trigger
+          system.disk_image_webhook_revoke system.disk_image_webhook_rotate_secret
         ])
 
         # Runtime Manager domain

@@ -63,21 +63,27 @@ module Api
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/start
+        # All instance lifecycle actions flow through the autonomy gate for
+        # uniform audit + chain-of-custody. Manual operation policies default
+        # start/stop/restart/reboot to auto_approve, so steady-state behavior
+        # is identical — but operators can flip any of them to require_approval
+        # from the System Settings → Manual Operations tab if they want a
+        # double-check before bouncing nodes.
         def start
           require_permission("system.instances.control")
-          control_or_error(:start)
+          gate_or_execute(:start)
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/stop
         def stop
           require_permission("system.instances.control")
-          control_or_error(:stop)
+          gate_or_execute(:stop)
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/reboot
         def reboot
           require_permission("system.instances.control")
-          control_or_error(:reboot)
+          gate_or_execute(:reboot)
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/terminate
@@ -111,11 +117,7 @@ module Api
             return render_error(msg, status: :unprocessable_entity)
           end
 
-          operation = create_instance_operation("associate_public_ip")
-          render_success(
-            node_instance: serialize_instance(@instance.reload),
-            task: operation ? ::System::TaskSerializer.new(operation).as_json : nil
-          )
+          gate_ip_action(:associate_public_ip)
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/disassociate_public_ip
@@ -141,11 +143,7 @@ module Api
             )
           end
 
-          operation = create_instance_operation("disassociate_public_ip")
-          render_success(
-            node_instance: serialize_instance(@instance.reload),
-            task: operation ? ::System::TaskSerializer.new(operation).as_json : nil
-          )
+          gate_ip_action(:disassociate_public_ip)
         end
 
         private
@@ -274,6 +272,46 @@ module Api
           when :pending
             render_pending_approval(gate_result.deferred_operation,
                                     message: "Approval required to #{event} instance")
+          when :blocked
+            render_error(gate_result.error || "Action blocked by policy",
+                         status: :unprocessable_content)
+          end
+        end
+
+        # Variant of gate_or_execute for IP association/disassociation —
+        # which don't go through the AASM lifecycle (no may_event? predicate)
+        # but still need an audit row + the same gate semantics.
+        def gate_ip_action(event)
+          gate_result = ::Ai::AutonomyGate.evaluate(
+            action_category: "system.task.#{event}",
+            executor_class: "System::Executors::ExecuteTask",
+            params: {
+              task_attributes: {
+                command: event.to_s,
+                description: "#{event} #{@instance.class.name}##{@instance.id}",
+                operable_type: @instance.class.name,
+                operable_id: @instance.id,
+                initiated_by_id: current_user.id
+              }
+            },
+            account: current_account,
+            requested_by: current_user,
+            source_type: @instance.class.name,
+            source_id: @instance.id,
+            description: "#{event} on instance #{@instance.id}"
+          )
+
+          case gate_result.decision
+          when :proceed
+            data = gate_result.result&.dig(:data) || {}
+            task = data[:task_id] ? current_account.system_tasks.find_by(id: data[:task_id]) : nil
+            render_success(
+              node_instance: serialize_instance(@instance.reload),
+              task: task ? ::System::TaskSerializer.new(task).as_json : nil
+            )
+          when :pending
+            render_pending_approval(gate_result.deferred_operation,
+                                    message: "Approval required to #{event}")
           when :blocked
             render_error(gate_result.error || "Action blocked by policy",
                          status: :unprocessable_content)

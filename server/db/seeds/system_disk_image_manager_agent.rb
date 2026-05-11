@@ -68,10 +68,12 @@ ensure_disk_image_trust_score!(admin_account, disk_image_agent)
 puts "  ✅ Disk Image Manager agent: #{disk_image_agent.previously_new_record? ? 'created' : 'updated'}"
 
 disk_image_policies = {
-  "system.disk_image_publication_promote"  => "require_approval",  # production rollout
-  "system.disk_image_publication_rollback" => "require_approval",  # reverting affects active fleet
-  "system.disk_image_retention_update"     => "auto_approve",      # GC config, low-risk
-  "system.disk_image_webhook_trigger"      => "notify_and_proceed" # webhook ingest
+  "system.disk_image_publication_promote"   => "require_approval",  # production rollout
+  "system.disk_image_publication_rollback"  => "require_approval",  # reverting affects active fleet
+  "system.disk_image_retention_update"      => "auto_approve",      # GC config, low-risk
+  "system.disk_image_webhook_trigger"       => "notify_and_proceed", # webhook ingest
+  "system.disk_image_webhook_revoke"        => "require_approval",  # cuts active CI integration
+  "system.disk_image_webhook_rotate_secret" => "notify_and_proceed" # invalidates old, but recoverable
 }
 
 count = upsert_disk_image_policies!(admin_account, disk_image_agent, disk_image_policies)
