@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/fleetevent"
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
@@ -26,13 +28,27 @@ type Context struct {
 
 // BuildContext loads the mTLS material from PKIDir + PlatformURL and
 // returns a fully-wired Context. PlatformURL takes precedence over
-// any identity-discovered URL (commands run by an operator pin the
-// URL via flag rather than re-discovering identity each invocation).
+// any identity-discovered URL — commands run by an operator pin the
+// URL via flag rather than re-discovering identity each invocation.
+//
+// When platformURL is empty, falls back to identity discovery
+// (virtio-fw-cfg, kernel cmdline, cloud-init, local identity.cfg)
+// via identity.DefaultResolver — same path runtime.Service uses
+// during bootstrap. This lets operator CLI commands (`update`, `sync`,
+// `attach`, `exec`, etc.) work on a provisioned node without the
+// operator having to know or type --platform-url.
 //
 // pkiDir defaults to enroll.PKIDir when empty.
 func BuildContext(platformURL, pkiDir string) (*Context, error) {
 	if platformURL == "" {
-		return nil, errors.New("BuildContext: platform-url is required (set --platform-url or run identity discovery first)")
+		ident, err := identity.DefaultResolver().Resolve(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("BuildContext: platform-url not set and identity discovery failed: %w (pass --platform-url or run on a provisioned node)", err)
+		}
+		if ident == nil || ident.PlatformURL == "" {
+			return nil, errors.New("BuildContext: platform-url not set and identity discovery returned no PlatformURL (pass --platform-url or check fw-cfg/identity.cfg)")
+		}
+		platformURL = ident.PlatformURL
 	}
 	if pkiDir == "" {
 		pkiDir = enroll.PKIDir
