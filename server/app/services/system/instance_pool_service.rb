@@ -220,6 +220,11 @@ module System
     # Node + NodeInstance with pool_state="warming" and dispatches the
     # provision job.
     def provision_warming_member!(pool:, slot_index:)
+      # Step 1 — create the parent Node row. NodeInstance gets created
+      # by ProvisioningService.provision_instance below; we don't
+      # pre-create it because provision_instance always creates a
+      # fresh row (calling it on an existing instance would either
+      # double-up or no-op, neither of which is what we want).
       node = ::System::Node.create!(
         account: account,
         name: "#{pool.name}-pool-#{Time.current.to_i}-#{slot_index}",
@@ -229,49 +234,57 @@ module System
         config: { "instance_pool_id" => pool.id }
       )
 
-      instance = ::System::NodeInstance.create!(
+      # Step 2 — synchronously provision the cloud instance via the
+      # canonical ProvisioningService path (the same path the MCP
+      # `system_provision_instance` action uses; proven-working). This
+      # returns when the libvirt/cloud VM is created + the
+      # NodeInstance row is populated with cloud_instance_id + status.
+      #
+      # Why synchronous? The previous implementation dispatched to a
+      # System::NodeInstanceProvisionJob worker job that:
+      #   (a) had its method called wrong (.dispatch vs .enqueue)
+      #   (b) expected node_id + operation_id args (an Operation
+      #       record had to exist first); pool was sending
+      #       node_instance_id + options hash
+      #   (c) the queue 'system' wasn't even in the worker's listened
+      #       queue list, so jobs accumulated forever in Redis
+      # All three layers were broken; pool replenish has NEVER
+      # actually provisioned cloud instances since pool support
+      # landed. A synchronous direct call to ProvisioningService is
+      # both correct and proven; the trade-off is replenish call
+      # latency ≈ deficit × per-instance provisioning time
+      # (~3-5s per cloud VM in our LocalQemu setup).
+      result = ::System::ProvisioningService.provision_instance(
         node: node,
-        name: "#{pool.name}-instance-#{Time.current.to_i}-#{slot_index}",
-        variety: "cloud",
-        status: "pending",
-        provider_region: pool.provider_region,
-        provider_instance_type: pool.provider_instance_type,
+        provider_region_id: pool.provider_region_id,
+        provider_instance_type_id: pool.provider_instance_type_id
+      )
+
+      unless result.success?
+        Rails.logger.warn(
+          "[InstancePoolService] cloud provision failed for pool '#{pool.name}' " \
+          "slot=#{slot_index}: #{result.error}"
+        )
+        # Tear down the orphan Node so re-replenish doesn't accumulate
+        # zombie nodes; the failure is propagated to the operator via
+        # the result.error path.
+        node.destroy
+        raise PoolError, "cloud provision failed: #{result.error}"
+      end
+
+      # Step 3 — patch the freshly-created NodeInstance with the pool
+      # tracking fields. ProvisioningService doesn't know about pools;
+      # we apply pool_state/pool_warming_started_at/instance_pool_id
+      # here so the pool's accounting (warming_count, ready_count,
+      # deficit) is honest.
+      instance = result.data[:instance]
+      instance.update!(
         instance_pool_id: pool.id,
         pool_state: "warming",
         pool_warming_started_at: Time.current
       )
 
-      # Dispatch the actual cloud provision via worker. The worker
-      # job runs the existing ProvisioningService flow (provider
-      # adapter create_instance + status sync); the after_save
-      # callback on NodeInstance promotes pool_state→"ready" once
-      # status reaches "running" and modules are attached.
-      enqueue_pool_provision_job(instance: instance, pool: pool)
-
       instance
-    end
-
-    def enqueue_pool_provision_job(instance:, pool:)
-      # Worker is a separate Sidekiq process — dispatched via HTTP API.
-      # If the worker dispatch service exists, use it; otherwise the
-      # platform's existing periodic sync will pick up the pending
-      # instance on its next tick.
-      return unless defined?(::System::WorkerDispatch)
-
-      ::System::WorkerDispatch.dispatch(
-        job_class: "System::NodeInstanceProvisionJob",
-        args: [instance.id, {
-          provider_region_id: pool.provider_region_id,
-          provider_instance_type_id: pool.provider_instance_type_id,
-          pool_id: pool.id
-        }]
-      )
-    rescue StandardError => e
-      Rails.logger.warn(
-        "[InstancePoolService] worker dispatch failed for " \
-        "instance_id=#{instance.id} pool_id=#{pool.id}: #{e.class}: #{e.message}. " \
-        "Periodic sync will retry."
-      )
     end
   end
 end
