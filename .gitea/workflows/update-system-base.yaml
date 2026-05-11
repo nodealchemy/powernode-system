@@ -8,11 +8,16 @@ name: update-system-base
 # on-rootfs binary drifts (e.g., the May-1 binary still running in field
 # VMs even though the agent source has multiple commits since).
 #
+# Builds both amd64 and arm64 on every push — the fleet runs heterogeneous
+# hardware (x86 servers + Pi 5 / Ampere arm64 nodes) and the module-ingest
+# pipeline needs per-arch artifacts so a node fetches the binary matching
+# its uname -m.
+#
 # Trigger: push to develop/master touching agent/** OR the module sources.
-# Output: a signed tarball under dist/, uploaded as a workflow artifact
-# AND attached to a `system-base/agent-<short-sha>-<arch>` release tag for
-# the platform's module-ingest webhook (POST /api/v1/system/webhooks/gitea/module)
-# to pull from.
+# Output per arch: a signed tarball under dist/, uploaded as a workflow
+# artifact AND attached to a `system-base/agent-<short-sha>-<arch>` release
+# for the platform's module-ingest webhook
+# (POST /api/v1/system/webhooks/gitea/module) to pull from.
 
 on:
   push:
@@ -24,9 +29,9 @@ on:
   workflow_dispatch:
     inputs:
       arch:
-        description: "Target architecture (amd64 or arm64)"
+        description: "Target architecture"
         required: false
-        default: "amd64"
+        default: "both"
         type: choice
         options:
           - amd64
@@ -38,12 +43,19 @@ permissions:
   packages: write   # OCI artifact push (future — currently unused)
 
 jobs:
-  build-amd64:
+  build:
+    # Matrix-build both archs in parallel. The `if` filter on the matrix
+    # entry honors the workflow_dispatch arch selector (build only the
+    # selected arch on manual runs); on push events both archs always run.
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-24.04
     if: |
       github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.arch == 'amd64' ||
-      github.event.inputs.arch == 'both'
-    runs-on: ubuntu-24.04
+      github.event.inputs.arch == 'both' ||
+      github.event.inputs.arch == matrix.arch
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,26 +66,26 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: agent/go.sum
 
-      - name: Stage agent + build tarball
+      - name: Stage agent + build tarball (${{ matrix.arch }})
         working-directory: templates/example-modules/system-base
         run: |
-          make stage-agent-amd64
-          make tarball ARCH=amd64
+          make stage-agent-${{ matrix.arch }}
+          make tarball ARCH=${{ matrix.arch }}
 
       - name: Compute artifact metadata
         id: meta
         working-directory: templates/example-modules/system-base
         run: |
-          TARBALL=$(ls dist/system-base-*-amd64.tar.gz | head -1)
+          TARBALL=$(ls dist/system-base-*-${{ matrix.arch }}.tar.gz | head -1)
           SHA=$(sha256sum "$TARBALL" | awk '{print $1}')
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "tag=system-base/agent-${GITHUB_SHA:0:8}-amd64" >> "$GITHUB_OUTPUT"
+          echo "tag=system-base/agent-${GITHUB_SHA:0:8}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v3
         with:
-          name: system-base-amd64
+          name: system-base-${{ matrix.arch }}
           path: templates/example-modules/system-base/dist/*
           retention-days: 30
 
@@ -89,7 +101,7 @@ jobs:
           TAG="${{ steps.meta.outputs.tag }}"
           TARBALL="${{ steps.meta.outputs.tarball }}"
           SHA="${{ steps.meta.outputs.sha256 }}"
-          BODY="system-base module rebuilt with fresh agent binary.\n\nAgent commit: ${GITHUB_SHA}\nSHA256: ${SHA}"
+          BODY="system-base module rebuilt with fresh agent binary (${{ matrix.arch }}).\n\nAgent commit: ${GITHUB_SHA}\nSHA256: ${SHA}"
 
           # Create lightweight tag against the commit that triggered this build.
           git config user.email "ci@powernode.local"
@@ -113,33 +125,3 @@ jobs:
             -H "Authorization: token ${GITEA_TOKEN}" \
             -F "attachment=@${TARBALL}" \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$(basename ${TARBALL})"
-
-  build-arm64:
-    if: |
-      github.event_name == 'workflow_dispatch' && (
-        github.event.inputs.arch == 'arm64' ||
-        github.event.inputs.arch == 'both'
-      )
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache-dependency-path: agent/go.sum
-
-      - name: Stage agent + build tarball
-        working-directory: templates/example-modules/system-base
-        run: |
-          make stage-agent-arm64
-          make tarball ARCH=arm64
-
-      - name: Upload as workflow artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: system-base-arm64
-          path: templates/example-modules/system-base/dist/*
-          retention-days: 30
