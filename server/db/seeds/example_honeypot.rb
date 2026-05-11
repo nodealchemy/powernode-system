@@ -27,11 +27,14 @@ unless instance
   puts "  ⚠️  No NodeInstance found — provision one first via smoke_test_provision.rb or similar"
   return
 end
-puts "  ✅ Target instance: #{instance.id[0, 8]} (#{instance.node.hostname})"
+puts "  ✅ Target instance: #{instance.id[0, 8]} (#{instance.node.name})"
 
 # ── Ensure honeypot-canary module exists ──────────────────────────────────
 
-category = ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Security") do |c|
+# Existing per-account category names use lowercase ("security", "database",
+# etc.); name uniqueness is case-insensitive on (account_id, name), so
+# using "Security" would 422 with "Name has already been taken".
+category = ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "security") do |c|
   c.position = 30
 end
 
@@ -61,13 +64,16 @@ event = ::System::FleetEvent.create!(
     "node_instance_id" => instance.id,
     "canary_path" => "/etc/cluster-admin-credentials.yaml",
     "accessing_process" => "bash",
-    "accessing_user" => "demo-attacker",
+    "accessing_user" => "drill-attacker",
     "accessed_at" => Time.current.iso8601,
     "drill" => true                              # explicit drill marker
   },
   correlation_id: correlation_id,
-  resource_type: "system.node_instance",
-  resource_id: instance.id
+  # FleetEvent uses specific FK columns (node_id, node_instance_id,
+  # node_module_id, certificate_id, cve_id) — not a polymorphic
+  # resource_type/resource_id pair. Original seed predated this schema.
+  node_instance_id: instance.id,
+  node_id: instance.node_id
 )
 puts "  ✅ FleetEvent emitted: kind=honeypot.access_attempted, severity=high"
 

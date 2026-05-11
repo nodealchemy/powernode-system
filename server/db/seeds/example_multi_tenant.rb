@@ -26,11 +26,14 @@ end
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def ensure_node!(account:, hostname:, lifecycle_class: "persistent")
-  node = ::System::Node.find_or_initialize_by(account: account, hostname: hostname)
+# `system_nodes` exposes `name` (not `hostname`), requires a `node_template`,
+# and uses `config` JSONB (no `metadata`).
+def ensure_node!(account:, name:, node_template:, lifecycle_class: "persistent")
+  node = ::System::Node.find_or_initialize_by(account: account, name: name)
   node.assign_attributes(
     lifecycle_class: lifecycle_class,
-    metadata: { "demo": "example_multi_tenant" }
+    node_template: node_template,
+    config: (node.config || {}).merge("source" => "example_multi_tenant")
   )
   node.save!
   node
@@ -40,7 +43,9 @@ def ensure_sdwan_network!(account:, name:)
   net = ::Sdwan::Network.find_or_initialize_by(account: account, name: name)
   net.assign_attributes(
     description: "Tenant-isolated overlay (example 03)",
-    routing_mode: "static",
+    # Schema column is `routing_protocol`, not `routing_mode` — rename
+    # post-dated this seed.
+    routing_protocol: "static",
     status: "active"
   ) if net.new_record?
   net.save!
@@ -49,13 +54,24 @@ end
 
 # ── Setup: 2 tenants ──────────────────────────────────────────────────────
 
-tenant_a_node = ensure_node!(account: account, hostname: "tenant-a-host-demo")
-tenant_b_node = ensure_node!(account: account, hostname: "tenant-b-host-demo")
-puts "  ✅ Nodes: tenant-a-host-demo, tenant-b-host-demo"
+# Provision the prerequisite chain (architecture → platform → template)
+# once for both tenant nodes to share.
+architecture = ::System::NodeArchitecture.find_by!(account: account, name: "amd64")
+platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04") do |p|
+  p.node_architecture = architecture
+end
+node_template = ::System::NodeTemplate.find_or_create_by!(account: account, name: "tenant-baseline") do |t|
+  t.node_platform = platform
+  t.description = "Baseline template for multi-tenant overlay nodes"
+end
 
-network_a = ensure_sdwan_network!(account: account, name: "tenant-a-demo")
-network_b = ensure_sdwan_network!(account: account, name: "tenant-b-demo")
-puts "  ✅ SDWAN networks: #{network_a.name} (#{network_a.prefix || 'auto-allocated'}), #{network_b.name}"
+tenant_a_node = ensure_node!(account: account, name: "tenant-a-host", node_template: node_template)
+tenant_b_node = ensure_node!(account: account, name: "tenant-b-host", node_template: node_template)
+puts "  ✅ Nodes: tenant-a-host, tenant-b-host"
+
+network_a = ensure_sdwan_network!(account: account, name: "tenant-a")
+network_b = ensure_sdwan_network!(account: account, name: "tenant-b")
+puts "  ✅ SDWAN networks: #{network_a.name} (#{network_a.cidr_64 || 'auto-allocated'}), #{network_b.name}"
 
 # ── NodeInstances (skipped — would require provider; see node-provisioning runbook) ──
 
@@ -72,10 +88,10 @@ puts "       4. system_provision_docker_runtime to provision Docker on each"
 # is implicitly blocked at the routing layer — no firewall rule needed for the
 # basic isolation guarantee.
 
-if network_a.prefix && network_b.prefix && network_a.prefix != network_b.prefix
-  puts "  ✅ Networks have distinct prefixes — cross-tenant reachability not routed"
+if network_a.cidr_64 && network_b.cidr_64 && network_a.cidr_64 != network_b.cidr_64
+  puts "  ✅ Networks have distinct /64 prefixes — cross-tenant reachability not routed"
 else
-  puts "  ⚠️  One or both networks lack a prefix — auto-allocation deferred"
+  puts "  ⚠️  One or both networks lack a cidr_64 — auto-allocation deferred"
 end
 
 # Optional: add a default-deny firewall rule on each network to make the boundary
@@ -86,10 +102,13 @@ end
   ::Sdwan::FirewallRule.create!(
     account: account,
     network: net,
+    name: "default-deny-ingress",
     direction: "ingress",
     action: "drop",
-    selector_kind: "all",
-    selector_payload: {},
+    # FirewallRule uses src_selector + dst_selector JSONB columns now
+    # (no `selector_kind` / `selector_payload` pair). Empty hash = match-all.
+    src_selector: {},
+    dst_selector: {},
     protocol: "any",
     priority: 1000
   )

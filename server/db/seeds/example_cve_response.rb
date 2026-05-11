@@ -26,11 +26,15 @@ drill_cve_id = "CVE-2026-99001"
 cve = ::System::Cve.find_or_initialize_by(cve_id: drill_cve_id)
 cve.assign_attributes(
   severity: "critical",
-  cvss_score: 9.8,
   affected_packages: [{ "name" => "openssl", "version" => "<3.1.4" }],
   summary: "DRILL: Synthetic OpenSSL TLS handshake RCE — for example 05 walkthrough only",
   published_at: Time.current,
-  source: "DRILL"
+  feed_source: "DRILL",
+  # CVSS score lives in metadata JSONB on system_cves; the table itself
+  # only stores cve_id / severity (enum) / summary / feed_source /
+  # affected_packages. Original seed used `cvss_score:` and `source:` —
+  # neither is a real column.
+  metadata: { "cvss_score" => 9.8, "drill" => true }
 )
 cve.save!
 puts "  ✅ Drill CVE: #{drill_cve_id} (#{cve.previously_new_record? ? 'created' : 'updated'})"

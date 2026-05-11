@@ -20,8 +20,19 @@ return puts("  ⚠️  No admin user — skipping") unless user
 
 # ── Setup: template + nginx module + two versions ─────────────────────────
 
-template = ::System::NodeTemplate.find_or_initialize_by(account: account, name: "edge-demo-template")
-template.assign_attributes(description: "Demo template for example 04 rolling upgrade") if template.new_record?
+# Walk the required-association chain bottom-up:
+# NodeArchitecture (account + name) → NodePlatform (... + node_architecture)
+# → NodeTemplate (... + node_platform). The platform ships with public
+# `amd64` + `arm64` architectures per account; reuse amd64 here so we
+# don't create orphan rows that need cleanup.
+architecture = ::System::NodeArchitecture.find_by!(account: account, name: "amd64")
+platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04") do |p|
+  p.node_architecture = architecture
+end
+
+template = ::System::NodeTemplate.find_or_initialize_by(account: account, name: "edge-baseline")
+template.assign_attributes(node_platform: platform)
+template.assign_attributes(description: "Baseline edge template for nginx workloads") if template.new_record?
 template.save!
 puts "  ✅ Template: #{template.name}"
 
@@ -33,20 +44,20 @@ if nginx_module.new_record?
   nginx_module.assign_attributes(
     category: category,
     variety: "subscription",
-    description: "Demo nginx module (example 04)"
+    description: "nginx web server module"
   )
   nginx_module.save!
 end
 puts "  ✅ Module: #{nginx_module.name}"
 
 v_old = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 1)
-v_old.assign_attributes(promotion_state: "live", changelog: "demo nginx 1.24.0") if v_old.new_record?
+v_old.assign_attributes(promotion_state: "live", changelog: "nginx 1.24.0") if v_old.new_record?
 v_old.save!
 
 v_new = ::System::NodeModuleVersion.find_or_initialize_by(node_module: nginx_module, version_number: 2)
-v_new.assign_attributes(promotion_state: "blessed", changelog: "demo nginx 1.26.0") if v_new.new_record?
+v_new.assign_attributes(promotion_state: "blessed", changelog: "nginx 1.26.0") if v_new.new_record?
 v_new.save!
-puts "  ✅ Versions: v1 (live, conceptual nginx 1.24.0), v2 (blessed, conceptual nginx 1.26.0)"
+puts "  ✅ Versions: v1 (live, nginx 1.24.0), v2 (blessed, nginx 1.26.0)"
 
 # ── Run the skill in plan mode ────────────────────────────────────────────
 

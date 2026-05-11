@@ -28,7 +28,7 @@ manifest = {
     name: "my-redis",
     category: "userland",
     variety: "subscription",
-    description: "Demo Redis 7.4 module (example 07)",
+    description: "Redis 7.4 in-memory data store",
     cosign_identity_regexp: '^https://git\.ipnode\.org/.*/modules/my-redis-module@.*$',
     cosign_issuer_regexp: '^https://gitea\.ipnode\.org$'
   },
@@ -57,11 +57,11 @@ mod.assign_attributes(
   category: category,
   variety: manifest[:identity][:variety],
   description: manifest[:identity][:description],
-  # Schema stores the manifest as YAML text in `manifest_yaml`, with
-  # `manifest_type` distinguishing the source path. Original example
-  # used a non-existent `manifest:` JSONB attribute.
-  manifest_yaml: manifest.deep_stringify_keys.to_yaml,
-  manifest_type: "inline"
+  # Schema stores the manifest as YAML text in `manifest_yaml`. (Earlier
+  # iterations of this seed referenced a non-existent `manifest:` JSONB
+  # attribute and a `manifest_type:` column; neither exists on the
+  # current `system_node_modules` table.)
+  manifest_yaml: manifest.deep_stringify_keys.to_yaml
 )
 mod.save!
 puts "  ✅ NodeModule: #{mod.name} (#{mod.previously_new_record? ? 'created' : 'updated'})"
@@ -71,10 +71,10 @@ puts "  ✅ NodeModule: #{mod.name} (#{mod.previously_new_record? ? 'created' : 
 v = ::System::NodeModuleVersion.find_or_initialize_by(node_module: mod, version_number: 1)
 v.assign_attributes(
   promotion_state: "built",
-  changelog: "demo my-redis 0.1.0 (conceptual)"
+  changelog: "my-redis 0.1.0 — initial release"
 )
 v.save!
-puts "  ✅ NodeModuleVersion: v1 (promotion_state=built, conceptual 0.1.0)"
+puts "  ✅ NodeModuleVersion: v1 (promotion_state=built, 0.1.0)"
 
 # ── Promote: built → staging → blessed → live ────────────────────────────
 
@@ -86,14 +86,22 @@ puts "  ✅ NodeModuleVersion: v1 (promotion_state=built, conceptual 0.1.0)"
 end
 
 # ── Show current dependency resolution ────────────────────────────────────
+# DependencyResolutionService takes (available_modules, options) positionally
+# — the original seed passed `account:` as a kwarg which became the
+# `available_modules` argument and blew up on `.map(&:id)` inside
+# initialize. Resolve over this account's full module set instead.
 
-resolver = ::System::DependencyResolutionService.new(account: account)
-deps = resolver.resolve_for(node_module: mod) rescue nil
+available_modules = account.system_node_modules.to_a
+resolver = ::System::DependencyResolutionService.new(available_modules)
+result = resolver.resolve([mod]) rescue nil
 
-if deps
-  puts "  ✅ Dependency resolution: #{deps[:modules]&.map { |m| m[:name] }&.join(' → ')}"
+if result&.success?
+  names = result.modules.map(&:name).join(' → ')
+  puts "  ✅ Dependency resolution: #{names}"
+elsif result
+  puts "  ℹ️  Dependency resolver returned with errors: #{result.errors.join('; ')}"
 else
-  puts "  ℹ️  Dependency resolver returned nil — system-base + security-hardening modules may not be seeded yet"
+  puts "  ℹ️  Dependency resolver raised — system-base + security-hardening modules may not be seeded yet"
 end
 
 puts "  ℹ️  In production, the full flow is:"
