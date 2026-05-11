@@ -21,6 +21,17 @@ module Sdwan
 
     belongs_to :account
 
+    # Phase O6 follow-up — ingested flow samples cascade-delete with
+    # the collector. The DB FK has on_delete: :cascade as a backstop;
+    # this `dependent: :destroy` makes Rails issue the explicit
+    # destroys (running model callbacks if any future flow_sample
+    # callbacks land) and is the canonical Rails-side declaration.
+    has_many :flow_samples,
+             class_name: "Sdwan::FlowSample",
+             foreign_key: :ipfix_collector_id,
+             dependent: :destroy,
+             inverse_of: :ipfix_collector
+
     validates :name, presence: true,
                      uniqueness: { scope: :account_id }
     validates :host, presence: true

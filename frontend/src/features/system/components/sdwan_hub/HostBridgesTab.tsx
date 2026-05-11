@@ -1,23 +1,31 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Network as NetworkIcon } from 'lucide-react';
+import { Network as NetworkIcon, Trash2 } from 'lucide-react';
+import { useArmedConfirm } from '@/shared/hooks/useArmedConfirm';
+import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import type {
   SdwanHostBridge,
   SdwanHostBridgeState,
 } from '@system/features/system/types/sdwan.types';
 
-// Phase O6 — read-only operator view of allocated SDWAN host bridges.
-// Allocation happens through the agent reconcile loop / AI compose
-// skill / MCP action; this tab is purely an inspection surface.
+// Phase O6 — read-only operator view of allocated SDWAN host bridges
+// (now with inline manage actions). Allocation happens through the
+// agent reconcile loop / AI compose skill / MCP action; the inline
+// delete button uses arm-and-confirm and force-removes the bridge
+// (short_id returns to the pool immediately).
 //
 // Bridges are grouped visually by host — the controller sorts by
-// (node_instance_id, short_id) so consecutive rows share a host. The
-// table renders a flat list since 99% of accounts run < 100 bridges
-// (one per host, one host per node, < 50 nodes typically).
+// (node_instance_id, short_id) so consecutive rows share a host.
 export const HostBridgesTab: React.FC = () => {
+  const { hasPermission } = usePermissions();
+  const { addNotification } = useNotifications();
+  const canManage = hasPermission('sdwan.host_bridges.manage');
+
   const [bridges, setBridges] = useState<SdwanHostBridge[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -34,7 +42,20 @@ export const HostBridgesTab: React.FC = () => {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshKey]);
+
+  const handleDelete = useCallback(async (bridge: SdwanHostBridge) => {
+    try {
+      await sdwanApi.deleteHostBridge(bridge.id);
+      addNotification({ type: 'success', message: `Bridge ${bridge.bridge_name} removed` });
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to remove bridge',
+      });
+    }
+  }, [addNotification]);
 
   if (loading) {
     return <div className="p-8 text-center text-theme-secondary">Loading host bridges…</div>;
@@ -67,26 +88,67 @@ export const HostBridgesTab: React.FC = () => {
             <th className="text-left p-3">Kind</th>
             <th className="text-left p-3">State</th>
             <th className="text-left p-3">Short ID</th>
+            <th className="text-right p-3">Actions</th>
           </tr>
         </thead>
         <tbody>
           {bridges.map((b) => (
-            <tr key={b.id} className="border-b border-theme-border">
-              <td className="p-3 text-theme-primary">{b.node_instance_name ?? b.node_instance_id}</td>
-              <td className="p-3 text-theme-secondary text-sm">{b.network_profile ?? '—'}</td>
-              <td className="p-3 font-mono text-xs text-theme-secondary">{b.bridge_name}</td>
-              <td className="p-3">
-                <span className={kindBadgeClass(b.kind)}>{b.kind}</span>
-              </td>
-              <td className="p-3">
-                <span className={stateBadgeClass(b.state)}>{b.state}</span>
-              </td>
-              <td className="p-3 text-theme-secondary text-sm">{b.short_id}</td>
-            </tr>
+            <BridgeRow
+              key={b.id}
+              bridge={b}
+              canManage={canManage}
+              onDelete={handleDelete}
+            />
           ))}
         </tbody>
       </table>
     </div>
+  );
+};
+
+interface BridgeRowProps {
+  bridge: SdwanHostBridge;
+  canManage: boolean;
+  onDelete: (bridge: SdwanHostBridge) => void;
+}
+
+const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, onDelete }) => {
+  // Per-row armed-confirm state so each row's delete button arms
+  // independently; one row's armed state never bleeds into another.
+  const { armed, trigger } = useArmedConfirm(() => onDelete(b));
+
+  return (
+    <tr className="border-b border-theme-border">
+      <td className="p-3 text-theme-primary">{b.node_instance_name ?? b.node_instance_id}</td>
+      <td className="p-3 text-theme-secondary text-sm">{b.network_profile ?? '—'}</td>
+      <td className="p-3 font-mono text-xs text-theme-secondary">{b.bridge_name}</td>
+      <td className="p-3">
+        <span className={kindBadgeClass(b.kind)}>{b.kind}</span>
+      </td>
+      <td className="p-3">
+        <span className={stateBadgeClass(b.state)}>{b.state}</span>
+      </td>
+      <td className="p-3 text-theme-secondary text-sm">{b.short_id}</td>
+      <td className="p-3 text-right">
+        {canManage && b.state !== 'removed' && (
+          <button
+            type="button"
+            onClick={trigger}
+            className={
+              'p-1 rounded text-xs ' +
+              (armed
+                ? 'bg-theme-danger text-theme-danger px-2'
+                : 'text-theme-danger hover:bg-theme-danger')
+            }
+            aria-label={`Remove bridge ${b.bridge_name}`}
+            title={armed ? 'Click to confirm' : 'Remove bridge'}
+            data-testid={`delete-host-bridge-${b.id}`}
+          >
+            {armed ? 'Confirm?' : <Trash2 size={16} />}
+          </button>
+        )}
+      </td>
+    </tr>
   );
 };
 

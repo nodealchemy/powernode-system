@@ -584,6 +584,10 @@ export const sdwanApi = {
     return extractData(response).host_bridge;
   },
 
+  deleteHostBridge: async (id: string): Promise<void> => {
+    await apiClient.delete(`/system/sdwan/host_bridges/${id}`);
+  },
+
   // -------- Phase O6: OVN Deployments (read-only) --------
   getOvnDeployments: async (): Promise<SdwanOvnDeploymentSummary[]> => {
     const response = await apiClient.get<ApiEnvelope<{ ovn_deployments: SdwanOvnDeploymentSummary[] }>>(
@@ -614,6 +618,21 @@ export const sdwanApi = {
       `/system/sdwan/ipfix_collectors/${id}`
     );
     return extractData(response).ipfix_collector;
+  },
+
+  setIpfixCollectorState: async (
+    id: string,
+    state: 'active' | 'disabled'
+  ): Promise<SdwanIpfixCollector> => {
+    const response = await apiClient.patch<ApiEnvelope<{ ipfix_collector: SdwanIpfixCollector }>>(
+      `/system/sdwan/ipfix_collectors/${id}`,
+      { ipfix_collector: { state } }
+    );
+    return extractData(response).ipfix_collector;
+  },
+
+  deleteIpfixCollector: async (id: string): Promise<void> => {
+    await apiClient.delete(`/system/sdwan/ipfix_collectors/${id}`);
   },
 
   // -------- Phase O6 follow-up: Flow Samples (read-only) --------

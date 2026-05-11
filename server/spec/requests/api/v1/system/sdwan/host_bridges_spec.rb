@@ -113,4 +113,25 @@ RSpec.describe "Api::V1::System::Sdwan::HostBridges", type: :request do
       expect(response).to have_http_status(:not_found)
     end
   end
+
+  describe "DELETE /api/v1/system/sdwan/host_bridges/:id" do
+    let(:manager) { user_with_permissions("sdwan.host_bridges.read", "sdwan.host_bridges.manage", account: account) }
+    let(:manager_headers) { auth_headers_for(manager) }
+
+    it "force-removes the bridge (state → removed) and returns deleted=true" do
+      bridge = ::Sdwan::HostBridgeAllocator.allocate!(host: instance_a, kind: "linux")
+
+      delete "/api/v1/system/sdwan/host_bridges/#{bridge.id}", headers: manager_headers
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data["deleted"]).to be true
+      expect(::Sdwan::HostBridge.find(bridge.id).state).to eq("removed")
+    end
+
+    it "rejects without sdwan.host_bridges.manage permission" do
+      bridge = ::Sdwan::HostBridgeAllocator.allocate!(host: instance_a, kind: "linux")
+      delete "/api/v1/system/sdwan/host_bridges/#{bridge.id}", headers: headers
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
 end

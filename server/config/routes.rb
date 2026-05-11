@@ -248,17 +248,20 @@ Rails.application.routes.draw do
             member { get :compile }
           end
 
-          # Phase O6: read-only operator APIs for the dual-profile
-          # networking models. Mutation happens through allocators / AI
-          # composition skills / MCP actions; these surfaces exist so an
-          # operator UI can inspect the resulting rows.
-          resources :host_bridges,     only: %i[index show]
+          # Phase O6: read APIs + inline operator destroy/update for
+          # the dual-profile networking models. Bulk creation still
+          # happens through allocators / AI composition skills / MCP
+          # actions; these inline mutations let operators clean up or
+          # toggle individual rows from the operator UI.
+          resources :host_bridges,     only: %i[index show destroy]
           resources :ovn_deployments,  only: %i[index show]
           # Phase O6 follow-up: IPFIX flow ingest under the parent
           # collector so each flow batch is attributed to a specific
           # exporter target. Read-side index for operator inspection;
           # POST create accepts batched JSON from sidecar collectors.
-          resources :ipfix_collectors, only: %i[index show] do
+          # PATCH update toggles state (active/disabled); DELETE
+          # destroys the collector + its flow_samples (cascade FK).
+          resources :ipfix_collectors, only: %i[index show update destroy] do
             resources :flow_samples, only: %i[index create]
           end
         end

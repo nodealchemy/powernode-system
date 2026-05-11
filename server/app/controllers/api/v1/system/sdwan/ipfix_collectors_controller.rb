@@ -18,7 +18,7 @@ module Api
       module Sdwan
         class IpfixCollectorsController < ::Api::V1::System::BaseController
           before_action :set_account
-          before_action :set_collector, only: %i[show]
+          before_action :set_collector, only: %i[show update destroy]
 
           def index
             require_permission("sdwan.ipfix.read")
@@ -39,6 +39,26 @@ module Api
           def show
             require_permission("sdwan.ipfix.read")
             render_success(ipfix_collector: serialize_collector_full(@collector))
+          end
+
+          def update
+            require_permission("sdwan.ipfix.manage")
+
+            target = params.dig(:ipfix_collector, :state) || params[:state]
+            case target.to_s
+            when "active"   then @collector.enable!
+            when "disabled" then @collector.disable!
+            else
+              return render_error("state must be 'active' or 'disabled'", status: :unprocessable_entity)
+            end
+
+            render_success(ipfix_collector: serialize_collector_full(@collector.reload))
+          end
+
+          def destroy
+            require_permission("sdwan.ipfix.manage")
+            @collector.destroy!
+            render_success(deleted: true, id: @collector.id)
           end
 
           private

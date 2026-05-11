@@ -109,4 +109,86 @@ RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
       expect(response).to have_http_status(:not_found)
     end
   end
+
+  describe "PATCH /api/v1/system/sdwan/ipfix_collectors/:id" do
+    let(:manager) { user_with_permissions("sdwan.ipfix.read", "sdwan.ipfix.manage", account: account) }
+    let(:manager_headers) { auth_headers_for(manager) }
+    let!(:collector) do
+      ::Sdwan::IpfixCollector.create!(
+        account_id: account.id, name: "primary",
+        host: "10.0.0.1", port: 4739,
+        sampling_rate: 1, state: "active"
+      )
+    end
+
+    it "transitions to disabled when state=disabled" do
+      patch "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}",
+            params: { ipfix_collector: { state: "disabled" } }.to_json,
+            headers: manager_headers.merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:ok)
+      expect(collector.reload.state).to eq("disabled")
+    end
+
+    it "transitions to active when state=active" do
+      collector.update!(state: "disabled")
+      patch "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}",
+            params: { ipfix_collector: { state: "active" } }.to_json,
+            headers: manager_headers.merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:ok)
+      expect(collector.reload.state).to eq("active")
+    end
+
+    it "rejects an unknown state" do
+      patch "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}",
+            params: { ipfix_collector: { state: "haunted" } }.to_json,
+            headers: manager_headers.merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:unprocessable_entity)
+    end
+
+    it "rejects without sdwan.ipfix.manage permission" do
+      patch "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}",
+            params: { ipfix_collector: { state: "disabled" } }.to_json,
+            headers: headers.merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
+
+  describe "DELETE /api/v1/system/sdwan/ipfix_collectors/:id" do
+    let(:manager) { user_with_permissions("sdwan.ipfix.read", "sdwan.ipfix.manage", account: account) }
+    let(:manager_headers) { auth_headers_for(manager) }
+
+    it "destroys the collector + cascades to its flow_samples" do
+      collector = ::Sdwan::IpfixCollector.create!(
+        account_id: account.id, name: "doomed", host: "10.0.0.1", port: 4739,
+        sampling_rate: 1, state: "active"
+      )
+      ::Sdwan::IpfixIngestService.call(
+        account: account, ipfix_collector: collector,
+        records: [ {
+          src_ip: "10.0.0.10", dst_ip: "10.0.0.20",
+          src_port: 12345, dst_port: 5432, protocol: 6,
+          octet_count: 1500, packet_count: 1,
+          flow_start_at: 1.minute.ago.iso8601,
+          flow_end_at: Time.current.iso8601
+        } ]
+      )
+      expect(::Sdwan::FlowSample.where(ipfix_collector_id: collector.id).count).to eq(1)
+
+      delete "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}", headers: manager_headers
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response_data["deleted"]).to be true
+      expect(::Sdwan::IpfixCollector.find_by(id: collector.id)).to be_nil
+      expect(::Sdwan::FlowSample.where(ipfix_collector_id: collector.id).count).to eq(0)
+    end
+
+    it "rejects without sdwan.ipfix.manage permission" do
+      collector = ::Sdwan::IpfixCollector.create!(
+        account_id: account.id, name: "kept", host: "10.0.0.1", port: 4739,
+        sampling_rate: 1, state: "active"
+      )
+      delete "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}", headers: headers
+      expect(response).to have_http_status(:forbidden)
+    end
+  end
 end

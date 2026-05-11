@@ -15,7 +15,7 @@ module Api
       module Sdwan
         class HostBridgesController < ::Api::V1::System::BaseController
           before_action :set_account
-          before_action :set_bridge, only: %i[show]
+          before_action :set_bridge, only: %i[show destroy]
 
           def index
             require_permission("sdwan.host_bridges.read")
@@ -44,6 +44,17 @@ module Api
           def show
             require_permission("sdwan.host_bridges.read")
             render_success(host_bridge: serialize_bridge_full(@bridge))
+          end
+
+          def destroy
+            require_permission("sdwan.host_bridges.manage")
+            # Release via the allocator with force: true so the short_id
+            # returns to the pool immediately (rather than entering the
+            # draining grace window). Operators using inline UI delete
+            # know what they're doing; the grace window is for the
+            # autonomous reconcile path.
+            ::Sdwan::HostBridgeAllocator.release!(@bridge, force: true)
+            render_success(deleted: true, id: @bridge.id)
           end
 
           private
