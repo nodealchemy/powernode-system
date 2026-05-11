@@ -35,7 +35,7 @@ export const HoneypotCanaryTile: React.FC = () => {
     return Date.now() - t <= 24 * 60 * 60 * 1000;
   });
 
-  const tone = last24h.length > 0 ? 'border-theme-error' : last7d.length > 0 ? 'border-theme-warning' : 'border-theme-border';
+  const tone = last24h.length > 0 ? 'border-theme-error' : last7d.length > 0 ? 'border-theme-warning' : 'border-theme';
 
   return (
     <div className={`bg-theme-surface rounded-lg border ${tone} p-3`}>

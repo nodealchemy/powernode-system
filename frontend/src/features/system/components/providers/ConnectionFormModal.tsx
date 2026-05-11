@@ -239,7 +239,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Server className="w-6 h-6 text-theme-accent" />
+              <Server className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Connection' : 'Add Connection'}
               </h2>

@@ -63,10 +63,10 @@ export const DispatchLatencyTile: React.FC = () => {
       : 0;
 
   return (
-    <div className="rounded-xl border border-theme-border-default bg-theme-bg-card p-4">
+    <div className="rounded-xl border border-theme bg-theme-surface p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-theme-text-muted" />
+          <Activity className="h-4 w-4 text-theme-tertiary" />
           <h4 className="text-sm font-semibold text-theme-text-primary">Dispatch pipeline</h4>
         </div>
         <Badge variant={failurePercent > 5 ? 'danger' : 'default'}>
@@ -75,7 +75,7 @@ export const DispatchLatencyTile: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="text-xs text-theme-text-muted italic">Loading metrics...</div>
+        <div className="text-xs text-theme-tertiary italic">Loading metrics...</div>
       ) : error ? (
         <div className="text-xs text-theme-error">{error}</div>
       ) : data ? (
@@ -86,18 +86,18 @@ export const DispatchLatencyTile: React.FC = () => {
               const count = stat?.count ?? 0;
               const rate = stat?.rate_per_sec ?? 0;
               return (
-                <div key={key} className="rounded-md bg-theme-bg-hover p-2 text-center">
-                  <div className="text-[10px] uppercase tracking-wider text-theme-text-muted">
+                <div key={key} className="rounded-md bg-theme-surface-hover p-2 text-center">
+                  <div className="text-[10px] uppercase tracking-wider text-theme-tertiary">
                     {label}
                   </div>
                   <div className="text-lg font-semibold text-theme-text-primary mt-1">{count}</div>
-                  <div className="text-[10px] text-theme-text-muted">{formatRate(rate)}</div>
+                  <div className="text-[10px] text-theme-tertiary">{formatRate(rate)}</div>
                 </div>
               );
             })}
           </div>
           {completedRate + failureRate > 0 && (
-            <div className="text-xs text-theme-text-muted">
+            <div className="text-xs text-theme-tertiary">
               Failure rate:{' '}
               <span className={failurePercent > 5 ? 'text-theme-error' : 'text-theme-text-primary'}>
                 {failurePercent.toFixed(2)}%

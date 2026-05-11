@@ -136,7 +136,7 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
               </label>
               <input
                 type="text" value={endpointHostV6} onChange={(e) => setEndpointHostV6(e.target.value)}
-                className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
                 placeholder="2001:db8::1 or hub.v6.example.com"
                 disabled={submitting}
               />
@@ -147,7 +147,7 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
               </label>
               <input
                 type="text" value={endpointHostV4} onChange={(e) => setEndpointHostV4(e.target.value)}
-                className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
                 placeholder="203.0.113.10 or hub.example.com"
                 disabled={submitting}
               />
@@ -159,7 +159,7 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
               <label className="block text-sm font-medium text-theme-primary mb-1">Port</label>
               <input
                 type="number" value={endpointPort} onChange={(e) => setEndpointPort(Number(e.target.value))}
-                className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                 min={1} max={65535} disabled={submitting}
               />
             </div>

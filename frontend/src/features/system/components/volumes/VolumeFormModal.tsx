@@ -233,7 +233,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <HardDrive className="w-6 h-6 text-theme-accent" />
+              <HardDrive className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Volume' : 'Create Volume'}
               </h2>
@@ -416,7 +416,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                     type="checkbox"
                     checked={formData.encrypted}
                     onChange={(e) => handleChange('encrypted', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     disabled={submitting || isEditMode}
                   />
                   <span className="text-sm text-theme-primary">Encrypt volume</span>

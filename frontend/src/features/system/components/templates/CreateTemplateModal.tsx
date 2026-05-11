@@ -221,7 +221,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <FileText className="w-6 h-6 text-theme-accent" />
+              <FileText className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Template' : isDuplicateMode ? 'Duplicate Template' : 'Create Template'}
               </h2>
@@ -354,7 +354,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -366,7 +366,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public (visible to all accounts)</span>
                 </label>

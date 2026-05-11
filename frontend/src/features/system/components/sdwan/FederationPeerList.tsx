@@ -72,7 +72,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
         </thead>
         <tbody>
           {peers.map((p) => (
-            <tr key={p.id} className="border-b border-theme-border">
+            <tr key={p.id} className="border-b border-theme">
               <td className="p-3">
                 <div className="font-mono text-xs text-theme-primary">{p.remote_instance_url}</div>
                 {p.remote_instance_id && (

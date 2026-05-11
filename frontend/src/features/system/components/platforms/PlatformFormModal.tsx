@@ -179,7 +179,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
         <div className={`relative w-full ${isEditMode ? 'max-w-4xl' : 'max-w-2xl'} bg-theme-surface rounded-lg shadow-xl`}>
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Layers className="w-6 h-6 text-theme-accent" />
+              <Layers className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Platform' : 'Create Platform'}
               </h2>
@@ -314,7 +314,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -325,7 +325,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

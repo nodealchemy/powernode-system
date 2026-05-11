@@ -49,7 +49,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-theme-surface border border-theme-border rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-y-auto p-6">
+      <div className="bg-theme-surface border border-theme rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] overflow-y-auto p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <Search size={16} />
@@ -68,7 +68,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
             max="168"
             value={lookbackHours}
             onChange={(e) => setLookbackHours(Math.max(1, parseInt(e.target.value, 10) || 24))}
-            className="w-20 px-2 py-1 text-sm rounded border border-theme-border bg-theme-background"
+            className="w-20 px-2 py-1 text-sm rounded border border-theme bg-theme-background"
           />
           <Button size="sm" variant="secondary" onClick={fetchAttribution} disabled={loading}>
             Re-analyze
@@ -81,7 +81,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
           <p className="text-sm text-theme-muted">No data yet.</p>
         ) : (
           <div className="space-y-4">
-            <div className="text-sm bg-theme-background border border-theme-border rounded p-3">
+            <div className="text-sm bg-theme-background border border-theme rounded p-3">
               <div className="font-medium mb-1">Reasoning</div>
               <p className="text-theme-muted">{result.reasoning}</p>
               {result.confidence > 0 && (
@@ -123,7 +123,7 @@ interface CandidateRowProps {
 const CandidateRow: React.FC<CandidateRowProps> = ({ candidate, rank, instanceId }) => {
   const isTop = rank === 1;
   return (
-    <li className={`border ${isTop ? 'border-theme-warning' : 'border-theme-border'} rounded p-3 bg-theme-background`}>
+    <li className={`border ${isTop ? 'border-theme-warning' : 'border-theme'} rounded p-3 bg-theme-background`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1">
           <div className="flex items-center gap-2">

@@ -62,7 +62,7 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
   };
 
   return (
-    <div className="bg-theme-surface border border-theme-border rounded-lg p-4">
+    <div className="bg-theme-surface border border-theme rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold flex items-center gap-2">
           {isCanary ? <ShieldAlert size={14} className="text-theme-warning" /> : <Shield size={14} />}
@@ -98,7 +98,7 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
             <select
               value={lureKind}
               onChange={(e) => setLureKind(e.target.value)}
-              className="w-full px-2 py-1.5 text-sm rounded border border-theme-border bg-theme-background"
+              className="w-full px-2 py-1.5 text-sm rounded border border-theme bg-theme-background"
             >
               {LURE_KINDS.map((kind) => (
                 <option key={kind} value={kind}>{kind}</option>

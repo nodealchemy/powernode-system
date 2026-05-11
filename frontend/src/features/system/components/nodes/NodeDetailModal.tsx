@@ -466,7 +466,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
             return (
             <div
               key={instance.id}
-              className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-accent/50 transition-colors"
+              className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-info/50 transition-colors"
             >
               <div className="flex items-center justify-between gap-2">
                 <button

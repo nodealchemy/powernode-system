@@ -58,12 +58,12 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
         </thead>
         <tbody>
           {peers.map((p) => (
-            <tr key={p.id} className="border-b border-theme-border">
+            <tr key={p.id} className="border-b border-theme">
               <td className="p-3">
                 <div className="flex items-center gap-2">
                   {p.publicly_reachable ? (
                     <>
-                      <Globe size={16} className="text-theme-accent" />
+                      <Globe size={16} className="text-theme-info" />
                       <span className="text-sm text-theme-primary">Hub</span>
                     </>
                   ) : (
@@ -89,7 +89,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                   <button
                     type="button"
                     onClick={() => onEdit(p)}
-                    className="text-theme-secondary hover:bg-theme-hover p-1 rounded mr-1"
+                    className="text-theme-secondary hover:bg-theme-surface-hover p-1 rounded mr-1"
                     aria-label={`Edit peer ${p.assigned_address}`}
                   >
                     <Pencil size={16} />

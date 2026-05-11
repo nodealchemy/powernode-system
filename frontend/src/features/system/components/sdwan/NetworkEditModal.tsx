@@ -67,7 +67,7 @@ export const NetworkEditModal: React.FC<NetworkEditModalProps> = ({ isOpen, netw
           <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
           <input
             type="text" value={name} onChange={(e) => setName(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
             disabled={submitting}
           />
         </div>
@@ -75,7 +75,7 @@ export const NetworkEditModal: React.FC<NetworkEditModalProps> = ({ isOpen, netw
           <label className="block text-sm font-medium text-theme-primary mb-1">Description</label>
           <textarea
             value={description} onChange={(e) => setDescription(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
             rows={2} disabled={submitting}
           />
         </div>
@@ -83,7 +83,7 @@ export const NetworkEditModal: React.FC<NetworkEditModalProps> = ({ isOpen, netw
           <label className="block text-sm font-medium text-theme-primary mb-1">Status</label>
           <select
             value={status} onChange={(e) => setStatus(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
             disabled={submitting}
           >
             <option value="registered">registered</option>

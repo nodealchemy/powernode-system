@@ -144,7 +144,7 @@ export function FleetDashboardPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col h-full bg-theme-background text-theme-foreground">
-      <header className="px-6 py-4 border-b border-theme-border space-y-3">
+      <header className="px-6 py-4 border-b border-theme space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">Fleet Dashboard</h1>
@@ -158,7 +158,7 @@ export function FleetDashboardPage(): React.JSX.Element {
               value={filterKind}
               onChange={(e) => setFilterKind(e.target.value)}
               placeholder="Filter kind…"
-              className="px-3 py-1.5 text-sm rounded border border-theme-border bg-theme-background"
+              className="px-3 py-1.5 text-sm rounded border border-theme bg-theme-background"
             />
             <Button size="sm" variant="secondary" onClick={refreshBacklog} disabled={loading}>
               Refresh
@@ -180,8 +180,8 @@ export function FleetDashboardPage(): React.JSX.Element {
                 className={
                   'px-2 py-0.5 rounded border transition-colors ' +
                   (active
-                    ? 'bg-theme-accent text-theme-on-accent border-theme-accent'
-                    : 'border-theme-border text-theme-primary hover:bg-theme-hover')
+                    ? 'bg-theme-info text-theme-on-accent border-theme-info'
+                    : 'border-theme text-theme-primary hover:bg-theme-surface-hover')
                 }
               >
                 {chip.label}
@@ -198,8 +198,8 @@ export function FleetDashboardPage(): React.JSX.Element {
                 className={
                   'px-2 py-0.5 rounded border transition-colors ' +
                   (active
-                    ? 'bg-theme-accent text-theme-on-accent border-theme-accent'
-                    : 'border-theme-border text-theme-primary hover:bg-theme-hover')
+                    ? 'bg-theme-info text-theme-on-accent border-theme-info'
+                    : 'border-theme text-theme-primary hover:bg-theme-surface-hover')
                 }
               >
                 {sev}
@@ -224,8 +224,8 @@ export function FleetDashboardPage(): React.JSX.Element {
       </div>
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 p-4 overflow-hidden">
-        <section className="md:col-span-2 flex flex-col bg-theme-surface rounded-lg border border-theme-border overflow-hidden">
-          <div className="px-4 py-2 border-b border-theme-border flex items-center justify-between">
+        <section className="md:col-span-2 flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
+          <div className="px-4 py-2 border-b border-theme flex items-center justify-between">
             <h2 className="font-medium">Live Event Feed</h2>
             <span className="text-xs text-theme-muted">{filteredEvents.length} events</span>
           </div>
@@ -237,7 +237,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                 {filteredEvents.map((e) => (
                   <li
                     key={e.id}
-                    className={`px-4 py-2 hover:bg-theme-hover cursor-pointer ${selectedEvent?.id === e.id ? 'bg-theme-hover' : ''}`}
+                    className={`px-4 py-2 hover:bg-theme-surface-hover cursor-pointer ${selectedEvent?.id === e.id ? 'bg-theme-surface-hover' : ''}`}
                     onClick={() => setSelectedEvent(e)}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -271,8 +271,8 @@ export function FleetDashboardPage(): React.JSX.Element {
           </div>
         </section>
 
-        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme-border overflow-hidden">
-          <div className="px-4 py-2 border-b border-theme-border flex items-center justify-between">
+        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
+          <div className="px-4 py-2 border-b border-theme flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Clock size={14} />
               <h2 className="font-medium">{selectedEvent ? 'Event Detail' : 'Correlation Chain'}</h2>
@@ -294,7 +294,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                 {/* Selected event detail — was missing entirely before; clicking
                     only set selectedCorrelation, so events without a correlation_id
                     (most events) produced no visible response. */}
-                <div className="px-4 py-3 border-b border-theme-border space-y-2">
+                <div className="px-4 py-3 border-b border-theme space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs">{selectedEvent.kind}</span>
                     <SeverityBadge severity={selectedEvent.severity} />
@@ -354,7 +354,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                     events in the chain. */}
                 {selectedCorrelation && (
                   <div>
-                    <div className="px-4 py-2 border-b border-theme-border bg-theme-background">
+                    <div className="px-4 py-2 border-b border-theme bg-theme-background">
                       <span className="text-xs font-medium text-theme-muted uppercase tracking-wide">Correlation Chain ({correlationEvents.length})</span>
                     </div>
                     {correlationEvents.length === 0 ? (
@@ -362,7 +362,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                     ) : (
                       <ul className="divide-y divide-theme-border">
                         {correlationEvents.map((e) => (
-                          <li key={e.id} className={`px-4 py-2 space-y-0.5 cursor-pointer hover:bg-theme-hover ${selectedEvent.id === e.id ? 'bg-theme-hover' : ''}`} onClick={() => setSelectedEvent(e)}>
+                          <li key={e.id} className={`px-4 py-2 space-y-0.5 cursor-pointer hover:bg-theme-surface-hover ${selectedEvent.id === e.id ? 'bg-theme-surface-hover' : ''}`} onClick={() => setSelectedEvent(e)}>
                             <div className="font-mono text-xs">{e.kind}</div>
                             <div className="text-xs text-theme-muted">
                               {new Date(e.emitted_at).toLocaleTimeString()}
@@ -396,7 +396,7 @@ interface CounterProps {
 }
 function Counter({ icon, label, value, highlight }: CounterProps): React.JSX.Element {
   return (
-    <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning' : 'border-theme-border'} p-3`}>
+    <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning' : 'border-theme'} p-3`}>
       <div className="flex items-center justify-between">
         <div className="text-xs text-theme-muted flex items-center gap-1">
           {icon}

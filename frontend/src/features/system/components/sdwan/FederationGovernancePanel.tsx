@@ -39,10 +39,10 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
   React.useEffect(() => { run(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [refreshKey]);
 
   return (
-    <div className="border border-theme-border rounded p-4">
+    <div className="border border-theme rounded p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <ShieldAlert size={18} className="text-theme-accent" />
+          <ShieldAlert size={18} className="text-theme-info" />
           <h3 className="font-medium text-theme-primary">Governance scan</h3>
         </div>
         <Button variant="secondary" onClick={run} disabled={running}>
@@ -62,7 +62,7 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
       ) : (
         <ul className="space-y-2">
           {findings.map((f, i) => (
-            <li key={`${f.federation_peer_id}-${f.kind}-${i}`} className="p-3 border border-theme-border rounded">
+            <li key={`${f.federation_peer_id}-${f.kind}-${i}`} className="p-3 border border-theme rounded">
               <div className="flex items-center gap-2 mb-1">
                 <span className={severityClass(f.severity)}>{f.severity}</span>
                 <span className="text-xs text-theme-secondary font-mono">{f.kind}</span>

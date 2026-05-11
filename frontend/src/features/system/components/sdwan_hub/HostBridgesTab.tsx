@@ -118,7 +118,7 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, onDelete })
   const { armed, trigger } = useArmedConfirm(() => onDelete(b));
 
   return (
-    <tr className="border-b border-theme-border">
+    <tr className="border-b border-theme">
       <td className="p-3 text-theme-primary">{b.node_instance_name ?? b.node_instance_id}</td>
       <td className="p-3 text-theme-secondary text-sm">{b.network_profile ?? '—'}</td>
       <td className="p-3 font-mono text-xs text-theme-secondary">{b.bridge_name}</td>

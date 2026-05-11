@@ -196,7 +196,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
         <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-accent" />
+              <Package className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Puppet Module' : 'Add Puppet Module'}
               </h2>
@@ -425,7 +425,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -436,7 +436,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

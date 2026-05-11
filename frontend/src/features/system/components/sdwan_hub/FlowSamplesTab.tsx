@@ -155,7 +155,7 @@ export const FlowSamplesTab: React.FC = () => {
           type="button"
           onClick={loadSamples}
           disabled={samplesLoading}
-          className="ml-auto px-3 py-1.5 rounded text-sm bg-theme-accent text-theme-on-accent hover:opacity-90 disabled:opacity-50"
+          className="ml-auto px-3 py-1.5 rounded text-sm bg-theme-info text-theme-on-accent hover:opacity-90 disabled:opacity-50"
         >
           {samplesLoading ? 'Refreshing…' : 'Refresh'}
         </button>
@@ -193,7 +193,7 @@ export const FlowSamplesTab: React.FC = () => {
             </thead>
             <tbody>
               {samples.map((s) => (
-                <tr key={s.id} className="border-b border-theme-border">
+                <tr key={s.id} className="border-b border-theme">
                   <td className="p-3 font-mono text-xs text-theme-primary">
                     {s.src_ip}{s.src_port != null ? `:${s.src_port}` : ''}
                   </td>

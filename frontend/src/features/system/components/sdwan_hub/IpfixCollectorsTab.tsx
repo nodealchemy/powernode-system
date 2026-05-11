@@ -138,10 +138,10 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, on
   const isActive = c.state === 'active';
 
   return (
-    <tr className="border-b border-theme-border">
+    <tr className="border-b border-theme">
       <td className="p-3">
         <div className="flex items-center gap-2">
-          <Activity size={14} className="text-theme-accent" />
+          <Activity size={14} className="text-theme-info" />
           <span className="font-medium text-theme-primary">{c.name}</span>
         </div>
       </td>
@@ -165,7 +165,7 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, on
             <button
               type="button"
               onClick={() => onToggleState(c)}
-              className="p-1 rounded text-theme-secondary hover:bg-theme-hover"
+              className="p-1 rounded text-theme-secondary hover:bg-theme-surface-hover"
               aria-label={isActive ? `Disable ${c.name}` : `Enable ${c.name}`}
               title={isActive ? 'Disable collector' : 'Enable collector'}
               data-testid={`toggle-ipfix-${c.id}`}

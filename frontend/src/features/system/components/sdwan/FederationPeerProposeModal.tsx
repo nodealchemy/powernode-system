@@ -68,7 +68,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
             type="url" value={remoteInstanceUrl} onChange={(e) => setRemoteInstanceUrl(e.target.value)}
             placeholder="https://other.powernode.example.org" required
             disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
@@ -76,7 +76,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           <input
             type="text" value={remoteInstanceId} onChange={(e) => setRemoteInstanceId(e.target.value)}
             placeholder="019d…" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
@@ -84,7 +84,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           <input
             type="text" value={remoteAccountId} onChange={(e) => setRemoteAccountId(e.target.value)}
             disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
@@ -92,7 +92,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           <input
             type="text" value={remotePrefix} onChange={(e) => setRemotePrefix(e.target.value)}
             placeholder="fdab:cdef:1234::/48" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
           <p className="text-xs text-theme-secondary mt-1">/48, /56, or /64 ULA prefix the remote claims to own.</p>
         </div>

@@ -149,10 +149,10 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
   }, [addNotification, refresh]);
 
   return (
-    <section className="bg-theme-surface rounded-lg border border-theme-border">
-      <header className="px-4 py-3 border-b border-theme-border flex items-center justify-between">
+    <section className="bg-theme-surface rounded-lg border border-theme">
+      <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Cpu size={16} className="text-theme-accent" />
+          <Cpu size={16} className="text-theme-info" />
           <h2 className="font-medium text-theme-primary">Unclaimed Devices</h2>
           {visibleDevices.length > 0 && (
             <Badge variant="info" size="xs">{visibleDevices.length}</Badge>
@@ -236,7 +236,7 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
             <select
               value={pickerSelected}
               onChange={(e) => setPickerSelected(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-theme-border bg-theme-background text-theme-primary mb-4"
+              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary mb-4"
             >
               <option value="">Select a NodeInstance...</option>
               {pickerInstances.map((i) => (

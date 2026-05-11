@@ -144,11 +144,11 @@ function statusPillClasses(status: InstancePoolSummary['status']): string {
     case 'draining':
       return 'bg-theme-warning/10 text-theme-warning';
     case 'archived':
-      return 'bg-theme-text-secondary/10 text-theme-text-secondary';
+      return 'bg-theme-text-secondary/10 text-theme-secondary';
     case 'paused':
       return 'bg-theme-info/10 text-theme-info';
     default:
-      return 'bg-theme-text-secondary/10 text-theme-text-secondary';
+      return 'bg-theme-text-secondary/10 text-theme-secondary';
   }
 }
 

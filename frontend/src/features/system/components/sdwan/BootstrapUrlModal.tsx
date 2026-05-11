@@ -55,7 +55,7 @@ export const BootstrapUrlModal: React.FC<BootstrapUrlModalProps> = ({ isOpen, re
             <input
               type="text" value={fullUrl} readOnly
               onFocus={(e) => e.currentTarget.select()}
-              className="flex-1 p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-xs"
+              className="flex-1 p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-xs"
             />
             <Button variant="secondary" onClick={handleCopy} type="button">
               {copied ? <Check size={16} /> : <Copy size={16} />}

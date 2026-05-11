@@ -19,7 +19,7 @@ export const ModuleCard: FC<Props> = ({ module, onClick }) => {
     <button
       type="button"
       onClick={onClick}
-      className="text-left p-4 rounded-lg border border-theme-border-default bg-theme-bg-card hover:bg-theme-bg-hover transition-colors"
+      className="text-left p-4 rounded-lg border border-theme bg-theme-surface hover:bg-theme-surface-hover transition-colors"
     >
       <div className="flex justify-between items-start mb-2">
         <h3 className="font-semibold text-theme-text-primary">{module.name}</h3>
@@ -29,10 +29,10 @@ export const ModuleCard: FC<Props> = ({ module, onClick }) => {
       </div>
 
       {module.description && (
-        <p className="text-sm text-theme-text-secondary mb-3 line-clamp-2">{module.description}</p>
+        <p className="text-sm text-theme-secondary mb-3 line-clamp-2">{module.description}</p>
       )}
 
-      <div className="flex items-center justify-between text-xs text-theme-text-muted">
+      <div className="flex items-center justify-between text-xs text-theme-tertiary">
         <span>v{module.current_version_number}</span>
         <span>{module.assignment_count} node{module.assignment_count === 1 ? '' : 's'}</span>
         {module.platform && <span>{module.platform}</span>}

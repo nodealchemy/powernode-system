@@ -217,7 +217,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Network className="w-6 h-6 text-theme-accent" />
+              <Network className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Network' : 'Create Network'}
               </h2>
@@ -339,7 +339,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.dns_support}
                     onChange={(e) => handleChange('dns_support', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Enable DNS resolution</span>
@@ -350,7 +350,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.dns_hostnames}
                     onChange={(e) => handleChange('dns_hostnames', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Enable DNS hostnames</span>
@@ -361,7 +361,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.is_default}
                     onChange={(e) => handleChange('is_default', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Set as default network</span>

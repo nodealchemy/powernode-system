@@ -51,7 +51,7 @@ export const SdwanTopology: React.FC<SdwanTopologyProps> = ({ networkId, refresh
   }
 
   return (
-    <div className="bg-theme-primary border border-theme-border rounded" style={{ height: 480 }}>
+    <div className="bg-theme-primary border border-theme rounded" style={{ height: 480 }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

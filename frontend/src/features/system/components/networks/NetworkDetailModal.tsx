@@ -109,7 +109,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Network className="w-6 h-6 text-theme-accent" />
+              <Network className="w-6 h-6 text-theme-info" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : network?.name || 'Network Details'}

@@ -69,7 +69,7 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
           </thead>
           <tbody>
             {rules.map((r) => (
-              <tr key={r.id} className="border-b border-theme-border">
+              <tr key={r.id} className="border-b border-theme">
                 <td className="p-3 text-theme-secondary text-sm">{r.priority}</td>
                 <td className="p-3">
                   <div className="font-medium text-theme-primary">{r.name}</div>
@@ -89,7 +89,7 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
                     <button
                       type="button"
                       onClick={() => onEdit(r)}
-                      className="text-theme-secondary hover:bg-theme-hover p-1 rounded mr-1"
+                      className="text-theme-secondary hover:bg-theme-surface-hover p-1 rounded mr-1"
                       aria-label={`Edit rule ${r.name}`}
                     >
                       <Pencil size={16} />

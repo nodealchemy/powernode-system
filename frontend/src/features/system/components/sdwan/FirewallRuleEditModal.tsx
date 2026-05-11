@@ -115,13 +115,13 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
           <div className="col-span-2">
             <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-                   className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                   className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                    disabled={submitting} />
           </div>
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">Priority</label>
             <input type="number" value={priority} onChange={(e) => setPriority(Number(e.target.value))}
-                   className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                   className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                    min={0} disabled={submitting} />
           </div>
         </div>
@@ -129,7 +129,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">Action</label>
             <select value={action} onChange={(e) => setAction(e.target.value as SdwanFirewallAction)}
-                    className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                    className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                     disabled={submitting}>
               <option value="accept">accept</option>
               <option value="drop">drop</option>
@@ -139,7 +139,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">Direction</label>
             <select value={direction} onChange={(e) => setDirection(e.target.value as SdwanFirewallDirection)}
-                    className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                    className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                     disabled={submitting}>
               <option value="ingress">ingress</option>
               <option value="egress">egress</option>
@@ -149,7 +149,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
           <div>
             <label className="block text-sm font-medium text-theme-primary mb-1">Protocol</label>
             <select value={protocol} onChange={(e) => setProtocol(e.target.value as SdwanFirewallProtocol)}
-                    className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                    className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                     disabled={submitting}>
               <option value="any">any</option>
               <option value="tcp">tcp</option>
@@ -166,7 +166,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
             <label className="block text-sm font-medium text-theme-primary mb-1">{row.label}</label>
             <div className="grid grid-cols-3 gap-2">
               <select value={row.kind} onChange={(e) => row.setKind(e.target.value as SelectorKind)}
-                      className="p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                      className="p-2 bg-theme-input border border-theme rounded text-theme-primary"
                       disabled={submitting}>
                 <option value="all">any</option>
                 <option value="cidr">cidr</option>
@@ -175,7 +175,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
               </select>
               {row.kind !== 'all' && (
                 <input type="text" value={row.value} onChange={(e) => row.setValue(e.target.value)}
-                       className="col-span-2 p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+                       className="col-span-2 p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
                        disabled={submitting} />
               )}
             </div>
@@ -186,13 +186,13 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-1">Port from</label>
               <input type="number" value={portFrom} onChange={(e) => setPortFrom(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                      disabled={submitting} />
             </div>
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-1">Port to</label>
               <input type="number" value={portTo} onChange={(e) => setPortTo(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                      disabled={submitting} />
             </div>
           </div>

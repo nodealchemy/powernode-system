@@ -65,7 +65,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
   };
 
   return (
-    <div className="bg-theme-surface border border-theme-border rounded-lg p-4">
+    <div className="bg-theme-surface border border-theme rounded-lg p-4">
       <h3 className="text-sm font-semibold mb-2">Consent Budget</h3>
       <p className="text-xs text-theme-muted mb-3">
         Daily ceiling on autonomous decisions for this module. When exhausted, every
@@ -81,7 +81,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
             min="0"
             value={budget}
             onChange={(e) => setBudget(e.target.value)}
-            className="w-full px-2 py-1.5 text-sm rounded border border-theme-border bg-theme-background"
+            className="w-full px-2 py-1.5 text-sm rounded border border-theme bg-theme-background"
             placeholder="unlimited"
           />
         </div>

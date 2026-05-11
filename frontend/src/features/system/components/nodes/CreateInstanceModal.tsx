@@ -410,8 +410,8 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 className={`
                   flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors
                   ${formData.variety === type
-                    ? 'bg-theme-accent text-white border-theme-accent'
-                    : 'bg-theme-surface text-theme-secondary border-theme hover:border-theme-accent/50'
+                    ? 'bg-theme-info text-white border-theme-info'
+                    : 'bg-theme-surface text-theme-secondary border-theme hover:border-theme-info/50'
                   }
                 `}
                 disabled={submitting}

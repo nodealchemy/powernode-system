@@ -52,7 +52,7 @@ export const UserDeviceIssueModal: React.FC<UserDeviceIssueModalProps> = ({
             type="text" value={label} onChange={(e) => setLabel(e.target.value)}
             placeholder="e.g. macbook, phone, work-laptop"
             autoFocus disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
           />
           <p className="text-xs text-theme-secondary mt-1">
             The keypair is generated server-side; the private key is stored in Vault. You'll get a

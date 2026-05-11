@@ -117,7 +117,7 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Link className="w-6 h-6 text-theme-accent" />
+              <Link className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 Attach Volume
               </h2>

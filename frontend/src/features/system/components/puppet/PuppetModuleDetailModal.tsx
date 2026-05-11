@@ -461,7 +461,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-accent" />
+              <Package className="w-6 h-6 text-theme-info" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : module?.name || 'Puppet Module Details'}
@@ -494,7 +494,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-accent text-theme-accent'
+                      ? 'border-theme-info text-theme-info'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >

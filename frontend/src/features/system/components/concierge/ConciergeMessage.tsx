@@ -44,7 +44,7 @@ export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest }) =>
             ? 'bg-theme-primary text-theme-primary-text'
             : isTool
               ? 'bg-theme-info text-theme-info border border-theme-info'
-              : 'bg-theme-bg-hover text-theme-text-primary'
+              : 'bg-theme-surface-hover text-theme-text-primary'
         }`}
       >
         {message.toolCall ? (
@@ -77,7 +77,7 @@ export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest }) =>
                 key={cveId}
                 type="button"
                 onClick={() => onCveRunbookRequest?.(cveId)}
-                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-theme-bg-card border border-theme-border-default hover:border-theme-primary"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-theme-surface border border-theme hover:border-theme-primary"
               >
                 <FileText className="h-3 w-3" />
                 <span>Runbook: {cveId}</span>

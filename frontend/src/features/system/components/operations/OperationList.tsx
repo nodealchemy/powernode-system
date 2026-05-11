@@ -239,7 +239,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                     <div className="flex items-center gap-2">
                       <div className="w-24 bg-theme-background rounded-full h-2">
                         <div
-                          className="bg-theme-accent h-2 rounded-full transition-all duration-300"
+                          className="bg-theme-info h-2 rounded-full transition-all duration-300"
                           style={{ width: `${operation.progress || 0}%` }}
                         />
                       </div>
@@ -332,7 +332,7 @@ export const OperationList: React.FC<OperationListProps> = ({
               <div className="mt-3">
                 <div className="w-full bg-theme-background rounded-full h-2">
                   <div
-                    className="bg-theme-accent h-2 rounded-full transition-all duration-300"
+                    className="bg-theme-info h-2 rounded-full transition-all duration-300"
                     style={{ width: `${operation.progress || 0}%` }}
                   />
                 </div>

@@ -76,7 +76,7 @@ export const OvnDeploymentsTab: React.FC = () => {
       <div className="bg-theme-surface border border-theme rounded-lg p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Layers className="text-theme-accent" size={24} />
+            <Layers className="text-theme-info" size={24} />
             <div>
               <h3 className="text-lg font-medium text-theme-primary">OVN Deployment</h3>
               <p className="text-xs text-theme-secondary font-mono">{deployment.id}</p>
@@ -130,7 +130,7 @@ const SwitchCard: React.FC<SwitchCardProps> = ({ switchData: s }) => {
       {s.acls && s.acls.length > 0 && (
         <div className="border-t border-theme pt-3">
           <div className="flex items-center gap-2 mb-2">
-            <Shield size={14} className="text-theme-accent" />
+            <Shield size={14} className="text-theme-info" />
             <span className="text-xs uppercase tracking-wide text-theme-secondary">Firewall ACLs</span>
           </div>
           <table className="w-full text-xs">
@@ -160,7 +160,7 @@ interface AclRowProps {
 }
 
 const AclRow: React.FC<AclRowProps> = ({ acl }) => (
-  <tr className="border-t border-theme-border">
+  <tr className="border-t border-theme">
     <td className="p-1 text-theme-primary">{acl.name}</td>
     <td className="p-1 text-theme-secondary">{acl.direction}</td>
     <td className="p-1 text-right text-theme-secondary">{acl.priority}</td>

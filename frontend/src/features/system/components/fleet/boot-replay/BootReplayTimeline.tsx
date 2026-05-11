@@ -32,14 +32,14 @@ export const BootReplayTimeline: FC<Props> = ({ instanceId, correlationId }) => 
 
   if (!instanceId) {
     return (
-      <div className="p-6 text-sm text-theme-text-muted">
+      <div className="p-6 text-sm text-theme-tertiary">
         Select a node instance to replay its boot timeline.
       </div>
     );
   }
 
   if (loading && !data) {
-    return <div className="p-6 text-sm text-theme-text-muted">Loading boot replay...</div>;
+    return <div className="p-6 text-sm text-theme-tertiary">Loading boot replay...</div>;
   }
 
   if (error) {
@@ -59,7 +59,7 @@ export const BootReplayTimeline: FC<Props> = ({ instanceId, correlationId }) => 
 
   if (!data || data.events.length === 0) {
     return (
-      <div className="p-6 text-sm text-theme-text-muted">
+      <div className="p-6 text-sm text-theme-tertiary">
         No boot events recorded for this instance yet.
       </div>
     );
@@ -69,34 +69,34 @@ export const BootReplayTimeline: FC<Props> = ({ instanceId, correlationId }) => 
     <div className="flex gap-6 p-4">
       {/* Timeline column */}
       <div className="w-1/2 space-y-4">
-        <div className="text-xs uppercase tracking-wider text-theme-text-muted mb-3">
+        <div className="text-xs uppercase tracking-wider text-theme-tertiary mb-3">
           Boot phases — {data.events.length} events
         </div>
         {phases.map(({ phase, summary }) => (
-          <div key={phase} className="border-l-2 border-theme-border-default pl-4">
+          <div key={phase} className="border-l-2 border-theme pl-4">
             <div className="font-medium text-theme-text-primary capitalize">{phase}</div>
             {summary ? (
-              <div className="text-xs text-theme-text-muted">
+              <div className="text-xs text-theme-tertiary">
                 {new Date(summary.first_at).toLocaleTimeString()} – {new Date(summary.last_at).toLocaleTimeString()} · {summary.count} event(s)
               </div>
             ) : (
-              <div className="text-xs text-theme-text-muted italic">no events</div>
+              <div className="text-xs text-theme-tertiary italic">no events</div>
             )}
           </div>
         ))}
 
         <div className="mt-6 space-y-2">
-          <div className="text-xs uppercase tracking-wider text-theme-text-muted">All events</div>
+          <div className="text-xs uppercase tracking-wider text-theme-tertiary">All events</div>
           {data.events.map((evt) => (
             <button
               key={evt.id}
               type="button"
               onClick={() => setSelected(evt)}
-              className={`w-full text-left p-2 rounded text-sm hover:bg-theme-bg-hover ${
-                selected?.id === evt.id ? 'bg-theme-bg-selected' : ''
+              className={`w-full text-left p-2 rounded text-sm hover:bg-theme-surface-hover ${
+                selected?.id === evt.id ? 'bg-theme-surface-selected' : ''
               }`}
             >
-              <span className="font-mono text-xs text-theme-text-muted mr-2">
+              <span className="font-mono text-xs text-theme-tertiary mr-2">
                 {new Date(evt.emitted_at).toLocaleTimeString()}
               </span>
               <span className="font-medium">{evt.kind}</span>

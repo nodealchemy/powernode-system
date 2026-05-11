@@ -62,18 +62,18 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
       : concierge.messages.map(toDisplayMessage);
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-theme-bg-card border-l border-theme-border-default flex flex-col shadow-xl">
-      <div className="p-4 border-b border-theme-border-default flex justify-between items-center">
+    <div className="fixed inset-y-0 right-0 z-40 w-full sm:w-96 bg-theme-surface border-l border-theme flex flex-col shadow-xl">
+      <div className="p-4 border-b border-theme flex justify-between items-center">
         <div>
           <h3 className="font-semibold">System Concierge</h3>
-          <p className="text-xs text-theme-text-muted">
+          <p className="text-xs text-theme-tertiary">
             {concierge.agentName ? `Connected to ${concierge.agentName}` : 'Ask, plan, dispatch'}
           </p>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="text-theme-text-muted hover:text-theme-text-primary"
+          className="text-theme-tertiary hover:text-theme-text-primary"
           aria-label="Close concierge"
         >
           ×
@@ -81,9 +81,9 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
       </div>
 
       {concierge.snapshot && (
-        <div className="px-4 py-2 border-b border-theme-border-default bg-theme-bg-hover">
+        <div className="px-4 py-2 border-b border-theme bg-theme-surface-hover">
           <details className="text-xs">
-            <summary className="cursor-pointer font-semibold text-theme-text-muted">
+            <summary className="cursor-pointer font-semibold text-theme-tertiary">
               Current fleet snapshot
             </summary>
             <pre className="mt-2 whitespace-pre-wrap text-theme-text-primary">
@@ -94,7 +94,7 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
       )}
 
       {concierge.error && (
-        <div className="px-4 py-2 bg-theme-error text-theme-error text-xs border-b border-theme-border-default">
+        <div className="px-4 py-2 bg-theme-error text-theme-error text-xs border-b border-theme">
           {concierge.error}
         </div>
       )}
@@ -108,18 +108,18 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
           />
         ))}
         {concierge.pending && (
-          <div className="text-xs text-theme-text-muted italic">Concierge is thinking...</div>
+          <div className="text-xs text-theme-tertiary italic">Concierge is thinking...</div>
         )}
       </div>
 
-      <div className="p-3 border-t border-theme-border-default">
+      <div className="p-3 border-t border-theme">
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Ask the concierge..."
           rows={2}
-          className="w-full px-3 py-2 rounded border border-theme-border-default bg-theme-bg-input text-sm resize-none"
+          className="w-full px-3 py-2 rounded border border-theme bg-theme-surface text-sm resize-none"
           disabled={concierge.pending || !concierge.conversationId}
         />
         <div className="flex justify-end mt-2">

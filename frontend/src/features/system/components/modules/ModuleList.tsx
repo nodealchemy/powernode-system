@@ -129,7 +129,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
           <div className="bg-theme-surface rounded-lg border border-theme p-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <FolderTree className="w-5 h-5 text-theme-accent" />
+                <FolderTree className="w-5 h-5 text-theme-info" />
                 <h3 className="font-medium text-theme-primary">Categories</h3>
               </div>
               {canCreate && onCategoryCreate && (
@@ -148,7 +148,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                 onClick={() => setFilters(prev => ({ ...prev, categoryId: null }))}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                   filters.categoryId === null
-                    ? 'bg-theme-accent text-white'
+                    ? 'bg-theme-info text-white'
                     : 'text-theme-secondary hover:bg-theme-surface-hover'
                 }`}
               >
@@ -173,7 +173,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                         onClick={() => setFilters(prev => ({ ...prev, categoryId: category.id }))}
                         className={`flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                           filters.categoryId === category.id
-                            ? 'bg-theme-accent text-white'
+                            ? 'bg-theme-info text-white'
                             : 'text-theme-secondary hover:bg-theme-surface-hover'
                         }`}
                         style={{ paddingLeft: `${(category.depth + 1) * 12}px` }}

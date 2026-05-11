@@ -178,7 +178,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
             type="text"
             value={form.name}
             onChange={(e) => update('name', e.target.value)}
-            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent"
+            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info"
             disabled={submitting}
           />
           {errors.name && <p className="text-xs text-theme-error mt-1">{errors.name}</p>}
@@ -189,7 +189,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
           <select
             value={form.resource_type}
             onChange={(e) => update('resource_type', e.target.value)}
-            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent"
+            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info"
             disabled={submitting}
           >
             {RESOURCE_TYPES.map((type) => (
@@ -206,7 +206,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
             value={form.title}
             onChange={(e) => update('title', e.target.value)}
             placeholder="(defaults to name if blank)"
-            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent"
+            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info"
             disabled={submitting}
           />
         </div>
@@ -218,7 +218,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
             value={form.path}
             onChange={(e) => update('path', e.target.value)}
             placeholder="(e.g., /etc/nginx/nginx.conf)"
-            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent font-mono text-sm"
+            className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info font-mono text-sm"
             disabled={submitting}
           />
         </div>
@@ -230,7 +230,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
           type="text"
           value={form.description}
           onChange={(e) => update('description', e.target.value)}
-          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent"
+          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info"
           disabled={submitting}
         />
       </div>
@@ -243,7 +243,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
           value={form.parameters}
           onChange={(e) => update('parameters', e.target.value)}
           rows={5}
-          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent font-mono text-sm"
+          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info font-mono text-sm"
           placeholder='{"ensure": "present", "owner": "root"}'
           disabled={submitting}
         />
@@ -258,7 +258,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
           value={form.config}
           onChange={(e) => update('config', e.target.value)}
           rows={3}
-          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent font-mono text-sm"
+          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info font-mono text-sm"
           placeholder='{}'
           disabled={submitting}
         />
@@ -271,7 +271,7 @@ export const PuppetResourceForm: React.FC<PuppetResourceFormProps> = ({
           value={form.data}
           onChange={(e) => update('data', e.target.value)}
           rows={4}
-          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-accent font-mono text-sm"
+          className="w-full px-3 py-2 bg-theme-surface border border-theme rounded text-theme-primary focus:outline-none focus:border-theme-info font-mono text-sm"
           disabled={submitting}
         />
       </div>

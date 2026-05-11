@@ -158,7 +158,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
               </div>
               <div className="w-full bg-theme-surface rounded-full h-3">
                 <div
-                  className="bg-theme-accent h-3 rounded-full transition-all duration-300"
+                  className="bg-theme-info h-3 rounded-full transition-all duration-300"
                   style={{ width: `${operation.progress || 0}%` }}
                 />
               </div>
@@ -337,7 +337,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Activity className="w-6 h-6 text-theme-accent" />
+              <Activity className="w-6 h-6 text-theme-info" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : operation?.command || 'Operation Details'}
@@ -363,7 +363,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-accent text-theme-accent'
+                      ? 'border-theme-info text-theme-info'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >

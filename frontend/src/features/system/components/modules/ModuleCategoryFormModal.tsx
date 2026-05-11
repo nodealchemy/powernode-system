@@ -252,7 +252,7 @@ export const ModuleCategoryFormModal: React.FC<ModuleCategoryFormModalProps> = (
           <div className="p-3 bg-theme-surface-hover rounded-lg">
             <div className="text-sm text-theme-secondary mb-1">Preview:</div>
             <div className="flex items-center gap-2">
-              <FolderTree className="w-4 h-4 text-theme-accent" />
+              <FolderTree className="w-4 h-4 text-theme-info" />
               <span className="text-theme-primary">
                 {selectedParent && (
                   <span className="text-theme-secondary">{selectedParent.name} / </span>

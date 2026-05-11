@@ -172,7 +172,7 @@ export const ProviderList: React.FC<ProviderListProps> = ({
           {filteredProviders.map((provider) => (
           <div
             key={provider.id}
-            className="bg-theme-surface rounded-lg border border-theme p-4 hover:border-theme-accent transition-colors"
+            className="bg-theme-surface rounded-lg border border-theme p-4 hover:border-theme-info transition-colors"
           >
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-3">

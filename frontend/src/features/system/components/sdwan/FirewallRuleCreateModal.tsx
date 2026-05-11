@@ -113,7 +113,7 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+              className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
               placeholder="e.g. allow-ssh"
               autoFocus
               disabled={submitting}
@@ -125,7 +125,7 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
               type="number"
               value={priority}
               onChange={(e) => setPriority(Number(e.target.value))}
-              className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+              className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
               min={0}
               disabled={submitting}
             />
@@ -151,13 +151,13 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-1">Port from (optional)</label>
               <input type="number" value={portFrom} onChange={(e) => setPortFrom(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                      disabled={submitting} />
             </div>
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-1">Port to</label>
               <input type="number" value={portTo} onChange={(e) => setPortTo(e.target.value)} min={1} max={65535}
-                     className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+                     className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
                      disabled={submitting} />
             </div>
           </div>
@@ -184,7 +184,7 @@ const SelectField: React.FC<{
   <div>
     <label className="block text-sm font-medium text-theme-primary mb-1">{label}</label>
     <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary">
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary">
       {options.map((o) => <option key={o} value={o}>{o}</option>)}
     </select>
   </div>
@@ -205,7 +205,7 @@ const SelectorField: React.FC<{
       <label className="block text-sm font-medium text-theme-primary mb-1">{label}</label>
       <div className="grid grid-cols-3 gap-2">
         <select value={kind} onChange={(e) => onKindChange(e.target.value as SelectorKind)} disabled={disabled}
-                className="p-2 bg-theme-input border border-theme-border rounded text-theme-primary">
+                className="p-2 bg-theme-input border border-theme rounded text-theme-primary">
           <option value="all">any</option>
           <option value="cidr">cidr</option>
           <option value="peer_id">peer</option>
@@ -214,7 +214,7 @@ const SelectorField: React.FC<{
         {kind !== 'all' && (
           <input type="text" value={value} onChange={(e) => onValueChange(e.target.value)}
                  placeholder={placeholder} disabled={disabled}
-                 className="col-span-2 p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm" />
+                 className="col-span-2 p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm" />
         )}
       </div>
     </div>

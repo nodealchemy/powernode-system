@@ -112,10 +112,10 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
   };
 
   return (
-    <section className="bg-theme-surface rounded-lg border border-theme-border">
-      <header className="px-4 py-3 border-b border-theme-border flex items-center justify-between">
+    <section className="bg-theme-surface rounded-lg border border-theme">
+      <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <History size={16} className="text-theme-accent" />
+          <History size={16} className="text-theme-info" />
           <h2 className="font-medium text-theme-primary">Publication history</h2>
           {publications.length > 0 && (
             <Badge variant="info" size="xs">{publications.length}</Badge>

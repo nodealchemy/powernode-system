@@ -136,7 +136,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
         <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Cpu className="w-6 h-6 text-theme-accent" />
+              <Cpu className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Architecture' : 'Create Architecture'}
               </h2>
@@ -215,7 +215,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -226,7 +226,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

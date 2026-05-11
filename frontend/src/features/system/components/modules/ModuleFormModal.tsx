@@ -315,7 +315,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
         <div className="relative w-full max-w-3xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-accent" />
+              <Package className="w-6 h-6 text-theme-info" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Module' : 'Create Module'}
               </h2>
@@ -626,7 +626,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="reboot_required"
                       checked={formData.reboot_required}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     />
                     <Power className="w-4 h-4 text-theme-secondary" />
                     <span className="text-sm text-theme-primary">Reboot required on attach/detach</span>
@@ -638,7 +638,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="lock_spec"
                       checked={formData.lock_spec}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     />
                     <Lock className="w-4 h-4 text-theme-secondary" />
                     <span className="text-sm text-theme-primary">Lock module (prevent further spec edits)</span>
@@ -656,7 +656,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="enabled"
                       checked={formData.enabled}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     />
                     <span className="text-sm text-theme-primary">Enabled</span>
                   </label>
@@ -667,7 +667,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="public"
                       checked={formData.public}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-accent focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
                     />
                     <span className="text-sm text-theme-primary">Public</span>
                   </label>

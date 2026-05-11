@@ -56,7 +56,7 @@ export const AccessGrantCreateModal: React.FC<AccessGrantCreateModalProps> = ({
           <input
             type="text" value={userId} onChange={(e) => setUserId(e.target.value)}
             placeholder="019d…" autoFocus disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary font-mono text-sm"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
           <p className="text-xs text-theme-secondary mt-1">
             Find user IDs in the Users panel or via the platform Users API.
@@ -67,7 +67,7 @@ export const AccessGrantCreateModal: React.FC<AccessGrantCreateModalProps> = ({
           <input
             type="text" value={tagsInput} onChange={(e) => setTagsInput(e.target.value)}
             placeholder="vpn-pilot, contractor" disabled={submitting}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
           />
         </div>
         <div className="flex justify-end gap-2 pt-2">

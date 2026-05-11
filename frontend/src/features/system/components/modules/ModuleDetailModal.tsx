@@ -309,7 +309,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         title: module.dependant
           ? `File spec (inherited from ${module.parent_module_name ?? 'parent'}.dependency_spec)`
           : 'File spec',
-        icon: <FileCode className="w-4 h-4 text-theme-accent" />,
+        icon: <FileCode className="w-4 h-4 text-theme-info" />,
         help: module.dependant
           ? `This is a dependant child module. Its file_spec is read-through from its parent's dependency_spec at runtime — to change what this dependant ships, edit ${module.parent_module_name ?? 'the parent'}'s dependency_spec instead.`
           : 'Paths this module owns and ships in its blob.',
@@ -318,7 +318,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'protected_spec',
         title: 'Protected spec',
-        icon: <ShieldCheck className="w-4 h-4 text-theme-accent" />,
+        icon: <ShieldCheck className="w-4 h-4 text-theme-info" />,
         help: 'Paths this module claims as sensitive. The build pipeline folds these into every neighbor\'s effective_mask, so no other module ships them. Used for /etc/shadow, /etc/ssh/ssh_host_*_key, and other security-critical files.',
         text: module.protected_spec_text,
         tone: 'protected',
@@ -326,7 +326,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'mask',
         title: 'Mask (local exclude)',
-        icon: <Settings className="w-4 h-4 text-theme-accent" />,
+        icon: <Settings className="w-4 h-4 text-theme-info" />,
         help: 'Paths to exclude from THIS module\'s blob during build (build cruft like /var/cache/apt/**). Local rsync filter; does not affect neighbors.',
         text: module.mask_text,
         tone: 'mask',
@@ -334,14 +334,14 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'package_spec',
         title: 'Package spec',
-        icon: <Package className="w-4 h-4 text-theme-accent" />,
+        icon: <Package className="w-4 h-4 text-theme-info" />,
         help: 'Debian packages installed into the build chroot.',
         text: module.package_spec_text,
       },
       {
         key: 'dependency_spec',
         title: 'Dependency spec (inherited by dependants)',
-        icon: <GitBranch className="w-4 h-4 text-theme-accent" />,
+        icon: <GitBranch className="w-4 h-4 text-theme-info" />,
         help: 'The file-spec this module\'s dependant config / instance children inherit. When a child is created with this module as its parent_module, the child\'s file_spec returns this value transparently. Subscription-variety bases populate it; leaf modules with no dependants leave it empty.',
         text: module.dependency_spec_text,
       },
@@ -387,7 +387,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Lifecycle */}
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4 text-theme-accent" />
+            <Settings className="w-4 h-4 text-theme-info" />
             <h4 className="font-medium text-theme-primary">Lifecycle</h4>
           </div>
           <div className="bg-theme-background rounded-lg p-4 border border-theme grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -418,7 +418,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Config (raw JSON — usually populated by manifest import) */}
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4 text-theme-accent" />
+            <Settings className="w-4 h-4 text-theme-info" />
             <h4 className="font-medium text-theme-primary">Configuration</h4>
           </div>
           <p className="text-xs text-theme-secondary mb-2">
@@ -446,7 +446,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Header with Add button */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <GitBranch className="w-5 h-5 text-theme-accent" />
+            <GitBranch className="w-5 h-5 text-theme-info" />
             <h4 className="font-medium text-theme-primary">Module Dependencies</h4>
           </div>
           {canManageDependencies && (
@@ -475,7 +475,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-theme-surface flex items-center justify-center">
-                    <Package className="w-5 h-5 text-theme-accent" />
+                    <Package className="w-5 h-5 text-theme-info" />
                   </div>
                   <div>
                     <h5 className="font-medium text-theme-primary">{dep.name}</h5>
@@ -544,7 +544,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-accent" />
+              <Package className="w-6 h-6 text-theme-info" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : module?.name || 'Module Details'}
@@ -577,7 +577,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-accent text-theme-accent'
+                      ? 'border-theme-info text-theme-info'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >
@@ -631,7 +631,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
               <div className="flex items-center justify-between p-4 border-b border-theme">
                 <div className="flex items-center gap-3">
-                  <Plus className="w-6 h-6 text-theme-accent" />
+                  <Plus className="w-6 h-6 text-theme-info" />
                   <h3 className="text-lg font-semibold text-theme-primary">
                     Add Dependency
                   </h3>

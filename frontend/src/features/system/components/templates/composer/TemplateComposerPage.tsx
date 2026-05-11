@@ -117,7 +117,7 @@ export function TemplateComposerPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col h-full bg-theme-background text-theme-foreground">
-      <header className="px-6 py-4 border-b border-theme-border flex items-start justify-between">
+      <header className="px-6 py-4 border-b border-theme flex items-start justify-between">
         <div>
           <h1 className="text-xl font-semibold">Template Composer</h1>
           <p className="text-sm text-theme-muted mt-1">
@@ -150,15 +150,15 @@ export function TemplateComposerPage(): React.JSX.Element {
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 p-4 overflow-hidden">
         {/* Module Catalog */}
-        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme-border overflow-hidden">
-          <div className="px-4 py-3 border-b border-theme-border">
+        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
+          <div className="px-4 py-3 border-b border-theme">
             <h2 className="font-medium">Module Catalog</h2>
             <input
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search modules..."
-              className="mt-2 w-full px-3 py-2 text-sm rounded border border-theme-border bg-theme-background"
+              className="mt-2 w-full px-3 py-2 text-sm rounded border border-theme bg-theme-background"
             />
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -169,7 +169,7 @@ export function TemplateComposerPage(): React.JSX.Element {
             ) : (
               <ul className="divide-y divide-theme-border">
                 {filteredCatalog.map((m) => (
-                  <li key={m.id} className="px-4 py-3 flex items-center justify-between hover:bg-theme-hover">
+                  <li key={m.id} className="px-4 py-3 flex items-center justify-between hover:bg-theme-surface-hover">
                     <div>
                       <div className="font-medium text-sm">{m.name}</div>
                       <div className="text-xs text-theme-muted">
@@ -187,8 +187,8 @@ export function TemplateComposerPage(): React.JSX.Element {
         </section>
 
         {/* Composition Canvas */}
-        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme-border overflow-hidden">
-          <div className="px-4 py-3 border-b border-theme-border flex items-center justify-between">
+        <section className="flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
+          <div className="px-4 py-3 border-b border-theme flex items-center justify-between">
             <h2 className="font-medium">Composition</h2>
             <div className="text-xs text-theme-muted">
               {selectedModules.length} module(s)
@@ -203,7 +203,7 @@ export function TemplateComposerPage(): React.JSX.Element {
             ) : (
               <ul className="divide-y divide-theme-border">
                 {selectedModules.map((m, idx) => (
-                  <li key={m.id} className="px-4 py-3 flex items-center gap-3 hover:bg-theme-hover">
+                  <li key={m.id} className="px-4 py-3 flex items-center gap-3 hover:bg-theme-surface-hover">
                     <span className="font-mono text-xs text-theme-muted w-6">{idx + 1}.</span>
                     <div className="flex-1">
                       <div className="font-medium text-sm">{m.name}</div>
@@ -227,7 +227,7 @@ export function TemplateComposerPage(): React.JSX.Element {
       </div>
 
       {/* Conflicts + Footprint footer panel */}
-      <footer className="border-t border-theme-border bg-theme-surface px-6 py-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <footer className="border-t border-theme bg-theme-surface px-6 py-4 grid grid-cols-1 md:grid-cols-2 gap-4">
         <ConflictPanel conflicts={conflicts} />
         <FootprintPanel footprint={footprint} />
       </footer>

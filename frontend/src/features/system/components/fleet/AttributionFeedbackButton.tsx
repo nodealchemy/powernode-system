@@ -75,7 +75,7 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
           onChange={(e) => setNote(e.target.value)}
           rows={2}
           placeholder="Optional context for the learning record…"
-          className="w-full px-2 py-1 text-xs rounded border border-theme-border bg-theme-background"
+          className="w-full px-2 py-1 text-xs rounded border border-theme bg-theme-background"
         />
       )}
     </div>

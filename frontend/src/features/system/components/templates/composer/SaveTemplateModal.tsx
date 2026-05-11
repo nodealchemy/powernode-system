@@ -95,7 +95,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-theme-surface border border-theme-border rounded-lg shadow-xl w-full max-w-lg p-6">
+      <div className="bg-theme-surface border border-theme rounded-lg shadow-xl w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Save as Template</h2>
           <Button size="xs" variant="ghost" onClick={onClose}>
@@ -110,7 +110,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded border border-theme-border bg-theme-background"
+              className="w-full px-3 py-2 text-sm rounded border border-theme bg-theme-background"
               placeholder="e.g., web-tier-prod"
               autoFocus
             />
@@ -122,7 +122,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 text-sm rounded border border-theme-border bg-theme-background"
+              className="w-full px-3 py-2 text-sm rounded border border-theme bg-theme-background"
               placeholder="Optional — what is this template for?"
             />
           </div>
@@ -133,7 +133,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
               <select
                 value={platformId}
                 onChange={(e) => setPlatformId(e.target.value)}
-                className="w-full px-3 py-2 text-sm rounded border border-theme-border bg-theme-background"
+                className="w-full px-3 py-2 text-sm rounded border border-theme bg-theme-background"
               >
                 <option value="">Select platform…</option>
                 {platformIds.map((id) => (

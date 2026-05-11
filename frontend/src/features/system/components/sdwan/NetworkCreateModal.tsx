@@ -71,7 +71,7 @@ export const NetworkCreateModal: React.FC<NetworkCreateModalProps> = ({ isOpen, 
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
             placeholder="e.g. edge-overlay"
             autoFocus
             disabled={submitting}
@@ -83,7 +83,7 @@ export const NetworkCreateModal: React.FC<NetworkCreateModalProps> = ({ isOpen, 
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full p-2 bg-theme-input border border-theme-border rounded text-theme-primary"
+            className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary"
             rows={2}
             placeholder="What is this network for?"
             disabled={submitting}

@@ -107,7 +107,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
             const devices = devicesByGrant[g.id] ?? [];
             const isRevoked = g.status === 'revoked';
             return (
-              <div key={g.id} className="border border-theme-border rounded">
+              <div key={g.id} className="border border-theme rounded">
                 <div className="flex items-center justify-between p-3 bg-theme-background-secondary">
                   <div>
                     <div className="font-medium text-theme-primary">
@@ -146,7 +146,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
                     </thead>
                     <tbody>
                       {devices.map((d) => (
-                        <tr key={d.id} className="border-t border-theme-border">
+                        <tr key={d.id} className="border-t border-theme">
                           <td className="p-2 text-theme-primary">
                             <Smartphone size={14} className="inline mr-1" />
                             {d.label}

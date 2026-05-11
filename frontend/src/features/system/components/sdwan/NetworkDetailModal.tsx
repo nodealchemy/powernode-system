@@ -209,7 +209,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
           )}
 
           {/* Tab nav */}
-          <div className="border-b border-theme-border">
+          <div className="border-b border-theme">
             <nav className="flex gap-4 flex-wrap">
               {(Object.keys(TAB_LABELS) as TabKey[]).map((k) => (
                 <button
@@ -219,7 +219,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                   className={
                     'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
                     (tab === k
-                      ? 'border-theme-accent text-theme-accent'
+                      ? 'border-theme-info text-theme-info'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary')
                   }
                 >
