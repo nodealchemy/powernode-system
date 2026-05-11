@@ -19,13 +19,37 @@ const StatTile: React.FC<{
       : tone === 'warning'
       ? 'text-theme-warning'
       : 'text-theme-primary';
+
+  // Numbers + short labels stay big (text-2xl). Long string values like
+  // `peer_overlay_ipv6_hash` shrink to text-base so the whole token fits
+  // on one line at the lg:grid-cols-4 width — wrapping looks worse than
+  // smaller text per operator feedback. Anything still too long for the
+  // smaller size truncates with an ellipsis + tooltip.
+  const valueStr = String(value);
+  const isLongString = typeof value === 'string' && valueStr.length > 10;
+  const valueSizeClass = isLongString ? 'text-base' : 'text-2xl';
+
   return (
-    <div className="flex items-start gap-3 p-4 bg-theme-surface rounded border border-theme">
-      <div className="text-theme-secondary mt-0.5">{icon}</div>
-      <div className="flex-1">
-        <div className="text-xs text-theme-secondary uppercase tracking-wide">{label}</div>
-        <div className={`text-2xl font-semibold mt-1 ${toneClass}`}>{value}</div>
-        {hint && <div className="text-xs text-theme-secondary mt-0.5">{hint}</div>}
+    <div className="flex items-start gap-3 p-4 bg-theme-surface rounded border border-theme overflow-hidden">
+      <div className="text-theme-secondary mt-0.5 shrink-0">{icon}</div>
+      {/* min-w-0 releases the default content-sized min-width so the flex
+          column can shrink to its parent's actual width instead of pushing
+          past the tile edge. */}
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-theme-secondary uppercase tracking-wide truncate" title={label}>
+          {label}
+        </div>
+        <div
+          className={`${valueSizeClass} font-semibold mt-1 truncate ${toneClass}`}
+          title={valueStr}
+        >
+          {value}
+        </div>
+        {hint && (
+          <div className="text-xs text-theme-secondary mt-0.5 truncate" title={hint}>
+            {hint}
+          </div>
+        )}
       </div>
     </div>
   );
