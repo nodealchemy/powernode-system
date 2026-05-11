@@ -47,7 +47,7 @@ module System
       return unless defined?(::System::ModuleSkillRegistrar)
       ::System::ModuleSkillRegistrar.register_for_module!(node_module: node_module)
     rescue StandardError => e
-      Rails.logger.warn("[NodeModuleAssignment] skill register failed: #{e.message}")
+      emit_skill_event_failure!(operation: :register, error: e)
     end
 
     def unregister_module_skills_if_last
@@ -57,7 +57,37 @@ module System
       return if ::System::NodeModuleAssignment.where(node_module_id: node_module_id).exists?
       ::System::ModuleSkillRegistrar.unregister_for_module!(node_module: node_module)
     rescue StandardError => e
-      Rails.logger.warn("[NodeModuleAssignment] skill unregister failed: #{e.message}")
+      emit_skill_event_failure!(operation: :unregister, error: e)
+    end
+
+    # Surface skill registrar failures via FleetEvent in addition to the
+    # log line — silent log warns hid registrar bugs from operators
+    # (caught in the 2026-05-11 module-management audit). Emits a single
+    # event kind (`system.module_skill_registration_failed`) with an
+    # `operation` field in payload so dashboard filters catch both
+    # register and unregister paths.
+    def emit_skill_event_failure!(operation:, error:)
+      Rails.logger.warn("[NodeModuleAssignment] skill #{operation} failed: #{error.message}")
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "system.module_skill_registration_failed",
+        severity: :medium,
+        payload: {
+          operation: operation.to_s,
+          node_module_id: node_module_id,
+          node_id: node_id,
+          assignment_id: id,
+          error_class: error.class.name,
+          error_message: error.message.to_s.truncate(500)
+        },
+        source: "node_module_assignment",
+        node_id: node_id,
+        node_module_id: node_module_id
+      )
+    rescue StandardError => e
+      Rails.logger.error("[NodeModuleAssignment] event emit itself failed: #{e.class}: #{e.message}")
     end
 
     public
