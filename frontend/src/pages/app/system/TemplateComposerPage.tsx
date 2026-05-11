@@ -10,7 +10,7 @@ const TemplateComposerPageWrapper: React.FC = () => {
   if (!hasPermission('system.templates.update')) {
     return (
       <PageContainer title="Template Composer">
-        <div className="p-6 text-sm text-theme-muted">
+        <div className="p-6 text-sm text-theme-tertiary">
           You don't have permission to compose templates.
           Required: <code>system.templates.update</code>
         </div>

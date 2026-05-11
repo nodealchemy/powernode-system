@@ -120,7 +120,7 @@ export function TemplateComposerPage(): React.JSX.Element {
       <header className="px-6 py-4 border-b border-theme flex items-start justify-between">
         <div>
           <h1 className="text-xl font-semibold">Template Composer</h1>
-          <p className="text-sm text-theme-muted mt-1">
+          <p className="text-sm text-theme-tertiary mt-1">
             Drag modules from the catalog into the composition. Conflicts and footprint
             estimate update live as you compose.
           </p>
@@ -163,16 +163,16 @@ export function TemplateComposerPage(): React.JSX.Element {
           </div>
           <div className="flex-1 overflow-y-auto">
             {catalogLoading ? (
-              <p className="p-4 text-sm text-theme-muted">Loading catalog…</p>
+              <p className="p-4 text-sm text-theme-tertiary">Loading catalog…</p>
             ) : filteredCatalog.length === 0 ? (
-              <p className="p-4 text-sm text-theme-muted">No modules match.</p>
+              <p className="p-4 text-sm text-theme-tertiary">No modules match.</p>
             ) : (
               <ul className="divide-y divide-theme-border">
                 {filteredCatalog.map((m) => (
                   <li key={m.id} className="px-4 py-3 flex items-center justify-between hover:bg-theme-surface-hover">
                     <div>
                       <div className="font-medium text-sm">{m.name}</div>
-                      <div className="text-xs text-theme-muted">
+                      <div className="text-xs text-theme-tertiary">
                         variety={m.variety} · priority={m.priority}
                       </div>
                     </div>
@@ -190,24 +190,24 @@ export function TemplateComposerPage(): React.JSX.Element {
         <section className="flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
           <div className="px-4 py-3 border-b border-theme flex items-center justify-between">
             <h2 className="font-medium">Composition</h2>
-            <div className="text-xs text-theme-muted">
+            <div className="text-xs text-theme-tertiary">
               {selectedModules.length} module(s)
               {previewing && ' · previewing…'}
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             {selectedModules.length === 0 ? (
-              <p className="p-4 text-sm text-theme-muted">
+              <p className="p-4 text-sm text-theme-tertiary">
                 Add modules from the catalog to begin composing a template.
               </p>
             ) : (
               <ul className="divide-y divide-theme-border">
                 {selectedModules.map((m, idx) => (
                   <li key={m.id} className="px-4 py-3 flex items-center gap-3 hover:bg-theme-surface-hover">
-                    <span className="font-mono text-xs text-theme-muted w-6">{idx + 1}.</span>
+                    <span className="font-mono text-xs text-theme-tertiary w-6">{idx + 1}.</span>
                     <div className="flex-1">
                       <div className="font-medium text-sm">{m.name}</div>
-                      <div className="text-xs text-theme-muted">{m.variety}</div>
+                      <div className="text-xs text-theme-tertiary">{m.variety}</div>
                     </div>
                     <Button size="xs" variant="ghost" onClick={() => moveModule(m.id, 'up')} disabled={idx === 0}>
                       <ArrowUp size={14} />
@@ -238,8 +238,8 @@ export function TemplateComposerPage(): React.JSX.Element {
 function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }): React.JSX.Element {
   if (conflicts.length === 0) {
     return (
-      <div className="text-sm text-theme-muted">
-        <span className="font-medium text-theme-foreground">No conflicts detected.</span>
+      <div className="text-sm text-theme-tertiary">
+        <span className="font-medium text-theme-primary">No conflicts detected.</span>
       </div>
     );
   }
@@ -253,7 +253,7 @@ function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }):
         {conflicts.map((c, i) => (
           <li key={i} className="flex items-start gap-2">
             <Badge variant="warning">{c.kind}</Badge>
-            <span className="text-theme-muted">{c.detail}</span>
+            <span className="text-theme-tertiary">{c.detail}</span>
           </li>
         ))}
       </ul>
@@ -263,22 +263,22 @@ function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }):
 
 function FootprintPanel({ footprint }: { footprint?: TemplateComposePreview['footprint'] }): React.JSX.Element {
   if (!footprint) {
-    return <div className="text-sm text-theme-muted">Footprint will appear once you add modules.</div>;
+    return <div className="text-sm text-theme-tertiary">Footprint will appear once you add modules.</div>;
   }
   return (
     <div className="text-sm">
       <div className="font-medium mb-2">Footprint</div>
       <div className="grid grid-cols-3 gap-3 text-xs">
         <div>
-          <div className="text-theme-muted">Modules</div>
+          <div className="text-theme-tertiary">Modules</div>
           <div className="text-base font-mono">{footprint.module_count}</div>
         </div>
         <div>
-          <div className="text-theme-muted">Packages (est.)</div>
+          <div className="text-theme-tertiary">Packages (est.)</div>
           <div className="text-base font-mono">{footprint.estimated_package_count}</div>
         </div>
         <div>
-          <div className="text-theme-muted">Arch</div>
+          <div className="text-theme-tertiary">Arch</div>
           <div className="text-base font-mono">{footprint.architectures.join(', ') || '—'}</div>
         </div>
       </div>

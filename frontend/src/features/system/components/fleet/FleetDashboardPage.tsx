@@ -148,7 +148,7 @@ export function FleetDashboardPage(): React.JSX.Element {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">Fleet Dashboard</h1>
-            <p className="text-sm text-theme-muted mt-1">
+            <p className="text-sm text-theme-tertiary mt-1">
               Live observability of FleetAutonomyService — signals, decisions, ticks.
             </p>
           </div>
@@ -170,7 +170,7 @@ export function FleetDashboardPage(): React.JSX.Element {
             severity chips set the floor. Both compose with the free-text
             kind input above. */}
         <div className="flex items-center gap-2 flex-wrap text-xs">
-          <span className="text-theme-muted">Kind:</span>
+          <span className="text-theme-tertiary">Kind:</span>
           {QUICK_KIND_FILTERS.map((chip) => {
             const active = filterKind === chip.match;
             return (
@@ -188,7 +188,7 @@ export function FleetDashboardPage(): React.JSX.Element {
               </button>
             );
           })}
-          <span className="text-theme-muted ml-3">Min severity:</span>
+          <span className="text-theme-tertiary ml-3">Min severity:</span>
           {(['all', 'low', 'medium', 'high', 'critical'] as const).map((sev) => {
             const active = minSeverity === sev;
             return (
@@ -227,11 +227,11 @@ export function FleetDashboardPage(): React.JSX.Element {
         <section className="md:col-span-2 flex flex-col bg-theme-surface rounded-lg border border-theme overflow-hidden">
           <div className="px-4 py-2 border-b border-theme flex items-center justify-between">
             <h2 className="font-medium">Live Event Feed</h2>
-            <span className="text-xs text-theme-muted">{filteredEvents.length} events</span>
+            <span className="text-xs text-theme-tertiary">{filteredEvents.length} events</span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {filteredEvents.length === 0 ? (
-              <p className="p-4 text-sm text-theme-muted">No events yet.</p>
+              <p className="p-4 text-sm text-theme-tertiary">No events yet.</p>
             ) : (
               <ul className="divide-y divide-theme-border text-sm">
                 {filteredEvents.map((e) => (
@@ -243,11 +243,11 @@ export function FleetDashboardPage(): React.JSX.Element {
                     <div className="flex items-center justify-between gap-2">
                       <div className="font-mono text-xs flex-1 truncate">{e.kind}</div>
                       <SeverityBadge severity={e.severity} />
-                      <span className="text-xs text-theme-muted">
+                      <span className="text-xs text-theme-tertiary">
                         {new Date(e.emitted_at).toLocaleTimeString()}
                       </span>
                     </div>
-                    <div className="flex items-center gap-3 mt-0.5 text-xs text-theme-muted">
+                    <div className="flex items-center gap-3 mt-0.5 text-xs text-theme-tertiary">
                       {e.source && <span>source: {e.source}</span>}
                       {/* When an event references a specific module (e.g.
                           system.module_published), give the operator one-
@@ -280,7 +280,7 @@ export function FleetDashboardPage(): React.JSX.Element {
             {selectedEvent && (
               <button
                 onClick={() => setSelectedEvent(null)}
-                className="text-xs text-theme-muted hover:text-theme-primary"
+                className="text-xs text-theme-tertiary hover:text-theme-primary"
               >
                 clear
               </button>
@@ -288,7 +288,7 @@ export function FleetDashboardPage(): React.JSX.Element {
           </div>
           <div className="flex-1 overflow-y-auto">
             {!selectedEvent ? (
-              <p className="p-4 text-sm text-theme-muted">Click an event to view its details + correlation chain.</p>
+              <p className="p-4 text-sm text-theme-tertiary">Click an event to view its details + correlation chain.</p>
             ) : (
               <div className="text-sm">
                 {/* Selected event detail — was missing entirely before; clicking
@@ -299,7 +299,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                     <span className="font-mono text-xs">{selectedEvent.kind}</span>
                     <SeverityBadge severity={selectedEvent.severity} />
                   </div>
-                  <div className="text-xs text-theme-muted space-y-0.5">
+                  <div className="text-xs text-theme-tertiary space-y-0.5">
                     <div>id: <code className="font-mono">{selectedEvent.id}</code></div>
                     <div>emitted: {new Date(selectedEvent.emitted_at).toLocaleString()}</div>
                     {selectedEvent.source && <div>source: {selectedEvent.source}</div>}
@@ -312,8 +312,8 @@ export function FleetDashboardPage(): React.JSX.Element {
                   </div>
                   {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
                     <details className="text-xs" open>
-                      <summary className="cursor-pointer text-theme-muted hover:text-theme-primary">payload</summary>
-                      <pre className="mt-1 p-2 bg-theme-background rounded text-xs overflow-x-auto font-mono">
+                      <summary className="cursor-pointer text-theme-tertiary hover:text-theme-primary">payload</summary>
+                      <pre className="mt-1 p-2 bg-theme-surface rounded text-xs overflow-x-auto font-mono">
 {JSON.stringify(selectedEvent.payload, null, 2)}
                       </pre>
                     </details>
@@ -355,16 +355,16 @@ export function FleetDashboardPage(): React.JSX.Element {
                 {selectedCorrelation && (
                   <div>
                     <div className="px-4 py-2 border-b border-theme bg-theme-background">
-                      <span className="text-xs font-medium text-theme-muted uppercase tracking-wide">Correlation Chain ({correlationEvents.length})</span>
+                      <span className="text-xs font-medium text-theme-tertiary uppercase tracking-wide">Correlation Chain ({correlationEvents.length})</span>
                     </div>
                     {correlationEvents.length === 0 ? (
-                      <p className="px-4 py-2 text-xs text-theme-muted">No other events with this correlation_id in the buffer.</p>
+                      <p className="px-4 py-2 text-xs text-theme-tertiary">No other events with this correlation_id in the buffer.</p>
                     ) : (
                       <ul className="divide-y divide-theme-border">
                         {correlationEvents.map((e) => (
                           <li key={e.id} className={`px-4 py-2 space-y-0.5 cursor-pointer hover:bg-theme-surface-hover ${selectedEvent.id === e.id ? 'bg-theme-surface-hover' : ''}`} onClick={() => setSelectedEvent(e)}>
                             <div className="font-mono text-xs">{e.kind}</div>
-                            <div className="text-xs text-theme-muted">
+                            <div className="text-xs text-theme-tertiary">
                               {new Date(e.emitted_at).toLocaleTimeString()}
                             </div>
                           </li>
@@ -398,7 +398,7 @@ function Counter({ icon, label, value, highlight }: CounterProps): React.JSX.Ele
   return (
     <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning' : 'border-theme'} p-3`}>
       <div className="flex items-center justify-between">
-        <div className="text-xs text-theme-muted flex items-center gap-1">
+        <div className="text-xs text-theme-tertiary flex items-center gap-1">
           {icon}
           {label}
         </div>

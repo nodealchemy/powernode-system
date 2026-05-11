@@ -42,7 +42,7 @@ export const BootReplayModal: FC<BootReplayModalProps> = ({
     >
       <div className="min-h-[60vh]">
         {!hasPermission('system.fleet.autonomy') ? (
-          <div className="p-6 text-sm text-theme-muted">
+          <div className="p-6 text-sm text-theme-tertiary">
             You don&apos;t have permission to view boot replays.
             Required: <code>system.fleet.autonomy</code>
           </div>

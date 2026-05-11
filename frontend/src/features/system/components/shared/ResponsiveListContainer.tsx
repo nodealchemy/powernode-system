@@ -207,7 +207,7 @@ const ResponsiveListContainerImpl: React.FC<ResponsiveListContainerProps> = ({
             </div>
           )}
           {!hasMore && totalCount > 0 && serverTotalCount !== undefined && (
-            <p className="text-center text-sm text-theme-muted py-2">
+            <p className="text-center text-sm text-theme-tertiary py-2">
               All {serverTotalCount} loaded
             </p>
           )}

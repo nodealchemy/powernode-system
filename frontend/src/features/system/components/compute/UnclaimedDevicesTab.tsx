@@ -9,7 +9,7 @@ export const UnclaimedDevicesTab: React.FC = () => {
 
   if (!hasPermission('system.unclaimed_devices.read')) {
     return (
-      <div className="p-6 text-sm text-theme-muted">
+      <div className="p-6 text-sm text-theme-tertiary">
         You don&apos;t have permission to view unclaimed devices.
         Required: <code>system.unclaimed_devices.read</code>
       </div>

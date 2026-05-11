@@ -67,7 +67,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
   return (
     <div className="bg-theme-surface border border-theme rounded-lg p-4">
       <h3 className="text-sm font-semibold mb-2">Consent Budget</h3>
-      <p className="text-xs text-theme-muted mb-3">
+      <p className="text-xs text-theme-tertiary mb-3">
         Daily ceiling on autonomous decisions for this module. When exhausted, every
         subsequent decision is forced through require_approval until the 24-hour
         window resets.
@@ -75,7 +75,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
         <div>
-          <label className="block text-xs text-theme-muted mb-1">Per-day budget</label>
+          <label className="block text-xs text-theme-tertiary mb-1">Per-day budget</label>
           <input
             type="number"
             min="0"
@@ -86,11 +86,11 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
           />
         </div>
         <div>
-          <div className="block text-xs text-theme-muted mb-1">Used (current window)</div>
+          <div className="block text-xs text-theme-tertiary mb-1">Used (current window)</div>
           <div className="text-base font-mono">{used}{max ? `/${max}` : ''}</div>
         </div>
         <div>
-          <div className="block text-xs text-theme-muted mb-1">Remaining</div>
+          <div className="block text-xs text-theme-tertiary mb-1">Remaining</div>
           <div className={`text-base font-mono ${remaining === 0 ? 'text-theme-error' : ''}`}>
             {remaining ?? '∞'}
           </div>
@@ -98,7 +98,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
       </div>
 
       {windowStart && (
-        <div className="text-xs text-theme-muted mb-3">
+        <div className="text-xs text-theme-tertiary mb-3">
           Window started: {new Date(windowStart).toLocaleString()}
         </div>
       )}

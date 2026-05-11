@@ -40,7 +40,7 @@ export const HoneypotCanaryTile: React.FC = () => {
   return (
     <div className={`bg-theme-surface rounded-lg border ${tone} p-3`}>
       <div className="flex items-center justify-between text-xs">
-        <div className="flex items-center gap-1 text-theme-muted">
+        <div className="flex items-center gap-1 text-theme-tertiary">
           {last24h.length > 0 ? <ShieldAlert size={14} className="text-theme-error" /> : <Shield size={14} />}
           Honeypot Canaries
         </div>
@@ -48,16 +48,16 @@ export const HoneypotCanaryTile: React.FC = () => {
       </div>
       <div className="mt-1">
         {loading ? (
-          <span className="text-sm text-theme-muted">Loading…</span>
+          <span className="text-sm text-theme-tertiary">Loading…</span>
         ) : (
           <div className="flex items-baseline gap-3">
             <div>
               <div className="text-2xl font-semibold">{last24h.length}</div>
-              <div className="text-xs text-theme-muted">last 24h</div>
+              <div className="text-xs text-theme-tertiary">last 24h</div>
             </div>
             <div>
-              <div className="text-base text-theme-muted">{last7d.length}</div>
-              <div className="text-xs text-theme-muted">last 7d</div>
+              <div className="text-base text-theme-tertiary">{last7d.length}</div>
+              <div className="text-xs text-theme-tertiary">last 7d</div>
             </div>
           </div>
         )}

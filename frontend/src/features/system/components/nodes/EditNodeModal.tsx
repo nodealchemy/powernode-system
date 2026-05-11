@@ -287,7 +287,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
                 className="sr-only peer"
                 disabled={submitting}
               />
-              <div className="w-10 h-6 bg-theme-muted rounded-full peer-checked:bg-theme-interactive-primary transition-colors" />
+              <div className="w-10 h-6 bg-theme-background-secondary rounded-full peer-checked:bg-theme-interactive-primary transition-colors" />
               <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
             </div>
             <div>
@@ -306,7 +306,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
                 className="sr-only peer"
                 disabled={submitting}
               />
-              <div className="w-10 h-6 bg-theme-muted rounded-full peer-checked:bg-theme-interactive-primary transition-colors" />
+              <div className="w-10 h-6 bg-theme-background-secondary rounded-full peer-checked:bg-theme-interactive-primary transition-colors" />
               <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
             </div>
             <div>

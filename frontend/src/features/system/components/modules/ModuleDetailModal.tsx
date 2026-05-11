@@ -198,7 +198,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           module={module}
           onUpdated={(updated) => setModule(updated)}
         />
-        <div className="text-xs text-theme-muted">
+        <div className="text-xs text-theme-tertiary">
           The consent budget is a per-module ceiling on autonomous decisions
           (drift remediation, module reassignment, cert rotation) that
           FleetAutonomyService can take in a 24-hour window. When exhausted,

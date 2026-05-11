@@ -76,17 +76,17 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
         </div>
 
         {loading ? (
-          <p className="text-sm text-theme-muted">Computing attribution…</p>
+          <p className="text-sm text-theme-tertiary">Computing attribution…</p>
         ) : !result ? (
-          <p className="text-sm text-theme-muted">No data yet.</p>
+          <p className="text-sm text-theme-tertiary">No data yet.</p>
         ) : (
           <div className="space-y-4">
             <div className="text-sm bg-theme-background border border-theme rounded p-3">
               <div className="font-medium mb-1">Reasoning</div>
-              <p className="text-theme-muted">{result.reasoning}</p>
+              <p className="text-theme-tertiary">{result.reasoning}</p>
               {result.confidence > 0 && (
                 <div className="mt-2 text-xs">
-                  <span className="text-theme-muted">Confidence:</span>{' '}
+                  <span className="text-theme-tertiary">Confidence:</span>{' '}
                   <Badge variant={result.confidence >= 0.7 ? 'success' : result.confidence >= 0.4 ? 'warning' : 'default'}>
                     {(result.confidence * 100).toFixed(0)}%
                   </Badge>
@@ -99,7 +99,7 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
                 Candidates ({result.candidates.length})
               </h3>
               {result.candidates.length === 0 ? (
-                <p className="text-sm text-theme-muted">No suspect changes found in the lookback window.</p>
+                <p className="text-sm text-theme-tertiary">No suspect changes found in the lookback window.</p>
               ) : (
                 <ul className="space-y-3">
                   {result.candidates.map((c, idx) => (
@@ -127,11 +127,11 @@ const CandidateRow: React.FC<CandidateRowProps> = ({ candidate, rank, instanceId
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-xs text-theme-muted">#{rank}</span>
+            <span className="font-mono text-xs text-theme-tertiary">#{rank}</span>
             {isTop && <AlertTriangle size={12} className="text-theme-warning" />}
             <span className="font-medium text-sm">{candidate.module_name || candidate.module_id}</span>
             <Badge variant="default">{candidate.kind}</Badge>
-            <span className="text-xs text-theme-muted">score {candidate.score}</span>
+            <span className="text-xs text-theme-tertiary">score {candidate.score}</span>
             {(candidate as { feedback?: string }).feedback && (
               <Badge variant={(candidate as { feedback?: string }).feedback?.startsWith('boosted') ? 'success' : 'warning'}>
                 {(candidate as { feedback?: string }).feedback?.split('_').slice(0, 2).join(' ')}
@@ -139,7 +139,7 @@ const CandidateRow: React.FC<CandidateRowProps> = ({ candidate, rank, instanceId
             )}
           </div>
           {candidate.reasons.length > 0 && (
-            <ul className="mt-2 text-xs text-theme-muted list-disc pl-4 space-y-0.5">
+            <ul className="mt-2 text-xs text-theme-tertiary list-disc pl-4 space-y-0.5">
               {candidate.reasons.slice(0, 4).map((r, i) => (
                 <li key={i}>{r}</li>
               ))}

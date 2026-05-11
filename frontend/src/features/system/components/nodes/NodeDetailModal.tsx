@@ -893,7 +893,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                         <span>Progress</span>
                         <span>{operation.progress}%</span>
                       </div>
-                      <div className="w-full bg-theme-muted rounded-full h-2">
+                      <div className="w-full bg-theme-background-secondary rounded-full h-2">
                         <div
                           className="bg-theme-interactive-primary h-2 rounded-full transition-all duration-300"
                           style={{ width: `${operation.progress}%` }}

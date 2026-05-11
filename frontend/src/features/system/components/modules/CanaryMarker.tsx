@@ -70,7 +70,7 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
         </h3>
         {isCanary && <Badge variant="warning">CANARY</Badge>}
       </div>
-      <p className="text-xs text-theme-muted mb-3">
+      <p className="text-xs text-theme-tertiary mb-3">
         Marking this module as a canary means any access (by external scanner or
         rogue AI agent) emits a critical-severity FleetEvent and routes through
         autonomy quarantine. The module remains operationally indistinguishable
@@ -80,11 +80,11 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
       {isCanary ? (
         <div className="space-y-2">
           <div className="text-xs">
-            <span className="text-theme-muted">Lure kind:</span>{' '}
+            <span className="text-theme-tertiary">Lure kind:</span>{' '}
             <code>{honeypot?.lure_kind}</code>
           </div>
           <div className="text-xs">
-            <span className="text-theme-muted">Marked at:</span>{' '}
+            <span className="text-theme-tertiary">Marked at:</span>{' '}
             {honeypot?.marked_at && new Date(honeypot.marked_at).toLocaleString()}
           </div>
           <Button size="sm" variant="secondary" onClick={unmark} disabled={submitting}>
@@ -94,7 +94,7 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
       ) : confirming ? (
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-theme-muted mb-1">Lure kind</label>
+            <label className="block text-xs text-theme-tertiary mb-1">Lure kind</label>
             <select
               value={lureKind}
               onChange={(e) => setLureKind(e.target.value)}
