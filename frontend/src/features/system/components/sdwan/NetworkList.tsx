@@ -76,31 +76,34 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
     );
   }
 
+  // Standard platform table styling — matches CreditsPage / OutcomeBillingPage /
+  // PagesPage etc.: surface-card wrapper, secondary-bg header row, divide-y
+  // body rows, surface-hover on hover, transition-colors for the hover fade.
   return (
-    <div className="overflow-x-auto">
+    <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <table className="w-full">
-        <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
-          <tr>
-            <th className="text-left p-3 w-8"></th>
-            <th className="text-left p-3">Name</th>
-            <th className="text-left p-3">Status</th>
-            <th className="text-left p-3">CIDR</th>
-            <th className="text-left p-3">Peers</th>
-            <th className="text-left p-3">Hub / Spoke</th>
-            <th className="text-right p-3">Actions</th>
+        <thead>
+          <tr className="border-b border-theme bg-theme-background-secondary">
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase w-8"></th>
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase">Name</th>
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase">Status</th>
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase">CIDR</th>
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase">Peers</th>
+            <th className="px-4 py-3 text-left text-xs font-medium text-theme-secondary uppercase">Hub / Spoke</th>
+            <th className="px-4 py-3 text-right text-xs font-medium text-theme-secondary uppercase">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-theme">
           {networks.map((n) => {
             const isExpanded = expandedIds.has(n.id);
             return (
               <React.Fragment key={n.id}>
                 <tr
-                  className="border-b border-theme-border hover:bg-theme-hover cursor-pointer"
+                  className="hover:bg-theme-surface-hover transition-colors cursor-pointer"
                   onClick={() => toggleExpanded(n.id)}
                   data-testid={`network-row-${n.id}`}
                 >
-                  <td className="p-3">
+                  <td className="px-4 py-3">
                     <ChevronRight
                       size={16}
                       className={
@@ -109,23 +112,23 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                       }
                     />
                   </td>
-                  <td className="p-3">
+                  <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <NetworkIcon size={16} className="text-theme-accent" />
+                      <NetworkIcon size={16} className="text-theme-info" />
                       <span className="font-medium text-theme-primary">{n.name}</span>
                     </div>
                     <div className="text-xs text-theme-secondary">{n.slug}</div>
                   </td>
-                  <td className="p-3">
+                  <td className="px-4 py-3">
                     <span className={statusBadgeClass(n.status)}>{n.status}</span>
                   </td>
-                  <td className="p-3 font-mono text-xs text-theme-secondary">{n.cidr_64}</td>
-                  <td className="p-3 text-theme-primary">{n.peer_count}</td>
-                  <td className="p-3 text-theme-secondary text-sm">
+                  <td className="px-4 py-3 font-mono text-xs text-theme-secondary">{n.cidr_64}</td>
+                  <td className="px-4 py-3 text-theme-primary">{n.peer_count}</td>
+                  <td className="px-4 py-3 text-theme-secondary text-sm">
                     {(n.hub_count ?? 0)} hub{(n.hub_count ?? 0) === 1 ? '' : 's'} ·{' '}
                     {(n.spoke_count ?? 0)} spoke{(n.spoke_count ?? 0) === 1 ? '' : 's'}
                   </td>
-                  <td className="p-3 text-right">
+                  <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <button
                         type="button"
@@ -133,7 +136,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                           e.stopPropagation();
                           onOpenDetails(n);
                         }}
-                        className="text-theme-accent hover:bg-theme-hover p-1 rounded"
+                        className="text-theme-info hover:bg-theme-surface-hover p-1 rounded transition-colors"
                         aria-label={`View details for ${n.name}`}
                         title="View details"
                         data-testid={`open-network-${n.id}`}
@@ -147,7 +150,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                             e.stopPropagation();
                             onDelete(n);
                           }}
-                          className="text-theme-danger hover:bg-theme-danger p-1 rounded"
+                          className="text-theme-danger hover:bg-theme-danger/10 p-1 rounded transition-colors"
                           aria-label={`Delete ${n.name}`}
                           data-testid={`delete-network-${n.id}`}
                         >
@@ -158,8 +161,8 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                   </td>
                 </tr>
                 {isExpanded && (
-                  <tr className="bg-theme-background-secondary border-b border-theme-border">
-                    <td colSpan={7} className="p-4">
+                  <tr className="bg-theme-background-secondary">
+                    <td colSpan={7} className="px-4 py-4">
                       <ExpandedRowDetails network={n} />
                     </td>
                   </tr>
@@ -213,14 +216,16 @@ const DetailField: React.FC<DetailFieldProps> = ({ label, value, mono, className
 );
 
 function statusBadgeClass(status: string): string {
+  // Pill-style badges: translucent fill at /20 opacity + full-color text.
+  // Same color for both bg and text would render the text invisible.
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (status) {
     case 'active':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success/20 text-theme-success`;
     case 'registered':
-      return `${base} bg-theme-info text-theme-info`;
+      return `${base} bg-theme-info/20 text-theme-info`;
     case 'suspended':
-      return `${base} bg-theme-warning text-theme-warning`;
+      return `${base} bg-theme-warning/20 text-theme-warning`;
     case 'archived':
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:
