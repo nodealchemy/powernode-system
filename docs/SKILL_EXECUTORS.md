@@ -1,23 +1,31 @@
 # Skill Executors — System Extension Reference
 
-The system extension ships 14 skill executors at `extensions/system/server/app/services/system/ai/skills/`. Each pairs with an `Ai::Skill` record (seeded by `system_skills_seed.rb`) that makes it discoverable via `platform.discover_skills`. Skills are bound to autonomy + chat agents via `Ai::AgentSkill`.
+The system extension ships 29 skill executors at `extensions/system/server/app/services/system/ai/skills/`. Each pairs with an `Ai::Skill` record (seeded by `system_skills_seed.rb`) that makes it discoverable via `platform.discover_skills`. Skills are bound to autonomy + chat agents via `Ai::AgentSkill`.
 
-## Agent → Skill Bindings
+> The per-executor reference section below covers the original 14 executors in depth. The 15 newer executors (CVE remediation orchestration, full-stack provisioning, package management, SDWAN OVN composition, IPFIX collector, workload relocation, etc.) have inline documentation in their source files and `descriptor()` blocks; expanding this reference is tracked separately.
+
+## Agent → Skill Bindings (2026-05-11 — 5-agent split complete)
+
+The 2026-05-10 agent split moved CVE work out of Fleet Autonomy into a dedicated **CVE Responder** agent. The full current binding map:
 
 | Skill | Bound To | Why |
 |---|---|---|
 | `system-capacity-recommend` | System Concierge | Read-shape — operator chat ("do I need more nodes?") |
 | `system-attribute-failure` | System Concierge | Read-shape — diagnostic chat ("why did instance X fail?") |
 | `system-runbook-generate` | System Concierge | Read-shape — generates docs |
-| `system-cve-runbook-generate` | System Concierge | Read-shape — generates docs |
+| `system-cve-runbook-generate` | System Concierge **+** CVE Responder | Read-shape — generates CVE remediation runbooks |
 | `system-drift-remediate` | Fleet Autonomy | Autonomous reconciliation |
-| `system-cve-response` | Fleet Autonomy | Autonomous CVE triage |
 | `system-sdwan-failover` | Fleet Autonomy | Autonomous SDWAN remediation |
 | `system-sdwan-peer-remediate` | Fleet Autonomy | Autonomous SDWAN remediation |
 | `system-sdwan-bgp-session-remediate` | Fleet Autonomy | Autonomous SDWAN remediation |
 | `system-sdwan-vip-failover` | Fleet Autonomy | Autonomous SDWAN remediation |
 | `system-module-compose` | Fleet Autonomy | Autonomous module planning |
-| `system-rolling-module-upgrade` | Fleet Autonomy | Autonomous release planning |
+| `system-rolling-module-upgrade` | Fleet Autonomy **+** CVE Responder | Autonomous release planning (CVE-driven via CVE Responder) |
+| `system-package-repository-sync` | Fleet Autonomy | Autonomous package catalog sync |
+| `system-package-module-create` | Fleet Autonomy | Autonomous package-derived module creation |
+| `system-package-module-refresh` | Fleet Autonomy **+** CVE Responder | Autonomous package drift refresh (CVE-driven via CVE Responder) |
+| `system-cve-response` | CVE Responder | CVE triage (moved from Fleet Autonomy 2026-05-11) |
+| `system-cve-remediation-orchestration` | CVE Responder | Chains triage → refresh → rolling upgrade for inline notify_and_proceed dispatch |
 | `system-provision-cluster` | Runtime Manager | Container runtime lifecycle (Phase 2 K3s) |
 | `system-docker-provision` | Runtime Manager | Container runtime lifecycle (Phase 1 Docker) |
 

@@ -8,7 +8,6 @@ module System
     belongs_to :account
     belongs_to :node_architecture, class_name: "System::NodeArchitecture"
     has_many :node_templates, class_name: "System::NodeTemplate", dependent: :restrict_with_error
-    # has_many :node_modules will be added in Release 3
 
     # Disk-image publication history (Phase 2 — Chunk 1).
     # Plan: docs/plans/wondrous-yawning-anchor.md.
