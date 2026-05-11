@@ -36,7 +36,7 @@ export const bootReplayApi = {
     search.set('instance_id', params.instance_id);
     if (params.correlation_id) search.set('correlation_id', params.correlation_id);
     if (params.limit) search.set('limit', String(params.limit));
-    const url = `/api/v1/system/fleet/boot_replay?${search.toString()}`;
+    const url = `/system/fleet/boot_replay?${search.toString()}`;
     const response = await apiClient.get<ApiEnvelope<BootReplayResponse>>(url);
     return extractData(response);
   },

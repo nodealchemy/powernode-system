@@ -28,7 +28,9 @@ export const metricsApi = {
     const search = new URLSearchParams();
     if (params.window) search.set('window', String(params.window));
     const qs = search.toString();
-    const url = `/api/v1/system/metrics/dispatch${qs ? `?${qs}` : ''}`;
+    // apiClient base URL already includes /api/v1 — sibling files use bare
+    // /system/... paths. Prefixing with /api/v1 here would double the segment.
+    const url = `/system/metrics/dispatch${qs ? `?${qs}` : ''}`;
     const response = await apiClient.get<ApiEnvelope<DispatchMetricsResponse>>(url);
     return extractData(response);
   },

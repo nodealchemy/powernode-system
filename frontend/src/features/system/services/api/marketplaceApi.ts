@@ -55,13 +55,13 @@ export const marketplaceApi = {
     Object.entries(filters).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
     });
-    const url = `/api/v1/system/marketplace?${params.toString()}`;
+    const url = `/system/marketplace?${params.toString()}`;
     const response = await apiClient.get<PaginatedEnvelope<{ modules: MarketplaceModuleCard[] }>>(url);
     return extractPaginated(response);
   },
 
   async get(id: string) {
-    const url = `/api/v1/system/marketplace/${id}`;
+    const url = `/system/marketplace/${id}`;
     const response = await apiClient.get<ApiEnvelope<{
       module: MarketplaceModuleDetail;
       recent_versions: MarketplaceVersion[];

@@ -29,7 +29,7 @@ export interface ConciergeSendResponse {
 export const conciergeApi = {
   async start(): Promise<ConciergeStartResponse> {
     const response = await apiClient.post<ApiEnvelope<ConciergeStartResponse>>(
-      '/api/v1/system/concierge/start',
+      '/system/concierge/start',
       {}
     );
     return extractData(response);
@@ -37,7 +37,7 @@ export const conciergeApi = {
 
   async listMessages(conversationId: string): Promise<ConciergeMessage[]> {
     const response = await apiClient.get<ApiEnvelope<ConciergeMessagesResponse>>(
-      `/api/v1/ai/conversations/${conversationId}/messages`
+      `/ai/conversations/${conversationId}/messages`
     );
     const data = extractData(response);
     return data.messages || [];
@@ -45,7 +45,7 @@ export const conciergeApi = {
 
   async sendMessage(conversationId: string, content: string): Promise<ConciergeSendResponse> {
     const response = await apiClient.post<ApiEnvelope<ConciergeSendResponse>>(
-      `/api/v1/ai/conversations/${conversationId}/send_message`,
+      `/ai/conversations/${conversationId}/send_message`,
       { message: { content } }
     );
     return extractData(response);
