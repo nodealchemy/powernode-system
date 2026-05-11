@@ -163,6 +163,43 @@ module System
     scope :operator_authored,   -> { where(auto_generated: false) }
     scope :package_sourced,     -> { joins(:package_module_link) }
 
+    # Finds modules whose upstream package provides a given capability —
+    # either as the package's own name (e.g. "python3") or via the
+    # package's `provides` JSONB array (e.g. a package that provides
+    # "/usr/bin/python3"). Mirrors Package.providing but at the NodeModule
+    # layer so operator queries can be answered without leaving the
+    # module catalog.
+    #
+    # Modules without a PackageModuleLink (operator-authored modules
+    # not derived from upstream packages) are never returned by this
+    # scope — they don't carry a `provides` declaration.
+    #
+    # PackageModuleLink does not have a direct FK to Package — the link
+    # stores package coordinates (repo+name+arch+version) inline. So we
+    # join on the full tuple to pick up the exact Package row the link
+    # was materialized against.
+    scope :providing, ->(capability) {
+      next all if capability.blank?
+
+      link_ids = ::System::PackageModuleLink
+        .joins(<<~SQL.squish)
+          INNER JOIN system_packages
+                  ON system_packages.package_repository_id = system_package_module_links.package_repository_id
+                 AND system_packages.name                   = system_package_module_links.package_name
+                 AND system_packages.architecture           = system_package_module_links.architecture
+                 AND system_packages.version                = system_package_module_links.package_version
+        SQL
+        .where(
+          "system_packages.name = ? OR system_packages.provides @> ?::jsonb",
+          capability,
+          [ [ { name: capability } ] ].to_json
+        )
+        .distinct
+        .select(:node_module_id)
+
+      where(id: link_ids)
+    }
+
     # === Callbacks ===
     before_validation :encode_specs
     before_update :check_lock_status, if: :will_save_change_to_versioned_attributes?
