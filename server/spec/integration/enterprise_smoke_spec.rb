@@ -93,7 +93,7 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
   let!(:provider_connection) do
     create(:system_provider_connection, account: account, provider: provider, status: "connected")
   end
-  let(:architecture) { create(:system_node_architecture, :with_checksums, account: account) }
+  let(:architecture) { create(:system_node_architecture, :with_checksums) }
   let(:platform)     { create(:system_node_platform, account: account, node_architecture: architecture) }
   let(:template)     { create(:system_node_template, account: account, node_platform: platform) }
   let(:node)         { create(:system_node, account: account, node_template: template) }

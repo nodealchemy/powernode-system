@@ -50,7 +50,7 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
   let(:account)        { create(:account) }
   let(:admin)          { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
   let(:agent)          { create(:ai_agent, account: account) }
-  let(:architecture)   { create(:system_node_architecture, :with_checksums, account: account) }
+  let(:architecture)   { create(:system_node_architecture, :with_checksums) }
   let(:platform_obj)   { create(:system_node_platform, account: account, node_architecture: architecture) }
   let(:template)       { create(:system_node_template, account: account, node_platform: platform_obj) }
   let(:provider)       { create(:system_provider, account: account, provider_type: "local_qemu") }

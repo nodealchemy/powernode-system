@@ -7,7 +7,7 @@ RSpec.describe 'Node Provisioning Integration', type: :integration do
   let(:provider) { create(:system_provider, account: account, provider_type: 'aws') }
   let(:region) { create(:system_provider_region, account: account, provider: provider) }
   let(:instance_type) { create(:system_provider_instance_type, account: account, provider: provider) }
-  let(:architecture) { create(:system_node_architecture, :with_checksums, account: account) }
+  let(:architecture) { create(:system_node_architecture, :with_checksums) }
   let(:platform) { create(:system_node_platform, account: account, node_architecture: architecture) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform) }
   let(:node) { create(:system_node, account: account, node_template: template) }

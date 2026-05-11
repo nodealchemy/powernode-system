@@ -42,7 +42,11 @@ RSpec.describe System::AccountBootstrapService do
     it "seeds the node-template catalog (architectures, platforms, modules, templates)" do
       described_class.call(account)
 
-      expect(::System::NodeArchitecture.where(account: account).pluck(:name)).to match_array(%w[amd64 arm64])
+      # NodeArchitecture is platform-wide as of i-would-like-to-zesty-glade.md
+      # (Tier 1). The bootstrap resolves the canonical amd64 + arm64 rows
+      # rather than creating per-account ones. Canonical names follow apt
+      # convention to match production callers.
+      expect(::System::NodeArchitecture.canonical.pluck(:name)).to include("amd64", "arm64")
       expect(::System::NodePlatform.where(account: account).pluck(:name)).to match_array(
         %w[ubuntu-24.04-lts ubuntu-24.04-rpi4 ubuntu-24.04-arm64-uefi]
       )
@@ -62,7 +66,7 @@ RSpec.describe System::AccountBootstrapService do
           provider:       ::System::Provider.where(account: account, name: "Pro Cloud").count,
           regions:        ::System::ProviderRegion.joins(:provider).where(system_providers: { account_id: account.id, name: "Pro Cloud" }).count,
           instance_types: ::System::ProviderInstanceType.joins(:provider).where(system_providers: { account_id: account.id, name: "Pro Cloud" }).count,
-          architectures:  ::System::NodeArchitecture.where(account: account).count,
+          architectures:  ::System::NodeArchitecture.canonical.count,
           platforms:      ::System::NodePlatform.where(account: account).count,
           modules:        ::System::NodeModule.where(account: account).count,
           templates:      ::System::NodeTemplate.where(account: account).count
