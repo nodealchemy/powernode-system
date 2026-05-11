@@ -109,24 +109,36 @@ documented gap:
 |---|---|---|---|
 | On-node commit | `powernode-agent commit ... --push` | `ModuleCommitService#materialize_assignment!` (find_or_create_by!) | No |
 | GitOps reconcile | `fleet.yaml` change → diff engine | `Gitops::ApplyService` | No |
-| Operator UI | Manual "assign module to node" action | direct `NodeModuleAssignment.create!` | No |
-| _Gap — not wired_ | Template apply to a Node | `TemplateExpansionService` exists but no caller wires it to `NodeModuleAssignment.create!` | Would be `source_template_module: tm` |
+| Operator UI — manual | "Assign module to node" UI action | direct `NodeModuleAssignment.create!` | No |
+| Operator UI — apply template | `POST /api/v1/system/nodes/:id/apply_template` | `TemplateApplyService#apply!` → `TemplateExpansionService` → idempotent `create!` | Yes |
 
-`TemplateExpansionService` (`app/services/system/template_expansion_service.rb`)
-is infrastructure ready for a future automated template-apply flow:
-it computes the closure (modules + transitive `requires`/`recommends`)
-with per-`TemplateModule.recommends_override` honored, and returns a
-`source_template_module_for` map for back-reference. It is not yet
-called by any controller or service. The `NodeTemplatesController#compose_preview`
-endpoint uses `DependencyResolutionService` directly (one layer below
-`TemplateExpansionService`) so the preview path doesn't depend on the
-unwired apply path.
+`TemplateApplyService` (`app/services/system/template_apply_service.rb`)
+is the wired apply path. It computes the closure via
+`TemplateExpansionService`, then for each module not already assigned
+on the node creates a `NodeModuleAssignment` with
+`source_template_module` set to the `TemplateModule` whose override
+governed inclusion (`nil` for purely transitive modules pulled by
+closure expansion — see `auto_resolved`). Operator-tuned priority/
+config/enabled on prior assignments are preserved across re-apply.
 
-If you need to populate assignments from a template today, do it
-manually or via GitOps. The `NodeModuleAssignment.source_template_module_id`
-column is reserved for the future flow — leave it `NULL` on hand-
-authored rows so the eventual auto-cleaner doesn't mistake them for
-template-derived rows.
+Body params:
+- `dry_run: true` — returns the planned diff without persisting
+- `purge_stale: true` — removes assignments whose `source_template_module`
+  is now disabled (or whose module left the closure). Hand-authored
+  assignments (`source_template_module_id IS NULL`) are never touched.
+
+Because the FK constraint on `system_node_module_assignments.source_template_module_id`
+uses `on_delete: :nullify`, **destroying** a TemplateModule wipes the
+back-reference and makes the assignment look hand-authored. To remove
+a module from a template without losing track of its derived
+assignments, disable the TemplateModule (`enabled: false`) instead of
+destroying it — that keeps the FK intact so `purge_stale` can find
+the orphans.
+
+`NodeTemplatesController#compose_preview` uses `DependencyResolutionService`
+directly (one layer below `TemplateExpansionService`) for the preview-
+without-overrides path. The two services share the same dependency walk
+but differ in whether per-template `recommends_override` is applied.
 
 ### 2. On-node runtime (`powernode-agent`)
 

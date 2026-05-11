@@ -24,6 +24,12 @@ Rails.application.routes.draw do
         # /api/v1/system/nodes/:node_id/node_instances/.... A flat
         # `resources :node_instances` would 404 because set_node always runs.
         resources :nodes do
+          member do
+            # Materializes NodeModuleAssignment rows from the closure of
+            # this node's NodeTemplate via TemplateExpansionService. Body:
+            # { dry_run?: bool, purge_stale?: bool }
+            post :apply_template
+          end
           resources :node_instances do
             member do
               post :start
