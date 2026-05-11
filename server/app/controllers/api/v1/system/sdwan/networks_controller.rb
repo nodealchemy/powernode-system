@@ -9,6 +9,8 @@ module Api
     module System
       module Sdwan
         class NetworksController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network, only: %i[show update destroy topology]
 
@@ -48,8 +50,17 @@ module Api
 
           def destroy
             require_permission("sdwan.networks.manage")
-            @network.destroy!
-            render_success(deleted: true, id: @network.id)
+            id = @network.id
+            name = @network.name
+            gate!(
+              action_category: "sdwan.network_delete",
+              executor_class: "Sdwan::Executors::DeleteNetwork",
+              params: { network_id: id },
+              source_type: "Sdwan::Network",
+              source_id: id,
+              description: "Delete SDWAN network '#{name}'",
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           # GET /api/v1/system/sdwan/networks/:id/topology

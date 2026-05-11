@@ -15,6 +15,8 @@ module Api
     module System
       module Sdwan
         class FederationPeersController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_peer, only: %i[show update destroy revoke]
 
@@ -30,18 +32,27 @@ module Api
             render_success(federation_peer: serialize_peer_full(@peer))
           end
 
-          # POST creates a "proposed" row. Operators can later transition
-          # via a future federation slice once cross-CA verification ships.
+          # POST creates a "proposed" row. Federation peering is sensitive —
+          # always gated through Ai::AutonomyGate (default require_approval).
           def create
             require_permission("sdwan.federation.manage")
-            attrs = peer_params
+            attrs = peer_params.to_h
 
-            peer = ::Sdwan::FederationPeer.new(attrs.merge(account_id: @account.id, status: "proposed"))
-            if peer.save
-              render_success({ federation_peer: serialize_peer_full(peer) }, status: :created)
-            else
-              render_validation_error(peer)
-            end
+            gate!(
+              action_category: "sdwan.federation_peer_propose",
+              executor_class: "Sdwan::Executors::ProposeFederationPeer",
+              params: { attributes: attrs },
+              description: "Propose federation with #{attrs[:remote_instance_url]}",
+              on_proceed: ->(result) {
+                peer_id = result.result&.dig(:data, :federation_peer_id)
+                peer = ::Sdwan::FederationPeer.find(peer_id) if peer_id
+                if peer
+                  render_success({ federation_peer: serialize_peer_full(peer) }, status: :created)
+                else
+                  render_error("Federation peer not found after create", status: :internal_server_error)
+                end
+              }
+            )
           end
 
           def update
@@ -63,14 +74,32 @@ module Api
 
           def destroy
             require_permission("sdwan.federation.manage")
-            @peer.destroy!
-            render_success(deleted: true, id: @peer.id)
+            id = @peer.id
+            url = @peer.remote_instance_url
+            gate!(
+              action_category: "sdwan.federation_peer_revoke",
+              executor_class: "Sdwan::Executors::RevokeFederationPeer",
+              params: { federation_peer_id: id },
+              source_type: "Sdwan::FederationPeer",
+              source_id: id,
+              description: "Revoke federation peer #{url}",
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           def revoke
             require_permission("sdwan.federation.manage")
-            @peer.revoke!(reason: params[:reason])
-            render_success(federation_peer: serialize_peer_full(@peer.reload), revoked: true)
+            id = @peer.id
+            url = @peer.remote_instance_url
+            gate!(
+              action_category: "sdwan.federation_peer_revoke",
+              executor_class: "Sdwan::Executors::RevokeFederationPeer",
+              params: { federation_peer_id: id, reason: params[:reason] },
+              source_type: "Sdwan::FederationPeer",
+              source_id: id,
+              description: "Revoke federation peer #{url}",
+              on_proceed: ->(_r) { render_success(federation_peer: serialize_peer_full(@peer.reload), revoked: true) }
+            )
           end
 
           private

@@ -11,6 +11,8 @@ module Api
     module System
       module Sdwan
         class PortMappingsController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_mapping, only: %i[show update destroy]
@@ -50,8 +52,16 @@ module Api
 
           def destroy
             require_permission("sdwan.port_mappings.manage")
-            @mapping.destroy!
-            render_success(deleted: true, id: @mapping.id)
+            id = @mapping.id
+            gate!(
+              action_category: "sdwan.port_mapping_delete",
+              executor_class: "Sdwan::Executors::DeletePortMapping",
+              params: { mapping_id: id },
+              source_type: "Sdwan::PortMapping",
+              source_id: id,
+              description: "Delete port mapping #{id}",
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           private

@@ -15,6 +15,8 @@ module Api
       # worker's InstancePoolReplenisherJob can drive periodic
       # replenishment without going through the MCP execution layer.
       class InstancePoolsController < ApplicationController
+        include ::System::GatedActions
+
         before_action :authenticate_user_or_service!
         before_action :set_pool, only: [:show, :update, :destroy, :replenish, :drain, :recycle_stale]
 
@@ -33,10 +35,26 @@ module Api
         end
 
         # POST /api/v1/system/instance_pools
+        # Pool create is gated — committing capacity is operator-initiated and
+        # high-blast (instances begin pre-provisioning to target size).
         def create
           authorize_write!
-          pool = ::System::InstancePool.create!(create_params.merge(account: current_account))
-          render_success({ pool: pool.to_summary }, status: :created)
+          attrs = create_params.to_h
+          gate!(
+            action_category: "system.instance_pool_create",
+            executor_class: "System::Executors::InstancePool::CreatePool",
+            params: { attributes: attrs },
+            description: "Create instance pool '#{attrs['name']}'",
+            on_proceed: ->(result) {
+              pool_id = result.result&.dig(:data, :pool_id)
+              pool = ::System::InstancePool.find_by(id: pool_id)
+              if pool
+                render_success({ pool: pool.to_summary }, status: :created)
+              else
+                render_error("Pool created but row not found", status: :internal_server_error)
+              end
+            }
+          )
         rescue ActiveRecord::RecordInvalid => e
           render_error("validation failed: #{e.message}", :unprocessable_entity)
         end
@@ -51,10 +69,24 @@ module Api
         end
 
         # DELETE /api/v1/system/instance_pools/:id
+        # Gated — destroying a pool removes all warm instances + halts
+        # replenishment. Default policy is require_approval.
         def destroy
           authorize_write!
-          @pool.update!(status: "archived")
-          render_success(pool: @pool.to_summary)
+          id = @pool.id
+          name = @pool.name
+          gate!(
+            action_category: "system.instance_pool_delete",
+            executor_class: "System::Executors::InstancePool::DeletePool",
+            params: { pool_id: id },
+            source_type: "System::InstancePool",
+            source_id: id,
+            description: "Delete instance pool '#{name}'",
+            on_proceed: ->(_r) {
+              @pool.update!(status: "archived") if @pool.persisted?
+              render_success(pool: @pool.reload.to_summary)
+            }
+          )
         end
 
         # POST /api/v1/system/instance_pools/:id/replenish

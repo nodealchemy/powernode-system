@@ -67,10 +67,35 @@ module Api
             end
           end
 
+          # Gated through Ai::AutonomyGate — sdwan.peer_delete defaults to
+          # require_approval (see system_sdwan_manager_agent.rb). Operators
+          # without auto-approve get 202 + a notification with inline approve;
+          # the executor (Sdwan::Executors::DeletePeer) handles the destroy
+          # when the chain completes.
           def destroy
             require_permission("sdwan.peers.manage")
-            @peer.destroy!
-            render_success(deleted: true, id: @peer.id)
+
+            gate_result = ::Ai::AutonomyGate.evaluate(
+              action_category: "sdwan.peer_delete",
+              executor_class: "Sdwan::Executors::DeletePeer",
+              params: { peer_id: @peer.id, network_id: @network.id },
+              account: current_account,
+              requested_by: current_user,
+              source_type: "Sdwan::Peer",
+              source_id: @peer.id,
+              description: "Delete SDWAN peer #{@peer.try(:endpoint) || @peer.id}"
+            )
+
+            case gate_result.decision
+            when :proceed
+              render_success(deleted: true, id: @peer.id)
+            when :pending
+              render_pending_approval(gate_result.deferred_operation,
+                                      message: "Approval required to delete peer")
+            when :blocked
+              render_error(gate_result.error || "Action blocked by policy",
+                           status: :unprocessable_content)
+            end
           end
 
           private

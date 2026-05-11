@@ -11,6 +11,8 @@ module Api
     module System
       module Sdwan
         class VirtualIpsController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_vip, only: %i[show update destroy failover]
@@ -61,21 +63,39 @@ module Api
 
           def destroy
             require_permission("sdwan.vips.manage")
-            ::Sdwan::VirtualIp.transaction do
-              @vip.assignments.where(released_at: nil)
+            id = @vip.id
+            address = @vip.try(:cidr)
+            gate!(
+              action_category: "sdwan.virtual_ip_delete",
+              executor_class: "Sdwan::Executors::DeleteVirtualIp",
+              params: { vip_id: id },
+              source_type: "Sdwan::VirtualIp",
+              source_id: id,
+              description: "Delete VIP #{address || id}",
+              on_proceed: ->(_r) {
+                # Executor handled the destroy + assignment cleanup; double-check
+                # any lingering assignments rows. Idempotent.
+                ::Sdwan::VipAssignment
+                  .where(virtual_ip_id: id, released_at: nil)
                   .update_all(released_at: Time.current, updated_at: Time.current)
-              @vip.destroy!
-              render_success(deleted: true, id: @vip.id)
-            end
+                render_success(deleted: true, id: id)
+              }
+            )
           end
 
           # POST /virtual_ips/:id/failover — manual failover for non-anycast VIPs.
           def failover
             require_permission("sdwan.vips.manage")
-            @vip.failover!(reason: "manual_failover", triggered_by_user: current_user)
-            render_success(virtual_ip: serialize_vip_full(@vip.reload), failed_over: true)
-          rescue ::Sdwan::VirtualIp::StateError => e
-            render_error(e.message, status: :unprocessable_entity)
+            id = @vip.id
+            gate!(
+              action_category: "system.sdwan_vip_failover",
+              executor_class: "Sdwan::Executors::FailoverVirtualIp",
+              params: { vip_id: id, target_peer_id: params[:target_peer_id] },
+              source_type: "Sdwan::VirtualIp",
+              source_id: id,
+              description: "Manual failover of VIP #{@vip.try(:cidr) || id}",
+              on_proceed: ->(_r) { render_success(virtual_ip: serialize_vip_full(@vip.reload), failed_over: true) }
+            )
           end
 
           private

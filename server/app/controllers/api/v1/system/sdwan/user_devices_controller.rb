@@ -12,6 +12,8 @@ module Api
     module System
       module Sdwan
         class UserDevicesController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_grant
@@ -55,15 +57,37 @@ module Api
 
           def destroy
             require_permission("sdwan.user_devices.manage")
-            @device.destroy!
-            render_success(deleted: true, id: @device.id)
+            id = @device.id
+            label = @device.try(:label)
+            gate!(
+              action_category: "system.sdwan_user_device_revoke",
+              executor_class: "Sdwan::Executors::RevokeAccessGrant",  # device destroy reuses revoke semantics
+              params: { grant_id: @grant.id, device_id: id },
+              source_type: "Sdwan::UserDevice",
+              source_id: id,
+              description: "Delete SDWAN device #{label || id}",
+              on_proceed: ->(_r) {
+                # The executor handles the revoke; explicit destroy still legal.
+                @device.destroy! if @device.persisted? && !@device.revoked?
+                render_success(deleted: true, id: id)
+              }
+            )
           end
 
           # POST /user_devices/:id/revoke — soft revoke, keeps the row for audit.
           def revoke
             require_permission("sdwan.user_devices.manage")
-            @device.revoke!(reason: params[:reason])
-            render_success(user_device: serialize_device(@device.reload), revoked: true)
+            id = @device.id
+            label = @device.try(:label)
+            gate!(
+              action_category: "system.sdwan_user_device_revoke",
+              executor_class: "Sdwan::Executors::RevokeAccessGrant",
+              params: { grant_id: @grant.id, device_id: id, reason: params[:reason] },
+              source_type: "Sdwan::UserDevice",
+              source_id: id,
+              description: "Revoke SDWAN device #{label || id}",
+              on_proceed: ->(_r) { render_success(user_device: serialize_device(@device.reload), revoked: true) }
+            )
           end
 
           private

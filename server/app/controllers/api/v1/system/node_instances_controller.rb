@@ -83,9 +83,14 @@ module Api
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/terminate
         # Unlike DELETE (which removes the row), terminate keeps the row and
         # the worker runtime brings the cloud resource down via an operation.
+        #
+        # Gated through Ai::AutonomyGate — system.task.terminate defaults to
+        # require_approval in the manual operation policies seed. If the
+        # operator's account has it set to auto_approve, terminate executes
+        # immediately as before.
         def terminate
           require_permission("system.instances.control")
-          control_or_error(:terminate)
+          gate_or_execute(:terminate)
         end
 
         # POST /api/v1/system/nodes/:node_id/node_instances/:id/associate_public_ip
@@ -224,6 +229,57 @@ module Api
         # execute. The state machine moves the instance into a transitional
         # state ("starting", "stopping", etc.); the runtime finalizes via
         # mark_running / mark_stopped / mark_terminated.
+        # Gate-aware wrapper around control_or_error. Consults the AutonomyGate
+        # for the policy on `system.task.<event>` and either proceeds inline
+        # (auto_approve / notify_and_proceed) or returns 202 + an approval
+        # request that, on approval, recreates the instance op via the
+        # ExecuteTask executor.
+        def gate_or_execute(event)
+          gate_result = ::Ai::AutonomyGate.evaluate(
+            action_category: "system.task.#{event}",
+            executor_class: "System::Executors::ExecuteTask",
+            params: {
+              task_attributes: {
+                command: event.to_s,
+                description: "#{event} #{@instance.class.name}##{@instance.id}",
+                operable_type: @instance.class.name,
+                operable_id: @instance.id,
+                initiated_by_id: current_user.id
+              }
+            },
+            account: current_account,
+            requested_by: current_user,
+            source_type: @instance.class.name,
+            source_id: @instance.id,
+            description: "#{event} instance #{@instance.id}"
+          )
+
+          case gate_result.decision
+          when :proceed
+            # Mirrors original control_or_error behaviour for the inline path.
+            unless @instance.public_send("may_#{event}?")
+              return render_error(
+                "Cannot #{event} instance in #{@instance.status} state",
+                status: :unprocessable_entity
+              )
+            end
+            @instance.public_send("#{event}!")
+            execute_local_provider_action_sync!(event) if local_hypervisor_instance?
+            data = gate_result.result&.dig(:data) || {}
+            task = data[:task_id] ? current_account.system_tasks.find_by(id: data[:task_id]) : nil
+            render_success(
+              node_instance: serialize_instance(@instance.reload),
+              task: task ? ::System::TaskSerializer.new(task).as_json : nil
+            )
+          when :pending
+            render_pending_approval(gate_result.deferred_operation,
+                                    message: "Approval required to #{event} instance")
+          when :blocked
+            render_error(gate_result.error || "Action blocked by policy",
+                         status: :unprocessable_content)
+          end
+        end
+
         def control_or_error(event)
           unless @instance.public_send("may_#{event}?")
             return render_error(

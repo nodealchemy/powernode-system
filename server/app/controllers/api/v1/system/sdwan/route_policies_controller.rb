@@ -10,6 +10,8 @@ module Api
     module System
       module Sdwan
         class RoutePoliciesController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_policy, only: %i[show update destroy compile]
 
@@ -50,8 +52,17 @@ module Api
 
           def destroy
             require_permission("sdwan.route_policies.manage")
-            @policy.destroy!
-            render_success(deleted: true, id: @policy.id)
+            id = @policy.id
+            name = @policy.name
+            gate!(
+              action_category: "sdwan.route_policy_delete",
+              executor_class: "Sdwan::Executors::DeleteRoutePolicy",
+              params: { policy_id: id },
+              source_type: "Sdwan::RoutePolicy",
+              source_id: id,
+              description: "Delete route policy '#{name}'",
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           # GET /route_policies/:id/compile?peer_id=<uuid>

@@ -24,6 +24,8 @@ module Api
       #
       # Plan: docs/plans/wondrous-yawning-anchor.md (Phase 2 — Chunk 3).
       class DiskImagePublicationsController < BaseController
+        include ::System::GatedActions
+
         before_action :set_account
         before_action :set_platform
         before_action :set_publication, only: %i[show]
@@ -50,6 +52,10 @@ module Api
         # Flips platform pointer to a prior publication's file_object,
         # restoring the FileObject from soft-delete if the publication
         # was retired. Refuses :purged (FileObject hard-deleted).
+        #
+        # Gated through Ai::AutonomyGate — rolling back affects every new
+        # node provision until the next promote/rollback. Default policy is
+        # require_approval per system_disk_image_manager_agent.rb.
         def rollback
           require_permission("system.platforms.rollback_disk_image")
 
@@ -63,6 +69,32 @@ module Api
           unless target.file_object_id.present?
             return render_error("Target publication has no file_object — was it ever published?", 422)
           end
+
+          # Gate-check before running the destructive transaction. The
+          # executor stub records the intent; the controller still owns the
+          # actual rollback logic on the :proceed path because the multi-step
+          # transaction (restore file_object, retire prior, emit event) is
+          # tightly coupled to controller state.
+          gate_result = ::Ai::AutonomyGate.evaluate(
+            action_category: "system.disk_image_publication_rollback",
+            executor_class: "System::Executors::DiskImage::RollbackPublication",
+            params: { target_publication_id: target.id, platform_id: @platform.id },
+            account: current_account,
+            requested_by: current_user,
+            source_type: "System::DiskImagePublication",
+            source_id: target.id,
+            description: "Roll back #{@platform.name} disk image to publication #{target.id}"
+          )
+
+          case gate_result.decision
+          when :pending
+            return render_pending_approval(gate_result.deferred_operation,
+                                           message: "Approval required to roll back disk image")
+          when :blocked
+            return render_error(gate_result.error || "Action blocked by policy",
+                                status: :unprocessable_content)
+          end
+          # :proceed — fall through to the existing transaction.
 
           previous_active_id = @platform.disk_image_file_object_id
 

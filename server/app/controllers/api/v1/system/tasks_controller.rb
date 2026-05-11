@@ -31,6 +31,12 @@ module Api
         # a duplicate POST with the same key+account returns the existing
         # task instead of creating a second one. This protects against
         # flaky-network retry double-provisioning.
+        #
+        # Mutating commands flow through Ai::AutonomyGate first — see
+        # `system_manual_operation_policies.rb` for the per-command policy
+        # defaults. If the gate returns `:pending` the operator gets a 202
+        # with the approval_request_id and can approve from the notification
+        # center; the task is created when the chain completes.
         def create
           require_permission("system.infra_tasks.create")
 
@@ -44,13 +50,31 @@ module Api
             end
           end
 
-          task = current_account.system_tasks.build(task_params)
-          task.initiated_by = current_user
+          attrs = task_params.to_h.merge(initiated_by_id: current_user.id)
+          gate_result = ::Ai::AutonomyGate.evaluate(
+            action_category: "system.task.#{attrs[:command]}",
+            executor_class: "System::Executors::ExecuteTask",
+            params: { task_attributes: attrs },
+            account: current_account,
+            requested_by: current_user,
+            description: "#{attrs[:command]} on #{attrs[:operable_type]}##{attrs[:operable_id]}".strip
+          )
 
-          if task.save
-            render_success(task: ::System::TaskSerializer.new(task).as_json, status: :created)
-          else
-            render_validation_error(task)
+          case gate_result.decision
+          when :proceed
+            data = gate_result.result&.dig(:data) || {}
+            task = current_account.system_tasks.find_by(id: data[:task_id])
+            if task
+              render_success(task: ::System::TaskSerializer.new(task).as_json, status: :created)
+            else
+              render_error("Task creation succeeded but row not found", status: :internal_server_error)
+            end
+          when :pending
+            render_pending_approval(gate_result.deferred_operation,
+                                    message: "Approval required for #{attrs[:command]}")
+          when :blocked
+            render_error(gate_result.error || "Action blocked by policy",
+                         status: :unprocessable_content)
           end
         end
 

@@ -11,6 +11,8 @@ module Api
     module System
       module Sdwan
         class FirewallRulesController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_rule, only: %i[show update destroy]
@@ -58,8 +60,16 @@ module Api
 
           def destroy
             require_permission("sdwan.firewall.manage")
-            @rule.destroy!
-            render_success(deleted: true, id: @rule.id)
+            id = @rule.id
+            gate!(
+              action_category: "sdwan.firewall_rule_delete",
+              executor_class: "Sdwan::Executors::DeleteFirewallRule",
+              params: { rule_id: id },
+              source_type: "Sdwan::FirewallRule",
+              source_id: id,
+              description: "Delete firewall rule #{@rule.try(:name) || id}",
+              on_proceed: ->(_r) { render_success(deleted: true, id: id) }
+            )
           end
 
           private

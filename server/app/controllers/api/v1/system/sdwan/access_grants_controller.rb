@@ -11,6 +11,8 @@ module Api
     module System
       module Sdwan
         class AccessGrantsController < ::Api::V1::System::BaseController
+          include ::System::GatedActions
+
           before_action :set_account
           before_action :set_network
           before_action :set_grant, only: %i[show update destroy revoke]
@@ -67,11 +69,22 @@ module Api
           end
 
           # POST /access_grants/:id/revoke — softer than DELETE; preserves
-          # the row + its devices for audit, just flips status.
+          # the row + its devices for audit, just flips status. Gated through
+          # AutonomyGate (default require_approval) — revoking access cuts
+          # off a user's VPN immediately.
           def revoke
             require_permission("sdwan.user_devices.manage")
-            @grant.revoke!(reason: params[:reason], by_user: current_user)
-            render_success(access_grant: serialize_grant_full(@grant.reload), revoked: true)
+            id = @grant.id
+            user_email = @grant.try(:user)&.email
+            gate!(
+              action_category: "sdwan.access_grant_revoke",
+              executor_class: "Sdwan::Executors::RevokeAccessGrant",
+              params: { grant_id: id, reason: params[:reason] },
+              source_type: "Sdwan::AccessGrant",
+              source_id: id,
+              description: "Revoke SDWAN access for #{user_email || id}",
+              on_proceed: ->(_r) { render_success(access_grant: serialize_grant_full(@grant.reload), revoked: true) }
+            )
           end
 
           private

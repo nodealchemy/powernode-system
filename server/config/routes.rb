@@ -271,6 +271,15 @@ Rails.application.routes.draw do
         # ActionController::Metal#dispatch.
         get "metrics/dispatch", to: "metrics#index"
 
+        # === Autonomy Settings (per-action policy + chain configuration) ===
+        # Operators view + edit per-domain intervention policies and assign
+        # multi-step approval chains. The 7 domain tabs in the System
+        # Settings UI (Node Lifecycle / SDWAN / Container Runtimes / Disk
+        # Image CI / Instance Pools / CVE & Compliance / Approval Chains)
+        # all pivot off the same payload.
+        get  "autonomy", to: "autonomy#show"
+        patch "autonomy", to: "autonomy#update"
+
         # === System Concierge bootstrap (Phase 10.3) ===
         # Returns or creates the operator's active Concierge conversation
         # against the System Concierge agent. Subsequent message exchange
