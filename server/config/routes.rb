@@ -160,6 +160,11 @@ Rails.application.routes.draw do
             # which 500'd on every preview request — confirmed by the
             # rspec coverage in node_templates_compose_preview_spec.rb.
             post :compose_preview
+            # Symmetric to /:id/export — accepts a TemplateExporter JSON
+            # bundle in the body and creates the NodeTemplate + TemplateModule
+            # rows in the current account. Modules must already exist in
+            # the target account (resolved by name + variety).
+            post :import
           end
         end
         resources :node_architectures

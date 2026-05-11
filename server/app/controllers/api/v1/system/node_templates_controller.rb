@@ -108,6 +108,53 @@ module Api
           )
         end
 
+        # POST /api/v1/system/node_templates/import
+        # Body: { bundle: <TemplateExporter JSON>, name?: <override> }
+        # Symmetric to /api/v1/system/node_templates/:id/export. Refuses
+        # if any referenced module is missing in the target account.
+        def import
+          require_permission("system.templates.create")
+
+          bundle_param = params[:bundle]
+          return render_error("bundle param required", status: :bad_request) if bundle_param.blank?
+
+          bundle =
+            if bundle_param.is_a?(ActionController::Parameters)
+              bundle_param.to_unsafe_h.deep_stringify_keys
+            elsif bundle_param.is_a?(Hash)
+              bundle_param.deep_stringify_keys
+            elsif bundle_param.is_a?(String)
+              begin
+                JSON.parse(bundle_param)
+              rescue JSON::ParserError => e
+                return render_error("bundle JSON parse failed: #{e.message}", status: :bad_request)
+              end
+            else
+              return render_error("bundle must be a Hash or JSON string", status: :bad_request)
+            end
+
+          result = ::System::TemplateImporter.new(@account).import!(
+            bundle: bundle,
+            new_name: params[:name].presence
+          )
+
+          if result.ok?
+            render_success(
+              node_template: serialize_template(result.template),
+              template_modules_count: result.template_modules_count,
+              status: :created
+            )
+          elsif result.missing_modules.any?
+            render_error(
+              result.errors.first || "missing modules",
+              status: :unprocessable_entity,
+              details: { missing_modules: result.missing_modules }
+            )
+          else
+            render_error(result.errors.first || "import failed", status: :unprocessable_entity)
+          end
+        end
+
         # POST /api/v1/system/node_templates/:id/clone
         # Deep-clones a template + its TemplateModule rows (priorities,
         # enabled flags, per-module config, recommends_override all
