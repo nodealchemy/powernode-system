@@ -27,8 +27,7 @@ puts "  ✅ Template: #{template.name}"
 
 nginx_module = ::System::NodeModule.find_or_initialize_by(account: account, name: "nginx")
 if nginx_module.new_record?
-  category = ::System::NodeModuleCategory.find_or_create_by!(account: account, slug: "userland") do |c|
-    c.name = "Userland"
+  category = ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Userland") do |c|
     c.position = 90
   end
   nginx_module.assign_attributes(

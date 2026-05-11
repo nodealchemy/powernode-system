@@ -46,8 +46,7 @@ manifest = {
 
 # ── Ensure category exists ────────────────────────────────────────────────
 
-category = ::System::NodeModuleCategory.find_or_create_by!(account: account, slug: "userland") do |c|
-  c.name = "Userland"
+category = ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Userland") do |c|
   c.position = 90
 end
 
@@ -58,7 +57,11 @@ mod.assign_attributes(
   category: category,
   variety: manifest[:identity][:variety],
   description: manifest[:identity][:description],
-  manifest: manifest                                 # full manifest stored as JSONB
+  # Schema stores the manifest as YAML text in `manifest_yaml`, with
+  # `manifest_type` distinguishing the source path. Original example
+  # used a non-existent `manifest:` JSONB attribute.
+  manifest_yaml: manifest.deep_stringify_keys.to_yaml,
+  manifest_type: "inline"
 )
 mod.save!
 puts "  ✅ NodeModule: #{mod.name} (#{mod.previously_new_record? ? 'created' : 'updated'})"

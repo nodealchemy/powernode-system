@@ -31,8 +31,7 @@ puts "  ✅ Target instance: #{instance.id[0, 8]} (#{instance.node.hostname})"
 
 # ── Ensure honeypot-canary module exists ──────────────────────────────────
 
-category = ::System::NodeModuleCategory.find_or_create_by!(account: account, slug: "security") do |c|
-  c.name = "Security"
+category = ::System::NodeModuleCategory.find_or_create_by!(account: account, name: "Security") do |c|
   c.position = 30
 end
 
