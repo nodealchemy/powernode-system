@@ -9,3 +9,4 @@ export { ScriptsTab } from './ScriptsTab';
 export { ArchitecturesTab } from './ArchitecturesTab';
 export { PlatformsTab } from './PlatformsTab';
 export { MarketplaceTab } from './MarketplaceTab';
+export { PackageRepositoriesTab } from './PackageRepositoriesTab';

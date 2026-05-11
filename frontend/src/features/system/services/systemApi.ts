@@ -25,6 +25,7 @@ import { puppetApi } from './api/puppetApi';
 import { volumesApi } from './api/volumesApi';
 import { networksApi } from './api/networksApi';
 import { unclaimedDevicesApi } from './api/unclaimedDevicesApi';
+import { packageRepositoriesApi, packagesApi } from './api/packageRepositoriesApi';
 
 // Re-export domain modules for callers that want narrower typing.
 export {
@@ -38,6 +39,8 @@ export {
   modulesApi,
   tasksApi,
   puppetApi,
+  packageRepositoriesApi,
+  packagesApi,
   volumesApi,
   networksApi,
   unclaimedDevicesApi,
@@ -56,4 +59,9 @@ export const systemApi = {
   ...puppetApi,
   ...volumesApi,
   ...networksApi,
+  // Package repositories + packages exposed as `systemApi.packageRepositories.*`
+  // and `systemApi.packages.*` rather than spread, because their method names
+  // (list/get/create/sync) would collide with other domain modules.
+  packageRepositories: packageRepositoriesApi,
+  packages: packagesApi,
 };
