@@ -230,13 +230,30 @@ export interface SystemCiWorkerCreatedResponse {
   note: string;
 }
 
+export type ArchitectureFamily = 'x86' | 'arm' | 'power' | 'z' | 'risc-v' | 'mips' | 'other';
+
 export interface SystemNodeArchitecture {
   id: string;
   name: string;
+  apt_name?: string;
+  rpm_name?: string;
+  display_name?: string;
+  family: ArchitectureFamily;
   description?: string;
   kernel_options?: string;
   enabled: boolean;
   public: boolean;
+  is_canonical: boolean;
+  kernel_file_object_id?: string;
+  ramdisk_file_object_id?: string;
+  image_file_object_id?: string;
+  usage?: {
+    node_platforms: number;
+    package_repositories: number;
+    packages: number;
+  };
+  // Back-compat alias for the desktop view's "Platforms" column. Equal to
+  // `usage.node_platforms` for canonical + custom rows.
   platform_count?: number;
   created_at: string;
   updated_at: string;

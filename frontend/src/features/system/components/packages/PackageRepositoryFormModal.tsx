@@ -1,7 +1,11 @@
-import { FC, useEffect, useState } from 'react';
+import { FC, useEffect, useMemo, useState } from 'react';
+import { Check } from 'lucide-react';
 import { packageRepositoriesApi, type SystemPackageRepository, type PackageRepositoryCreate } from '@system/features/system/services/api/packageRepositoriesApi';
+import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { logger } from '@/shared/utils/logger';
+import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
+import type { SystemNodeArchitecture } from '@system/features/system/types/system.types';
 
 interface Props {
   repository: SystemPackageRepository | null;
@@ -9,6 +13,63 @@ interface Props {
   onClose: () => void;
   onSaved: (repo: SystemPackageRepository) => void;
 }
+
+type Kind = 'apt' | 'rpm' | 'dnf';
+
+const FAMILY_ORDER = ['x86', 'arm', 'power', 'z', 'risc-v', 'mips', 'other'];
+
+// Map a name (could be canonical, apt_name, or rpm_name) to the row's
+// value for the target kind. Returns the original input when no catalog
+// match is found (preserves operator-entered values).
+function translateArchValue(
+  current: string,
+  fromKind: Kind,
+  toKind: Kind,
+  catalog: SystemNodeArchitecture[]
+): string {
+  const norm = current.trim().toLowerCase();
+  const fromField = fromKind === 'apt' ? 'apt_name' : 'rpm_name';
+  const toField = toKind === 'apt' ? 'apt_name' : 'rpm_name';
+  const match = catalog.find(
+    (a) =>
+      a.name.toLowerCase() === norm ||
+      (a.apt_name && a.apt_name.toLowerCase() === norm) ||
+      (a.rpm_name && a.rpm_name.toLowerCase() === norm) ||
+      (a[fromField] && a[fromField]!.toLowerCase() === norm)
+  );
+  return match?.[toField] ?? match?.name ?? current;
+}
+
+function archOptionsForKind(catalog: SystemNodeArchitecture[], kind: Kind): MultiSelectOption[] {
+  const field: 'apt_name' | 'rpm_name' = kind === 'apt' ? 'apt_name' : 'rpm_name';
+  return catalog
+    .filter((a) => a.enabled)
+    .map((a) => {
+      const primary = a[field] ?? a.name;
+      const secondary = field === 'apt_name' ? a.rpm_name ?? a.name : a.apt_name ?? a.name;
+      return {
+        value: primary,
+        label: primary,
+        secondaryLabel: secondary && secondary !== primary ? secondary : undefined,
+        description: a.description,
+        group: familyLabel(a.family),
+      };
+    });
+}
+
+function familyLabel(family: string): string {
+  switch (family) {
+    case 'x86':     return 'x86 (Intel/AMD)';
+    case 'arm':     return 'ARM';
+    case 'power':   return 'Power';
+    case 'z':       return 'IBM Z';
+    case 'risc-v':  return 'RISC-V';
+    case 'mips':    return 'MIPS';
+    default:        return 'Other';
+  }
+}
+
+const GROUP_ORDER = FAMILY_ORDER.map(familyLabel);
 
 // Kind-conditional form: apt fields (suite/components) vs rpm fields
 // (releasever/gpgcheck/metalink) toggle based on kind selection. Visibility
@@ -19,10 +80,10 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [kind, setKind] = useState<'apt' | 'rpm' | 'dnf'>('apt');
+  const [kind, setKind] = useState<Kind>('apt');
   const [visibility, setVisibility] = useState<'account' | 'shared'>('account');
   const [baseUrl, setBaseUrl] = useState('');
-  const [archs, setArchs] = useState('amd64');
+  const [archs, setArchs] = useState<string[]>(['amd64']);
   const [aptSuite, setAptSuite] = useState('');
   const [aptComponents, setAptComponents] = useState('main');
   const [rpmReleasever, setRpmReleasever] = useState('');
@@ -32,6 +93,24 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [catalog, setCatalog] = useState<SystemNodeArchitecture[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [translationMessage, setTranslationMessage] = useState<string | null>(null);
+
+  // Load the architecture catalog once when the modal opens.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setCatalogLoading(true);
+    architecturesApi
+      .getArchitectures({ enabled: true })
+      .then((rows) => { if (!cancelled) setCatalog(rows); })
+      .catch((err) => { logger.error('[PackageRepoForm] catalog load failed', err); })
+      .finally(() => { if (!cancelled) setCatalogLoading(false); });
+    return () => { cancelled = true; };
+  }, [open]);
+
+  // Reset form when (re)opening.
   useEffect(() => {
     if (repository) {
       setName(repository.name);
@@ -39,7 +118,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setKind(repository.kind);
       setVisibility(repository.visibility);
       setBaseUrl(repository.base_url);
-      setArchs(repository.architectures.join(','));
+      setArchs(repository.architectures.map((s) => s.trim()).filter(Boolean));
       setAptSuite((repository.apt_config?.suite as string) ?? '');
       setAptComponents(((repository.apt_config?.components as string[]) ?? []).join(','));
       setRpmReleasever((repository.rpm_config?.releasever as string) ?? '');
@@ -51,7 +130,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setKind('apt');
       setVisibility('account');
       setBaseUrl('');
-      setArchs('amd64');
+      setArchs(['amd64']);
       setAptSuite('');
       setAptComponents('main');
       setRpmReleasever('');
@@ -60,7 +139,33 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setEnabled(true);
     }
     setError(null);
+    setTranslationMessage(null);
   }, [repository, open]);
+
+  // Auto-dismiss kind-translation banner after 4s.
+  useEffect(() => {
+    if (!translationMessage) return;
+    const t = setTimeout(() => setTranslationMessage(null), 4000);
+    return () => clearTimeout(t);
+  }, [translationMessage]);
+
+  const onKindChange = (next: Kind) => {
+    const prev = kind;
+    setKind(next);
+    if (prev === next || catalog.length === 0 || archs.length === 0) return;
+
+    const prevKind: Kind = prev;
+    const translated = archs.map((a) => translateArchValue(a, prevKind, next, catalog));
+    const changedCount = translated.filter((v, i) => v !== archs[i]).length;
+    if (changedCount > 0) {
+      setArchs(translated);
+      setTranslationMessage(
+        `Translated ${changedCount} architecture${changedCount === 1 ? '' : 's'} from ${prev} → ${next} naming.`
+      );
+    }
+  };
+
+  const archOptions = useMemo(() => archOptionsForKind(catalog, kind), [catalog, kind]);
 
   if (!open) return null;
 
@@ -74,7 +179,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       kind,
       visibility,
       base_url: baseUrl,
-      architectures: archs.split(',').map((s) => s.trim()).filter(Boolean),
+      architectures: archs.map((s) => s.trim()).filter(Boolean),
       enabled,
     };
     if (signingKey.trim()) payload.signing_key_armor = signingKey;
@@ -129,7 +234,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
             <span className="text-xs text-theme-secondary">Kind</span>
             <select
               value={kind}
-              onChange={(e) => setKind(e.target.value as 'apt' | 'rpm' | 'dnf')}
+              onChange={(e) => onKindChange(e.target.value as Kind)}
               className="w-full mt-1 px-2 py-1.5 rounded border border-theme bg-theme-background text-theme-primary"
             >
               <option value="apt">apt (Debian/Ubuntu)</option>
@@ -162,16 +267,26 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
         </label>
 
         <div className="grid grid-cols-2 gap-3 mt-3">
-          <label className="block">
-            <span className="text-xs text-theme-secondary">Architectures (comma-separated)</span>
-            <input
-              type="text"
+          <div className="block">
+            <span className="text-xs text-theme-secondary">Architectures</span>
+            <MultiSelect
+              options={archOptions}
               value={archs}
-              onChange={(e) => setArchs(e.target.value)}
-              placeholder="amd64,arm64"
-              className="w-full mt-1 px-2 py-1.5 rounded border border-theme bg-theme-background text-theme-primary"
+              onChange={setArchs}
+              placeholder={catalogLoading ? 'Loading catalog…' : 'Select architectures…'}
+              searchPlaceholder="Filter by name or family…"
+              emptyMessage={catalogLoading ? 'Loading…' : 'No matches in the catalog'}
+              groupOrder={GROUP_ORDER}
+              ariaLabel="Repository architectures"
+              className="mt-1"
             />
-          </label>
+            {translationMessage && (
+              <p className="mt-1 text-xs text-theme-info flex items-center gap-1">
+                <Check className="w-3 h-3" />
+                {translationMessage}
+              </p>
+            )}
+          </div>
           <label className="block">
             <span className="text-xs text-theme-secondary">Visibility</span>
             <select
