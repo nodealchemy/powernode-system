@@ -93,6 +93,13 @@ module System
     has_many :module_puppet_assignments, class_name: "System::ModulePuppetAssignment", dependent: :destroy
     has_many :puppet_modules, through: :module_puppet_assignments
 
+    # Optional 1:1 link to the upstream apt/rpm package this module was
+    # materialized from. Present when auto_generated=true OR when the
+    # operator picked the module via "Create module from package".
+    has_one :package_module_link,
+            class_name: "System::PackageModuleLink",
+            dependent: :destroy
+
     # Dependencies (what this module requires)
     has_many :module_dependencies,
              class_name: "System::ModuleDependency",
@@ -152,6 +159,9 @@ module System
     scope :locked, -> { where(lock_spec: true) }
     scope :unlocked, -> { where(lock_spec: false) }
     scope :versioned, -> { where.not(current_version_id: nil) }
+    scope :auto_generated_only, -> { where(auto_generated: true) }
+    scope :operator_authored,   -> { where(auto_generated: false) }
+    scope :package_sourced,     -> { joins(:package_module_link) }
 
     # === Callbacks ===
     before_validation :encode_specs
@@ -163,6 +173,14 @@ module System
     # Returns true when this module is a dependant child (has a parent_module).
     def dependant?
       parent_module_id.present?
+    end
+
+    # Returns true when this module was materialized from an apt/rpm package.
+    # Cheaper than checking `package_module_link.present?` because the
+    # auto_generated flag is on the row itself; the link table is only
+    # touched when the caller wants the upstream package details.
+    def package_sourced?
+      package_module_link.present?
     end
 
     # Display name with legacy parent-aware rendering for dependant children.

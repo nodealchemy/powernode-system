@@ -37,5 +37,29 @@ module System
     def template_name
       node_template&.name
     end
+
+    # Computes the effective set of Recommends package names to pull in when
+    # this TemplateModule expands into NodeModuleAssignments. Algorithm:
+    #
+    # 1. Defaults from the module's PackageModuleLink.recommends_chosen
+    #    (empty array if the module isn't package-sourced)
+    # 2. If recommends_override has "replace" → use that exact list, ignore defaults
+    # 3. Else apply "excluded" subtraction then "included" addition
+    #
+    # Returns a Set<String> of package names. Used by TemplateExpansionService.
+    def effective_recommends_set
+      override = (recommends_override || {}).with_indifferent_access
+
+      if override["replace"].is_a?(Array)
+        return override["replace"].map(&:to_s).to_set
+      end
+
+      defaults = Array(node_module&.package_module_link&.recommends_chosen).map(&:to_s)
+      result = defaults.to_set
+
+      Array(override["excluded"]).each { |pkg| result.delete(pkg.to_s) }
+      Array(override["included"]).each { |pkg| result.add(pkg.to_s) }
+      result
+    end
   end
 end

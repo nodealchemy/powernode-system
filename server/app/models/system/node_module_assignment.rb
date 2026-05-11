@@ -8,6 +8,15 @@ module System
     belongs_to :node, class_name: "System::Node"
     belongs_to :node_module, class_name: "System::NodeModule"
 
+    # Set when this assignment was produced by template-apply closure expansion.
+    # Records which TemplateModule's recommends_override governed inclusion —
+    # used by the on-node UI to explain "why is this here?" and by refresh
+    # jobs to re-derive the closure on template changes. NULL for assignments
+    # created outside the template-apply path.
+    belongs_to :source_template_module,
+               class_name: "System::TemplateModule",
+               optional: true
+
     # Delegate account access through node
     delegate :account, to: :node
     delegate :account_id, to: :node
@@ -20,6 +29,8 @@ module System
     scope :enabled, -> { where(enabled: true) }
     scope :disabled, -> { where(enabled: false) }
     scope :by_priority, -> { order(priority: :desc) }
+    scope :auto_resolved, -> { where(auto_resolved: true) }
+    scope :explicit,      -> { where(auto_resolved: false) }
 
     # === Module-as-Skill auto-attach (Track F-4) ===
     # On attach (create), parse the module's manifest_yaml#skills and
