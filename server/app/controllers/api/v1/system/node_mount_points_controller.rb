@@ -8,7 +8,7 @@ module Api
 
         # GET /api/v1/system/node_mount_points
         def index
-          require_permission("system.modules.read")
+          require_permission("system.storage.mount_points.read")
 
           mount_points = current_account.system_node_mount_points
           mount_points = apply_filters(mount_points)
@@ -22,13 +22,13 @@ module Api
 
         # GET /api/v1/system/node_mount_points/:id
         def show
-          require_permission("system.modules.read")
+          require_permission("system.storage.mount_points.read")
           render_success(mount_point: ::System::NodeMountPointSerializer.new(@mount_point).as_json)
         end
 
         # POST /api/v1/system/node_mount_points
         def create
-          require_permission("system.modules.create")
+          require_permission("system.storage.mount_points.create")
 
           mount_point = current_account.system_node_mount_points.build(mount_point_params)
 
@@ -41,7 +41,7 @@ module Api
 
         # PATCH/PUT /api/v1/system/node_mount_points/:id
         def update
-          require_permission("system.modules.update")
+          require_permission("system.storage.mount_points.update")
 
           if @mount_point.update(mount_point_params)
             render_success(mount_point: ::System::NodeMountPointSerializer.new(@mount_point).as_json)
@@ -52,7 +52,7 @@ module Api
 
         # DELETE /api/v1/system/node_mount_points/:id
         def destroy
-          require_permission("system.modules.delete")
+          require_permission("system.storage.mount_points.delete")
 
           if @mount_point.instance_mount_points.exists?
             render_error("Cannot delete mount point that is in use", status: :unprocessable_entity)

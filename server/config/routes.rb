@@ -124,6 +124,17 @@ Rails.application.routes.draw do
         resources :node_scripts
         resources :node_mount_points
 
+        # Phase S5 — Storage assignments (FileManagement::Storage × NodeInstance)
+        resources :storage_assignments do
+          member do
+            post :reconcile
+            post :rotate_credential
+          end
+        end
+        resources :storage_credentials, only: %i[index show] do
+          member { post :rotate }
+        end
+
         # Provider catalog. Regions/availability_zones/instance_types are
         # nested under :providers because the controllers' before_actions
         # read params[:provider_id] (and AZ also params[:region_id]) — flat
@@ -474,6 +485,15 @@ Rails.application.routes.draw do
           # phases ('wants_cert' | 'ready' | 'stopped') keyed by
           # `runtime` enum.
           post "runtime/handshake", to: "runtime#handshake"
+
+          # Phase S5 — Storage assignments node-side
+          resources :storage_assignments, only: %i[index] do
+            member do
+              post :status, action: :update_status
+              get :credential
+              get :encryption_key
+            end
+          end
 
           # Slice 10 — per-tick agent fetch for daemon.json overrides
           # (and forward-compat for k3s / kubeadm). Returns the merged
