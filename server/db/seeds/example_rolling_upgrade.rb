@@ -25,7 +25,7 @@ return puts("  ⚠️  No admin user — skipping") unless user
 # → NodeTemplate (... + node_platform). The platform ships with public
 # `amd64` + `arm64` architectures per account; reuse amd64 here so we
 # don't create orphan rows that need cleanup.
-architecture = ::System::NodeArchitecture.find_by!(account: account, name: "amd64")
+architecture = ::System::NodeArchitecture.canonical.find_by!(name: "amd64")
 platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04") do |p|
   p.node_architecture = architecture
 end

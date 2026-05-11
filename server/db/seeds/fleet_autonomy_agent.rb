@@ -115,7 +115,17 @@ fleet_policies = {
   # refresh out into auto-approve via the executor's payload metadata).
   "system.package_repository.sync" => "auto_approve",
   "system.package_module.create"   => "require_approval",
-  "system.package_module.refresh"  => "require_approval"
+  "system.package_module.refresh"  => "require_approval",
+
+  # Architecture catalog. Propose auto-approves at the policy layer
+  # because the Ai::AgentProposal it creates is itself the human-review
+  # gate. Direct CRUD requires approval — even with system.architectures.manage,
+  # mutating the catalog surfaces for operator confirmation because it
+  # affects every account's available platforms.
+  "system.architecture.propose" => "auto_approve",
+  "system.architecture.create"  => "require_approval",
+  "system.architecture.update"  => "require_approval",
+  "system.architecture.delete"  => "require_approval"
 
   # NOTE: SDWAN policies moved to system_sdwan_manager_agent.rb (2026-05-10).
   # NOTE: CVE policies moved to system_cve_responder_agent.rb (2026-05-10).

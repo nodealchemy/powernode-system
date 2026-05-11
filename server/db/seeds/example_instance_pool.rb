@@ -24,7 +24,7 @@ return puts("  ⚠️  No admin user — skipping") unless user
 # NodeTemplate requires a NodePlatform (belongs_to without optional: true).
 # Reuse the public amd64 architecture seeded per account; provision an
 # ubuntu-24.04 platform on top if one isn't already present.
-architecture = ::System::NodeArchitecture.find_by!(account: account, name: "amd64")
+architecture = ::System::NodeArchitecture.canonical.find_by!(name: "amd64")
 platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04") do |p|
   p.node_architecture = architecture
 end

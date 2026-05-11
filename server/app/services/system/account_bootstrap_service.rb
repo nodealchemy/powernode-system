@@ -67,19 +67,17 @@ module System
       log = ->(msg) { puts msg if verbose }
 
       # ── Architectures ────────────────────────────────────────────────
-      arch = ::System::NodeArchitecture.find_or_create_by!(account: account, name: "amd64") do |a|
-        a.kernel_options = "console=ttyS0,115200 console=tty1 powernode.boot=1 ro"
-        a.enabled = true
-        a.public  = true
-      end
-      log.call("    ✓ NodeArchitecture: amd64 (id=#{arch.id})")
+      #
+      # NodeArchitecture is platform-wide as of i-would-like-to-zesty-glade.md
+      # (Tier 1). Migrations seed canonicals in dev/prod; test environments
+      # only run schema:load (no migrations), so ensure_canonical_seed!
+      # idempotently materializes them on first bootstrap call.
+      ::System::NodeArchitecture.ensure_canonical_seed!
+      arch = ::System::NodeArchitecture.canonical.find_by!(name: "amd64")
+      log.call("    ✓ NodeArchitecture: #{arch.name} (id=#{arch.id})")
 
-      arch_arm64 = ::System::NodeArchitecture.find_or_create_by!(account: account, name: "arm64") do |a|
-        a.kernel_options = "console=serial0,115200 console=tty1 powernode.boot=1 ro"
-        a.enabled = true
-        a.public  = true
-      end
-      log.call("    ✓ NodeArchitecture: arm64 (id=#{arch_arm64.id})")
+      arch_arm64 = ::System::NodeArchitecture.canonical.find_by!(name: "arm64")
+      log.call("    ✓ NodeArchitecture: #{arch_arm64.name} (id=#{arch_arm64.id})")
 
       # ── Platforms ────────────────────────────────────────────────────
       platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04-lts") do |p|

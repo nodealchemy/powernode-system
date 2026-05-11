@@ -56,7 +56,7 @@ end
 
 # Provision the prerequisite chain (architecture → platform → template)
 # once for both tenant nodes to share.
-architecture = ::System::NodeArchitecture.find_by!(account: account, name: "amd64")
+architecture = ::System::NodeArchitecture.canonical.find_by!(name: "amd64")
 platform = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04") do |p|
   p.node_architecture = architecture
 end

@@ -433,6 +433,74 @@ SKILLS_DATA = [
       package_module_link_id (required), force (optional). CVE-flagged
       drifts auto-approve; non-CVE drifts require human approval.
     PROMPT
+  },
+  # ─── Architecture catalog skills ───────────────────────────────────
+  {
+    name: "Architecture Propose",
+    slug: "system-architecture-propose",
+    description: "Propose adding a new architecture to the platform-wide catalog (creates an Ai::AgentProposal for human review)",
+    category: "devops",
+    subdomain: "architecture-catalog",
+    executor: "System::Ai::Skills::ArchitectureProposeExecutor",
+    tags: %w[architecture catalog proposal fleet],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to surface the need for a new CPU architecture
+      in the platform-wide catalog without holding the manage
+      permission. Inputs: name (required, e.g. loongarch64), family
+      (required, one of: x86, arm, power, z, risc-v, mips, other),
+      apt_name, rpm_name, display_name, description, justification.
+      Creates an Ai::AgentProposal row — the architecture is NOT
+      materialized until an operator approves the proposal.
+    PROMPT
+  },
+  {
+    name: "Architecture Create",
+    slug: "system-architecture-create",
+    description: "Directly create a custom (non-canonical) architecture in the platform-wide catalog. Requires manage permission and surfaces for operator approval.",
+    category: "devops",
+    subdomain: "architecture-catalog",
+    executor: "System::Ai::Skills::ArchitectureCreateExecutor",
+    tags: %w[architecture catalog create fleet],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when an agent has system.architectures.manage AND
+      needs to directly create a new custom architecture. Inputs:
+      name (required), family (required), apt_name, rpm_name,
+      display_name, description, enabled, public. The created row is
+      always is_canonical=false — agents can't fabricate canonicals.
+      Each call surfaces for operator confirmation via the
+      intervention policy.
+    PROMPT
+  },
+  {
+    name: "Architecture Update",
+    slug: "system-architecture-update",
+    description: "Update a non-canonical architecture's fields. Canonical rows are immutable.",
+    category: "devops",
+    subdomain: "architecture-catalog",
+    executor: "System::Ai::Skills::ArchitectureUpdateExecutor",
+    tags: %w[architecture catalog update fleet],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to update a non-canonical architecture's fields.
+      Inputs: architecture_id (required), attributes (required hash of
+      allowed keys: name, family, apt_name, rpm_name, display_name,
+      description, kernel_options, enabled, public). Canonical rows
+      are immutable and return an error.
+    PROMPT
+  },
+  {
+    name: "Architecture Delete",
+    slug: "system-architecture-delete",
+    description: "Delete a non-canonical architecture. Fails if any NodePlatform still references it. Canonical rows are immutable.",
+    category: "devops",
+    subdomain: "architecture-catalog",
+    executor: "System::Ai::Skills::ArchitectureDeleteExecutor",
+    tags: %w[architecture catalog delete fleet],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to delete a non-canonical architecture from the
+      platform-wide catalog. Inputs: architecture_id (required). Fails
+      if any NodePlatform references it (restrict_with_error
+      dependency). Canonical rows are immutable and return an error.
+    PROMPT
   }
 ].freeze
 
@@ -520,6 +588,10 @@ if fleet_autonomy
     system-package-repository-sync
     system-package-module-create
     system-package-module-refresh
+    system-architecture-propose
+    system-architecture-create
+    system-architecture-update
+    system-architecture-delete
   ]
 
   fleet_autonomy_slugs.each_with_index do |slug, i|
