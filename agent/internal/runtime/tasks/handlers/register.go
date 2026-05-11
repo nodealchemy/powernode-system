@@ -18,4 +18,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterConfig(r, deps)
 	RegisterSSH(r, deps)
 	RegisterPassthrough(r, deps)
+	RegisterStorage(r, deps)
 }
