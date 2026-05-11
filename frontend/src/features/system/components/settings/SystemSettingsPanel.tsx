@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
+import {
+  Server,
+  Network,
+  Container,
+  HardDrive,
+  Layers,
+  ShieldAlert,
+  UserCog,
+  GitBranch,
+} from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/shared/components/ui/Tabs';
 import { AutonomyPolicyGroup } from '@/shared/components/autonomy/AutonomyPolicyGroup';
 import { ApprovalChainList } from '@/shared/components/approval-chains/ApprovalChainList';
 import { useSystemAutonomyConfig } from '@system/features/system/hooks/useSystemAutonomyConfig';
@@ -10,18 +19,29 @@ interface SystemSettingsPanelProps {
   onClose: () => void;
 }
 
+interface DomainSection {
+  key: string;
+  label: string;
+  agentName: string;
+  icon: React.ElementType;
+  description: string;
+  actions: string[];
+}
+
 /**
  * 7-domain Settings modal for the System extension's autonomy framework.
- * Operators configure per-action intervention policies + assign multi-step
- * approval chains. Tabs are organized by domain (Node Lifecycle / SDWAN /
- * Container Runtimes / Disk Image / Instance Pools / CVE / Approval Chains)
- * — the per-action UI is identical across tabs.
+ * Sidebar nav (left) + content pane (right) — at 5xl width with 8 sections
+ * the horizontal tab strip wrapped awkwardly. Sidebar gives every section
+ * the full content area for its policy table without cramming icons into
+ * a 100%-width nav.
  */
-const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; actions: string[] }> = [
+const DOMAIN_SECTIONS: DomainSection[] = [
   {
     key: 'node_lifecycle',
     label: 'Node Lifecycle',
     agentName: 'Fleet Autonomy',
+    icon: Server,
+    description: 'Cert rotation, module assignment, instance reboot/reprovision/terminate, fleet-wide upgrades.',
     actions: [
       'system.cert_rotate', 'system.cert_revoke',
       'system.module_assign', 'system.module_promote_to_live',
@@ -33,6 +53,8 @@ const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; action
     key: 'sdwan',
     label: 'SDWAN',
     agentName: 'SDWAN Manager',
+    icon: Network,
+    description: 'Networks, peers, firewall rules, VIPs, route policies, port mappings, access grants, federation.',
     actions: [
       'system.sdwan_peer_remediate', 'system.sdwan_key_rotate', 'system.sdwan_failover',
       'system.sdwan_user_device_revoke', 'system.sdwan_bgp_session_remediate',
@@ -52,6 +74,8 @@ const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; action
     key: 'runtime',
     label: 'Container Runtimes',
     agentName: 'Runtime Manager',
+    icon: Container,
+    description: 'Docker daemon + K3s cluster lifecycle. TLS rotation, node join/drain, runtime upgrades.',
     actions: [
       'system.runtime_docker_provision', 'system.runtime_docker_decommission',
       'system.runtime_docker_tls_rotate',
@@ -64,17 +88,23 @@ const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; action
     key: 'disk_image',
     label: 'Disk Image CI',
     agentName: 'Disk Image Manager',
+    icon: HardDrive,
+    description: 'Publication promotion, rollback, retention, webhook lifecycle.',
     actions: [
       'system.disk_image_publication_promote',
       'system.disk_image_publication_rollback',
       'system.disk_image_retention_update',
       'system.disk_image_webhook_trigger',
+      'system.disk_image_webhook_revoke',
+      'system.disk_image_webhook_rotate_secret',
     ],
   },
   {
     key: 'instance_pool',
     label: 'Instance Pools',
     agentName: 'Fleet Autonomy',
+    icon: Layers,
+    description: 'Warm-pool create / update / delete / replenish / drain / acquire.',
     actions: [
       'system.instance_pool_create', 'system.instance_pool_update', 'system.instance_pool_delete',
       'system.instance_pool_replenish', 'system.instance_pool_drain', 'system.instance_pool_acquire',
@@ -84,6 +114,8 @@ const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; action
     key: 'cve',
     label: 'CVE & Compliance',
     agentName: 'CVE Responder',
+    icon: ShieldAlert,
+    description: 'SBOM ingest, exposure scan, remediation orchestration.',
     actions: [
       'system.cve_remediate', 'system.cve_sbom_ingest',
       'system.cve_exposure_scan', 'system.cve_auto_remediate',
@@ -93,20 +125,30 @@ const DOMAIN_TABS: Array<{ key: string; label: string; agentName: string; action
     key: 'manual',
     label: 'Manual Operations',
     agentName: 'Manual Operations',
+    icon: UserCog,
+    description: 'Operator-initiated System::Task commands (terminate, deprovision, snapshot, ssh_command, etc.).',
     actions: [
-      'system.task.terminate', 'system.task.deprovision',
-      'system.task.delete_volume', 'system.task.delete_snapshot',
-      'system.task.restore_snapshot', 'system.task.delete_network',
-      'system.task.ssh_command', 'system.task.restore', 'system.task.custom',
-      'system.task.start', 'system.task.stop', 'system.task.restart',
+      'system.task.start', 'system.task.stop', 'system.task.restart', 'system.task.reboot',
+      'system.task.terminate', 'system.task.provision', 'system.task.deprovision',
+      'system.task.associate_public_ip', 'system.task.disassociate_public_ip',
+      'system.task.create_volume', 'system.task.delete_volume',
+      'system.task.attach_volume', 'system.task.detach_volume',
+      'system.task.create_snapshot', 'system.task.delete_snapshot', 'system.task.restore_snapshot',
+      'system.task.create_network', 'system.task.delete_network',
+      'system.task.sync', 'system.task.sync_modules', 'system.task.apply_config',
+      'system.task.build_module', 'system.task.commit_module',
+      'system.task.ssh_command', 'system.task.backup', 'system.task.restore', 'system.task.custom',
     ],
   },
 ];
 
+const CHAINS_KEY = 'chains';
+
 export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen, onClose }) => {
   const autonomy = useSystemAutonomyConfig();
-  const [activeTab, setActiveTab] = useState<string>('node_lifecycle');
+  const [activeKey, setActiveKey] = useState<string>('node_lifecycle');
 
+  const activeSection = DOMAIN_SECTIONS.find((s) => s.key === activeKey);
   const handleSave = async () => {
     await autonomy.save();
   };
@@ -116,43 +158,94 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
       isOpen={isOpen}
       onClose={onClose}
       variant="centered"
-      size="3xl"
+      size="6xl"
       title="System Autonomy Settings"
       subtitle="Configure per-action intervention policies and approval chains"
     >
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="mb-4 flex-wrap">
-          {DOMAIN_TABS.map((t) => (
-            <TabsTrigger key={t.key} value={t.key}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-          <TabsTrigger value="chains">Approval Chains</TabsTrigger>
-        </TabsList>
+      <div className="flex gap-4 min-h-[60vh]">
+        {/* Sidebar nav */}
+        <nav className="w-56 shrink-0 border-r border-theme pr-2 -mr-2">
+          <ul className="space-y-0.5">
+            {DOMAIN_SECTIONS.map((s) => {
+              const Icon = s.icon;
+              const isActive = activeKey === s.key;
+              return (
+                <li key={s.key}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveKey(s.key)}
+                    className={
+                      'w-full flex items-center gap-2 px-3 py-2 rounded text-sm text-left transition-colors ' +
+                      (isActive
+                        ? 'bg-theme-surface-selected text-theme-primary font-medium'
+                        : 'text-theme-secondary hover:bg-theme-surface-hover hover:text-theme-primary')
+                    }
+                  >
+                    <Icon size={16} className={isActive ? 'text-theme-info' : 'text-theme-tertiary'} />
+                    <span className="flex-1 truncate">{s.label}</span>
+                    <span className="text-[10px] text-theme-tertiary tabular-nums">
+                      {s.actions.length}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
 
-        {DOMAIN_TABS.map((tab) => (
-          <TabsContent key={tab.key} value={tab.key}>
-            {autonomy.loading ? (
-              <p className="text-sm text-theme-tertiary py-6 text-center">Loading…</p>
-            ) : (
-              <AutonomyPolicyGroup
-                label={`${tab.label} (owner: ${tab.agentName})`}
-                agentName={tab.agentName}
-                actions={tab.actions}
-                getPolicy={autonomy.getPolicy}
-                updatePolicy={autonomy.updatePolicy}
-                onDirty={() => { /* tracked via autonomy.isDirty */ }}
-                onSave={handleSave}
-                isDirty={autonomy.isDirty}
-              />
-            )}
-          </TabsContent>
-        ))}
+            <li className="pt-2 mt-2 border-t border-theme">
+              <button
+                type="button"
+                onClick={() => setActiveKey(CHAINS_KEY)}
+                className={
+                  'w-full flex items-center gap-2 px-3 py-2 rounded text-sm text-left transition-colors ' +
+                  (activeKey === CHAINS_KEY
+                    ? 'bg-theme-surface-selected text-theme-primary font-medium'
+                    : 'text-theme-secondary hover:bg-theme-surface-hover hover:text-theme-primary')
+                }
+              >
+                <GitBranch
+                  size={16}
+                  className={activeKey === CHAINS_KEY ? 'text-theme-info' : 'text-theme-tertiary'}
+                />
+                <span className="flex-1 truncate">Approval Chains</span>
+              </button>
+            </li>
+          </ul>
+        </nav>
 
-        <TabsContent value="chains">
-          <ApprovalChainList />
-        </TabsContent>
-      </Tabs>
+        {/* Content pane */}
+        <div className="flex-1 min-w-0">
+          {activeKey === CHAINS_KEY ? (
+            <ApprovalChainList />
+          ) : activeSection ? (
+            <div className="space-y-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-theme-primary">{activeSection.label}</h3>
+                  <span className="text-xs px-2 py-0.5 rounded bg-theme-background-secondary text-theme-tertiary">
+                    {activeSection.agentName}
+                  </span>
+                </div>
+                <p className="text-xs text-theme-tertiary mt-1">{activeSection.description}</p>
+              </div>
+
+              {autonomy.loading ? (
+                <p className="text-sm text-theme-tertiary py-6 text-center">Loading…</p>
+              ) : (
+                <AutonomyPolicyGroup
+                  label={`${activeSection.label} policies`}
+                  agentName={activeSection.agentName}
+                  actions={activeSection.actions}
+                  getPolicy={autonomy.getPolicy}
+                  updatePolicy={autonomy.updatePolicy}
+                  onDirty={() => { /* tracked via autonomy.isDirty */ }}
+                  onSave={handleSave}
+                  isDirty={autonomy.isDirty}
+                />
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </Modal>
   );
 };
