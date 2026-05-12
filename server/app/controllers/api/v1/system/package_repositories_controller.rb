@@ -20,10 +20,10 @@ module Api
           repos = ::System::PackageRepository.accessible_to(@account).enabled
           repos = repos.where(kind: params[:kind]) if params[:kind].present?
           # Multi-platform filter: any-match on linked platforms via the
-          # join table. Accepts a single id (legacy ?node_platform_id=X) or
-          # an array (?node_platform_ids[]=A&node_platform_ids[]=B).
-          platform_ids = Array(params[:node_platform_ids]).presence ||
-                         Array(params[:node_platform_id]).presence
+          # join table. `compact_blank` drops nils + empty strings (the
+          # frontend sometimes serializes an empty array param as
+          # ?node_platform_ids[]=).
+          platform_ids = Array(params[:node_platform_ids]).compact_blank
           if platform_ids.any?
             repos = repos.joins(:package_repository_platforms)
                          .where(system_package_repository_platforms: { node_platform_id: platform_ids })
