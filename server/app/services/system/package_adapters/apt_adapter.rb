@@ -132,7 +132,14 @@ module System
 
       # Stream-parse a Debian control-file format Packages blob. Yields a
       # Hash<String, String> per package (raw field name → folded value).
+      #
+      # Force UTF-8 encoding up-front: the bytes come from `http_get` as
+      # ASCII-8BIT (binary), but Debian Packages files are documented
+      # UTF-8 (Debian Policy §5.2). Without this, JSON.generate later
+      # warns "UTF-8 string passed as BINARY" and will raise once the
+      # json gem hits 3.0.
       def parse_packages_stream(text)
+        text = text.force_encoding("UTF-8") if text.is_a?(String)
         current = {}
         current_field = nil
 
