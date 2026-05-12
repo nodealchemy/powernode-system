@@ -130,6 +130,11 @@ module System
     def flush(buffer)
       return if buffer.empty?
 
+      # `update_only` must NOT include `updated_at`: Rails 7.1+ already
+      # appends `updated_at = NOW()` to the ON CONFLICT SET clause when
+      # `record_timestamps: true` (the default). Listing it here too
+      # produces a duplicate column assignment and PG raises
+      # "multiple assignments to same column updated_at".
       ::System::Package.upsert_all(
         buffer,
         unique_by: :idx_pkg_repo_name_arch_ver,
@@ -138,7 +143,7 @@ module System
           installed_size_bytes download_size_bytes
           depends pre_depends recommends suggests conflicts provides replaces breaks
           filename sha256 sha512 homepage license maintainer raw_metadata
-          obsoleted_at updated_at
+          obsoleted_at
         ]
       )
     end
