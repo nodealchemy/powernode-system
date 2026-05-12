@@ -111,6 +111,10 @@ Rails.application.routes.draw do
           # is on_delete: :restrict.
           get :stale_links, on: :member
           post :clean_stale_links, on: :member
+          # M:N platform linkage — operators (or AI) tie a repo to the
+          # specific NodePlatforms it serves.
+          post   :link_platform,   on: :member
+          delete :unlink_platform, on: :member
         end
 
         # Browse + materialize endpoints over the synced package catalog.

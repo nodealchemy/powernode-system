@@ -30,7 +30,6 @@ module System
 
     # === Associations ===
     belongs_to :account, optional: true
-    belongs_to :node_platform, class_name: "System::NodePlatform", optional: true
     belongs_to :created_by, class_name: "::User"
 
     has_many :packages,
@@ -41,6 +40,15 @@ module System
              class_name: "System::PackageModuleLink",
              foreign_key: :package_repository_id,
              dependent: :restrict_with_error
+
+    # M:N to NodePlatform via the join table. A repo may serve many
+    # platforms (Ubuntu noble's main archive applies to every Ubuntu-noble
+    # NodePlatform regardless of arch flavor); a platform may pull from
+    # many repos (base + security + third-party).
+    has_many :package_repository_platforms,
+             class_name: "System::PackageRepositoryPlatform",
+             dependent: :destroy
+    has_many :node_platforms, through: :package_repository_platforms
 
     # === Validations ===
     validates :name, presence: true

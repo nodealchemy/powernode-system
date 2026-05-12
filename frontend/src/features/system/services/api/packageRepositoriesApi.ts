@@ -21,7 +21,12 @@ export interface SystemPackageRepository {
   last_sync_error?: string;
   package_count: number;
   shared: boolean;
-  node_platform_id?: string;
+  // M:N to NodePlatform via system_package_repository_platforms.
+  // Always returned as an array (possibly empty for platform-agnostic
+  // shared repos like Debian stable / Ubuntu noble).
+  node_platform_ids: string[];
+  // Detail-only: full {id, name} for each linked platform.
+  node_platforms?: Array<{ id: string; name: string }>;
   apt_config?: Record<string, unknown>;
   rpm_config?: Record<string, unknown>;
   has_signing_key?: boolean;
@@ -57,7 +62,9 @@ export interface PackageRepositoryCreate {
   apt_config?: { suite?: string; components?: string[] };
   rpm_config?: { releasever?: string; gpgcheck?: boolean; metalink?: string };
   signing_key_armor?: string;
-  node_platform_id?: string;
+  // Optional pre-linked platforms for M:N. Empty/omitted = platform-
+  // agnostic; cross-account validation enforced server-side.
+  node_platform_ids?: string[];
   priority?: number;
   enabled?: boolean;
 }
@@ -89,7 +96,10 @@ export interface CreateModuleResult {
 }
 
 export const packageRepositoriesApi = {
-  list: async (params?: { kind?: PackageRepositoryKind; node_platform_id?: string }): Promise<SystemPackageRepository[]> => {
+  list: async (params?: {
+    kind?: PackageRepositoryKind;
+    node_platform_ids?: string[];
+  }): Promise<SystemPackageRepository[]> => {
     const response = await apiClient.get<ApiEnvelope<{ package_repositories: SystemPackageRepository[] }>>(
       '/system/package_repositories',
       { params },
@@ -129,6 +139,31 @@ export const packageRepositoriesApi = {
       `/system/package_repositories/${id}/sync`,
       {},
     );
+    return extractData(response);
+  },
+
+  // M:N — link a NodePlatform to this repository. Server enforces
+  // cross-account integrity (account-scoped repos can only link
+  // platforms in the same account; shared repos can link anywhere).
+  linkPlatform: async (
+    id: string,
+    nodePlatformId: string,
+  ): Promise<{ package_repository_id: string; node_platform_id: string; linked: boolean }> => {
+    const response = await apiClient.post<
+      ApiEnvelope<{ package_repository_id: string; node_platform_id: string; linked: boolean }>
+    >(`/system/package_repositories/${id}/link_platform`, { node_platform_id: nodePlatformId });
+    return extractData(response);
+  },
+
+  unlinkPlatform: async (
+    id: string,
+    nodePlatformId: string,
+  ): Promise<{ package_repository_id: string; node_platform_id: string; linked: boolean }> => {
+    const response = await apiClient.delete<
+      ApiEnvelope<{ package_repository_id: string; node_platform_id: string; linked: boolean }>
+    >(`/system/package_repositories/${id}/unlink_platform`, {
+      data: { node_platform_id: nodePlatformId },
+    });
     return extractData(response);
   },
 };

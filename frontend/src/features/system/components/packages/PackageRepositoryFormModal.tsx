@@ -2,10 +2,11 @@ import { FC, useEffect, useMemo, useState } from 'react';
 import { Check } from 'lucide-react';
 import { packageRepositoriesApi, type SystemPackageRepository, type PackageRepositoryCreate } from '@system/features/system/services/api/packageRepositoriesApi';
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
+import { platformsApi } from '@system/features/system/services/api/platformsApi';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
-import type { SystemNodeArchitecture } from '@system/features/system/types/system.types';
+import type { SystemNodeArchitecture, SystemNodePlatform } from '@system/features/system/types/system.types';
 
 interface Props {
   repository: SystemPackageRepository | null;
@@ -102,16 +103,33 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [translationMessage, setTranslationMessage] = useState<string | null>(null);
 
-  // Load the architecture catalog once when the modal opens.
+  // Platform multi-select state. M:N — a repo may serve many platforms
+  // (the operator picks the specific ones the repo is known compatible
+  // with). Empty = platform-agnostic, gated solely by architectures + kind.
+  const [platforms, setPlatforms] = useState<SystemNodePlatform[]>([]);
+  const [selectedPlatformIds, setSelectedPlatformIds] = useState<string[]>([]);
+  const [platformsLoading, setPlatformsLoading] = useState(false);
+
+  // Load architecture + platform catalogs in parallel when the modal opens.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setCatalogLoading(true);
-    architecturesApi
-      .getArchitectures({ enabled: true })
-      .then((rows) => { if (!cancelled) setCatalog(rows); })
-      .catch((err) => { logger.error('[PackageRepoForm] catalog load failed', err); })
-      .finally(() => { if (!cancelled) setCatalogLoading(false); });
+    setPlatformsLoading(true);
+    Promise.allSettled([
+      architecturesApi.getArchitectures({ enabled: true }),
+      platformsApi.getPlatforms(),
+    ]).then(([catalogResult, platformsResult]) => {
+      if (cancelled) return;
+      if (catalogResult.status === 'fulfilled') setCatalog(catalogResult.value);
+      else logger.error('[PackageRepoForm] catalog load failed', catalogResult.reason);
+      if (platformsResult.status === 'fulfilled') setPlatforms(platformsResult.value);
+      else logger.error('[PackageRepoForm] platforms load failed', platformsResult.reason);
+    }).finally(() => {
+      if (cancelled) return;
+      setCatalogLoading(false);
+      setPlatformsLoading(false);
+    });
     return () => { cancelled = true; };
   }, [open]);
 
@@ -132,6 +150,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
           .map((s) => toCanonical(s.trim(), catalog))
           .filter(Boolean)
       );
+      setSelectedPlatformIds(repository.node_platform_ids ?? []);
       setAptSuite((repository.apt_config?.suite as string) ?? '');
       setAptComponents(((repository.apt_config?.components as string[]) ?? []).join(','));
       setRpmReleasever((repository.rpm_config?.releasever as string) ?? '');
@@ -144,6 +163,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setVisibility('account');
       setBaseUrl('');
       setArchs(['amd64']);
+      setSelectedPlatformIds([]);
       setAptSuite('');
       setAptComponents('main');
       setRpmReleasever('');
@@ -186,6 +206,20 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
 
   const archOptions = useMemo(() => archOptionsForKind(catalog, kind), [catalog, kind]);
 
+  // Platforms multi-select options. Group by node_platform.name's first
+  // word so e.g. "Ubuntu noble x86_64" + "Ubuntu noble arm64" cluster.
+  const platformOptions: MultiSelectOption[] = useMemo(
+    () =>
+      platforms
+        .filter((p) => p.enabled !== false)
+        .map((p) => ({
+          value: p.id,
+          label: p.name,
+          group: p.name.split(/\s+/)[0] || 'Platforms',
+        })),
+    [platforms],
+  );
+
   if (!open) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -199,6 +233,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       visibility,
       base_url: baseUrl,
       architectures: archs.map((s) => s.trim()).filter(Boolean),
+      node_platform_ids: selectedPlatformIds,
       enabled,
     };
     if (signingKey.trim()) payload.signing_key_armor = signingKey;
@@ -320,6 +355,36 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
               </option>
             </select>
           </label>
+        </div>
+
+        <div className="block mt-3">
+          <span className="text-xs text-theme-secondary">
+            Platforms
+            <span className="ml-1 opacity-60">
+              (optional — leave empty for platform-agnostic / repository serves any compatible platform)
+            </span>
+          </span>
+          <MultiSelect
+            options={platformOptions}
+            value={selectedPlatformIds}
+            onChange={setSelectedPlatformIds}
+            placeholder={
+              platformsLoading
+                ? 'Loading platforms…'
+                : platformOptions.length === 0
+                  ? 'No platforms available'
+                  : 'Link compatible platforms…'
+            }
+            searchPlaceholder="Filter platforms…"
+            emptyMessage={platformsLoading ? 'Loading…' : 'No platforms match'}
+            ariaLabel="Compatible NodePlatforms"
+            className="mt-1"
+          />
+          {visibility === 'shared' && (
+            <p className="mt-1 text-xs text-theme-secondary">
+              Shared repositories may link to platforms across any account.
+            </p>
+          )}
         </div>
 
         {kind === 'apt' && (

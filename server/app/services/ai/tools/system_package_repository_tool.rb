@@ -19,6 +19,11 @@ module Ai
         "system_delete_package_repository"   => "system.package_repositories.delete",
         "system_sync_package_repository"     => "system.package_repositories.sync",
 
+        # M:N platform linkage. Same gating as update — link/unlink are
+        # mutations of the repo's compatibility set, not new authority.
+        "system_link_repository_platform"    => "system.package_repositories.update",
+        "system_unlink_repository_platform"  => "system.package_repositories.update",
+
         "system_search_packages"             => "system.packages.search",
         "system_get_package"                 => "system.packages.view",
 
@@ -38,15 +43,17 @@ module Ai
       def self.definition
         {
           name: "system_package_repository",
-          description: "Manage apt/rpm package repositories — sync, search, materialize, suggest archs",
+          description: "Manage apt/rpm package repositories — sync, search, materialize, link platforms, suggest archs",
           parameters: {
             action:                 { type: "string",  required: true,
                                        description: "One of: #{ACTION_PERMISSIONS.keys.join(', ')}" },
             repository_id:          { type: "string",  required: false },
             package_id:             { type: "string",  required: false },
             package_module_link_id: { type: "string",  required: false },
+            node_platform_id:       { type: "string",  required: false },
             attributes:             { type: "object",  required: false },
             architectures:          { type: "array",   required: false },
+            node_platform_ids:      { type: "array",   required: false },
             recommends_selected:    { type: "array",   required: false },
             max_suggestions:        { type: "integer", required: false }
           }
@@ -56,10 +63,10 @@ module Ai
       def self.action_definitions
         {
           "system_list_package_repositories" => {
-            description: "List accessible apt/rpm package repositories (account-scoped + shared)",
+            description: "List accessible apt/rpm package repositories (account-scoped + shared). Filter by platform via node_platform_ids — repos linked to any of the supplied platforms are returned.",
             parameters: {
               kind: { type: "string", required: false },
-              node_platform_id: { type: "string", required: false }
+              node_platform_ids: { type: "array", required: false, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" }
             }
           },
           "system_get_package_repository" => {
@@ -67,7 +74,7 @@ module Ai
             parameters: { repository_id: { type: "string", required: true } }
           },
           "system_create_package_repository" => {
-            description: "Register a new apt/rpm package repository. Set visibility='shared' for system-wide (requires manage_shared permission).",
+            description: "Register a new apt/rpm package repository. Set visibility='shared' for system-wide (requires manage_shared permission). Optionally pre-link NodePlatforms via node_platform_ids.",
             parameters: {
               name: { type: "string", required: true },
               kind: { type: "string", required: true },           # apt|rpm|dnf
@@ -77,7 +84,7 @@ module Ai
               apt_config: { type: "object", required: false },    # { suite, components: [] }
               rpm_config: { type: "object", required: false },    # { releasever, gpgcheck, metalink }
               signing_key_armor: { type: "string", required: false },
-              node_platform_id: { type: "string", required: false },
+              node_platform_ids: { type: "array", required: false, description: "NodePlatform UUIDs to link on create" },
               description: { type: "string", required: false }
             }
           },
@@ -95,6 +102,20 @@ module Ai
           "system_sync_package_repository" => {
             description: "Trigger an immediate sync of the upstream apt/rpm index for this repository",
             parameters: { repository_id: { type: "string", required: true } }
+          },
+          "system_link_repository_platform" => {
+            description: "Link a NodePlatform to a PackageRepository. Cross-account validated — account-scoped repos can only link platforms in the same account; shared repos can link any platform.",
+            parameters: {
+              repository_id:    { type: "string", required: true },
+              node_platform_id: { type: "string", required: true }
+            }
+          },
+          "system_unlink_repository_platform" => {
+            description: "Remove a NodePlatform ↔ PackageRepository link. Idempotent — returns linked:false whether or not the link existed.",
+            parameters: {
+              repository_id:    { type: "string", required: true },
+              node_platform_id: { type: "string", required: true }
+            }
           },
           "system_search_packages" => {
             description: "Search the synced apt/rpm package catalog by name/section/architecture",
@@ -167,6 +188,8 @@ module Ai
         when "system_update_package_repository"   then update_repository(params)
         when "system_delete_package_repository"   then delete_repository(params)
         when "system_sync_package_repository"     then sync_repository(params)
+        when "system_link_repository_platform"    then link_repository_platform(params)
+        when "system_unlink_repository_platform"  then unlink_repository_platform(params)
         when "system_search_packages"             then search_packages(params)
         when "system_get_package"                 then get_package(params)
         when "system_resolve_package_dependencies" then resolve_dependencies(params)
@@ -206,9 +229,14 @@ module Ai
       def list_repositories(params)
         repos = scoped_repos.enabled
         repos = repos.where(kind: params[:kind]) if params[:kind].present?
-        repos = repos.where(node_platform_id: params[:node_platform_id]) if params[:node_platform_id].present?
+        platform_ids = Array(params[:node_platform_ids]).compact_blank
+        if platform_ids.any?
+          repos = repos.joins(:package_repository_platforms)
+                       .where(system_package_repository_platforms: { node_platform_id: platform_ids })
+                       .distinct
+        end
         success_result(
-          package_repositories: repos.order(:name).map { |r| serialize_repo(r) }
+          package_repositories: repos.includes(:node_platforms).order(:name).map { |r| serialize_repo(r) }
         )
       end
 
@@ -223,6 +251,7 @@ module Ai
           return error_result("permission denied: system.package_repositories.manage_shared required for shared repositories")
         end
 
+        platform_ids = Array(params[:node_platform_ids]).compact_blank
         repo = ::System::PackageRepository.new(
           name:                  params[:name],
           description:           params[:description],
@@ -233,15 +262,16 @@ module Ai
           apt_config:            params[:apt_config] || {},
           rpm_config:            params[:rpm_config] || {},
           signing_key_armor:     params[:signing_key_armor],
-          node_platform_id:      params[:node_platform_id],
           account:               (visibility == "shared" ? nil : @user&.account),
           created_by:            @user
         )
-        if repo.save
-          success_result(package_repository: serialize_repo(repo))
-        else
-          error_result(repo.errors.full_messages.join("; "))
+        ::System::PackageRepository.transaction do
+          repo.save!
+          platform_ids.each { |pid| repo.package_repository_platforms.create!(node_platform_id: pid) }
         end
+        success_result(package_repository: serialize_repo(repo, detail: true))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result(e.record.errors.full_messages.join("; "))
       end
 
       def update_repository(params)
@@ -253,13 +283,63 @@ module Ai
         attrs = (params[:attributes] || {}).slice(
           "name", "description", "base_url", "architectures",
           "apt_config", "rpm_config", "signing_key_armor",
-          "node_platform_id", "priority", "enabled"
+          "priority", "enabled"
         )
-        if repo.update(attrs)
-          success_result(package_repository: serialize_repo(repo))
-        else
-          error_result(repo.errors.full_messages.join("; "))
+        # node_platform_ids — if explicitly supplied, reconcile the link
+        # set; absent means "no change".
+        new_platform_ids = params[:attributes]&.dig("node_platform_ids")
+        ::System::PackageRepository.transaction do
+          repo.update!(attrs) if attrs.any?
+          unless new_platform_ids.nil?
+            sync_platform_links!(repo, Array(new_platform_ids).compact_blank.map(&:to_s))
+          end
         end
+        success_result(package_repository: serialize_repo(repo, detail: true))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result(e.record.errors.full_messages.join("; "))
+      end
+
+      def sync_platform_links!(repo, ids)
+        current = repo.package_repository_platforms.pluck(:node_platform_id).map(&:to_s)
+        (ids - current).each { |pid| repo.package_repository_platforms.create!(node_platform_id: pid) }
+        remove_ids = current - ids
+        repo.package_repository_platforms.where(node_platform_id: remove_ids).destroy_all if remove_ids.any?
+      end
+
+      def link_repository_platform(params)
+        repo = scoped_repos.find(params[:repository_id])
+        if repo.shared? && !(@user&.has_permission?("system.package_repositories.manage_shared"))
+          return error_result("permission denied: cannot link platform on shared repository without manage_shared")
+        end
+        platform = ::System::NodePlatform.find(params[:node_platform_id])
+
+        link = repo.package_repository_platforms.find_or_initialize_by(node_platform_id: platform.id)
+        if link.persisted?
+          return success_result(repository_id: repo.id, node_platform_id: platform.id, linked: true, idempotent: true)
+        end
+
+        if link.save
+          success_result(repository_id: repo.id, node_platform_id: platform.id, linked: true)
+        else
+          error_result(link.errors.full_messages.join("; "))
+        end
+      end
+
+      def unlink_repository_platform(params)
+        repo = scoped_repos.find(params[:repository_id])
+        if repo.shared? && !(@user&.has_permission?("system.package_repositories.manage_shared"))
+          return error_result("permission denied: cannot unlink platform on shared repository without manage_shared")
+        end
+
+        deleted = repo.package_repository_platforms
+                      .where(node_platform_id: params[:node_platform_id])
+                      .destroy_all
+        success_result(
+          repository_id: repo.id,
+          node_platform_id: params[:node_platform_id],
+          linked: false,
+          removed: deleted.size
+        )
       end
 
       def delete_repository(params)
@@ -429,10 +509,13 @@ module Ai
           base_url: repo.base_url, architectures: Array(repo.architectures),
           enabled: repo.enabled, sync_status: repo.sync_status, last_synced_at: repo.last_synced_at,
           package_count: repo.package_count, shared: repo.shared?,
-          node_platform_id: repo.node_platform_id
+          node_platform_ids: repo.node_platforms.map(&:id)
         }
-        base[:apt_config] = repo.apt_config if detail
-        base[:rpm_config] = repo.rpm_config if detail
+        if detail
+          base[:apt_config] = repo.apt_config
+          base[:rpm_config] = repo.rpm_config
+          base[:node_platforms] = repo.node_platforms.map { |p| { id: p.id, name: p.name } }
+        end
         base
       end
 

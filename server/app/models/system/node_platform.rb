@@ -15,6 +15,14 @@ module System
              class_name: "System::DiskImagePublication",
              dependent: :destroy
 
+    # M:N to PackageRepository — a platform may pull from many repos
+    # (base + security + third-party). Inverse of PackageRepository's
+    # has_many :node_platforms.
+    has_many :package_repository_platforms,
+             class_name: "System::PackageRepositoryPlatform",
+             dependent: :destroy
+    has_many :package_repositories, through: :package_repository_platforms
+
     # Convenience: the publication that the platform pointer currently
     # references. Useful in UI + serializer where "the active disk image"
     # is the operator-relevant view, not the full history list.
