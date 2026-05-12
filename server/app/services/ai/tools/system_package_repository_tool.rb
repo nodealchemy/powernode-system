@@ -25,6 +25,7 @@ module Ai
         "system_unlink_repository_platform"  => "system.package_repositories.update",
 
         "system_search_packages"             => "system.packages.search",
+        "system_discover_packages"           => "system.packages.view",
         "system_get_package"                 => "system.packages.view",
 
         "system_resolve_package_dependencies" => "system.packages.view",
@@ -118,14 +119,33 @@ module Ai
             }
           },
           "system_search_packages" => {
-            description: "Search the synced apt/rpm package catalog by name/section/architecture",
+            description: "Search the synced apt/rpm package catalog. Supports name+description trigram + semantic embedding ranking (mode: lexical|semantic|hybrid, default hybrid). Filters: kind (apt/rpm/dnf), repository_ids[], architectures[] (canonical, cross-kind expanded), sections[], license, provides (capability lookup).",
             parameters: {
-              q:             { type: "string", required: false },
-              repository_id: { type: "string", required: false },
-              section:       { type: "string", required: false },
-              architecture:  { type: "string", required: false },
-              page:          { type: "integer", required: false },
-              per_page:      { type: "integer", required: false }
+              q:              { type: "string",  required: false },
+              mode:           { type: "string",  required: false, description: "lexical | semantic | hybrid (default hybrid; blank q forces lexical)" },
+              sort:           { type: "string",  required: false, description: "relevance | name | updated (default relevance)" },
+              repository_id:  { type: "string",  required: false, description: "Back-compat: singular form of repository_ids" },
+              repository_ids: { type: "array",   required: false },
+              kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
+              architecture:   { type: "string",  required: false, description: "Back-compat: singular form of architectures" },
+              architectures:  { type: "array",   required: false, description: "Canonical arch names (amd64, arm64) — cross-kind expanded" },
+              section:        { type: "string",  required: false, description: "Back-compat: singular form of sections" },
+              sections:       { type: "array",   required: false },
+              license:        { type: "string",  required: false },
+              provides:       { type: "string",  required: false, description: "Capability name — finds packages whose name=capability OR provides @> [{name: capability}]" },
+              page:           { type: "integer", required: false },
+              per_page:       { type: "integer", required: false }
+            }
+          },
+          "system_discover_packages" => {
+            description: "Intent-based package discovery — describe a capability ('reverse proxy', 'distributed cache') and get ranked packages from accessible repositories. Pure semantic ranking via pgvector cosine distance. Use system_search_packages instead when you already know the package name.",
+            parameters: {
+              intent:         { type: "string",  required: true,  description: "Free-text capability description — what the package should do" },
+              repository_ids: { type: "array",   required: false },
+              kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
+              architectures:  { type: "array",   required: false, description: "Canonical arch names — cross-kind expanded" },
+              license:        { type: "string",  required: false },
+              top_k:          { type: "integer", required: false, description: "Max results (1-50, default 10)" }
             }
           },
           "system_get_package" => {
@@ -191,6 +211,7 @@ module Ai
         when "system_link_repository_platform"    then link_repository_platform(params)
         when "system_unlink_repository_platform"  then unlink_repository_platform(params)
         when "system_search_packages"             then search_packages(params)
+        when "system_discover_packages"           then discover_packages(params)
         when "system_get_package"                 then get_package(params)
         when "system_resolve_package_dependencies" then resolve_dependencies(params)
         when "system_create_module_from_package"  then create_module_from_package(params)
@@ -370,19 +391,32 @@ module Ai
       # === Packages ===
 
       def search_packages(params)
-        repos = scoped_repos.enabled
-        repos = repos.where(id: params[:repository_id]) if params[:repository_id].present?
-        scope = ::System::Package.live.where(package_repository_id: repos.pluck(:id))
-        scope = scope.where("name ILIKE ?", "%#{params[:q]}%") if params[:q].present?
-        scope = scope.where(section_or_group: params[:section]) if params[:section].present?
-        scope = scope.where(architecture: params[:architecture]) if params[:architecture].present?
-        per_page = [[params[:per_page].to_i, 50].max, 200].min
-        page = [params[:page].to_i, 1].max
-        rows = scope.order(:name, :architecture).limit(per_page).offset((page - 1) * per_page)
+        result = ::System::PackageSearchService.call(account: @user&.account, params: params)
         success_result(
-          packages: rows.map { |p| serialize_package(p) },
-          page: page, per_page: per_page, total: scope.count
+          packages:        result.packages.map { |p| serialize_package(p, similarity: extract_similarity(p)) },
+          page:            result.applied_filters[:page],
+          per_page:        result.applied_filters[:per_page],
+          total:           result.total,
+          mode:            result.mode,
+          applied_filters: result.applied_filters
         )
+      end
+
+      # Intent-based discovery — thin wrapper over the skill executor so
+      # direct skill invocation and MCP invocation return identical shapes.
+      def discover_packages(params)
+        executor = ::System::Ai::Skills::DiscoverPackagesByIntentExecutor.new(
+          account: @user&.account, agent: @agent, user: @user
+        )
+        result = executor.execute(
+          intent:         params[:intent],
+          repository_ids: Array(params[:repository_ids]).compact_blank,
+          kind:           params[:kind],
+          architectures:  Array(params[:architectures]).compact_blank,
+          license:        params[:license],
+          top_k:          params[:top_k] || ::System::Ai::Skills::DiscoverPackagesByIntentExecutor::DEFAULT_TOP_K
+        )
+        result[:success] ? success_result(**result[:data]) : error_result(result[:error])
       end
 
       def get_package(params)
@@ -509,6 +543,7 @@ module Ai
           base_url: repo.base_url, architectures: Array(repo.architectures),
           enabled: repo.enabled, sync_status: repo.sync_status, last_synced_at: repo.last_synced_at,
           package_count: repo.package_count, shared: repo.shared?,
+          embedding_pending_count: embedding_pending_count_for(repo),
           node_platform_ids: repo.node_platforms.map(&:id)
         }
         if detail
@@ -519,13 +554,15 @@ module Ai
         base
       end
 
-      def serialize_package(pkg, detail: false)
+      def serialize_package(pkg, detail: false, similarity: nil)
         base = {
           id: pkg.id, name: pkg.name, version: pkg.version, architecture: pkg.architecture,
-          section: pkg.section_or_group, summary: pkg.summary,
+          section: pkg.section_or_group, summary: pkg.summary, license: pkg.license,
+          provides_names: pkg.provides_capabilities,
           installed_size: pkg.installed_size_bytes, download_size: pkg.download_size_bytes,
           repository_id: pkg.package_repository_id
         }
+        base[:similarity] = similarity if similarity
         if detail
           base[:description] = pkg.description
           base[:depends] = pkg.depends
@@ -533,10 +570,28 @@ module Ai
           base[:provides] = pkg.provides
           base[:conflicts] = pkg.conflicts
           base[:maintainer] = pkg.maintainer
-          base[:license] = pkg.license
           base[:homepage] = pkg.homepage
         end
         base
+      end
+
+      # Lightweight count — uses the same scope the worker leases from so
+      # the Catalog UI can show coverage at a glance. Not eager-loaded; this
+      # runs once per repo serialized.
+      def embedding_pending_count_for(repo)
+        ::System::Package.live
+                         .where(package_repository_id: repo.id, embedding: nil)
+                         .count
+      end
+
+      # Pulls a similarity score off the AR record when run_hybrid stashed
+      # one via define_singleton_method, OR derives it from neighbor_distance
+      # when nearest_neighbors set the virtual attribute. Returns nil for
+      # lexical-mode rows (no similarity meaningful).
+      def extract_similarity(pkg)
+        return pkg.hybrid_similarity.round(4) if pkg.respond_to?(:hybrid_similarity)
+        dist = pkg.neighbor_distance
+        dist ? (1.0 - dist.to_f).round(4) : nil
       end
 
       def mod_summary(m)

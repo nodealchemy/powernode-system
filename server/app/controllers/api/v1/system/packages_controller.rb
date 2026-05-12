@@ -13,20 +13,47 @@ module Api
         before_action :set_account
 
         # GET /api/v1/system/packages
-        # Filters: repository_id, q (name LIKE), section, architecture, page, per_page
+        # Delegates to PackageSearchService — see that service for the full
+        # param surface. Back-compat: existing singular params
+        # (repository_id, section, architecture) still work alongside the
+        # new array forms.
         def index
           require_permission("system.packages.search")
-          repos = scoped_repositories
-          scope = ::System::Package.live.where(package_repository_id: repos.pluck(:id))
-          scope = scope.where("name ILIKE ?", "%#{params[:q]}%") if params[:q].present?
-          scope = scope.where(section_or_group: params[:section]) if params[:section].present?
-          scope = scope.where(architecture: params[:architecture]) if params[:architecture].present?
-          scope = scope.order(:name, :architecture).limit(per_page).offset(offset)
-          total = scope.except(:limit, :offset).count
+          result = ::System::PackageSearchService.call(account: @account, params: params)
           render_success(
-            packages: scope.map { |p| serialize(p) },
-            meta: { total: total, page: page, per_page: per_page }
+            packages: result.packages.map { |p| serialize(p, similarity: extract_similarity(p)) },
+            meta: {
+              total:            result.total,
+              page:             result.applied_filters[:page],
+              per_page:         result.applied_filters[:per_page],
+              mode:             result.mode,
+              applied_filters:  result.applied_filters
+            }
           )
+        end
+
+        # POST /api/v1/system/packages/discover
+        # Body: { intent (required), repository_ids?, kind?, architectures?, license?, top_k? }
+        # Intent-based semantic discovery — same data as the MCP action
+        # system_discover_packages, backed by the same executor.
+        def discover
+          require_permission("system.packages.view")
+          executor = ::System::Ai::Skills::DiscoverPackagesByIntentExecutor.new(
+            account: @account, user: current_user
+          )
+          result = executor.execute(
+            intent:         params[:intent],
+            repository_ids: Array(params[:repository_ids]).compact_blank,
+            kind:           params[:kind],
+            architectures:  Array(params[:architectures]).compact_blank,
+            license:        params[:license],
+            top_k:          params[:top_k]&.to_i || ::System::Ai::Skills::DiscoverPackagesByIntentExecutor::DEFAULT_TOP_K
+          )
+          if result[:success]
+            render_success(**result[:data])
+          else
+            render_error(result[:error], status: :unprocessable_entity)
+          end
         end
 
         # GET /api/v1/system/packages/:id
@@ -132,7 +159,7 @@ module Api
           ::System::PackageRepository.accessible_to(@account).enabled
         end
 
-        def serialize(pkg, detail: false)
+        def serialize(pkg, detail: false, similarity: nil)
           base = {
             id:           pkg.id,
             name:         pkg.name,
@@ -144,8 +171,10 @@ module Api
             download_size_bytes:  pkg.download_size_bytes,
             homepage:     pkg.homepage,
             license:      pkg.license,
+            provides_names: pkg.provides_capabilities,
             package_repository_id: pkg.package_repository_id
           }
+          base[:similarity] = similarity if similarity
           if detail
             base[:description] = pkg.description
             base[:depends]     = pkg.depends
@@ -189,16 +218,13 @@ module Api
           { id: m.id, name: m.name, auto_generated: m.auto_generated, public: m.public }
         end
 
-        def page
-          [params[:page].to_i, 1].max
-        end
-
-        def per_page
-          [[params[:per_page].to_i, 50].max, 200].min
-        end
-
-        def offset
-          (page - 1) * per_page
+        # Hybrid mode stashes its merged score on the AR record via
+        # define_singleton_method; semantic mode sets neighbor_distance.
+        # Returns nil under lexical mode (no similarity meaningful).
+        def extract_similarity(pkg)
+          return pkg.hybrid_similarity.round(4) if pkg.respond_to?(:hybrid_similarity)
+          dist = pkg.neighbor_distance
+          dist ? (1.0 - dist.to_f).round(4) : nil
         end
       end
     end

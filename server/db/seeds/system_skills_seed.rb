@@ -522,6 +522,28 @@ SKILLS_DATA = [
       when there's no fleet overlap. Use the per-arch `rationale` array
       to explain the recommendation to the operator.
     PROMPT
+  },
+  # ─── Intent-based package discovery (semantic) ───────────────────────
+  {
+    name: "Discover Packages By Intent",
+    slug: "system-discover-packages-by-intent",
+    description: "Semantic package discovery — given a free-text capability need ('reverse proxy', 'distributed cache'), returns ranked packages from accessible repositories sorted by cosine similarity.",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::DiscoverPackagesByIntentExecutor",
+    tags: %w[packages discovery semantic intent catalog embedding],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when the operator describes a capability NEED rather
+      than a package NAME ("I need a reverse proxy", "find me an
+      in-memory cache"). Inputs: intent (required free-text),
+      repository_ids (optional), kind (apt|rpm|dnf), architectures
+      (canonical names — cross-kind expanded), license (exact match),
+      top_k (1-50, default 10). Returns ranked packages with
+      similarity scores + per-result reasoning + an overall
+      confidence label (high/medium/low). Use system-search-packages
+      INSTEAD when the operator already knows the package name and just
+      wants to filter/browse — search is faster for keyword queries.
+    PROMPT
   }
 ].freeze
 
@@ -579,6 +601,7 @@ if concierge
     system-runbook-generate
     system-cve-runbook-generate
     system-suggest-architectures-for-fleet
+    system-discover-packages-by-intent
   ]
   concierge_skill_slugs.each_with_index do |slug, i|
     skill = ::Ai::Skill.find_by(slug: slug)
@@ -616,6 +639,7 @@ if fleet_autonomy
     system-architecture-update
     system-architecture-delete
     system-suggest-architectures-for-fleet
+    system-discover-packages-by-intent
   ]
 
   fleet_autonomy_slugs.each_with_index do |slug, i|
