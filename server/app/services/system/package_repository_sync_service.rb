@@ -57,6 +57,18 @@ module System
       # stays honest. Cheap (~N=arch_count SELECT COUNTs) and idempotent.
       ::System::NodeArchitecture.recompute_package_counts!
 
+      # Fresh metadata → fresh embeddings. Pushed via WorkerJobEnqueuer
+      # (server has no Sidekiq gem; we LPUSH the queue directly). Job is
+      # a no-op on the worker side if everything is already embedded (the
+      # lessor sees zero candidates).
+      if upserted_count.positive?
+        ::System::WorkerJobEnqueuer.enqueue(
+          job_class: "SystemPackageEmbeddingJob",
+          args:      [@repository.id, {}],
+          queue:     "system"
+        )
+      end
+
       Result.new(
         success: true,
         package_count: package_count,

@@ -121,11 +121,13 @@ Rails.application.routes.draw do
         # POST /api/v1/system/packages/resolve_dependencies   — preview closure
         # POST /api/v1/system/packages/create_module          — materialize + dispatch
         # POST /api/v1/system/packages/suggest_architectures  — fleet-aware arch suggestion (T2.B)
+        # POST /api/v1/system/packages/discover               — intent-based semantic discovery
         resources :packages, only: %i[index show] do
           collection do
             post :resolve_dependencies
             post :create_module
             post :suggest_architectures
+            post :discover
           end
         end
 
@@ -503,6 +505,14 @@ Rails.application.routes.draw do
           # by SystemPackageModuleRefreshJob for drift-detected refreshes.
           post "package_modules/materialize", to: "package_modules#materialize"
           post "package_modules/refresh",     to: "package_modules#refresh"
+
+          # Package embedding pipeline (worker-orchestrated). Worker calls
+          # process_embedding_batch in a loop until `remaining: 0`. Server
+          # leases a batch, generates embeddings via Ai::Memory::EmbeddingService
+          # (which proxies to the worker over HTTP for the actual provider
+          # call), and writes the vectors. Triggered after
+          # PackageRepositorySyncService runs and by the manual backfill task.
+          post "packages/process_embedding_batch", to: "packages#process_embedding_batch"
 
           # Slice 5 (deferred reaper) of the SDWAN plan — daily 90-day
           # audit retention sweep over revoked Sdwan::UserDevice rows.
