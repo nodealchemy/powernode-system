@@ -258,12 +258,13 @@ module Ai
           display_name:   params[:display_name],
           description:    params[:description],
           kernel_options: params[:kernel_options],
+          aliases:        params[:aliases],
           enabled:        params.key?(:enabled) ? bool(params[:enabled]) : true,
           public:         params.key?(:public) ? bool(params[:public]) : true
         }.compact
       end
 
-      ALLOWED_UPDATE_KEYS = %w[name family apt_name rpm_name display_name description kernel_options enabled public].freeze
+      ALLOWED_UPDATE_KEYS = %w[name family apt_name rpm_name display_name description kernel_options aliases enabled public].freeze
 
       def update_attrs(raw)
         raw.to_h.transform_keys(&:to_s).slice(*ALLOWED_UPDATE_KEYS)
@@ -307,6 +308,7 @@ module Ai
           family: arch.family,
           description: arch.description,
           kernel_options: arch.kernel_options,
+          aliases: Array(arch.aliases),
           enabled: arch.enabled,
           public: arch.public,
           is_canonical: arch.is_canonical,

@@ -32,6 +32,9 @@ interface FormData {
   family: ArchitectureFamily;
   description: string;
   kernel_options: string;
+  // Free-form textarea content; one alias per line or comma-separated.
+  // The backend normalizes to a lowercase deduplicated string array.
+  aliases_text: string;
   enabled: boolean;
   public: boolean;
 }
@@ -44,6 +47,7 @@ const EMPTY: FormData = {
   family: 'other',
   description: '',
   kernel_options: '',
+  aliases_text: '',
   enabled: true,
   public: false,
 };
@@ -84,6 +88,9 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
         family: editArchitecture.family ?? 'other',
         description: editArchitecture.description ?? '',
         kernel_options: editArchitecture.kernel_options ?? '',
+        // Render the persisted array as one alias per line — easier to scan
+        // than comma-separated when the list grows.
+        aliases_text: Array(editArchitecture.aliases ?? []).flat().join('\n'),
         enabled: editArchitecture.enabled,
         public: editArchitecture.public,
       });
@@ -128,6 +135,14 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
 
     setSubmitting(true);
     try {
+      // Split on comma or newline, trim, drop blanks. Backend
+      // also normalizes (lowercase + dedupe) — this keeps the wire
+      // payload predictable.
+      const aliases = formData.aliases_text
+        .split(/[,\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
       const payload = {
         name: formData.name,
         family: formData.family,
@@ -136,6 +151,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
         display_name: formData.display_name.trim() || undefined,
         description: formData.description.trim() || undefined,
         kernel_options: formData.kernel_options.trim() || undefined,
+        aliases,
         enabled: formData.enabled,
         public: formData.public,
       };
@@ -332,6 +348,25 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                   className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm disabled:opacity-60"
                 />
                 <p className="mt-1 text-xs text-theme-secondary">Optional kernel command line parameters</p>
+              </div>
+
+              <div>
+                <label htmlFor="aliases_text" className="block text-sm font-medium text-theme-primary mb-1">
+                  Aliases
+                </label>
+                <textarea
+                  id="aliases_text"
+                  name="aliases_text"
+                  value={formData.aliases_text}
+                  onChange={handleChange}
+                  placeholder={`amd64-graviton\nx86_64-v3\naarch64-pacbti`}
+                  rows={3}
+                  disabled={isReadOnly}
+                  className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus font-mono text-sm resize-none disabled:opacity-60"
+                />
+                <p className="mt-1 text-xs text-theme-secondary">
+                  One alias per line (or comma-separated). Vendor-specific tags that should resolve to this architecture — e.g. <code>amd64-graviton</code>, <code>x86_64-v3</code>. Saved lowercased and deduplicated.
+                </p>
               </div>
 
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">

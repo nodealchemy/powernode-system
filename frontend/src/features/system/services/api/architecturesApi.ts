@@ -11,6 +11,9 @@ export interface ArchitectureCreate {
   display_name?: string;
   description?: string;
   kernel_options?: string;
+  // Vendor-specific tags. Backend lowercases + dedupes; safe to submit
+  // mixed case + duplicates.
+  aliases?: string[];
   enabled?: boolean;
   public?: boolean;
 }

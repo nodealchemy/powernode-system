@@ -23,9 +23,15 @@ module System
     belongs_to :ramdisk_file_object, class_name: "FileManagement::Object", optional: true
     belongs_to :image_file_object,   class_name: "FileManagement::Object", optional: true
 
+    # Normalization callbacks
+    # Aliases must be lowercase + deduped + non-empty so the GIN-indexed
+    # containment lookup in find_normalized matches without case-folding.
+    before_validation :normalize_aliases
+
     # Validations
     validates :name, presence: true, uniqueness: true
     validates :family, inclusion: { in: FAMILIES }
+    validate :aliases_not_canonical_names
     validates :image_format, inclusion: { in: IMAGE_FORMATS }, allow_nil: true
     validates :kernel_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: "must be a valid SHA256 hash" }, allow_nil: true
     validates :ramdisk_checksum, format: { with: /\A[a-f0-9]{64}\z/i, message: "must be a valid SHA256 hash" }, allow_nil: true
@@ -72,13 +78,21 @@ module System
       where("LOWER(rpm_name) = ?", name.to_s.downcase).first
     end
 
-    # Resolve a value (could be canonical `name`, apt_name, or rpm_name)
-    # to its canonical row. Returns nil if no match.
+    # Resolve a value (could be canonical `name`, apt_name, rpm_name, or
+    # any alias) to its canonical row. Returns nil if no match.
+    #
+    # The aliases JSONB array is normalized to lowercase on write (see
+    # before_validation :normalize_aliases below), so the @> containment
+    # operator can be used directly — no LOWER() wrapper needed, which
+    # keeps the GIN index hot.
     def self.find_normalized(value)
       return nil if value.blank?
 
       v = value.to_s.downcase
-      where("LOWER(name) = ? OR LOWER(apt_name) = ? OR LOWER(rpm_name) = ?", v, v, v).first
+      where(
+        "LOWER(name) = ? OR LOWER(apt_name) = ? OR LOWER(rpm_name) = ? OR aliases @> ?::jsonb",
+        v, v, v, [v].to_json
+      ).first
     end
 
     # Project a row onto the kind-specific name an apt/rpm repo expects.
@@ -193,6 +207,37 @@ module System
       ::System::PackageRepository
         .where("architectures ?| array[:names]", names: names)
         .count
+    end
+
+    # === Aliases callbacks + validation ===
+
+    # Coerce aliases into the canonical shape:
+    #   - cast Array (or comma/newline-separated String) → Array<String>
+    #   - split each element on comma/newline too (frontend textarea
+    #     submits Array<String> where an element might itself be
+    #     `"a, b\nc"`)
+    #   - downcase, strip, reject blanks, dedupe
+    # Idempotent. Operators can submit `"amd64-graviton, x86_64-v2"`,
+    # `["AMD64-Graviton", "x86_64-v2"]`, or `["amd64-graviton, x86_64-v2"]`
+    # and all three land identically.
+    def normalize_aliases
+      raw = aliases
+      tokens = if raw.is_a?(String)
+                 raw.split(/[,\n]/)
+               else
+                 Array(raw).flat_map { |s| s.to_s.split(/[,\n]/) }
+               end
+      self.aliases = tokens.map { |s| s.strip.downcase }.reject(&:empty?).uniq
+    end
+
+    # Aliases can't shadow the catalog's primary names. A row tagging
+    # `amd64` as an alias of `arm64` would scramble find_normalized.
+    def aliases_not_canonical_names
+      reserved = self.class.where.not(id: id).pluck(:name, :apt_name, :rpm_name).flatten.compact.map(&:downcase)
+      colliding = Array(aliases) & reserved
+      return if colliding.empty?
+
+      errors.add(:aliases, "cannot include canonical names: #{colliding.join(', ')}")
     end
 
     # === Boot Image Methods ===

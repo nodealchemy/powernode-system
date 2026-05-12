@@ -76,7 +76,8 @@ module Api
           params.require(:node_architecture).permit(
             :name, :description, :apt_name, :rpm_name, :display_name, :family,
             :enabled, :public, :kernel_options,
-            :kernel_file_object_id, :ramdisk_file_object_id, :image_file_object_id
+            :kernel_file_object_id, :ramdisk_file_object_id, :image_file_object_id,
+            aliases: []
           )
         end
 

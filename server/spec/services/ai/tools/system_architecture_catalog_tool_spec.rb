@@ -188,6 +188,63 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
     end
   end
 
+  # ── aliases (T2.C) ─────────────────────────────────────────────────────
+
+  describe "aliases" do
+    let(:custom_arch) do
+      create(:system_node_architecture, name: "custom-#{SecureRandom.hex(3)}",
+                                         family: "arm",
+                                         apt_name: "custarm-#{SecureRandom.hex(2)}",
+                                         rpm_name: "custarmr-#{SecureRandom.hex(2)}",
+                                         display_name: "Custom ARM",
+                                         is_canonical: false,
+                                         enabled: true)
+    end
+
+    it "stores aliases lowercased + deduplicated on create" do
+      r = call_as(manage_user, "system_create_architecture",
+                    name: "alias-create-#{SecureRandom.hex(3)}",
+                    family: "arm",
+                    apt_name: "ac-#{SecureRandom.hex(2)}",
+                    rpm_name: "acr-#{SecureRandom.hex(2)}",
+                    display_name: "Alias Create",
+                    aliases: ["Vendor-X", "vendor-x", "VENDOR-Y"])
+      expect(r[:success]).to be true
+      expect(r[:data][:architecture][:aliases]).to match_array(%w[vendor-x vendor-y])
+    end
+
+    it "updates aliases via update_architecture attributes" do
+      r = call_as(manage_user, "system_update_architecture",
+                    architecture_id: custom_arch.id,
+                    attributes: { aliases: ["Foo-Bar", "foo-bar, baz"] })
+      expect(r[:success]).to be true
+      expect(custom_arch.reload.aliases).to match_array(%w[foo-bar baz])
+    end
+
+    it "find_normalized resolves a custom alias case-insensitively to its canonical row" do
+      custom_arch.update!(aliases: ["amd64-graviton", "x86_64-v3"])
+      # Re-fetch fresh, no memoization
+      expect(::System::NodeArchitecture.find_normalized("AMD64-Graviton")&.id).to eq(custom_arch.id)
+      expect(::System::NodeArchitecture.find_normalized("X86_64-V3")&.id).to eq(custom_arch.id)
+      expect(::System::NodeArchitecture.find_normalized("not-an-alias")).to be_nil
+    end
+
+    it "rejects aliases that shadow a canonical name" do
+      # amd64 is a canonical name; can't alias it onto a custom row.
+      r = call_as(manage_user, "system_update_architecture",
+                    architecture_id: custom_arch.id,
+                    attributes: { aliases: ["amd64"] })
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/canonical names/i)
+    end
+
+    it "surfaces aliases in serialize output" do
+      custom_arch.update!(aliases: ["my-vendor-tag"])
+      r = call_as(read_user, "system_get_architecture", architecture_id: custom_arch.id)
+      expect(r[:data][:architecture][:aliases]).to eq(["my-vendor-tag"])
+    end
+  end
+
   # ── propose flow creates an Ai::AgentProposal, not a row ───────────────
 
   describe "system_propose_architecture" do

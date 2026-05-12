@@ -241,6 +241,10 @@ export interface SystemNodeArchitecture {
   family: ArchitectureFamily;
   description?: string;
   kernel_options?: string;
+  // Vendor-specific tags that resolve to this canonical row via the
+  // backend's NodeArchitecture.find_normalized helper. Always
+  // lowercase + deduplicated. Editable on non-canonical rows only.
+  aliases?: string[];
   enabled: boolean;
   public: boolean;
   is_canonical: boolean;

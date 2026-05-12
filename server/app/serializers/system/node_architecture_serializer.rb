@@ -16,6 +16,7 @@ module System
         family: @architecture.family,
         description: @architecture.description,
         kernel_options: @architecture.kernel_options,
+        aliases: Array(@architecture.aliases),
         enabled: @architecture.enabled,
         public: @architecture.public,
         is_canonical: @architecture.is_canonical,
