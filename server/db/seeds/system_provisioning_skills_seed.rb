@@ -192,7 +192,15 @@ PROVISIONING_SKILLS_DATA.each do |data|
       "icon" => data[:subdomain],
       "system_subdomain" => data[:subdomain],
       "executor_class" => data[:executor],
-      "blast_radius" => data[:blast_radius]
+      "blast_radius" => data[:blast_radius],
+      # === ConciergeRouter signals ===
+      # Provisioning skills are multi-step by nature — they materialize
+      # infrastructure, dispatch builds, wait for callbacks. Default to
+      # workflow_step so the router delegates to the specialist who can
+      # orchestrate the full lifecycle. Individual entries can override
+      # via data[:invocation_mode] if they're genuinely one-shot.
+      "domain" => "system",
+      "invocation_mode" => data[:invocation_mode] || "workflow_step"
     },
     tags: data[:tags] + %w[system workspace provisioning],
     is_system: true,

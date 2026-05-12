@@ -77,6 +77,7 @@ SKILLS_DATA = [
   {
     name: "CVE Response",
     slug: "system-cve-response",
+    invocation_mode: "workflow_step",
     description: "Triage a CVE entry against the fleet — enumerates exposure, scores risk, proposes a remediation plan",
     category: "security",
     subdomain: "cve",
@@ -106,6 +107,7 @@ SKILLS_DATA = [
   {
     name: "CVE Remediation Orchestration",
     slug: "system-cve-remediation-orchestration",
+    invocation_mode: "workflow_step",
     description: "Chain the full CVE → exposure → package refresh → rolling upgrade flow for one CVE",
     category: "security",
     subdomain: "cve",
@@ -125,6 +127,7 @@ SKILLS_DATA = [
   {
     name: "Docker Provision",
     slug: "system-docker-provision",
+    invocation_mode: "workflow_step",
     description: "Provision a managed Docker daemon on a NodeInstance — auto-registers as a Devops::DockerHost on the SDWAN overlay",
     category: "devops",
     subdomain: "runtime",
@@ -171,6 +174,7 @@ SKILLS_DATA = [
   {
     name: "Provision Cluster",
     slug: "system-provision-cluster",
+    invocation_mode: "workflow_step",
     description: "Provision N instances of a Template in a region — composes create_node + provision_instance for each",
     category: "devops",
     subdomain: "fleet",
@@ -187,6 +191,7 @@ SKILLS_DATA = [
   {
     name: "Rolling Module Upgrade",
     slug: "system-rolling-module-upgrade",
+    invocation_mode: "workflow_step",
     description: "Plan a batched rolling upgrade of a NodeModule across all instances of a Template, with circuit-breaker and health gating",
     category: "release_management",
     subdomain: "modules",
@@ -275,6 +280,7 @@ SKILLS_DATA = [
   {
     name: "SDWAN OVN Compose Topology",
     slug: "system-sdwan-ovn-compose-topology",
+    invocation_mode: "workflow_step",
     description: "Compose an OVN logical-network topology (deployment + logical switches + ports) for a heavyweight-profile account, then compile the ovn-nbctl plan",
     category: "devops",
     subdomain: "sdwan",
@@ -296,6 +302,7 @@ SKILLS_DATA = [
   {
     name: "SDWAN Host Bridge Compose",
     slug: "system-sdwan-host-bridge-compose",
+    invocation_mode: "workflow_step",
     description: "Allocate per-host SDWAN bridges (Linux for lightweight profile, OVS for heavyweight) for a set of NodeInstances. Composes Sdwan::HostBridgeAllocator. Idempotent.",
     category: "devops",
     subdomain: "sdwan",
@@ -317,6 +324,7 @@ SKILLS_DATA = [
   {
     name: "SDWAN IPFIX Collector Compose",
     slug: "system-sdwan-ipfix-collector-compose",
+    invocation_mode: "workflow_step",
     description: "Register an IPFIX collector for an account so the topology compiler stamps ipfix exporter config onto every heavyweight (ovs-kind) HostBridge. Idempotent on (account, name). Composes Sdwan::IpfixCollector.",
     category: "devops",
     subdomain: "sdwan",
@@ -339,6 +347,7 @@ SKILLS_DATA = [
   {
     name: "SDWAN Compose Full Topology",
     slug: "system-sdwan-compose-full-topology",
+    invocation_mode: "workflow_step",
     description: "Composer-of-composers — orchestrates HostBridge + OVN + IPFIX composition in one tool call. Delegates to the three SDWAN compose primitives and aggregates outputs. Rollback unwinds in reverse dependency order.",
     category: "devops",
     subdomain: "sdwan",
@@ -363,6 +372,7 @@ SKILLS_DATA = [
   {
     name: "SDWAN OVN Apply ACL",
     slug: "system-sdwan-ovn-apply-acl",
+    invocation_mode: "workflow_step",
     description: "Apply OVN ACLs (firewall rules) to a logical switch — heavyweight-profile only. Composes Sdwan::OvnAcl entries scoped to one switch and re-compiles the deployment plan. Idempotent on (switch, acl_name).",
     category: "devops",
     subdomain: "sdwan",
@@ -403,6 +413,7 @@ SKILLS_DATA = [
   {
     name: "Package Module Create",
     slug: "system-package-module-create",
+    invocation_mode: "workflow_step",
     description: "Materialize an apt/rpm package + transitive deps as NodeModule rows + ModuleDependency edges, then dispatch a CI build",
     category: "devops",
     subdomain: "package-catalog",
@@ -421,6 +432,7 @@ SKILLS_DATA = [
   {
     name: "Package Module Refresh",
     slug: "system-package-module-refresh",
+    invocation_mode: "workflow_step",
     description: "Re-materialize a package-sourced NodeModule when upstream package version drifts",
     category: "devops",
     subdomain: "package-catalog",
@@ -523,6 +535,27 @@ SKILLS_DATA = [
       to explain the recommendation to the operator.
     PROMPT
   },
+  # ─── Wrapper skills for inventory/inspection MCP actions ─────────────
+  # These exist so natural-language inventory queries ("how many X?",
+  # "what X are configured?") surface in skill discovery. The router can
+  # then auto-invoke them for chat surfaces that lack direct MCP tool access.
+  {
+    name: "List Package Repositories Summary",
+    slug: "system-list-package-repositories-summary",
+    description: "Summarize package repositories — counts, kinds (apt/rpm/dnf), visibility, sync status. Use for 'how many package repos', 'what package sources are configured', 'list my apt repositories'.",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::ListPackageRepositoriesSummaryExecutor",
+    tags: %w[inventory packages repositories summary],
+    system_prompt: <<~PROMPT.strip
+      Use this skill for any operator query asking about the inventory of
+      package repositories ("how many", "what kinds", "list them",
+      "what's configured", etc.). Returns total count, breakdown by kind
+      (apt/rpm/dnf), visibility (shared vs account), sync status, and the
+      full list. Always prefer this skill over generic "look elsewhere"
+      responses when the user asks about repository inventory.
+    PROMPT
+  },
   # ─── Intent-based package discovery (semantic) ───────────────────────
   {
     name: "Discover Packages By Intent",
@@ -569,7 +602,14 @@ SKILLS_DATA.each do |data|
       "author" => "system_extension",
       "icon" => data[:subdomain],
       "system_subdomain" => data[:subdomain],
-      "executor_class" => data[:executor]
+      "executor_class" => data[:executor],
+      # === ConciergeRouter signals ===
+      # Domain is "system" for every skill in this extension's seed file —
+      # extensions own their domain naming via Ai::Skill.register_domain
+      # in engine.rb. invocation_mode defaults to one_shot; flip to
+      # workflow_step on skills that require multi-step operator follow-up.
+      "domain" => "system",
+      "invocation_mode" => data[:invocation_mode] || "one_shot"
     },
     tags: data[:tags] + %w[system workspace],
     is_system: true,
@@ -595,14 +635,31 @@ puts "    ✓ Skills: #{created_count} created, #{updated_count} updated (#{SKIL
 # Concierge — read-shape: capacity_recommend, attribute_failure, runbook_generate, cve_runbook_generate
 concierge = ::Ai::Agent.where(account: account).find_by(name: "System Concierge")
 if concierge
-  concierge_skill_slugs = %w[
+  # Read-shape skills — System Concierge handles these in single-turn Q&A.
+  concierge_read_skill_slugs = %w[
     system-capacity-recommend
     system-attribute-failure
     system-runbook-generate
     system-cve-runbook-generate
     system-suggest-architectures-for-fleet
     system-discover-packages-by-intent
+    system-list-package-repositories-summary
   ]
+
+  # Workflow_step skills — also bound to System Concierge so the router can
+  # delegate operator-initiated workflow chat queries to it. (Fleet Autonomy
+  # also binds these for autonomous cron-driven execution; the two
+  # bindings serve different paths: autonomous vs. operator-driven via chat.)
+  concierge_workflow_skill_slugs = %w[
+    system-package-module-create
+    system-package-module-refresh
+    system-rolling-module-upgrade
+    system-docker-provision
+    system-provision-cluster
+  ]
+
+  concierge_skill_slugs = concierge_read_skill_slugs + concierge_workflow_skill_slugs
+
   concierge_skill_slugs.each_with_index do |slug, i|
     skill = ::Ai::Skill.find_by(slug: slug)
     next unless skill
@@ -613,7 +670,8 @@ if concierge
     binding.assign_attributes(priority: 100 + i, is_active: true)
     binding.save!
   end
-  puts "    ✓ Bound #{concierge_skill_slugs.size} read-shape skills to System Concierge"
+  puts "    ✓ Bound #{concierge_skill_slugs.size} skills to System Concierge " \
+       "(#{concierge_read_skill_slugs.size} read-shape + #{concierge_workflow_skill_slugs.size} workflow-step for router delegation)"
 else
   puts "    = System Concierge not seeded yet — skipping concierge bindings"
 end

@@ -137,6 +137,23 @@ module PowernodeSystem
       end
     end
 
+    # Register this extension's skill-routing domain with the parent's
+    # ConciergeRouter. Used as the fallback when a skill's metadata
+    # doesn't explicitly declare `domain`, and as the affinity signal
+    # when multiple chat-facing agents are bound to one skill.
+    initializer "powernode_system.register_routing_domain", after: :load_config_initializers do
+      config.after_initialize do
+        next unless defined?(::Ai::Skill) && ::Ai::Skill.respond_to?(:register_domain)
+
+        ::Ai::Skill.register_domain(
+          name: "system",
+          executor_namespace_pattern: /\ASystem::/
+        )
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register routing domain: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry. Without this, InterventionPolicy seeds for these
     # categories would fail validation (Phase 5 — Action Category Registry).
