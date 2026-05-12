@@ -18,39 +18,44 @@ type Kind = 'apt' | 'rpm' | 'dnf';
 
 const FAMILY_ORDER = ['x86', 'arm', 'power', 'z', 'risc-v', 'mips', 'other'];
 
-// Map a name (could be canonical, apt_name, or rpm_name) to the row's
-// value for the target kind. Returns the original input when no catalog
-// match is found (preserves operator-entered values).
-function translateArchValue(
-  current: string,
-  fromKind: Kind,
-  toKind: Kind,
-  catalog: SystemNodeArchitecture[]
-): string {
-  const norm = current.trim().toLowerCase();
-  const fromField = fromKind === 'apt' ? 'apt_name' : 'rpm_name';
-  const toField = toKind === 'apt' ? 'apt_name' : 'rpm_name';
+// Resolve any input form (canonical name, apt_name, rpm_name, or alias)
+// to the catalog row's canonical `name`. Returns the original input
+// when no catalog match is found (preserves operator-entered tags
+// during edit; the backend's canonicalize_architectures hook drops
+// truly unmappable entries on save).
+function toCanonical(value: string, catalog: SystemNodeArchitecture[]): string {
+  const norm = value.trim().toLowerCase();
   const match = catalog.find(
     (a) =>
       a.name.toLowerCase() === norm ||
       (a.apt_name && a.apt_name.toLowerCase() === norm) ||
       (a.rpm_name && a.rpm_name.toLowerCase() === norm) ||
-      (a[fromField] && a[fromField]!.toLowerCase() === norm)
+      (a.aliases?.some((al) => al.toLowerCase() === norm))
   );
-  return match?.[toField] ?? match?.name ?? current;
+  return match?.name ?? value;
 }
 
+// Architectures are stored canonical (T2.A) — the dropdown VALUE is the
+// canonical name. The LABEL prefers the kind-specific name for operator
+// readability ("x86_64" reads naturally in an rpm context even though the
+// stored value is "amd64"), and the secondaryLabel shows the alternate
+// convention so the operator sees the equivalence at a glance.
 function archOptionsForKind(catalog: SystemNodeArchitecture[], kind: Kind): MultiSelectOption[] {
   const field: 'apt_name' | 'rpm_name' = kind === 'apt' ? 'apt_name' : 'rpm_name';
   return catalog
     .filter((a) => a.enabled)
     .map((a) => {
       const primary = a[field] ?? a.name;
-      const secondary = field === 'apt_name' ? a.rpm_name ?? a.name : a.apt_name ?? a.name;
+      const alt = field === 'apt_name' ? a.rpm_name ?? a.name : a.apt_name ?? a.name;
       return {
-        value: primary,
+        // Wire value: canonical (apt-convention per prior session).
+        // Backend's adapter translates to kind-specific at sync time.
+        value: a.name,
+        // Display: kind-specific reads naturally in context, but canonical
+        // is what gets stored — show alt in parens to make the mapping
+        // visible.
         label: primary,
-        secondaryLabel: secondary && secondary !== primary ? secondary : undefined,
+        secondaryLabel: alt && alt !== primary ? alt : undefined,
         description: a.description,
         group: familyLabel(a.family),
       };
@@ -118,7 +123,15 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setKind(repository.kind);
       setVisibility(repository.visibility);
       setBaseUrl(repository.base_url);
-      setArchs(repository.architectures.map((s) => s.trim()).filter(Boolean));
+      // Stored architectures are canonical (post-T2.A) but be defensive
+      // and re-canonicalize via the catalog on load — handles any stale
+      // pre-T2.A rows that slipped through and any user-supplied non-
+      // canonical strings the backend's hook would normalize on save.
+      setArchs(
+        repository.architectures
+          .map((s) => toCanonical(s.trim(), catalog))
+          .filter(Boolean)
+      );
       setAptSuite((repository.apt_config?.suite as string) ?? '');
       setAptComponents(((repository.apt_config?.components as string[]) ?? []).join(','));
       setRpmReleasever((repository.rpm_config?.releasever as string) ?? '');
@@ -152,17 +165,23 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   const onKindChange = (next: Kind) => {
     const prev = kind;
     setKind(next);
+    // Architectures are stored canonical — they don't need translation
+    // across a kind toggle. Only the displayed label changes (the
+    // dropdown re-renders kind-specific labels via archOptions). The
+    // inline banner stays useful for visual confirmation that the
+    // operator's selection still resolves on the new side.
     if (prev === next || catalog.length === 0 || archs.length === 0) return;
 
-    const prevKind: Kind = prev;
-    const translated = archs.map((a) => translateArchValue(a, prevKind, next, catalog));
-    const changedCount = translated.filter((v, i) => v !== archs[i]).length;
-    if (changedCount > 0) {
-      setArchs(translated);
-      setTranslationMessage(
-        `Translated ${changedCount} architecture${changedCount === 1 ? '' : 's'} from ${prev} → ${next} naming.`
-      );
-    }
+    const visibleNow = archs
+      .map((canonical) => {
+        const row = catalog.find((a) => a.name === canonical);
+        if (!row) return canonical;
+        return next === 'apt' ? row.apt_name ?? row.name : row.rpm_name ?? row.name;
+      })
+      .join(', ');
+    setTranslationMessage(
+      `Showing ${next} names: ${visibleNow}. (Canonical values unchanged — backend translates per-kind at sync.)`
+    );
   };
 
   const archOptions = useMemo(() => archOptionsForKind(catalog, kind), [catalog, kind]);

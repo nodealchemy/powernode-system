@@ -30,7 +30,17 @@ module System
 
     def initialize(repository:, architectures: nil)
       @repository = repository
-      @architectures = architectures.presence || Array(repository.architectures).presence || ["amd64"]
+      # PackageRepository.architectures stores canonical names (post-T2.A).
+      # Adapters need kind-specific names for URL construction
+      # (apt's `binary-<arch>` paths, rpm's `--forcearch`). Translate at
+      # the boundary via architectures_for_kind. The `architectures:`
+      # override kwarg is treated as already kind-specific — used by
+      # tests and ad-hoc CLI invocations that want to force a specific
+      # set without canonicalization.
+      @architectures =
+        architectures.presence ||
+        repository.architectures_for_kind.presence ||
+        default_architecture_for(repository.kind)
     end
 
     def call
@@ -143,6 +153,13 @@ module System
         .where(obsoleted_at: nil)
         .where("updated_at < ?", since)
         .update_all(obsoleted_at: Time.current)
+    end
+
+    # Fallback when a repo has no architectures set — pick the kind's
+    # default. apt's `amd64` and rpm's `x86_64` are the safest baseline
+    # choices and match what the form would default to.
+    def default_architecture_for(kind)
+      kind.to_s == "apt" ? ["amd64"] : ["x86_64"]
     end
   end
 end

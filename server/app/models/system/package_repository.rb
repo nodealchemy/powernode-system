@@ -82,6 +82,16 @@ module System
     # go through update! but don't touch the `architectures` column, so the
     # `saved_change_to_architectures?` guard prevents spurious counter writes
     # on every sync tick.
+
+    # Canonicalize architectures on every write. Operators or AI agents can
+    # submit kind-specific names ("x86_64"), aliases ("amd64-graviton"), or
+    # already-canonical names ("amd64") — we normalize to the canonical form
+    # via NodeArchitecture.find_normalized so the JSONB column always stores
+    # the catalog's `name` values. Downstream consumers (adapters, the sync
+    # service) translate back to kind-specific via #architectures_for_kind.
+    # Runs before validation so the canonicalized form is what gets validated.
+    before_validation :canonicalize_architectures
+
     after_create_commit  :increment_arch_counters
     after_update_commit  :diff_arch_counters
     after_destroy_commit :decrement_arch_counters
@@ -148,6 +158,23 @@ module System
       update!(sync_status: "failed", last_sync_error: error_message.to_s.truncate(2000))
     end
 
+    # Translate this repo's canonical architectures back to the kind-
+    # specific names its adapter expects. The PackageRepository column
+    # stores canonical names (post-T2.A), but apt's `binary-<arch>/Packages.xz`
+    # URLs need apt-style names and rpm's `--forcearch=<arch>` needs rpm-style
+    # names. This method is the translation point at the adapter boundary.
+    #
+    # Returns an array; preserves order; drops entries whose canonical
+    # value can't be resolved (defensive — shouldn't happen since the
+    # before_validation hook rejects unmappable input).
+    def architectures_for_kind
+      Array(architectures).filter_map do |canonical_name|
+        arch = ::System::NodeArchitecture.find_normalized(canonical_name)
+        next nil unless arch
+        arch.value_for_kind(kind)
+      end
+    end
+
     private
 
     def visibility_account_consistency
@@ -172,6 +199,27 @@ module System
           errors.add(:rpm_config, "must contain 'releasever' or 'metalink' for rpm/dnf repositories")
         end
       end
+    end
+
+    # === Architecture canonicalization (T2.A) ===
+
+    # before_validation hook — coerces every entry in `architectures` to
+    # the canonical name from the NodeArchitecture catalog. Accepts:
+    #   - canonical names ("amd64") — pass through
+    #   - kind-specific names ("x86_64", "aarch64") — translated
+    #   - aliases ("amd64-graviton") — translated via the aliases JSONB
+    # Unmappable entries are silently dropped — the operator should
+    # define an alias on a canonical row if they want a vendor tag preserved.
+    def canonicalize_architectures
+      raw = Array(architectures)
+      return if raw.empty?
+
+      canonicalized = raw.filter_map do |value|
+        arch = ::System::NodeArchitecture.find_normalized(value)
+        arch&.name
+      end.uniq
+
+      self.architectures = canonicalized
     end
 
     # === Arch-counter helpers (called by after_commit hooks above) ===

@@ -42,7 +42,16 @@ module System
                    category: nil, dispatch_build: true)
       @repository          = repository
       @package_name        = package_name
-      @architectures       = Array(architectures).presence || ["amd64"]
+      # Callers (frontend, MCP) submit canonical names (post-T2.A). The
+      # PackageDependencyResolver queries Package.architecture which is
+      # kind-specific (apt's "amd64" / rpm's "x86_64" — whatever the
+      # upstream metadata used). Translate at the boundary so the resolver
+      # WHERE clauses hit the right rows.
+      canonical_input      = Array(architectures).presence || ["amd64"]
+      @architectures       = canonical_input.filter_map do |canonical|
+        arch_row = ::System::NodeArchitecture.find_normalized(canonical)
+        arch_row ? arch_row.value_for_kind(repository.kind) : canonical
+      end
       @account             = account
       @user                = requested_by_user
       @recommends_selected = Array(recommends_selected).map(&:to_s)
