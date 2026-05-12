@@ -42,6 +42,10 @@ module System
         .where(package_repository_id: @repository.id, obsoleted_at: nil)
         .count
       @repository.mark_synced!(package_count: package_count)
+      # Package rows landed via upsert_all (no callbacks); refresh the
+      # arch-level package_count counter so the catalog UI's Usage column
+      # stays honest. Cheap (~N=arch_count SELECT COUNTs) and idempotent.
+      ::System::NodeArchitecture.recompute_package_counts!
 
       Result.new(
         success: true,

@@ -138,6 +138,63 @@ module System
       end
     end
 
+    # === Counter-cache reconciliation ===
+    #
+    # `node_platform_count` is maintained by `counter_cache: :node_platform_count`
+    # on NodePlatform's belongs_to, so it stays accurate for normal
+    # ActiveRecord writes. Bare SQL UPDATEs (migrations, psql) bypass it.
+    #
+    # `package_repository_count` is maintained by after_commit hooks on
+    # PackageRepository (the JSONB `architectures` array can't drive a
+    # built-in counter_cache).
+    #
+    # `package_count` is the trickiest — Package rows are bulk-imported via
+    # upsert_all (which doesn't fire callbacks), so we recompute it from
+    # SQL after each sync via #recompute_package_counts_for!. The class-level
+    # reset helpers below are the operator-facing path: invoke after bare-
+    # SQL operations or any time you suspect drift.
+
+    # Resets all three counters on every row from authoritative source data.
+    # Safe to run anytime; idempotent.
+    def self.recompute_all_counters!
+      find_each do |arch|
+        reset_counters(arch.id, :node_platforms)
+        arch.update_columns(
+          package_repository_count: count_package_repositories_for(arch),
+          package_count:            count_packages_for(arch)
+        )
+      end
+    end
+
+    # Recompute package_count only — invoked at the end of every
+    # PackageRepositorySyncService run because Package rows are written via
+    # upsert_all and bypass after_commit callbacks. Cheap (N=arch_count
+    # SELECT COUNTs, ~7 today) and keeps the UI's Usage column honest.
+    def self.recompute_package_counts!
+      find_each do |arch|
+        arch.update_columns(package_count: count_packages_for(arch))
+      end
+    end
+
+    # Build a SQL fragment matching this arch by canonical/apt/rpm name —
+    # repos and packages store kind-specific strings, so we OR across all
+    # three conventions to find rows attributable to this canonical arch.
+    def self.count_packages_for(arch)
+      ::System::Package
+        .where(obsoleted_at: nil)
+        .where("architecture IN (?)", [arch.name, arch.apt_name, arch.rpm_name].compact.uniq)
+        .count
+    end
+
+    def self.count_package_repositories_for(arch)
+      names = [arch.name, arch.apt_name, arch.rpm_name].compact.uniq
+      # JSONB ?| operator: true when any element of the array matches any
+      # of the listed names. Hits the GIN index on architectures.
+      ::System::PackageRepository
+        .where("architectures ?| array[:names]", names: names)
+        .count
+    end
+
     # === Boot Image Methods ===
     def has_kernel?
       kernel_file_object.present?

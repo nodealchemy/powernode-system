@@ -70,6 +70,22 @@ module System
       end
     }
 
+    # === Callbacks ===
+    # The architectures column is a JSONB array of strings, so a built-in
+    # counter_cache can't track it (counter_cache requires a belongs_to FK).
+    # Instead, fire after_commit callbacks to bump NodeArchitecture.package_
+    # repository_count for each canonical arch the repo touches. find_normalized
+    # handles apt/rpm name aliases, so "amd64" and "x86_64" count against the
+    # same canonical row.
+    #
+    # The sync-status updates (mark_syncing!/mark_synced!/mark_sync_failed!)
+    # go through update! but don't touch the `architectures` column, so the
+    # `saved_change_to_architectures?` guard prevents spurious counter writes
+    # on every sync tick.
+    after_create_commit  :increment_arch_counters
+    after_update_commit  :diff_arch_counters
+    after_destroy_commit :decrement_arch_counters
+
     # === Methods ===
     def shared?
       visibility == "shared"
@@ -154,6 +170,37 @@ module System
       when "rpm", "dnf"
         if releasever.blank? && metalink.blank?
           errors.add(:rpm_config, "must contain 'releasever' or 'metalink' for rpm/dnf repositories")
+        end
+      end
+    end
+
+    # === Arch-counter helpers (called by after_commit hooks above) ===
+
+    def increment_arch_counters
+      bump_arch_counters(Array(architectures), delta: 1)
+    end
+
+    def decrement_arch_counters
+      bump_arch_counters(Array(architectures), delta: -1)
+    end
+
+    def diff_arch_counters
+      return unless saved_change_to_architectures?
+
+      old_arches, new_arches = saved_change_to_architectures
+      bump_arch_counters(Array(old_arches) - Array(new_arches), delta: -1)
+      bump_arch_counters(Array(new_arches) - Array(old_arches), delta: 1)
+    end
+
+    def bump_arch_counters(arch_names, delta:)
+      arch_names.uniq.each do |name|
+        arch = ::System::NodeArchitecture.find_normalized(name)
+        next unless arch
+
+        if delta.positive?
+          ::System::NodeArchitecture.increment_counter(:package_repository_count, arch.id)
+        else
+          ::System::NodeArchitecture.decrement_counter(:package_repository_count, arch.id)
         end
       end
     end
