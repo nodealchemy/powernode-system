@@ -1,6 +1,6 @@
 import { apiClient } from '@/shared/services/apiClient';
 import { extractData } from './helpers';
-import type { ApiEnvelope, PaginationParams } from './types';
+import type { ApiEnvelope } from './types';
 
 export type PackageRepositoryKind = 'apt' | 'rpm' | 'dnf';
 export type PackageRepositoryVisibility = 'account' | 'shared';
@@ -21,6 +21,9 @@ export interface SystemPackageRepository {
   last_sync_error?: string;
   package_count: number;
   shared: boolean;
+  // Live packages without embeddings yet (populated server-side). The
+  // Catalog UI uses this to show a coverage chip on the repo row.
+  embedding_pending_count?: number;
   // M:N to NodePlatform via system_package_repository_platforms.
   // Always returned as an array (possibly empty for platform-agnostic
   // shared repos like Debian stable / Ubuntu noble).
@@ -46,10 +49,63 @@ export interface SystemPackage {
   download_size_bytes?: number;
   homepage?: string;
   license?: string;
+  // Flattened capability names from the JSONB `provides` array (server
+  // side computes this via Package#provides_capabilities). Useful for
+  // UI badges + AI agent reasoning without re-walking the nested shape.
+  provides_names?: string[];
+  // Populated in semantic/hybrid search modes + in discoverByIntent
+  // results. 1.0 = perfect match, 0.0 = orthogonal. Absent in lexical
+  // mode (no meaningful similarity).
+  similarity?: number;
   package_repository_id: string;
   depends?: Array<Array<{ name: string; op?: string; version?: string }>>;
   recommends?: Array<Array<{ name: string; op?: string; version?: string }>>;
   provides?: Array<Array<{ name: string; op?: string; version?: string }>>;
+}
+
+export type PackageSearchMode = 'lexical' | 'semantic' | 'hybrid';
+
+// Mirrors the server-side PackageSearchService param surface. Both legacy
+// singular params (repository_id, section, architecture) and the new array
+// forms are accepted by the backend — frontend should prefer the array
+// forms going forward.
+export interface PackagesSearchParams {
+  q?: string;
+  mode?: PackageSearchMode;
+  sort?: 'relevance' | 'name' | 'updated';
+  // Legacy singular (kept for back-compat callers like CreateModuleFromPackageModal)
+  repository_id?: string;
+  architecture?: string;
+  section?: string;
+  // Preferred array forms
+  repository_ids?: string[];
+  architectures?: string[];
+  sections?: string[];
+  kind?: PackageRepositoryKind;
+  license?: string;
+  provides?: string;
+  page?: number;
+  per_page?: number;
+}
+
+export interface PackagesSearchResult {
+  packages: SystemPackage[];
+  total: number | null;             // null under semantic/hybrid with q (exact COUNT prohibitive)
+  page: number;
+  per_page: number;
+  mode: PackageSearchMode;
+  applied_filters: Record<string, unknown>;
+}
+
+export interface PackageDiscoverResult {
+  intent: string;
+  results: Array<SystemPackage & {
+    package_id: string;
+    similarity: number;
+    reason: string;
+  }>;
+  seed_count: number;
+  confidence: 'high' | 'medium' | 'low';
 }
 
 export interface PackageRepositoryCreate {
@@ -169,20 +225,40 @@ export const packageRepositoriesApi = {
 };
 
 export const packagesApi = {
-  search: async (params: {
-    q?: string;
-    repository_id?: string;
-    section?: string;
-    architecture?: string;
-    page?: number;
-    per_page?: number;
-  }): Promise<{ packages: SystemPackage[]; total: number; page: number; per_page: number }> => {
-    const response = await apiClient.get<ApiEnvelope<{ packages: SystemPackage[]; meta: { total: number; page: number; per_page: number } }>>(
-      '/system/packages',
-      { params },
-    );
+  search: async (params: PackagesSearchParams): Promise<PackagesSearchResult> => {
+    const response = await apiClient.get<
+      ApiEnvelope<{
+        packages: SystemPackage[];
+        meta: {
+          total: number | null;
+          page: number;
+          per_page: number;
+          mode: PackageSearchMode;
+          applied_filters: Record<string, unknown>;
+        };
+      }>
+    >('/system/packages', { params });
     const data = extractData(response);
     return { packages: data.packages, ...data.meta };
+  },
+
+  // Intent-based semantic discovery. Backed by DiscoverPackagesByIntentExecutor.
+  // Use when the operator describes a capability ("reverse proxy", "distributed
+  // cache") rather than a known package name — use `search` for keyword/filter
+  // browsing instead.
+  discoverByIntent: async (params: {
+    intent: string;
+    repository_ids?: string[];
+    kind?: PackageRepositoryKind;
+    architectures?: string[];
+    license?: string;
+    top_k?: number;
+  }): Promise<PackageDiscoverResult> => {
+    const response = await apiClient.post<ApiEnvelope<PackageDiscoverResult>>(
+      '/system/packages/discover',
+      params,
+    );
+    return extractData(response);
   },
 
   get: async (id: string): Promise<SystemPackage> => {
