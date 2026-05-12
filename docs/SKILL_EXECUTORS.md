@@ -1,6 +1,6 @@
 # Skill Executors — System Extension Reference
 
-The system extension ships 29 skill executors at `extensions/system/server/app/services/system/ai/skills/`. Each pairs with an `Ai::Skill` record (seeded by `system_skills_seed.rb`) that makes it discoverable via `platform.discover_skills`. Skills are bound to autonomy + chat agents via `Ai::AgentSkill`.
+The system extension ships 30 skill executors at `extensions/system/server/app/services/system/ai/skills/`. Each pairs with an `Ai::Skill` record (seeded by `system_skills_seed.rb`) that makes it discoverable via `platform.discover_skills`. Skills are bound to autonomy + chat agents via `Ai::AgentSkill`.
 
 > The per-executor reference section below covers the original 14 executors in depth. The 15 newer executors (CVE remediation orchestration, full-stack provisioning, package management, SDWAN OVN composition, IPFIX collector, workload relocation, etc.) have inline documentation in their source files and `descriptor()` blocks; expanding this reference is tracked separately.
 
@@ -24,6 +24,7 @@ The 2026-05-10 agent split moved CVE work out of Fleet Autonomy into a dedicated
 | `system-package-repository-sync` | Fleet Autonomy | Autonomous package catalog sync |
 | `system-package-module-create` | Fleet Autonomy | Autonomous package-derived module creation |
 | `system-package-module-refresh` | Fleet Autonomy **+** CVE Responder | Autonomous package drift refresh (CVE-driven via CVE Responder) |
+| `system-discover-packages-by-intent` | Fleet Autonomy **+** System Concierge | Intent-based semantic package discovery — operator chat ("find me a web server") + autonomous module composition |
 | `system-cve-response` | CVE Responder | CVE triage (moved from Fleet Autonomy 2026-05-11) |
 | `system-cve-remediation-orchestration` | CVE Responder | Chains triage → refresh → rolling upgrade for inline notify_and_proceed dispatch |
 | `system-provision-cluster` | Runtime Manager | Container runtime lifecycle (Phase 2 K3s) |

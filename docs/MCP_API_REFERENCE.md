@@ -49,7 +49,7 @@ Every action requires a permission grant on the calling user/agent. Permissions 
 
 ## Action catalog
 
-### `system_*` — Fleet, lifecycle, modules (27 actions)
+### `system_*` — Fleet, lifecycle, modules (42 actions)
 
 Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerProvisioningTool` (managed Docker runtimes).
 
@@ -104,6 +104,37 @@ Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerPro
 | `system_decommission_docker_runtime` | Destroy managed DockerHost row + Vault TLS material |
 | `system_mark_docker_ready` | Agent-side ack endpoint (mostly internal) |
 | `system_list_managed_docker_hosts` | List Powernode-managed Docker hosts (excludes externally-registered) |
+
+#### Package repositories + catalog
+
+Backed by `Ai::Tools::SystemPackageRepositoryTool`. Manages apt/rpm package repositories, browses the synced catalog with rich filtering, and materializes packages into NodeModules with full dependency closure.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_list_package_repositories` | List accessible apt/rpm repositories (account-scoped + shared); filter by `kind` and `node_platform_ids[]`. Each row carries `embedding_pending_count` for catalog coverage. | operator, agent |
+| `system_get_package_repository` | Fetch one repository with detail (apt_config, rpm_config, linked NodePlatforms) | operator, agent |
+| `system_create_package_repository` | Register a new apt/rpm/dnf repository (`visibility: shared` requires `system.package_repositories.manage_shared`) | operator |
+| `system_update_package_repository` | Update repository config (architectures, enabled, priority, apt/rpm config) | operator |
+| `system_delete_package_repository` | Delete a repository (only when no modules link to its packages) | operator |
+| `system_sync_package_repository` | Trigger an immediate upstream sync (fetches index, upserts Package rows). Enqueues `SystemPackageEmbeddingJob` after successful sync. | operator, agent |
+| `system_link_repository_platform` / `system_unlink_repository_platform` | M:N link/unlink between repository and NodePlatform | operator |
+| **`system_search_packages`** | **Search the synced catalog. Hybrid trigram+embedding ranking (default), pure lexical, or pure semantic.** Filters: `q`, `mode` (lexical/semantic/hybrid), `repository_ids[]`, `kind`, `architectures[]` (canonical, cross-kind expanded), `sections[]`, `license`, `provides` (capability lookup), `sort`, `page`, `per_page`. Back-compat with singular `repository_id`/`architecture`/`section`. Response includes `similarity` (when mode ≠ lexical), `provides_names`, `license`, `applied_filters` echo. `total` is null under semantic/hybrid (exact COUNT prohibitive on vector-filtered sets). | operator, agent |
+| **`system_discover_packages`** | **Intent-based semantic discovery — describe a capability ("reverse proxy", "distributed cache") and get ranked packages.** Pure cosine-distance ranking via pgvector. Inputs: `intent` (required), `repository_ids[]`, `kind`, `architectures[]`, `license`, `top_k` (1-50, default 10). Returns `{results: [{package_id, name, version, architecture, summary, similarity, repository_id, reason}], seed_count, confidence (high/medium/low)}`. Use `system_search_packages` instead when you already know the package name. | operator, agent |
+| `system_get_package` | Fetch one Package row with full metadata (depends, recommends, provides, conflicts, license, maintainer) | operator, agent |
+| `system_resolve_package_dependencies` | Preview the dependency closure of a package without writes — required + recommends candidates the operator can opt into | operator, agent |
+| `system_create_module_from_package` | Materialize a package + transitive deps as NodeModule rows + ModuleDependency edges; dispatches CI build per architecture | operator, agent |
+| `system_list_package_module_links` | Auditable provenance — which NodeModules came from which packages, top-level vs auto-generated | operator, agent |
+| `system_refresh_package_module` | Re-materialize a NodeModule when upstream drifts (replays persisted `recommends_chosen` for deterministic refreshes) | operator, agent |
+| `system_suggest_architectures_for_fleet` | T2.B — fleet-aware architecture suggestion for materialization; intersects repo's archs with NodePlatform coverage | operator, agent |
+
+**Embedding pipeline:** `Package.embedding` (pgvector 1536-dim) is populated by `SystemPackageEmbeddingJob` (worker-side). The job is auto-enqueued after every sync that upserts ≥1 row, and can be manually run via `rake system:packages:backfill_embeddings`. Without embeddings, hybrid mode contributes only the trigram leg — search still works, just without semantic ranking.
+
+**Permission map:**
+- `system.package_repositories.{view,create,update,delete,sync,manage_shared}` — repository CRUD + sync
+- `system.packages.{view,search}` — catalog read access (search covers both `search` and `discover`)
+- `system.package_modules.{view,create,refresh}` — materialization + provenance
+- `system.packages.embed` (worker-only) — embedding writeback
+- `system.packages.reembed` (operator) — manual re-embed campaigns
 
 ### `system_sdwan_*` — SDWAN networking (52 actions)
 
