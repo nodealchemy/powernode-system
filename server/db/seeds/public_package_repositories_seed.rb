@@ -58,11 +58,25 @@ PUBLIC_REPOS = [
     architectures: %w[amd64 arm64 armhf ppc64el s390x]
   },
   {
+    # Ubuntu's main archive at us.archive.ubuntu.com hosts ONLY the
+    # primary architecture (amd64; i386 was dropped after 18.04).
+    # Secondary architectures live at ports.ubuntu.com — separate
+    # repository below.
     name:        "Ubuntu noble (US mirror)",
-    description: "Ubuntu 24.04 LTS (noble) main archive served from us.archive.ubuntu.com. Tracks Ubuntu's primary architecture set: amd64, arm64, armhf, ppc64el, riscv64, s390x.",
+    description: "Ubuntu 24.04 LTS (noble) main archive served from us.archive.ubuntu.com. Primary architecture only (amd64) — secondary architectures (arm64/armhf/ppc64el/riscv64/s390x) live in the companion 'Ubuntu noble (ports)' repository.",
     base_url:    "http://us.archive.ubuntu.com/ubuntu/",
     apt_config:  { "suite" => "noble", "components" => ["main", "restricted", "universe", "multiverse"] },
-    architectures: %w[amd64 arm64 armhf ppc64el riscv64 s390x]
+    architectures: %w[amd64]
+  },
+  {
+    # Ubuntu's secondary architectures live at ports.ubuntu.com (CDN-
+    # served, not US-specific). The base path is `/ubuntu-ports/` rather
+    # than `/ubuntu/`. Same noble suite + components map across.
+    name:        "Ubuntu noble (ports)",
+    description: "Ubuntu 24.04 LTS (noble) secondary-architecture archive served from ports.ubuntu.com. Hosts arm64, armhf, ppc64el, riscv64, and s390x — split from the primary mirror by Ubuntu convention.",
+    base_url:    "http://ports.ubuntu.com/ubuntu-ports/",
+    apt_config:  { "suite" => "noble", "components" => ["main", "restricted", "universe", "multiverse"] },
+    architectures: %w[arm64 armhf ppc64el riscv64 s390x]
   }
 ].freeze
 

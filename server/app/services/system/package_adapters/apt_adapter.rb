@@ -13,7 +13,12 @@ module System
     #   [[{name,op,version}], [{name,op,version},{name,op,version}], ...]
     # outer array = AND, inner = OR (apt's "a | b" alternatives).
     class AptAdapter < Base
-      COMPRESSION_EXTENSIONS = %w[.xz .gz ""].freeze
+      # Tried in order — `.xz` is the modern default for Debian/Ubuntu,
+      # `.gz` is the legacy fallback, "" is the uncompressed `Packages`
+      # file (rare in 2026 but still served by some mirrors / third-party
+      # repos). Cannot use `%w[.xz .gz ""]` here because %w turns "" into
+      # the literal two-character string `""`, not an empty string.
+      COMPRESSION_EXTENSIONS = [".xz", ".gz", ""].freeze
 
       def sync_metadata(repository:, architectures:)
         return enum_for(:sync_metadata, repository: repository, architectures: architectures) unless block_given?
@@ -29,16 +34,32 @@ module System
         end
 
         count = 0
+        missing = []
         repository.components.each do |component|
           architectures.each do |arch|
             packages_bytes = fetch_packages_file(repository, component: component, architecture: arch)
-            next if packages_bytes.nil?
+            if packages_bytes.nil?
+              missing << "#{component}/#{arch}"
+              next
+            end
 
             parse_packages_stream(packages_bytes) do |raw_fields|
               yield to_parsed_package(raw_fields, default_arch: arch)
               count += 1
             end
           end
+        end
+        # If we yielded zero packages AND every (component, arch) returned
+        # nil, the configuration is wrong (typically: wrong base_url for
+        # the requested arches — e.g. Ubuntu ports live at
+        # ports.ubuntu.com, not us.archive.ubuntu.com). Raise so the
+        # sync service marks the repo as failed with a clear message
+        # rather than silently reporting success with 0 upserts.
+        if count.zero? && missing.any? && missing.size == repository.components.size * architectures.size
+          raise FetchError,
+                "All Packages files returned 404 (tried .xz, .gz, uncompressed). " \
+                "Missing paths: #{missing.first(5).join(', ')}#{missing.size > 5 ? " (+#{missing.size - 5} more)" : ''}. " \
+                "Check that base_url '#{repository.base_url}' serves the requested architectures."
         end
         count
       end
