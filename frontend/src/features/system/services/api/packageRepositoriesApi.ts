@@ -181,4 +181,33 @@ export const packagesApi = {
     );
     return extractData(response);
   },
+
+  // T2.B — fleet-aware architecture suggestion. Returns canonical arch
+  // names ranked by NodePlatform coverage intersected with repo support.
+  // Used by CreateModuleFromPackageModal to pre-populate the materialize
+  // form so operators don't manually pick arches when the fleet's shape
+  // already implies the answer.
+  suggestArchitectures: async (params: {
+    repository_id: string;
+    max_suggestions?: number;
+  }): Promise<SuggestArchitecturesResult> => {
+    const response = await apiClient.post<ApiEnvelope<SuggestArchitecturesResult>>(
+      '/system/packages/suggest_architectures',
+      params,
+    );
+    return extractData(response);
+  },
 };
+
+export interface SuggestArchitecturesResult {
+  repository_id: string;
+  suggested: string[];
+  rationale: Array<{
+    arch?: string;
+    node_platforms?: number;
+    packages?: number;
+    reason: string;
+  }>;
+  fallback: boolean;
+  confidence: 'high' | 'medium' | 'low';
+}

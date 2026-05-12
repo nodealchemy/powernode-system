@@ -114,12 +114,14 @@ Rails.application.routes.draw do
         end
 
         # Browse + materialize endpoints over the synced package catalog.
-        # POST /api/v1/system/packages/resolve_dependencies  — preview closure
-        # POST /api/v1/system/packages/create_module         — materialize + dispatch
+        # POST /api/v1/system/packages/resolve_dependencies   — preview closure
+        # POST /api/v1/system/packages/create_module          — materialize + dispatch
+        # POST /api/v1/system/packages/suggest_architectures  — fleet-aware arch suggestion (T2.B)
         resources :packages, only: %i[index show] do
           collection do
             post :resolve_dependencies
             post :create_module
+            post :suggest_architectures
           end
         end
 

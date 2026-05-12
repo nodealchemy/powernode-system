@@ -501,6 +501,27 @@ SKILLS_DATA = [
       if any NodePlatform references it (restrict_with_error
       dependency). Canonical rows are immutable and return an error.
     PROMPT
+  },
+  # ─── T2.B ────────────────────────────────────────────────────────────
+  {
+    name: "Suggest Architectures for Fleet",
+    slug: "system-suggest-architectures-for-fleet",
+    description: "Suggest which canonical architectures to materialize a package for, based on the fleet's current NodePlatform coverage and the repository's served architectures.",
+    category: "devops",
+    subdomain: "package-catalog",
+    executor: "System::Ai::Skills::SuggestArchitecturesForFleetExecutor",
+    tags: %w[architecture fleet packages materialize suggestion],
+    system_prompt: <<~PROMPT.strip
+      Use this skill BEFORE invoking system-package-module-create when
+      the operator hasn't specified architectures. Inputs: repository_id
+      (required), max_suggestions (1-7, default 4). Returns the canonical
+      architectures most-likely-correct for the operator's fleet — the
+      intersection of (repo's served archs, arches with non-zero fleet
+      NodePlatform coverage), ranked by NodePlatform count. Falls back
+      to repo defaults with a `fallback: true` flag + low confidence
+      when there's no fleet overlap. Use the per-arch `rationale` array
+      to explain the recommendation to the operator.
+    PROMPT
   }
 ].freeze
 
@@ -552,12 +573,14 @@ puts "    ✓ Skills: #{created_count} created, #{updated_count} updated (#{SKIL
 # Concierge — read-shape: capacity_recommend, attribute_failure, runbook_generate, cve_runbook_generate
 concierge = ::Ai::Agent.where(account: account).find_by(name: "System Concierge")
 if concierge
-  %w[
+  concierge_skill_slugs = %w[
     system-capacity-recommend
     system-attribute-failure
     system-runbook-generate
     system-cve-runbook-generate
-  ].each_with_index do |slug, i|
+    system-suggest-architectures-for-fleet
+  ]
+  concierge_skill_slugs.each_with_index do |slug, i|
     skill = ::Ai::Skill.find_by(slug: slug)
     next unless skill
 
@@ -567,7 +590,7 @@ if concierge
     binding.assign_attributes(priority: 100 + i, is_active: true)
     binding.save!
   end
-  puts "    ✓ Bound 4 read-shape skills to System Concierge"
+  puts "    ✓ Bound #{concierge_skill_slugs.size} read-shape skills to System Concierge"
 else
   puts "    = System Concierge not seeded yet — skipping concierge bindings"
 end
@@ -592,6 +615,7 @@ if fleet_autonomy
     system-architecture-create
     system-architecture-update
     system-architecture-delete
+    system-suggest-architectures-for-fleet
   ]
 
   fleet_autonomy_slugs.each_with_index do |slug, i|

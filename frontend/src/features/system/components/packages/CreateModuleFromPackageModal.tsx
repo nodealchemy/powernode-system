@@ -1,5 +1,10 @@
 import { FC, useEffect, useState, useMemo } from 'react';
-import { packagesApi, type ResolveDependenciesPreview, type SystemPackageRepository } from '@system/features/system/services/api/packageRepositoriesApi';
+import {
+  packagesApi,
+  type ResolveDependenciesPreview,
+  type SuggestArchitecturesResult,
+  type SystemPackageRepository,
+} from '@system/features/system/services/api/packageRepositoriesApi';
 import { logger } from '@/shared/utils/logger';
 
 interface Props {
@@ -25,6 +30,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
   onCreated,
 }) => {
   const [preview, setPreview] = useState<ResolveDependenciesPreview | null>(null);
+  const [suggestion, setSuggestion] = useState<SuggestArchitecturesResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedRecommends, setSelectedRecommends] = useState<Set<string>>(new Set());
@@ -36,15 +42,44 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
     setLoading(true);
     setError(null);
     setSelectedRecommends(new Set());
-    packagesApi
-      .resolveDependencies({ repository_id: repository.id, package_name: packageName, architecture: arch })
-      .then((p) => setPreview(p))
+    // Fire suggest in parallel with resolveDependencies — they touch
+    // different tables and don't depend on each other.
+    Promise.all([
+      packagesApi.resolveDependencies({
+        repository_id: repository.id,
+        package_name: packageName,
+        architecture: arch,
+      }),
+      packagesApi
+        .suggestArchitectures({ repository_id: repository.id })
+        .catch((e) => {
+          // Suggestion is best-effort — log and continue with the prop-
+          // passed architectures. A failed suggestion shouldn't block
+          // materialization.
+          logger.warn('[CreateModuleModal] arch suggestion failed', e);
+          return null;
+        }),
+    ])
+      .then(([p, s]) => {
+        setPreview(p);
+        setSuggestion(s);
+      })
       .catch((e) => {
         logger.error('[CreateModuleModal] resolve failed', e);
         setError(e instanceof Error ? e.message : 'Failed to resolve dependencies');
       })
       .finally(() => setLoading(false));
   }, [open, repository.id, packageName, arch]);
+
+  // Architectures actually used for the materialize call. Prefer the
+  // AI suggestion when it returned non-fallback results; fall back to
+  // the prop-passed array otherwise.
+  const effectiveArchitectures = useMemo<string[]>(() => {
+    if (suggestion && !suggestion.fallback && suggestion.suggested.length > 0) {
+      return suggestion.suggested;
+    }
+    return architectures;
+  }, [suggestion, architectures]);
 
   const totalSize = useMemo(() => {
     if (!preview) return 0;
@@ -87,7 +122,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
       const result = await packagesApi.createModuleFromPackage({
         repository_id: repository.id,
         package_name: packageName,
-        architectures,
+        architectures: effectiveArchitectures,
         recommends_selected: Array.from(selectedRecommends),
       });
       onCreated(result.top_level_module.id);
@@ -100,6 +135,17 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
     }
   };
 
+  const suggestionApplied =
+    suggestion !== null &&
+    !suggestion.fallback &&
+    suggestion.suggested.length > 0;
+
+  const confidenceBadgeClass = (level: 'high' | 'medium' | 'low'): string => {
+    if (level === 'high') return 'bg-theme-success/20 text-theme-success';
+    if (level === 'medium') return 'bg-theme-info/20 text-theme-info';
+    return 'bg-theme-warning/20 text-theme-warning';
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-4xl bg-theme-surface rounded-lg shadow-xl p-6 max-h-[90vh] flex flex-col">
@@ -107,11 +153,49 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
           <div>
             <h2 className="text-lg font-semibold text-theme-primary">Create Module from Package</h2>
             <p className="text-sm text-theme-secondary mt-0.5">
-              {packageName} <span className="opacity-60">·</span> {repository.name} <span className="opacity-60">·</span> {architectures.join(', ')}
+              {packageName} <span className="opacity-60">·</span> {repository.name} <span className="opacity-60">·</span>{' '}
+              <span className={suggestionApplied ? 'text-theme-info' : ''}>
+                {effectiveArchitectures.join(', ')}
+              </span>
+              {suggestionApplied && (
+                <>
+                  {' '}
+                  <span
+                    className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${confidenceBadgeClass(
+                      suggestion!.confidence,
+                    )}`}
+                  >
+                    AI · {suggestion!.confidence}
+                  </span>
+                </>
+              )}
             </p>
           </div>
           <button onClick={onClose} className="text-theme-secondary hover:text-theme-primary">×</button>
         </div>
+
+        {suggestionApplied && suggestion!.rationale.length > 0 && (
+          <details className="mb-3 text-xs">
+            <summary className="cursor-pointer text-theme-info hover:underline">
+              Why these architectures?
+            </summary>
+            <ul className="mt-1 ml-4 space-y-0.5 text-theme-secondary">
+              {suggestion!.rationale.map((r, idx) => (
+                <li key={idx}>
+                  {r.arch && <span className="font-mono text-theme-primary">{r.arch}</span>}
+                  {r.arch && ' — '}
+                  {r.reason}
+                  {r.node_platforms !== undefined && (
+                    <span className="opacity-70"> ({r.node_platforms} platforms)</span>
+                  )}
+                  {r.packages !== undefined && (
+                    <span className="opacity-70"> ({r.packages} packages)</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
 
         {error && (
           <div className="mb-3 p-2 bg-theme-danger/10 text-theme-danger rounded text-sm">{error}</div>
@@ -213,7 +297,9 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
               <span className="mx-2">·</span>
               <span>~{formatSize(totalSize)} installed</span>
               <span className="mx-2">·</span>
-              <span>{architectures.length} architecture{architectures.length === 1 ? '' : 's'}</span>
+              <span>
+                {effectiveArchitectures.length} architecture{effectiveArchitectures.length === 1 ? '' : 's'}
+              </span>
             </div>
             <div className="flex gap-2">
               <button

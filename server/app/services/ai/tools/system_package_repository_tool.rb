@@ -25,8 +25,33 @@ module Ai
         "system_resolve_package_dependencies" => "system.packages.view",
         "system_create_module_from_package"   => "system.package_modules.create",
         "system_list_package_module_links"    => "system.package_modules.view",
-        "system_refresh_package_module"       => "system.package_modules.refresh"
+        "system_refresh_package_module"       => "system.package_modules.refresh",
+
+        # T2.B — AI-suggested architectures for materialization.
+        # Read-only: gated by the same view permission as packages.
+        "system_suggest_architectures_for_fleet" => "system.packages.view"
       }.freeze
+
+      # Generic top-level definition consumed by BaseTool#validate_params!.
+      # Per-action schemas live in #action_definitions; this advertises the
+      # `action` discriminator + a free-form params surface.
+      def self.definition
+        {
+          name: "system_package_repository",
+          description: "Manage apt/rpm package repositories — sync, search, materialize, suggest archs",
+          parameters: {
+            action:                 { type: "string",  required: true,
+                                       description: "One of: #{ACTION_PERMISSIONS.keys.join(', ')}" },
+            repository_id:          { type: "string",  required: false },
+            package_id:             { type: "string",  required: false },
+            package_module_link_id: { type: "string",  required: false },
+            attributes:             { type: "object",  required: false },
+            architectures:          { type: "array",   required: false },
+            recommends_selected:    { type: "array",   required: false },
+            max_suggestions:        { type: "integer", required: false }
+          }
+        }
+      end
 
       def self.action_definitions
         {
@@ -118,6 +143,13 @@ module Ai
               package_module_link_id: { type: "string", required: true },
               force: { type: "boolean", required: false }
             }
+          },
+          "system_suggest_architectures_for_fleet" => {
+            description: "Suggest which canonical architectures to materialize a package for, based on the fleet's NodePlatform coverage and the repository's served archs. Returns suggested arches + per-arch rationale + confidence label. Frontend uses this to pre-populate the CreateModuleFromPackageModal multi-select.",
+            parameters: {
+              repository_id:   { type: "string",  required: true },
+              max_suggestions: { type: "integer", required: false, description: "1-7 (default 4)" }
+            }
           }
         }
       end
@@ -141,6 +173,7 @@ module Ai
         when "system_create_module_from_package"  then create_module_from_package(params)
         when "system_list_package_module_links"   then list_package_module_links(params)
         when "system_refresh_package_module"      then refresh_package_module(params)
+        when "system_suggest_architectures_for_fleet" then suggest_architectures_for_fleet(params)
         else error_result("Unknown action: #{action}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -372,6 +405,20 @@ module Ai
           enqueued: true,
           package_module_link_id: params[:package_module_link_id]
         )
+      end
+
+      # T2.B — thin MCP wrapper over the skill executor. Keeps the
+      # ranking + rationale logic in one place (the executor) so direct
+      # skill invocation and MCP invocation return identical shapes.
+      def suggest_architectures_for_fleet(params)
+        executor = ::System::Ai::Skills::SuggestArchitecturesForFleetExecutor.new(
+          account: @user&.account, agent: @agent, user: @user
+        )
+        result = executor.execute(
+          repository_id:   params[:repository_id],
+          max_suggestions: params[:max_suggestions] || ::System::Ai::Skills::SuggestArchitecturesForFleetExecutor::DEFAULT_MAX_SUGGESTIONS
+        )
+        result[:success] ? success_result(**result[:data]) : error_result(result[:error])
       end
 
       # === Serializers ===

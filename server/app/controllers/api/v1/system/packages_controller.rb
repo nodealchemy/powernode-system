@@ -63,6 +63,29 @@ module Api
           )
         end
 
+        # POST /api/v1/system/packages/suggest_architectures
+        # Body: { repository_id, max_suggestions? }
+        # Returns the fleet-aware arch suggestion set + per-arch rationale.
+        # Frontend modal calls this on open to pre-populate the materialize
+        # form's architectures field. Same data shape as the MCP action
+        # system_suggest_architectures_for_fleet — backed by the same
+        # executor.
+        def suggest_architectures
+          require_permission("system.packages.view")
+          executor = ::System::Ai::Skills::SuggestArchitecturesForFleetExecutor.new(
+            account: @account, user: current_user
+          )
+          result = executor.execute(
+            repository_id:   params[:repository_id],
+            max_suggestions: params[:max_suggestions]&.to_i || 4
+          )
+          if result[:success]
+            render_success(**result[:data])
+          else
+            render_error(result[:error], status: :unprocessable_entity)
+          end
+        end
+
         # POST /api/v1/system/packages/create_module
         # Body: { repository_id, package_name, architectures, recommends_selected[], category_id? }
         # Materializes the package + closure into NodeModules and dispatches build.
