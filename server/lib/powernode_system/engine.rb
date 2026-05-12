@@ -84,6 +84,59 @@ module PowernodeSystem
       end
     end
 
+    # Register extension permissions + role grants with the parent platform's
+    # Permissions module. Without this, db:seed's Role.sync_from_config! would
+    # destructively replace role_permissions with ONLY the parent config's
+    # static list — wiping grants that this extension's migrations added.
+    # Runs after_initialize so the autoload paths are populated; idempotent
+    # so safe across Rails reloader cycles.
+    initializer "powernode_system.register_permissions", after: :load_config_initializers do
+      config.after_initialize do
+        next unless defined?(::Permissions) && ::Permissions.respond_to?(:register_permissions)
+
+        # Permission descriptions (mirrors what the extension's permission
+        # migrations create). Listed here so Permission.sync_from_config!
+        # can pre-create them with the right descriptions.
+        ::Permissions.register_permissions(
+          # Cloud sync (worker-side reconcile tick)
+          "system.cloud_sync.reconcile"  => "Trigger CloudSyncService reconcile tick (worker, hourly)",
+          # Fleet autonomy (worker-side reconcile tick)
+          "system.fleet.reconcile"       => "Trigger FleetAutonomyService reconcile tick (worker, 60s)",
+          "system.fleet.autonomy"        => "Fleet autonomy decision making (worker)",
+          # GitOps reconcile + access
+          "system.gitops.reconcile"      => "Trigger GitOps reconcile tick (worker, cron)",
+          "system.gitops.sync"           => "Sync a GitOps repository (worker)",
+          "system.gitops.read"           => "Read GitOps repository state",
+          "system.gitops.write"          => "Modify GitOps repository state",
+          # Metrics ingest
+          "system.metrics.read"          => "Read system metrics + telemetry",
+          # Package catalog embedding pipeline
+          "system.packages.embed"        => "Lease + write package embeddings (worker)",
+          "system.packages.reembed"      => "Manually re-embed a package repository's catalog (operator)"
+        )
+
+        # Worker role grants. Migrations already grant these (via
+        # role.permissions << perm), but db:seed's destructive sync wipes
+        # them on every run — this registration is what keeps them in
+        # place across seeds.
+        ::Permissions.register_role_permissions(
+          "system_worker",
+          %w[
+            system.cloud_sync.reconcile
+            system.fleet.reconcile
+            system.fleet.autonomy
+            system.gitops.reconcile
+            system.gitops.sync
+            system.gitops.read
+            system.metrics.read
+            system.packages.embed
+          ]
+        )
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register extension permissions: #{e.message}"
+      end
+    end
+
     # Register all action_categories the system extension owns with the core
     # AutonomyGate registry. Without this, InterventionPolicy seeds for these
     # categories would fail validation (Phase 5 — Action Category Registry).
