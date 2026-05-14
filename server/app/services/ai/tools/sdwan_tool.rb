@@ -43,8 +43,8 @@ module Ai
         "system_sdwan_revoke_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_federation_scan"         => "sdwan.federation.read",
         # Slice 9a: routing layer (static subnet routing)
-        "system_sdwan_set_peer_lan_subnets"        => "sdwan.routing.manage",
-        "system_sdwan_set_network_routing_mode"    => "sdwan.routing.manage",
+        "system_sdwan_update_peer_lan_subnets"        => "sdwan.routing.manage",
+        "system_sdwan_update_network_routing_mode"    => "sdwan.routing.manage",
         "system_sdwan_list_subnet_advertisements"  => "sdwan.routing.read",
         "system_sdwan_get_routing_summary"         => "sdwan.routing.read",
         # Slice 9b: virtual IPs
@@ -57,7 +57,7 @@ module Ai
         "system_sdwan_list_vip_assignments"        => "sdwan.vips.read",
         # Slice 9c: iBGP / FRR control plane
         "system_sdwan_get_account_bgp"             => "sdwan.routing.read",
-        "system_sdwan_set_account_as_number"       => "sdwan.routing.manage",
+        "system_sdwan_update_account_as_number"       => "sdwan.routing.manage",
         "system_sdwan_get_bgp_sessions"            => "sdwan.routing.read",
         "system_sdwan_get_bgp_config_for_peer"     => "sdwan.routing.read",
         # Slice 9e: route policies
@@ -84,9 +84,13 @@ module Ai
         "system_sdwan_compile_ovn_plan"            => "sdwan.ovn.read",
         "system_sdwan_create_ipfix_collector"      => "sdwan.ipfix.manage",
         "system_sdwan_list_ipfix_collectors"       => "sdwan.ipfix.read",
+        "system_sdwan_delete_ipfix_collector"      => "sdwan.ipfix.manage",
         # Phase O6 follow-up — OVN ACLs (multi-tenant isolation)
         "system_sdwan_create_ovn_acl"              => "sdwan.ovn.manage",
-        "system_sdwan_list_ovn_acls"               => "sdwan.ovn.read"
+        "system_sdwan_list_ovn_acls"               => "sdwan.ovn.read",
+        "system_sdwan_delete_ovn_acl"              => "sdwan.ovn.manage",
+        "system_sdwan_delete_ovn_logical_switch"   => "sdwan.ovn.manage",
+        "system_sdwan_delete_ovn_deployment"       => "sdwan.ovn.manage"
       }.freeze
 
       def self.definition
@@ -298,14 +302,14 @@ module Ai
             parameters: {}
           },
           # Slice 9a — routing layer (static subnet routing baseline)
-          "system_sdwan_set_peer_lan_subnets" => {
+          "system_sdwan_update_peer_lan_subnets" => {
             description: "Declare the external LAN prefixes a peer can route to. In static mode, the topology compiler folds these into AllowedIPs so other peers route across the SDWAN to reach them. CIDR strings (v4 or v6).",
             parameters: {
               peer_id: { type: "string", required: true },
               lan_subnets: { type: "array", required: true, description: "Array of CIDR strings. Empty array clears." }
             }
           },
-          "system_sdwan_set_network_routing_mode" => {
+          "system_sdwan_update_network_routing_mode" => {
             description: "Set a network's routing protocol: 'static' (declarative AllowedIPs, no daemon) or 'ibgp' (slice 9c FRR + dynamic distribution). Until slice 9c lands, only 'static' is fully functional.",
             parameters: {
               network_id: { type: "string", required: true },
@@ -381,7 +385,7 @@ module Ai
             description: "Read the account's iBGP config (AS number, router-id strategy, default local-pref). Returns null if AS not yet allocated.",
             parameters: {}
           },
-          "system_sdwan_set_account_as_number" => {
+          "system_sdwan_update_account_as_number" => {
             description: "Allocate the account's private AS number (RFC 6996 4-byte private range). Idempotent — returns existing AccountBgp if already allocated.",
             parameters: {}
           },
@@ -569,6 +573,22 @@ module Ai
               logical_switch_id: { type: "string", required: false, description: "Restrict to ACLs on this switch" },
               sdwan_ovn_deployment_id: { type: "string", required: false, description: "Restrict to ACLs on switches under this deployment" }
             }
+          },
+          "system_sdwan_delete_ovn_acl" => {
+            description: "Delete an OVN ACL. Effect: ACL row destroyed and excluded from next OVN compile; northbound database reapplies on next reconcile.",
+            parameters: { acl_id: { type: "string", required: true, description: "Sdwan::OvnAcl id" } }
+          },
+          "system_sdwan_delete_ovn_logical_switch" => {
+            description: "Delete an OVN logical switch. Cascades attached logical switch ports and ACLs scoped to the switch.",
+            parameters: { logical_switch_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitch id" } }
+          },
+          "system_sdwan_delete_ovn_deployment" => {
+            description: "Decommission an OVN deployment. Cascades logical switches, ports, and ACLs under it. Irreversible.",
+            parameters: { deployment_id: { type: "string", required: true, description: "Sdwan::OvnDeployment id" } }
+          },
+          "system_sdwan_delete_ipfix_collector" => {
+            description: "Delete an IPFIX collector. Next topology compile drops the ipfix: block from per-host payloads.",
+            parameters: { collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" } }
           }
         }
       end
@@ -615,13 +635,13 @@ module Ai
         when "system_sdwan_revoke_federation_peer"  then revoke_federation_peer(params)
         when "system_sdwan_federation_scan"         then federation_scan(params)
         # Slice 9a routing actions
-        when "system_sdwan_set_peer_lan_subnets"       then set_peer_lan_subnets(params)
-        when "system_sdwan_set_network_routing_mode"   then set_network_routing_mode(params)
+        when "system_sdwan_update_peer_lan_subnets"       then set_peer_lan_subnets(params)
+        when "system_sdwan_update_network_routing_mode"   then set_network_routing_mode(params)
         when "system_sdwan_list_subnet_advertisements" then list_subnet_advertisements(params)
         when "system_sdwan_get_routing_summary"        then get_routing_summary(params)
         # Slice 9c iBGP actions
         when "system_sdwan_get_account_bgp"            then get_account_bgp(params)
-        when "system_sdwan_set_account_as_number"     then set_account_as_number(params)
+        when "system_sdwan_update_account_as_number"     then set_account_as_number(params)
         when "system_sdwan_get_bgp_sessions"           then get_bgp_sessions(params)
         when "system_sdwan_get_bgp_config_for_peer"   then get_bgp_config_for_peer(params)
         # Slice 9e route policies
@@ -656,6 +676,10 @@ module Ai
         when "system_sdwan_compile_ovn_plan"               then compile_ovn_plan(params)
         when "system_sdwan_create_ovn_acl"                 then create_ovn_acl(params)
         when "system_sdwan_list_ovn_acls"                  then list_ovn_acls(params)
+        when "system_sdwan_delete_ovn_acl"                 then delete_ovn_acl(params)
+        when "system_sdwan_delete_ovn_logical_switch"      then delete_ovn_logical_switch(params)
+        when "system_sdwan_delete_ovn_deployment"          then delete_ovn_deployment(params)
+        when "system_sdwan_delete_ipfix_collector"         then delete_ipfix_collector(params)
         when "system_sdwan_create_ipfix_collector"         then create_ipfix_collector(params)
         when "system_sdwan_list_ipfix_collectors"          then list_ipfix_collectors(params)
         else error_result("Unknown action: #{params[:action]}")
@@ -1815,6 +1839,38 @@ module Ai
         # the SdwanOvnApplyAclExecutor skill's auto-activate step.
         acl.mark_active!
         success_result(ovn_acl: serialize_ovn_acl(acl))
+      end
+
+      def delete_ovn_acl(params)
+        acl = ::Sdwan::OvnAcl.where(account_id: @account.id).find(params[:acl_id])
+        name = acl.name
+        acl.destroy!
+        success_result(deleted: true, acl_id: params[:acl_id], name: name)
+      end
+
+      def delete_ovn_logical_switch(params)
+        sw = account_ovn_logical_switches.find(params[:logical_switch_id])
+        name = sw.name
+        sw.destroy!
+        success_result(deleted: true, logical_switch_id: params[:logical_switch_id], name: name)
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result("FK blocks destroy: #{e.message}")
+      end
+
+      def delete_ovn_deployment(params)
+        dep = ::Sdwan::OvnDeployment.where(account_id: @account.id).find(params[:deployment_id])
+        name = dep.name
+        dep.destroy!
+        success_result(deleted: true, deployment_id: params[:deployment_id], name: name)
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result("FK blocks destroy: #{e.message}")
+      end
+
+      def delete_ipfix_collector(params)
+        col = ::Sdwan::IpfixCollector.where(account_id: @account.id).find(params[:collector_id])
+        name = col.name
+        col.destroy!
+        success_result(deleted: true, collector_id: params[:collector_id], name: name)
       end
 
       def list_ovn_acls(params)

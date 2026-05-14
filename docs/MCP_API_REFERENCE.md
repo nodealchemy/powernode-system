@@ -195,8 +195,8 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 
 | Action | What it does |
 |---|---|
-| `system_sdwan_set_peer_lan_subnets` | Declare LAN subnets a peer advertises over iBGP |
-| `system_sdwan_set_network_routing_mode` | Toggle network between `static` and `ibgp` |
+| `system_sdwan_update_peer_lan_subnets` | Declare LAN subnets a peer advertises over iBGP |
+| `system_sdwan_update_network_routing_mode` | Toggle network between `static` and `ibgp` |
 | `system_sdwan_list_subnet_advertisements` | List active subnet advertisements |
 | `system_sdwan_get_routing_summary` | Network-wide routing table summary |
 
@@ -217,7 +217,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | Action | What it does |
 |---|---|
 | `system_sdwan_get_account_bgp` | Fetch per-account ASN + BGP global config |
-| `system_sdwan_set_account_as_number` | Set the account's ASN (private 64512–65534) |
+| `system_sdwan_update_account_as_number` | Set the account's ASN (private 64512–65534) |
 | `system_sdwan_get_bgp_sessions` | List iBGP sessions on a Network with their states |
 | `system_sdwan_get_bgp_config_for_peer` | Fetch FRR config snippet for a peer (debugging) |
 
@@ -266,7 +266,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 | `docker_get_container` | Detailed info on one container |
 | `docker_create_container` | Create from an image |
 | `docker_start_container` / `docker_stop_container` / `docker_restart_container` | Lifecycle |
-| `docker_remove_container` | Remove (force flag available) |
+| `docker_delete_container` | Remove (force flag available) |
 | `docker_container_logs` | Retrieve logs (tail + since filters) |
 | `docker_container_stats` | Live CPU/mem/network I/O stats |
 | `docker_container_exec` | Execute a command in a running container |
@@ -278,7 +278,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 | `docker_list_services` / `docker_get_service` / `docker_create_service` / `docker_update_service` | Lifecycle |
 | `docker_scale_service` | Scale to N replicas |
 | `docker_rollback_service` | Rollback to previous version |
-| `docker_remove_service` | Remove a service |
+| `docker_delete_service` | Remove a service |
 | `docker_service_logs` | Aggregated logs across all tasks |
 | `docker_service_tasks` | List tasks with status + node placement |
 
@@ -288,7 +288,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 |---|---|
 | `docker_list_stacks` / `docker_get_stack` | Inspection |
 | `docker_deploy_stack` | Deploy/redeploy from Compose YAML |
-| `docker_remove_stack` | Remove all services in a stack |
+| `docker_delete_stack` | Remove all services in a stack |
 | `docker_adopt_stack` | Adopt an externally-deployed stack into Powernode |
 
 #### Cluster (Swarm)
@@ -299,8 +299,8 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 | `docker_list_nodes` | List nodes with role + availability |
 | `docker_node_promote` / `docker_node_demote` | Worker ↔ manager |
 | `docker_node_drain` / `docker_node_activate` | Drain/resume scheduling |
-| `docker_list_secrets` / `docker_create_secret` / `docker_remove_secret` | Swarm secrets |
-| `docker_list_configs` / `docker_create_config` / `docker_remove_config` | Swarm configs |
+| `docker_list_secrets` / `docker_create_secret` / `docker_delete_secret` | Swarm secrets |
+| `docker_list_configs` / `docker_create_config` / `docker_delete_config` | Swarm configs |
 
 #### Hosts
 
@@ -317,15 +317,15 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 |---|---|
 | `docker_list_images` | List images with tags + size |
 | `docker_pull_image` | Pull from registry |
-| `docker_remove_image` | Remove (force flag available) |
+| `docker_delete_image` | Remove (force flag available) |
 | `docker_tag_image` | Tag with new repo + tag |
 
 #### Networks + volumes
 
 | Action | What it does |
 |---|---|
-| `docker_list_networks` / `docker_create_network` / `docker_remove_network` | Network lifecycle |
-| `docker_list_volumes` / `docker_create_volume` / `docker_remove_volume` | Volume lifecycle |
+| `docker_list_networks` / `docker_create_network` / `docker_delete_network` | Network lifecycle |
+| `docker_list_volumes` / `docker_create_volume` / `docker_delete_volume` | Volume lifecycle |
 
 ## Known gaps (backlog)
 

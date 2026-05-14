@@ -243,7 +243,7 @@ platform.system_sdwan_revoke_user_device({ user_device_id: "<id>" })
 When `routing_mode: "ibgp"` is set on a network, peers exchange routes via iBGP. Configure the per-account ASN once:
 
 ```javascript
-platform.system_sdwan_set_account_as_number({
+platform.system_sdwan_update_account_as_number({
   as_number: 65000                         // private-range ASN; 64512–65534
 })
 ```
@@ -251,7 +251,7 @@ platform.system_sdwan_set_account_as_number({
 Each peer announces its assigned subnets:
 
 ```javascript
-platform.system_sdwan_set_peer_lan_subnets({
+platform.system_sdwan_update_peer_lan_subnets({
   peer_id: "<peer-id>",
   subnets: [
     { prefix: "fd00:abcd:1:1::/64", description: "Tokyo office LAN" }

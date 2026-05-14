@@ -35,9 +35,15 @@ module Ai
 
         # Mutate
         "system_create_node"            => "system.nodes.create",
+        "system_delete_node"            => "system.nodes.delete",
+        "system_delete_template"        => "system.nodes.delete",
+        "system_update_template"        => "system.nodes.update",
+        "system_delete_module"          => "system.modules.delete",
+        "system_refresh_instance_modules" => "system.node_instances.control",
         "system_assign_module_to_template" => "system.modules.update",
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
+        "system_destroy_instance"       => "system.instances.control",
 
         # Promotion (state-changing across the fleet — same level as module update)
         "system_promote_module_version" => "system.modules.update",
@@ -167,6 +173,31 @@ module Ai
               template_id: { type: "string", required: true }
             }
           },
+          "system_delete_node" => {
+            description: "Hard-destroy a Node. Cascades node_instances, node_module_assignments, and tasks via dependent:destroy. " \
+                         "FK-blocked if instances have unhandled SDWAN/bootstrap_token references — use system_destroy_instance first per instance, then this.",
+            parameters: { node_id: { type: "string", required: true } }
+          },
+          "system_delete_template" => {
+            description: "Delete a NodeTemplate. Restricted: errors if any Node uses this template (System::NodeTemplate has dependent::restrict_with_error on nodes).",
+            parameters: { template_id: { type: "string", required: true } }
+          },
+          "system_update_template" => {
+            description: "Update mutable NodeTemplate fields: name, description.",
+            parameters: {
+              template_id: { type: "string", required: true },
+              name: { type: "string", required: false },
+              description: { type: "string", required: false }
+            }
+          },
+          "system_delete_module" => {
+            description: "Delete a NodeModule. Cascades child_modules, versions, node_module_assignments, template_modules, module_puppet_assignments, module_dependencies.",
+            parameters: { module_id: { type: "string", required: true } }
+          },
+          "system_refresh_instance_modules" => {
+            description: "Force re-apply all assigned modules to an instance — queues a reconcile task. Useful when instance has drifted from desired template state.",
+            parameters: { instance_id: { type: "string", required: true } }
+          },
 
           # === Instances ===
           "system_list_instances" => {
@@ -190,7 +221,15 @@ module Ai
             }
           },
           "system_terminate_instance" => {
-            description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated)",
+            description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated). Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
+            parameters: { instance_id: { type: "string", required: true } }
+          },
+          "system_destroy_instance" => {
+            description: "Hard-destroy a NodeInstance registry row, walking known FK dependents " \
+                         "(sdwan_peers + sub-tables, system_bootstrap_tokens, system_node_certificates, " \
+                         "system_node_modules, system_storage_assignments, billing_provisioning_usage_records, etc.). " \
+                         "Use ONLY for ghost rows: cloud_instance_id is null OR the provider resource is already gone. " \
+                         "Irreversible. Does NOT call the provider to destroy a live VM — pair with system_terminate_instance for that.",
             parameters: { instance_id: { type: "string", required: true } }
           },
 
@@ -566,10 +605,16 @@ module Ai
         when "system_list_nodes"               then list_nodes(params)
         when "system_get_node"                 then get_node(params)
         when "system_create_node"              then create_node(params)
+        when "system_delete_node"              then delete_node(params)
+        when "system_delete_template"          then delete_template(params)
+        when "system_update_template"          then update_template(params)
+        when "system_delete_module"            then delete_module(params)
+        when "system_refresh_instance_modules" then refresh_instance_modules(params)
         when "system_list_instances"           then list_instances(params)
         when "system_get_instance"             then get_instance(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
+        when "system_destroy_instance"         then destroy_instance(params)
         when "system_list_templates"           then list_templates
         when "system_get_template"             then get_template(params)
         when "system_assign_module_to_template" then assign_module_to_template(params)
@@ -684,6 +729,60 @@ module Ai
         success_result(node: serialize_node_full(node))
       end
 
+      def delete_node(params)
+        node = account_nodes.find(params[:node_id])
+        name = node.name
+        instance_count = node.node_instances.count
+        node.destroy!
+        success_result(deleted: true, node_id: params[:node_id], name: name, instances_cascaded: instance_count)
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result("FK blocks destroy — destroy underlying NodeInstances first via system_destroy_instance: #{e.message}")
+      end
+
+      def delete_template(params)
+        template = account_templates.find(params[:template_id])
+        node_count = template.nodes.count
+        if node_count > 0
+          return error_result("Template '#{template.name}' is in use by #{node_count} node(s) — reassign or delete those nodes first")
+        end
+        name = template.name
+        template.destroy!
+        success_result(deleted: true, template_id: params[:template_id], name: name)
+      end
+
+      def update_template(params)
+        template = account_templates.find(params[:template_id])
+        attrs = {}
+        attrs[:name] = params[:name] if params[:name].present?
+        attrs[:description] = params[:description] if params[:description].present?
+        template.update!(attrs)
+        success_result(template: serialize_template(template))
+      end
+
+      def delete_module(params)
+        node_module = account_modules.find(params[:module_id])
+        name = node_module.name
+        versions = node_module.versions.count
+        assignments = node_module.node_module_assignments.count
+        node_module.destroy!
+        success_result(deleted: true, module_id: params[:module_id], name: name,
+                       versions_cascaded: versions, assignments_cascaded: assignments)
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result("FK blocks destroy: #{e.message}")
+      end
+
+      def refresh_instance_modules(params)
+        instance = account_instances.find(params[:instance_id])
+        task = ::System::Task.create!(
+          account: @account, node_instance: instance,
+          kind: "reconcile_modules", status: "pending",
+          source: "mcp_refresh", payload: { triggered_by_user_id: @user&.id, triggered_at: Time.current.iso8601 }
+        )
+        success_result(refreshed: true, instance_id: instance.id, task_id: task.id, task_status: task.status)
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Failed to queue refresh task: #{e.message}")
+      end
+
       # === Instances ===
 
       def list_instances(params)
@@ -728,6 +827,103 @@ module Ai
         return error_result(result.error || "termination failed") unless result.success?
 
         success_result(terminated: true, instance: serialize_instance(instance.reload))
+      end
+
+      # Direct FK dependents of system_node_instances that have NO dependent:destroy
+      # on the NodeInstance model. Order doesn't matter inside the set — they're
+      # all peers of the same parent.
+      DESTROY_INSTANCE_FKS = [
+        ["system_node_modules", "node_instance_id"],
+        ["system_bootstrap_tokens", "node_instance_id"],
+        ["system_node_certificates", "node_instance_id"],
+        ["sdwan_ovn_logical_switch_ports", "host_node_instance_id"],
+        ["system_unclaimed_devices", "claimed_node_instance_id"],
+        ["system_node_instance_peers", "node_instance_id"],
+        ["system_storage_assignments", "node_instance_id"],
+        ["devops_kubernetes_nodes", "node_instance_id"],
+        ["devops_docker_hosts", "node_instance_id"],
+        ["system_storage_credentials", "node_instance_id"],
+        ["system_mount_encryption_keys", "node_instance_id"],
+        ["billing_provisioning_usage_records", "node_instance_id"],
+        ["ai_provisioning_code_deployments", "node_instance_id"],
+        ["sdwan_host_vrf_assignments", "node_instance_id"],
+        ["sdwan_host_bridges", "node_instance_id"],
+        ["system_instance_mount_points", "node_instance_id"],
+        ["system_provider_volumes", "node_instance_id"]
+      ].freeze
+
+      # FK dependents of sdwan_peers — those peers are attached to the instance
+      # being destroyed and themselves have child rows that must clear first.
+      DESTROY_SDWAN_PEER_FKS = [
+        ["sdwan_peer_keys", "sdwan_peer_id"],
+        ["sdwan_subnet_advertisements", "sdwan_peer_id"],
+        ["sdwan_virtual_ip_assignments", "sdwan_peer_id"],
+        ["sdwan_bgp_sessions", "sdwan_peer_id"],
+        ["sdwan_bgp_sessions", "neighbor_peer_id"],
+        ["sdwan_port_mappings", "sdwan_peer_id"],
+        ["sdwan_port_mappings", "target_peer_id"],
+        ["sdwan_membership_credentials", "sdwan_peer_id"]
+      ].freeze
+
+      def destroy_instance(params)
+        instance = account_instances.find(params[:instance_id])
+        inst_id = instance.id
+        name = instance.name
+        deleted = Hash.new(0)
+        peers_destroyed = 0
+
+        ActiveRecord::Base.transaction do
+          # Break the circular enrollment_token_id ↔ system_bootstrap_tokens loop:
+          # NULL the instance's pointer before deleting its bootstrap_tokens.
+          n = ActiveRecord::Base.connection.exec_update(
+            "UPDATE system_node_instances SET enrollment_token_id = NULL WHERE id = $1 AND enrollment_token_id IS NOT NULL",
+            "null-enrollment-token", [inst_id]
+          )
+          deleted["system_node_instances.enrollment_token_id_nulled"] = n if n > 0
+
+          # SDWAN peers attached to this instance + their child rows
+          peer_rows = ActiveRecord::Base.connection.exec_query(
+            "SELECT id FROM sdwan_peers WHERE node_instance_id = $1",
+            "peers_for_inst", [inst_id]
+          )
+          peer_rows.rows.flatten.each do |peer_id|
+            DESTROY_SDWAN_PEER_FKS.each do |table, col|
+              k = ActiveRecord::Base.connection.exec_delete(
+                "DELETE FROM #{table} WHERE #{col} = $1",
+                "del-#{table}-#{col}", [peer_id]
+              )
+              deleted["#{table}.#{col}"] += k if k > 0
+            end
+            k = ActiveRecord::Base.connection.exec_delete(
+              "DELETE FROM sdwan_peers WHERE id = $1",
+              "del-peer", [peer_id]
+            )
+            peers_destroyed += k
+          end
+
+          # Direct dependents
+          DESTROY_INSTANCE_FKS.each do |table, col|
+            k = ActiveRecord::Base.connection.exec_delete(
+              "DELETE FROM #{table} WHERE #{col} = $1",
+              "del-#{table}-#{col}", [inst_id]
+            )
+            deleted["#{table}.#{col}"] = k if k > 0
+          end
+
+          instance.destroy!
+        end
+
+        success_result(
+          destroyed: true,
+          instance_id: inst_id,
+          name: name,
+          sdwan_peers_destroyed: peers_destroyed,
+          dependent_rows_deleted: deleted
+        )
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result(
+          "FK still blocks destroy — extend DESTROY_INSTANCE_FKS or DESTROY_SDWAN_PEER_FKS: #{e.message}"
+        )
       end
 
       # === Templates ===
