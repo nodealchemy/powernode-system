@@ -177,5 +177,134 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.resolved_dependencies.first[:status]).to eq("unresolved")
       end
     end
+
+    context "services parsing (Decentralized Federation plan §A)" do
+      let(:services_yaml_fragment) do
+        <<~YAML
+          services:
+            - name: rails
+              start_command: "bundle exec puma -C config/puma.rb"
+              restart_policy: always
+              user: powernode
+              working_directory: /opt/powernode-rails
+              env:
+                RAILS_ENV: production
+              exposed_ports:
+                - { port: 3000, protocol: tcp, name: http }
+              capabilities: []
+              health:
+                endpoint: /up
+                method: GET
+                interval_seconds: 30
+                timeout_seconds: 5
+                initial_delay_seconds: 10
+              dependencies:
+                - { service: postgres, kind: requires_health }
+            - name: postgres
+              start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main"
+              restart_policy: always
+              user: postgres
+              exposed_ports:
+                - { port: 5432, protocol: tcp, name: postgres }
+        YAML
+      end
+      let(:yaml_with_services) { manifest_yaml + services_yaml_fragment }
+
+      it "creates ModuleService rows from manifest.services" do
+        result = described_class.import!(node_module: mod, yaml: yaml_with_services)
+        expect(result.ok?).to be true
+        mod.reload
+        expect(mod.module_services.pluck(:name)).to match_array(%w[rails postgres])
+        rails = mod.module_services.find_by(name: "rails")
+        expect(rails.start_command).to eq("bundle exec puma -C config/puma.rb")
+        expect(rails.restart_policy).to eq("always")
+        expect(rails.run_as_user).to eq("powernode")
+        expect(rails.exposed_ports).to eq([ { "port" => 3000, "protocol" => "tcp", "name" => "http" } ])
+        expect(rails.health_endpoint).to eq("/up")
+        expect(rails.health_interval_seconds).to eq(30)
+      end
+
+      it "creates cross-service ModuleServiceDependency edges within the manifest" do
+        described_class.import!(node_module: mod, yaml: yaml_with_services)
+        rails = mod.reload.module_services.find_by(name: "rails")
+        postgres = mod.module_services.find_by(name: "postgres")
+        expect(rails.outgoing_dependencies.count).to eq(1)
+        edge = rails.outgoing_dependencies.first
+        expect(edge.depends_on_module_service).to eq(postgres)
+        expect(edge.kind).to eq("requires_health")
+      end
+
+      it "is idempotent: re-importing the same manifest doesn't churn" do
+        described_class.import!(node_module: mod, yaml: yaml_with_services)
+        original_ids = mod.reload.module_services.pluck(:id)
+        described_class.import!(node_module: mod, yaml: yaml_with_services)
+        expect(mod.reload.module_services.pluck(:id)).to match_array(original_ids)
+      end
+
+      it "deletes services declared previously but absent from a re-import" do
+        described_class.import!(node_module: mod, yaml: yaml_with_services)
+        expect(mod.reload.module_services.pluck(:name)).to include("postgres")
+
+        rails_only = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "bundle exec puma -C config/puma.rb"
+              restart_policy: always
+        YAML
+        described_class.import!(node_module: mod, yaml: rails_only)
+        expect(mod.reload.module_services.pluck(:name)).to eq([ "rails" ])
+      end
+
+      it "deletes all services when re-imported without a services key" do
+        described_class.import!(node_module: mod, yaml: yaml_with_services)
+        expect(mod.reload.module_services.count).to eq(2)
+        described_class.import!(node_module: mod, yaml: manifest_yaml)
+        expect(mod.reload.module_services.count).to eq(0)
+      end
+
+      it "rejects a manifest with a duplicate service name" do
+        dup = manifest_yaml + <<~YAML
+          services:
+            - { name: rails, start_command: "x" }
+            - { name: rails, start_command: "y" }
+        YAML
+        result = described_class.import!(node_module: mod, yaml: dup)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("duplicates an earlier service")
+      end
+
+      it "rejects a service missing start_command" do
+        bad = manifest_yaml + <<~YAML
+          services:
+            - { name: rails }
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("start_command is required")
+      end
+
+      it "rejects a service with invalid restart_policy" do
+        bad = manifest_yaml + <<~YAML
+          services:
+            - { name: rails, start_command: "x", restart_policy: bogus }
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("restart_policy must be one of")
+      end
+
+      it "rejects a dependency referencing a non-existent service in the manifest" do
+        bad = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              dependencies:
+                - { service: ghost, kind: requires_health }
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.error).to include("references unknown service")
+      end
+    end
   end
 end

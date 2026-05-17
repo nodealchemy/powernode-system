@@ -40,6 +40,26 @@ module System
   #   build:
   #     ubuntu_digest: null           # config.build.ubuntu_digest
   #     apt_snapshot:  "..."          # config.build.apt_snapshot
+  #   services:                       # → ModuleService rows (Decentralized Federation plan §A)
+  #     - name: rails
+  #       start_command: "bundle exec puma -C config/puma.rb"
+  #       stop_command:  "kill -SIGTERM $MAINPID"  # optional
+  #       restart_policy: always       # always | on-failure | never
+  #       user: powernode              # optional
+  #       working_directory: /opt/...  # optional
+  #       env: { RAILS_ENV: production }
+  #       exposed_ports:
+  #         - { port: 3000, protocol: tcp, name: http }
+  #       capabilities: []             # Linux capabilities to retain
+  #       health:
+  #         endpoint: /up              # optional; nil = no HTTP health
+  #         method: GET                # GET | POST | PUT
+  #         interval_seconds: 30
+  #         timeout_seconds: 5
+  #         initial_delay_seconds: 10
+  #       dependencies:
+  #         - { service: postgres, kind: requires_health }  # start_before | requires_health | softdep
+  #       metadata: {}
   #
   # Anything not in the schema is preserved on `config` under a
   # `manifest_extras` key, so authors can iterate without us racing
@@ -61,10 +81,16 @@ module System
     KNOWN_TOP_KEYS = %w[
       schema_version name display_name description license
       mask file_spec package_spec dependency_spec protected_spec
-      dependencies init reboot_required security skills build
+      dependencies init reboot_required security skills build services
     ].freeze
 
     SPEC_FIELDS = %w[mask file_spec package_spec dependency_spec protected_spec].freeze
+
+    # Per-service schema (manifest.services[*]); see docs/federation/MODULE_MANIFEST_SCHEMA.md.
+    SERVICE_KNOWN_KEYS = %w[
+      name start_command stop_command restart_policy user working_directory
+      env exposed_ports capabilities health dependencies metadata
+    ].freeze
 
     class << self
       def import!(node_module:, yaml:, create_version: false, version_changelog: nil)
@@ -102,6 +128,7 @@ module System
         node_module.save!
 
         resolved = resolve_dependencies(node_module, manifest)
+        apply_services(node_module, manifest)
 
         if create_version
           version = snapshot_version(node_module, manifest, version_changelog)
@@ -184,7 +211,79 @@ module System
         end
       end
 
+      validate_services(manifest, errors)
+
       errors
+    end
+
+    # Validates `services:` key. Catches schema issues before any DB writes
+    # so the operator sees the full error set in one round-trip.
+    def validate_services(manifest, errors)
+      services = manifest["services"]
+      return if services.nil?
+
+      unless services.is_a?(Array)
+        errors << "services must be an array"
+        return
+      end
+
+      seen_names = Set.new
+      services.each_with_index do |svc, i|
+        prefix = "services[#{i}]"
+        unless svc.is_a?(Hash)
+          errors << "#{prefix} must be a hash"
+          next
+        end
+
+        name = svc["name"]
+        if name.blank?
+          errors << "#{prefix}.name is required"
+        elsif !name.is_a?(String)
+          errors << "#{prefix}.name must be a string"
+        elsif seen_names.include?(name)
+          errors << "#{prefix}.name #{name.inspect} duplicates an earlier service"
+        else
+          seen_names << name
+        end
+
+        if svc["start_command"].blank?
+          errors << "#{prefix}.start_command is required"
+        elsif !svc["start_command"].is_a?(String)
+          errors << "#{prefix}.start_command must be a string"
+        end
+
+        if (rp = svc["restart_policy"]) && !::System::ModuleService::RESTART_POLICIES.include?(rp)
+          errors << "#{prefix}.restart_policy must be one of #{::System::ModuleService::RESTART_POLICIES.inspect}"
+        end
+
+        if (health = svc["health"])
+          unless health.is_a?(Hash)
+            errors << "#{prefix}.health must be a hash"
+          else
+            if (m = health["method"]) && !::System::ModuleService::HEALTH_METHODS.include?(m)
+              errors << "#{prefix}.health.method must be one of #{::System::ModuleService::HEALTH_METHODS.inspect}"
+            end
+          end
+        end
+
+        if (deps = svc["dependencies"])
+          unless deps.is_a?(Array)
+            errors << "#{prefix}.dependencies must be an array"
+          else
+            deps.each_with_index do |dep, j|
+              dep_prefix = "#{prefix}.dependencies[#{j}]"
+              unless dep.is_a?(Hash)
+                errors << "#{dep_prefix} must be a hash"
+                next
+              end
+              errors << "#{dep_prefix}.service is required" if dep["service"].blank?
+              if (k = dep["kind"]) && !::System::ModuleServiceDependency::KINDS.include?(k)
+                errors << "#{dep_prefix}.kind must be one of #{::System::ModuleServiceDependency::KINDS.inspect}"
+              end
+            end
+          end
+        end
+      end
     end
 
     def apply_to_module(mod, manifest, raw_yaml:)
@@ -260,6 +359,73 @@ module System
         end
       end
       resolved
+    end
+
+    # Upserts ModuleService rows from manifest.services[]. Idempotent:
+    # re-importing with the same services updates fields without churn;
+    # services declared in the DB but absent from the manifest are deleted
+    # (manifest_yaml is the authoritative source for service definitions).
+    # Cross-service dependencies are resolved within this manifest only.
+    def apply_services(mod, manifest)
+      services_yaml = Array(manifest["services"])
+      declared_names = services_yaml.map { |s| s["name"] }.compact
+
+      mod.module_services.where.not(name: declared_names).destroy_all if declared_names.any?
+      mod.module_services.destroy_all if services_yaml.empty?
+
+      service_records_by_name = {}
+
+      services_yaml.each do |svc|
+        record = ::System::ModuleService.find_or_initialize_by(node_module: mod, name: svc["name"])
+        record.account = mod.account
+        record.start_command = svc["start_command"]
+        record.stop_command  = svc["stop_command"]
+        record.restart_policy = svc.fetch("restart_policy", "always")
+        record.run_as_user = svc["user"]
+        record.working_directory = svc["working_directory"]
+        record.env           = svc["env"] || {}
+        record.exposed_ports = svc["exposed_ports"] || []
+        record.capabilities  = svc["capabilities"] || []
+        record.metadata      = svc["metadata"] || {}
+
+        health = svc["health"] || {}
+        record.health_endpoint              = health["endpoint"]
+        record.health_method                = health.fetch("method", "GET")
+        record.health_interval_seconds      = health.fetch("interval_seconds", 30)
+        record.health_timeout_seconds       = health.fetch("timeout_seconds", 5)
+        record.health_initial_delay_seconds = health.fetch("initial_delay_seconds", 10)
+
+        record.save!
+        service_records_by_name[svc["name"]] = record
+      end
+
+      # Resolve cross-service dependencies. References must resolve within
+      # the same node_module (the model's same_node_module validation enforces
+      # this; here we surface a clear error for missing names rather than
+      # passing a nil to the validation).
+      services_yaml.each do |svc|
+        source = service_records_by_name[svc["name"]]
+        existing_targets = source.outgoing_dependencies.pluck(:depends_on_module_service_id)
+        declared_targets = []
+
+        Array(svc["dependencies"]).each do |dep|
+          target = service_records_by_name[dep["service"]]
+          unless target
+            raise ImportError, "services[#{svc['name']}].dependencies references unknown service #{dep['service'].inspect}"
+          end
+          edge = ::System::ModuleServiceDependency.find_or_initialize_by(
+            module_service: source,
+            depends_on_module_service: target
+          )
+          edge.kind = dep.fetch("kind", "requires_health")
+          edge.save!
+          declared_targets << target.id
+        end
+
+        (existing_targets - declared_targets).each do |stale_id|
+          source.outgoing_dependencies.where(depends_on_module_service_id: stale_id).destroy_all
+        end
+      end
     end
 
     def snapshot_version(mod, manifest, changelog)
