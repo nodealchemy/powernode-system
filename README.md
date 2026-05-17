@@ -195,9 +195,18 @@ MIT — see [LICENSE](./LICENSE). Code of Conduct: see [CODE_OF_CONDUCT.md](./CO
 
 ## Community
 
+**Text channels**
+
 - **GitHub issues** — [nodealchemy/powernode-system/issues](https://github.com/nodealchemy/powernode-system/issues) for bugs + feature requests
 - **X / Twitter** — [@nodealchemy](https://x.com/nodealchemy) for general updates and informal questions
-- **Code of Conduct reports** — see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) (dedicated address, separate from the channels above)
+
+**Email**
+
+- [contact@nodealchemy.com](mailto:contact@nodealchemy.com) — general inquiries
+- [support@nodealchemy.com](mailto:support@nodealchemy.com) — technical support
+- [sales@nodealchemy.com](mailto:sales@nodealchemy.com) — commercial + enterprise-tier inquiries
+- [security@nodealchemy.com](mailto:security@nodealchemy.com) — security vulnerabilities; see [SECURITY.md](./SECURITY.md)
+- [conduct@nodealchemy.com](mailto:conduct@nodealchemy.com) — Code of Conduct reports; see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 
 ---
 
