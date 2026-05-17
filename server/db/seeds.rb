@@ -27,6 +27,8 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # either destructive, expensive, or operator-only.
 SYSTEM_SEED_FILES = %w[
   system_storage_permissions.rb
+  system_acme_permissions.rb
+  system_platform_permissions.rb
   fleet_autonomy_agent.rb
   system_concierge_agent.rb
   system_runtime_manager_agent.rb

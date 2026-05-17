@@ -889,7 +889,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   describe "Missing-features slice 11a — federation acceptance (via SdwanTool)" do
     let(:sdwan_tool) { ::Ai::Tools::SdwanTool.new(account: account) }
     let!(:proposed_peer) do
-      ::Sdwan::FederationPeer.create!(
+      ::System::FederationPeer.create!(
         account: account, status: "proposed",
         remote_instance_url: "https://other.example.com",
         remote_instance_id: SecureRandom.uuid
@@ -945,7 +945,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         expect(r[:data][:acceptance_token_expires_at]).to be_present
         expect(r[:data][:note]).to include("EXACTLY ONCE")
 
-        peer = ::Sdwan::FederationPeer.find(r[:data][:federation_peer][:id])
+        peer = ::System::FederationPeer.find(r[:data][:federation_peer][:id])
         # Stored as digest only, not plaintext
         expect(peer.acceptance_token_digest).to be_present
         expect(peer.acceptance_token_digest).not_to eq(r[:data][:acceptance_token_plaintext])
@@ -976,7 +976,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         expect(r[:success]).to be true
         expect(r[:data][:accepted]).to be true
 
-        peer = ::Sdwan::FederationPeer.find(peer_id)
+        peer = ::System::FederationPeer.find(peer_id)
         expect(peer.status).to eq("accepted")
         # Token cleared after single-use
         expect(peer.acceptance_token_digest).to be_nil
@@ -1002,7 +1002,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       end
 
       it "rejects when token expired" do
-        peer = ::Sdwan::FederationPeer.find(peer_id)
+        peer = ::System::FederationPeer.find(peer_id)
         peer.update!(acceptance_token_expires_at: 1.minute.ago)
         r = sdwan_tool.execute(params: {
           action: "system_sdwan_accept_federation_peer",

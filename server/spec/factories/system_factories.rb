@@ -637,4 +637,408 @@ FactoryBot.define do
     auto_generated { true }
     last_synced_at { Time.current }
   end
+
+  factory :system_module_service, class: "System::ModuleService" do
+    association :node_module, factory: :system_node_module
+    account { node_module&.account }
+    sequence(:name) { |n| "service-#{n}" }
+    start_command { "/usr/bin/true" }
+    restart_policy { "always" }
+    health_method { "GET" }
+    health_interval_seconds { 30 }
+    health_timeout_seconds { 5 }
+    health_initial_delay_seconds { 10 }
+    env { {} }
+    exposed_ports { [] }
+    capabilities { [] }
+    metadata { {} }
+
+    trait :rails do
+      name { "rails" }
+      start_command { "bundle exec puma -C config/puma.rb" }
+      health_endpoint { "/up" }
+      exposed_ports { [{ "port" => 3000, "protocol" => "tcp", "name" => "http" }] }
+      env { { "RAILS_ENV" => "production" } }
+    end
+
+    trait :sidekiq do
+      name { "sidekiq" }
+      start_command { "bundle exec sidekiq -C config/sidekiq.yml" }
+      health_endpoint { nil }
+      restart_policy { "on-failure" }
+    end
+
+    trait :postgres do
+      name { "postgres" }
+      start_command { "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main" }
+      health_endpoint { nil }
+      exposed_ports { [{ "port" => 5432, "protocol" => "tcp", "name" => "postgres" }] }
+      run_as_user { "postgres" }
+    end
+  end
+
+  factory :system_module_service_dependency, class: "System::ModuleServiceDependency" do
+    association :module_service, factory: :system_module_service
+    depends_on_module_service { association :system_module_service, node_module: module_service&.node_module }
+    kind { "requires_health" }
+  end
+
+  factory :system_federation_peer, class: "System::FederationPeer" do
+    association :account
+    sequence(:remote_instance_url) { |n| "https://peer-#{n}.example.com" }
+    sequence(:remote_instance_id) { SecureRandom.uuid }
+    status { "proposed" }
+    peer_kind { "sdwan_only" }
+    endpoints { [] }
+    extension_slugs { [] }
+    capabilities { {} }
+    sync_cursor { {} }
+    metadata { {} }
+
+    trait :platform do
+      peer_kind { "platform" }
+      spawn_role { "symmetric" }
+      spawn_mode { "out_of_band" }
+    end
+
+    trait :accepted do
+      status { "accepted" }
+      signed_at { Time.current }
+    end
+
+    trait :enrolled do
+      platform
+      status { "enrolled" }
+      last_handshake_at { Time.current }
+    end
+
+    trait :active do
+      platform
+      status { "active" }
+      last_handshake_at { 1.hour.ago }
+      last_heartbeat_at { Time.current }
+    end
+
+    trait :spawned_child do
+      platform
+      spawn_mode { "managed_child" }
+      spawn_role { "child" }
+    end
+
+    trait :spawned_parent_managed do
+      platform
+      spawn_mode { "managed_child" }
+      spawn_role { "parent" }
+    end
+  end
+
+  factory :sdwan_virtual_ip, class: "Sdwan::VirtualIp" do
+    association :network, factory: :sdwan_network
+    account { network&.account }
+    sequence(:name) { |n| "vip-#{n}" }
+    sequence(:cidr) { |n| "fd00:beef::#{format('%x', n)}/128" }
+    state { "pending" }
+    advertised_med { 100 }
+    advertised_local_pref { 100 }
+    anycast { false }
+    holder_peer_ids { [] }
+  end
+
+  factory :system_federation_network_bridge, class: "System::FederationNetworkBridge" do
+    association :account
+    federation_peer { association :system_federation_peer, :platform, account: account }
+    sdwan_network { association :sdwan_network, account: account }
+    state { "proposed" }
+    metadata { {} }
+
+    trait :active do
+      state { "active" }
+      activated_at { Time.current }
+    end
+
+    trait :suspended do
+      state { "suspended" }
+      activated_at { 1.hour.ago }
+      suspended_at { Time.current }
+    end
+  end
+
+  factory :system_federation_capability, class: "System::FederationCapability" do
+    association :account
+    federation_peer { association :system_federation_peer, :platform, account: account }
+    sequence(:resource_kind) { |n| "kind-#{n}" }
+    direction { "bidirectional" }
+    policy { "manual" }
+    conflict_resolution { "newer_wins_logical_clock" }
+    filter { {} }
+    sync_cursor { {} }
+
+    trait :auto_periodic do
+      policy { "auto_periodic" }
+    end
+
+    trait :outbound_only do
+      direction { "push_local_to_remote" }
+    end
+
+    trait :inbound_only do
+      direction { "pull_remote_to_local" }
+    end
+
+    trait :migration_only do
+      direction { "migration_only" }
+    end
+  end
+
+  factory :system_federation_grant, class: "System::FederationGrant" do
+    association :account
+    federation_peer { association :system_federation_peer, :platform, account: account }
+    grantor_user { association :user, account: account }
+    sequence(:remote_subject) { |n| "subject-#{n}@peer.example.com" }
+    sequence(:resource_kind) { |n| "kind-#{n}" }
+    resource_id { nil }
+    permission_scopes { [ "read" ] }
+    issued_at { Time.current }
+    expires_at { 30.days.from_now }
+    metadata { {} }
+
+    trait :revoked do
+      revoked_at { 1.day.ago }
+      revocation_reason { "operator revoked" }
+    end
+
+    trait :archived do
+      revoked
+      archived_at { Time.current }
+    end
+
+    trait :expired do
+      issued_at { 60.days.ago }
+      expires_at { 1.day.ago }
+    end
+
+    trait :migrate_scope do
+      permission_scopes { %w[read migrate] }
+    end
+  end
+
+  factory :system_migration, class: "System::Migration" do
+    association :account
+    operation { "duplicate" }
+    sequence(:root_resource_kind) { |n| "kind_#{n}" }
+    root_resource_id { SecureRandom.uuid }
+    status { "planned" }
+    dry_run { false }
+    plan_summary { {} }
+    conflict_log { [] }
+    audit_log { [] }
+    metadata { {} }
+
+    trait :duplicate   do operation { "duplicate" } end
+    trait :migrate     do operation { "migrate" } end
+    trait :dry_run     do dry_run { true } end
+    trait :validating  do status { "validating" } end
+    trait :transferring do status { "transferring" }; started_at { Time.current } end
+    trait :completed   do status { "completed" }; completed_at { Time.current } end
+    trait :failed      do status { "failed" }; failed_at { Time.current }; error_message { "failed for test" } end
+    trait :conflict    do status { "conflict" } end
+  end
+
+  factory :system_migration_plan_step, class: "System::MigrationPlanStep" do
+    association :migration, factory: :system_migration
+    sequence(:step_order) { |n| n }
+    sequence(:resource_kind) { |n| "kind_#{n}" }
+    resource_id { SecureRandom.uuid }
+    action { "create" }
+    conflict_policy { "fail" }
+    payload { {} }
+    metadata { {} }
+  end
+
+  factory :system_federation_contract_version, class: "System::FederationContractVersion" do
+    sequence(:version) { |n| n + 1 }
+    contract_text { "The Twelve Commitments v#{version}\n\nOperator acknowledges..." }
+    effective_at { Date.current }
+    metadata { {} }
+  end
+
+  factory :system_platform_deployment, class: "System::PlatformDeployment" do
+    association :account
+    association :node_template, factory: :system_node_template
+    virtual_ip { nil }
+    sequence(:name) { |n| "deployment-#{n}" }
+    service_role { "api" }
+    target_replicas { 1 }
+    metadata { {} }
+
+    trait :api do
+      service_role { "api" }
+      sequence(:name) { |n| "hub-api-#{n}" }
+    end
+
+    trait :worker do
+      service_role { "worker" }
+      sequence(:name) { |n| "hub-worker-#{n}" }
+    end
+
+    trait :with_vip do
+      virtual_ip { association :sdwan_virtual_ip, account: account }
+    end
+
+    trait :with_dns do
+      sequence(:public_dns_hostname) { |n| "hub-#{n}.example.com" }
+    end
+
+    trait :satellite do
+      service_role { "satellite-runtime" }
+      sequence(:satellite_extension_slug) { |n| "ext-#{n}" }
+    end
+  end
+
+  factory :system_acme_dns_credential, class: "System::AcmeDnsCredential" do
+    association :account
+    sequence(:name) { |n| "dns-cred-#{n}" }
+    provider { "cloudflare" }
+    status { "untested" }
+    metadata { {} }
+
+    trait :valid do
+      status { "valid" }
+      last_validated_at { Time.current }
+    end
+
+    trait :invalid do
+      status { "invalid" }
+      last_validated_at { Time.current }
+    end
+
+    trait :route53 do
+      provider { "route53" }
+    end
+  end
+
+  factory :system_acme_certificate, class: "System::AcmeCertificate" do
+    association :account
+    association :dns_credential, factory: :system_acme_dns_credential
+    sequence(:common_name) { |n| "cert-#{n}.example.com" }
+    sans { [] }
+    issuer { "letsencrypt-prod" }
+    challenge_type { "dns-01" }
+    status { "pending" }
+    # acme_email is required by CertificateManager#resolve_acme_email
+    # for any path that triggers issuance/renewal. Tests can override
+    # via metadata: { acme_email: ... }.
+    metadata { { "acme_email" => "test-ops@example.com" } }
+
+    trait :issuing do
+      status { "issuing" }
+      last_renewal_attempt_at { Time.current }
+    end
+
+    trait :valid do
+      status { "valid" }
+      issued_at { Time.current }
+      expires_at { 90.days.from_now }
+    end
+
+    trait :expiring_soon do
+      status { "valid" }
+      issued_at { 60.days.ago }
+      expires_at { 20.days.from_now }
+    end
+
+    trait :expired do
+      status { "expired" }
+      issued_at { 100.days.ago }
+      expires_at { 10.days.ago }
+    end
+
+    trait :revoked do
+      status { "revoked" }
+    end
+
+    trait :http01 do
+      challenge_type { "http-01" }
+      dns_credential { nil }
+    end
+  end
+
+  factory :system_federation_service_offering, class: "System::Federation::ServiceOffering" do
+    association :account
+    sequence(:slug) { |n| "service-#{n}" }
+    sequence(:name) { |n| "Service ##{n}" }
+    protocol { "https" }
+    backend_host { "backend.example.com" }
+    backend_port { 443 }
+    status { "draft" }
+    default_grant_ttl_days { 30 }
+    default_grant_scopes { %w[read] }
+    capacity_metadata { {} }
+    latency_metadata { {} }
+    metadata { {} }
+
+    trait :active do
+      status { "active" }
+    end
+
+    trait :deprecated do
+      status { "deprecated" }
+      deprecated_at { Time.current }
+    end
+
+    trait :retired do
+      status { "retired" }
+      retired_at { Time.current }
+    end
+
+    trait :tcp do
+      protocol { "tcp" }
+      backend_port { 5432 }
+    end
+
+    trait :capped do
+      capacity_metadata { { "max_subscribers" => 5 } }
+    end
+  end
+
+  factory :system_federation_service_subscription, class: "System::Federation::ServiceSubscription" do
+    association :account
+    association :federation_peer, factory: [ :system_federation_peer, :platform, :active ]
+    association :federation_grant, factory: :system_federation_grant
+    association :acme_certificate, factory: [ :system_acme_certificate, :valid ]
+    sequence(:service_offering_slug) { |n| "service-#{n}" }
+    service_offering_id { SecureRandom.uuid }
+    sequence(:local_hostname) { |n| "svc-#{n}.example.com" }
+    protocol { "https" }
+    backend_vip { nil }
+    backend_port { 443 }
+    status { "pending" }
+    metadata { {} }
+
+    trait :active do
+      status { "active" }
+      activated_at { Time.current }
+    end
+
+    trait :suspended do
+      status { "suspended" }
+      suspended_at { Time.current }
+    end
+
+    trait :cancelled do
+      status { "cancelled" }
+      cancelled_at { Time.current }
+    end
+
+    trait :site_local do
+      sequence(:local_hostname) { |n| "localhost:#{5432 + n}" }
+      protocol { "tcp" }
+      acme_certificate { nil }
+    end
+
+    trait :tcp do
+      protocol { "tcp" }
+      backend_port { 5432 }
+    end
+  end
 end

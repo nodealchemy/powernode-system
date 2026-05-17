@@ -577,6 +577,101 @@ SKILLS_DATA = [
       INSTEAD when the operator already knows the package name and just
       wants to filter/browse — search is faster for keyword queries.
     PROMPT
+  },
+  # ─── Platform maintenance (D2-ext.1) ───────────────────────────────
+  {
+    name: "Platform Maintenance",
+    slug: "system-platform-maintenance",
+    description: "Routine platform maintenance: cert renewal/rotation, drift checks, health snapshots. Action-discriminated: cert_status, cert_rotate, drift_check, health_check.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::PlatformMaintenanceExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform maintenance certificates renewal drift health],
+    system_prompt: <<~PROMPT.strip
+      Use this skill for ROUTINE platform care — not for incident
+      response (use platform_resilience for that), not for new
+      deployments (use platform_deploy).
+
+      The skill is action-discriminated. Pick the right branch:
+        - cert_status   → "are my certs healthy?" / "what's expiring?"
+        - cert_rotate   → "rotate the cert for X" / "renew everything expiring"
+        - drift_check   → "any drift on my deployments?"
+        - health_check  → "what's the platform's overall health?"
+
+      Each branch is read-only OR triggers an async background job.
+      None of them block on long work — the skill returns immediately
+      with structured recommendations the operator can act on.
+    PROMPT
+  },
+
+  # ─── Platform resilience / incident response (D2-ext.2) ────────────
+  {
+    name: "Platform Resilience",
+    slug: "system-platform-resilience",
+    description: "Incident response — drain a misbehaving instance, scale a deployment up or down, or triage cross-platform stress (stale peers, errored instances). Action-discriminated.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::PlatformResilienceExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform resilience drain scale failover incident],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when something is misbehaving or capacity is
+      under pressure — phrases like "drain X", "scale up", "what's
+      wrong with the fleet", "any unhealthy peers".
+
+      The skill is action-discriminated:
+        - drain_instance  → cordon + drain a specific NodeInstance
+        - scale           → mutate target_replicas (set | increment | decrement)
+        - failover_check  → read-only triage of stress signals
+
+      `failover_check` is the safe diagnostic call — always prefer it
+      first when the operator describes a vague problem. Use the
+      mutation branches (drain_instance, scale) only after you've
+      confirmed the failing component AND the operator has agreed to
+      the action.
+    PROMPT
+  },
+
+  # ─── Platform deployment (D2) ──────────────────────────────────────
+  {
+    name: "Platform Deploy",
+    slug: "system-platform-deploy",
+    description: "Deploy a new Powernode platform (standalone or federated). With no params, returns a wizard payload describing the form fields. With full params, calls System::PlatformDeploymentOrchestrator to provision the new platform end-to-end.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::PlatformDeployExecutor",
+    invocation_mode: "workflow_step",
+    tags: %w[platform deployment provisioning federation standalone],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when the operator wants to spin up a new Powernode
+      platform — phrases like "deploy a new platform", "spin up another
+      hub", "create a federated peer", "stand up a standalone instance".
+
+      Two modes:
+        - standalone  → sovereign platform, no FederationPeer relationship
+        - federated   → peers with this platform on first boot (requires
+                        spawn_mode + parent_url)
+
+      Calling with no parameters returns a wizard payload — the frontend
+      renders an inline form so the operator can fill in the details.
+      Once submitted, call this skill AGAIN with mode + name + (for
+      federated) parent_url + spawn_mode.
+
+      Standalone is the default. The new platform comes up sovereign:
+      its first-run handler creates a fresh admin account, requests its
+      own ACME cert if public_dns_hostname is set, and is ready to sign
+      into within ~5 minutes.
+
+      Federated mode returns a single-use acceptance_token — the operator
+      MUST capture it immediately because it's never shown again. The
+      child platform's first-run handler uses it to complete the
+      handshake.
+
+      Always confirm with the operator BEFORE calling in deploy mode —
+      this provisions real infrastructure. The wizard phase is a safe
+      no-op so use it generously to surface the form.
+    PROMPT
   }
 ].freeze
 

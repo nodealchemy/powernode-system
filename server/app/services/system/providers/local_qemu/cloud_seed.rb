@@ -49,6 +49,23 @@ module System
             entries["opt/com.powernode/agent_url"] = agent_url
           end
 
+          # Federation spawn payload — when this NodeInstance is being
+          # provisioned as a spawned child platform, the parent's
+          # SpawnPlatformService injects the payload via
+          # options[:spawn_payload] or stashes it in
+          # instance.config["federation_spawn"]. The agent's first-run
+          # handler reads these to POST /federation_api/accept to the
+          # parent. Plan reference: Decentralized Federation §H + P6.7.
+          spawn_payload = options[:spawn_payload] ||
+                          (instance.respond_to?(:config) ? instance.config&.dig("federation_spawn") : nil)
+          if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].present?
+            entries["opt/com.powernode/parent_url"]        = spawn_payload["parent_url"].to_s
+            entries["opt/com.powernode/acceptance_token"]  = spawn_payload["acceptance_token"].to_s
+            entries["opt/com.powernode/spawn_mode"]        = spawn_payload["spawn_mode"].to_s
+            entries["opt/com.powernode/parent_peer_id"]    = spawn_payload["parent_peer_id"].to_s
+            entries["opt/com.powernode/contract_version"]  = (spawn_payload["contract_version"] || "v1").to_s
+          end
+
           # SDWAN peer hint: when the NodeInstance has a Sdwan::Peer row
           # bound to it (via Sdwan::PeerEnroller), surface the peer + network
           # IDs so the agent (post-enrollment, with its issued mTLS cert)

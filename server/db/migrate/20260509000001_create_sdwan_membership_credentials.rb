@@ -5,7 +5,7 @@
 # WG public key, overlay address, managed routes, tags, and optional
 # capability list, all sealed by the constellation's Ed25519 signing key.
 #
-# Lifecycle (AASM, mirrors Sdwan::FederationPeer's transition table style):
+# Lifecycle (AASM, mirrors System::FederationPeer's transition table style):
 #
 #   pending  → active   (signed and embedded in the next config push)
 #   active   → expiring (TTL window crossed; agent should refresh)

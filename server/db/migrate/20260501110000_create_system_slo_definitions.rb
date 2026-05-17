@@ -30,7 +30,12 @@ class CreateSystemSloDefinitions < ActiveRecord::Migration[8.1]
       t.jsonb :metadata, default: -> { "'{}'::jsonb" }, null: false
       t.timestamps
 
-      t.index :node_module_id
+      # NOTE: `t.references :node_module` above already creates the
+      # `index_system_slo_definitions_on_node_module_id` index. An
+      # explicit `t.index :node_module_id` here would duplicate it and
+      # raise PG::DuplicateTable. Per the project's t.references rule,
+      # only customize the auto-generated index via the references
+      # declaration itself.
       t.index [:node_module_id, :name], unique: true, name: "ix_slo_module_name_unique"
     end
   end

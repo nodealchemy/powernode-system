@@ -208,6 +208,9 @@ read_shape_skills = %w[
   system-attribute-failure
   system-runbook-generate
   system-cve-runbook-generate
+  system-platform-deploy
+  system-platform-maintenance
+  system-platform-resilience
 ]
 bound = 0
 read_shape_skills.each_with_index do |slug, i|

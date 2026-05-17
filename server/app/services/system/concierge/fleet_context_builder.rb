@@ -73,7 +73,7 @@ module System
         access_grant_count = ::Sdwan::AccessGrant.where(account_id: @account.id).count if defined?(::Sdwan::AccessGrant)
         vip_count = ::Sdwan::VirtualIp.where(account_id: @account.id).count if defined?(::Sdwan::VirtualIp)
         firewall_rule_count = ::Sdwan::FirewallRule.where(account_id: @account.id).count if defined?(::Sdwan::FirewallRule)
-        federation_peer_count = ::Sdwan::FederationPeer.where(account_id: @account.id).count if defined?(::Sdwan::FederationPeer)
+        federation_peer_count = ::System::FederationPeer.where(account_id: @account.id).count if defined?(::System::FederationPeer)
         established_bgp_count = sdwan_established_bgp_count
 
         lines = [

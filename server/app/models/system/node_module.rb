@@ -118,6 +118,14 @@ module System
              through: :dependent_relationships,
              source: :node_module
 
+    # Service definitions declared by this module's manifest_yaml (parsed at
+    # OCI ingest time). Each row is a runtime service (rails, sidekiq,
+    # postgres, etc.). The Platform Infrastructure dashboard and scaling
+    # composer query these rows; the Go agent reads manifest_yaml directly.
+    has_many :module_services,
+             class_name: "System::ModuleService",
+             dependent: :destroy
+
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
     validates :variety, presence: true, inclusion: { in: VARIETIES }

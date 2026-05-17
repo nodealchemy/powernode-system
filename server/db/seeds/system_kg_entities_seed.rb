@@ -36,7 +36,7 @@ ENTITY_ANCHORS = [
   # SDWAN (4)
   { name: "Sdwan::Network",        description: "SDWAN overlay network — IPv6 ULA /64; routing_protocol=static|ibgp" },
   { name: "Sdwan::Peer",           description: "SDWAN peer — NodeInstance's WireGuard membership in a network with /128 overlay address" },
-  { name: "Sdwan::FederationPeer", description: "Federation peer — cross-account SDWAN trust relationship with JWT-signed advertisements" },
+  { name: "System::FederationPeer", description: "Federation peer — cross-account SDWAN trust relationship with JWT-signed advertisements" },
   { name: "Sdwan::VirtualIp",      description: "VirtualIP — anycast or single-holder address advertised by one or more peers via iBGP" },
 
   # Container runtimes (3, Phase 1+2)

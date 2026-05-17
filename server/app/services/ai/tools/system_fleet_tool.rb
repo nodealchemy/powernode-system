@@ -54,6 +54,39 @@ module Ai
         # Module diff (read — same level as get_module)
         "system_module_diff"            => "system.modules.read",
 
+        # Platform deployment (D1.2 + D2 + D3) — wizard payload is
+        # safe to read with system.platform.read; actual deploy mutation
+        # requires system.platform.deploy.
+        "system_deploy_platform"        => "system.platform.deploy",
+
+        # Storage volume CRUD (MCP.1) — read/list/create/update/delete
+        # + attach/detach + NFS export probe. The recommendations
+        # read/write surface the shared-memory tunables.
+        "system_list_volumes"           => "system.volumes.read",
+        "system_get_volume"             => "system.volumes.read",
+        "system_create_volume"          => "system.volumes.create",
+        "system_update_volume"          => "system.volumes.update",
+        "system_delete_volume"          => "system.volumes.delete",
+        "system_attach_volume"          => "system.volumes.update",
+        "system_detach_volume"          => "system.volumes.update",
+        "system_test_nfs_export"        => "system.volumes.read",
+        "system_get_storage_recommendations"    => "system.platform.read",
+        "system_update_storage_recommendations" => "system.platform.scale",
+        "system_migrate_storage_component"      => "system.platform.scale",
+        # E7.3 — storage migration lifecycle
+        "system_list_storage_migrations"        => "system.platform.read",
+        "system_get_storage_migration"          => "system.platform.read",
+        "system_approve_storage_migration"      => "system.platform.scale",
+        "system_cancel_storage_migration"       => "system.platform.scale",
+        "system_report_storage_migration_progress" => "system.platform.scale",
+
+        # Lifecycle skill wrappers (MCP.2) — surface platform_maintenance
+        # + platform_resilience as MCP-callable actions so external
+        # tools (concierge, autonomous agents, ops scripts) can invoke
+        # them directly. The executors are reused.
+        "system_platform_maintenance"   => "system.platform.read",
+        "system_platform_resilience"    => "system.platform.scale",
+
         # Audit + AI skills surfaces
         "system_compliance_snapshot"    => "system.fleet.autonomy",
         "system_runbook_generate"       => "system.modules.read",
@@ -296,6 +329,137 @@ module Ai
             parameters: {
               version_a_id: { type: "string", required: true },
               version_b_id: { type: "string", required: true }
+            }
+          },
+
+          # === Platform deployment (D3) ===
+          # Two-branch tool: with no `mode`, returns a wizard payload
+          # the chat UI renders as an inline form. With full args, calls
+          # the orchestrator and provisions the new platform.
+          "system_deploy_platform" => {
+            description: "Deploy a new Powernode platform. Two execution shapes: (1) call with no `mode` to receive a wizard-card payload describing the form fields the operator should fill in — the chat UI renders this inline; (2) call with full args (mode, name, template_slug, [parent_url, spawn_mode for federated]) to actually provision. Standalone = sovereign platform; federated = peers back with this platform via P6 spawn flow. Federated mode returns a single-use acceptance_token that must be captured immediately.",
+            parameters: {
+              mode: { type: "string", required: false,
+                      description: "standalone | federated. Omit to receive the wizard payload." },
+              name: { type: "string", required: false,
+                      description: "Display name for the new deployment (required when mode is set)." },
+              template_slug: { type: "string", required: false,
+                               description: "NodeTemplate to provision from (defaults to powernode-hub)." },
+              parent_url: { type: "string", required: false,
+                            description: "Required for federated mode — reachable URL of THIS platform." },
+              spawn_mode: { type: "string", required: false,
+                            description: "Required for federated mode — one of managed_child, autonomous_peer, cluster_member." },
+              region: { type: "string", required: false },
+              instance_size: { type: "string", required: false },
+              service_role: { type: "string", required: false },
+              public_dns_hostname: { type: "string", required: false },
+              token_ttl_seconds: { type: "integer", required: false }
+            }
+          },
+
+          # === Storage volume CRUD (MCP.1) ===
+          "system_list_volumes" => {
+            description: "List storage volumes for the current account. Filter by status (available/in-use/etc), transport (nfs/iscsi/block), or attached node_instance_id.",
+            parameters: {
+              status: { type: "string", required: false },
+              transport: { type: "string", required: false },
+              node_instance_id: { type: "string", required: false },
+              unattached_only: { type: "boolean", required: false }
+            }
+          },
+          "system_get_volume" => {
+            description: "Get full detail on a single storage volume — backing config (NFS server + export path / block device id), attachment state, ACL, capacity.",
+            parameters: { id: { type: "string", required: true } }
+          },
+          "system_create_volume" => {
+            description: "Register a new ProviderVolume. For NFS, pass transport=nfs + nfs_server + nfs_export_path. For block, pass volume_type_id. The platform records the row; on-node mounting happens at attach time.",
+            parameters: {
+              name: { type: "string", required: true },
+              size_gb: { type: "integer", required: true },
+              volume_type_id: { type: "string", required: false, description: "ProviderVolumeType id (skip if transport given — we'll find/create the matching type)" },
+              transport: { type: "string", required: false, description: "nfs | iscsi | smb | block (default: block)" },
+              nfs_server: { type: "string", required: false, description: "Required for transport=nfs — hostname or IP" },
+              nfs_export_path: { type: "string", required: false, description: "Required for transport=nfs — path on the server" },
+              nfs_version: { type: "string", required: false, description: "Optional — 3 | 4.0 | 4.1 | 4.2 (default 4.1)" },
+              description: { type: "string", required: false }
+            }
+          },
+          "system_update_volume" => {
+            description: "Update a ProviderVolume's mutable fields: name, description, size_gb, status.",
+            parameters: {
+              id: { type: "string", required: true },
+              name: { type: "string", required: false },
+              description: { type: "string", required: false },
+              size_gb: { type: "integer", required: false },
+              status: { type: "string", required: false }
+            }
+          },
+          "system_delete_volume" => {
+            description: "Delete a ProviderVolume row. Refuses to delete if currently attached.",
+            parameters: { id: { type: "string", required: true } }
+          },
+          "system_attach_volume" => {
+            description: "Attach a ProviderVolume to a NodeInstance. For block: assigns next free /dev/vdX. For NFS pools: records the per-deployment binding without flipping pool status.",
+            parameters: {
+              volume_id: { type: "string", required: true },
+              node_instance_id: { type: "string", required: true },
+              deployment_name: { type: "string", required: false, description: "Used for the NFS subpath isolation when applicable" },
+              role: { type: "string", required: false, description: "Service role (postgres / redis / etc.) — used for mount point + subpath" }
+            }
+          },
+          "system_detach_volume" => {
+            description: "Detach a ProviderVolume. For block volumes: clears node_instance_id + sets status=available. For NFS: clears the per-deployment binding only (pool remains available to other consumers).",
+            parameters: {
+              volume_id: { type: "string", required: true },
+              node_instance_id: { type: "string", required: false, description: "Required for NFS volumes to identify which consumer binding to clear" }
+            }
+          },
+          "system_test_nfs_export" => {
+            description: "Probe an NFS server + export to verify reachability before recording a ProviderVolume. Runs DNS lookup + TCP probe on 111/2049 + showmount -e. Does NOT actually mount — that's safer when called from chat.",
+            parameters: {
+              server: { type: "string", required: true },
+              export_path: { type: "string", required: false, description: "Optional — when omitted, returns the list of all advertised exports" }
+            }
+          },
+          "system_get_storage_recommendations" => {
+            description: "Read the platform-memory-stored storage recommendations — stateful role mount points + recommended size_gb per role. Falls back to defaults if no override exists.",
+            parameters: {}
+          },
+          "system_update_storage_recommendations" => {
+            description: "Update the platform-memory storage recommendations. Partial merge — only supplied keys override defaults. Example: { recommended_size_gb_by_role: { postgres: 200 } } leaves redis/etc untouched.",
+            parameters: {
+              recommendations: { type: "object", required: true }
+            }
+          },
+          "system_migrate_storage_component" => {
+            description: "Records intent to migrate a stateful component's data from one ProviderVolume to another. Returns a migration plan (source subpath, target subpath, estimated bytes, recommended rsync command). v1 returns the plan only — actual rsync execution is a follow-up runbook.",
+            parameters: {
+              node_instance_id: { type: "string", required: true },
+              source_volume_id: { type: "string", required: true },
+              target_volume_id: { type: "string", required: true },
+              role: { type: "string", required: true }
+            }
+          },
+
+          # === Lifecycle skill wrappers (MCP.2) ===
+          "system_platform_maintenance" => {
+            description: "Wraps the platform_maintenance skill executor — op-discriminated: cert_status, cert_rotate, drift_check, health_check. Use `op:` for the sub-action; the MCP dispatcher already owns `action:`.",
+            parameters: {
+              op: { type: "string", required: true, description: "cert_status | cert_rotate | drift_check | health_check" },
+              certificate_id: { type: "string", required: false },
+              deployment_id: { type: "string", required: false },
+              renewal_window_days: { type: "integer", required: false }
+            }
+          },
+          "system_platform_resilience" => {
+            description: "Wraps the platform_resilience skill executor — op-discriminated: drain_instance, scale, failover_check.",
+            parameters: {
+              op: { type: "string", required: true, description: "drain_instance | scale | failover_check" },
+              instance_id: { type: "string", required: false },
+              deployment_id: { type: "string", required: false },
+              direction: { type: "string", required: false, description: "set | increment | decrement (for op=scale)" },
+              target_replicas: { type: "integer", required: false },
+              timeout_seconds: { type: "integer", required: false }
             }
           },
 
@@ -626,6 +790,27 @@ module Ai
         when "system_list_tasks"               then list_tasks(params)
         when "system_cancel_task"              then cancel_task(params)
         when "system_module_diff"              then module_diff(params)
+        when "system_deploy_platform"          then deploy_platform(params)
+        # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
+        when "system_list_volumes"             then list_volumes(params)
+        when "system_get_volume"               then get_volume(params)
+        when "system_create_volume"            then create_volume(params)
+        when "system_update_volume"            then update_volume(params)
+        when "system_delete_volume"            then delete_volume(params)
+        when "system_attach_volume"            then attach_volume(params)
+        when "system_detach_volume"            then detach_volume(params)
+        when "system_test_nfs_export"          then test_nfs_export(params)
+        when "system_get_storage_recommendations"    then get_storage_recommendations
+        when "system_update_storage_recommendations" then update_storage_recommendations(params)
+        when "system_migrate_storage_component"      then migrate_storage_component(params)
+        when "system_list_storage_migrations"        then list_storage_migrations(params)
+        when "system_get_storage_migration"          then get_storage_migration(params)
+        when "system_approve_storage_migration"      then approve_storage_migration(params)
+        when "system_cancel_storage_migration"       then cancel_storage_migration(params)
+        when "system_report_storage_migration_progress" then report_storage_migration_progress(params)
+        # Lifecycle skill wrappers (MCP.2)
+        when "system_platform_maintenance"     then platform_maintenance(params)
+        when "system_platform_resilience"      then platform_resilience(params)
         when "system_compliance_snapshot"      then compliance_snapshot(params)
         when "system_runbook_generate"         then runbook_generate(params)
         when "system_cve_runbook_generate"     then cve_runbook_generate(params)
@@ -1061,6 +1246,543 @@ module Ai
           package_changes: result.package_changes,
           mount_changes: result.mount_changes
         )
+      end
+
+      # === Platform deployment (D3) ===
+      #
+      # Two-branch tool: with no params (or mode missing), returns the
+      # wizard payload that the chat UI renders as an inline form. With
+      # full params, executes the deployment via the orchestrator.
+      #
+      # The bridge service (CARD_TOOLS) maps this tool name to the
+      # `platform_deployment_wizard` ChatCard kind so the frontend
+      # renders the form inline rather than showing the JSON envelope.
+      def deploy_platform(params)
+        executor = ::System::Ai::Skills::PlatformDeployExecutor.new(
+          account: @account, agent: @agent, user: @user
+        )
+        # Pass through every relevant param; nil/blank get filtered by the executor
+        execute_args = {
+          mode: params[:mode].presence,
+          name: params[:name].presence,
+          template_slug: params[:template_slug].presence,
+          parent_url: params[:parent_url].presence,
+          spawn_mode: params[:spawn_mode].presence,
+          region: params[:region].presence,
+          instance_size: params[:instance_size].presence,
+          service_role: params[:service_role].presence,
+          public_dns_hostname: params[:public_dns_hostname].presence,
+          token_ttl_seconds: params[:token_ttl_seconds].presence
+        }.compact
+
+        result = executor.execute(**execute_args)
+        return error_result(result[:error]) unless result[:success]
+        success_result(result[:data])
+      end
+
+      # === Storage volume CRUD (MCP.1) ===
+
+      def list_volumes(params)
+        scope = ::System::ProviderVolume.where(account: @account)
+        scope = scope.where(status: params[:status]) if params[:status].present?
+        scope = scope.where(node_instance_id: params[:node_instance_id]) if params[:node_instance_id].present?
+        scope = scope.where(node_instance_id: nil) if params[:unattached_only]
+        if params[:transport].present?
+          scope = scope.joins(:volume_type).where(
+            system_provider_volume_types: { volume_type: params[:transport] }
+          )
+        end
+        success_result(volumes: scope.includes(:volume_type).order(:size_gb, :created_at).map { |v| serialize_volume(v) })
+      end
+
+      def get_volume(params)
+        v = ::System::ProviderVolume.includes(:volume_type, :node_instance).find_by(
+          id: params[:id], account: @account
+        )
+        return error_result("Volume not found") unless v
+        success_result(volume: serialize_volume(v, full: true))
+      end
+
+      def create_volume(params)
+        transport = (params[:transport].presence || "block").to_s
+        unless %w[nfs iscsi smb block].include?(transport)
+          return error_result("Invalid transport (allowed: nfs, iscsi, smb, block)")
+        end
+
+        provider = ::System::Provider.where(account: @account).order(:created_at).first
+        region = ::System::ProviderRegion.where(provider: provider).order(:created_at).first
+        return error_result("No provider/region available for account") unless provider && region
+
+        volume_type = resolve_or_create_volume_type(params, provider, transport)
+        return error_result("Could not resolve volume_type") unless volume_type
+
+        config = build_volume_config(params, transport)
+
+        v = ::System::ProviderVolume.new(
+          account: @account,
+          name: params[:name].to_s,
+          description: params[:description].to_s,
+          size_gb: params[:size_gb].to_i,
+          status: "available",
+          volume_type: volume_type,
+          provider_region: region,
+          encrypted: false,
+          delete_on_termination: false,
+          external_id: external_id_for(transport, params),
+          config: config
+        )
+        v.save!
+        success_result(volume: serialize_volume(v, full: true))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Volume create failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      def update_volume(params)
+        v = ::System::ProviderVolume.find_by(id: params[:id], account: @account)
+        return error_result("Volume not found") unless v
+
+        attrs = params.slice(:name, :description, :size_gb, :status).to_h.compact
+        return error_result("No mutable fields supplied") if attrs.empty?
+
+        v.update!(attrs)
+        success_result(volume: serialize_volume(v.reload, full: true))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Update failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      def delete_volume(params)
+        v = ::System::ProviderVolume.find_by(id: params[:id], account: @account)
+        return error_result("Volume not found") unless v
+        return error_result("Volume is attached — detach first") if v.node_instance_id.present?
+        v.destroy!
+        success_result(deleted: true, id: params[:id])
+      end
+
+      def attach_volume(params)
+        v = ::System::ProviderVolume.find_by(id: params[:volume_id], account: @account)
+        return error_result("Volume not found: #{params[:volume_id]}") unless v
+        instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+                                          .find_by(id: params[:node_instance_id])
+        return error_result("Instance not found: #{params[:node_instance_id]}") unless instance
+
+        vt_kind = v.volume_type&.volume_type.to_s
+        is_network_fs = %w[nfs smb iscsi].include?(vt_kind)
+        deployment_name = params[:deployment_name].to_s.presence || "manual"
+        role = params[:role].to_s.presence || "generic"
+
+        if is_network_fs
+          subpath = ::System::Platform::StorageLayout.subpath_for(
+            deployment_name: deployment_name, role: role
+          )
+          binding = {
+            volume_id: v.id, volume_name: v.name, size_gb: v.size_gb,
+            transport: vt_kind, mount_type: vt_kind,
+            mount_point: ::System::Platform::StorageRecommendations.mount_point_for(account: @account, role: role),
+            subpath: subpath, role: role, attached_at: Time.current.iso8601,
+            vt_kind => v.config[vt_kind]&.merge("subpath" => subpath)
+          }
+          instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
+        else
+          return error_result("Volume already attached to another instance") if v.attached?
+          device_name = next_block_device_for(instance)
+          v.attach_to!(instance, device_name)
+          binding = {
+            volume_id: v.id, volume_name: v.name, size_gb: v.size_gb,
+            transport: "block", mount_type: "device",
+            device_name: device_name, role: role,
+            mount_point: ::System::Platform::StorageRecommendations.mount_point_for(account: @account, role: role),
+            attached_at: Time.current.iso8601
+          }
+          instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
+        end
+        success_result(volume: serialize_volume(v.reload, full: true), binding: binding)
+      end
+
+      def detach_volume(params)
+        v = ::System::ProviderVolume.find_by(id: params[:volume_id], account: @account)
+        return error_result("Volume not found") unless v
+        vt_kind = v.volume_type&.volume_type.to_s
+
+        if %w[nfs smb iscsi].include?(vt_kind)
+          # Pool semantics — clear the consumer binding on the specified instance only.
+          return error_result("node_instance_id is required for shared-pool detach") if params[:node_instance_id].blank?
+          instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+                                            .find_by(id: params[:node_instance_id])
+          return error_result("Instance not found") unless instance
+          new_config = (instance.config || {}).except("storage_volume")
+          instance.update!(config: new_config)
+          success_result(detached: true, volume_id: v.id, instance_id: instance.id)
+        else
+          # Block volume — flip pool status back to available.
+          return error_result("Volume not currently attached") unless v.attached?
+          previous_instance_id = v.node_instance_id
+          v.detach!
+          # Best-effort: also clear the binding from the instance's config
+          instance = ::System::NodeInstance.find_by(id: previous_instance_id)
+          if instance
+            instance.update!(config: (instance.config || {}).except("storage_volume"))
+          end
+          success_result(detached: true, volume_id: v.id, instance_id: previous_instance_id)
+        end
+      end
+
+      def test_nfs_export(params)
+        server = params[:server].to_s.strip
+        return error_result("server is required") if server.empty?
+
+        out = {
+          server: server,
+          dns_resolved: nil,
+          port_111_open: nil,
+          port_2049_open: nil,
+          exports: []
+        }
+
+        begin
+          addrs = Resolv.getaddresses(server)
+          out[:dns_resolved] = addrs.first
+        rescue StandardError => e
+          out[:dns_error] = e.message
+        end
+
+        out[:port_111_open]  = tcp_probe(server, 111, timeout: 3)
+        out[:port_2049_open] = tcp_probe(server, 2049, timeout: 3)
+
+        if out[:port_111_open]
+          out[:exports] = parse_showmount_exports(server)
+        end
+
+        out[:export_path_match] =
+          if params[:export_path].present?
+            out[:exports].any? { |e| e[:path] == params[:export_path] }
+          end
+
+        success_result(probe: out)
+      end
+
+      def get_storage_recommendations
+        recs = ::System::Platform::StorageRecommendations.fetch(account: @account)
+        success_result(recommendations: recs)
+      end
+
+      def update_storage_recommendations(params)
+        attrs = params[:recommendations]
+        return error_result("recommendations object is required") unless attrs.is_a?(Hash)
+        ok = ::System::Platform::StorageRecommendations.update!(
+          account: @account, attrs: attrs, agent: @agent
+        )
+        return error_result("Update failed (no writable agent on default pool?)") unless ok
+        success_result(recommendations: ::System::Platform::StorageRecommendations.fetch(account: @account))
+      end
+
+      # E7.3 — Persists a StorageMigration row capturing intent + plan.
+      # The row starts in `planned`; operator advances via
+      # system_approve_storage_migration; the on-node agent advances
+      # through preparing → syncing → verifying → cutover; the agent
+      # reports progress via system_report_storage_migration_progress;
+      # the orchestrator marks `completed` once cutover lands.
+      def migrate_storage_component(params)
+        instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+                                          .find_by(id: params[:node_instance_id])
+        return error_result("Instance not found") unless instance
+        source = ::System::ProviderVolume.find_by(id: params[:source_volume_id], account: @account)
+        target = ::System::ProviderVolume.find_by(id: params[:target_volume_id], account: @account)
+        return error_result("Source/target volume not found") unless source && target
+        return error_result("Source and target must differ") if source.id == target.id
+
+        role = params[:role].to_s
+        return error_result("role is required") if role.blank?
+
+        deployment_name = (instance.config&.dig("storage_volume", "deployment_name") ||
+                            instance.config&.dig("storage_volume", "volume_name") ||
+                            instance.name).to_s
+
+        source_subpath = ::System::Platform::StorageLayout.subpath_for(
+          deployment_name: deployment_name, role: role
+        )
+        target_subpath = ::System::Platform::StorageLayout.subpath_for(
+          deployment_name: deployment_name, role: role
+        )
+        snapshot_subpath = ::System::Platform::StorageLayout.migration_subpath_for(
+          deployment_name: deployment_name, role: role
+        )
+
+        plan = {
+          "deployment_name" => deployment_name,
+          "role" => role,
+          "source" => {
+            "volume_id" => source.id, "volume_name" => source.name,
+            "transport" => source.volume_type&.volume_type, "subpath" => source_subpath
+          },
+          "target" => {
+            "volume_id" => target.id, "volume_name" => target.name,
+            "transport" => target.volume_type&.volume_type, "subpath" => target_subpath
+          },
+          "snapshot_path" => snapshot_subpath,
+          "agent_contract" => {
+            "v" => 1,
+            "steps" => %w[mount_target snapshot rsync verify cutover unmount_source]
+          }
+        }
+
+        migration = ::System::StorageMigration.create!(
+          account: @account,
+          node_instance: instance,
+          source_volume: source,
+          target_volume: target,
+          initiated_by_user: @user,
+          role: role,
+          status: "planned",
+          source_subpath: source_subpath,
+          target_subpath: target_subpath,
+          snapshot_subpath: snapshot_subpath,
+          plan: plan
+        )
+        migration.append_audit!(
+          message: "Migration planned by #{@user&.email || 'system'}",
+          status_after: "planned"
+        )
+
+        success_result(storage_migration: serialize_storage_migration(migration))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Migration create failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
+      def list_storage_migrations(params)
+        scope = ::System::StorageMigration.where(account: @account).order(created_at: :desc)
+        scope = scope.where(status: params[:status]) if params[:status].present?
+        scope = scope.for_instance(params[:node_instance_id]) if params[:node_instance_id].present?
+        scope = scope.active if params[:active_only]
+        success_result(storage_migrations: scope.limit(100).map { |m| serialize_storage_migration(m) })
+      end
+
+      def get_storage_migration(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+        success_result(storage_migration: serialize_storage_migration(m, full: true))
+      end
+
+      def approve_storage_migration(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+        return error_result("Cannot approve in status=#{m.status}") unless m.can_transition_to?("approved")
+        m.transition_to!(
+          "approved",
+          message: "Approved by #{@user&.email || 'system'}",
+          details: { approved_by_user_id: @user&.id }
+        )
+        success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      def cancel_storage_migration(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+        return error_result("Already terminal (#{m.status}) — nothing to cancel") if m.terminal?
+        return error_result("Cannot cancel — sync already in progress") unless %w[planned approved preparing].include?(m.status)
+        m.cancel!(reason: params[:reason], user: @user)
+        success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      # Called by the on-node agent during sync to surface progress.
+      def report_storage_migration_progress(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+
+        # Optional state transition (agent advancing through phases).
+        if params[:status].present?
+          unless m.can_transition_to?(params[:status])
+            return error_result("Illegal transition #{m.status} → #{params[:status]}")
+          end
+          m.transition_to!(
+            params[:status],
+            message: params[:note] || "Agent reported #{params[:status]}",
+            details: params.slice(:bytes_copied, :bytes_total, :bytes_verified).to_h.compact
+          )
+        end
+
+        m.report_progress!(
+          bytes_copied: params[:bytes_copied]&.to_i,
+          bytes_total: params[:bytes_total]&.to_i,
+          bytes_verified: params[:bytes_verified]&.to_i,
+          note: params[:note]
+        )
+        success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      def serialize_storage_migration(m, full: false)
+        base = {
+          id: m.id,
+          status: m.status,
+          role: m.role,
+          node_instance_id: m.node_instance_id,
+          source_volume_id: m.source_volume_id,
+          target_volume_id: m.target_volume_id,
+          source_subpath: m.source_subpath,
+          target_subpath: m.target_subpath,
+          bytes_copied: m.bytes_copied,
+          bytes_total: m.bytes_total,
+          bytes_verified: m.bytes_verified,
+          created_at: m.created_at.iso8601,
+          approved_at: m.approved_at&.iso8601,
+          started_at: m.started_at&.iso8601,
+          completed_at: m.completed_at&.iso8601,
+          failed_at: m.failed_at&.iso8601,
+          cancelled_at: m.cancelled_at&.iso8601,
+          error_message: m.error_message
+        }
+        return base unless full
+        base.merge(
+          plan: m.plan,
+          audit_log: m.audit_log,
+          metadata: m.metadata,
+          snapshot_subpath: m.snapshot_subpath
+        )
+      end
+
+      # === Lifecycle skill MCP wrappers (MCP.2) ===
+
+      # Inner-action key is `op:` (not `action:`) because the MCP
+      # dispatcher uses `params[:action]` for the tool name itself —
+      # using the same key for the sub-action would shadow it.
+      def platform_maintenance(params)
+        op = params[:op].presence || params[:maintenance_action].presence
+        return error_result("op is required (cert_status | cert_rotate | drift_check | health_check)") if op.blank?
+
+        executor = ::System::Ai::Skills::PlatformMaintenanceExecutor.new(
+          account: @account, agent: @agent, user: @user
+        )
+        result = executor.execute(
+          action: op.to_s,
+          certificate_id: params[:certificate_id],
+          deployment_id: params[:deployment_id],
+          renewal_window_days: params[:renewal_window_days]
+        )
+        return error_result(result[:error]) unless result[:success]
+        success_result(result[:data])
+      end
+
+      def platform_resilience(params)
+        op = params[:op].presence || params[:resilience_action].presence
+        return error_result("op is required (drain_instance | scale | failover_check)") if op.blank?
+
+        executor = ::System::Ai::Skills::PlatformResilienceExecutor.new(
+          account: @account, agent: @agent, user: @user
+        )
+        result = executor.execute(
+          action: op.to_s,
+          instance_id: params[:instance_id],
+          deployment_id: params[:deployment_id],
+          direction: params[:direction],
+          target_replicas: params[:target_replicas],
+          timeout_seconds: params[:timeout_seconds]
+        )
+        return error_result(result[:error]) unless result[:success]
+        success_result(result[:data])
+      end
+
+      # === Volume helpers ===
+
+      def serialize_volume(v, full: false)
+        base = {
+          id: v.id, name: v.name, size_gb: v.size_gb, status: v.status,
+          transport: v.volume_type&.volume_type, volume_type_id: v.volume_type_id,
+          volume_type_name: v.volume_type&.name,
+          attached_to: v.node_instance_id, device_name: v.device_name,
+          external_id: v.external_id
+        }
+        return base unless full
+        base.merge(
+          description: v.description, encrypted: v.encrypted,
+          delete_on_termination: v.delete_on_termination,
+          config: v.config, created_at: v.created_at.iso8601
+        )
+      end
+
+      def resolve_or_create_volume_type(params, provider, transport)
+        return ::System::ProviderVolumeType.find_by(id: params[:volume_type_id]) if params[:volume_type_id].present?
+
+        # Find existing matching type — by transport + provider
+        existing = ::System::ProviderVolumeType.where(
+          account: @account, provider: provider, volume_type: transport
+        ).order(:created_at).first
+        return existing if existing
+
+        # Auto-create a default type for this transport
+        ::System::ProviderVolumeType.create!(
+          account: @account, provider: provider,
+          name: "#{transport}-default",
+          description: "Auto-created #{transport.upcase} volume type",
+          volume_type: transport,
+          min_size_gb: 1,
+          max_size_gb: 100_000,
+          enabled: true,
+          specs: {}
+        )
+      end
+
+      def build_volume_config(params, transport)
+        case transport
+        when "nfs"
+          {
+            "transport" => "nfs",
+            "nfs" => {
+              "server" => params[:nfs_server].to_s,
+              "export_path" => params[:nfs_export_path].to_s,
+              "version" => params[:nfs_version].to_s.presence || "4.1",
+              "mount_options" => "nfsvers=#{params[:nfs_version].to_s.presence || '4.1'},hard,rsize=1048576,wsize=1048576,proto=tcp"
+            },
+            "discovered_via" => "mcp_create_volume"
+          }
+        else
+          { "transport" => transport }
+        end
+      end
+
+      def external_id_for(transport, params)
+        case transport
+        when "nfs" then "nfs://#{params[:nfs_server]}#{params[:nfs_export_path]}"
+        else nil
+        end
+      end
+
+      def next_block_device_for(instance)
+        attached = ::System::ProviderVolume.where(node_instance_id: instance.id).pluck(:device_name).compact
+        ("b".."z").each do |letter|
+          dev = "/dev/vd#{letter}"
+          return dev unless attached.include?(dev)
+        end
+        "/dev/vdb"
+      end
+
+      def tcp_probe(host, port, timeout: 3)
+        Socket.tcp(host, port, connect_timeout: timeout) { |sock| sock.close }
+        true
+      rescue StandardError
+        false
+      end
+
+      def parse_showmount_exports(server)
+        # Open3.capture3 doesn't support :timeout — use Timeout.timeout
+        # to bound the call so a hung NFS server doesn't wedge the
+        # MCP dispatch indefinitely.
+        out = nil
+        Timeout.timeout(10) do
+          out, _err, status = Open3.capture3("showmount", "-e", "--no-headers", server)
+          return [] unless status.success?
+        end
+        return [] unless out
+        out.lines.map(&:strip).reject(&:empty?).map do |line|
+          path, acl = line.split(/\s+/, 2)
+          { path: path, acl: acl }
+        end
+      rescue StandardError
+        []
       end
 
       # === Compliance snapshot ===

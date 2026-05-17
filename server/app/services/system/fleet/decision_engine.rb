@@ -187,36 +187,28 @@ module System
       private
 
       def recently_decided?(signal)
-        cache = redis_cache
-        return false unless cache
+        return false unless Rails.cache.respond_to?(:exist?)
 
-        key = dedup_key(signal)
-        cache.exists?(key) == true || cache.exists?(key) == 1
+        Rails.cache.exist?(dedup_key(signal))
       rescue StandardError => e
         Rails.logger.warn("[FleetDecisionEngine] dedup check failed: #{e.message}")
         false
       end
 
       def record_decision!(signal)
-        cache = redis_cache
-        return unless cache
+        return unless Rails.cache.respond_to?(:write)
 
-        cache.set(dedup_key(signal), Time.current.to_i.to_s, ex: DEDUP_TTL_SECONDS)
+        Rails.cache.write(
+          dedup_key(signal),
+          Time.current.to_i.to_s,
+          expires_in: DEDUP_TTL_SECONDS
+        )
       rescue StandardError => e
         Rails.logger.warn("[FleetDecisionEngine] dedup record failed: #{e.message}")
       end
 
       def dedup_key(signal)
         "fleet:decided:#{account.id}:#{signal.kind}:#{signal.fingerprint}"
-      end
-
-      def redis_cache
-        return @redis_cache if defined?(@redis_cache)
-
-        @redis_cache = Sidekiq.redis_pool.with { |c| c } if defined?(Sidekiq) && Sidekiq.respond_to?(:redis_pool)
-        @redis_cache ||= (Rails.cache.respond_to?(:redis) ? Rails.cache : nil)
-      rescue StandardError
-        @redis_cache = nil
       end
 
       def invoke_skill(skill_class, signal)
