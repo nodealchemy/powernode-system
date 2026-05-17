@@ -1,7 +1,10 @@
 # GitOps Reconciliation
 
-**Status:** Active stabilization sweep, Phase 5. Implementation in
-`extensions/system/server/app/services/system/gitops/`.
+**Status:** Active stabilization sweep, Phase 5 (~80% complete). Target close: Q3 2026.
+Implementation present in `extensions/system/server/app/services/system/gitops/`
+(5 services: `apply_service.rb`, `desired_state_parser.rb`, `diff_engine.rb`,
+`reconciler.rb`, `repo_sync_service.rb`). Remaining work is documented under
+"Known limitations" below.
 
 This document describes the GitOps reconciler — the system that lets
 operators declare desired fleet state in a git repository and continuously

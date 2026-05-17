@@ -1,8 +1,9 @@
 # NodeInstance-as-Agent Peering
 
-**Status:** Active stabilization sweep, Phase 6. Implementation in
-`extensions/system/server/app/services/system/agent_peering_service.rb` +
-`extensions/system/agent/internal/agent_peer/registrar.go`.
+**Status:** Active stabilization sweep, Phase 6 (~80% complete). Target close: Q3 2026.
+Core implementation present in `extensions/system/server/app/services/system/agent_peering_service.rb`
+plus `extensions/system/agent/internal/agent_peer/registrar.go` (with `registrar_test.go` companion).
+Remaining work is documented under "Known limitations / future work" below.
 
 This document describes the protocol by which a running NodeInstance
 auto-registers as a peer in the platform's agent graph. Registered peers

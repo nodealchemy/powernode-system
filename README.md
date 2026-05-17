@@ -53,13 +53,12 @@ it via the standard extension contract.
   promotion readiness, config drift, SLO violations, honeypot canary access,
   trading pressure (cross-extension stigmergic coordination), and SDWAN
   health (peer reachability, BGP session, VIP reachability, drift)
-- **14 AI Skill executors**:
-  - 4 read-shape (capacity_recommend, attribute_failure, runbook_generate,
-    cve_runbook_generate) — bound to System Concierge for chat
-  - 8 fleet autonomy (drift_remediate, cve_response, sdwan_failover,
-    sdwan_peer_remediate, sdwan_bgp_session_remediate, sdwan_vip_failover,
-    module_compose, rolling_module_upgrade)
-  - 2 runtime (docker_provision, provision_cluster) — bound to Runtime Manager
+- **40 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+  (drift remediation, CVE response, module composition, rolling upgrades),
+  SDWAN topology composition + remediation, container runtime provisioning,
+  package + module authoring, architecture catalog, federation, and platform
+  deployment. See [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) for
+  the catalog with descriptors and example I/O.
 - **FleetAutonomyService** — gates every autonomous action through
   intervention policy + approval chain (auto_approve / notify_and_proceed /
   require_approval / blocked); same UI as trading-overseer's approval queue
@@ -87,15 +86,15 @@ To operate this extension you need a running Powernode platform installation.
 See [the parent platform repo][platform] for installation instructions.
 
 This extension contributes:
-- Rails models, services, controllers (62 models across `system::*` + `sdwan::*`,
-  ~136 service classes across 10 subdomains, ~77 controllers across operator API +
-  on-node API + worker API)
-- React/TypeScript frontend (~175 TS/TSX files including 9 page components +
-  ~50 reusable components + 4 custom hooks + 15+ API client services)
+- Rails models, services, controllers (98 models across `system::*` + `sdwan::*`,
+  ~285 service classes incl. 40 skill executors across 11 subdomains, ~138
+  controllers across operator API + on-node API + worker API)
+- React/TypeScript frontend (~250 TS/TSX files including 11 page components +
+  ~156 reusable components + custom hooks + API client services)
 - Worker jobs (7): `system_task_reaper`, `system_fleet_reconcile`,
   `system_cve_feed`, `system_fleet_event_retention`, `system_cloud_sync`,
   `system_execute_task`, `system_gitops_sync`
-- Database migrations (66)
+- Database migrations (131)
 - Sidekiq cron schedule entries
 
 ---
@@ -129,7 +128,7 @@ extensions/system/
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 8 subsystems, threat model, state machines, API surfaces |
 | [`docs/USE_CASE_MATRIX.md`](./docs/USE_CASE_MATRIX.md) | What works / doesn't / what to expect for 10 NodeInstance container scenarios — **READ FIRST when designing a deployment** |
 | [`docs/CONTAINER_RUNTIMES.md`](./docs/CONTAINER_RUNTIMES.md) | Phase 1 Docker + Phase 2 K3s lifecycle + operator troubleshooting |
-| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | All 14 skill executors with descriptors and example I/O |
+| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (40 executors with descriptors and example I/O) |
 | [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 12 fleet sensors + intervention policy reference table |
 | [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md) | Webhook + CI worker + OCI artifact pipeline |
 | [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md) | All `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions |

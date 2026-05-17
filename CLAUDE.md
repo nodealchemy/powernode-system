@@ -13,22 +13,23 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 | Container runtimes (Phase 1 Docker + Phase 2 K3s) | `docs/CONTAINER_RUNTIMES.md` | `app/services/system/docker_daemon_provisioner_service.rb`, `app/services/system/kubernetes_cluster_provisioner_service.rb`, `app/controllers/api/v1/system/node_api/runtime_controller.rb`, `agent/internal/dockerd/`, `agent/internal/k3sd/` |
 | SDWAN (slices 1–9) | `docs/ARCHITECTURE.md` §5 | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
 | Fleet autonomy + sensors | `docs/FLEET_SENSORS.md`, `docs/ARCHITECTURE.md` §4 | `app/services/system/fleet/sensors/`, `app/services/fleet_autonomy_service.rb`, `db/seeds/fleet_autonomy_agent.rb` |
-| Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (30 executors), `db/seeds/system_skills_seed.rb` |
+| Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (40 executors), `db/seeds/system_skills_seed.rb` |
 | Disk image CI | `docs/DISK_IMAGE_CI.md` | `app/models/system/{disk_image_publication,disk_image_webhook}.rb`, `app/services/system/disk_image_*_service.rb` |
 | CI workers + Gitea Actions | (cross-cuts disk image CI) | `app/services/system/{worker_dispatch,execution_dispatcher}.rb` |
 | Tasks + autonomy reconcile | `docs/ARCHITECTURE.md` §4 | `app/models/system/task.rb`, `app/services/system/runtime_task_dispatcher.rb` |
 | Honeypot canaries | `docs/ARCHITECTURE.md` §7 | `app/services/system/honeypot/canary_module_service.rb` |
 
-## AI Agents (5)
+## AI Agents (7)
 
-The system extension seeds five AI agents with distinct trust scores + approval chains. The 5-agent split (2026-05-10) replaced an earlier 3-agent model where Fleet Autonomy owned CVE, SDWAN, and Disk Image work — each domain now has its own queue so operators can pause one (e.g. SDWAN during maintenance) without halting the others.
+The system extension seeds seven AI agents with distinct trust scores + approval chains. The 2026-05-10 split brought Concierge + Fleet Autonomy + Runtime Manager + CVE Responder + SDWAN Manager + Disk Image Manager — replacing an earlier 3-agent model where Fleet Autonomy owned CVE, SDWAN, and Disk Image work. Phase O6 then added System Topology Designer as the first specialist in the cross-cutting design track. Each domain has its own queue so operators can pause one (e.g. SDWAN during maintenance) without halting the others. Note: Fleet Autonomy's seed file is `db/seeds/fleet_autonomy_agent.rb` (no `system_` prefix — predates the naming convention); the other six follow `db/seeds/system_<name>_agent.rb`.
 
 - **System Concierge** (`assistant`, chat) — operator chat agent. `concierge_tool_filter` covers `system_*`, `docker_*`, `kubernetes_*`, plus `discover_skills`/`get_skill_context`/`request_confirmation`. 4 read-shape skills bound. Seeded by `db/seeds/system_concierge_agent.rb`.
 - **Fleet Autonomy** (`monitor`) — non-CVE fleet reconciler running every 60s. Cert rotation, drift remediation, module composition, rolling upgrades, package repository/module ops. 10 skills bound. ~13 intervention policies (CVE policies moved to CVE Responder). Seeded by `db/seeds/fleet_autonomy_agent.rb`.
 - **Runtime Manager** (`monitor`) — Phase 1 Docker + Phase 2 K3s lifecycle. 2 skills bound (`docker_provision`, `provision_cluster`). 8 intervention policies. Distinct approval chain so container runtime changes route separately. Seeded by `db/seeds/system_runtime_manager_agent.rb`.
 - **CVE Responder** (`monitor`) — security-focused reconciler running every 60s via `SystemCveResponderReconcileJob`. Owns the full chain: CVE ingest (via hourly `SystemCveFeedJob`) → exposure scan → triage → critical-upgrade detection → orchestrated rebuild + rolling upgrade. 5 skills bound (`cve_response`, `cve_remediation_orchestration`, `cve_runbook_generate`, `rolling_module_upgrade`, `package_module_refresh`). 5 intervention policies. 8h approval timeout (security responses span business days). Seeded by `db/seeds/system_cve_responder_agent.rb`. Sensors live in `app/services/system/cve_ops/sensors/`: `CvePublishedSensor` emits `system.cve_critical_published` for fresh critical/high exposures; `CriticalUpgradeAvailableSensor` emits `system.module_critical_upgrade_ready` only when drift AND open CveExposure intersect (the "patch already exists, fly it" path which gets `notify_and_proceed`).
-- **SDWAN Manager** (`monitor`) — owns SDWAN peer drift, hub reachability, BGP session health, VIP failover, route policy audit. Skills bound: `sdwan_*` executors. Seeded by `db/seeds/system_sdwan_manager_agent.rb` (2026-05-10). _Documentation pending; refer to the SDWAN sensors + plan files for current scope._
-- **Disk Image Manager** (`monitor`) — owns disk image CI publication lifecycle (build → verify → promote → retention). Seeded by `db/seeds/system_disk_image_manager_agent.rb` (2026-05-10). _Documentation pending; refer to `docs/DISK_IMAGE_CI.md` for current scope._
+- **SDWAN Manager** (`monitor`) — owns SDWAN peer drift, hub reachability, BGP session health, VIP failover, route policy audit, and operator-initiated SDWAN CRUD. 28 intervention policies; 4h approval timeout. Skills bound: `sdwan_*` reconciliation executors. Seeded by `db/seeds/system_sdwan_manager_agent.rb` (2026-05-10). Operator guide: [`docs/SDWAN_MANAGER_AGENT.md`](./docs/SDWAN_MANAGER_AGENT.md).
+- **Disk Image Manager** (`monitor`) — owns disk image CI publication lifecycle (build → verify → promote → retention). 6 intervention policies; 12h approval timeout; 5-minute tick. Seeded by `db/seeds/system_disk_image_manager_agent.rb` (2026-05-10). Operator guide: [`docs/DISK_IMAGE_MANAGER_AGENT.md`](./docs/DISK_IMAGE_MANAGER_AGENT.md). For the upstream CI pipeline see [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md).
+- **System Topology Designer** (`assistant`) — specialist agent for cross-cutting platform topology design (Phase O6, first specialist in the cross-cutting design track). Charter: SDWAN composition today (host bridges, OVN logical networks, IPFIX collectors); container networking + storage topology in future. Invoked by Concierge via `execute_agent` for topology composition. 5 compose skills bound: `system-sdwan-host-bridge-compose`, `system-sdwan-ovn-compose-topology`, `system-sdwan-ipfix-collector-compose`, `system-sdwan-compose-full-topology`, `system-sdwan-ovn-apply-acl`. Trust tier: monitored. Seeded by `db/seeds/system_topology_designer_agent.rb`.
 
 ## MCP Tools
 
@@ -45,7 +46,7 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 
 ### When adding a new capability
 
-1. Always check existing skill executors before writing a new orchestration. 14 already cover most fleet/SDWAN/runtime workflows. See `docs/SKILL_EXECUTORS.md`.
+1. Always check existing skill executors before writing a new orchestration. 40 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
 2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via `db/seeds/system_skills_seed.rb`).
 3. New autonomy actions must have a `system.<action>` intervention policy entry in either `fleet_autonomy_agent.rb` or `system_runtime_manager_agent.rb`.
 4. Cross-account safety: use `find_or_create_by` with `account: account` scoping. The KG seeds + skill seeds follow this pattern.
@@ -74,7 +75,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/SMOKE_TEST.md` — integration test checklist
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
-- `docs/SKILL_EXECUTORS.md` — 29 executor reference (with example I/O)
+- `docs/SKILL_EXECUTORS.md` — 40 executor reference (auto-generated catalog forthcoming)
 - `docs/FLEET_SENSORS.md` — 12 sensor reference + intervention policy table
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions

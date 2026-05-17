@@ -327,18 +327,9 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 | `docker_list_networks` / `docker_create_network` / `docker_delete_network` | Network lifecycle |
 | `docker_list_volumes` / `docker_create_volume` / `docker_delete_volume` | Volume lifecycle |
 
-## Known gaps (backlog)
+## Backlog status
 
-Per memory `project_system_mcp_gaps`, 16 actions referenced in operator runbooks (Phase 1) are **not yet registered**:
-
-- **Lifecycle**: `system_drain_instance`, `system_get_silent_instances`
-- **Disk image CI**: `system_list_disk_image_publications`, `system_set_default_disk_image_publication`, `system_set_disk_image_retention`, `system_provision_ci_worker`, `system_terminate_ci_worker`, `system_list_ci_workers`, `system_list_disk_image_webhooks`
-- **Module authoring**: `system_validate_module_manifest`
-- **Instance pools**: `system_return_pooled_instance`, `system_delete_instance_pool`
-- **CVE**: `system_create_cve`, `system_get_cve_exposure`, `system_get_cve`
-- **Vault**: `system_rotate_vault_transit_pepper`
-
-The runbooks that reference these document the *intended* operator UX. As these actions land, this reference will be updated.
+All 16 actions previously listed as Phase 1 runbook gaps — lifecycle (`system_drain_instance`, `system_get_silent_instances`), disk image CI (publications/retention/CI worker/webhooks set), module authoring (`system_validate_module_manifest`), instance pools (`system_return_pooled_instance`, `system_delete_instance_pool`), CVE (`system_create_cve`, `system_get_cve_exposure`, `system_get_cve`), and vault (`system_rotate_vault_transit_pepper`) — are now registered in `system_fleet_tool.rb` and reachable via the MCP surface. Operator runbooks under `docs/runbooks/` reference current registry actions; cross-validate before adding new runbook steps.
 
 ## How to add a new action
 
@@ -352,19 +343,17 @@ The runbooks that reference these document the *intended* operator UX. As these 
 
 ## Counts
 
-| Prefix | Action count | Tool classes |
+| Prefix | Unique actions | Tool classes |
 |---|---|---|
-| `system_*` (excl. sdwan) | 27 | `SystemFleetTool` + `DockerProvisioningTool` |
-| `system_sdwan_*` | 52 | `SdwanTool` |
+| `system_*` (excl. sdwan) | 119 | `SystemFleetTool` + `SystemArchitectureCatalogTool` + `SystemPackageRepositoryTool` + `DockerProvisioningTool` |
+| `system_sdwan_*` | 69 | `SdwanTool` |
 | `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
 | `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
-| **Total** | **136** | |
-
-Plus 16 backlog items per `project_system_mcp_gaps`.
+| **Total** | **~245** | |
 
 ## Related docs
 
-- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — 14 skill executors (compose multiple MCP actions into orchestrations)
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — 40 skill executors (compose multiple MCP actions into orchestrations)
 - [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — 12 sensors (signals → autonomy actions → MCP action invocation)
 - [`runbooks/`](./runbooks/) — operator runbooks (use these MCP actions in concrete workflows)
 - `server/app/services/ai/tools/platform_api_tool_registry.rb` (parent platform) — source of truth for action-to-tool mapping
