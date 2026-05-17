@@ -199,8 +199,8 @@ module System
       def counts(account)
         {
           nodes: ::System::Node.where(account: account).count,
-          instances: ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: account.id }).count,
-          running_instances: ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: account.id }).where(status: "running").count,
+          instances: ::System::NodeInstance.where(account_id: account.id).count,
+          running_instances: ::System::NodeInstance.where(account_id: account.id, status: "running").count,
           modules: ::System::NodeModule.where(account: account).count,
           live_module_versions: ::System::NodeModuleVersion.joins(:node_module).where(system_node_modules: { account_id: account.id }, promotion_state: "live").count,
           retired_module_versions: ::System::NodeModuleVersion.joins(:node_module).where(system_node_modules: { account_id: account.id }, promotion_state: "retired").count,

@@ -44,6 +44,12 @@ module System
 
     # Associations
     belongs_to :node, class_name: "System::Node"
+    # Account is denormalized as a first-class column (mirroring sibling
+    # tables like system_provider_volumes, system_acme_certificates).
+    # The before_validation callback below inherits the value from the
+    # parent Node so callers can omit it; a validation check keeps the
+    # two in sync.
+    belongs_to :account
     belongs_to :provider_region, class_name: "System::ProviderRegion", optional: true
     belongs_to :provider_instance_type, class_name: "System::ProviderInstanceType", optional: true
     # Slice 7 — optional pool membership.
@@ -61,8 +67,8 @@ module System
     # Volume associations (Release 4)
     has_many :provider_volumes, class_name: "System::ProviderVolume"
 
-    # Delegations
-    delegate :account, :account_id, to: :node
+    before_validation :inherit_account_from_node
+    validate :account_matches_node
 
     # Validations
     validates :name, presence: true, uniqueness: { scope: :node_id }
@@ -402,6 +408,23 @@ module System
       raw = config && (config["hardware_model"] || config["board_model"])
       return nil if raw.nil? || raw.to_s.strip.empty?
       raw.to_s.downcase.strip.gsub(/[\s-]+/, "_")
+    end
+
+    # Inherit account_id from the parent Node when unset. Callers can
+    # create NodeInstance with just `node:` and skip `account:`; this
+    # callback fills it in before validation runs.
+    def inherit_account_from_node
+      self.account_id ||= node&.account_id
+    end
+
+    # Defense in depth: refuse to save a row whose denormalized
+    # account_id has drifted from the parent Node's account_id. Nodes
+    # don't migrate accounts in practice, so this is a "should never
+    # happen" guard, not a hot path.
+    def account_matches_node
+      return if node.nil? || account_id.nil?
+      return if account_id == node.account_id
+      errors.add(:account_id, "must match node.account_id (got #{account_id.inspect}; node has #{node.account_id.inspect})")
     end
   end
 end

@@ -1361,7 +1361,7 @@ module Ai
       def attach_volume(params)
         v = ::System::ProviderVolume.find_by(id: params[:volume_id], account: @account)
         return error_result("Volume not found: #{params[:volume_id]}") unless v
-        instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+        instance = ::System::NodeInstance.where(account_id: @account.id)
                                           .find_by(id: params[:node_instance_id])
         return error_result("Instance not found: #{params[:node_instance_id]}") unless instance
 
@@ -1406,7 +1406,7 @@ module Ai
         if %w[nfs smb iscsi].include?(vt_kind)
           # Pool semantics — clear the consumer binding on the specified instance only.
           return error_result("node_instance_id is required for shared-pool detach") if params[:node_instance_id].blank?
-          instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+          instance = ::System::NodeInstance.where(account_id: @account.id)
                                             .find_by(id: params[:node_instance_id])
           return error_result("Instance not found") unless instance
           new_config = (instance.config || {}).except("storage_volume")
@@ -1482,7 +1482,7 @@ module Ai
       # reports progress via system_report_storage_migration_progress;
       # the orchestrator marks `completed` once cutover lands.
       def migrate_storage_component(params)
-        instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+        instance = ::System::NodeInstance.where(account_id: @account.id)
                                           .find_by(id: params[:node_instance_id])
         return error_result("Instance not found") unless instance
         source = ::System::ProviderVolume.find_by(id: params[:source_volume_id], account: @account)
@@ -1902,7 +1902,7 @@ module Ai
       end
 
       def account_instances
-        ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: @account.id })
+        ::System::NodeInstance.where(account_id: @account.id)
       end
 
       # === Serializers ===

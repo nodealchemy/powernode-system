@@ -224,9 +224,9 @@ class SystemChannel < ApplicationCable::Channel
         enabled: System::Node.where(account: current_account, enabled: true).count
       },
       instances: {
-        total: System::NodeInstance.joins(:node).where(system_nodes: { account_id: current_account.id }).count,
-        running: System::NodeInstance.joins(:node).where(system_nodes: { account_id: current_account.id }, status: "running").count,
-        stopped: System::NodeInstance.joins(:node).where(system_nodes: { account_id: current_account.id }, status: "stopped").count
+        total: System::NodeInstance.where(account_id: current_account.id).count,
+        running: System::NodeInstance.where(account_id: current_account.id, status: "running").count,
+        stopped: System::NodeInstance.where(account_id: current_account.id, status: "stopped").count
       },
       tasks: {
         total: System::Task.where(account: current_account).count,

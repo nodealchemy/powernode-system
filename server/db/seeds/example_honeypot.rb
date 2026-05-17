@@ -22,7 +22,7 @@ return puts("  ⚠️  No admin user — skipping") unless user
 
 # ── Need a NodeInstance to attach the canary to ──────────────────────────
 
-instance = ::System::NodeInstance.joins(:node).where(system_nodes: { account_id: account.id }).first
+instance = ::System::NodeInstance.where(account_id: account.id).first
 unless instance
   puts "  ⚠️  No NodeInstance found — provision one first via smoke_test_provision.rb or similar"
   return
