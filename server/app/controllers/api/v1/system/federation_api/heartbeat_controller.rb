@@ -36,11 +36,30 @@ module Api
               peer.update!(extension_slugs: slugs) if slugs != peer.extension_slugs
             end
 
+            # P9.3 — Schema version negotiation. Stamp peer.platform_version
+            # from the heartbeat payload + consult the compatibility
+            # matrix. Result feeds the governance scanner; controller
+            # surfaces the outcome so the caller can see whether
+            # capability sync will resume next tick.
+            negotiation = negotiate_schema_version!(peer)
+
+            # P9.4 — Stamp peer.data_residency from the heartbeat
+            # payload (Social Contract #8). Operator-supplied string;
+            # no normalization beyond whitespace trimming.
+            stamp_residency!(peer)
+
             render_success(
               data: {
                 status: peer.status,
                 last_heartbeat_at: peer.last_heartbeat_at&.iso8601,
-                our_endpoints: our_endpoints_for(peer)
+                our_endpoints: our_endpoints_for(peer),
+                schema_compatibility: {
+                  status: negotiation.status,
+                  source: negotiation.source,
+                  local_version:  ::Federation::SchemaVersionNegotiator.current_platform_version,
+                  remote_version: peer.platform_version,
+                  notes:          negotiation.notes
+                }
               }
             )
           end
@@ -69,6 +88,31 @@ module Api
           def extension_slugs_param
             return nil if params[:extension_slugs].blank?
             Array(params[:extension_slugs]).map(&:to_s).reject(&:blank?)
+          end
+
+          # P9.3 — pull remote platform_version off the heartbeat payload,
+          # stamp the peer, negotiate compatibility. Always returns a
+          # Result, even when the remote didn't report a version (the
+          # result.status will be "incompatible" so the operator notices).
+          def negotiate_schema_version!(peer)
+            remote_version = params[:platform_version].to_s.strip
+            if remote_version.present? && remote_version != peer.platform_version
+              peer.update!(platform_version: remote_version)
+            end
+            ::Federation::SchemaVersionNegotiator.negotiate(
+              remote_version: peer.platform_version
+            )
+          end
+
+          # P9.4 — record peer's declared data_residency from heartbeat.
+          # Free-form string (ISO code, region group, "global"); the
+          # ResidencyEnforcer doesn't normalize beyond exact match, so
+          # operators must declare consistently.
+          def stamp_residency!(peer)
+            raw = params[:data_residency].to_s.strip
+            return if raw.blank?
+            return if raw == peer.data_residency
+            peer.update!(data_residency: raw)
           end
 
           # Return THIS platform's own endpoint advertisement back to the

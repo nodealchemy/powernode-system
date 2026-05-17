@@ -44,6 +44,27 @@ module System
           return failure(migration, "migration in #{migration.status}; cannot apply")
         end
 
+        # P9.4 — Data residency check (Social Contract #8). Evaluates
+        # whether this migration crosses a jurisdictional boundary and
+        # either: (a) refuses if the local platform is in "refuse"
+        # enforcement mode, or (b) appends an audit-log entry recording
+        # the crossing for downstream operator visibility.
+        residency_check = evaluate_residency(migration)
+        if residency_check && residency_check.refused?
+          return failure(migration,
+                         "data residency policy refuses cross-boundary migration " \
+                         "(#{residency_check.reason})")
+        end
+        if residency_check && residency_check.crossed?
+          migration.append_audit!(
+            "event" => "cross_residency_boundary",
+            "local_residency"  => residency_check.local_residency,
+            "remote_residency" => residency_check.remote_residency,
+            "reason"           => residency_check.reason
+          )
+          emit_cross_boundary_event!(migration, residency_check)
+        end
+
         migration.transition_to!(
           "applying",
           audit_entry: { "event" => "apply_started", "step_count" => migration.plan_steps.count }
@@ -204,6 +225,42 @@ module System
 
       def failure(migration, message)
         Result.new(ok?: false, migration: migration, error: message)
+      end
+
+      # P9.4 — Evaluate cross-residency boundary for this migration.
+      # Returns nil when there's no destination peer (intra-platform
+      # migration) so the caller skips the audit entry.
+      def evaluate_residency(migration)
+        peer = migration.respond_to?(:destination_peer) ? migration.destination_peer : nil
+        peer ||= migration.destination_peer_id && ::System::FederationPeer.find_by(id: migration.destination_peer_id)
+        return nil if peer.nil?
+
+        ::Federation::ResidencyEnforcer.evaluate(remote_peer: peer)
+      rescue ::StandardError => e
+        ::Rails.logger.warn("[ApplyExecutor] residency eval failed: #{e.class}: #{e.message}")
+        nil
+      end
+
+      # Emit a FleetEvent so the cross-boundary migration is visible
+      # in operator dashboards + picked up by the audit-shipment
+      # sweep (P9.2) for WORM retention.
+      def emit_cross_boundary_event!(migration, decision)
+        ::System::FleetEvent.create!(
+          account:    migration.account,
+          kind:       "migration.cross_residency_boundary",
+          severity:   "medium",
+          source:     "migration:apply_executor",
+          emitted_at: ::Time.current,
+          payload: {
+            "migration_id"        => migration.id,
+            "federation_peer_id"  => migration.destination_peer_id,
+            "local_residency"     => decision.local_residency,
+            "remote_residency"    => decision.remote_residency,
+            "reason"              => decision.reason
+          }
+        )
+      rescue ::StandardError => e
+        ::Rails.logger.warn("[ApplyExecutor] cross-boundary FleetEvent failed: #{e.class}: #{e.message}")
       end
     end
   end
