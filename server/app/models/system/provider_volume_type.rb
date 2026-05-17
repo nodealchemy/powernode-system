@@ -5,7 +5,12 @@ module System
     include System::Base
 
     # === Constants ===
-    VOLUME_TYPES = %w[gp2 gp3 io1 io2 st1 sc1 standard ssd hdd custom].freeze
+    # AWS-EBS-derived values (gp2..sc1) + generic device tiers (ssd/hdd)
+    # + network-filesystem types (nfs, iscsi, smb) + custom for catch-all.
+    # NFS/iSCSI/SMB are first-class so the platform UI + on-node agent
+    # can branch on transport (block vs. shared-fs) without inferring
+    # from `config` JSON.
+    VOLUME_TYPES = %w[gp2 gp3 io1 io2 st1 sc1 standard ssd hdd nfs iscsi smb custom].freeze
 
     # === Associations ===
     belongs_to :account
