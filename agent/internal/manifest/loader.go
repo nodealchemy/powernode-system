@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -126,22 +125,4 @@ func writeCache(root string, m *Manifest) error {
 
 func manifestPath(root, moduleID string) string {
 	return filepath.Join(root, moduleID, "manifest.json")
-}
-
-// ──────────────────────────────────────────────────────────────────
-// Legacy init_start parsing
-// ──────────────────────────────────────────────────────────────────
-
-// singleUnitRE matches a single `systemctl <verb> <unit>` invocation.
-// Anything more complex (semicolons, multiple commands, env vars)
-// fails to match — callers fall back to declaring units explicitly
-// in Manifest.Config["units"].
-var singleUnitRE = regexp.MustCompile(`^\s*systemctl\s+(?:start|restart|reload)\s+(\S+)\s*$`)
-
-func parseSingleUnit(initStart string) []string {
-	m := singleUnitRE.FindStringSubmatch(initStart)
-	if m == nil {
-		return nil
-	}
-	return []string{m[1]}
 }

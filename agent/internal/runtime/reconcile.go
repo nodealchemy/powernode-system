@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
-	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
@@ -301,18 +301,27 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		return fmt.Errorf("apply policy: %w", err)
 	}
 	if policy.SeccompProfile != "" {
-		for _, unit := range mf.Units() {
+		for _, unit := range mf.UnitNames() {
 			if err := security.WriteSeccompDropIn(unit, sanitizeProfileName(policy.SeccompProfile), policy.SeccompProfile); err != nil {
 				r.cfg.OnError("reconciler:seccomp_dropin", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 			}
 		}
 	}
 
-	// Start the module's units.
-	for _, unit := range mf.Units() {
-		if err := systemd.Action(ctx, r.cfg.MountRunner, unit, systemd.Start); err != nil {
-			r.cfg.OnError("reconciler:start_unit", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
-		}
+	// P8.1 — Service lifecycle. lifecycle.AttachServices writes one
+	// systemd unit file per system_module_services row, runs
+	// daemon-reload, then starts services in topological order over
+	// declared dependencies. Modules without services are an
+	// authoring error and surface as an empty-attach no-op (logged
+	// via OnError).
+	if len(mf.Services) == 0 {
+		r.cfg.OnError("reconciler:no_services",
+			fmt.Errorf("module %s has no services; nothing to attach (authoring bug — every module must declare at least one system_module_services row)", mod.ID))
+		return nil
+	}
+	if _, err := lifecycle.AttachServices(ctx, r.cfg.MountRunner, mod.ID, mf.Services); err != nil {
+		r.cfg.OnError("reconciler:attach_services",
+			fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 
 	return nil
@@ -326,16 +335,17 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 	if !ok {
 		mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
 	}
-	if mf != nil {
-		// Stop units in reverse order so dependencies come down cleanly.
-		units := mf.Units()
-		for i := len(units) - 1; i >= 0; i-- {
-			if err := systemd.Action(ctx, r.cfg.MountRunner, units[i], systemd.Stop); err != nil {
-				r.cfg.OnError("reconciler:stop_unit", fmt.Errorf("module %s unit %s: %w", mod.ID, units[i], err))
-			}
+	// P8.1 — Service detach via lifecycle.DetachServices: reverse
+	// topological stop + unit-file removal + daemon-reload. Modules
+	// without services (authoring bug or stale on-disk manifest)
+	// degrade to no-op silently — there's nothing to stop.
+	if mf != nil && len(mf.Services) > 0 {
+		if _, err := lifecycle.DetachServices(ctx, r.cfg.MountRunner, mod.ID, mf.Services); err != nil {
+			r.cfg.OnError("reconciler:detach_services",
+				fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
-	_ = current // current state held by caller; we return success on best-effort detach
+	_ = current // current state held by caller; best-effort detach
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/systemd"
@@ -13,8 +14,9 @@ import (
 
 // InitOptions controls the `powernode-agent init <module-id> <action>`
 // command. Local-only — no platform call. Reads the cached manifest
-// from disk, dispatches the action verb to all units listed in
-// manifest.Units().
+// from disk, dispatches the action verb to the systemd units
+// materialized from manifest.Services (one unit per
+// system_module_services row).
 type InitOptions struct {
 	ModuleID     string
 	Action       string // start|stop|restart|reload|status
@@ -26,9 +28,11 @@ type InitOptions struct {
 
 // RunInit executes the init command.
 //
-// On restart, units are stopped in reverse order then started in
-// forward order — matches systemd dependency direction so the unit
-// graph comes down + up cleanly.
+// start  — write unit files (idempotent) + daemon-reload + start in
+//          topological order over service dependencies.
+// stop   — stop in reverse topological order + remove unit files.
+// restart — stop reverse, start forward (preserves unit files).
+// reload / status — apply verb to each unit name.
 //
 // Aggregates errors: a failure on one unit doesn't abort the rest.
 // Returns a non-nil error iff any unit failed; the error wraps a
@@ -56,14 +60,11 @@ func RunInit(ctx context.Context, opts InitOptions) (Result, error) {
 			Errorf(ExitGeneric, "init:load_manifest", "module %s not attached or manifest missing (run `attach` first): %w", opts.ModuleID, err)
 	}
 
-	units := mf.Units()
-	if len(units) == 0 {
-		return errResult("init", ExitGeneric, "no_units", errors.New("no units")),
-			Errorf(ExitGeneric, "init:no_units", "module %s has no units declared in manifest config[\"units\"]", opts.ModuleID)
+	if len(mf.Services) == 0 {
+		return errResult("init", ExitGeneric, "no_services", errors.New("no services")),
+			Errorf(ExitGeneric, "init:no_services", "module %s manifest has no services (system_module_services rows)", opts.ModuleID)
 	}
 
-	// Execution order: restart goes reverse-stop, forward-start. Other
-	// verbs go forward order.
 	type unitResult struct {
 		Unit   string `json:"unit"`
 		Status string `json:"status"`
@@ -73,30 +74,56 @@ func RunInit(ctx context.Context, opts InitOptions) (Result, error) {
 	failed := 0
 
 	switch verb {
-	case systemd.Restart:
-		// Stop reverse, start forward.
-		for i := len(units) - 1; i >= 0; i-- {
-			err := systemd.Action(ctx, opts.Runner, units[i], systemd.Stop)
-			res := unitResult{Unit: units[i], Status: "stopped"}
-			if err != nil {
-				res.Status = "stop_failed"
-				res.Error = err.Error()
+	case systemd.Start:
+		// AttachServices is idempotent (writeIfChanged + start) so
+		// callers can re-run init start safely. Returns the same
+		// per-unit ordering lifecycle uses internally.
+		attached, _ := lifecycle.AttachServices(ctx, opts.Runner, opts.ModuleID, mf.Services)
+		for _, a := range attached {
+			res := unitResult{Unit: a.Unit, Status: "started"}
+			if a.StepErr != nil {
+				res.Status = "start_failed"
+				res.Error = a.StepErr.Error()
 				failed++
 			}
 			results = append(results, res)
 		}
-		for _, unit := range units {
-			err := systemd.Action(ctx, opts.Runner, unit, systemd.Start)
-			res := unitResult{Unit: unit, Status: "started"}
-			if err != nil {
+	case systemd.Stop:
+		detached, _ := lifecycle.DetachServices(ctx, opts.Runner, opts.ModuleID, mf.Services)
+		for _, d := range detached {
+			res := unitResult{Unit: d.Unit, Status: "stopped"}
+			if d.StepErr != nil {
+				res.Status = "stop_failed"
+				res.Error = d.StepErr.Error()
+				failed++
+			}
+			results = append(results, res)
+		}
+	case systemd.Restart:
+		// Use the lifecycle topological order: stop reverse, start forward.
+		detached, _ := lifecycle.DetachServices(ctx, opts.Runner, opts.ModuleID, mf.Services)
+		for _, d := range detached {
+			res := unitResult{Unit: d.Unit, Status: "stopped"}
+			if d.StepErr != nil {
+				res.Status = "stop_failed"
+				res.Error = d.StepErr.Error()
+				failed++
+			}
+			results = append(results, res)
+		}
+		attached, _ := lifecycle.AttachServices(ctx, opts.Runner, opts.ModuleID, mf.Services)
+		for _, a := range attached {
+			res := unitResult{Unit: a.Unit, Status: "started"}
+			if a.StepErr != nil {
 				res.Status = "start_failed"
-				res.Error = err.Error()
+				res.Error = a.StepErr.Error()
 				failed++
 			}
 			results = append(results, res)
 		}
 	default:
-		for _, unit := range units {
+		// reload / status: forward iteration over service unit names.
+		for _, unit := range mf.UnitNames() {
 			err := systemd.Action(ctx, opts.Runner, unit, verb)
 			res := unitResult{Unit: unit, Status: opts.Action}
 			if err != nil {

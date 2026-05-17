@@ -1,0 +1,184 @@
+# Platform modules build pipeline — builds each module in
+# extensions/system/modules/*/ into an OCI artifact + composefs blob,
+# signs with cosign, and pushes to the Gitea registry under
+# powernode/<module-name>:<version>.
+#
+# Triggered by:
+#   - workflow_dispatch (operator-initiated rebuild of all or one module)
+#   - push to develop/master touching extensions/system/modules/**
+#   - tag push v*.*.* (release builds — signed for production)
+#
+# Two-stage build per module:
+#   Stage 1 (builder): templates/module-repo/Containerfile + apt-install
+#                      from manifest.yaml's package_spec; layered with
+#                      this module's rootfs/.
+#   Stage 2 (composer): rsync filter from file_spec + mask + protected_spec,
+#                       mkcomposefs, fs-verity merkle root, cosign sign,
+#                       oras push.
+#
+# This workflow is the canonical M1 entry point for the platform's own
+# modules — third-party modules use the per-repo workflow at
+# templates/module-repo/.gitea/workflows/build.yaml.
+#
+# Plan reference: P8.2 (Containerfiles per module + M1 supply-chain
+# glue from Golden Eclipse M1).
+
+name: build-platform-modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Single module slug to rebuild (default: all)"
+        required: false
+        type: string
+        default: ""
+      tag:
+        description: "Version tag for the published artifact (e.g. v1.0.0)"
+        required: false
+        type: string
+        default: ""
+  push:
+    branches: [ develop, master ]
+    paths:
+      - "extensions/system/modules/**"
+      - "extensions/system/templates/module-repo/Containerfile"
+      - ".gitea/workflows/build-platform-modules.yaml"
+  release:
+    types: [ published ]
+
+permissions:
+  contents: read
+  id-token: write    # cosign keyless via Sigstore Fulcio
+  packages: write    # oras push
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: collect
+        name: Discover modules to build
+        run: |
+          set -euo pipefail
+          modules_root="extensions/system/modules"
+          if [ -n "${{ inputs.module }}" ]; then
+            # Single-module rebuild path.
+            if [ ! -d "$modules_root/${{ inputs.module }}" ]; then
+              echo "::error::Module not found: ${{ inputs.module }}"
+              exit 1
+            fi
+            entries=$(printf '"%s"' "${{ inputs.module }}")
+          else
+            # Discover every directory that has a manifest.yaml.
+            entries=$(find "$modules_root" -mindepth 2 -maxdepth 2 -name manifest.yaml \
+                       -printf '%h\n' | sort | xargs -n1 basename \
+                       | jq -R . | paste -sd,)
+          fi
+          echo "matrix={\"module\":[$entries]}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # cosign needs the full history for keyless signing's commit
+          # provenance; oras push also reads the tag for tagging.
+          fetch-depth: 0
+
+      - name: Parse manifest for ${{ matrix.module }}
+        id: manifest
+        run: |
+          set -euo pipefail
+          mfpath="extensions/system/modules/${{ matrix.module }}/manifest.yaml"
+          # Extract the fields the builder stage needs. yq is preferred;
+          # fall back to python if not available on the runner.
+          if command -v yq >/dev/null 2>&1; then
+            yq -o=json '.' "$mfpath" > /tmp/manifest.json
+          else
+            python3 -c "import yaml,json,sys; json.dump(yaml.safe_load(open('$mfpath')), sys.stdout)" > /tmp/manifest.json
+          fi
+          jq -r '.package_spec[]?' /tmp/manifest.json > /tmp/package_spec.txt
+          # rsync filter: drop anything in mask, keep anything in
+          # file_spec, otherwise exclude.
+          {
+            jq -r '.mask[]?' /tmp/manifest.json | awk '{print "- " $0}'
+            jq -r '.file_spec[]?' /tmp/manifest.json | awk '{print "+ " $0}'
+            jq -r '.protected_spec[]?' /tmp/manifest.json | awk '{print "+ " $0}'
+            echo "- *"
+          } > /tmp/rsync_spec.txt
+          # APT snapshot pin if declared.
+          snapshot=$(jq -r '.build.apt_snapshot // "20260415T000000Z"' /tmp/manifest.json)
+          echo "apt_snapshot=$snapshot" >> "$GITHUB_OUTPUT"
+          # Module-name slug (alphanumeric + hyphens) for image tag.
+          echo "slug=${{ matrix.module }}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage 1 — builder image (apt install package_spec)
+        run: |
+          set -euo pipefail
+          cp /tmp/package_spec.txt extensions/system/modules/${{ matrix.module }}/package_spec.txt
+          buildah bud \
+            --file extensions/system/templates/module-repo/Containerfile \
+            --build-arg APT_SNAPSHOT=${{ steps.manifest.outputs.apt_snapshot }} \
+            --tag powernode-${{ matrix.module }}-builder:ci \
+            extensions/system/modules/${{ matrix.module }}/
+        env:
+          STORAGE_DRIVER: vfs    # rootless-safe; CI runners don't have overlayfs
+
+      - name: Stage 2 — composer (rsync filter + mkcomposefs + fs-verity)
+        run: |
+          set -euo pipefail
+          # 1. Mount the stage-1 image so we can rsync out of it
+          mountpoint=$(buildah mount powernode-${{ matrix.module }}-builder:ci)
+          # 2. Apply rsync filter to carve the slim module rootfs
+          mkdir -p /tmp/slim
+          rsync -a \
+            --filter='. /tmp/rsync_spec.txt' \
+            --filter='+ */' \
+            "$mountpoint/" /tmp/slim/
+          # 3. Layer the module's static rootfs/ contents on top
+          if [ -d "extensions/system/modules/${{ matrix.module }}/rootfs" ]; then
+            rsync -a extensions/system/modules/${{ matrix.module }}/rootfs/ /tmp/slim/
+          fi
+          # 4. mkcomposefs + fs-verity (requires the host kernel; CI
+          #    runners have fs-verity enabled per the M1 spec)
+          mkcomposefs --digest-store=/tmp/objects /tmp/slim /tmp/${{ matrix.module }}.cfs
+          # 5. Compute the Merkle root and stash for the manifest
+          ROOT=$(fsverity digest --hash-alg=sha256 /tmp/${{ matrix.module }}.cfs | awk '{print $1}')
+          echo "fsverity_root=$ROOT" > /tmp/${{ matrix.module }}.meta
+
+      - name: Cosign sign + oras push
+        run: |
+          set -euo pipefail
+          # Tag = workflow input, else commit SHA short.
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
+          REF="git.ipnode.org/powernode/${{ matrix.module }}:$TAG"
+          # Push composefs blob + manifest meta as OCI artifact
+          oras push "$REF" \
+            --artifact-type application/vnd.powernode.module.v1 \
+            "/tmp/${{ matrix.module }}.cfs:application/vnd.powernode.composefs" \
+            "/tmp/${{ matrix.module }}.meta:application/vnd.powernode.module.meta"
+          # Sign keylessly via Sigstore Fulcio
+          cosign sign --yes "$REF"
+        env:
+          ORAS_REGISTRY_USERNAME: ${{ secrets.GITEA_REGISTRY_USERNAME }}
+          ORAS_REGISTRY_PASSWORD: ${{ secrets.GITEA_REGISTRY_PASSWORD }}
+          COSIGN_EXPERIMENTAL: "1"
+
+      - name: Notify platform — module published
+        if: success()
+        run: |
+          # POST to the platform's disk-image-style webhook so the new
+          # NodeModuleVersion lands at promotion_state: "built".
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.POWERNODE_WEBHOOK_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"module_name\":\"${{ matrix.module }}\",\"tag\":\"${TAG:-unknown}\",\"fsverity_root\":\"$(cat /tmp/${{ matrix.module }}.meta | cut -d= -f2)\"}" \
+            "${{ secrets.POWERNODE_WEBHOOK_URL }}/api/v1/system/module_publications" || true

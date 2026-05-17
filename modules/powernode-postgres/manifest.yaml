@@ -1,0 +1,42 @@
+schema_version: 1
+name: powernode-postgres
+display_name: PostgreSQL 16
+description: PostgreSQL server providing the platform's primary database
+license: PostgreSQL
+package_spec:
+  - postgresql-16
+  - postgresql-contrib-16
+  - postgresql-client-16
+file_spec: []
+mask: []
+dependency_spec: []
+protected_spec:
+  - /etc/postgresql/16/main/postgresql.conf
+reboot_required: false
+
+services:
+  - name: postgres
+    start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf"
+    stop_command: "/usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
+    restart_policy: always
+    user: postgres
+    working_directory: /var/lib/postgresql
+    exposed_ports:
+      - { port: 5432, protocol: tcp, name: postgres }
+    capabilities: []
+    # TCP health probe deferred: ModuleService.HEALTH_METHODS = GET/POST/PUT only.
+    # Operator monitors Postgres readiness via `pg_isready` in a sidecar
+    # systemd unit (future work) — model schema needs a TCP/exec method
+    # before we can express it declaratively here.
+    metadata:
+      pg_data: /var/lib/postgresql/16/main
+      pg_version: "16"
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"

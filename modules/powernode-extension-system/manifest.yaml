@@ -1,0 +1,32 @@
+schema_version: 1
+name: powernode-extension-system
+display_name: Powernode System Extension
+description: The Powernode System extension Rails engine (nodes, modules, SDWAN, fleet autonomy, Go agent control plane)
+license: MIT
+package_spec: []
+file_spec:
+  - /opt/powernode-rails/extensions/system
+mask:
+  - /opt/powernode-rails/extensions/system/tmp
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires:
+    - powernode/powernode-hub-backend@^1.0
+
+# Extension is mounted under the Rails app's extensions/ tree and
+# loaded by the hub-backend at boot; it owns no long-running services
+# of its own — its controllers + jobs run inside hub-backend's rails
+# and hub-worker's sidekiq processes.
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"

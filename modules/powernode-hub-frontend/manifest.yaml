@@ -1,0 +1,33 @@
+schema_version: 1
+name: powernode-hub-frontend
+display_name: Powernode Hub Frontend (Vite static assets)
+description: React TypeScript frontend built artifacts; served as static files by powernode-reverse-proxy
+license: MIT
+package_spec: []
+file_spec:
+  - /opt/powernode-frontend/dist
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires:
+    - powernode/powernode-reverse-proxy@^1.0
+
+# Frontend is a static-asset module: no long-running service. The
+# reverse proxy serves /opt/powernode-frontend/dist directly via its
+# dynamic config (router with `service: powernode-frontend`). The
+# build pipeline materializes Vite's dist/ output and the agent's
+# composefs layer makes those files available at attach time.
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  # Vite build runs in CI; dist/ is the only artifact this module ships.
+  apt_snapshot: "20260415T000000Z"

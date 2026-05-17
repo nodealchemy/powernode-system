@@ -14,36 +14,37 @@ import (
 )
 
 // seedManifest writes a manifest.json to the cache root for a given
-// module id with the supplied units list.
-func seedManifest(t *testing.T, root, moduleID string, units []string) {
+// module id with the supplied services. Services are the canonical
+// lifecycle source (P8.1) — one per system_module_services row.
+func seedManifest(t *testing.T, root, moduleID string, services []manifest.Service) {
 	t.Helper()
 	dir := filepath.Join(root, moduleID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	mf := manifest.Manifest{
-		ID: moduleID,
-		Config: map[string]any{
-			"units": stringsToAny(units),
-		},
-	}
+	mf := manifest.Manifest{ID: moduleID, Services: services}
 	body, _ := json.Marshal(mf)
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), body, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 }
 
-func stringsToAny(in []string) []any {
-	out := make([]any, len(in))
-	for i, s := range in {
-		out[i] = s
-	}
-	return out
+// setUnitDir routes lifecycle's systemd-unit-file writes to a tmpdir
+// so tests don't touch the host's real /etc/systemd/system.
+func setUnitDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", dir)
+	return dir
 }
 
-func TestInitStartIssuesSystemctlStart(t *testing.T) {
+func TestInitStartWritesUnitsAndStarts(t *testing.T) {
 	root := t.TempDir()
-	seedManifest(t, root, "m1", []string{"nginx.service", "php-fpm.service"})
+	_ = setUnitDir(t)
+	seedManifest(t, root, "m1", []manifest.Service{
+		{Name: "nginx", StartCommand: "/usr/sbin/nginx -g 'daemon off;'"},
+		{Name: "php-fpm", StartCommand: "/usr/sbin/php-fpm"},
+	})
 
 	runner := &mount.RecorderRunner{}
 	res, err := RunInit(context.Background(), InitOptions{
@@ -59,21 +60,29 @@ func TestInitStartIssuesSystemctlStart(t *testing.T) {
 		t.Errorf("status: %q", res.Status)
 	}
 
-	// Both units started, in forward order.
 	var startCalls []string
 	for _, inv := range runner.Invocations {
 		if inv.Name == "systemctl" && len(inv.Args) >= 2 && inv.Args[0] == "start" {
 			startCalls = append(startCalls, inv.Args[1])
 		}
 	}
-	if len(startCalls) != 2 || startCalls[0] != "nginx.service" || startCalls[1] != "php-fpm.service" {
+	if len(startCalls) != 2 {
+		t.Fatalf("expected 2 start calls, got %d: %v", len(startCalls), startCalls)
+	}
+	// Both services are independent — topological sort orders them
+	// lexicographically (nginx before php-fpm by name asc).
+	if startCalls[0] != "powernode-m1-nginx.service" || startCalls[1] != "powernode-m1-php-fpm.service" {
 		t.Errorf("start order: %v", startCalls)
 	}
 }
 
-func TestInitRestartReverseStops(t *testing.T) {
+func TestInitRestartReverseStopsForwardStarts(t *testing.T) {
 	root := t.TempDir()
-	seedManifest(t, root, "m1", []string{"nginx.service", "php-fpm.service"})
+	_ = setUnitDir(t)
+	seedManifest(t, root, "m1", []manifest.Service{
+		{Name: "nginx", StartCommand: "/usr/sbin/nginx"},
+		{Name: "php-fpm", StartCommand: "/usr/sbin/php-fpm", Dependencies: []string{"nginx"}},
+	})
 
 	runner := &mount.RecorderRunner{}
 	res, err := RunInit(context.Background(), InitOptions{
@@ -101,13 +110,13 @@ func TestInitRestartReverseStops(t *testing.T) {
 			starts = append(starts, inv.Args[1])
 		}
 	}
-	// Stops in reverse order.
-	if len(stops) != 2 || stops[0] != "php-fpm.service" || stops[1] != "nginx.service" {
-		t.Errorf("stop order: %v (want reverse)", stops)
+	// Topo order: nginx, then php-fpm. Stops reverse: php-fpm, nginx.
+	if len(stops) != 2 || stops[0] != "powernode-m1-php-fpm.service" || stops[1] != "powernode-m1-nginx.service" {
+		t.Errorf("stop order: %v (want reverse topo)", stops)
 	}
-	// Starts in forward order.
-	if len(starts) != 2 || starts[0] != "nginx.service" || starts[1] != "php-fpm.service" {
-		t.Errorf("start order: %v (want forward)", starts)
+	// Starts forward topo: nginx then php-fpm.
+	if len(starts) != 2 || starts[0] != "powernode-m1-nginx.service" || starts[1] != "powernode-m1-php-fpm.service" {
+		t.Errorf("start order: %v (want forward topo)", starts)
 	}
 }
 
@@ -150,7 +159,7 @@ func TestInitMissingManifest(t *testing.T) {
 	}
 }
 
-func TestInitNoUnitsDeclared(t *testing.T) {
+func TestInitNoServicesDeclared(t *testing.T) {
 	root := t.TempDir()
 	seedManifest(t, root, "m1", nil)
 
@@ -161,20 +170,27 @@ func TestInitNoUnitsDeclared(t *testing.T) {
 		Runner:       &mount.RecorderRunner{},
 	})
 	if err == nil {
-		t.Errorf("expected error for no units")
+		t.Errorf("expected error for no services")
 	}
 	if res.Status != "error" {
 		t.Errorf("status: %q", res.Status)
 	}
+	if !strings.Contains(err.Error(), "no services") && !strings.Contains(err.Error(), "system_module_services") {
+		t.Errorf("expected services-missing message: %v", err)
+	}
 }
 
-func TestInitOneUnitFailedReturnsPartial(t *testing.T) {
+func TestInitOneServiceFailedReturnsPartial(t *testing.T) {
 	root := t.TempDir()
-	seedManifest(t, root, "m1", []string{"good.service", "bad.service"})
+	_ = setUnitDir(t)
+	seedManifest(t, root, "m1", []manifest.Service{
+		{Name: "good", StartCommand: "/bin/true"},
+		{Name: "bad", StartCommand: "/bin/false"},
+	})
 
 	runner := &mount.RecorderRunner{
 		StubErr: map[string]error{
-			"systemctl start bad.service": errors.New("Failed to start bad.service"),
+			"systemctl start powernode-m1-bad.service": errors.New("Failed to start"),
 		},
 	}
 	res, err := RunInit(context.Background(), InitOptions{

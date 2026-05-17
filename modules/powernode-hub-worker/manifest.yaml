@@ -1,0 +1,47 @@
+schema_version: 1
+name: powernode-hub-worker
+display_name: Powernode Hub Worker (Sidekiq)
+description: Sidekiq worker process; communicates with hub-backend via HTTP API only
+license: MIT
+package_spec: []
+file_spec:
+  - /opt/powernode-worker
+mask:
+  - /opt/powernode-worker/tmp
+  - /opt/powernode-worker/log
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires:
+    - powernode/powernode-base-ruby@^1.0
+    - powernode/powernode-redis@^1.0
+    - powernode/powernode-hub-backend@^1.0
+
+services:
+  - name: sidekiq
+    start_command: "bundle exec sidekiq -C config/sidekiq.yml"
+    restart_policy: on-failure
+    user: powernode
+    working_directory: /opt/powernode-worker
+    env:
+      RAILS_ENV: production
+      BACKEND_API_URL: "http://localhost:3000"
+      REDIS_URL: "redis://localhost:6379/0"
+    capabilities: []
+    # Cross-module ordering (rails + redis must be up first) lives in
+    # the top-level dependencies.requires above. Service-level
+    # dependencies is intra-module only.
+    metadata:
+      sidekiq_version: "7.x"
+      notes: "BACKEND_API_URL is the default; per-node deployments override via config-variety child module (SDWAN VIP or DNS)."
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"

@@ -219,11 +219,11 @@ module Api
               # instance override of another module. The agent uses this to
               # know which mounts belong to which subscription chain.
               parent_module_id: mod.parent_module_id,
-              # Lifecycle hooks the on-node agent runs as subprocesses
-              # (NEVER eval'd) on attach / detach / hot-reload.
-              init_start: mod.init_start,
-              init_stop: mod.init_stop,
-              init_restart: mod.init_restart,
+              # P8.1: lifecycle is driven by system_module_services rows
+              # (surfaced via #serialize_module_services in the show
+              # response). The legacy init_start/init_stop/init_restart
+              # operator-supplied shell strings are no longer consumed by
+              # the on-node agent.
               reboot_required: mod.reboot_required,
               # Copy-path destination if set — agent writes this module's
               # data file into <destination_path> at attach time.
@@ -260,6 +260,11 @@ module Api
                 recursive: mod.copy_path.recursive,
                 preserve_permissions: mod.copy_path.preserve_permissions
               },
+              # P8.1 — Per-service definitions. The on-node Go agent uses
+              # these to write systemd unit files at attach time. Each
+              # entry maps to one `system_module_services` row + its
+              # outgoing dependencies for topological start order.
+              services: serialize_module_services(mod),
               # Legacy `.info` sidecar — key=value lines in the order the
               # legacy on-node tooling expected. Kept for parity until the
               # Go agent fully migrates to the JSON shape above.
@@ -269,6 +274,37 @@ module Api
               data_checksum: mod.data_checksum,
               puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
             )
+          end
+
+          # Render each ModuleService row in the shape the agent's
+          # internal/lifecycle package expects. `dependencies` carries
+          # the names of services that must be `Type=notify`-up before
+          # this one starts; the agent topologically sorts on these.
+          def serialize_module_services(mod)
+            services = mod.respond_to?(:module_services) ? mod.module_services.includes(:dependencies) : []
+            services.map do |svc|
+              {
+                name:                          svc.name,
+                start_command:                 svc.start_command,
+                stop_command:                  svc.stop_command,
+                restart_policy:                svc.restart_policy,
+                user:                          svc.user,
+                working_directory:             svc.working_directory,
+                env:                           svc.env || {},
+                exposed_ports:                 svc.exposed_ports || [],
+                capabilities:                  svc.capabilities || [],
+                health_endpoint:               svc.health_endpoint,
+                health_method:                 svc.health_method,
+                health_interval_seconds:       svc.health_interval_seconds,
+                health_timeout_seconds:        svc.health_timeout_seconds,
+                health_initial_delay_seconds:  svc.health_initial_delay_seconds,
+                dependencies:                  svc.dependencies.map(&:name),
+                metadata:                      svc.metadata || {}
+              }
+            end
+          rescue StandardError => e
+            ::Rails.logger.warn("[ModulesController#serialize_module_services] #{e.class}: #{e.message}")
+            []
           end
         end
       end

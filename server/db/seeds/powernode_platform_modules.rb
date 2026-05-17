@@ -36,263 +36,35 @@
 
 POWERNODE_PLATFORM_CATEGORY_NAME = "Powernode Platform"
 
-POWERNODE_PLATFORM_MODULE_MANIFESTS = {
-  "powernode-base-ruby" => <<~YAML,
-    schema_version: 1
-    name: powernode-base-ruby
-    display_name: Powernode Base Ruby Runtime
-    description: Ruby 3.3 + bundler + system dependencies for Rails workloads
-    license: MIT
-    package_spec:
-      - ruby3.3
-      - ruby3.3-dev
-      - bundler
-      - build-essential
-      - libpq-dev
-      - libssl-dev
-      - libyaml-dev
-      - zlib1g-dev
-    file_spec: []
-    mask: []
-    dependency_spec: []
-    protected_spec: []
-    reboot_required: false
-  YAML
+# P8.2: per-module manifests live on disk at
+# extensions/system/modules/<name>/manifest.yaml. The M1 supply chain
+# (build-platform-modules.yaml workflow) and this seed read from the
+# same files — a single source of truth. Editing a manifest requires
+# editing exactly one file.
+POWERNODE_PLATFORM_MODULES_DISK_ROOT = ::Rails.root.join(
+  "..", "extensions", "system", "modules"
+).to_s.freeze
 
-  "powernode-postgres" => <<~YAML,
-    schema_version: 1
-    name: powernode-postgres
-    display_name: PostgreSQL 16
-    description: PostgreSQL server providing the platform's primary database
-    license: PostgreSQL
-    package_spec:
-      - postgresql-16
-      - postgresql-contrib-16
-      - postgresql-client-16
-    file_spec: []
-    mask: []
-    dependency_spec: []
-    protected_spec:
-      - /etc/postgresql/16/main/postgresql.conf
-    services:
-      - name: postgres
-        start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf"
-        stop_command: "/usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
-        restart_policy: always
-        user: postgres
-        working_directory: /var/lib/postgresql
-        exposed_ports:
-          - { port: 5432, protocol: tcp, name: postgres }
-        capabilities: []
-        metadata:
-          pg_data: /var/lib/postgresql/16/main
-          pg_version: "16"
-  YAML
+def load_platform_module_manifests_from_disk
+  unless ::Dir.exist?(POWERNODE_PLATFORM_MODULES_DISK_ROOT)
+    raise "Platform modules disk root missing: #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}. " \
+          "Create extensions/system/modules/<name>/manifest.yaml for each platform module."
+  end
+  manifests = {}
+  ::Dir.entries(POWERNODE_PLATFORM_MODULES_DISK_ROOT).sort.each do |entry|
+    next if entry.start_with?(".")
+    mfpath = ::File.join(POWERNODE_PLATFORM_MODULES_DISK_ROOT, entry, "manifest.yaml")
+    next unless ::File.file?(mfpath)
+    manifests[entry] = ::File.read(mfpath)
+  end
+  raise "No platform module manifests found under #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}" if manifests.empty?
+  manifests
+end
 
-  "powernode-redis" => <<~YAML,
-    schema_version: 1
-    name: powernode-redis
-    display_name: Redis
-    description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
-    license: BSD-3-Clause
-    package_spec:
-      - redis-server
-    file_spec: []
-    mask: []
-    dependency_spec: []
-    protected_spec:
-      - /etc/redis/redis.conf
-    services:
-      - name: redis
-        start_command: "/usr/bin/redis-server /etc/redis/redis.conf"
-        restart_policy: always
-        user: redis
-        exposed_ports:
-          - { port: 6379, protocol: tcp, name: redis }
-        capabilities: []
-  YAML
+PLATFORM_MODULE_MANIFESTS_TO_SEED = load_platform_module_manifests_from_disk
+puts "  Loaded #{PLATFORM_MODULE_MANIFESTS_TO_SEED.size} platform module manifests from #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}"
 
-  "powernode-reverse-proxy" => <<~YAML,
-    schema_version: 1
-    name: powernode-reverse-proxy
-    display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
-    description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
-    license: MIT
-    package_spec: []
-    file_spec:
-      - /usr/local/bin/traefik
-      - /etc/traefik/traefik.yml
-      - /etc/systemd/system/traefik.service
-    mask: []
-    dependency_spec: []
-    protected_spec:
-      - /etc/traefik/dynamic
-    services:
-      - name: traefik
-        start_command: "/usr/local/bin/traefik --configFile=/etc/traefik/traefik.yml"
-        restart_policy: always
-        user: traefik
-        working_directory: /etc/traefik
-        exposed_ports:
-          - { port: 80,  protocol: tcp, name: http }
-          - { port: 443, protocol: tcp, name: https }
-        capabilities:
-          - CAP_NET_BIND_SERVICE
-        health:
-          endpoint: /ping
-          method: GET
-          interval_seconds: 30
-          timeout_seconds: 5
-          initial_delay_seconds: 5
-        metadata:
-          traefik_version: "v3"
-          acme_dynamic_config_path: /etc/traefik/dynamic
-          notes: "Cert lifecycle managed by Acme::CertificateManager (P2.5). Dynamic config written by Acme::TraefikConfigWriter from system_acme_certificates rows."
-  YAML
-
-  "powernode-hub-backend" => <<~YAML,
-    schema_version: 1
-    name: powernode-hub-backend
-    display_name: Powernode Hub Backend (Rails 8 API)
-    description: The Powernode platform's Rails 8 API server with ActionCable; backed by powernode-postgres and powernode-redis
-    license: MIT
-    package_spec: []
-    file_spec:
-      - /opt/powernode-rails
-    mask:
-      - /opt/powernode-rails/tmp
-      - /opt/powernode-rails/log
-      - /opt/powernode-rails/node_modules
-    dependency_spec: []
-    protected_spec:
-      - /opt/powernode-rails/config/master.key
-      - /opt/powernode-rails/config/credentials
-    dependencies:
-      requires:
-        - powernode/powernode-base-ruby@^1.0
-    services:
-      - name: rails
-        start_command: "bundle exec puma -C config/puma.rb"
-        restart_policy: always
-        user: powernode
-        working_directory: /opt/powernode-rails
-        env:
-          RAILS_ENV: production
-          RAILS_LOG_TO_STDOUT: "1"
-        exposed_ports:
-          - { port: 3000, protocol: tcp, name: http }
-        capabilities: []
-        health:
-          endpoint: /up
-          method: GET
-          interval_seconds: 30
-          timeout_seconds: 5
-          initial_delay_seconds: 30
-        metadata:
-          ruby_version: "3.3"
-          rails_version: "8.0"
-          notes: "ActionCable shares port 3000 via Rack-mounted /cable path."
-  YAML
-
-  "powernode-hub-worker" => <<~YAML,
-    schema_version: 1
-    name: powernode-hub-worker
-    display_name: Powernode Hub Worker (Sidekiq)
-    description: Sidekiq worker process; communicates with hub-backend via HTTP API only
-    license: MIT
-    package_spec: []
-    file_spec:
-      - /opt/powernode-worker
-    mask:
-      - /opt/powernode-worker/tmp
-      - /opt/powernode-worker/log
-    dependency_spec: []
-    protected_spec: []
-    dependencies:
-      requires:
-        - powernode/powernode-base-ruby@^1.0
-    services:
-      - name: sidekiq
-        start_command: "bundle exec sidekiq -C config/sidekiq.yml"
-        restart_policy: on-failure
-        user: powernode
-        working_directory: /opt/powernode-worker
-        env:
-          RAILS_ENV: production
-          BACKEND_API_URL: "http://localhost:3000"
-        capabilities: []
-        metadata:
-          sidekiq_version: "7.x"
-          notes: "BACKEND_API_URL is the default; per-node deployments override via config-variety child module (SDWAN VIP or DNS)."
-  YAML
-
-  "powernode-hub-frontend" => <<~YAML,
-    schema_version: 1
-    name: powernode-hub-frontend
-    display_name: Powernode Hub Frontend (Vite static assets)
-    description: React TypeScript frontend built artifacts; served as static files by powernode-reverse-proxy
-    license: MIT
-    package_spec: []
-    file_spec:
-      - /opt/powernode-frontend/dist
-    mask: []
-    dependency_spec: []
-    protected_spec: []
-    dependencies:
-      requires:
-        - powernode/powernode-reverse-proxy@^1.0
-  YAML
-
-  "powernode-pg-replica" => <<~YAML,
-    schema_version: 1
-    name: powernode-pg-replica
-    display_name: PostgreSQL 16 Streaming Replica
-    description: PostgreSQL streaming replica following a parent platform's primary (cluster_member spawn mode)
-    license: PostgreSQL
-    package_spec:
-      - postgresql-16
-      - postgresql-client-16
-    file_spec: []
-    mask: []
-    dependency_spec: []
-    protected_spec:
-      - /etc/postgresql/16/replica/postgresql.conf
-      - /var/lib/postgresql/16/replica
-    services:
-      - name: pg-replica
-        start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/replica -c config_file=/etc/postgresql/16/replica/postgresql.conf"
-        restart_policy: always
-        user: postgres
-        working_directory: /var/lib/postgresql/16/replica
-        exposed_ports:
-          - { port: 5433, protocol: tcp, name: pg-replica }
-        capabilities: []
-        metadata:
-          role: streaming_replica
-          pg_version: "16"
-          notes: "Replication slot + primary connection string injected via virtio-fw-cfg at spawn time."
-  YAML
-
-  "powernode-extension-system" => <<~YAML,
-    schema_version: 1
-    name: powernode-extension-system
-    display_name: Powernode System Extension
-    description: The Powernode System extension Rails engine (nodes, modules, SDWAN, fleet autonomy, Go agent control plane)
-    license: MIT
-    package_spec: []
-    file_spec:
-      - /opt/powernode-rails/extensions/system
-    mask:
-      - /opt/powernode-rails/extensions/system/tmp
-    dependency_spec: []
-    protected_spec: []
-    dependencies:
-      requires:
-        - powernode/powernode-hub-backend@^1.0
-  YAML
-}.freeze
-
-puts "\n  Seeding Powernode Platform modules (9 modules)..."
+puts "\n  Seeding Powernode Platform modules (#{PLATFORM_MODULE_MANIFESTS_TO_SEED.size} modules)..."
 
 created = 0
 updated = 0
@@ -310,7 +82,7 @@ errors  = []
     next
   end
 
-  POWERNODE_PLATFORM_MODULE_MANIFESTS.each do |module_name, manifest_yaml|
+  PLATFORM_MODULE_MANIFESTS_TO_SEED.each do |module_name, manifest_yaml|
     mod = ::System::NodeModule.find_or_initialize_by(
       account: account,
       name: module_name

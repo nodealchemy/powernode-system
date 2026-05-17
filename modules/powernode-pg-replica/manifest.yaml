@@ -1,0 +1,39 @@
+schema_version: 1
+name: powernode-pg-replica
+display_name: PostgreSQL 16 Streaming Replica
+description: PostgreSQL streaming replica following a parent platform's primary (cluster_member spawn mode)
+license: PostgreSQL
+package_spec:
+  - postgresql-16
+  - postgresql-client-16
+file_spec: []
+mask: []
+dependency_spec: []
+protected_spec:
+  - /etc/postgresql/16/replica/postgresql.conf
+  - /var/lib/postgresql/16/replica
+reboot_required: false
+
+services:
+  - name: pg-replica
+    start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/replica -c config_file=/etc/postgresql/16/replica/postgresql.conf"
+    restart_policy: always
+    user: postgres
+    working_directory: /var/lib/postgresql/16/replica
+    exposed_ports:
+      - { port: 5433, protocol: tcp, name: pg-replica }
+    capabilities: []
+    # TCP health probe deferred — see powernode-postgres.
+    metadata:
+      role: streaming_replica
+      pg_version: "16"
+      notes: "Replication slot + primary connection string injected via virtio-fw-cfg at spawn time."
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"

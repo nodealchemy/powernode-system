@@ -1,0 +1,29 @@
+schema_version: 1
+name: powernode-base-ruby
+display_name: Powernode Base Ruby Runtime
+description: Ruby 3.3 + bundler + system dependencies for Rails workloads
+license: MIT
+package_spec:
+  - ruby3.3
+  - ruby3.3-dev
+  - bundler
+  - build-essential
+  - libpq-dev
+  - libssl-dev
+  - libyaml-dev
+  - zlib1g-dev
+file_spec: []
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+# Base-ruby is FS-only: it installs the runtime that other modules
+# (powernode-hub-backend, powernode-hub-worker) depend on, but it
+# doesn't host any services of its own. That's why the services
+# list is empty — the modules layered on top declare their own
+# Rails/Sidekiq services.
+services: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

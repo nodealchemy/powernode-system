@@ -1,0 +1,33 @@
+schema_version: 1
+name: powernode-redis
+display_name: Redis
+description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
+license: BSD-3-Clause
+package_spec:
+  - redis-server
+file_spec: []
+mask: []
+dependency_spec: []
+protected_spec:
+  - /etc/redis/redis.conf
+reboot_required: false
+
+services:
+  - name: redis
+    start_command: "/usr/bin/redis-server /etc/redis/redis.conf"
+    restart_policy: always
+    user: redis
+    exposed_ports:
+      - { port: 6379, protocol: tcp, name: redis }
+    capabilities: []
+    # TCP health probe deferred — see powernode-postgres for the same
+    # ModuleService.HEALTH_METHODS constraint.
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"

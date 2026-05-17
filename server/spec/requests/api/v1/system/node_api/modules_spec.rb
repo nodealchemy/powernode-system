@@ -97,13 +97,14 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       )
     end
 
-    it "index emits lifecycle hooks (init_*, reboot_required) on every module" do
+    it "index emits reboot_required on every module (lifecycle hooks moved to services array per P8.1)" do
       get "/api/v1/system/node_api/modules", headers: headers
       mod = JSON.parse(response.body).dig("data", "modules").find { |m| m["name"] == "nginx-base" }
-      expect(mod["init_start"]).to    eq("systemctl start nginx")
-      expect(mod["init_stop"]).to     eq("systemctl stop nginx")
-      expect(mod["init_restart"]).to  eq("systemctl reload nginx")
       expect(mod["reboot_required"]).to be true
+      # Legacy init_* fields are no longer emitted to the agent.
+      expect(mod).not_to have_key("init_start")
+      expect(mod).not_to have_key("init_stop")
+      expect(mod).not_to have_key("init_restart")
     end
 
     it "index emits effective_priority + parent_module_id" do
@@ -127,7 +128,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(decoded_protected).to include("/etc/nginx/protected.conf")
       decoded_dependency = payload["dependency_spec"].map { |b| Base64.decode64(b) }
       expect(decoded_dependency).to include("/etc/nginx/inherited/**")
-      expect(payload["info"]).to include("name=nginx-base", "init_start=systemctl start nginx", "reboot=true")
+      expect(payload["info"]).to include("name=nginx-base", "reboot=true")
     end
 
     it "show emits copy_path block when copy_path is set" do
@@ -152,6 +153,73 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
       payload = JSON.parse(response.body).dig("data", "module")
       expect(payload["copy_path"]).to be_nil
+    end
+
+    # P8.1 — Per-service lifecycle. The on-node agent (internal/lifecycle)
+    # consumes this array to write one systemd unit per service.
+    it "show emits services array with full module_service shape" do
+      svc = ::System::ModuleService.create!(
+        account: account,
+        node_module: base_module,
+        name: "nginx",
+        start_command: "/usr/sbin/nginx -g 'daemon off;'",
+        stop_command: "/usr/sbin/nginx -s quit",
+        restart_policy: "always",
+        user: "www-data",
+        working_directory: "/var/www",
+        env: { "NGINX_HOST" => "dev.example.com" },
+        exposed_ports: [ { "container" => 80, "host" => 80 } ],
+        health_endpoint: "/healthz",
+        health_method: "http_get",
+        health_interval_seconds: 10,
+        health_timeout_seconds: 5,
+        health_initial_delay_seconds: 0
+      )
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      payload = JSON.parse(response.body).dig("data", "module")
+      services = payload["services"]
+      expect(services).to be_an(Array)
+      expect(services.size).to eq(1)
+      entry = services.first
+      expect(entry).to include(
+        "name" => "nginx",
+        "start_command" => "/usr/sbin/nginx -g 'daemon off;'",
+        "stop_command" => "/usr/sbin/nginx -s quit",
+        "restart_policy" => "always",
+        "user" => "www-data",
+        "working_directory" => "/var/www",
+        "health_endpoint" => "/healthz",
+        "health_method" => "http_get"
+      )
+      expect(entry["env"]).to eq("NGINX_HOST" => "dev.example.com")
+      expect(entry["exposed_ports"]).to eq([ { "container" => 80, "host" => 80 } ])
+      expect(entry["dependencies"]).to eq([])
+      svc.reload
+    end
+
+    it "show services array preserves dependency edges by name" do
+      pg  = ::System::ModuleService.create!(account: account, node_module: base_module,
+                                             name: "postgres", start_command: "/usr/bin/postgres")
+      web = ::System::ModuleService.create!(account: account, node_module: base_module,
+                                             name: "web", start_command: "/usr/sbin/nginx")
+      ::System::ModuleServiceDependency.create!(account: account,
+                                                module_service: web,
+                                                depends_on_service: pg,
+                                                kind: "start_before")
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      services = JSON.parse(response.body).dig("data", "module", "services")
+      web_entry = services.find { |s| s["name"] == "web" }
+      pg_entry  = services.find { |s| s["name"] == "postgres" }
+      expect(web_entry["dependencies"]).to include("postgres")
+      expect(pg_entry["dependencies"]).to eq([])
+    end
+
+    it "show emits empty services array when no module_service rows seeded" do
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      services = JSON.parse(response.body).dig("data", "module", "services")
+      expect(services).to eq([])
     end
   end
 end

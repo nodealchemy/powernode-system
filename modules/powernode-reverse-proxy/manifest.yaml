@@ -1,0 +1,46 @@
+schema_version: 1
+name: powernode-reverse-proxy
+display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
+description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
+license: MIT
+package_spec: []
+file_spec:
+  - /usr/local/bin/traefik
+  - /etc/traefik/traefik.yml
+  - /etc/systemd/system/traefik.service
+mask: []
+dependency_spec: []
+protected_spec:
+  - /etc/traefik/dynamic
+reboot_required: false
+
+services:
+  - name: traefik
+    start_command: "/usr/local/bin/traefik --configFile=/etc/traefik/traefik.yml"
+    restart_policy: always
+    user: traefik
+    working_directory: /etc/traefik
+    exposed_ports:
+      - { port: 80,  protocol: tcp, name: web }
+      - { port: 443, protocol: tcp, name: websecure }
+    capabilities:
+      - CAP_NET_BIND_SERVICE
+    health:
+      endpoint: "/ping"
+      method: GET
+      interval_seconds: 15
+      timeout_seconds: 3
+      initial_delay_seconds: 5
+
+security:
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  # Vendored Traefik binary from extensions/system/agent/dist/.
+  # The CI step copies it into /usr/local/bin during the
+  # composer stage, so package_spec is empty.
+  apt_snapshot: "20260415T000000Z"

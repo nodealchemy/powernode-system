@@ -14,6 +14,12 @@ package manifest
 // Manifest is the typed view the agent operates on. Field names
 // follow the platform's JSON shape (snake_case) so the unmarshal
 // from /node_api/modules/:id is direct.
+//
+// P8.1 lifecycle: every module ships `services` (one row per
+// system_module_services). The agent's internal/lifecycle package
+// writes a systemd unit per service on attach. There is no longer
+// a fallback to legacy `init_start` shell strings — modules without
+// a `services` array are unsupported.
 type Manifest struct {
 	ID                string         `json:"id"`
 	Name              string         `json:"name"`
@@ -21,9 +27,6 @@ type Manifest struct {
 	Priority          int            `json:"priority"`
 	EffectivePriority int            `json:"effective_priority"`
 	Digest            string         `json:"digest,omitempty"` // OCI digest from current_version
-	InitStart         string         `json:"init_start,omitempty"`
-	InitStop          string         `json:"init_stop,omitempty"`
-	InitRestart       string         `json:"init_restart,omitempty"`
 	RebootRequired    bool           `json:"reboot_required,omitempty"`
 	DataFileName      string         `json:"data_file_name,omitempty"`
 	DataChecksum      string         `json:"data_checksum,omitempty"`
@@ -36,10 +39,43 @@ type Manifest struct {
 	DependencySpec []string `json:"dependency_spec,omitempty"`
 	ProtectedSpec  []string `json:"protected_spec,omitempty"`
 	// Config is the free-form JSON blob. Known keys include:
-	//   - "units": []string  — preferred systemd unit list (for init/attach)
 	//   - "security": {capabilities, seccomp_profile, egress_allowlist}
 	//   - "skills": []string — bound skill ids (Phase 2 reseeders)
 	Config map[string]any `json:"config,omitempty"`
+	// Per-service definitions. Populated from
+	// system_module_services rows in the platform DB; surfaced by
+	// the modules#show endpoint at /api/v1/system/node_api/modules/:id.
+	// The agent's internal/lifecycle package emits one systemd unit
+	// file per service at attach time and tears them down on detach.
+	Services []Service `json:"services"`
+}
+
+// Service mirrors the server-side serialize_module_services payload.
+// Each maps 1:1 to a system_module_services row.
+//
+// Lifecycle on the on-node agent (internal/lifecycle):
+//   - attachModule writes /etc/systemd/system/powernode-<mod>-<name>.service
+//     from these fields, runs systemctl daemon-reload + start
+//   - detachModule stops + removes the unit + daemon-reload
+//   - Services are started in topological order over Dependencies;
+//     stopped in reverse order
+type Service struct {
+	Name                       string            `json:"name"`
+	StartCommand               string            `json:"start_command"`
+	StopCommand                string            `json:"stop_command,omitempty"`
+	RestartPolicy              string            `json:"restart_policy,omitempty"` // always | on-failure | never
+	User                       string            `json:"user,omitempty"`
+	WorkingDirectory           string            `json:"working_directory,omitempty"`
+	Env                        map[string]string `json:"env,omitempty"`
+	ExposedPorts               []any             `json:"exposed_ports,omitempty"` // metadata only
+	Capabilities               []string          `json:"capabilities,omitempty"`
+	HealthEndpoint             string            `json:"health_endpoint,omitempty"`
+	HealthMethod               string            `json:"health_method,omitempty"`
+	HealthIntervalSeconds      int               `json:"health_interval_seconds,omitempty"`
+	HealthTimeoutSeconds       int               `json:"health_timeout_seconds,omitempty"`
+	HealthInitialDelaySeconds  int               `json:"health_initial_delay_seconds,omitempty"`
+	Dependencies               []string          `json:"dependencies,omitempty"` // names of services that must start before this one
+	Metadata                   map[string]any    `json:"metadata,omitempty"`
 }
 
 // CopyPath describes a file or directory to copy from the module
@@ -61,24 +97,18 @@ type PuppetModule struct {
 	Name string `json:"name,omitempty"`
 }
 
-// Units returns the canonical systemd unit list for this manifest.
-// Prefer Config["units"] when set (M2-era explicit declaration);
-// fall back to single-unit legacy parsing of InitStart for back-compat
-// with modules authored before the structured Units field.
-func (m *Manifest) Units() []string {
-	if raw, ok := m.Config["units"]; ok {
-		if arr, ok := raw.([]any); ok {
-			out := make([]string, 0, len(arr))
-			for _, v := range arr {
-				if s, ok := v.(string); ok && s != "" {
-					out = append(out, s)
-				}
-			}
-			return out
-		}
+// UnitNames returns the canonical systemd unit names this manifest
+// declares — one per service, in the order the platform emitted them
+// (which is the declaration order in system_module_services). The
+// agent's internal/lifecycle package handles topological start
+// ordering separately; this is just the flat list.
+func (m *Manifest) UnitNames() []string {
+	if len(m.Services) == 0 {
+		return nil
 	}
-	// Fallback: parse legacy init_start text. Recognized form is
-	// `systemctl <verb> <unit>` for a single unit. Anything else
-	// returns nil — callers must handle the empty case explicitly.
-	return parseSingleUnit(m.InitStart)
+	out := make([]string, 0, len(m.Services))
+	for _, s := range m.Services {
+		out = append(out, "powernode-"+m.ID+"-"+s.Name+".service")
+	}
+	return out
 }

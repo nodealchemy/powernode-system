@@ -66,6 +66,9 @@ func (s *stubPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, error) {
 func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
+	// P8.1: route lifecycle unit-file writes into a tmpdir so we don't
+	// touch the host's /etc/systemd/system.
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
 
 	client := &stubModulesClient{
 		responses: map[string]string{
@@ -81,7 +84,9 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 					"id":"m1", "name":"nginx",
 					"priority":100, "effective_priority":100,
 					"digest":"abc123",
-					"config": {"units": ["nginx.service"]}
+					"services": [
+						{"name":"nginx", "start_command":"/usr/sbin/nginx -g 'daemon off;'", "restart_policy":"always"}
+					]
 				}
 			}`,
 		},
@@ -112,16 +117,16 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 		t.Errorf("puller calls: %v", puller.calls)
 	}
 
-	// systemd start nginx.service issued.
+	// P8.1: systemctl start of the service's generated unit name.
 	foundStart := false
 	for _, inv := range runner.Invocations {
 		if inv.Name == "systemctl" && inv.Op == "Run" &&
-			len(inv.Args) >= 2 && inv.Args[0] == "start" && inv.Args[1] == "nginx.service" {
+			len(inv.Args) >= 2 && inv.Args[0] == "start" && inv.Args[1] == "powernode-m1-nginx.service" {
 			foundStart = true
 		}
 	}
 	if !foundStart {
-		t.Errorf("expected `systemctl start nginx.service`, got: %v", runner.Invocations)
+		t.Errorf("expected `systemctl start powernode-m1-nginx.service`, got: %v", runner.Invocations)
 	}
 
 	// State persisted with m1 in attached modules.
@@ -157,7 +162,7 @@ func TestReconcilerRunOnceNoOpsWhenStateMatches(t *testing.T) {
 				"success": true,
 				"data": {"id":"m1", "name":"nginx", "digest":"abc123",
 				         "priority":100, "effective_priority":100,
-				         "config": {"units": ["nginx.service"]}}
+				         "services": [{"name":"nginx", "start_command":"/usr/sbin/nginx", "restart_policy":"always"}]}
 			}`,
 		},
 	}
@@ -201,11 +206,12 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 	})
 
 	manifestRoot := filepath.Join(tmpRoot, "manifests")
-	// Pre-seed manifest cache so detach knows the units.
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+	// Pre-seed manifest cache so detach knows the services.
 	dir := filepath.Join(manifestRoot, "m1")
 	mkdirAll(t, dir)
 	writeFile(t, filepath.Join(dir, "manifest.json"),
-		`{"id":"m1","name":"nginx","config":{"units":["nginx.service"]}}`)
+		`{"id":"m1","name":"nginx","services":[{"name":"nginx","start_command":"/usr/sbin/nginx"}]}`)
 
 	client := &stubModulesClient{
 		responses: map[string]string{
@@ -228,16 +234,16 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	// systemctl stop nginx.service issued.
+	// P8.1: lifecycle.DetachServices issues stop on the generated unit name.
 	foundStop := false
 	for _, inv := range runner.Invocations {
 		if inv.Name == "systemctl" && len(inv.Args) >= 2 &&
-			inv.Args[0] == "stop" && inv.Args[1] == "nginx.service" {
+			inv.Args[0] == "stop" && inv.Args[1] == "powernode-m1-nginx.service" {
 			foundStop = true
 		}
 	}
 	if !foundStop {
-		t.Errorf("expected `systemctl stop nginx.service`, got: %v", runner.Invocations)
+		t.Errorf("expected `systemctl stop powernode-m1-nginx.service`, got: %v", runner.Invocations)
 	}
 
 	// State updated to no attached modules.
@@ -282,7 +288,7 @@ func TestReconcilerDryRunSkipsMutations(t *testing.T) {
 			"/api/v1/system/node_api/modules/m1": `{
 				"success": true,
 				"data": {"id":"m1", "digest":"abc","priority":100,"effective_priority":100,
-				         "config":{"units":["nginx.service"]}}
+				         "services":[{"name":"nginx","start_command":"/usr/sbin/nginx"}]}
 			}`,
 		},
 	}

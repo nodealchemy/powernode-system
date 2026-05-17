@@ -144,42 +144,30 @@ func TestLoadOrFetchStaleness(t *testing.T) {
 	}
 }
 
-func TestUnitsExplicit(t *testing.T) {
+func TestUnitNames_FromServices(t *testing.T) {
 	m := &Manifest{
-		Config: map[string]any{
-			"units": []any{"nginx.service", "php-fpm.service"},
+		ID: "mod-x",
+		Services: []Service{
+			{Name: "nginx", StartCommand: "/usr/sbin/nginx"},
+			{Name: "php-fpm", StartCommand: "/usr/sbin/php-fpm"},
 		},
 	}
-	got := m.Units()
-	if len(got) != 2 || got[0] != "nginx.service" || got[1] != "php-fpm.service" {
-		t.Errorf("got %v", got)
+	got := m.UnitNames()
+	want := []string{"powernode-mod-x-nginx.service", "powernode-mod-x-php-fpm.service"}
+	if len(got) != len(want) {
+		t.Fatalf("UnitNames: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("UnitNames[%d]: got %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
-func TestUnitsLegacyParse(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{"systemctl start nginx.service", []string{"nginx.service"}},
-		{"systemctl restart sshd", []string{"sshd"}},
-		{"systemctl reload php-fpm", []string{"php-fpm"}},
-		{"true && systemctl start a; systemctl start b", nil}, // too complex
-		{"", nil},
-		{"echo hi", nil},
-	}
-	for _, tc := range cases {
-		m := &Manifest{InitStart: tc.in}
-		got := m.Units()
-		if len(got) != len(tc.want) {
-			t.Errorf("Units(%q): got %v, want %v", tc.in, got, tc.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != tc.want[i] {
-				t.Errorf("Units(%q)[%d]: got %q, want %q", tc.in, i, got[i], tc.want[i])
-			}
-		}
+func TestUnitNames_EmptyServicesReturnsNil(t *testing.T) {
+	m := &Manifest{ID: "mod-y"}
+	if got := m.UnitNames(); got != nil {
+		t.Errorf("expected nil for empty services, got %v", got)
 	}
 }
 

@@ -1,0 +1,61 @@
+schema_version: 1
+name: powernode-hub-backend
+display_name: Powernode Hub Backend (Rails 8 API)
+description: The Powernode platform's Rails 8 API server with ActionCable; backed by powernode-postgres and powernode-redis
+license: MIT
+package_spec: []
+file_spec:
+  - /opt/powernode-rails
+mask:
+  - /opt/powernode-rails/tmp
+  - /opt/powernode-rails/log
+  - /opt/powernode-rails/node_modules
+dependency_spec: []
+protected_spec:
+  - /opt/powernode-rails/config/master.key
+  - /opt/powernode-rails/config/credentials
+reboot_required: false
+
+dependencies:
+  requires:
+    - powernode/powernode-base-ruby@^1.0
+    - powernode/powernode-postgres@^1.0
+    - powernode/powernode-redis@^1.0
+
+services:
+  - name: rails
+    start_command: "bundle exec puma -C config/puma.rb"
+    restart_policy: always
+    user: powernode
+    working_directory: /opt/powernode-rails
+    env:
+      RAILS_ENV: production
+      RAILS_LOG_TO_STDOUT: "1"
+      DATABASE_URL: "postgres://powernode@localhost:5432/powernode_production"
+      REDIS_URL: "redis://localhost:6379/0"
+    exposed_ports:
+      - { port: 3000, protocol: tcp, name: http }
+    capabilities: []
+    health:
+      endpoint: "/up"
+      method: GET
+      interval_seconds: 30
+      timeout_seconds: 5
+      initial_delay_seconds: 30
+    # Cross-module ordering (postgres + redis must be up first) is
+    # expressed at the top-level `dependencies.requires` above. The
+    # service-level `dependencies` array is intra-module only —
+    # hub-backend has just one service so it stays empty.
+    metadata:
+      ruby_version: "3.3"
+      rails_version: "8.0"
+      notes: "ActionCable shares port 3000 via Rack-mounted /cable path."
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"
