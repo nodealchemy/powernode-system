@@ -20,6 +20,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/k3sd"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/migration"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
@@ -149,6 +150,17 @@ func (s *Service) Run(ctx context.Context) error {
 		client.InstanceID, s.cfg.OnError,
 	)
 
+	// E8.2 — storage migration runner. Polls
+	// /api/v1/system/node_api/storage_migrations every PostSend tick;
+	// advances each non-terminal migration through the 6-step
+	// contract. Idempotent: re-running picks up from server-reported
+	// status, so a crashed mid-rsync run resumes naturally.
+	migrationRunner := &migration.Runner{
+		Client:      client,
+		MountRunner: mount.ExecRunner{},
+		OnError:     s.cfg.OnError,
+	}
+
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -186,6 +198,14 @@ func (s *Service) Run(ctx context.Context) error {
 			// gets a slightly better convergence shape.
 			k3sServerMgr.Reconcile(ctx)
 			k3sAgentMgr.Reconcile(ctx)
+			// Storage migrations run last in the post-send chain —
+			// migrations only fire when an operator has explicitly
+			// approved them, and they tolerate slow execution
+			// (rsync can run for minutes). Failure surfaces via
+			// OnError but doesn't block the next tick.
+			if err := migrationRunner.Tick(ctx); err != nil {
+				s.cfg.OnError("migration_runner", err)
+			}
 		},
 	}
 

@@ -150,6 +150,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// E8: realize the durable-storage binding before module attaches,
+	// so any module unit start (e.g. postgres) finds its data
+	// directory already on the persistent mount. Best-effort: failure
+	// here surfaces via OnError but doesn't block the module-reconcile
+	// pass — modules without a volume binding still need to come up.
+	if binding, err := FetchStorageVolume(ctx, r.cfg.ModulesClient); err != nil {
+		r.cfg.OnError("reconciler:fetch_storage_volume", err)
+	} else if !r.cfg.DryRun {
+		if err := mount.ReconcileStorageVolume(ctx, r.cfg.MountRunner, binding); err != nil {
+			r.cfg.OnError("reconciler:storage_volume", err)
+		}
+	}
+
 	desiredModules, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
 	if err != nil {
 		r.lastError = fmt.Errorf("fetch assigned modules: %w", err)
