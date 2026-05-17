@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::Sdwan::FederationPeer.find(params[:federation_peer_id])
+        peer = ::System::FederationPeer.find(params[:federation_peer_id])
         if peer.respond_to?(:accept!)
           peer.accept!
         else

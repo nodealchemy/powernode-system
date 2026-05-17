@@ -22,7 +22,7 @@ module Api
 
           def index
             require_permission("sdwan.federation.read")
-            peers = ::Sdwan::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
+            peers = ::System::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
             peers = peers.where(status: params[:status]) if params[:status].present?
             render_success(federation_peers: peers.map { |p| serialize_peer(p) }, count: peers.size)
           end
@@ -45,7 +45,7 @@ module Api
               description: "Propose federation with #{attrs[:remote_instance_url]}",
               on_proceed: ->(result) {
                 peer_id = result.result&.dig(:data, :federation_peer_id)
-                peer = ::Sdwan::FederationPeer.find(peer_id) if peer_id
+                peer = ::System::FederationPeer.find(peer_id) if peer_id
                 if peer
                   render_success({ federation_peer: serialize_peer_full(peer) }, status: :created)
                 else
@@ -80,7 +80,7 @@ module Api
               action_category: "sdwan.federation_peer_revoke",
               executor_class: "Sdwan::Executors::RevokeFederationPeer",
               params: { federation_peer_id: id },
-              source_type: "Sdwan::FederationPeer",
+              source_type: "System::FederationPeer",
               source_id: id,
               description: "Revoke federation peer #{url}",
               on_proceed: ->(_r) { render_success(deleted: true, id: id) }
@@ -95,7 +95,7 @@ module Api
               action_category: "sdwan.federation_peer_revoke",
               executor_class: "Sdwan::Executors::RevokeFederationPeer",
               params: { federation_peer_id: id, reason: params[:reason] },
-              source_type: "Sdwan::FederationPeer",
+              source_type: "System::FederationPeer",
               source_id: id,
               description: "Revoke federation peer #{url}",
               on_proceed: ->(_r) { render_success(federation_peer: serialize_peer_full(@peer.reload), revoked: true) }
@@ -105,7 +105,7 @@ module Api
           private
 
           def set_peer
-            @peer = ::Sdwan::FederationPeer.where(account_id: @account.id).find(params[:id])
+            @peer = ::System::FederationPeer.where(account_id: @account.id).find(params[:id])
           rescue ActiveRecord::RecordNotFound
             render_not_found("SDWAN Federation Peer")
           end
@@ -144,7 +144,7 @@ module Api
             serialize_peer(p).merge(
               metadata: p.metadata,
               has_trust_jwt: p.vault_path.present? || p.encrypted_credentials.present?,
-              v1_allowed_transitions: ::Sdwan::FederationPeer::V1_TRANSITIONS.fetch(p.status, [])
+              v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, [])
             )
           end
         end

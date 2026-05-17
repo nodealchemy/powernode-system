@@ -42,6 +42,23 @@ module System
         @adapter = nil
       end
 
+      # Operator-facing preflight that verifies the configured adapter can
+      # actually issue certificates before any caller tries. Returns
+      #   { status: :ok | :error, message: String, details: Hash }
+      # so operators / bootstrap tooling can fail fast with an actionable
+      # error rather than discovering misconfiguration on first issue.
+      # See Golden Eclipse plan M0.N + project_vault_pki_state for the
+      # production Vault PKI bootstrap context.
+      def preflight_check
+        adapter.preflight_check
+      rescue StandardError => e
+        {
+          status: :error,
+          message: "InternalCaService.preflight_check raised #{e.class}: #{e.message}",
+          details: { adapter: adapter.class.name }
+        }
+      end
+
       def issue_certificate(csr_pem:, ttl_seconds: DEFAULT_TTL_SECONDS, common_name: nil)
         adapter.issue_certificate(
           csr_pem: csr_pem,
@@ -124,6 +141,18 @@ module System
         ca_cert.to_pem
       end
 
+      def preflight_check
+        {
+          status: :ok,
+          message: "LocalCaAdapter active (dev/test). Ephemeral in-memory CA.",
+          details: {
+            adapter: "local",
+            subject: ca_cert.subject.to_s,
+            not_after: ca_cert.not_after.iso8601
+          }
+        }
+      end
+
       private
 
       def build_self_signed_root(key)
@@ -195,6 +224,41 @@ module System
         result.is_a?(String) ? result : result.to_s
       rescue ::Security::VaultClient::VaultError => e
         raise CaError, "Vault PKI ca_chain fetch failed: #{e.message}"
+      end
+
+      # Probes the configured PKI role to verify Vault is reachable AND
+      # the PKI engine is mounted AND the issuing role exists. Specific
+      # error classes drive specific operator messaging so failure mode
+      # (network vs mount vs role) is visible without enabling debug logs.
+      def preflight_check
+        @vault.read_secret("#{@mount}/roles/#{@role}")
+        {
+          status: :ok,
+          message: "VaultCaAdapter active. PKI mount '#{@mount}' role '#{@role}' is reachable.",
+          details: { adapter: "vault", mount: @mount, role: @role }
+        }
+      rescue ::Security::VaultClient::SecretNotFoundError
+        {
+          status: :error,
+          message: "Vault PKI role '#{@role}' not found at mount '#{@mount}'. " \
+                   "Bootstrap the PKI engine + role, or override via " \
+                   "POWERNODE_PKI_MOUNT / POWERNODE_PKI_ROLE. " \
+                   "To run without Vault, set POWERNODE_CA_MODE=local.",
+          details: { adapter: "vault", mount: @mount, role: @role }
+        }
+      rescue ::Security::VaultClient::ConnectionError => e
+        {
+          status: :error,
+          message: "Vault unreachable: #{e.message}. Verify VAULT_ADDR + network. " \
+                   "To run without Vault, set POWERNODE_CA_MODE=local.",
+          details: { adapter: "vault", mount: @mount, role: @role }
+        }
+      rescue ::Security::VaultClient::VaultError => e
+        {
+          status: :error,
+          message: "Vault PKI preflight failed: #{e.class}: #{e.message}",
+          details: { adapter: "vault", mount: @mount, role: @role }
+        }
       end
     end
   end

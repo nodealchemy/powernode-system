@@ -388,8 +388,107 @@ Rails.application.routes.draw do
         # version metadata. Submission/review pipeline is out of scope.
         resources :marketplace, only: %i[index show], controller: "marketplace"
 
+        # === Platform infrastructure dashboard (P7) ===
+        # /app/system/compute/platform reads from this endpoint to render
+        # at-a-glance counts + status for the unified-platform-ops page.
+        # Plan reference: Decentralized Federation §I.
+        get "platform/overview", to: "platform#overview"
+
+        # P7.1 — Platform Peers panel. List + propose + revoke peers
+        # excluding spawned-children (those live in /federation/children).
+        # P7.2 — Platform Health snapshot endpoint.
+        namespace :platform do
+          resources :peers, only: %i[index show create] do
+            member do
+              post :revoke
+            end
+            # P7.5 — Per-peer grants editor (FederationGrant CRUD).
+            resources :grants, only: %i[index create], controller: "peer_grants" do
+              member do
+                post :revoke
+              end
+            end
+            # P7.6 — Per-peer capabilities editor (FederationCapability CRUD).
+            resources :capabilities, only: %i[index create destroy],
+                                     controller: "peer_capabilities"
+          end
+          get "health", to: "health#show"
+
+          # P7.3 — Platform deployments / Scaling panel.
+          # D1.2 — Adds `create` so operators can deploy new platforms
+          # via POST (standalone | federated). Plan: Decentralized
+          # Federation §I + chat-deploy story.
+          # D4.1 — Adds GET /wizard so the standalone page consumes the
+          # same payload as the chat card.
+          resources :deployments, only: %i[index show create update] do
+            collection do
+              get :wizard
+            end
+          end
+
+          # P7.4 — Operator-facing Migrations read endpoints. (Writes
+          # land via the future MigrationWizard slice; for now plan
+          # composition + apply happens via internal services.)
+          resources :migrations, only: %i[index show]
+
+          # E6 — Volume CRUD REST shim. Wraps the system_create_volume
+          # / system_list_volumes MCP actions so the wizard can POST
+          # without going through the MCP dispatch boundary. Index +
+          # create here; full CRUD is in SystemFleetTool for MCP callers.
+          resources :volumes, only: %i[index create]
+
+          # E8 follow-on — operator-facing storage-migration surface.
+          # Plan + approve + cancel sit on top of the MCP actions;
+          # index/show provide the list + detail the dashboard needs.
+          resources :storage_migrations, only: %i[index show create] do
+            member do
+              post :approve
+              post :cancel
+            end
+          end
+        end
+
+        # === ACME DNS credentials (operator-facing CRUD) ===
+        # Plan reference: Decentralized Federation §J + P2.5.8.
+        resources :acme_dns_credentials, only: %i[index show create update destroy] do
+          member do
+            post :test_connectivity
+            post :rotate
+            # CF-DNS — list zones available via this credential's api_token.
+            get :zones, to: "acme_dns_credentials/dns_records#zones"
+          end
+          # CF-DNS — DNS record CRUD scoped to the credential. zone_id is
+          # passed as a query/body param since one credential can manage
+          # records across many zones the token has access to.
+          resources :records, only: %i[index create update destroy],
+                              controller: "acme_dns_credentials/dns_records"
+        end
+
+        # === ACME certificates (operator-facing lifecycle) ===
+        # Plan reference: Decentralized Federation §J + P2.5.9.
+        resources :acme_certificates, only: %i[index show create update destroy] do
+          member do
+            post :request_issue
+            post :renew
+            post :revoke
+          end
+        end
+
         # === Worker API (token-authenticated workers) ===
         namespace :worker_api do
+          # Periodic sweep endpoints — workers POST here on cron tick.
+          # Plan reference: Decentralized Federation §J + §L + P2.5.5 + P4.6.6.
+          post "acme/renewal_sweep", to: "acme_renewal_sweep#create"
+          post "federation/subscription_monitor", to: "subscription_monitor#create"
+          # P3.5 — periodic federation peer heartbeat sweep. Worker
+          # ticks every 60s via Sidekiq cron; controller invokes
+          # System::Federation::HeartbeatSweepService to transition
+          # active peers with stale last_heartbeat_at to degraded.
+          post "federation/heartbeat_sweep", to: "federation_heartbeat#create"
+          # Per-peer cluster_member PG replica slot + credential
+          # materialization. Plan: P6.4.
+          post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"
+
           # Async module publication processor — long-pole work the
           # webhook receiver dispatches to the worker so Gitea acks fast.
           post "module_publications/process",
@@ -607,6 +706,23 @@ Rails.application.routes.draw do
           end
           resources :mount_points, only: %i[index show]
 
+          # E8 — durable-storage binding for the on-node mount reconciler.
+          # The orchestrator stamps NodeInstance.config["storage_volume"];
+          # the Go agent calls this endpoint each reconcile tick and feeds
+          # the JSON straight into mount.ReconcileStorageVolume.
+          get "storage_volume", to: "storage_volume#show"
+
+          # E8.2 — agent-side execution of storage migrations. The agent
+          # polls /index each reconcile tick, advances each non-terminal
+          # migration through the 6-step contract, and reports progress
+          # back via /progress (and /fail when it gives up).
+          resources :storage_migrations, only: %i[index] do
+            member do
+              post :progress
+              post :fail
+            end
+          end
+
           # Puppet manifests
           get "puppet/resources", to: "puppet#resources"
           get "puppet/modules", to: "puppet#modules"
@@ -628,6 +744,87 @@ Rails.application.routes.draw do
           # the on-node Go agent batch-emit FleetEvent rows scoped to
           # its current_instance + current_account.
           post "fleet/events", to: "fleet#events"
+        end
+
+        # === Network management (unified SDWAN + federation topology) ===
+        # Plan reference: Decentralized Federation §K.5 + P4.5.7.
+        namespace :network do
+          # System-wide topology graph (federation peers + SDWAN networks
+          # + bridges + grant summaries) for the @xyflow/react canvas.
+          get :topology, to: "topology#show"
+        end
+
+        # === Federation API (cross-Powernode-platform peer-to-peer) ===
+        # Distinct from node_api/: subject is a remote Powernode platform
+        # (FederationPeer with peer_kind: "platform"), not a NodeInstance.
+        # Plan reference: Decentralized Federation §C + P3.4.
+        namespace :federation_api do
+          # Bootstrap-token handshake: spawned child or out-of-band-invited
+          # peer presents its acceptance_token to claim its FederationPeer
+          # row and exchange initial capabilities + endpoints.
+          # NOT mTLS-authenticated (the peer doesn't have a cert yet).
+          post :accept, to: "accept#create"
+
+          # Heartbeat + capability/cursor refresh. mTLS-authenticated
+          # against the FederationPeer's node_certificate.
+          post :heartbeat, to: "heartbeat#create"
+
+          # Cross-peer resource fetch. mTLS + Bearer grant-token-authenticated.
+          # GET /resources/:kind/:id
+          get "resources/:kind/:id", to: "resources#show",
+              constraints: { kind: /[a-z_]+/, id: /[A-Za-z0-9-]+/ }
+
+          # Cross-peer migration ingest. mTLS + Bearer grant-token-authenticated.
+          # Body: serialized Migration plan + steps. Body is applied
+          # transactionally to the destination DB via ApplyExecutor.
+          # Plan reference: Decentralized Federation §F + P5.8.
+          post :migrations, to: "migrations#create"
+
+          # Service catalog browse + subscribe/unsubscribe. mTLS-authenticated;
+          # grant is NOT required for browse (peering itself is the credential).
+          # Subscribe issues the grant; unsubscribe revokes it.
+          # Plan reference: Decentralized Federation §L.3 + P4.6.5.
+          get  :service_catalog, to: "service_catalog#index"
+          post :subscriptions,         to: "subscriptions#create"
+          delete "subscriptions/:id",  to: "subscriptions#destroy",
+                                       constraints: { id: /[A-Za-z0-9-]+/ }
+        end
+
+        # === Federated service delivery — OPERATOR ADMIN ===
+        # Distinct from federation_api (which serves remote peers via mTLS).
+        # These endpoints authenticate via operator JWT and are what the
+        # operator-facing offerings + subscriptions dashboards talk to.
+        # Plan reference: Decentralized Federation §L.7 + P4.6.8.
+        namespace :federation do
+          resources :service_offerings, only: %i[index show create update destroy] do
+            member do
+              post :activate
+              post :deprecate
+              post :retire
+            end
+          end
+          resources :service_subscriptions, only: %i[index show] do
+            member { post :cancel }
+          end
+
+          # Per-peer catalog browse + remote subscribe (operator-admin
+          # orchestration; calls the peer's federation_api via PeerClient).
+          # Plan reference: Decentralized Federation §L + P4.6.8e.
+          scope "peers/:peer_id" do
+            get  :catalog,      to: "peer_catalog#show",         as: :peer_catalog
+            post :subscriptions, to: "peer_subscriptions#create", as: :peer_subscriptions
+          end
+
+          # Children — operator-spawned child platforms.
+          # Plan reference: Decentralized Federation §H + P6.
+          resources :children, only: %i[index show] do
+            collection do
+              post :spawn
+            end
+            member do
+              post :revoke
+            end
+          end
         end
       end
     end

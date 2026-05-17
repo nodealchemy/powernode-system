@@ -6,7 +6,7 @@ module Sdwan
       protected
 
       def perform
-        peer = ::Sdwan::FederationPeer.create!(
+        peer = ::System::FederationPeer.create!(
           params[:attributes].to_h.symbolize_keys.merge(account: account, status: "proposed")
         )
         { federation_peer_id: peer.id }

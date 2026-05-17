@@ -960,7 +960,7 @@ module Ai
       # === Federation (Slice 6) ===
 
       def list_federation_peers(_params)
-        peers = ::Sdwan::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
+        peers = ::System::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
         success_result(federation_peers: peers.map { |p| serialize_federation_peer(p) }, count: peers.size)
       end
 
@@ -970,7 +970,7 @@ module Ai
       end
 
       def propose_federation_peer(params)
-        peer = ::Sdwan::FederationPeer.create!(
+        peer = ::System::FederationPeer.create!(
           account_id: @account.id,
           status: "proposed",
           remote_instance_url: params[:remote_instance_url],
@@ -1004,7 +1004,7 @@ module Ai
 
         unless peer.can_transition_to?("accepted")
           return error_result(
-            "peer #{peer.id} is in status=#{peer.status.inspect}; only 'proposed' peers can be accepted (transition matrix: #{::Sdwan::FederationPeer::V1_TRANSITIONS[peer.status].inspect})"
+            "peer #{peer.id} is in status=#{peer.status.inspect}; only 'proposed' peers can be accepted (transition matrix: #{::System::FederationPeer::V1_TRANSITIONS[peer.status].inspect})"
           )
         end
 
@@ -1516,7 +1516,7 @@ module Ai
       end
 
       def account_federation_peers
-        ::Sdwan::FederationPeer.where(account_id: @account.id)
+        ::System::FederationPeer.where(account_id: @account.id)
       end
 
       def serialize_federation_peer(p)
@@ -1527,7 +1527,7 @@ module Ai
           remote_account_id: p.remote_account_id,
           remote_prefix_advertisement: p.remote_prefix_advertisement,
           status: p.status,
-          v1_allowed_transitions: ::Sdwan::FederationPeer::V1_TRANSITIONS.fetch(p.status, []),
+          v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, []),
           signed_at: p.signed_at&.iso8601,
           expires_at: p.expires_at&.iso8601,
           created_at: p.created_at&.iso8601

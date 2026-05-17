@@ -17,9 +17,25 @@ module System
     EXPIRY_WARN_DAYS       = 7
 
     # === Associations ===
-    belongs_to :node_instance, class_name: "System::NodeInstance"
-    delegate :node, to: :node_instance
-    delegate :account, to: :node_instance
+    # node_instance is optional for federation_peer certs (subject_kind="federation_peer")
+    # which represent a remote Powernode platform, not an on-node agent.
+    # An explicit account_id column was added (P3 plan) so federation-peer
+    # certs can resolve their owning account without going through an
+    # instance that doesn't exist for them.
+    belongs_to :node_instance, class_name: "System::NodeInstance", optional: true
+    delegate :node, to: :node_instance, allow_nil: true
+
+    # Account resolution: direct association wins when present; falls back
+    # to node_instance.account for the legacy/instance-cert path so existing
+    # callers continue to work.
+    def account
+      return ::Account.find_by(id: account_id) if account_id
+      node_instance&.account
+    end
+
+    def account_id
+      self[:account_id] || node_instance&.account_id
+    end
 
     # === Validations ===
     validates :serial,     presence: true, uniqueness: true

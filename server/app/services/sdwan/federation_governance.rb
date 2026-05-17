@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Sdwan::FederationGovernance — read-only scanner over Sdwan::FederationPeer
+# Sdwan::FederationGovernance — read-only scanner over System::FederationPeer
 # rows. Returns findings that operators (or a future scheduled
 # governance_scan job) can act on.
 #
@@ -27,8 +27,19 @@ module Sdwan
       prefix_overlap_with_install:        :critical,
       prefix_overlap_with_other_peer:     :high,
       stale_accepted_without_handshake:   :medium,
-      expired_trust_jwt:                  :high
+      expired_trust_jwt:                  :high,
+      # Added by P3.6 — platform-peer health checks. These only apply
+      # to peers with peer_kind="platform"; sdwan_only rows skip them.
+      peer_heartbeat_stale:               :medium,
+      peer_capability_drift:              :medium,
+      peer_cert_expiring:                 :medium,
+      peer_cert_expired:                  :high
     }.freeze
+
+    # Default cert-expiry warning threshold (matches Social Contract #1
+    # operational guidance — 30 days gives operators enough lead time to
+    # coordinate rotation across a federation pair).
+    CERT_EXPIRY_WARN_DAYS = 30
 
     # Returns an array of finding hashes:
     #   { kind:, severity:, federation_peer_id:, message:, payload: }
@@ -42,7 +53,7 @@ module Sdwan
 
     def scan
       findings = []
-      peers = ::Sdwan::FederationPeer.where(account_id: @account.id).to_a
+      peers = ::System::FederationPeer.where(account_id: @account.id).to_a
 
       install_prefix_48 = derive_install_prefix_48
       seen_prefixes = {} # remote_prefix_48 → first peer that claimed it
@@ -91,6 +102,52 @@ module Sdwan
             "Trust JWT expired at #{peer.expires_at.utc.iso8601}. " \
             "Revoke and re-propose with a fresh JWT."
           )
+        end
+
+        # === Platform-peer checks (P3.6) ===
+        next unless peer.platform_peer?
+
+        # 5. Heartbeat stale (platform peers in active/enrolled with no
+        # recent heartbeat). The HeartbeatSweepService transitions active
+        # → degraded automatically; this finding surfaces the staleness
+        # in the operator dashboard regardless of state.
+        if peer.status.in?(%w[enrolled active]) && peer.heartbeat_stale?
+          last_hb = peer.last_heartbeat_at&.utc&.iso8601 || "never"
+          findings << build_finding(
+            :peer_heartbeat_stale, peer,
+            "Platform peer hasn't heartbeated since #{last_hb}. " \
+            "Stale beyond #{::System::FederationPeer::HEARTBEAT_STALE_AFTER.inspect}."
+          )
+        end
+
+        # 6. Capability drift — peer's advertised extension_slugs
+        # don't match what was granted (capabilities key empty but
+        # extension_slugs declared, or vice-versa). Indicates a
+        # capability handshake that didn't fully complete.
+        if peer.extension_slugs.any? && peer.capabilities.blank?
+          findings << build_finding(
+            :peer_capability_drift, peer,
+            "Peer advertised extensions #{peer.extension_slugs.inspect} but " \
+            "exchanged no capabilities. Re-handshake to re-establish capability grants."
+          )
+        end
+
+        # 7. Cert expiring / expired (when a node_certificate is bound).
+        if peer.node_certificate && peer.node_certificate.not_after
+          days_remaining = ((peer.node_certificate.not_after - Time.current) / 1.day).to_i
+          if days_remaining < 0
+            findings << build_finding(
+              :peer_cert_expired, peer,
+              "Peer's federation cert expired #{-days_remaining} day(s) ago " \
+              "(#{peer.node_certificate.not_after.utc.iso8601}). Rotate immediately."
+            )
+          elsif days_remaining <= CERT_EXPIRY_WARN_DAYS
+            findings << build_finding(
+              :peer_cert_expiring, peer,
+              "Peer's federation cert expires in #{days_remaining} day(s) " \
+              "(#{peer.node_certificate.not_after.utc.iso8601}). Plan rotation."
+            )
+          end
         end
       end
 
