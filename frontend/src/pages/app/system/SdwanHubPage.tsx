@@ -11,6 +11,7 @@ import {
   OvnDeploymentsTab,
   IpfixCollectorsTab,
   FlowSamplesTab,
+  TopologyTab,
 } from '@system/features/system/components/sdwan_hub';
 import SdwanRoutingPage from './SdwanRoutingPage';
 
@@ -24,9 +25,13 @@ import SdwanRoutingPage from './SdwanRoutingPage';
 // access, VIPs, routing, port mappings) so operators stay in the hub
 // throughout. No standalone per-network page exists.
 
-type TabKey = 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix' | 'flows';
+type TabKey = 'topology' | 'networks' | 'routing' | 'federation' | 'host_bridges' | 'ovn' | 'ipfix' | 'flows';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
+  // P4.5.8 — system-wide federation + SDWAN graph. Lands first because
+  // it's the operator's at-a-glance view; deeper drill-down lives in
+  // the kind-specific tabs that follow.
+  { key: 'topology', label: 'Topology', permission: 'sdwan.networks.read' },
   { key: 'networks', label: 'Networks', permission: 'sdwan.networks.read' },
   { key: 'routing', label: 'Routing', permission: 'sdwan.routing.read' },
   { key: 'federation', label: 'Federation', permission: 'sdwan.federation.read' },
@@ -51,6 +56,7 @@ const SdwanHubPage: React.FC = () => {
   // routing tab matches when the URL contains /sdwan/routing/anything.
   const activeTabKey = useMemo<TabKey>(() => {
     const path = location.pathname;
+    if (path.includes('/sdwan/topology')) return 'topology';
     if (path.includes('/sdwan/routing')) return 'routing';
     if (path.includes('/sdwan/federation')) return 'federation';
     if (path.includes('/sdwan/host_bridges')) return 'host_bridges';
@@ -122,6 +128,7 @@ const SdwanHubPage: React.FC = () => {
 
       <Routes>
         <Route index element={<Navigate to={defaultTabKey} replace />} />
+        <Route path="topology" element={<TopologyTab />} />
         <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
         <Route path="routing/*" element={<SdwanRoutingPage embedded />} />
         <Route path="federation" element={<FederationTab onActionsReady={setFederationActions} />} />

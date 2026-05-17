@@ -35,6 +35,10 @@ const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
 const OperationsHubPage = lazyPage(() => import('./pages/app/system/OperationsHubPage'));
 const SdwanHubPage = lazyPage(() => import('./pages/app/system/SdwanHubPage'));
+const FederationHubPage = lazyPage(() => import('./pages/app/system/FederationHubPage'));
+// ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
+// Plan reference: Decentralized Federation §J + P2.5.8.
+const AcmePage = lazyPage(() => import('./pages/app/system/AcmePage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -81,7 +85,18 @@ export function register(): void {
 
     // SDWAN — single hub route. Network detail surfaces as a modal
     // triggered from the Networks tab; no standalone detail page.
+    // P4.5.8 adds the `topology` tab (system-wide SDWAN + federation
+    // graph via @xyflow/react).
     { path: '/system/sdwan/*', component: SdwanHubPage },
+
+    // Federation Services hub (Offerings + Subscriptions + Catalog
+    // Browser). P4.6.8 — operator-facing surfaces for federated
+    // service delivery. Plan reference: §L.7.
+    { path: '/system/federation/*', component: FederationHubPage },
+
+    // ACME hub — tabs: DNS Credentials (P2.5.8), Certificates (P2.5.9).
+    // `/*` wildcard so path-based sub-tabs render.
+    { path: '/system/acme/*', component: AcmePage },
   ]);
 
   // Top-level "System" nav section. Phase B.5 collapses the previous
@@ -103,6 +118,8 @@ export function register(): void {
         { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 4 },
         { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 5 },
         { label: 'SDWAN',          path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 6 },
+        { label: 'Federation',     path: '/app/system/federation',     icon: 'Share2',          order: 7 },
+        { label: 'ACME',           path: '/app/system/acme',           icon: 'KeyRound',        order: 8 },
       ],
     },
   ]);

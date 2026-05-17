@@ -1,0 +1,85 @@
+/*
+ * CSS overrides for @xyflow/react inside the System Topology view.
+ * The library ships its own light-mode default CSS via
+ * `@xyflow/react/dist/style.css`; without these overrides the
+ * Controls component renders solid white, the wrapper node container
+ * sets a white background under our custom node renderers, and the
+ * edge text is dark-on-dark in dark mode.
+ *
+ * Scoped via the `.system-topology` wrapper class so we don't
+ * trample on other react-flow uses elsewhere in the app
+ * (MissionTaskGraph, KnowledgeGraphVisualization, etc.).
+ */
+
+.system-topology .react-flow__background {
+  background: var(--color-background);
+}
+
+/* Strip the default white-card background from the node wrapper —
+   our custom renderers (SelfNode, NetworkNode, PeerNode) own the
+   visual styling and need the wrapper transparent. */
+.system-topology .react-flow__node {
+  background: transparent;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+  color: var(--color-text-primary);
+}
+
+/* Self node's handles inherit the info color (matching its themed
+   border + icon). Networks + peers use the xyflow default handle
+   color, which renders fine against the surface background. */
+.system-topology .react-flow__node-self .react-flow__handle {
+  background: var(--color-info);
+}
+
+.system-topology .react-flow__node.selected {
+  outline: 2px solid var(--color-info);
+  outline-offset: 4px;
+  border-radius: 0.5rem;
+}
+
+/* Zoom + fit-view controls (bottom-left). Default library CSS is
+   a solid white panel that's invisible in dark mode. */
+.system-topology .react-flow__controls {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.system-topology .react-flow__controls-button {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border);
+  width: 28px;
+  height: 28px;
+}
+
+.system-topology .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.system-topology .react-flow__controls-button:hover {
+  background: var(--color-surface-hover);
+}
+
+.system-topology .react-flow__controls-button svg {
+  fill: var(--color-text-primary);
+  max-width: 14px;
+  max-height: 14px;
+}
+
+/* Edge labels — re-style the background pill + text. */
+.system-topology .react-flow__edge-text {
+  fill: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.system-topology .react-flow__edge-textbg {
+  fill: var(--color-surface);
+  opacity: 0.92;
+}
+
+/* Attribution stays hidden via the proOptions prop on ReactFlow. */

@@ -11,3 +11,5 @@ export { OvnDeploymentsTab } from './OvnDeploymentsTab';
 export { IpfixCollectorsTab } from './IpfixCollectorsTab';
 // Phase O6 follow-up — IPFIX flow sample inspector.
 export { FlowSamplesTab } from './FlowSamplesTab';
+// P4.5.8 — system-wide federation + SDWAN topology graph (@xyflow/react).
+export { TopologyTab } from './TopologyTab';

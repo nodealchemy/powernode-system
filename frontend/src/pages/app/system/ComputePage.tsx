@@ -11,6 +11,7 @@ import {
   ProvidersTab,
   NetworksTab,
 } from '@system/features/system/components/compute';
+import { PlatformInfraTab } from '@system/features/system/components/platform/PlatformInfraTab';
 
 // Phase B.1 — Compute hub. Path-based tabs (matches the canonical
 // platform pattern from AdminSettingsPage): each tab has its own URL
@@ -18,7 +19,7 @@ import {
 // with /system/compute/* wildcard so React Router delegates path
 // matching to this page's nested <Routes>.
 
-type TabKey = 'nodes' | 'unclaimed-devices' | 'volumes' | 'providers' | 'networks';
+type TabKey = 'nodes' | 'unclaimed-devices' | 'volumes' | 'providers' | 'networks' | 'platform';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
   { key: 'nodes', label: 'Nodes', permission: 'system.nodes.read' },
@@ -26,6 +27,9 @@ const TABS: { key: TabKey; label: string; permission: string }[] = [
   { key: 'volumes', label: 'Volumes', permission: 'system.volumes.read' },
   { key: 'providers', label: 'Providers', permission: 'system.providers.read' },
   { key: 'networks', label: 'Networks', permission: 'system.networks.read' },
+  // P7 — unified platform-ops dashboard: peers + children + services
+  // + migrations + scaling + health under one path-based hub.
+  { key: 'platform', label: 'Platform', permission: 'system.platform.read' },
 ];
 
 const BASE_PATH = '/app/system/compute';
@@ -43,8 +47,14 @@ const ComputePage: React.FC = () => {
   // when on the bare /compute path (the inner <Route path="/"> below
   // also redirects to that fallback).
   const activeTabKey = useMemo<TabKey>(() => {
-    const match = TABS.find((t) => location.pathname.endsWith(`/${t.key}`));
-    if (match) return match.key;
+    // Match any path segment to a tab key — handles both flat tabs
+    // (`/compute/nodes` → nodes) and tabs that own their own nested
+    // sub-routes (`/compute/platform/services` → platform).
+    const segments = location.pathname.split('/').filter(Boolean);
+    for (const seg of segments) {
+      const match = TABS.find((t) => t.key === seg);
+      if (match) return match.key;
+    }
     return (visibleTabs[0]?.key ?? 'nodes') as TabKey;
   }, [location.pathname, visibleTabs]);
 
@@ -121,6 +131,11 @@ const ComputePage: React.FC = () => {
         <Route path="volumes" element={<VolumesTab onActionsReady={setVolumesActions} />} />
         <Route path="providers" element={<ProvidersTab onActionsReady={setProvidersActions} />} />
         <Route path="networks" element={<NetworksTab onActionsReady={setNetworksActions} />} />
+        {/* P7: platform tab owns its own nested sub-routes (services /
+            peers / children / migrations / scaling / health). The `/*`
+            suffix delegates further path matching to PlatformInfraTab's
+            inner <Routes>. */}
+        <Route path="platform/*" element={<PlatformInfraTab />} />
         <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
       </Routes>
     </PageContainer>
