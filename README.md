@@ -189,7 +189,15 @@ first, then update the submodule pointer in the parent platform repo. See
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE). Code of Conduct: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+
+---
+
+## Community
+
+- **GitHub issues** — [nodealchemy/powernode-system/issues](https://github.com/nodealchemy/powernode-system/issues) for bugs + feature requests
+- **X / Twitter** — [@nodealchemy](https://x.com/nodealchemy) for general updates and informal questions
+- **Code of Conduct reports** — see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) (dedicated address, separate from the channels above)
 
 ---
 
