@@ -31,7 +31,16 @@ platform_permissions = [
   # D1.2 — Deploy new platform (standalone OR federated). Distinct
   # from system.platform.scale (which mutates an existing deployment).
   { resource: "system.platform", action: "deploy",
-    description: "Deploy a new Powernode platform (standalone or federated)" }
+    description: "Deploy a new Powernode platform (standalone or federated)" },
+
+  # P9.5 — Multi-hop migration chain write actions. Reads stay on
+  # system.platform.read (matching the single-hop migrations
+  # controller). `apply` gates compose/advance/run; `cancel` gates
+  # operator-initiated chain abandonment.
+  { resource: "system.migrations", action: "apply",
+    description: "Compose, advance, or run multi-hop migration chains" },
+  { resource: "system.migrations", action: "cancel",
+    description: "Cancel an active multi-hop migration chain" }
 ]
 
 platform_permissions.each do |perm|

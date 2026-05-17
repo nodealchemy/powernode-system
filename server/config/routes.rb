@@ -431,6 +431,20 @@ Rails.application.routes.draw do
           # composition + apply happens via internal services.)
           resources :migrations, only: %i[index show]
 
+          # P9.5 — Operator surface for multi-hop migration chains.
+          # Compose a chain (one envelope row + N-1 hop Migration rows
+          # in planned state); advance one hop on demand; run to
+          # completion synchronously; or cancel an active chain.
+          # The worker (MigrationChainAdvanceJob, 60s cron) also
+          # advances active chains autonomously.
+          resources :migration_chains, only: %i[index show create] do
+            member do
+              post :advance
+              post :run
+              post :cancel
+            end
+          end
+
           # E6 — Volume CRUD REST shim. Wraps the system_create_volume
           # / system_list_volumes MCP actions so the wizard can POST
           # without going through the MCP dispatch boundary. Index +
@@ -485,6 +499,21 @@ Rails.application.routes.draw do
           # System::Federation::HeartbeatSweepService to transition
           # active peers with stale last_heartbeat_at to degraded.
           post "federation/heartbeat_sweep", to: "federation_heartbeat#create"
+          # P9 — periodic auto-policy capability sweep. Worker ticks
+          # every 5min via Sidekiq cron; controller invokes
+          # Federation::CapabilityAutoSyncService which walks
+          # auto_periodic / on_match_filter / auto_on_change
+          # capabilities and dispatches the sync transport per row.
+          post "federation/capability_auto_sync", to: "federation_capability_auto_sync#create"
+          # P9.2 — daily per-peer WORM audit shipment. Worker ticks
+          # at 04:30 UTC; controller invokes
+          # Federation::AuditShipmentService which seals FleetEvent
+          # rows older than 30d into sha256-addressed JSON-Lines.
+          post "federation/audit_shipment", to: "federation_audit_shipment#create"
+          # P9.5 — every-60s multi-hop migration chain advancement.
+          # Worker invokes System::Migrations::ChainSweepService which
+          # walks active chains and advances one hop per chain per tick.
+          post "migration_chains/advance", to: "migration_chain_advance#create"
           # Per-peer cluster_member PG replica slot + credential
           # materialization. Plan: P6.4.
           post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"
@@ -779,6 +808,13 @@ Rails.application.routes.draw do
           # transactionally to the destination DB via ApplyExecutor.
           # Plan reference: Decentralized Federation §F + P5.8.
           post :migrations, to: "migrations#create"
+
+          # P9.2 — Cross-peer audit excerpt request (Social Contract #5).
+          # Authenticated by mTLS only (no specific grant — peers fetch
+          # their own audit trail). Returns FleetEvent rows tagged
+          # with the calling peer's federation_peer_id + the set of
+          # WORM shipments overlapping the requested window.
+          get :audit_excerpts, to: "audit_excerpts#index"
 
           # Service catalog browse + subscribe/unsubscribe. mTLS-authenticated;
           # grant is NOT required for browse (peering itself is the credential).
