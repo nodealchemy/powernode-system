@@ -124,4 +124,4 @@ Start with `docs/tutorials/INDEX.md` for a Mermaid decision tree mapping operato
 
 ### External references (live in parent platform)
 
-- `<parent>/docs/system/threat-model.md` — STRIDE threat analysis across 6 attack surfaces (operator API, worker API, node API, MCP tools, internal CA, GitHub mirror)
+- `<parent>/docs/history/audits/threat-model-2026-04.md` — STRIDE threat analysis across 6 attack surfaces (operator API, worker API, node API, MCP tools, internal CA, GitHub mirror); archived 2026-05-17 as part of docs modernization
