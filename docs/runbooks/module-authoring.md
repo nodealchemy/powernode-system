@@ -246,6 +246,7 @@ platform.system_assign_module_to_template({
 Priorities are determined by the module's category position + variety. To override (e.g., for a per-node config module that should win over a base subscription module):
 
 ```javascript
+// ⚠️ aspirational MCP — use REST today: PATCH /api/v1/system/node_module_assignments/<id>
 platform.system_update_module_assignment({
   id: "<assignment-id>",
   effective_priority: 95               // higher than userland (90)
@@ -309,7 +310,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 |---|---|---|
 | `ModuleManifestSchemaError` on push | YAML doesn't match schema_version | Run `platform.system_validate_module_manifest` locally first |
 | Cosign signature rejected | `cosign_identity_regexp` doesn't match the OIDC issuer | Verify the Gitea Actions OIDC URL matches your regexp |
-| Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s; or trigger via `platform.system_ingest_module_oci` |
+| Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u powernode-worker@default \| grep ModuleOciIngest` |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
 | Assignment to template succeeds but agent doesn't pull | Module is `draft` lifecycle_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |
 | fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the platform re-ingests on next OCI poll |

@@ -124,6 +124,36 @@ Disk Image Manager actions are triggered by:
 
 See [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) for sensor implementation details.
 
+### Tick → Autonomy Gate
+
+```mermaid
+sequenceDiagram
+    participant Cron as DiskImageManager<br/>tick (5 min)
+    participant Sensor as Sensors
+    participant DE as DecisionEngine
+    participant Pol as InterventionPolicy
+    participant Exec as Skill executor
+    participant Op as Operator
+    participant FE as FleetEvent + UI
+
+    Cron->>Sensor: pull recent signals<br/>(disk_image_*)
+    Sensor->>DE: signal → action_category
+    DE->>Pol: lookup policy
+    alt auto_approve<br/>(retention update)
+        Pol->>Exec: execute now
+        Exec->>FE: emit completion
+    else notify_and_proceed<br/>(webhook trigger / secret rotate)
+        Pol->>Exec: execute now
+        Pol->>Op: notify
+        Exec->>FE: emit completion
+    else require_approval<br/>(promote / rollback / webhook revoke)
+        Pol->>Op: open ApprovalRequest<br/>(12h timeout, then reject)
+        Op->>Exec: approve
+        Exec->>FE: emit promotion event<br/>severity=high
+        FE->>Op: broadcast on SystemFleetChannel
+    end
+```
+
 ---
 
 ## Observability

@@ -153,15 +153,18 @@ platform.create_learning({
 })
 ```
 
-The `Trading::AuditLog` table records every Vault credential access — confirm via:
+`System::FleetEvent` records every Vault credential access via the
+`vault.credential.*` event kinds — confirm via:
 
-```sql
-SELECT account_id, action, vault_path, occurred_at
-FROM trading_audit_logs
-WHERE action LIKE 'vault.%'
-ORDER BY occurred_at DESC
-LIMIT 100;
+```ruby
+System::FleetEvent.where("kind LIKE 'vault.credential.%'")
+  .order(occurred_at: :desc).limit(100)
+  .pluck(:account_id, :kind, :payload, :occurred_at)
 ```
+
+Deployments with a parent-platform audit table (e.g. when the platform
+bundles a private audit extension) may have richer per-action logs there;
+consult the platform's audit-extension docs for that path.
 
 For full SOC2 / compliance evidence, dump the audit log over the DR window and archive.
 

@@ -1,5 +1,11 @@
 # Powernode System Extension — Active Tasks
 
+> **ARCHIVED — historical record only.**
+> This document captures point-in-time state from a prior phase and is no longer
+> maintained. For current state see [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md),
+> [`docs/runbooks/`](../runbooks/), and the parent platform's plan files.
+> _Archived 2026-05-17 as part of the docs modernization pass._
+
 Living document tracking active milestones, recent completions, and open
 follow-ups. Updated after substantial work; the parent platform's plan
 file at `~/.claude/plans/we-are-working-on-golden-eclipse.md` (operator-

@@ -125,7 +125,7 @@ The platform marks the instance `status=running` after the first `phase=ready` P
 
 **What to watch:**
 - Bootstrap timeline: ~90 s from kernel boot to `phase=ready` on warm cache; +30-60 s on first run when modules aren't cached. Slice 7 instance pools cut this to <30 s by pre-warming.
-- Stuck in `bootstrapping`: usually a module pull failure (signature verify, network, OCI 404). Check `journalctl -u powernode-agent` on the node, or `platform.system_recent_signals` for the instance.
+- Stuck in `bootstrapping`: usually a module pull failure (signature verify, network, OCI 404). Check `journalctl -u powernode-agent` on the node, or `platform.recent_events` for the instance.
 - Bootstrap token rotation: tokens expire 24 h after issue. Re-provision if you see `BootstrapTokenExpiredError`.
 
 ## Phase 4 — Run ✅
@@ -202,7 +202,7 @@ Cascade actions (FK + service-level):
 | `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart powernode-worker@default`; retry |
 | `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task({ id: "<task-id>" })`; investigate provider; retry with `system_provision_instance` |
 | `bootstrapping` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
-| `running` but no heartbeats >5 min | Network partition or agent crash | `platform.system_recent_signals` for `instance.silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
+| `running` but no heartbeats >5 min | Network partition or agent crash | `platform.recent_events` for `instance.silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
 | `draining` (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate with explicit `force: true` |
 | `terminating` (>5 min) | Provider VM teardown stuck | Check provider console; in worst case, mark task `failed` via `system_cancel_task` and clean orphan rows |
 

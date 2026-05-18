@@ -112,8 +112,9 @@ extensions/system/
 │   └── module-repo/        # Canonical module-source layout
 └── docs/
     ├── ARCHITECTURE.md     # Subsystem reference
+    ├── tutorials/          # Numbered learning sequence (01-first-boot → 12-disk-image-ci)
     ├── runbooks/           # Step-by-step operator guides
-    ├── examples/           # End-to-end use-case walkthroughs
+    ├── history/            # Archived phase plans + acceptance reports
     └── …                   # Domain-specific reference (see Documentation)
 ```
 
@@ -135,30 +136,56 @@ extensions/system/
 
 ### Operator runbooks
 
+See [`docs/runbooks/README.md`](./docs/runbooks/README.md) for the full index with audience + prerequisites + runtime per runbook. Highlights:
+
 | Runbook | Goal |
 |---|---|
 | [`docs/runbooks/node-provisioning.md`](./docs/runbooks/node-provisioning.md) | Full Node + NodeInstance lifecycle (create → enroll → drain → decommission) with per-AASM-state error recovery |
 | [`docs/runbooks/sdwan-network-setup.md`](./docs/runbooks/sdwan-network-setup.md) | SDWAN end-to-end: networks, peers, VIPs, firewall, route policies, BGP, federation |
 | [`docs/runbooks/module-authoring.md`](./docs/runbooks/module-authoring.md) | Author + register + sign + publish a new NodeModule |
 | [`docs/runbooks/cve-response.md`](./docs/runbooks/cve-response.md) | Full CVE response workflow with SBOM-aware matching |
+| [`docs/runbooks/gitops-reconciliation.md`](./docs/runbooks/gitops-reconciliation.md) | Operator workflow for GitOps reconciler: fleet.yaml, sync, proposal review, apply |
+| [`docs/runbooks/acme-issuance.md`](./docs/runbooks/acme-issuance.md) | ACME DNS-01 cert lifecycle: provider setup, issue, renew, revoke, endpoint failover |
+| [`docs/runbooks/acme-smoke.md`](./docs/runbooks/acme-smoke.md) | P2.5.7 acceptance smoke test (6 scenarios) |
 | [`docs/runbooks/instance-pool-tuning.md`](./docs/runbooks/instance-pool-tuning.md) | Pool sizing, reaping, draining, troubleshooting |
 | [`docs/runbooks/multi-cluster-k3s.md`](./docs/runbooks/multi-cluster-k3s.md) | Multi-cluster K3s with `target_cluster_id` + HA control plane |
 | [`docs/runbooks/disk-image-ci.md`](./docs/runbooks/disk-image-ci.md) | Disk image build + signing + publication operator workflow |
+| [`docs/runbooks/federation-setup.md`](./docs/runbooks/federation-setup.md) | Multi-region / multi-account federation peering |
+| [`docs/runbooks/federation-troubleshooting.md`](./docs/runbooks/federation-troubleshooting.md) | Diagnosing federation peering failures |
+| [`docs/runbooks/docker-compose-cutover.md`](./docs/runbooks/docker-compose-cutover.md) | Migrating legacy compose deployments to Powernode |
 | [`docs/runbooks/vault-credential-restoration.md`](./docs/runbooks/vault-credential-restoration.md) | DR runbook for credential restoration |
 
-### Use-case examples
+### Tutorials
 
-[`docs/examples/`](./docs/examples/) — 10 end-to-end walkthroughs (single-node QEMU, K3s + SDWAN, multi-tenant container farm, rolling upgrades, CVE response, instance pools, custom module authoring, honeypot canaries, federation, GitOps). Six have companion runnable seeds under `server/db/seeds/example_*.rb`.
+[`docs/tutorials/`](./docs/tutorials/) — numbered, dependency-aware learning sequence (beginner → advanced):
+
+| # | Tutorial | What it teaches |
+|---|----------|-----------------|
+| 01 | [First boot (single-node QEMU)](./docs/tutorials/01-first-boot.md) | Catalog seed, kernel + initrd, local QEMU, agent enrollment |
+| 02 | [Your first custom module](./docs/tutorials/02-first-module.md) | manifest.yaml, rsync globs, Containerfile, cosign-keyless |
+| 03 | [Container runtime — Docker](./docs/tutorials/03-docker-runtime.md) | docker-engine module, mTLS handshake, SDWAN binding |
+| 04 | [Container runtime — K3s cluster](./docs/tutorials/04-k3s-cluster.md) | k3s-server/agent, VIP-backed api_endpoint, multi-node join |
+| 05 | [Multi-cluster K3s + SDWAN isolation](./docs/tutorials/05-multi-cluster-k3s.md) | target_cluster_id, per-tenant SDWAN, trust boundary |
+| 06 | [Rolling module upgrade with canary](./docs/tutorials/06-rolling-upgrade.md) | rolling_module_upgrade, circuit breaker, attribution feedback |
+| 07 | [CVE response end-to-end](./docs/tutorials/07-cve-response.md) | ExposureCalculator, CveResponseExecutor, orchestrated rebuild |
+| 08 | [Instance pools for bursty batch](./docs/tutorials/08-instance-pool.md) | InstancePool, atomic acquire, reaper auto-replenishment |
+| 09 | [Honeypot canaries](./docs/tutorials/09-honeypot-canary.md) | mark_canary, HoneypotAccessSensor, intervention policy |
+| 10 | [GitOps-managed fleet](./docs/tutorials/10-gitops-fleet.md) | fleet.yaml, sync cycle, proposal review |
+| 11 | [Multi-region federation](./docs/tutorials/11-federation.md) | Spawn modes, P9.x data residency + WORM audit + schema negotiation |
+| 12 | [Disk image CI publication](./docs/tutorials/12-disk-image-ci.md) | DiskImageWebhook, CI worker, signed OCI artifact, retention |
+
+Start with [`docs/tutorials/INDEX.md`](./docs/tutorials/INDEX.md) for a Mermaid decision tree mapping your goal to a starting tutorial.
 
 ### Subsystem-specific
 
-- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — integration test checklist (LocalQemuProvider)
+- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — platform-level smoke catalog (16 seeded scripts across 7 passes; covers boot, container runtimes, SDWAN, federation, ACME, storage, credentials)
 - [`docs/credential-restoration.md`](./docs/credential-restoration.md) — Vault transit credential design
-- [`docs/agent-peering.md`](./docs/agent-peering.md) — NodeInstance-as-Agent design (in sweep)
-- [`docs/gitops.md`](./docs/gitops.md) — GitOps reconciler design (in sweep)
-- [`docs/TASKS.md`](./docs/TASKS.md) — milestone tracker
+- [`docs/agent-peering.md`](./docs/agent-peering.md) — NodeInstance-as-Agent design
+- [`docs/agent-internals.md`](./docs/agent-internals.md) — Go agent package-by-package reference (23 internal packages)
+- [`docs/gitops.md`](./docs/gitops.md) — GitOps reconciler design
+- [`docs/history/`](./docs/history/) — archived phase plans + acceptance reports
 - [`initramfs/README.md`](./initramfs/README.md) — multi-arch boot artifact builder
-- [`agent/README.md`](./agent/README.md) — Go agent layout + 13 subcommands
+- [`agent/README.md`](./agent/README.md) — Go agent build + 16 subcommands (architecture in `docs/agent-internals.md`)
 - [`templates/module-repo/README.md`](./templates/module-repo/README.md) — canonical module-source layout
 
 ---
@@ -256,11 +283,11 @@ viewer in active sweep).
 
 ### Active sweep (May 2026)
 
-Tracking under [`docs/TASKS.md`](./docs/TASKS.md). Adds: per-account
-encryption key restoration via Vault transit, SBOM-aware CVE matching
-(M-D2-2), GitOps reconciliation (M-D2-3), NodeInstance-as-Agent peer
-registration (F-3), Boot Replay viewer (M-FE-3 completion), Module Marketplace
-skeleton (M-FE-2), AI Concierge chat (M-FE-4).
+Per-account encryption key restoration via Vault transit, SBOM-aware CVE
+matching (M-D2-2), GitOps reconciliation (M-D2-3), NodeInstance-as-Agent
+peer registration (F-3), Boot Replay viewer (M-FE-3 completion), Module
+Marketplace skeleton (M-FE-2), AI Concierge chat (M-FE-4). For historical
+phase tracking see [`docs/history/TASKS.md`](./docs/history/TASKS.md).
 
 ---
 

@@ -1,5 +1,13 @@
 # Missing Features Implementation Plan
 
+> **ARCHIVED — historical record only.**
+> This document captures point-in-time state from a prior phase and is no longer
+> maintained. Many of the gaps described here have since shipped (GitOps reconciler,
+> SDWAN federation, Vault transit rotation). For current state see
+> [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md), [`docs/runbooks/`](../../runbooks/),
+> and [`docs/MCP_API_REFERENCE.md`](../../MCP_API_REFERENCE.md).
+> _Archived 2026-05-17 as part of the docs modernization pass._
+
 **Context:** Gap remediation slices 1+2+3+5 (2026-05-04) shipped 18 of 24 MCP actions identified in `project_system_mcp_gaps` memory. The remaining **6 MCP actions are blocked on 3 underlying features** that aren't yet complete:
 
 | Feature | Blocked MCP actions | Operator UX it unblocks |

@@ -42,41 +42,50 @@ Each peer carries:
 
 ---
 
-## Lifecycle
+## Peer Lifecycle
 
+```mermaid
+stateDiagram-v2
+    [*] --> unregistered: NodeInstance exists<br/>but no peer row
+    unregistered --> registered: First heartbeat triggers<br/>agent_peer.Registrar.Announce<br/>→ AgentPeeringService.announce!
+    registered --> registered: Re-announce<br/>(throttled 60s min interval)
+    registered --> activated: Operator POST /activate<br/>(system.peers.activate)
+    activated --> registered: Operator POST /deactivate
+    activated --> activated: Remote task executions<br/>(updates trust_score + execution_count)
+    activated --> deregistered: NodeInstance terminated
+    registered --> deregistered: NodeInstance terminated
+    deregistered --> [*]
+
+    note right of activated
+        Eligible for remote-task delegation.
+        Trust score floats based on success/failure.
+        Daily decision budget caps tasks per 24h.
+    end note
 ```
-Instance enrolls  → NodeCertificate issued (existing M0/M2 flow)
-   ↓
-First heartbeat   → Go agent's agent_peer.Registrar fires Announce
-   ↓
-POST /api/v1/system/node_api/peer/announce
-   ↓
-AgentPeeringService.announce!
-   ├─ find_or_initialize NodeInstancePeer by node_instance_id
-   ├─ upsert capabilities, skills, addresses, status
-   ├─ leave `enabled: false` (operator-activation gate)
-   └─ emit fleet_event kind="peer.registered" or "peer.reannounced"
 
-Operator activates → POST /api/v1/system/node_instance_peers/:id/activate
-   ↓
-Peer is now eligible for remote-task delegation.
+## Operator Delegation Flow
 
-Operator delegates → POST /api/v1/system/node_instance_peers/:id/execute
-   ↓
-NodeInstancePeersController#execute
-   ├─ permission gate: system.peers.execute
-   ├─ peer.enabled? check
-   ├─ daily decision budget check (atomic reserve_decision!)
-   ├─ skill-membership check (declared_skills contains task.skill)
-   └─ dispatch to peer over mTLS channel
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant API as NodeInstancePeers<br/>Controller
+    participant Svc as AgentPeering<br/>Service
+    participant Peer as Go agent<br/>(agent_peer)
+    participant Plat as Platform
+    participant TS as Trust score<br/>+ budget tracker
 
-Peer Go agent    → executes task locally
-   ↓
-POST /api/v1/system/node_api/peer/execute_result
-   ↓
-peer.record_execution!(success: true|false)
-   └─ updates trust_score (+0.005 success, -0.02 failure)
-       and last_executed_at, execution_count
+    Op->>API: POST /execute<br/>{skill: "uptime"}
+    API->>API: permission gate<br/>system.peers.execute
+    API->>Svc: validate peer
+    Svc->>Svc: peer.enabled? check
+    Svc->>TS: atomic reserve_decision!<br/>(daily budget check)
+    Svc->>Svc: declared_skills.include?(skill)
+    Svc->>Peer: dispatch over mTLS<br/>(202 Accepted)
+    API-->>Op: 202 task descriptor
+    Peer->>Peer: execute locally
+    Peer->>Plat: POST /node_api/peer/execute_result<br/>{success: true, output: ...}
+    Plat->>TS: record_execution!<br/>(+0.005 success / -0.02 failure)
+    TS-->>Plat: updated trust_score + execution_count
 ```
 
 ---

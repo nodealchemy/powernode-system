@@ -32,6 +32,31 @@ parent-side `System::FederationPeer` row at
 `spawn_role: "parent"` / `spawn_mode: <mode>` and ships in the
 virtio-fw-cfg payload so the child knows how to configure itself.
 
+```mermaid
+flowchart LR
+    subgraph Parent["Parent platform"]
+        P[Parent operator UI<br/>Spawn Platform → mode]
+    end
+
+    subgraph MC["managed_child"]
+        C1[Child platform]
+        P -- "auto-grant operator<br/>scope to parent<br/>365d TTL" --> C1
+        C1 -. "child operator may<br/>revoke = emancipate" .-> C1
+    end
+
+    subgraph AP["autonomous_peer"]
+        C2[Child platform]
+        P -- "handshake only<br/>no auto-grants" --> C2
+    end
+
+    subgraph CM["cluster_member"]
+        C3["Child platform<br/>(no own postgres)"]
+        Repl[(PG replication slot<br/>+ replication user)]
+        P -- "spawn + materialize" --> Repl
+        Repl -- "streams from parent's primary" --> C3
+    end
+```
+
 | Mode | Relationship | Auto-grant from child to parent | Shared infrastructure | Use case |
 |---|---|---|---|---|
 | `managed_child` | Parent-administered child | **Yes** — operator-scope (read/write/admin) | None | Dev/test sandbox, branch deployment, fleet of similar platforms a single team operates |

@@ -8,44 +8,75 @@ A `System::NodePlatform` carries a `build_script` that produces a disk image (ke
 
 ## End-to-End Flow
 
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant Runner as Gitea Runner
+    participant Plat as Platform
+    participant Reg as OCI registry
+    participant Ret as Retention service
+    participant Agent as powernode-agent
+
+    Op->>Runner: 1. trigger build<br/>(push tag OR dispatch_gitea_workflow)
+    Runner->>Runner: 2. run build_script:<br/>apt-mirror, kernel,<br/>composefs blob, initramfs
+    Runner->>Reg: oras push artifact<br/>cosign sign keyless
+    Runner->>Plat: 3. POST webhook<br/>OCI digest + SBOM<br/>HMAC-signed
+    Plat->>Plat: 4. DiskImageWebhook<br/>validates signature
+    Plat->>Reg: 5. DiskImagePublicationProcessor<br/>fetch manifest + cosign verify
+    Reg-->>Plat: verified manifest
+    Plat->>Plat: 6. create DiskImagePublication<br/>update NodePlatform.disk_image_oci_ref
+    Ret->>Plat: 7. prune images beyond retention_count
+    Op->>Plat: 8. provision instance from Template
+    Plat->>Agent: deploy
+    Agent->>Reg: fetch OCI artifact at boot
+    Reg-->>Agent: kernel + initramfs + composefs blob
+    Agent-->>Op: instance booted from custom image
 ```
-Operator                         Gitea Runner               Platform
-───────                          ────────────               ────────
-   │                                  │                          │
-   │ 1. Trigger build                 │                          │
-   │    (push to repo or              │                          │
-   │     dispatch_gitea_workflow)     │                          │
-   ├────────────────────────────────► │                          │
-   │                                  │ 2. Run build_script:     │
-   │                                  │    apt-mirror, kernel,   │
-   │                                  │    composefs blob,       │
-   │                                  │    initramfs, signed     │
-   │                                  │    OCI artifact          │
-   │                                  │                          │
-   │                                  │ 3. POST webhook with     │
-   │                                  │    OCI digest + SBOM     │
-   │                                  ├─────────────────────────►│
-   │                                  │                          │ 4. DiskImageWebhook
-   │                                  │                          │    receives request,
-   │                                  │                          │    validates signature
-   │                                  │                          │
-   │                                  │                          │ 5. DiskImagePublicationProcessor
-   │                                  │                          │    fetches OCI manifest,
-   │                                  │                          │    runs Cosign verify
-   │                                  │                          │
-   │                                  │                          │ 6. Creates
-   │                                  │                          │    DiskImagePublication
-   │                                  │                          │    + updates NodePlatform
-   │                                  │                          │    .disk_image_oci_ref
-   │                                  │                          │
-   │                                  │                          │ 7. Retention service
-   │                                  │                          │    prunes images beyond
-   │                                  │                          │    retention_count
-   │                                  │                          │
-   │ 8. Provision NodeInstance from   │                          │
-   │    Template — agent fetches      │                          │
-   │    OCI artifact, boots from it   │                          │
-   ◄──────────────────────────────────┴──────────────────────────┤
+
+### Six artifact families × two architectures
+
+The initramfs builder publishes six artifact families per architecture, each
+suited to a different deployment context. The Disk Image Manager agent tracks
+publications per `(NodePlatform, artifact_family, architecture)` triple.
+
+```mermaid
+flowchart LR
+    subgraph Build["Build pipeline"]
+        BS[build.sh<br/>--arch &lt;arch&gt;]
+    end
+
+    subgraph Families["6 artifact families"]
+        F1[kernel + initramfs.cpio.zst<br/>iPXE / direct kernel boot]
+        F2[raw disk image .img<br/>USB / SD card / dd]
+        F3[ISO 9660 .iso<br/>DVD / IPMI virtual media]
+        F4[iPXE chainload .ipxe<br/>network boot entry]
+        F5[qcow2 image<br/>libvirt / QEMU pre-baked]
+        F6[OCI image<br/>bootc-compatible]
+    end
+
+    subgraph Arches["Per-arch publication"]
+        A1[amd64]
+        A2[arm64]
+    end
+
+    BS --> F1
+    BS --> F2
+    BS --> F3
+    BS --> F4
+    BS --> F5
+    BS --> F6
+    F1 --> A1
+    F1 --> A2
+    F2 --> A1
+    F2 --> A2
+    F3 --> A1
+    F3 --> A2
+    F4 --> A1
+    F4 --> A2
+    F5 --> A1
+    F5 --> A2
+    F6 --> A1
+    F6 --> A2
 ```
 
 ## Setup: Initial CI Worker + Webhook
@@ -137,6 +168,7 @@ Each publication carries:
 The latest publication is auto-promoted to `current` for its NodePlatform when ingest succeeds. To roll back:
 
 ```javascript
+// ⚠️ aspirational rollback shorthand — use system_set_default_disk_image_publication with the previous publication id to revert
 platform.system_revert_disk_image({
   node_platform_id: "<id>",
   to_publication_id: "<earlier-publication-id>"

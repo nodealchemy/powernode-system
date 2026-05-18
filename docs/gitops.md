@@ -48,15 +48,42 @@ state become `Ai::AgentProposal` rows for operator review.
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    Cron[SystemGitopsSyncJob<br/>cron */5 * * * *]
+    Endpoint[POST /api/v1/system/worker_api/<br/>gitops/reconcile]
+    Loop[Iterate GitopsRepository<br/>.due_for_sync]
+    Recon[Reconciler.reconcile!<br/>repository: repo]
+    Sync[RepoSyncService.sync!<br/>clones/pulls into<br/>tmp/gitops/&lt;account&gt;/&lt;repo&gt;/]
+    Parse[DesiredStateParser.parse!<br/>fleet.yaml → DesiredState]
+    Diff[DiffEngine.diff!<br/>parsed vs live DB rows]
+    Prop[For each diff:<br/>Ai::AgentProposal]
+    Run[(GitopsSyncRun<br/>status: success/failed/partial)]
+
+    Cron --> Endpoint --> Loop --> Recon
+    Recon --> Sync --> Parse --> Diff --> Prop
+    Prop --> Run
+    Recon -.records.-> Run
 ```
-SystemGitopsSyncJob (cron */5 * * * *)
-  └─ POST /api/v1/system/worker_api/gitops/reconcile
-      └─ Iterates GitopsRepository.due_for_sync (last_synced_at older than 5min)
-          └─ Reconciler.reconcile!(repository: repo)
-              ├─ RepoSyncService.sync!  → clones/pulls into tmp/gitops/<account>/<repo>/
-              ├─ DesiredStateParser.parse!  → fleet.yaml → DesiredState struct
-              ├─ DiffEngine.diff!  → compares parsed state to live DB rows
-              └─ for each diff: opens an Ai::AgentProposal
+
+## Proposal Flow with Auto-Apply Branch
+
+```mermaid
+flowchart TD
+    Diff[DiffEngine output] --> Cap{per-tick<br/>proposal cap?<br/>default 25}
+    Cap -->|under cap| OpenAll[Open all as<br/>Ai::AgentProposal]
+    Cap -->|over cap| OpenSome[Open first 25,<br/>mark run partial]
+    OpenAll --> Mode{repository<br/>auto_apply?}
+    OpenSome --> Mode
+    Mode -->|false default| Queue[Proposal queue<br/>operator reviews]
+    Mode -->|true trusted repo| AutoApply[Reconciler applies<br/>without operator gate]
+    Queue --> Op{Operator<br/>decision}
+    Op -->|approve| Apply[Reconciler applies]
+    Op -->|reject| Retain[Live state retained<br/>diff re-detected next tick]
+    Op -->|ignore| Retain
+    Apply --> Sync2[Live DB updated]
+    AutoApply --> Sync2
+    Sync2 --> Audit[Audit trail:<br/>GitopsSyncRun<br/>+ FleetEvent]
 ```
 
 ---
@@ -233,7 +260,9 @@ recent runs per repository.
 
 ## Reference
 
+- **Operator runbook**: [`runbooks/gitops-reconciliation.md`](./runbooks/gitops-reconciliation.md) — day-2 procedure (register, sync, review, apply, DR scenarios)
+- **Tutorial**: [`tutorials/10-gitops-fleet.md`](./tutorials/10-gitops-fleet.md) — first-time walkthrough
+- Module system: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 - Active sweep plan: `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
 - Golden Eclipse plan: `~/.claude/plans/we-are-working-on-golden-eclipse.md` (M-D2-3)
 - Threat model: `docs/system/threat-model.md`
-- Module system: `extensions/system/docs/ARCHITECTURE.md`

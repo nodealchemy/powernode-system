@@ -13,6 +13,40 @@ The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.
 5. Policy = `notify_and_proceed` → executor runs + operator notified
 6. Policy = `require_approval` → ApprovalRequest queued; executor blocked until operator clicks Approve
 
+```mermaid
+flowchart LR
+    subgraph Sensors["12 sensors (per 60s tick)"]
+        S1[instance_status]
+        S2[module_drift]
+        S3[module_promotion]
+        S4[certificate_expiry]
+        S5[config_drift]
+        S6[sdwan_reachability]
+        S7[sdwan_drift]
+        S8[sdwan_bgp_session_health]
+        S9[sdwan_vip_reachability]
+        S10[honeypot_access]
+        S11[slo_violation]
+        S12[trading_pressure]
+    end
+    subgraph Signals["FleetEvent signal kinds"]
+        Sig[instance.* / module.* / cert.* / config.*<br/>sdwan.* / honeypot.* / slo.* / fleet.trading_*]
+    end
+    subgraph Executors["Skill executors"]
+        E1[drift_remediate]
+        E2[cve_response]
+        E3[rolling_module_upgrade]
+        E4[sdwan_peer_remediate]
+        E5[sdwan_vip_failover]
+        E6[cert_rotate]
+        E7[attribute_failure]
+    end
+    Sensors --> Signals
+    Signals --> DE[DecisionEngine]
+    DE --> FA[FleetAutonomyService<br/>gate_action!]
+    FA --> Executors
+```
+
 ## Sensor Reference
 
 ### `instance_status_sensor` — Heartbeat liveness
@@ -103,43 +137,60 @@ The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.
 **Signals:** `slo.violated`, `slo.recovered`
 **Recommended remediation:** None automated — surfaces in operator dashboard for manual investigation.
 
-### `trading_pressure_sensor` — Cross-domain coordination
+### `external_pressure_sensor` — Cross-domain coordination
 
-**Source:** `trading_pressure_sensor.rb`
-**Watches:** Trading extension's `trading.*` stigmergic signals (per memory `cross_domain_coordination`)
-**Threshold:** Trading aggregate pressure ≥1.0 → fleet defers non-critical actions
-**Signals:** `fleet.trading_pressure_high`, `fleet.trading_pressure_normal`
-**Recommended remediation:** Internal — no executor; the `TradingAwareThrottle` consults this signal to defer Fleet Autonomy actions when trading is hot.
+**Source:** `external_pressure_sensor.rb` (historically named `trading_pressure_sensor.rb` after the first integrated extension)
+**Watches:** Stigmergic pressure signals emitted by sibling extensions on the platform-wide signal bus
+**Threshold:** External aggregate pressure ≥1.0 → fleet defers non-critical actions
+**Signals:** `fleet.external_pressure_high`, `fleet.external_pressure_normal`
+**Recommended remediation:** Internal — no executor; the `ExternalAwareThrottle` consults this signal to defer Fleet Autonomy actions when sibling extensions are under load.
 
 ## Decision Engine Flow
 
+```mermaid
+flowchart TD
+    Tick[Sensor tick 60s] --> Emit[Emit FleetEvent]
+    Emit --> Eval[DecisionEngine.evaluate event]
+    Eval --> Lookup{Lookup<br/>InterventionPolicy<br/>action_category}
+
+    Lookup -->|auto_approve| AutoExec[Execute immediately<br/>e.g. cert_rotate]
+    Lookup -->|notify_and_proceed| NotifyExec[Execute + push notification<br/>e.g. drift_remediate]
+    Lookup -->|require_approval| Queue[Queue ApprovalRequest<br/>e.g. cve_remediate]
+    Lookup -->|blocked| Drop[Drop — refuse to execute]
+
+    Queue --> OpApprove{Operator<br/>approves?}
+    OpApprove -->|yes| Exec2[Execute]
+    OpApprove -->|no / timeout| Reject[Rejected]
+
+    AutoExec --> Audit[Audit + FleetEvent + ActionCable broadcast]
+    NotifyExec --> Audit
+    Exec2 --> Audit
+    Drop --> Audit
+    Reject --> Audit
 ```
-Sensor tick (60s) → emit FleetEvent → DecisionEngine.evaluate(event)
-   │
-   ├─ Lookup InterventionPolicy(action_category, agent: Fleet Autonomy)
-   │
-   ├─ auto_approve     → execute immediately (e.g. cert_rotate)
-   ├─ notify_and_proceed → execute + push notification (e.g. drift_remediate)
-   └─ require_approval → ApprovalRequest queued (e.g. cve_remediate)
 
 Action executors live at:
-  extensions/system/server/app/services/system/ai/skills/*_executor.rb
-  extensions/system/server/app/services/system/fleet/actions/*_action.rb (write actions)
-```
+
+- `extensions/system/server/app/services/system/ai/skills/*_executor.rb`
 
 ## Configuring Sensor Thresholds
 
 Sensors read thresholds from `Fleet::SensorConfig` records (account-scoped). Operator-tunable via:
 
 ```javascript
-// Get current thresholds for a sensor
-platform.system_get_sensor_config({ sensor: "instance_status" })
+// ⚠️ Sensor config MCP actions are aspirational — edit Fleet::SensorConfig via Rails console or REST today
+// platform.system_get_sensor_config({ sensor: "instance_status" })      // aspirational
+// platform.system_update_sensor_config({                                // aspirational
+//   sensor: "instance_status",
+//   silent_threshold_minutes: 10  // default 5
+// })
+```
 
-// Override for an account
-platform.system_update_sensor_config({
-  sensor: "instance_status",
-  silent_threshold_minutes: 10  // default 5
-})
+Until those MCP wrappers ship, configure via Rails console:
+
+```ruby
+Fleet::SensorConfig.upsert_for(account: Account.find("<id>"), sensor: "instance_status",
+  config: { silent_threshold_minutes: 10 })
 ```
 
 If no `Fleet::SensorConfig` exists for an account, sensor defaults from constants in each sensor class apply.

@@ -8,47 +8,31 @@ It complements [README.md](../README.md) (operator-facing summary) and
 
 ## Three-tier model
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       OPERATOR + AI SURFACE                             │
-│  • UI: Template Composer, Fleet Dashboard, Module Detail (Autonomy tab) │
-│  • MCP: ~25 system_* tools                                              │
-│  • REST: /api/v1/system/* (operator-facing) + /worker_api (worker token)│
-│  • ActionCable: SystemChannel (tasks/nodes) + SystemFleetChannel (events)│
-└──────────────────────────────────┬──────────────────────────────────────┘
-                                   │
-┌──────────────────────────────────▼──────────────────────────────────────┐
-│                       CONTROL PLANE (Rails 8)                           │
-│  • System extension models (~50): Node, NodeInstance, NodeTemplate,     │
-│    NodeModule + NodeModuleVersion (AASM promotion lifecycle),           │
-│    NodeModuleAssignment, ModuleArtifact, BootstrapToken,                │
-│    NodeCertificate, FleetEvent, Cve + CveExposure, Slo::Definition      │
-│  • Services (~80): ProvisioningService, ModuleBuildDispatchService,     │
-│    ModuleOciIngestService, InternalCaService, FleetAutonomyService,     │
-│    DecisionEngine, EventBroadcaster, AttributionFeedbackService,        │
-│    ConsentBudgetService, NodeEnrollmentService, ModulePromotionService  │
-│  • Controllers: 3 surfaces — operator JWT, worker token, node mTLS      │
-│  • Worker: SystemFleetReconcileJob (60s), SystemCveFeedJob (1h),        │
-│    SystemFleetEventRetentionJob (4:30 AM), SystemTaskReaperJob (1h)     │
-└──┬─────────────────────────────────────────────────────────────────────┬┘
-   │ webhook + dispatch_to_runner                                        │ mTLS
-┌──▼──────────────────────┐                                ┌─────────────▼──┐
-│  GITEA + ACTIONS        │  oras pull oci://...           │  NODE INSTANCE │
-│  Module CI:             │ ───────────────────────────►   │  ┌──────────┐  │
-│   buildah → mkcomposefs │                                │  │powernode-agent │  │
-│   → fs-verity → cosign  │                                │  │  (Go)    │  │
-│   → push (multi-arch)   │                                │  └─┬────────┘  │
-└─────────────────────────┘                                │ /sysroot       │
-                                                           │ overlayfs:     │
-                                                           │  lower: composefs(modules…)│
-                                                           │  upper: tmpfs   │
-                                                           │  + bind /var   │
-                                                           │     /persist/var│
-                                                           └────┬───────────┘
-                                                                │ heartbeat + tasks
-                                                                │ + events
-                                                                ▼
-                                                       (back to Control Plane)
+```mermaid
+flowchart TB
+    subgraph Surface["Operator + AI surface"]
+        UI[UI: Template Composer<br/>Fleet Dashboard<br/>Module Detail / Autonomy]
+        MCP[MCP: ~25 system_* tools]
+        REST[REST: /api/v1/system/*<br/>+ /worker_api]
+        AC[ActionCable: SystemChannel<br/>+ SystemFleetChannel]
+    end
+
+    subgraph Control["Control plane (Rails 8)"]
+        Models[~50 models<br/>Node, NodeInstance, NodeTemplate<br/>NodeModule + NodeModuleVersion AASM<br/>NodeModuleAssignment, BootstrapToken<br/>NodeCertificate, FleetEvent<br/>Cve, CveExposure, Slo::Definition]
+        Services[~80 services<br/>ProvisioningService<br/>ModuleBuildDispatchService<br/>ModuleOciIngestService<br/>InternalCaService<br/>FleetAutonomyService<br/>DecisionEngine, EventBroadcaster<br/>AttributionFeedbackService<br/>ConsentBudgetService]
+        Ctrl[3 controller surfaces:<br/>operator JWT<br/>worker token<br/>node mTLS]
+        Worker[Worker:<br/>SystemFleetReconcileJob 60s<br/>SystemCveFeedJob 1h<br/>SystemFleetEventRetentionJob 4:30 AM<br/>SystemTaskReaperJob 1h]
+    end
+
+    subgraph Edge["Edge"]
+        CI[Gitea + Actions<br/>Module CI:<br/>buildah → mkcomposefs<br/>→ fs-verity → cosign<br/>→ push multi-arch]
+        Node["NodeInstance<br/>powernode-agent Go<br/>/sysroot overlayfs:<br/>lower=composefs modules<br/>upper=tmpfs<br/>+ bind /var → /persist/var"]
+    end
+
+    Surface --> Control
+    Control -- "webhook + dispatch_to_runner" --> CI
+    CI -- "oras pull oci://" --> Node
+    Node -- "mTLS: heartbeat + tasks + events" --> Control
 ```
 
 ---
@@ -65,28 +49,29 @@ with an fs-verity root hash for tamper detection at file open.
 **Two-stage CI pipeline** (preserves the legacy rsync-glob composition layer
 while modernizing the underlying tools):
 
-```
-Stage 1 — Builder
-  Inputs: source repo (Containerfile, rootfs/, manifest.yaml) +
-          server-computed package_spec
-  Steps:  buildah bud --platform linux/amd64,linux/arm64
-            FROM ubuntu@sha256:<pinned-digest>
-            RUN apt-get install -y $(< package_spec.txt)
-            COPY rootfs/ /
-  Output: fat builder image with the full filesystem
+```mermaid
+flowchart TD
+    subgraph S1["Stage 1 — Builder"]
+        S1in["Inputs:<br/>Containerfile + rootfs/ + manifest.yaml<br/>+ server-computed package_spec"]
+        S1build[buildah bud<br/>--platform linux/amd64,linux/arm64<br/>FROM ubuntu@sha256:pinned<br/>RUN apt install package_spec<br/>COPY rootfs/ /]
+        S1out[Fat builder image<br/>with full filesystem]
+        S1in --> S1build --> S1out
+    end
 
-Stage 2 — Composer
-  Inputs: server-computed effective rsync_spec (mask + file_spec +
-          effective_mask from priority-aware neighbor analysis)
-  Steps:
-    rsync -aH --filter="$(cat rsync_spec.filter)" /builder-rootfs/ /module-staging/
-    mkcomposefs --digest-store=/cfs-store /module-staging/ /module.cfs
-    fsverity enable /module.cfs && fsverity digest /module.cfs > root_hash.txt
-    syft /module-staging/ -o cyclonedx-json > sbom.cdx.json
-    grype /module-staging/ -o json > vex.json
-    cosign sign-blob --bundle module.cosign-bundle /module.cfs
-    in-toto-attest --type slsa-provenance-v1 ... > provenance.json
-    oras push <registry>/<account>/<module>:<version> [+all attestations]
+    subgraph S2["Stage 2 — Composer"]
+        S2in["Inputs:<br/>effective rsync_spec from<br/>priority-aware neighbor analysis"]
+        Rsync["rsync -aH --filter=…<br/>→ /module-staging/"]
+        Comp[mkcomposefs<br/>→ /module.cfs]
+        Verity[fsverity enable + digest<br/>→ root_hash.txt]
+        SBOM["syft → sbom.cdx.json<br/>grype → vex.json"]
+        Sign[cosign sign-blob<br/>→ module.cosign-bundle]
+        Prov[in-toto-attest<br/>→ provenance.json]
+        Push[oras push<br/>registry/account/module:version<br/>+ all attestations]
+        S2in --> Rsync --> Comp --> Verity --> SBOM --> Sign --> Prov --> Push
+    end
+
+    S1out --> S2in
+    Push -. "webhook back to platform" .-> Ingest[ModuleOciIngestService<br/>→ NodeModuleVersion + ModuleArtifact rows]
 ```
 
 The webhook receiver at `POST /webhooks/gitea/module` ingests the artifact
@@ -100,6 +85,19 @@ operators via `POST /api/v1/system/node_module_versions/:id/promote`
 (body: `target_state`) and rollback via
 `POST /api/v1/system/node_modules/:id/rollback` (body: optional
 `target_version_id`, `changelog`).
+
+```mermaid
+stateDiagram-v2
+    [*] --> built: CI publishes signed OCI artifact
+    built --> staging: operator promote_to!(:staging)
+    staging --> blessed: PromotionCriteria met<br/>(N instances × M min)<br/>+ operator promote
+    blessed --> live: operator promote_to!(:live)<br/>(often require_approval)
+    live --> retired: superseded by newer live version<br/>or operator demote
+    retired --> [*]
+    staging --> retired: rollback via promote_to!(:retired)
+    blessed --> retired: rollback path
+    live --> blessed: rollback (operator)<br/>via NodeModule#rollback
+```
 
 **Module assignment materialization** — how `NodeModule` rows end up
 assigned to a `Node`. There are three live paths today, plus one
@@ -177,6 +175,24 @@ calls authenticate via mTLS with certificate pinning.
 - Event telemetry to `/node_api/events`
 - Module-as-Skill registrar (declared skills register with `Ai::Skill`)
 
+**NodeInstance lifecycle** (high-level — the polymorphic Task model carries the AASM detail):
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: create_node + create_instance
+    pending --> provisioning: provider VM create
+    provisioning --> running: kernel boot +<br/>agent enroll +<br/>first heartbeat
+    provisioning --> failed: provider error<br/>or boot timeout
+    running --> draining: operator drain
+    draining --> stopped: workloads<br/>terminated
+    running --> stopped: operator stop
+    stopped --> running: operator start
+    running --> terminated: operator terminate<br/>(cascade FK cleanup)
+    stopped --> terminated: operator terminate
+    failed --> terminated: operator abandon
+    terminated --> [*]
+```
+
 ### 3. Multi-arch initramfs builder
 
 Six artifact families per architecture, both amd64 and arm64:
@@ -205,7 +221,7 @@ Six sensors detect operational signals:
 - `ConfigDriftSensor` — assignment changed without dispatched task → `system.config_drift`
 - `SloViolationSensor` — Slo::Definition target not met → `system.slo_violation`
 - `HoneypotAccessSensor` — canary module accessed → `system.honeypot_access`
-- `TradingPressureSensor` — cross-domain consumer of `trading.*` signals
+- `ExternalPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions
 
 Each signal routes through `DecisionEngine` (binds signal → skill →
 action_category) → `FleetAutonomyService.gate_action!` (consults
@@ -216,10 +232,51 @@ defer (for cross-domain pressure).
 Every step persists a `FleetEvent` row + ActionCable broadcast on
 `SystemFleetChannel` for live UI consumption.
 
+```mermaid
+sequenceDiagram
+    participant Sensor as Sensor (per 60s tick)
+    participant FE as FleetEvent log
+    participant DE as DecisionEngine
+    participant FA as FleetAutonomyService
+    participant CB as ConsentBudgetService
+    participant IP as InterventionPolicy
+    participant Exec as Skill executor
+    participant Op as Operator
+    participant UI as SystemFleetChannel<br/>(ActionCable)
+
+    Sensor->>FE: emit signal<br/>(kind, severity, payload)
+    DE->>FE: pull recent signals
+    DE->>DE: bind signal → skill → action_category
+    DE->>FA: gate_action!(category, target)
+    FA->>IP: lookup policy(agent, category)
+    FA->>CB: check budget(target_module)
+    alt auto_approve + budget OK
+        FA->>Exec: execute now
+        Exec->>FE: emit completion event
+        FE->>UI: broadcast to operators
+    else notify_and_proceed + budget OK
+        FA->>Exec: execute now
+        FA->>Op: push notification
+        Exec->>FE: emit completion event
+        FE->>UI: broadcast
+    else require_approval OR budget exhausted
+        FA->>Op: open Ai::ApprovalRequest
+        Op->>FA: approve
+        FA->>Exec: execute
+        Exec->>FE: emit completion event
+        FE->>UI: broadcast
+    else blocked OR trust below floor
+        FA->>FE: emit rejected event
+        FE->>UI: broadcast
+    end
+```
+
 ### 5. Cross-domain stigmergic coordination
 
-Fleet ↔ Trading bidirectional pressure exchange via the platform's existing
-`Ai::Coordination::StigmergicSignalService`:
+Fleet ↔ sibling-extension bidirectional pressure exchange via the platform's
+`Ai::Coordination::StigmergicSignalService`. The fleet doesn't care which
+extension emits the signal — coordination happens purely through the signal
+bus.
 
 **Fleet emits** (after every reconcile tick):
 - `system.capacity_pressure` — instance utilization too low (<50%) or too high (>90%)
@@ -227,16 +284,44 @@ Fleet ↔ Trading bidirectional pressure exchange via the platform's existing
 - `system.region_busy:<region_id>` — per-region instance saturation
 
 **Fleet consumes:**
-- `trading.high_load`, `trading.market_pressure`, etc. → `TradingPressureSensor` aggregates → `TradingAwareThrottle` defers non-critical fleet actions
+- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `ExternalPressureSensor` aggregates → `ExternalAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0
 
-**Trading consumes:**
-- `system.capacity_pressure` → `Trading::FleetPressurePerceiver` returns
-  defer/block recommendation → `OverseerAutonomyService.gate_action!`
-  defers `FLEET_DEFERRABLE_ACTIONS` (session creation, scheduling, spawning)
+**Sibling extension consumes** (when integrated):
+- `system.capacity_pressure` → consumer-side pressure perceiver returns
+  defer/block recommendation → other extension's autonomy gate defers
+  its deferrable actions
 
-**Trading emits:**
-- `trading.venue_busy:<venue_slug>` → consumed by either side via
-  `recommend_least_busy_key`
+**Sibling extension emits** (when integrated):
+- `*.resource_busy:<key>` → consumed by either side via the
+  `recommend_least_busy_key` shared utility
+
+```mermaid
+flowchart LR
+    subgraph Fleet["Fleet (system extension)"]
+        Recon[Fleet reconciler<br/>60s tick]
+        FleetEmit[Pressure emitter]
+        ExtSensor[ExternalPressureSensor]
+        Throttle[ExternalAwareThrottle]
+    end
+
+    subgraph Bus["Stigmergic signal bus"]
+        StigBus[(Ai::Coordination::<br/>StigmergicSignalService)]
+    end
+
+    subgraph Sibling["Sibling extension"]
+        Autonomy[Autonomy gate]
+        PressurePerc[Pressure perceiver]
+        Workload[Workload scheduler]
+    end
+
+    Recon --> FleetEmit
+    FleetEmit -- "system.capacity_pressure<br/>system.fleet_error_pressure<br/>system.region_busy:R" --> StigBus
+    Workload -- "*.high_load<br/>*.workload_pressure<br/>*.resource_busy:K" --> StigBus
+    StigBus --> ExtSensor --> Throttle
+    StigBus --> PressurePerc --> Autonomy
+    Throttle -. "defer non-critical<br/>fleet actions" .-> Recon
+    Autonomy -. "defer deferrable<br/>workload actions" .-> Sibling
+```
 
 ### 6. Observability
 
@@ -364,6 +449,40 @@ in the parent platform.
 4. **Zero implicit trust on network location** — mTLS for `/node_api/*`,
    WireGuard mesh for east-west, default-deny egress at node level
 
+```mermaid
+flowchart TB
+    subgraph TB1["Trust boundary 1: artifact identity"]
+        OCI[(OCI registry)]
+        Cosign[Cosign signature<br/>+ Sigstore Fulcio cert]
+        OCI --- Cosign
+    end
+
+    subgraph TB2["Trust boundary 2: CA hierarchy"]
+        Root[Internal CA root<br/>Vault PKI HSM-sealed]
+        Inter[pki_int intermediate]
+        NodeCert[Node certificates<br/>90-day TTL<br/>auto-rotate at 75%]
+        Root --> Inter --> NodeCert
+    end
+
+    subgraph TB3["Trust boundary 3: control plane"]
+        OpJWT[Operator JWT<br/>+ MFA on sensitive]
+        AIGate[AI agent gating<br/>InterventionPolicy]
+        Worker[Worker token<br/>SHA-256 digest]
+    end
+
+    subgraph TB4["Trust boundary 4: network"]
+        MTLS[mTLS on /node_api/*]
+        WG[WireGuard mesh<br/>east-west]
+        Egress[Default-deny egress<br/>at node level]
+    end
+
+    TB1 -.verifies.-> Agent[powernode-agent]
+    TB2 -.signs.-> Agent
+    TB3 -.gates.-> Plat[Platform]
+    TB4 -.encrypts.-> Plat
+    Agent <--> Plat
+```
+
 ### Key custody
 
 - **Internal CA root** in HashiCorp Vault PKI engine
@@ -403,7 +522,9 @@ in the parent platform.
 
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
-- [docs/TASKS.md](./TASKS.md) — active milestone tracker
+- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (16 seeds, 7 passes)
+- [docs/tutorials/](./tutorials/) — numbered learning sequence
+- [docs/history/](./history/) — archived phase plans + acceptance reports
 - [Parent platform's CLAUDE.md](https://github.com/nodealchemy/powernode-platform/blob/master/CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details
 - [initramfs/README.md](../initramfs/README.md) — boot artifact builder details

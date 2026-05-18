@@ -8,88 +8,91 @@ A `NodeInstance` with the appropriate runtime module assigned (`docker-engine`, 
 
 ## Lifecycle Diagram (Phase 1 Docker)
 
-```
-Operator                       Agent                      Platform
-───────                        ─────                      ────────
-   │                            │                            │
-   │ 1. Assign docker-engine    │                            │
-   │    module to a Node        │                            │
-   ├───────────────────────────►│                            │
-   │                            │ 2. Heartbeat tick:         │
-   │                            │    detect module, install  │
-   │                            │    docker-ce, generate     │
-   │                            │    Ed25519 server keypair  │
-   │                            │                            │
-   │                            │ 3. POST /runtime/handshake │
-   │                            │    runtime: docker         │
-   │                            │    phase:   wants_cert     │
-   │                            │    csr_pem: ...            │
-   │                            ├───────────────────────────►│
-   │                            │                            │ 4. Sign CSR via
-   │                            │                            │    InternalCaService;
-   │                            │                            │    create managed
-   │                            │                            │    Devops::DockerHost
-   │                            │                            │    bound to instance
-   │                            │ 5. Cert returned           │
-   │                            │◄───────────────────────────┤
-   │                            │ 6. Write daemon.json with  │
-   │                            │    TLS + listen on /128;   │
-   │                            │    systemctl start docker  │
-   │                            │                            │
-   │                            │ 7. POST phase: ready       │
-   │                            │    version: 25.0.3         │
-   │                            ├───────────────────────────►│
-   │                            │                            │ 8. host status:
-   │                            │                            │    pending → connected
-   │                            │                            │
-   │ 9. docker_list_containers  │                            │
-   ├───────────────────────────────────────────────────────► │ over SDWAN /128
-   │                                                         │
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant Agent as powernode-agent
+    participant Plat as Platform
+    participant CA as InternalCaService
+
+    Op->>Plat: 1. assign docker-engine<br/>module to Node
+    Plat-->>Agent: heartbeat picks up<br/>new assignment
+    Agent->>Agent: 2. install docker-ce<br/>generate Ed25519 server keypair
+    Agent->>Plat: 3. POST /runtime/handshake<br/>runtime=docker phase=wants_cert<br/>csr_pem=...
+    Plat->>CA: 4. sign CSR
+    CA-->>Plat: signed cert + chain
+    Plat->>Plat: create managed<br/>Devops::DockerHost<br/>bound to instance
+    Plat-->>Agent: 5. cert returned
+    Agent->>Agent: 6. write daemon.json with TLS<br/>+ listen on SDWAN /128<br/>systemctl start docker
+    Agent->>Plat: 7. POST phase=ready<br/>version=25.0.3
+    Plat->>Plat: 8. host status:<br/>pending → connected
+    Op->>Plat: 9. docker_list_containers
+    Plat->>Agent: over SDWAN /128 (mTLS)
+    Agent-->>Op: container list
 ```
 
-## Lifecycle Diagram (Phase 2 K3s)
+## Lifecycle Diagram (Phase 2 K3s with VIP failover)
 
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant A1 as Agent<br/>(bootstrap server)
+    participant Plat as Platform
+    participant VIP as Sdwan::VirtualIp
+    participant A2 as Agent<br/>(worker)
+
+    Op->>Plat: 1. assign k3s-server module
+    Plat-->>A1: heartbeat picks up
+    A1->>A1: 2. apt install k3s,<br/>systemctl start k3s
+    A1->>A1: 3. k3s generates kubeconfig<br/>+ tokens
+    A1->>Plat: 4. POST phase=bootstrap
+    Plat->>VIP: allocate api_endpoint VIP<br/>(slice 3)
+    VIP-->>Plat: VIP /128 + holders=[A1]
+    Plat->>Plat: 5. create Devops::KubernetesCluster<br/>+ bootstrap node row<br/>status=bootstrapping<br/>api_endpoint=VIP /128
+    A1->>Plat: 6. POST phase=ready
+    Plat->>Plat: cluster status=active
+
+    Op->>Plat: 7. assign k3s-agent module
+    Plat-->>A2: heartbeat picks up
+    A2->>Plat: 8. POST phase=join_request
+    Plat-->>A2: 9. api_endpoint VIP /128 + token
+    A2->>A2: 10. write systemd drop-in<br/>K3S_URL + K3S_TOKEN<br/>systemctl start k3s-agent
+    A2->>Plat: 11. POST phase=ready
+    Plat->>Plat: node status=active
+
+    Op->>Plat: 12. download kubeconfig
+
+    note over VIP,A1: If bootstrap server drains:<br/>VIP migrates to next holder<br/>workers' K3S_URL keeps resolving
 ```
-Operator                       Agent                      Platform
-───────                        ─────                      ────────
-   │ 1. Assign k3s-server       │                            │
-   │    module to NodeInstance  │                            │
-   ├───────────────────────────►│                            │
-   │                            │ 2. apt install k3s,        │
-   │                            │    systemctl start k3s     │
-   │                            │ 3. K3s generates kubeconfig│
-   │                            │    + tokens at             │
-   │                            │    /etc/rancher/k3s/       │
-   │                            │ 4. Agent captures state,   │
-   │                            │    POST phase: bootstrap   │
-   │                            ├───────────────────────────►│
-   │                            │                            │ 5. Create
-   │                            │                            │    Devops::KubernetesCluster
-   │                            │                            │    + bootstrap node row
-   │                            │                            │    (status=bootstrapping)
-   │                            │                            │
-   │                            │ 6. POST phase: ready       │
-   │                            ├───────────────────────────►│ → cluster=active
-   │                            │                            │
-   │ 7. Assign k3s-agent to     │                            │
-   │    additional NodeInstance │                            │
-   ├───────────────────────────►│                            │
-   │                            │ 8. POST phase:             │
-   │                            │    join_request            │
-   │                            ├───────────────────────────►│
-   │                            │ 9. {api_endpoint, token}   │
-   │                            │◄───────────────────────────┤
-   │                            │ 10. Write systemd drop-in  │
-   │                            │     with K3S_URL+K3S_TOKEN │
-   │                            │     systemctl start k3s-agent
-   │                            │ 11. POST phase: ready      │
-   │                            ├───────────────────────────►│ → node=active
-   │                            │                            │
-   │ 12. Download kubeconfig    │                            │
-   │     from /app/devops/      │                            │
-   │     kubernetes UI          │                            │
-   │                            │                            │
+
+### Multi-cluster routing via `target_cluster_id`
+
+In accounts with more than one cluster, `k3s-agent` module assignments must
+carry `metadata.target_cluster_id` so the agent joins the right cluster.
+
+```mermaid
+flowchart TB
+    Op[Operator]
+    subgraph A["Account"]
+        T1[Template: cluster-a-worker<br/>module: k3s-agent<br/>config.target_cluster_id = C1]
+        T2[Template: cluster-b-worker<br/>module: k3s-agent<br/>config.target_cluster_id = C2]
+        subgraph C1["KubernetesCluster C1"]
+            S1[k3s-server #1]
+            W1[k3s-agent worker]
+        end
+        subgraph C2["KubernetesCluster C2"]
+            S2[k3s-server #2]
+            W2[k3s-agent worker]
+        end
+    end
+    Op --> T1 --> W1
+    Op --> T2 --> W2
+    W1 -. "joins via VIP" .-> S1
+    W2 -. "joins via VIP" .-> S2
 ```
+
+Without `target_cluster_id`, the agent picks the first cluster the API
+returns — wrong in multi-cluster accounts.
 
 ## Module Catalog
 
@@ -282,6 +285,7 @@ journalctl -u k3s-agent.service -n 200        # k3s-agent
 Or via the agent task channel (no SSH required):
 
 ```javascript
+// ⚠️ aspirational — use system_provision_instance / system_terminate_instance and platform.recent_events for task progress
 platform.system_execute_task({
   node_instance_id: "...",
   command: ["journalctl", "-u", "k3s-agent.service", "-n", "200"]

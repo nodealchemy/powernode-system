@@ -71,33 +71,56 @@ This is a git submodule. Per root CLAUDE.md:
 - `README.md` — extension overview
 - `CONTRIBUTING.md` — submodule + commit workflow
 - `docs/ARCHITECTURE.md` — 8 subsystems + 4 API surfaces + security architecture
-- `docs/TASKS.md` — milestone status (auto-generated)
-- `docs/SMOKE_TEST.md` — integration test checklist
+- `docs/SMOKE_TEST.md` — platform-level smoke catalog (16 seeded scripts, 7 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials)
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
-- `docs/SKILL_EXECUTORS.md` — 40 executor reference (auto-generated catalog forthcoming)
+- `docs/SKILL_EXECUTORS.md` — 40 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
 - `docs/FLEET_SENSORS.md` — 12 sensor reference + intervention policy table
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
-- `docs/agent-peering.md` — NodeInstance-as-Agent pattern (in sweep)
+- `docs/agent-peering.md` — NodeInstance-as-Agent pattern
 - `docs/credential-restoration.md` — Vault credential lifecycle
-- `docs/gitops.md` — GitOps reconciler design (in sweep)
+- `docs/gitops.md` — GitOps reconciler design
+- `docs/history/` — archived phase plans + acceptance reports (TASKS, missing-features, federation phase-reports)
 - `initramfs/README.md` — multi-arch boot builder
 
 ### Operator runbooks (`docs/runbooks/`)
+
+See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime per runbook). Current set:
 
 - `node-provisioning.md` — full Node + NodeInstance lifecycle with per-state error recovery
 - `sdwan-network-setup.md` — SDWAN end-to-end (networks, peers, VIPs, firewall, BGP, federation)
 - `module-authoring.md` — author + register + sign + publish a new NodeModule
 - `cve-response.md` — full CVE response workflow (SBOM-aware matching, triage, remediation)
+- `gitops-reconciliation.md` — operator GitOps reconciler workflow (Phase A4)
+- `acme-issuance.md` — ACME DNS-01 cert lifecycle (Phase A4)
+- `acme-smoke.md` — P2.5.7 acceptance smoke test
 - `instance-pool-tuning.md` — pool sizing + reaping (slice 7)
 - `multi-cluster-k3s.md` — multi-cluster K3s with `metadata.target_cluster_id` + HA control plane
 - `disk-image-ci.md` — disk image CI operator workflow
+- `federation-setup.md` — multi-region/multi-account federation peering
+- `federation-troubleshooting.md` — diagnostic procedures for federation failures
+- `docker-compose-cutover.md` — legacy compose → Powernode migration
 - `vault-credential-restoration.md` — DR runbook for credential restoration
 
-### Use-case examples (`docs/examples/`)
+### Tutorials (`docs/tutorials/`) — preferred entry point for learning
 
-10 end-to-end walkthroughs (`01-single-node-qemu.md` through `10-gitops-fleet.md`). Six have companion runnable seeds at `server/db/seeds/example_*.rb`.
+12 numbered, dependency-aware tutorials covering the full operator surface:
+
+- `01-first-boot.md` — single-node QEMU boot end-to-end
+- `02-first-module.md` — author + sign + publish a custom module
+- `03-docker-runtime.md` — Phase 1 Docker daemon provisioning
+- `04-k3s-cluster.md` — Phase 2 K3s cluster with VIP-backed api_endpoint
+- `05-multi-cluster-k3s.md` — multi-cluster + SDWAN isolation
+- `06-rolling-upgrade.md` — batched module upgrades with circuit breaker
+- `07-cve-response.md` — full CVE response pipeline (drill)
+- `08-instance-pool.md` — pre-warmed pools for bursty workloads
+- `09-honeypot-canary.md` — decoy assets + intervention policy
+- `10-gitops-fleet.md` — fleet.yaml declarative state + reconciler
+- `11-federation.md` — multi-region federation, spawn modes, P9.x guarantees
+- `12-disk-image-ci.md` — custom NodePlatform via CI-published OCI artifacts
+
+Start with `docs/tutorials/INDEX.md` for a Mermaid decision tree mapping operator goal → starting tutorial.
 
 ### External references (live in parent platform)
 

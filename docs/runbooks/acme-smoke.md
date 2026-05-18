@@ -4,6 +4,10 @@
 Discovery). Run this end-to-end against a `powernode-hub` deployment on
 the operator's preferred QEMU host. Expected duration: ~30 min.
 
+For day-2 ACME operator workflow (provider setup, single + multi-SAN
+issuance, renewal, revocation, endpoint failover), see the
+**[acme-issuance.md](./acme-issuance.md)** runbook.
+
 ## Prerequisites
 
 Before starting, gather:

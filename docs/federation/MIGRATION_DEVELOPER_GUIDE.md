@@ -31,6 +31,29 @@ conflict detection, and the destination-side write transaction.
 Two operations, with **opposite** UUID semantics — pick the right one
 for your use case:
 
+```mermaid
+flowchart TD
+    Op[Operator at Peer A] --> Compose[PlanComposer.compose!<br/>operation: migrate OR duplicate<br/>root_kind + root_id<br/>destination_peer]
+    Compose --> Walk[Walk AR has_many<br/>reflections per inventory]
+    Walk --> Plan[Migration row + MigrationPlanStep rows<br/>status: planned]
+
+    Plan --> OpMode{operation}
+    OpMode -->|migrate| MigrateBranch[Each step's resource_id<br/>= source UUID<br/>payload preserves id]
+    OpMode -->|duplicate| DupBranch[Each step's resource_id<br/>= fresh UUIDv7<br/>payload metadata.duplicated_from<br/>= source UUID]
+
+    MigrateBranch --> Detect[ConflictDetector.scan!<br/>(unique-index collisions)]
+    DupBranch --> Detect
+    Detect --> Decide{conflicts?}
+    Decide -->|none| Apply[ApplyExecutor.apply!<br/>at destination peer]
+    Decide -->|present| Policy[Operator picks per-step<br/>conflict_policy:<br/>skip_if_exists / overwrite / fail]
+    Policy --> Apply
+    Apply --> Result{success?}
+    Result -->|yes| Done[Migration status: applied]
+    Result -->|migrate only| Cleanup[Source-side cleanup<br/>(delete originals after ack)]
+    Cleanup --> Done
+    Result -->|no| Failed[Migration status: failed<br/>(transaction rolled back)]
+```
+
 ### `migrate` — transfer ownership, **UUID is preserved**
 
 The source's record is deleted after the destination acknowledges.
@@ -62,8 +85,8 @@ archival snapshots, or distribution of reference data.
 result = System::Migrations::PlanComposer.compose!(
   account: alice_account,
   operation: "duplicate",
-  root_kind: "trading_strategy",
-  root_id: strategy_uuid,
+  root_kind: "inventory_item",         # example: any duplicable kind your extension declares
+  root_id: item_uuid,
   destination_peer: peer_b
 )
 # Each plan_step's resource_id is a fresh UUIDv7 — NOT the source's id.
@@ -82,7 +105,8 @@ diverged" problems before they can occur. See plan §F + LD #14.
 Each extension drops a `federation_inventory.yaml` at its root:
 
 ```yaml
-extension: trading
+# Example federation_inventory.yaml from a hypothetical extension
+extension: inventory
 exportable_kinds:
   - kind: skill
     dependencies: [learning, knowledge_base_entry]
@@ -91,7 +115,7 @@ exportable_kinds:
     metadata:
       sensitive_fields: [api_secret]
 
-  - kind: trading_strategy
+  - kind: inventory_item
     dependencies: [skill]
     duplicable: true
     migratable: true
@@ -101,7 +125,7 @@ exportable_kinds:
 
 - `kind` (required) — the resource_kind string used in URLs + Migration rows.
   Must match the model's lowercase-snake-case-of-`name.demodulize`
-  (`Ai::Skill` → `"skill"`, `Trading::Strategy` → `"strategy"`,
+  (`Ai::Skill` → `"skill"`, `Inventory::Item` → `"inventory_item"`,
   `System::PlatformDeployment` → `"platform_deployment"`).
 
 - `dependencies` (optional, array) — other declared kinds that should be
@@ -127,7 +151,7 @@ exportable_kinds:
 result = System::Migrations::PlanComposer.compose!(
   account: alice_account,
   operation: "duplicate",  # or "migrate"
-  root_kind: "trading_strategy",
+  root_kind: "inventory_item",
   root_id: "019fab...",
   destination_peer: peer_b,
   initiated_by_user: alice,
@@ -259,14 +283,14 @@ The following are explicitly deferred:
 ## Testing your model's participation
 
 ```ruby
-RSpec.describe Trading::Strategy do
+RSpec.describe Inventory::Item do
   let(:account) { create(:account) }
 
   before do
     # Inject your kind into the InventoryRegistry
     registry = System::Federation::InventoryRegistry.new
     registry.register_kind(
-      extension: "trading", kind: "trading_strategy",
+      extension: "inventory", kind: "inventory_item",
       dependencies: [], duplicable: true, migratable: true,
       metadata: {}
     )
@@ -276,28 +300,28 @@ RSpec.describe Trading::Strategy do
   after { System::Federation::InventoryRegistry.install_test_double(nil) }
 
   it "is composable as a duplicate root with fresh UUID + lineage" do
-    strategy = create(:trading_strategy, account: account)
+    item = create(:inventory_item, account: account)
     result = System::Migrations::PlanComposer.compose!(
       account: account, operation: "duplicate",
-      root_kind: "trading_strategy", root_id: strategy.id
+      root_kind: "inventory_item", root_id: item.id
     )
     expect(result.ok?).to be true
     root_step = result.migration.plan_steps.find_by(step_order: 0)
     # LD #14: duplicate generates a fresh UUID; lineage in metadata
-    expect(root_step.resource_id).not_to eq(strategy.id)
-    expect(root_step.payload.dig("metadata", "duplicated_from", "uuid")).to eq(strategy.id)
+    expect(root_step.resource_id).not_to eq(item.id)
+    expect(root_step.payload.dig("metadata", "duplicated_from", "uuid")).to eq(item.id)
   end
 
   it "is composable as a migrate root preserving UUID" do
-    strategy = create(:trading_strategy, account: account)
+    item = create(:inventory_item, account: account)
     result = System::Migrations::PlanComposer.compose!(
       account: account, operation: "migrate",
-      root_kind: "trading_strategy", root_id: strategy.id
+      root_kind: "inventory_item", root_id: item.id
     )
     expect(result.ok?).to be true
     root_step = result.migration.plan_steps.find_by(step_order: 0)
     # LD #14: migrate transfers ownership; UUID preserved
-    expect(root_step.resource_id).to eq(strategy.id)
+    expect(root_step.resource_id).to eq(item.id)
   end
 end
 ```

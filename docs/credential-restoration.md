@@ -22,31 +22,44 @@ via the `AccountPepperedEncryption` concern).
 
 ## 1. Lifecycle overview
 
+```mermaid
+sequenceDiagram
+    actor Op as Operator / system
+    participant Acct as Account
+    participant AEKS as AccountEncryption<br/>KeyService
+    participant Vault as Vault transit
+    participant Conn as ProviderConnection<br/>(consumer)
+    participant Rails as Rails encrypts<br/>(at-rest layer)
+
+    Op->>Acct: account created
+    Acct->>AEKS: generate_for(account)
+    AEKS->>Vault: create transit/encrypt/account-&lt;id&gt;
+    Vault-->>AEKS: keypair created
+    AEKS->>Acct: persist Vault path on<br/>accounts.encryption_key_vault_path
+
+    Op->>Conn: write access_key (plaintext)
+    Conn->>AEKS: peppered(account, plaintext)
+    AEKS->>Vault: encrypt
+    Vault-->>AEKS: ciphertext blob
+    AEKS-->>Conn: ciphertext blob
+    Conn->>Rails: at-rest encrypt of ciphertext blob
+    Rails-->>Conn: persisted
+
+    Op->>Conn: read access_key
+    Conn->>Rails: decrypt at-rest layer
+    Rails-->>Conn: ciphertext blob
+    Conn->>AEKS: decrypt(account, ciphertext)
+    AEKS->>Vault: decrypt
+    Vault-->>AEKS: plaintext
+    AEKS-->>Conn: plaintext
 ```
-Account creation
-   └─ Security::AccountEncryptionKeyService.generate_for(account)
-        ├─ Vault transit creates `transit/encrypt/account-#{account.id}` keypair
-        └─ persists Vault path on `accounts.encryption_key_vault_path`
 
-First write of a peppered attribute (e.g., ProviderConnection#access_key)
-   └─ AccountPepperedEncryption#write_peppered
-        ├─ Security::AccountEncryptionKeyService.peppered(account, plaintext)
-        │     → Vault transit encrypts plaintext with account's key
-        │     → returns ciphertext blob
-        └─ Rails `encrypts` then ALSO encrypts the ciphertext blob at-rest
-
-Read
-   └─ Rails `encrypts` decrypts the at-rest layer
-        → Security::AccountEncryptionKeyService.decrypt(account, ciphertext)
-            → Vault transit decrypts back to plaintext
-        → returns plaintext to the caller
-
-Rotation
-   └─ Security::AccountEncryptionKeyService.rotate_for(account)
-        ├─ creates new transit key version
-        ├─ marks old version `rotation_pending` on the account
-        └─ background job re-encrypts existing rows (decrypt with vN-1,
-           re-encrypt with vN) in batches of 100
+```mermaid
+stateDiagram-v2
+    [*] --> active: generate_for(account)
+    active --> rotation_pending: rotate_for(account)<br/>(new transit version created)
+    rotation_pending --> active: background job rewraps<br/>all rows in batches of 100<br/>(decrypt vN-1 → encrypt vN)
+    active --> [*]: account destroyed<br/>(transit key remains in Vault<br/>for restore use cases)
 ```
 
 ---
@@ -243,6 +256,30 @@ Account.find_each(&:rotate_encryption_key!)
 
 **Scenario:** Vault lost; PG database intact.
 
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant Vault
+    participant Acct as Account
+    participant Conn as ProviderConnection
+    participant Sweep as AccountReencryptionJob
+
+    Op->>Vault: restore from snapshot
+    Op->>Vault: Shamir unseal 3-of-5
+    Vault-->>Op: transit keys recovered<br/>(at snapshot's key versions)
+
+    Op->>Conn: try to read access_key (existing row)
+    Conn->>Vault: decrypt with vN
+    alt vN matches snapshot's vN
+        Vault-->>Conn: plaintext (OK)
+    else snapshot is older — vN > snapshot.vN
+        Vault-->>Conn: Vault::Decrypt::KeyVersionMissing
+        Op->>Acct: rotate_for(account)<br/>or restore newer snapshot
+        Acct->>Sweep: enqueue rewrap of all rows<br/>(vSnapshot → vN_current)
+        Sweep-->>Conn: rows now decrypt cleanly
+    end
+```
+
 1. Restore Vault from snapshot (Shamir unseal + transit key persistence).
 2. If snapshot is older than some account's last rotation:
    - Unrotated accounts work normally.
@@ -325,5 +362,5 @@ To add a new model with peppered attributes:
 
 ---
 
-*Sweep status: Phase 3 implementation pending. Tracking in
-`extensions/system/docs/TASKS.md` "Active stabilization sweep" table.*
+*For DR procedure see [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md);
+for historical sweep tracking see [`history/TASKS.md`](./history/TASKS.md).*

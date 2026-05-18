@@ -153,13 +153,47 @@ A request from any of the following: **denied**.
 
 ---
 
+## Sovereign Auth Handshake
+
+```mermaid
+sequenceDiagram
+    actor PeerB as Peer B<br/>(calling)
+    participant Proxy as Traefik<br/>(at peer A)
+    participant Auth as Federation auth chain<br/>(backend)
+    participant Grant as FederationGrant<br/>predicates
+    participant Bridge as FederationNetwork<br/>Bridge
+
+    PeerB->>Proxy: HTTPS /federation_api/...<br/>(mTLS client cert with URI SAN)
+    Proxy->>Proxy: passTLSClientCert + URI SAN parse<br/>→ X-Calling-Instance: instance-uuid
+    Proxy->>Proxy: listener bound to SDWAN VIP<br/>→ X-Sdwan-Network: network-uuid
+    Proxy->>Proxy: standard X-Forwarded-For
+    Proxy->>Auth: request + headers + remote_ip
+    Auth->>Bridge: validate active bridge<br/>for (peer, network)
+    Bridge-->>Auth: bridge active
+    Auth->>Grant: applies_to_instance? + applies_to_network? + applies_to_source_ip?
+    alt all three allowlists match (or empty)
+        Grant-->>Auth: allowed
+        Auth-->>Proxy: 200 + response payload
+        Proxy-->>PeerB: 200
+    else any populated allowlist mismatches
+        Grant-->>Auth: forbidden
+        Auth-->>Proxy: 403 with allowlist contents in body
+        Proxy-->>PeerB: 403 ("calling instance not in grant allowlist" etc.)
+    end
+```
+
 ## Bridge state machine
 
-```
-proposed ──(accept!)──▶ active ──(suspend!)──▶ suspended
-   │                       │                       │
-   ▼                       ▼                       ▼
-revoked                 revoked                 revoked  (terminal)
+```mermaid
+stateDiagram-v2
+    [*] --> proposed: federation handshake creates bridge
+    proposed --> active: accept!
+    proposed --> revoked: operator revoke before accept
+    active --> suspended: suspend! (temporary disable)
+    suspended --> active: resume! (suspend was temporary)
+    active --> revoked: operator revoke (terminal)
+    suspended --> revoked: operator revoke (terminal)
+    revoked --> [*]
 ```
 
 A bridge is created at federation handshake time in `proposed` state.

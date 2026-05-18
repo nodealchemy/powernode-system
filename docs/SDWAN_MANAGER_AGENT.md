@@ -169,6 +169,45 @@ SDWAN Manager actions are triggered by Fleet sensors emitting `system.sdwan_*` s
 | `sdwan.route_policy_drift` → policy hash mismatch | `system.sdwan_route_policy_audit` | `auto_approve` |
 | Time-based (key TTL) | `system.sdwan_key_rotate` | `auto_approve` |
 
+### Tick + Drift Remediation Flow
+
+```mermaid
+sequenceDiagram
+    participant Cron as SDWAN Manager<br/>tick (60s)
+    participant SP as sdwan_drift_sensor
+    participant SB as sdwan_bgp_session<br/>_health_sensor
+    participant SV as sdwan_vip<br/>_reachability_sensor
+    participant DE as DecisionEngine
+    participant Skill as Skill executor
+    participant FRR as FRR / WireGuard<br/>(on-node)
+    participant Op as Operator
+
+    Cron->>SP: tick
+    SP->>SP: compare desired wg config<br/>vs agent-reported state
+    alt drift detected
+        SP->>DE: sdwan.peer_drift signal
+        DE->>Skill: sdwan_peer_remediate
+        Skill->>FRR: rotate keys + bounce iface
+        FRR-->>Skill: applied
+        Skill->>Op: notify (notify_and_proceed)
+    end
+
+    Cron->>SB: tick
+    alt iBGP session !Established for >10 min
+        SB->>DE: sdwan.bgp_unhealthy signal
+        DE->>Skill: sdwan_bgp_session_remediate
+        Skill->>Op: notify with vtysh recommendation
+    end
+
+    Cron->>SV: tick
+    alt single-holder VIP holder silent
+        SV->>DE: sdwan.vip_holder_silent signal
+        DE->>Op: open ApprovalRequest<br/>(require_approval, 4h timeout)
+        Op->>Skill: approve sdwan_vip_failover
+        Skill->>FRR: promote next failover holder
+    end
+```
+
 ---
 
 ## Pause / Resume — Maintenance Window Runbook
