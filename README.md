@@ -91,9 +91,12 @@ This extension contributes:
   controllers across operator API + on-node API + worker API)
 - React/TypeScript frontend (~250 TS/TSX files including 11 page components +
   ~156 reusable components + custom hooks + API client services)
-- Worker jobs (7): `system_task_reaper`, `system_fleet_reconcile`,
-  `system_cve_feed`, `system_fleet_event_retention`, `system_cloud_sync`,
-  `system_execute_task`, `system_gitops_sync`
+- Worker jobs (12): `system_task_reaper`, `system_fleet_reconcile`,
+  `system_cve_feed`, `system_cve_responder_reconcile`,
+  `system_fleet_event_retention`, `system_cloud_sync`, `system_execute_task`,
+  `system_gitops_sync`, `system_package_embedding`,
+  `system_package_module_materialize`, `system_package_module_refresh`,
+  `system_package_repository_sync`
 - Database migrations (131)
 - Sidekiq cron schedule entries
 
