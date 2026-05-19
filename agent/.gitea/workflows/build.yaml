@@ -28,6 +28,23 @@ jobs:
       - name: go test -race
         run: go test -race ./...
 
+  # Integration tests are tagged `//go:build integration` so they're skipped
+  # by the default unit test run above. This separate job exercises the
+  # FULL boot→claim→token flow using real BootIdentityStrategy + httptest
+  # TLS server, complementing the unit tests' fake-boot-strategy mocking.
+  # Mirror of audit plan P3.5 server-side smoke (smoke_test_bare_metal_claim.rb).
+  integration-test:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go test -tags integration
+        run: go test -tags integration -race ./test/integration/...
+
   build:
     needs: test
     runs-on: ${{ matrix.runner }}

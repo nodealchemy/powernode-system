@@ -18,7 +18,7 @@ LDFLAGS := -s -w \
   -X main.GitCommit=$(GIT_COMMIT) \
   -X main.BuildDate=$(BUILD_DATE)
 
-.PHONY: build build-amd64 build-arm64 build-acme build-acme-amd64 build-acme-arm64 vendor-traefik vendor-traefik-amd64 vendor-traefik-arm64 clean-traefik test lint vet clean
+.PHONY: build build-amd64 build-arm64 build-acme build-acme-amd64 build-acme-arm64 vendor-traefik vendor-traefik-amd64 vendor-traefik-arm64 clean-traefik bump-traefik test lint vet clean
 
 build: build-amd64 build-arm64 build-acme vendor-traefik
 
@@ -92,6 +92,31 @@ vendor-traefik-arm64:
 
 clean-traefik:
 	rm -f dist/powernode-reverse-proxy-linux-amd64 dist/powernode-reverse-proxy-linux-arm64
+
+# Bump the pinned Traefik version. Verifies the upstream release exists,
+# rewrites TRAEFIK_VERSION in this Makefile, removes the old vendored
+# binaries, and re-vendors. Run a smoke test after.
+#
+# Usage:   make bump-traefik NEW=v3.3.3
+# Runbook: ../docs/runbooks/vendored-binary-bump.md
+bump-traefik:
+	@[ -n "$(NEW)" ] || (echo "Usage: make bump-traefik NEW=vX.Y.Z"; exit 1)
+	@echo "Bumping Traefik $(TRAEFIK_VERSION) → $(NEW)"
+	@curl -fsSL "https://github.com/traefik/traefik/releases/download/$(NEW)/traefik_$(NEW)_checksums.txt" -o /tmp/traefik-bump-checksums.txt \
+	  || (echo "FATAL: upstream release $(NEW) not found at github.com/traefik/traefik/releases"; exit 1)
+	@grep -q "traefik_$(NEW)_linux_amd64.tar.gz" /tmp/traefik-bump-checksums.txt \
+	  || (echo "FATAL: linux/amd64 asset missing from $(NEW) release"; exit 1)
+	@grep -q "traefik_$(NEW)_linux_arm64.tar.gz" /tmp/traefik-bump-checksums.txt \
+	  || (echo "FATAL: linux/arm64 asset missing from $(NEW) release"; exit 1)
+	@sed -i.bak 's/^TRAEFIK_VERSION ?=.*/TRAEFIK_VERSION ?= $(NEW)/' Makefile && rm -f Makefile.bak
+	@$(MAKE) clean-traefik
+	@$(MAKE) vendor-traefik
+	@rm -f /tmp/traefik-bump-checksums.txt
+	@echo ""
+	@echo "✓ Bumped to $(NEW). Next steps:"
+	@echo "  1. file dist/powernode-reverse-proxy-linux-{amd64,arm64}"
+	@echo "  2. Smoke test: deploy powernode-reverse-proxy module to a NodeInstance"
+	@echo "  3. Commit Makefile + run 'git diff' to confirm only TRAEFIK_VERSION changed"
 
 # Add powernode-reverse-proxy to the top-level `make build` so the
 # platform's build artifact is complete without separate steps.

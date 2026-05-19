@@ -22,6 +22,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [node-provisioning.md](./node-provisioning.md) | New operators, on-call SREs | Provider connection configured | ~5–15 min per node |
 | [sdwan-network-setup.md](./sdwan-network-setup.md) | Network engineers, multi-tenant operators | At least one NodeInstance with publicly-reachable address | ~30 min |
 | [vault-credential-restoration.md](./vault-credential-restoration.md) | Security operators handling Vault DR | Vault snapshot, Shamir unseal keys | ~30 min – 2 hours |
+| [vendored-binary-bump.md](./vendored-binary-bump.md) | Platform maintainers updating Traefik / rpi4-firmware / dracut / kernel pins | Clean working tree; for ARM-only items, Pi 4 or QEMU-aarch64 | 15–60 min per bump |
 
 ## When to read which
 
