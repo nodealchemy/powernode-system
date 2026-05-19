@@ -3,88 +3,129 @@
 module System
   module Ai
     module Skills
-      # Registry pattern (per audit plan P3.3) replacing the hardcoded
-      # slug-list bindings in agent seeds. Each executor declares its
-      # agent bindings via:
+      # Registry mapping skill executors to the agents that should be bound
+      # to them. Sole source of truth for agent → skill bindings in the
+      # system extension — `system_skill_bindings_seed.rb` walks `discover`
+      # at seed time and creates the matching `Ai::AgentSkill` rows.
       #
-      #   System::Ai::Skills::SkillBindings.register(
-      #     self, agents: ["Fleet Autonomy", "CVE Responder"]
-      #   )
+      # Each executor declares its bindings via the `binds_to` DSL provided
+      # by `BaseSkillExecutor`:
       #
-      # at the bottom of its file. At seed time, `system_skill_bindings_seed.rb`
-      # walks the registry and binds each (agent, skill) pair via
-      # `Ai::AgentSkill.find_or_initialize_by`.
+      #   class CveResponseExecutor < BaseSkillExecutor
+      #     skill_descriptor(...)
+      #     binds_to "CVE Responder"
+      #     ...
+      #   end
       #
-      # Why a module-level registry instead of a base class?
-      # - Executors don't currently inherit from a common base; adding one
-      #   would require touching 40 class declarations.
-      # - A registry is opt-in: executors can migrate incrementally, and
-      #   non-migrated executors keep working via the existing hardcoded
-      #   blocks (dual-mode for one release per audit plan).
-      # - The registry survives class reloads (Rails dev autoload) because
-      #   re-registering with the same class is a no-op (deduplicated).
+      # `binds_to` is a thin wrapper around `SkillBindings.register(self, ...)`.
       module SkillBindings
-        # In-memory registry. Each entry:
-        #   { executor: <Class>, agents: <Array<String>> }
         @registrations = []
 
-        # The skill catalog ships well-known agent names; aliases let
-        # executor authors refer to them via short slugs without typos.
+        # The skill catalog uses canonical agent names; aliases let executor
+        # authors refer to them via short slugs without typos.
         AGENT_ALIASES = {
-          "concierge"           => "System Concierge",
-          "fleet_autonomy"      => "Fleet Autonomy",
-          "runtime_manager"     => "Runtime Manager",
-          "cve_responder"       => "CVE Responder",
-          "sdwan_manager"       => "SDWAN Manager",
-          "disk_image_manager"  => "Disk Image Manager",
-          "topology_designer"   => "System Topology Designer"
+          "concierge"          => "System Concierge",
+          "fleet_autonomy"     => "Fleet Autonomy",
+          "runtime_manager"    => "Runtime Manager",
+          "cve_responder"      => "CVE Responder",
+          "sdwan_manager"      => "SDWAN Manager",
+          "disk_image_manager" => "Disk Image Manager",
+          "topology_designer"  => "System Topology Designer"
         }.freeze
 
         class << self
-          # Register an executor's intended agent bindings. Safe to call
-          # multiple times (deduplicates on executor class identity).
+          # Register an executor's intended agent bindings. Idempotent and
+          # reload-safe: dedupes by executor class *name* (not object identity)
+          # so dev-mode class reloads don't create phantom duplicate entries.
           def register(executor_class, agents:)
-            agent_names = Array(agents).map { |a| AGENT_ALIASES.fetch(a.to_s, a.to_s) }
-            existing = @registrations.find { |r| r[:executor] == executor_class }
+            agent_names = Array(agents).flatten.map { |a| AGENT_ALIASES.fetch(a.to_s, a.to_s) }
+            existing = @registrations.find { |r| r[:executor].name == executor_class.name }
             if existing
-              existing[:agents] = (existing[:agents] + agent_names).uniq
+              existing[:executor] = executor_class
+              existing[:agents]   = (existing[:agents] + agent_names).uniq
             else
-              @registrations << { executor: executor_class, agents: agent_names }
+              @registrations << { executor: executor_class, agents: agent_names.uniq }
             end
             self
           end
 
           # All currently-registered (executor, agents) pairs. Returns a
-          # frozen array to discourage callers from mutating registry
-          # state out-of-band.
+          # frozen array to discourage out-of-band mutation.
           def all
             @registrations.map { |r| r.dup.freeze }.freeze
           end
 
-          # Discovery output suitable for the seed file: each entry has
-          # the canonical skill_slug (derived from the executor class
-          # name) plus the agent names to bind to.
+          # Discovery projection: each registration emits one entry per
+          # (skill_slug, agent_name) pair so the seed can iterate flatly.
           #
-          # The slug derivation mirrors what system_skills_seed.rb uses
-          # for `Ai::Skill.slug`: take the executor class name minus the
-          # `_executor` suffix, demodulized + dasherized + prefixed with
-          # "system-". Examples:
-          #   CveResponseExecutor       → "system-cve-response"
-          #   FleetReconcileExecutor    → "system-fleet-reconcile"
+          # Slug derivation mirrors `system_skills_seed.rb`'s convention for
+          # `Ai::Skill.slug`: take the executor class name, demodulize,
+          # underscore, strip the `_executor` suffix, dasherize, prefix with
+          # "system-".
+          #
+          #   CveResponseExecutor      → "system-cve-response"
+          #   SdwanVipFailoverExecutor → "system-sdwan-vip-failover"
           def discover
-            @registrations.map do |reg|
-              slug_base = reg[:executor].name.demodulize.underscore.sub(/_executor$/, "")
-              { skill_slug: "system-#{slug_base.dasherize}",
-                agents:     reg[:agents],
-                executor:   reg[:executor] }
+            @registrations.flat_map do |reg|
+              slug = derive_slug(reg[:executor])
+              reg[:agents].map do |agent_name|
+                {
+                  executor:   reg[:executor],
+                  skill_slug: slug,
+                  agent_name: agent_name
+                }
+              end
             end
           end
 
-          # Test / dev helper: clear the registry. Production seed code
-          # MUST NOT call this — the registry is populated by class-load
-          # order, and clearing it requires re-loading the executor files.
+          # Aggregated view: each unique (skill_slug, executor) once, with
+          # the list of agents bound. Useful for callers that need to iterate
+          # skills rather than skill-agent pairs.
+          def by_skill
+            @registrations.map do |reg|
+              {
+                executor:   reg[:executor],
+                skill_slug: derive_slug(reg[:executor]),
+                agents:     reg[:agents]
+              }
+            end
+          end
+
+          # Verify that every registered skill_slug has a matching `Ai::Skill`
+          # row in the database. Raises with the full list of missing slugs
+          # — single noisy failure beats per-row warnings.
+          #
+          # Called from `system_skill_bindings_seed.rb` before any binding
+          # rows are created, so a mismatch fails the seed run cleanly
+          # rather than producing partial state.
+          def validate!
+            missing = by_skill.filter_map do |entry|
+              entry[:skill_slug] unless ::Ai::Skill.exists?(slug: entry[:skill_slug])
+            end
+
+            return :ok if missing.empty?
+
+            raise <<~MSG.strip
+              SkillBindings.validate! failed — #{missing.size} registered skill(s) have no matching Ai::Skill row:
+                #{missing.join("\n  ")}
+
+              Run `system_skills_seed.rb` before `system_skill_bindings_seed.rb`, or add the missing skill rows.
+            MSG
+          end
+
+          # Test / dev helper: clear the registry. Production seed code must
+          # never call this — the registry is populated at class-load time
+          # and clearing it would orphan all existing bindings until the
+          # executor files reload.
           def reset!
             @registrations.clear
+          end
+
+          private
+
+          def derive_slug(executor_class)
+            base = executor_class.name.demodulize.underscore.sub(/_executor\z/, "")
+            "system-#{base.dasherize}"
           end
         end
       end
