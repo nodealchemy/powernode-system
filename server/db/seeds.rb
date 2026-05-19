@@ -44,6 +44,7 @@ SYSTEM_SEED_FILES = %w[
   system_provisioning_mission_template.rb
   system_skills_seed.rb
   system_provisioning_skills_seed.rb
+  system_skill_bindings_seed.rb
   system_kb_seed.rb
   node_module_catalog.rb
   role_modules_seed.rb
