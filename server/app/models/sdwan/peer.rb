@@ -112,6 +112,21 @@ module Sdwan
       new_status
     end
 
+    # Returns true when this peer's NodeInstance is running k3s — i.e.
+    # the underlying Node has either the `k3s-server` or `k3s-agent`
+    # module assigned. Used by the SDWAN routing compilers to decide
+    # whether to fold the network's `pod_subnet_prefix` into the peer's
+    # BGP announce set + spoke allowed_ips (only k3s peers participate
+    # in pod-CIDR routing). Mirrors the predicate pattern in
+    # `Api::V1::System::NodeApi::RuntimeController#module_assigned?`.
+    def k3s_host?
+      return false unless node_instance
+
+      node_instance.node.node_modules.where(name: %w[k3s-server k3s-agent]).exists?
+    rescue StandardError
+      false
+    end
+
     private
 
     def allocate_host_address
@@ -170,22 +185,6 @@ module Sdwan
         errors.add(:lan_subnets, "contains an invalid CIDR: #{entry.inspect}")
         break
       end
-    end
-
-    # Returns true when this peer's NodeInstance is running k3s — i.e.
-    # the underlying Node has either the `k3s-server` or `k3s-agent`
-    # module assigned. Used by the SDWAN routing compilers to decide
-    # whether to fold the network's `pod_subnet_prefix` into the peer's
-    # BGP announce set + spoke allowed_ips (only k3s peers participate
-    # in pod-CIDR routing). Mirrors the predicate pattern in
-    # `Api::V1::System::NodeApi::RuntimeController#module_assigned?`
-    # (runtime_controller.rb:179-185).
-    def k3s_host?
-      return false unless node_instance
-
-      node_instance.node.node_modules.where(name: %w[k3s-server k3s-agent]).exists?
-    rescue StandardError
-      false
     end
 
     # Slice 9a — diff the new lan_subnets list against existing

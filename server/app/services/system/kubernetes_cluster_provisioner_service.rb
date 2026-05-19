@@ -181,7 +181,7 @@ module System
       if bootstrap_peer&.network&.pod_subnet_prefix.present?
         if resolved_cni_plugin == "flannel"
           metadata["pod_cidr"] = bootstrap_peer.network.pod_subnet_prefix
-          metadata["sdwan_network_id"] = bootstrap_peer.network_id
+          metadata["sdwan_network_id"] = bootstrap_peer.sdwan_network_id
           pod_overlay_active = true
         elsif resolved_cni_plugin == "ovn_kubernetes" && defined?(::System::Fleet::EventBroadcaster)
           begin
@@ -194,7 +194,7 @@ module System
                 cluster_name: cluster_name,
                 node_instance_id: @node_instance.id,
                 cni_plugin: resolved_cni_plugin,
-                network_id: bootstrap_peer.network_id,
+                network_id: bootstrap_peer.sdwan_network_id,
                 pod_subnet_prefix: bootstrap_peer.network.pod_subnet_prefix,
                 note: "pod_subnet_prefix is flannel-only in v1; ovn-Kubernetes uses its own pod-network logic"
               }

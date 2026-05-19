@@ -115,7 +115,7 @@ step.call("Verify Sdwan::SubnetAdvertisement(source: pod_subnet) created")
 ad = ::Sdwan::SubnetAdvertisement.where(account_id: account.id, source: "pod_subnet").first
 assert.call(ad.present?, "SubnetAdvertisement row exists")
 assert.call(ad.prefix == "10.42.0.0/16", "ad.prefix = #{ad&.prefix}")
-assert.call(ad.peer_id == peer.id, "ad.peer == bootstrap peer")
+assert.call(ad.sdwan_peer_id == peer.id, "ad.sdwan_peer_id == bootstrap peer.id")
 assert.call(ad.active?, "ad.active? returns true")
 
 # ── Smoke 3: bootstrap_config builder returns the new fields ────────

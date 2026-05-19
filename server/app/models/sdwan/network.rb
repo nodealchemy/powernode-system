@@ -133,7 +133,12 @@ module Sdwan
     def pod_subnet_prefix_no_overlap
       return if pod_subnet_prefix.blank?
 
-      pod_addr = IPAddr.new(pod_subnet_prefix)
+      pod_addr = begin
+        IPAddr.new(pod_subnet_prefix)
+      rescue IPAddr::Error
+        # Format validator already errored; don't double-error or crash here.
+        return
+      end
 
       # (a) Must not overlap the SDWAN /64 itself.
       if cidr_64.present?
