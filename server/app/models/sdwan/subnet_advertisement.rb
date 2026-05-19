@@ -2,20 +2,25 @@
 
 # Sdwan::SubnetAdvertisement — observed/declared route advertisement.
 #
-# Three sources unified into one table:
+# Four sources unified into one table:
 #   declared_lan_subnet — operator declared via Sdwan::Peer.lan_subnets
 #   virtual_ip          — slice 9b VIP machinery emits one row per active VIP
 #   learned_via_bgp     — slice 9c FRR observer emits one row per learned route
+#   pod_subnet          — K3s cluster pod CIDR (added 2026-05-19, k3s overlay
+#                         feature); emitted by KubernetesClusterProvisionerService
+#                         at bootstrap when the cluster runs flannel + the network
+#                         has pod_subnet_prefix set
 #
 # The operator UI's `LearnedRoutesTable` filters by source; the topology
 # diagram annotates edges with prefix counts derived from these rows.
 #
-# Slice 9a of the SDWAN plan.
+# Slice 9a of the SDWAN plan; pod_subnet source added by the k3s-flannel-
+# over-sdwan feature.
 module Sdwan
   class SubnetAdvertisement < ApplicationRecord
     self.table_name = "sdwan_subnet_advertisements"
 
-    SOURCES = %w[declared_lan_subnet virtual_ip learned_via_bgp].freeze
+    SOURCES = %w[declared_lan_subnet virtual_ip learned_via_bgp pod_subnet].freeze
 
     belongs_to :peer,    class_name: "Sdwan::Peer",    foreign_key: :sdwan_peer_id
     belongs_to :network, class_name: "Sdwan::Network", foreign_key: :sdwan_network_id
@@ -29,11 +34,12 @@ module Sdwan
     }
     validates :source, inclusion: { in: SOURCES }
 
-    scope :active,    -> { where(withdrawn_at: nil) }
-    scope :withdrawn, -> { where.not(withdrawn_at: nil) }
-    scope :declared,  -> { where(source: "declared_lan_subnet") }
-    scope :vip,       -> { where(source: "virtual_ip") }
-    scope :learned,   -> { where(source: "learned_via_bgp") }
+    scope :active,     -> { where(withdrawn_at: nil) }
+    scope :withdrawn,  -> { where.not(withdrawn_at: nil) }
+    scope :declared,   -> { where(source: "declared_lan_subnet") }
+    scope :vip,        -> { where(source: "virtual_ip") }
+    scope :learned,    -> { where(source: "learned_via_bgp") }
+    scope :pod_subnet, -> { where(source: "pod_subnet") }
 
     before_validation :inherit_account_from_network
 

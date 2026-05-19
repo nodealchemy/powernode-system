@@ -58,6 +58,9 @@ module Sdwan
     validates :route_reflector_redundancy, numericality: {
       only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 16
     }
+    validate :pod_subnet_prefix_format
+    validate :pod_subnet_prefix_no_overlap
+    validate :pod_subnet_prefix_immutable_when_clusters_active
 
     before_validation :generate_slug, if: -> { name.present? && slug.blank? }
     before_validation :allocate_address_space, on: :create
@@ -106,7 +109,109 @@ module Sdwan
       template.gsub("{handle}", network_handle)
     end
 
+    # True when this network has a pod CIDR carried over the overlay.
+    # K3s clusters bootstrapped on this network use flannel host-gw + the
+    # AllowedIPs covering the /64 to encrypt pod-to-pod traffic via the
+    # existing WireGuard tunnels.
+    def pod_overlay_enabled?
+      pod_subnet_prefix.present?
+    end
+
     private
+
+    def pod_subnet_prefix_format
+      return if pod_subnet_prefix.blank?
+
+      addr = IPAddr.new(pod_subnet_prefix)
+      if addr.ipv4? && addr.prefix > 28
+        errors.add(:pod_subnet_prefix, "IPv4 pod CIDR must be /28 or larger (pods need address space)")
+      end
+    rescue IPAddr::Error
+      errors.add(:pod_subnet_prefix, "must be a CIDR (e.g. 10.42.0.0/16 or fd00:abcd:2::/64)")
+    end
+
+    def pod_subnet_prefix_no_overlap
+      return if pod_subnet_prefix.blank?
+
+      pod_addr = IPAddr.new(pod_subnet_prefix)
+
+      # (a) Must not overlap the SDWAN /64 itself.
+      if cidr_64.present?
+        begin
+          sdwan_addr = IPAddr.new(cidr_64.to_s.sub(%r{/64\z}, "/64"))
+          if pod_addr.include?(sdwan_addr) || sdwan_addr.include?(pod_addr)
+            errors.add(:pod_subnet_prefix, "must not overlap the SDWAN /64 (#{cidr_64})")
+          end
+        rescue IPAddr::Error
+          # cidr_64 invalid — handled by its own validation
+        end
+      end
+
+      # (b) Must not overlap any peer's lan_subnets in this network.
+      peers.find_each do |peer|
+        Array(peer.lan_subnets).each do |sub|
+          begin
+            sub_addr = IPAddr.new(sub.to_s)
+            if pod_addr.include?(sub_addr) || sub_addr.include?(pod_addr)
+              errors.add(:pod_subnet_prefix, "must not overlap peer LAN subnet #{sub}")
+            end
+          rescue IPAddr::Error
+            next
+          end
+        end
+      end
+
+      # (c) Must not overlap any VIP /128 in this network.
+      virtual_ips.find_each do |vip|
+        next if vip.assigned_address.blank?
+
+        begin
+          vip_addr = IPAddr.new("#{vip.assigned_address}/128")
+          if pod_addr.include?(vip_addr) || vip_addr.include?(pod_addr)
+            errors.add(:pod_subnet_prefix, "must not overlap VIP #{vip.assigned_address}")
+          end
+        rescue IPAddr::Error
+          next
+        end
+      end
+
+      # (d) Must not overlap any other network's pod_subnet_prefix in the same account.
+      return if account_id.blank?
+
+      self.class.where(account_id: account_id)
+                .where.not(id: id)
+                .where.not(pod_subnet_prefix: [nil, ""])
+                .find_each do |other|
+        begin
+          other_addr = IPAddr.new(other.pod_subnet_prefix)
+          if pod_addr.include?(other_addr) || other_addr.include?(pod_addr)
+            errors.add(:pod_subnet_prefix, "must not overlap network '#{other.name}' pod_subnet_prefix #{other.pod_subnet_prefix}")
+          end
+        rescue IPAddr::Error
+          next
+        end
+      end
+    end
+
+    # Refuses pod_subnet_prefix changes once a Devops::KubernetesCluster
+    # references this network (via cluster.metadata["sdwan_network_id"]).
+    # K3s pod CIDR is immutable post-bootstrap, so mutating the field
+    # would create a routing/cluster mismatch with no recovery path
+    # short of cluster destroy + rebuild.
+    def pod_subnet_prefix_immutable_when_clusters_active
+      return unless pod_subnet_prefix_changed?
+      return if new_record?
+
+      return unless defined?(::Devops::KubernetesCluster)
+
+      cluster_count = ::Devops::KubernetesCluster
+                        .where("metadata->>'sdwan_network_id' = ?", id.to_s)
+                        .count
+      if cluster_count.positive?
+        errors.add(:pod_subnet_prefix,
+                   "cannot change while #{cluster_count} K3s cluster(s) reference this network — destroy + rebuild required")
+      end
+    end
 
     def generate_slug
       base = name.downcase.gsub(/[^a-z0-9\s-]/, "").gsub(/\s+/, "-").squeeze("-")
