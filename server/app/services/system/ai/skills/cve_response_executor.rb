@@ -220,3 +220,11 @@ module System
     end
   end
 end
+
+# P3.3 discovery-based skill binding. The hardcoded slug list in
+# db/seeds/system_cve_responder_agent.rb still works (dual-mode for one
+# release); the new system_skill_bindings_seed.rb walks this registry
+# and binds (CVE Responder, system-cve-response) declaratively.
+System::Ai::Skills::SkillBindings.register(
+  System::Ai::Skills::CveResponseExecutor, agents: ["CVE Responder"]
+)

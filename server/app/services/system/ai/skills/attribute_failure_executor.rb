@@ -226,3 +226,9 @@ module System
     end
   end
 end
+
+# P3.3 discovery-based skill binding (dual-mode with existing seeds).
+System::Ai::Skills::SkillBindings.register(
+  System::Ai::Skills::AttributeFailureExecutor,
+  agents: ["System Concierge", "Fleet Autonomy"]
+)
