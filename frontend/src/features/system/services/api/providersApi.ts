@@ -78,12 +78,10 @@ export const providersApi = {
     await apiClient.delete(`/system/providers/${id}`);
   },
 
-  testProvider: async (id: string): Promise<{ success: boolean; message: string }> => {
-    const response = await apiClient.post<ApiEnvelope<{ success: boolean; message: string }>>(
-      `/system/providers/${id}/test`
-    );
-    return extractData(response);
-  },
+  // Connection testing lives on testProviderConnection (below) — the
+  // /system/providers/:id/test route was removed in audit P0.1 cleanup
+  // (the matching backend action was a stub with no router entry, and the
+  // working test endpoint is on ProviderConnections).
 
   // ===== Provider Regions =====
   getProviderRegions: async (providerId: string): Promise<SystemProviderRegion[]> => {

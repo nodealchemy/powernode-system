@@ -5,7 +5,7 @@ module Api
     module System
       class ProvidersController < BaseController
         before_action :set_account
-        before_action :set_provider, only: [ :show, :update, :destroy, :test ]
+        before_action :set_provider, only: [ :show, :update, :destroy ]
 
         def index
           require_permission("system.providers.read")
@@ -51,11 +51,11 @@ module Api
           end
         end
 
-        def test
-          require_permission("system.providers.test")
-          # Provider connection testing would be implemented here
-          render_success(message: "Provider test not yet implemented", data: { provider_id: @provider.id })
-        end
+        # Provider connection testing lives on ProviderConnectionsController
+        # (POST /api/v1/system/provider_connections/:id/test). A stub `#test`
+        # action used to live here unrouted; removed in audit P0.1 wave 1
+        # cleanup since it was orphan code with no callers after the
+        # ProviderConnections refactor.
 
         private
 
