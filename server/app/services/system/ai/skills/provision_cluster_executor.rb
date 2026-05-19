@@ -33,7 +33,8 @@ module System
               count: :integer,
               created_nodes: [ :object ],
               provisioned: [ :object ],
-              failures: [ :object ]
+              failures: [ :object ],
+              partial: :boolean
             }
           }
         end

@@ -104,14 +104,19 @@ puts "  ✅ Runtime Manager agent: #{runtime_agent.previously_new_record? ? 'cre
 #                        host row + Vault credentials; cluster
 #                        decommission cascade-deletes node rows;
 #                        upgrades affect workloads).
-#   auto_approve       — routine reversible (TLS cert rotation aligns
-#                        with `system.cert_rotate`'s hands-off posture).
+#   auto_approve       — routine reversible.
+#
+# NOTE: `system.runtime_docker_tls_rotate` was previously seeded as
+# `auto_approve` but had no executor implementation; removed during the
+# 2026-05-19 doc accuracy audit. Operators rotate Docker daemon TLS via
+# the `system.cert_rotate` skill (the broader cert-rotation flow) or by
+# re-running the daemon provisioner; a dedicated TLS-rotate executor
+# would be added when the lifecycle requires it.
 
 runtime_policies = {
   # Docker daemon lifecycle
   "system.runtime_docker_provision"        => "notify_and_proceed",
   "system.runtime_docker_decommission"     => "require_approval",
-  "system.runtime_docker_tls_rotate"       => "auto_approve",
 
   # Kubernetes cluster lifecycle (K3s today, kubeadm in Phase 3 —
   # same action vocabulary regardless of flavor; flavor enum on
