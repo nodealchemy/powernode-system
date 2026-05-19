@@ -106,8 +106,14 @@ module System
     def replenish!(pool:)
       raise PoolNotActiveError, "pool is paused" if pool.paused?
 
-      deficit = pool.deficit
-      return { provisioned: 0, deficit: 0 } if deficit.zero?
+      # Audit plan P2.5 gap #6 — cap deficit by max_size so a transient
+      # burst (e.g., concurrent autonomy ticks during a slow provision
+      # window) can't push the pool past its ceiling.
+      raw_deficit = pool.deficit
+      total_now = pool.ready_count + pool.warming_count + pool.claimed_count
+      headroom = pool.max_size.to_i.positive? ? [pool.max_size.to_i - total_now, 0].max : raw_deficit
+      deficit = [raw_deficit, headroom].min
+      return { provisioned: 0, deficit: raw_deficit, capped_by_max_size: deficit < raw_deficit } if deficit.zero?
 
       ::ActiveRecord::Base.transaction do
         provisioned = []
@@ -137,6 +143,16 @@ module System
         terminated = []
         pool.ready_members.find_each do |member|
           member.update!(pool_state: "draining")
+          # Audit plan P2.5 gap #2 — actually call the cloud-provider
+          # terminate. Prior implementation only flipped pool_state.
+          begin
+            ::System::ProvisioningService.terminate_instance(instance: member)
+          rescue StandardError => e
+            Rails.logger.warn(
+              "[InstancePoolService] terminate failed during drain " \
+              "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+            )
+          end
           terminated << member.id
         end
 
@@ -174,6 +190,17 @@ module System
         end
         stale_ready.find_each do |m|
           m.update!(pool_state: "draining")
+          # Audit plan P2.5 gap #3 — TTL-aware reaping must actually
+          # terminate the cloud VM. Prior implementation only flipped
+          # pool_state; the underlying VM ran past ready_ttl indefinitely.
+          begin
+            ::System::ProvisioningService.terminate_instance(instance: m)
+          rescue StandardError => e
+            Rails.logger.warn(
+              "[InstancePoolService] terminate failed during stale-recycle " \
+              "(instance=#{m.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+            )
+          end
           counts[:ready_to_draining] += 1
         end
       end
@@ -254,9 +281,16 @@ module System
       # both correct and proven; the trade-off is replenish call
       # latency ≈ deficit × per-instance provisioning time
       # (~3-5s per cloud VM in our LocalQemu setup).
+      # Audit plan P2.5 gap #1 + #5 — cross-AZ replenishment + AZ failover.
+      # `pool.preferred_regions` is round-robin'd at slot_index for HA spread;
+      # `pool.metadata.region_health` (populated by InstanceStatusSensor) lets
+      # us skip degraded regions automatically. Empty preferred_regions falls
+      # back to the single `provider_region_id` column (single-AZ default).
+      chosen_region_id = pick_region_for_slot(pool: pool, slot_index: slot_index)
+
       result = ::System::ProvisioningService.provision_instance(
         node: node,
-        provider_region_id: pool.provider_region_id,
+        provider_region_id: chosen_region_id,
         provider_instance_type_id: pool.provider_instance_type_id
       )
 
@@ -285,6 +319,23 @@ module System
       )
 
       instance
+    end
+
+    # P2.5 gap #1 + #5 — choose a provider_region for a given pool slot.
+    # Prefers the `preferred_regions` list (round-robin by slot_index) and
+    # filters out regions marked unhealthy via `pool.metadata["region_health"]`.
+    # Falls back to `pool.provider_region_id` if no preferred list is set.
+    def pick_region_for_slot(pool:, slot_index:)
+      preferred = Array(pool.preferred_regions).compact_blank
+      return pool.provider_region_id if preferred.empty?
+
+      region_health = pool.metadata.is_a?(Hash) ? pool.metadata["region_health"].to_h : {}
+      healthy = preferred.reject { |rid| region_health[rid.to_s].to_s == "unhealthy" }
+      # All preferred regions unhealthy — fall back to the canonical preferred
+      # list rather than skipping the slot. Operator visibility of the degraded
+      # state lives in InstanceStatusSensor's emitted events.
+      pool_choices = healthy.any? ? healthy : preferred
+      pool_choices[slot_index % pool_choices.size]
     end
   end
 end
