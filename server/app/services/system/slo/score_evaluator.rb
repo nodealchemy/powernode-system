@@ -41,9 +41,15 @@ module System
         denom = signal_count.zero? ? 1 : signal_count
         error_rate_pct = ((error_count * 100.0) / denom).round(2)
 
-        # Latency proxy: not measurable from FleetEvents alone; left nil
-        # until M-D2-2. The sensor doesn't fire on nil values.
-        latency_p99_ms = nil
+        # Latency p99: read from telemetry adapter (audit plan P2.8a).
+        # Returns nil when no `metric.latency_ms` FleetEvents exist for this
+        # node_module in the window — preserving the original no-op behavior
+        # of the SloViolationSensor (it doesn't fire on nil). Once M-D2-2
+        # telemetry samplers populate metric.latency_ms events, this lights
+        # up automatically with no further code changes here.
+        latency_p99_ms = ::System::Slo::TelemetryAdapter.latency_p99_ms(
+          node_module: defn.node_module, since: cutoff
+        )
 
         violations = []
         if defn.uptime_target_pct && uptime_pct && uptime_pct < defn.uptime_target_pct.to_f
