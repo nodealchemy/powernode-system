@@ -80,21 +80,44 @@ module Sdwan
       # we ALSO include the union of every other peer's lan_subnets — so
       # spoke A knows to send packets for "10.50.0.0/16" through a hub
       # (which then forwards to whichever spoke owns that prefix).
-      def spoke_view(_self_peer)
+      def spoke_view(self_peer)
         external_subnets = static_subnet_routing? ? other_peers_lan_subnets : []
         # Slice 9b — every VIP is reachable through any hub; the hub
         # forwards it on to the actual holder.
         vip_cidrs = static_subnet_routing? ? all_vip_cidrs : []
+        # K3s overlay — when the network carries flannel pod traffic
+        # and this spoke is a k3s host, route the cluster's pod CIDR
+        # through every hub. The hub then forwards pod packets to the
+        # correct holder via the per-peer /128 + flannel host-gw kernel
+        # routes that flannel installs on each k3s node from the K8s
+        # API. Non-k3s spokes don't carry pod-CIDR routes (no business
+        # with pod IPs).
+        pod_cidrs = pod_subnet_cidrs_for(self_peer)
         @hubs.filter_map do |hub|
           key = hub.keys.find { |k| k.revoked_at.nil? }
           next unless key
           next unless hub.primary_endpoint
 
           allowed = [@network.cidr_64] + external_subnets + vip_cidrs +
-                    (static_subnet_routing? ? Array(hub.lan_subnets) : [])
+                    (static_subnet_routing? ? Array(hub.lan_subnets) : []) +
+                    pod_cidrs
           build_peer_entry(hub, key, allowed_ips: allowed.uniq,
                                      keepalive: DEFAULT_PERSISTENT_KEEPALIVE)
         end
+      end
+
+      # Returns [pod_subnet_prefix] when the network carries flannel pod
+      # traffic AND this peer is a k3s host; otherwise []. The pod CIDR
+      # routed through hubs lets the spoke's kernel direct pod-egress
+      # packets into the WireGuard tunnel rather than the host primary
+      # NIC. Returns an empty list (no behavior change) for any combination
+      # that doesn't enable pod overlay routing.
+      def pod_subnet_cidrs_for(peer)
+        return [] unless @network.respond_to?(:pod_subnet_prefix)
+        return [] if @network.pod_subnet_prefix.blank?
+        return [] unless peer&.respond_to?(:k3s_host?) && peer.k3s_host?
+
+        [@network.pod_subnet_prefix]
       end
 
       def static_subnet_routing?

@@ -135,6 +135,16 @@ module Sdwan
         out << peer.network.cidr_64 if advertise_overlay_subnet?(peer.network)
         out.concat(Array(peer.lan_subnets))
         out.concat(vip_cidrs_held_by(peer))
+        # K3s overlay: announce the cluster's pod CIDR from k3s-running
+        # peers so other peers learn the route via iBGP. Flannel host-gw
+        # then installs per-node /24 routes derived from the K8s API;
+        # this BGP announce is the "umbrella" that gives non-k3s peers a
+        # route to drop pod-CIDR traffic in the right direction.
+        if peer.network.respond_to?(:pod_subnet_prefix) &&
+           peer.network.pod_subnet_prefix.present? &&
+           peer.k3s_host?
+          out << peer.network.pod_subnet_prefix
+        end
         out.compact.uniq
       end
 
