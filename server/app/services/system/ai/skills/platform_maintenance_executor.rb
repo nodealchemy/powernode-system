@@ -24,41 +24,35 @@ module System
       #
       # Plan reference: chat-driven platform deployment + maintenance
       # (D2-ext.1).
-      class PlatformMaintenanceExecutor
+      class PlatformMaintenanceExecutor < BaseSkillExecutor
         ACTIONS = %w[cert_status cert_rotate drift_check health_check].freeze
 
-        def self.descriptor
-          {
-            name: "platform_maintenance",
-            description: "Routine platform maintenance — certificate renewal, drift checks, health snapshots. Use this skill when the operator asks about (a) which certs are expiring soon, (b) whether they should rotate something, (c) the current platform health, or (d) whether any instances have drifted from their template.",
-            category: "devops",
-            inputs: {
-              action: { type: "string", required: true,
-                        description: "One of: cert_status, cert_rotate, drift_check, health_check" },
-              certificate_id: { type: "string", required: false,
-                                description: "Cert id (only for cert_rotate of a specific row; omit to rotate all expiring)" },
-              deployment_id: { type: "string", required: false,
-                               description: "PlatformDeployment id (for drift_check; omit to scan all deployments)" },
-              renewal_window_days: { type: "integer", required: false, default: 30,
-                                     description: "How many days ahead to consider a cert 'expiring soon' (cert_status / cert_rotate)" }
-            },
-            outputs: {
-              action: :string,
-              data: :object,
-              recommendations: [ :string ]
-            },
-            requires_approval: false,
-            blast_radius: :medium
+        skill_descriptor(
+          name: "platform_maintenance",
+          description: "Routine platform maintenance — certificate renewal, drift checks, health snapshots. Use this skill when the operator asks about (a) which certs are expiring soon, (b) whether they should rotate something, (c) the current platform health, or (d) whether any instances have drifted from their template.",
+          category: "devops",
+          inputs: {
+            action: { type: "string", required: true,
+                      description: "One of: cert_status, cert_rotate, drift_check, health_check" },
+            certificate_id: { type: "string", required: false,
+                              description: "Cert id (only for cert_rotate of a specific row; omit to rotate all expiring)" },
+            deployment_id: { type: "string", required: false,
+                             description: "PlatformDeployment id (for drift_check; omit to scan all deployments)" },
+            renewal_window_days: { type: "integer", required: false, default: 30,
+                                   description: "How many days ahead to consider a cert 'expiring soon' (cert_status / cert_rotate)" }
+          },
+          outputs: {
+            action: :string,
+            data: :object,
+            recommendations: [ :string ]
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(action:, **params)
+        protected
+
+        def perform(action:, **params)
           unless ACTIONS.include?(action.to_s)
             return failure("Unknown action: #{action.inspect}; allowed: #{ACTIONS.inspect}")
           end
@@ -69,9 +63,6 @@ module System
           when "drift_check"  then drift_check(params)
           when "health_check" then health_check
           end
-        rescue StandardError => e
-          Rails.logger.error("[PlatformMaintenanceExecutor] #{e.class}: #{e.message}")
-          failure("Maintenance action failed: #{e.message}")
         end
 
         private
@@ -283,14 +274,6 @@ module System
           }
         rescue StandardError => e
           { status: "down", error: e.message }
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

@@ -18,60 +18,99 @@ module System
       # plan-review surface can show the projected peer fan-out.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
-      class ConfigureSdwanForProjectExecutor
+      class ConfigureSdwanForProjectExecutor < BaseSkillExecutor
         TOPOLOGIES = %w[hub_and_spoke mesh].freeze
         MAX_PEERS  = 100
 
-        def self.descriptor
-          {
-            name: "configure_sdwan_for_project",
-            description: "Create an SDWAN network for a project, attach the supplied instances as peers, optionally provision a project VIP, and compile the topology preview. Composes Sdwan::Network + Sdwan::PeerEnroller + Sdwan::VirtualIp + Sdwan::TopologyCompiler.",
-            category: "devops",
-            inputs: {
-              project_id: { type: "string", required: true,
-                            description: "Ai::Mission id (the provisioning project receiving the overlay)" },
-              instance_ids: { type: "array", required: true,
-                              description: "System::NodeInstance ids to enroll as peers (1-#{MAX_PEERS})" },
-              network_name: { type: "string", required: true,
-                              description: "Display name for the new Sdwan::Network" },
-              topology: { type: "string", required: true,
-                          description: "One of: #{TOPOLOGIES.join(', ')}" },
-              with_vip: { type: "boolean", required: false, default: false,
-                          description: "When true, provision a project-level VirtualIp held by the first peer" },
-              vip_name: { type: "string", required: false,
-                          description: "Optional VIP name (defaults to '<network_name>-vip')" },
-              vip_cidr: { type: "string", required: false,
-                          description: "VIP CIDR — required when with_vip is true (operator must provide a /128 in the network's /64)" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no Sdwan::Network/Peer/VirtualIp rows are persisted" }
-            },
+        skill_descriptor(
+          name: "configure_sdwan_for_project",
+          description: "Create an SDWAN network for a project, attach the supplied instances as peers, optionally provision a project VIP, and compile the topology preview. Composes Sdwan::Network + Sdwan::PeerEnroller + Sdwan::VirtualIp + Sdwan::TopologyCompiler.",
+          category: "devops",
+          inputs: {
+            project_id: { type: "string", required: true,
+                          description: "Ai::Mission id (the provisioning project receiving the overlay)" },
+            instance_ids: { type: "array", required: true,
+                            description: "System::NodeInstance ids to enroll as peers (1-#{MAX_PEERS})" },
+            network_name: { type: "string", required: true,
+                            description: "Display name for the new Sdwan::Network" },
+            topology: { type: "string", required: true,
+                        description: "One of: #{TOPOLOGIES.join(', ')}" },
+            with_vip: { type: "boolean", required: false, default: false,
+                        description: "When true, provision a project-level VirtualIp held by the first peer" },
+            vip_name: { type: "string", required: false,
+                        description: "Optional VIP name (defaults to '<network_name>-vip')" },
+            vip_cidr: { type: "string", required: false,
+                        description: "VIP CIDR — required when with_vip is true (operator must provide a /128 in the network's /64)" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no Sdwan::Network/Peer/VirtualIp rows are persisted" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            count: :integer,
+            topology: :string,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              count: :integer,
-              topology: :string,
-              planned_actions: [ :object ],
-              outputs: {
-                sdwan_network_id: :string,
-                sdwan_peer_ids: [ :string ],
-                virtual_ip_id: :string,
-                topology_preview: [ :object ]
-              },
-              failures: [ :object ],
-              partial: :boolean
+              sdwan_network_id: :string,
+              sdwan_peer_ids: [ :string ],
+              virtual_ip_id: :string,
+              topology_preview: [ :object ]
             },
-            rollback: :rollback_configure_sdwan_for_project,
-            requires_approval: false,
-            blast_radius: :medium
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_configure_sdwan_for_project,
+          blast_radius: :medium
+        )
+
+        binds_to "SDWAN Manager"
+
+        # Rollback: delete VIP, detach peers, delete network. Order matters:
+        # destroying the network cascades to peers via dependent: :destroy,
+        # so the explicit per-peer detach is a belt-and-braces measure that
+        # preserves audit-trail granularity.
+        def rollback_configure_sdwan_for_project(sdwan_network_id: nil, sdwan_peer_ids: [],
+                                                 virtual_ip_id: nil, **_extras)
+          errors = []
+
+          if virtual_ip_id.present?
+            vip = ::Sdwan::VirtualIp.where(account_id: @account.id).find_by(id: virtual_ip_id)
+            if vip
+              begin
+                vip.destroy!
+              rescue StandardError => e
+                errors << { resource: "sdwan_virtual_ip", id: virtual_ip_id, error: e.message }
+              end
+            end
+          end
+
+          Array(sdwan_peer_ids).reverse_each do |peer_id|
+            peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
+            next unless peer
+
+            begin
+              peer.destroy!
+            rescue StandardError => e
+              errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
+            end
+          end
+
+          if sdwan_network_id.present?
+            network = ::Sdwan::Network.where(account_id: @account.id).find_by(id: sdwan_network_id)
+            if network
+              begin
+                network.destroy!
+              rescue StandardError => e
+                errors << { resource: "sdwan_network", id: sdwan_network_id, error: e.message }
+              end
+            end
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
-        def execute(project_id:, instance_ids:, network_name:, topology:,
+        def perform(project_id:, instance_ids:, network_name:, topology:,
                     with_vip: false, vip_name: nil, vip_cidr: nil,
                     dry_run: false, **_extras)
           topo = topology.to_s
@@ -122,53 +161,6 @@ module System
 
           run_execute(name: name, topology: topo, instances: instances,
                       with_vip: with_vip, vip_name: vip_name, vip_cidr: vip_cidr)
-        rescue StandardError => e
-          Rails.logger.error("[ConfigureSdwanForProjectExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Rollback: delete VIP, detach peers, delete network. Order matters:
-        # destroying the network cascades to peers via dependent: :destroy,
-        # so the explicit per-peer detach is a belt-and-braces measure that
-        # preserves audit-trail granularity.
-        def rollback_configure_sdwan_for_project(sdwan_network_id: nil, sdwan_peer_ids: [],
-                                                 virtual_ip_id: nil, **_extras)
-          errors = []
-
-          if virtual_ip_id.present?
-            vip = ::Sdwan::VirtualIp.where(account_id: @account.id).find_by(id: virtual_ip_id)
-            if vip
-              begin
-                vip.destroy!
-              rescue StandardError => e
-                errors << { resource: "sdwan_virtual_ip", id: virtual_ip_id, error: e.message }
-              end
-            end
-          end
-
-          Array(sdwan_peer_ids).reverse_each do |peer_id|
-            peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
-            next unless peer
-
-            begin
-              peer.destroy!
-            rescue StandardError => e
-              errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
-            end
-          end
-
-          if sdwan_network_id.present?
-            network = ::Sdwan::Network.where(account_id: @account.id).find_by(id: sdwan_network_id)
-            if network
-              begin
-                network.destroy!
-              rescue StandardError => e
-                errors << { resource: "sdwan_network", id: sdwan_network_id, error: e.message }
-              end
-            end
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -269,21 +261,7 @@ module System
         def dry_run_topology_preview(name:, topology:, count:)
           [ { network_name: name, topology: topology, projected_peer_count: count } ]
         end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
-        end
       end
     end
   end
 end
-
-# P3.3 discovery-based skill binding (dual-mode with existing seeds).
-System::Ai::Skills::SkillBindings.register(
-  System::Ai::Skills::ConfigureSdwanForProjectExecutor,
-  agents: ["SDWAN Manager", "System Topology Designer"]
-)

@@ -14,7 +14,7 @@ module System
       #     → ::System::CodeDeployService.call(...)  # Slice A
       #     → update deployment row (running | failed)
       #
-      # Returns `{ success:, requires_approval: false, data: {...} }`.
+      # Returns `{ success: true, data: {...} }` (descriptor declares requires_approval statically).
       #
       # Rollback (`rollback_deploy_app_code`): SSH to the node and stop +
       # disable the powernode-app systemd unit, then mark the deployment
@@ -22,89 +22,37 @@ module System
       # runner can surface them.
       #
       # Reference: how-can-we-provide-flickering-candy plan, M3 slice 2.
-      class DeployAppCodeExecutor
-        def self.descriptor
-          {
-            name: "deploy_app_code",
-            description: "Deploy a Git repository onto a provisioned NodeInstance via SSH+systemd",
-            category: "devops",
-            inputs: {
-              node_instance_id: { type: "string", required: true,
-                                  description: "Target System::NodeInstance.id (provisioned earlier in the plan)" },
-              repo_url: { type: "string", required: true,
-                          description: "Git remote URL (https or ssh)" },
-              branch: { type: "string", required: false, default: "main",
-                        description: "Git branch to deploy" },
-              start_command: { type: "string", required: false,
-                               description: "Command to run as the systemd ExecStart (e.g. 'npm start'). Inferred from repo if omitted." },
-              deploy_key_id: { type: "string", required: false,
-                               description: "Secret ID for a private repo deploy key (resolved by CodeDeployService)" },
-              mission_id: { type: "string", required: false,
-                            description: "Auto-injected by PlanComposer — the Ai::Mission this deploy belongs to" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — return projected actions without touching the node" }
-            },
-            outputs: {
-              deployment_id: :string,
-              commit_sha: :string,
-              public_url: :string
-            },
-            rollback: :rollback_deploy_app_code,
-            requires_approval: false,
-            blast_radius: :low
-          }
-        end
+      class DeployAppCodeExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "deploy_app_code",
+          description: "Deploy a Git repository onto a provisioned NodeInstance via SSH+systemd",
+          category: "devops",
+          inputs: {
+            node_instance_id: { type: "string", required: true,
+                                description: "Target System::NodeInstance.id (provisioned earlier in the plan)" },
+            repo_url: { type: "string", required: true,
+                        description: "Git remote URL (https or ssh)" },
+            branch: { type: "string", required: false, default: "main",
+                      description: "Git branch to deploy" },
+            start_command: { type: "string", required: false,
+                             description: "Command to run as the systemd ExecStart (e.g. 'npm start'). Inferred from repo if omitted." },
+            deploy_key_id: { type: "string", required: false,
+                             description: "Secret ID for a private repo deploy key (resolved by CodeDeployService)" },
+            mission_id: { type: "string", required: false,
+                          description: "Auto-injected by PlanComposer — the Ai::Mission this deploy belongs to" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — return projected actions without touching the node" }
+          },
+          outputs: {
+            deployment_id: :string,
+            commit_sha: :string,
+            public_url: :string
+          },
+          rollback: :rollback_deploy_app_code,
+          blast_radius: :low
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
-
-        # `**_extras` swallows context kwargs that PlanComposerService
-        # injects into every step's inputs (notably `brief`) so the
-        # runner's `executor.execute(**inputs)` call doesn't raise
-        # ArgumentError.
-        def execute(node_instance_id:, repo_url:,
-                    branch: "main", start_command: nil,
-                    deploy_key_id: nil, mission_id: nil,
-                    dry_run: false, **_extras)
-          return failure("repo_url is required") if repo_url.to_s.strip.empty?
-          return failure("node_instance_id is required") if node_instance_id.to_s.strip.empty?
-
-          node_instance = ::System::NodeInstance.find_by(id: node_instance_id)
-          return failure("node_instance not found: #{node_instance_id}") unless node_instance
-
-          mission = nil
-          if mission_id.present?
-            mission = ::Ai::Mission.find_by(id: mission_id)
-            return failure("mission not found: #{mission_id}") unless mission
-          end
-
-          if dry_run
-            return success(
-              dry_run: true,
-              deployment_id: nil,
-              commit_sha: nil,
-              public_url: nil,
-              planned_actions: build_plan(node_instance, repo_url, branch, start_command, deploy_key_id)
-            )
-          end
-
-          return failure("mission_id is required for non-dry-run deploys") unless mission
-
-          run_execute(
-            mission: mission,
-            node_instance: node_instance,
-            repo_url: repo_url,
-            branch: branch,
-            start_command: start_command,
-            deploy_key_id: deploy_key_id
-          )
-        rescue StandardError => e
-          ::Rails.logger.error("[DeployAppCodeExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
+        binds_to "Fleet Autonomy"
 
         # Instance-method rollback contract — invoked by
         # `SkillCompositionRunner` via
@@ -147,6 +95,50 @@ module System
           end
 
           { success: errors.empty?, errors: errors }
+        end
+
+        protected
+
+        # `**_extras` swallows context kwargs that PlanComposerService
+        # injects into every step's inputs (notably `brief`) so the
+        # runner's `executor.execute(**inputs)` call doesn't raise
+        # ArgumentError.
+        def perform(node_instance_id:, repo_url:,
+                    branch: "main", start_command: nil,
+                    deploy_key_id: nil, mission_id: nil,
+                    dry_run: false, **_extras)
+          return failure("repo_url is required") if repo_url.to_s.strip.empty?
+          return failure("node_instance_id is required") if node_instance_id.to_s.strip.empty?
+
+          node_instance = ::System::NodeInstance.find_by(id: node_instance_id)
+          return failure("node_instance not found: #{node_instance_id}") unless node_instance
+
+          mission = nil
+          if mission_id.present?
+            mission = ::Ai::Mission.find_by(id: mission_id)
+            return failure("mission not found: #{mission_id}") unless mission
+          end
+
+          if dry_run
+            return success(
+              dry_run: true,
+              deployment_id: nil,
+              commit_sha: nil,
+              public_url: nil,
+              planned_actions: build_plan(node_instance, repo_url, branch, start_command, deploy_key_id)
+            )
+          end
+
+          return failure("mission_id is required for non-dry-run deploys") unless mission
+
+          run_execute(
+            mission: mission,
+            node_instance: node_instance,
+            repo_url: repo_url,
+            branch: branch,
+            start_command: start_command,
+            deploy_key_id: deploy_key_id
+          )
         end
 
         private
@@ -260,10 +252,6 @@ module System
               start_command: start_command,
               uses_deploy_key: deploy_key_id.present? }
           ]
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
         end
 
         def failure(msg, **extra)

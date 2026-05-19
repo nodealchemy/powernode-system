@@ -31,56 +31,69 @@ module System
       # the heavyweight subset.
       #
       # Phase O6 of the OVS+OVN dual-profile networking roadmap.
-      class SdwanIpfixCollectorComposeExecutor
+      class SdwanIpfixCollectorComposeExecutor < BaseSkillExecutor
         DEFAULT_SAMPLING_RATE = 1
         PORT_MIN = 1
         PORT_MAX = 65_535
 
-        def self.descriptor
-          {
-            name: "sdwan_ipfix_collector_compose",
-            description: "Register an IPFIX collector for an account so the topology compiler can stamp ipfix exporter config onto every heavyweight (ovs-kind) HostBridge in the per-host payload. Idempotent on (account, name). Composes Sdwan::IpfixCollector.",
-            category: "devops",
-            inputs: {
-              name: { type: "string", required: true,
-                      description: "Display name for the collector — unique per account; reused on re-execution" },
-              host: { type: "string", required: true,
-                      description: "Collector host (IPv4, IPv6, or hostname). IPv6 addresses are bracketed automatically when emitted to ovs-vsctl." },
-              port: { type: "integer", required: true,
-                      description: "Collector UDP port (#{PORT_MIN}-#{PORT_MAX})" },
-              sampling_rate: { type: "integer", required: false, default: DEFAULT_SAMPLING_RATE,
-                               description: "Sampling rate (1 = export every flow). Ignored when re-using an existing collector." },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no Sdwan::IpfixCollector row is persisted" }
-            },
+        skill_descriptor(
+          name: "sdwan_ipfix_collector_compose",
+          description: "Register an IPFIX collector for an account so the topology compiler can stamp ipfix exporter config onto every heavyweight (ovs-kind) HostBridge in the per-host payload. Idempotent on (account, name). Composes Sdwan::IpfixCollector.",
+          category: "devops",
+          inputs: {
+            name: { type: "string", required: true,
+                    description: "Display name for the collector — unique per account; reused on re-execution" },
+            host: { type: "string", required: true,
+                    description: "Collector host (IPv4, IPv6, or hostname). IPv6 addresses are bracketed automatically when emitted to ovs-vsctl." },
+            port: { type: "integer", required: true,
+                    description: "Collector UDP port (#{PORT_MIN}-#{PORT_MAX})" },
+            sampling_rate: { type: "integer", required: false, default: DEFAULT_SAMPLING_RATE,
+                             description: "Sampling rate (1 = export every flow). Ignored when re-using an existing collector." },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no Sdwan::IpfixCollector row is persisted" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              planned_actions: [ :object ],
-              outputs: {
-                ipfix_collector_id: :string,
-                created: :boolean,
-                name: :string,
-                target_endpoint: :string,
-                sampling_rate: :integer,
-                state: :string,
-                is_winning_collector: :boolean
-              },
-              failures: [ :object ],
-              partial: :boolean
+              ipfix_collector_id: :string,
+              created: :boolean,
+              name: :string,
+              target_endpoint: :string,
+              sampling_rate: :integer,
+              state: :string,
+              is_winning_collector: :boolean
             },
-            rollback: :rollback_sdwan_ipfix_collector_compose,
-            requires_approval: false,
-            blast_radius: :low
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_sdwan_ipfix_collector_compose,
+          blast_radius: :low
+        )
+
+        binds_to "System Topology Designer"
+
+        # Rollback: destroy only when this call newly created the row.
+        # Pre-existing collectors are left alone since other state may
+        # depend on them (compiler selection, dashboards, alerts).
+        def rollback_sdwan_ipfix_collector_compose(ipfix_collector_id: nil, created: false, **_extras)
+          return { success: true, errors: [] } unless created
+          return { success: true, errors: [] } if ipfix_collector_id.blank?
+
+          collector = ::Sdwan::IpfixCollector.where(account_id: @account.id).find_by(id: ipfix_collector_id)
+          return { success: true, errors: [] } unless collector
+
+          begin
+            collector.destroy!
+            { success: true, errors: [] }
+          rescue StandardError => e
+            { success: false, errors: [ { resource: "ipfix_collector", id: ipfix_collector_id, error: e.message } ] }
+          end
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
-        def execute(name:, host:, port:, sampling_rate: DEFAULT_SAMPLING_RATE,
+        def perform(name:, host:, port:, sampling_rate: DEFAULT_SAMPLING_RATE,
                     dry_run: false, **_extras)
           name_str = name.to_s.strip
           return failure("name is required") if name_str.empty?
@@ -119,27 +132,6 @@ module System
 
           run_execute(name: name_str, host: host_str, port: port_int,
                       sampling: sampling_int, existing: existing)
-        rescue StandardError => e
-          Rails.logger.error("[SdwanIpfixCollectorComposeExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Rollback: destroy only when this call newly created the row.
-        # Pre-existing collectors are left alone since other state may
-        # depend on them (compiler selection, dashboards, alerts).
-        def rollback_sdwan_ipfix_collector_compose(ipfix_collector_id: nil, created: false, **_extras)
-          return { success: true, errors: [] } unless created
-          return { success: true, errors: [] } if ipfix_collector_id.blank?
-
-          collector = ::Sdwan::IpfixCollector.where(account_id: @account.id).find_by(id: ipfix_collector_id)
-          return { success: true, errors: [] } unless collector
-
-          begin
-            collector.destroy!
-            { success: true, errors: [] }
-          rescue StandardError => e
-            { success: false, errors: [ { resource: "ipfix_collector", id: ipfix_collector_id, error: e.message } ] }
-          end
         end
 
         private
@@ -254,14 +246,6 @@ module System
               partial: false
             }
           }
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

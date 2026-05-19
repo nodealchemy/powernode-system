@@ -14,7 +14,7 @@ module System
       # the linear-trend stub can be swapped without changing callers.
       #
       # Reference: Golden Eclipse plan M6 — Skills catalog (capacity_recommend row).
-      class CapacityRecommendExecutor
+      class CapacityRecommendExecutor < BaseSkillExecutor
         # Heartbeats older than this are treated as "silent" — not contributing
         # active capacity. Ties to FleetAutonomyService InstanceStatusSensor
         # (instance_silent at 3× heartbeat interval) — both should agree on
@@ -26,42 +26,38 @@ module System
         # CPU/queue/latency telemetry from M-D2-2.
         DEFAULT_TARGET_MIN_ACTIVE = 1
 
-        def self.descriptor
-          {
-            name: "capacity_recommend",
-            description: "Recommend instance count or instance-type adjustments for a Template's fleet based on heartbeat health and assignment density",
-            category: "devops",
-            inputs: {
-              template_id: { type: "string", required: true },
-              target_min_active: { type: "integer", required: false,
-                                   default: DEFAULT_TARGET_MIN_ACTIVE,
-                                   description: "Minimum number of healthy active instances the fleet must maintain" }
-            },
-            outputs: {
-              template_id: :string,
-              total_count: :integer,
-              active_count: :integer,
-              silent_count: :integer,
-              errored_count: :integer,
-              recommendation: :object,
-              confidence: :string
-            }
+        skill_descriptor(
+          name: "capacity_recommend",
+          description: "Recommend instance count or instance-type adjustments for a Template's fleet based on heartbeat health and assignment density",
+          category: "devops",
+          inputs: {
+            template_id: { type: "string", required: true },
+            target_min_active: { type: "integer", required: false,
+                                 default: DEFAULT_TARGET_MIN_ACTIVE,
+                                 description: "Minimum number of healthy active instances the fleet must maintain" }
+          },
+          outputs: {
+            template_id: :string,
+            total_count: :integer,
+            active_count: :integer,
+            silent_count: :integer,
+            errored_count: :integer,
+            recommendation: :object,
+            confidence: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(template_id:, target_min_active: DEFAULT_TARGET_MIN_ACTIVE)
-          tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
+        protected
 
-          tmpl_check = tool.execute(params: { action: "system_get_template", template_id: template_id })
+        def perform(template_id:, target_min_active: DEFAULT_TARGET_MIN_ACTIVE)
+          fleet_tool = tool(::Ai::Tools::SystemFleetTool)
+
+          tmpl_check = fleet_tool.execute(params: { action: "system_get_template", template_id: template_id })
           return failure("template lookup failed: #{tmpl_check[:error]}") unless tmpl_check[:success]
 
-          instances_resp = tool.execute(params: {
+          instances_resp = fleet_tool.execute(params: {
             action: "system_list_instances", template_id: template_id
           })
           return failure("instance listing failed: #{instances_resp[:error]}") unless instances_resp[:success]
@@ -81,9 +77,6 @@ module System
             confidence: "low",
             note: "v0 recommendation — real CPU/mem/queue trend forecasting lands with M-D2-2 telemetry pipeline"
           )
-        rescue StandardError => e
-          Rails.logger.error("[CapacityRecommendExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -148,14 +141,6 @@ module System
               reason: "Fleet appears healthy at target capacity"
             }
           end
-        end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

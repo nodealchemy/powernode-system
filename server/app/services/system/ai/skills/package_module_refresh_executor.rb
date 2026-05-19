@@ -12,31 +12,27 @@ module System
       # The CVE check happens in the Fleet Autonomy intervention policy
       # layer, not here — this executor unconditionally enqueues; the
       # autonomy framework gates whether the enqueue is allowed.
-      class PackageModuleRefreshExecutor
-        def self.descriptor
-          {
-            name:        "package_module_refresh",
-            description: "Re-materialize a NodeModule's source package when upstream drifts (replays persisted recommends_chosen for determinism)",
-            category:    "devops",
-            inputs: {
-              package_module_link_id: { type: "string", required: true,
-                                        description: "PackageModuleLink.id of the module to refresh" },
-              force:                  { type: "boolean", required: false }
-            },
-            outputs: {
-              enqueued:               :boolean,
-              package_module_link_id: :string
-            }
+      class PackageModuleRefreshExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name:        "package_module_refresh",
+          description: "Re-materialize a NodeModule's source package when upstream drifts (replays persisted recommends_chosen for determinism)",
+          category:    "devops",
+          inputs: {
+            package_module_link_id: { type: "string", required: true,
+                                      description: "PackageModuleLink.id of the module to refresh" },
+            force:                  { type: "boolean", required: false }
+          },
+          outputs: {
+            enqueued:               :boolean,
+            package_module_link_id: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy", "System Concierge", "CVE Responder"
 
-        def execute(package_module_link_id:, force: false)
+        protected
+
+        def perform(package_module_link_id:, force: false)
           link = ::System::PackageModuleLink
                    .joins(:node_module)
                    .where(system_node_modules: { account_id: @account.id })
@@ -52,11 +48,6 @@ module System
             requires_approval:      false
           )
         end
-
-        private
-
-        def success(**data); { success: true, data: data }; end
-        def failure(msg); { success: false, error: msg }; end
       end
     end
   end

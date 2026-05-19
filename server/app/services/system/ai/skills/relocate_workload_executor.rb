@@ -24,107 +24,59 @@ module System
       # source instances were torn down.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
-      class RelocateWorkloadExecutor
+      class RelocateWorkloadExecutor < BaseSkillExecutor
         STRATEGIES = %w[blue_green drain].freeze
         MAX_COUNT  = 50
 
-        def self.descriptor
-          {
-            name: "relocate_workload",
-            description: "Relocate a project's compute workload from one region to another via blue/green or drain cutover. Composes ProvisionFullStackExecutor (target) + ProvisioningService.terminate_instance (source).",
-            category: "devops",
-            inputs: {
-              project_id: { type: "string", required: true,
-                            description: "Ai::Mission id (the provisioning project being relocated)" },
-              from_region_id: { type: "string", required: true,
-                                description: "System::ProviderRegion the workload is leaving (audit hint, no lookup)" },
-              to_region_id: { type: "string", required: true,
-                              description: "System::ProviderRegion the workload is moving to (target for new stack)" },
-              cutover_strategy: { type: "string", required: true,
-                                  description: "One of: #{STRATEGIES.join(', ')}" },
-              template_id: { type: "string", required: true,
-                             description: "System::NodeTemplate to instantiate at the target region" },
-              provider_instance_type_id: { type: "string", required: true,
-                                           description: "Instance type for the target stack" },
-              count: { type: "integer", required: true,
-                       description: "Number of new instances to bring up at the target (1-#{MAX_COUNT})" },
-              source_instance_ids: { type: "array", required: true,
-                                     description: "System::NodeInstance ids in the source region to terminate during cutover" },
-              network_id: { type: "string", required: false,
-                            description: "Sdwan::Network — when present, target instances are wired into the SDWAN topology and peer ids returned" },
-              with_storage_gb: { type: "integer", required: false,
-                                 description: "When present, provision a per-instance ProviderVolume of this size at the target" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — return projected actions without provisioning or terminating" }
-            },
+        skill_descriptor(
+          name: "relocate_workload",
+          description: "Relocate a project's compute workload from one region to another via blue/green or drain cutover. Composes ProvisionFullStackExecutor (target) + ProvisioningService.terminate_instance (source).",
+          category: "devops",
+          inputs: {
+            project_id: { type: "string", required: true,
+                          description: "Ai::Mission id (the provisioning project being relocated)" },
+            from_region_id: { type: "string", required: true,
+                              description: "System::ProviderRegion the workload is leaving (audit hint, no lookup)" },
+            to_region_id: { type: "string", required: true,
+                            description: "System::ProviderRegion the workload is moving to (target for new stack)" },
+            cutover_strategy: { type: "string", required: true,
+                                description: "One of: #{STRATEGIES.join(', ')}" },
+            template_id: { type: "string", required: true,
+                           description: "System::NodeTemplate to instantiate at the target region" },
+            provider_instance_type_id: { type: "string", required: true,
+                                         description: "Instance type for the target stack" },
+            count: { type: "integer", required: true,
+                     description: "Number of new instances to bring up at the target (1-#{MAX_COUNT})" },
+            source_instance_ids: { type: "array", required: true,
+                                   description: "System::NodeInstance ids in the source region to terminate during cutover" },
+            network_id: { type: "string", required: false,
+                          description: "Sdwan::Network — when present, target instances are wired into the SDWAN topology and peer ids returned" },
+            with_storage_gb: { type: "integer", required: false,
+                               description: "When present, provision a per-instance ProviderVolume of this size at the target" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — return projected actions without provisioning or terminating" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            count: :integer,
+            cutover_strategy: :string,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              count: :integer,
-              cutover_strategy: :string,
-              planned_actions: [ :object ],
-              outputs: {
-                node_ids: [ :string ],
-                node_instance_ids: [ :string ],
-                sdwan_peer_ids: [ :string ],
-                storage_volume_ids: [ :string ],
-                terminated_instance_ids: [ :string ]
-              },
-              failures: [ :object ],
-              partial: :boolean
+              node_ids: [ :string ],
+              node_instance_ids: [ :string ],
+              sdwan_peer_ids: [ :string ],
+              storage_volume_ids: [ :string ],
+              terminated_instance_ids: [ :string ]
             },
-            rollback: :rollback_relocate_workload,
-            requires_approval: true,
-            blast_radius: :high
-          }
-        end
+            failures: [ :object ],
+            partial: :boolean
+          },
+          requires_approval: true,
+          rollback: :rollback_relocate_workload,
+          blast_radius: :high
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
-
-        def execute(project_id:, from_region_id:, to_region_id:, cutover_strategy:,
-                    template_id:, provider_instance_type_id:, count:, source_instance_ids:,
-                    network_id: nil, with_storage_gb: nil, dry_run: false, **_extras)
-          strategy = cutover_strategy.to_s
-          return failure("cutover_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
-
-          count = count.to_i
-          return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
-
-          source_ids = Array(source_instance_ids).map(&:to_s).reject(&:empty?)
-          return failure("source_instance_ids must contain at least one id") if source_ids.empty?
-
-          mission = ::Ai::Mission.where(account_id: @account.id).find_by(id: project_id)
-          return failure("project not found: #{project_id}") unless mission
-
-          if dry_run
-            return success(
-              dry_run: true,
-              count: count,
-              cutover_strategy: strategy,
-              planned_actions: build_plan(strategy: strategy, count: count,
-                                          source_ids: source_ids,
-                                          template_id: template_id,
-                                          to_region_id: to_region_id,
-                                          provider_instance_type_id: provider_instance_type_id,
-                                          network_id: network_id,
-                                          with_storage_gb: with_storage_gb),
-              outputs: empty_outputs,
-              failures: [],
-              partial: false
-            )
-          end
-
-          run_execute(strategy: strategy, count: count, source_ids: source_ids,
-                      template_id: template_id, to_region_id: to_region_id,
-                      provider_instance_type_id: provider_instance_type_id,
-                      network_id: network_id, with_storage_gb: with_storage_gb)
-        rescue StandardError => e
-          Rails.logger.error("[RelocateWorkloadExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
+        binds_to "Fleet Autonomy"
 
         # Rollback contract: terminate the *new* (target-region) instances
         # we provisioned + delete their volumes. The source instances may
@@ -161,6 +113,47 @@ module System
           _ = sdwan_peer_ids
 
           { success: errors.empty?, errors: errors }
+        end
+
+        protected
+
+        def perform(project_id:, from_region_id:, to_region_id:, cutover_strategy:,
+                    template_id:, provider_instance_type_id:, count:, source_instance_ids:,
+                    network_id: nil, with_storage_gb: nil, dry_run: false, **_extras)
+          strategy = cutover_strategy.to_s
+          return failure("cutover_strategy must be one of: #{STRATEGIES.join(', ')}") unless STRATEGIES.include?(strategy)
+
+          count = count.to_i
+          return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
+
+          source_ids = Array(source_instance_ids).map(&:to_s).reject(&:empty?)
+          return failure("source_instance_ids must contain at least one id") if source_ids.empty?
+
+          mission = ::Ai::Mission.where(account_id: @account.id).find_by(id: project_id)
+          return failure("project not found: #{project_id}") unless mission
+
+          if dry_run
+            return success(
+              dry_run: true,
+              count: count,
+              cutover_strategy: strategy,
+              planned_actions: build_plan(strategy: strategy, count: count,
+                                          source_ids: source_ids,
+                                          template_id: template_id,
+                                          to_region_id: to_region_id,
+                                          provider_instance_type_id: provider_instance_type_id,
+                                          network_id: network_id,
+                                          with_storage_gb: with_storage_gb),
+              outputs: empty_outputs,
+              failures: [],
+              partial: false
+            )
+          end
+
+          run_execute(strategy: strategy, count: count, source_ids: source_ids,
+                      template_id: template_id, to_region_id: to_region_id,
+                      provider_instance_type_id: provider_instance_type_id,
+                      network_id: network_id, with_storage_gb: with_storage_gb)
         end
 
         private
@@ -292,14 +285,6 @@ module System
         def empty_outputs
           { node_ids: [], node_instance_ids: [], sdwan_peer_ids: [],
             storage_volume_ids: [], terminated_instance_ids: [] }
-        end
-
-        def success(payload)
-          { success: true, requires_approval: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

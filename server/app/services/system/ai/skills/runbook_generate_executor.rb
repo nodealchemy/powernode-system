@@ -13,35 +13,30 @@ module System
       # the "first 5 minutes of an outage" companion document.
       #
       # Reference: Golden Eclipse plan F-16 AI-Generated Runbooks.
-      class RunbookGenerateExecutor
-        def self.descriptor
-          {
-            name: "runbook_generate",
-            description: "Generate a markdown operational runbook for a NodeTemplate — boot order, common failure modes, recovery procedures",
-            category: "documentation",
-            inputs: {
-              template_id: { type: "string", required: true },
-              persist_as_page: { type: "boolean", required: false, default: false,
-                                 description: "Save the result as a Pages document so it's reachable via list_pages" }
-            },
-            outputs: {
-              runbook_markdown: :string,
-              section_count: :integer,
-              persisted_page_id: :string,
-              source_artifacts: :object
-            }
+      class RunbookGenerateExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "runbook_generate",
+          description: "Generate a markdown operational runbook for a NodeTemplate — boot order, common failure modes, recovery procedures",
+          category: "documentation",
+          inputs: {
+            template_id: { type: "string", required: true },
+            persist_as_page: { type: "boolean", required: false, default: false,
+                               description: "Save the result as a Pages document so it's reachable via list_pages" }
+          },
+          outputs: {
+            runbook_markdown: :string,
+            section_count: :integer,
+            persisted_page_id: :string,
+            source_artifacts: :object
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(template_id:, persist_as_page: false)
-          tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
-          tmpl_resp = tool.execute(params: { action: "system_get_template", template_id: template_id })
+        protected
+
+        def perform(template_id:, persist_as_page: false)
+          tmpl_resp = tool(::Ai::Tools::SystemFleetTool).execute(params: { action: "system_get_template", template_id: template_id })
           return failure("template lookup failed: #{tmpl_resp[:error]}") unless tmpl_resp[:success]
 
           template = tmpl_resp[:data][:template]
@@ -72,9 +67,6 @@ module System
               kg_anchor_count: kg_anchors_count
             }
           )
-        rescue StandardError => e
-          Rails.logger.error("[RunbookGenerateExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -266,14 +258,6 @@ module System
         rescue StandardError => e
           Rails.logger.warn("[RunbookGenerateExecutor] page persist failed: #{e.message}")
           nil
-        end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

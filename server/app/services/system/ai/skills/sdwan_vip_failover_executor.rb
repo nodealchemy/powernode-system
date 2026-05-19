@@ -18,33 +18,29 @@
 module System
   module Ai
     module Skills
-      class SdwanVipFailoverExecutor
-        def self.descriptor
-          {
-            name: "sdwan_vip_failover",
-            description: "Promote the next failover candidate of a silent-holder Sdwan::VirtualIp. Anycast VIPs return informational only.",
-            category: "sdwan",
-            inputs: {
-              virtual_ip_id: { type: "string", required: true },
-              dry_run:       { type: "boolean", required: false, default: false }
-            },
-            outputs: {
-              resolved: :boolean,
-              virtual_ip_id: :string,
-              previous_holder_peer_id: :string,
-              new_holder_peer_id: :string,
-              anycast: :boolean
-            }
+      class SdwanVipFailoverExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "sdwan_vip_failover",
+          description: "Promote the next failover candidate of a silent-holder Sdwan::VirtualIp. Anycast VIPs return informational only.",
+          category: "sdwan",
+          inputs: {
+            virtual_ip_id: { type: "string", required: true },
+            dry_run:       { type: "boolean", required: false, default: false }
+          },
+          outputs: {
+            resolved: :boolean,
+            virtual_ip_id: :string,
+            previous_holder_peer_id: :string,
+            new_holder_peer_id: :string,
+            anycast: :boolean
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "SDWAN Manager"
 
-        def execute(virtual_ip_id:, dry_run: false)
+        protected
+
+        def perform(virtual_ip_id:, dry_run: false)
           vip = ::Sdwan::VirtualIp.where(account_id: @account.id).find_by(id: virtual_ip_id)
           return failure("VIP not found in account scope") unless vip
 
@@ -77,7 +73,11 @@ module System
             )
           end
 
-          vip.failover!(reason: "sensor_failover", triggered_by_user: @user)
+          begin
+            vip.failover!(reason: "sensor_failover", triggered_by_user: @user)
+          rescue ::Sdwan::VirtualIp::StateError => e
+            return failure(e.message)
+          end
           vip.reload
 
           success(
@@ -88,17 +88,7 @@ module System
             new_holder_peer_id: Array(vip.holder_peer_ids).first,
             anycast: false
           )
-        rescue ::Sdwan::VirtualIp::StateError => e
-          failure(e.message)
-        rescue StandardError => e
-          Rails.logger.error("[SdwanVipFailoverExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
-
-        private
-
-        def success(payload) = { success: true, data: payload }
-        def failure(error) = { success: false, error: error.to_s }
       end
     end
   end

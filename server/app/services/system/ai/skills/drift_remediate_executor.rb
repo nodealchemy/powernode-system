@@ -13,45 +13,39 @@ module System
       # this executor produces the *plan* an autonomy reconciler can act on.
       #
       # Reference: Golden Eclipse plan M6 — Skills catalog (drift_remediate row).
-      class DriftRemediateExecutor
+      class DriftRemediateExecutor < BaseSkillExecutor
         # Per-change disruption budget. Used to estimate impact: 5 changes ≈
         # 100% disruption (the linear model is a stand-in until we have real
         # operational data; M7 will tune this with PromotionCriteria-style
         # weighting).
         DISRUPTION_PER_CHANGE_PCT = 20
 
-        # Static descriptor that gets seeded into ai_skills via
-        # System::Ai::Skills::Seeder (TODO: ship as part of M6 seeds task).
-        def self.descriptor
-          {
-            name: "drift_remediate",
-            description: "Reconcile a NodeInstance's running modules against its assigned modules; returns a planned action set + estimated disruption %",
-            category: "devops",
-            inputs: {
-              instance_id: { type: "string", required: true,
-                             description: "NodeInstance to reconcile" },
-              max_disruption_pct: { type: "integer", required: false, default: 20,
-                                    description: "Disruption threshold above which the skill returns requires_approval=true" }
-            },
-            outputs: {
-              resolved: :boolean,
-              requires_approval: :boolean,
-              disruption_pct: :integer,
-              planned_actions: { attach: [ :string ], detach: [ :string ], update: [ :string ] }
-            }
+        skill_descriptor(
+          name: "drift_remediate",
+          description: "Reconcile a NodeInstance's running modules against its assigned modules; returns a planned action set + estimated disruption %",
+          category: "devops",
+          inputs: {
+            instance_id: { type: "string", required: true,
+                           description: "NodeInstance to reconcile" },
+            max_disruption_pct: { type: "integer", required: false, default: 20,
+                                  description: "Disruption threshold above which the skill returns requires_approval=true" }
+          },
+          outputs: {
+            resolved: :boolean,
+            requires_approval: :boolean,
+            disruption_pct: :integer,
+            planned_actions: { attach: [ :string ], detach: [ :string ], update: [ :string ] }
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "Fleet Autonomy"
 
-        def execute(instance_id:, max_disruption_pct: 20)
-          tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
+        protected
 
-          drift = tool.execute(params: { action: "system_drift_report", instance_id: instance_id })
+        def perform(instance_id:, max_disruption_pct: 20)
+          drift = tool(::Ai::Tools::SystemFleetTool).execute(
+            params: { action: "system_drift_report", instance_id: instance_id }
+          )
           return failure("drift_report failed: #{drift[:error]}") unless drift[:success]
 
           report = drift[:data]
@@ -76,9 +70,6 @@ module System
             note: requires_approval ? "disruption_pct exceeds max_disruption_pct; gated until M7 ApprovalRequest wiring" : "auto-apply pending M7 reconciler",
             drift_report: report
           )
-        rescue StandardError => e
-          Rails.logger.error("[DriftRemediateExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -97,20 +88,7 @@ module System
             update: Array(report[:mismatched]).map { |k, _| k.to_s }
           }
         end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
-        end
       end
     end
   end
 end
-
-# P3.3 discovery-based skill binding (dual-mode with existing seeds).
-System::Ai::Skills::SkillBindings.register(
-  System::Ai::Skills::DriftRemediateExecutor, agents: ["Fleet Autonomy"]
-)

@@ -23,36 +23,32 @@
 module System
   module Ai
     module Skills
-      class SdwanBgpSessionRemediateExecutor
-        def self.descriptor
-          {
-            name: "sdwan_bgp_session_remediate",
-            description: "Triage an unhealthy iBGP session; returns a plan with likely cause + recommended next step. v1 does NOT auto-restart FRR.",
-            category: "sdwan",
-            inputs: {
-              bgp_session_id: { type: "string", required: false },
-              peer_id:        { type: "string", required: false,
-                                description: "Local peer (resolves session via peer_id + neighbor_address)" },
-              neighbor_address: { type: "string", required: false },
-              dry_run:        { type: "boolean", required: false, default: true }
-            },
-            outputs: {
-              resolved: :boolean,
-              session_id: :string,
-              state: :string,
-              likely_cause: :string,
-              recommended_action: :string
-            }
+      class SdwanBgpSessionRemediateExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "sdwan_bgp_session_remediate",
+          description: "Triage an unhealthy iBGP session; returns a plan with likely cause + recommended next step. v1 does NOT auto-restart FRR.",
+          category: "sdwan",
+          inputs: {
+            bgp_session_id: { type: "string", required: false },
+            peer_id:        { type: "string", required: false,
+                              description: "Local peer (resolves session via peer_id + neighbor_address)" },
+            neighbor_address: { type: "string", required: false },
+            dry_run:        { type: "boolean", required: false, default: true }
+          },
+          outputs: {
+            resolved: :boolean,
+            session_id: :string,
+            state: :string,
+            likely_cause: :string,
+            recommended_action: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "SDWAN Manager"
 
-        def execute(bgp_session_id: nil, peer_id: nil, neighbor_address: nil, dry_run: true)
+        protected
+
+        def perform(bgp_session_id: nil, peer_id: nil, neighbor_address: nil, dry_run: true)
           session = locate_session(bgp_session_id, peer_id, neighbor_address)
           return failure("BGP session not found in account scope") unless session
 
@@ -77,9 +73,6 @@ module System
             recommended_action: analysis[:action],
             recommended_command: analysis[:command]
           )
-        rescue StandardError => e
-          Rails.logger.error("[SdwanBgpSessionRemediateExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -141,9 +134,6 @@ module System
           return 0 if session.last_state_change_at.nil?
           (Time.current - session.last_state_change_at).to_i
         end
-
-        def success(payload) = { success: true, data: payload }
-        def failure(error) = { success: false, error: error.to_s }
       end
     end
   end

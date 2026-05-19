@@ -20,101 +20,47 @@ module System
       # empty even though the rows exist.
       #
       # Phase O6 of the OVS+OVN dual-profile networking roadmap.
-      class SdwanOvnComposeTopologyExecutor
+      class SdwanOvnComposeTopologyExecutor < BaseSkillExecutor
         VALID_PORT_KINDS    = ::Sdwan::OvnLogicalSwitchPort::KINDS
         MAX_SWITCHES        = 50
         MAX_PORTS_PER_SWITCH = 250
 
-        def self.descriptor
-          {
-            name: "sdwan_ovn_compose_topology",
-            description: "Compose an OVN logical-network topology (deployment + logical switches + ports) for a heavyweight-profile account, then compile the ovn-nbctl plan. Composes Sdwan::OvnDeployment + Sdwan::OvnLogicalSwitch + Sdwan::OvnLogicalSwitchPort + Sdwan::OvnCompiler.",
-            category: "devops",
-            inputs: {
-              switches: { type: "array", required: true,
-                          description: "Array of {name, cidr?, ports: [{name, kind, addresses?, host_node_instance_id?}]} (1-#{MAX_SWITCHES})" },
-              nb_db_endpoint: { type: "string", required: false,
-                                description: "OVN NB DB endpoint (e.g., tcp:127.0.0.1:6641) — required only when the account has no OvnDeployment yet" },
-              sb_db_endpoint: { type: "string", required: false,
-                                description: "OVN SB DB endpoint (e.g., tcp:127.0.0.1:6642) — required only when the account has no OvnDeployment yet" },
-              northd_host: { type: "string", required: false,
-                             description: "Advisory hint for which host runs ovn-northd — only used when creating a new deployment" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no Sdwan rows are persisted" }
-            },
+        skill_descriptor(
+          name: "sdwan_ovn_compose_topology",
+          description: "Compose an OVN logical-network topology (deployment + logical switches + ports) for a heavyweight-profile account, then compile the ovn-nbctl plan. Composes Sdwan::OvnDeployment + Sdwan::OvnLogicalSwitch + Sdwan::OvnLogicalSwitchPort + Sdwan::OvnCompiler.",
+          category: "devops",
+          inputs: {
+            switches: { type: "array", required: true,
+                        description: "Array of {name, cidr?, ports: [{name, kind, addresses?, host_node_instance_id?}]} (1-#{MAX_SWITCHES})" },
+            nb_db_endpoint: { type: "string", required: false,
+                              description: "OVN NB DB endpoint (e.g., tcp:127.0.0.1:6641) — required only when the account has no OvnDeployment yet" },
+            sb_db_endpoint: { type: "string", required: false,
+                              description: "OVN SB DB endpoint (e.g., tcp:127.0.0.1:6642) — required only when the account has no OvnDeployment yet" },
+            northd_host: { type: "string", required: false,
+                           description: "Advisory hint for which host runs ovn-northd — only used when creating a new deployment" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no Sdwan rows are persisted" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            switch_count: :integer,
+            port_count: :integer,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              switch_count: :integer,
-              port_count: :integer,
-              planned_actions: [ :object ],
-              outputs: {
-                ovn_deployment_id: :string,
-                created_deployment: :boolean,
-                logical_switch_ids: [ :string ],
-                logical_switch_port_ids: [ :string ],
-                compiled_plan: :object
-              },
-              failures: [ :object ],
-              partial: :boolean
+              ovn_deployment_id: :string,
+              created_deployment: :boolean,
+              logical_switch_ids: [ :string ],
+              logical_switch_port_ids: [ :string ],
+              compiled_plan: :object
             },
-            rollback: :rollback_sdwan_ovn_compose_topology,
-            requires_approval: false,
-            blast_radius: :medium
-          }
-        end
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_sdwan_ovn_compose_topology,
+          blast_radius: :medium
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
-
-        def execute(switches:, nb_db_endpoint: nil, sb_db_endpoint: nil, northd_host: nil,
-                    dry_run: false, **_extras)
-          if (validation_error = validate_inputs(switches: switches))
-            return validation_error
-          end
-
-          host_ids = collect_host_ids(switches)
-          host_lookup = lookup_hosts_or_fail(host_ids)
-          return host_lookup if host_lookup.is_a?(Hash) && host_lookup[:success] == false
-
-          existing_deployment = ::Sdwan::OvnDeployment.for_account(@account).first
-
-          if existing_deployment.nil? &&
-             (nb_db_endpoint.to_s.strip.empty? || sb_db_endpoint.to_s.strip.empty?)
-            return failure("nb_db_endpoint and sb_db_endpoint are required when no OvnDeployment exists for the account yet")
-          end
-
-          if dry_run
-            return success(
-              dry_run: true,
-              switch_count: switches.size,
-              port_count: switches.sum { |s| Array(s[:ports] || s["ports"]).size },
-              planned_actions: build_plan(switches: switches,
-                                          creating_deployment: existing_deployment.nil?),
-              outputs: {
-                ovn_deployment_id: existing_deployment&.id,
-                created_deployment: existing_deployment.nil?,
-                logical_switch_ids: [],
-                logical_switch_port_ids: [],
-                compiled_plan: nil
-              },
-              failures: [],
-              partial: false
-            )
-          end
-
-          run_execute(switches: switches,
-                      nb_db_endpoint: nb_db_endpoint,
-                      sb_db_endpoint: sb_db_endpoint,
-                      northd_host: northd_host,
-                      existing_deployment: existing_deployment,
-                      host_lookup: host_lookup)
-        rescue StandardError => e
-          Rails.logger.error("[SdwanOvnComposeTopologyExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
+        binds_to "System Topology Designer"
 
         # Rollback: tear down ports → switches → (only when this call
         # created it) deployment. Pre-existing deployments are left
@@ -163,10 +109,56 @@ module System
           { success: errors.empty?, errors: errors }
         end
 
+        protected
+
+        def perform(switches:, nb_db_endpoint: nil, sb_db_endpoint: nil, northd_host: nil,
+                    dry_run: false, **_extras)
+          if (validation_error = validate_switches(switches: switches))
+            return validation_error
+          end
+
+          host_ids = collect_host_ids(switches)
+          host_lookup = lookup_hosts_or_fail(host_ids)
+          return host_lookup if host_lookup.is_a?(Hash) && host_lookup[:success] == false
+
+          existing_deployment = ::Sdwan::OvnDeployment.for_account(@account).first
+
+          if existing_deployment.nil? &&
+             (nb_db_endpoint.to_s.strip.empty? || sb_db_endpoint.to_s.strip.empty?)
+            return failure("nb_db_endpoint and sb_db_endpoint are required when no OvnDeployment exists for the account yet")
+          end
+
+          if dry_run
+            return success(
+              dry_run: true,
+              switch_count: switches.size,
+              port_count: switches.sum { |s| Array(s[:ports] || s["ports"]).size },
+              planned_actions: build_plan(switches: switches,
+                                          creating_deployment: existing_deployment.nil?),
+              outputs: {
+                ovn_deployment_id: existing_deployment&.id,
+                created_deployment: existing_deployment.nil?,
+                logical_switch_ids: [],
+                logical_switch_port_ids: [],
+                compiled_plan: nil
+              },
+              failures: [],
+              partial: false
+            )
+          end
+
+          run_execute(switches: switches,
+                      nb_db_endpoint: nb_db_endpoint,
+                      sb_db_endpoint: sb_db_endpoint,
+                      northd_host: northd_host,
+                      existing_deployment: existing_deployment,
+                      host_lookup: host_lookup)
+        end
+
         private
 
         # Returns nil on success, a failure-shaped hash on rejection.
-        def validate_inputs(switches:)
+        def validate_switches(switches:)
           arr = Array(switches)
           return failure("switches must contain at least one entry") if arr.empty?
           return failure("switches must be <= #{MAX_SWITCHES}") if arr.size > MAX_SWITCHES
@@ -356,14 +348,6 @@ module System
           end
           steps << { step: "compile_topology" }
           steps
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

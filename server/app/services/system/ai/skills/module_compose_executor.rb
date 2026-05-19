@@ -13,7 +13,7 @@ module System
       # against the returned module list.
       #
       # Reference: Golden Eclipse plan M6 — Skills catalog (module_compose row).
-      class ModuleComposeExecutor
+      class ModuleComposeExecutor < BaseSkillExecutor
         DEFAULT_MAX_MODULES = 10
         # Minimum keyword overlap to include a module. Ratio is matched
         # tokens / total description tokens. 0.05 = 1 match per 20 description
@@ -30,39 +30,34 @@ module System
           want need spin run setup install deploy host server use using
         ].freeze
 
-        def self.descriptor
-          {
-            name: "module_compose",
-            description: "Compose a Template draft from a workload description — keyword-matches modules and proposes a composition with conflict checks",
-            category: "devops",
-            inputs: {
-              description: { type: "string", required: true,
-                             description: "Free-form workload description, e.g. 'nginx web server with SSL and metrics'" },
-              platform_id: { type: "string", required: false,
-                             description: "Restrict the search to modules for a specific NodePlatform" },
-              max_modules: { type: "integer", required: false, default: DEFAULT_MAX_MODULES }
-            },
-            outputs: {
-              draft_template: :object,
-              conflicts: [ :object ],
-              candidate_count: :integer,
-              reasoning: :string
-            }
+        skill_descriptor(
+          name: "module_compose",
+          description: "Compose a Template draft from a workload description — keyword-matches modules and proposes a composition with conflict checks",
+          category: "devops",
+          inputs: {
+            description: { type: "string", required: true,
+                           description: "Free-form workload description, e.g. 'nginx web server with SSL and metrics'" },
+            platform_id: { type: "string", required: false,
+                           description: "Restrict the search to modules for a specific NodePlatform" },
+            max_modules: { type: "integer", required: false, default: DEFAULT_MAX_MODULES }
+          },
+          outputs: {
+            draft_template: :object,
+            conflicts: [ :object ],
+            candidate_count: :integer,
+            reasoning: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "Fleet Autonomy"
 
-        def execute(description:, platform_id: nil, max_modules: DEFAULT_MAX_MODULES)
+        protected
+
+        def perform(description:, platform_id: nil, max_modules: DEFAULT_MAX_MODULES)
           tokens = tokenize(description)
           return failure("description must contain at least one non-stopword token") if tokens.empty?
 
-          tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
-          modules_resp = tool.execute(params: { action: "system_list_modules" })
+          modules_resp = tool(::Ai::Tools::SystemFleetTool).execute(params: { action: "system_list_modules" })
           return failure("module listing failed: #{modules_resp[:error]}") unless modules_resp[:success]
 
           candidates = filter_for_platform(modules_resp[:data][:modules], platform_id)
@@ -79,9 +74,6 @@ module System
             requires_approval: false,
             note: "draft only — operator/concierge must confirm via system_create_template + system_assign_module_to_template"
           )
-        rescue StandardError => e
-          Rails.logger.error("[ModuleComposeExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -160,14 +152,6 @@ module System
             "Matched #{ranked.size} candidate modules; selected top #{chosen.size}. " \
             "Top match: #{chosen.first[:module][:name]} (score=#{chosen.first[:score]})."
           end
-        end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

@@ -7,39 +7,35 @@ module System
       # and dispatching a CI build. REQUIRES HUMAN APPROVAL per the
       # system.package_module.create intervention policy (supply-chain
       # critical — operators audit which packages enter their fleet).
-      class PackageModuleCreateExecutor
-        def self.descriptor
-          {
-            name:        "package_module_create",
-            description: "Materialize an apt/rpm package + transitive dep closure as NodeModule rows + ModuleDependency edges, then dispatch a CI build",
-            category:    "devops",
-            inputs: {
-              repository_id:       { type: "string", required: true },
-              package_name:        { type: "string", required: true },
-              architectures:       { type: "array",  required: false,
-                                     description: "Defaults to repository.architectures if omitted" },
-              recommends_selected: { type: "array",  required: false,
-                                     description: "Per-edge recommends opt-in list (defaults to none)" },
-              category_id:         { type: "string", required: false }
-            },
-            outputs: {
-              top_level_module_id:  :string,
-              dependency_count:     :integer,
-              recommends_count:     :integer,
-              build_dispatches:     :array,
-              warnings:             :array
-            },
-            requires_approval: true
-          }
-        end
+      class PackageModuleCreateExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name:        "package_module_create",
+          description: "Materialize an apt/rpm package + transitive dep closure as NodeModule rows + ModuleDependency edges, then dispatch a CI build",
+          category:    "devops",
+          inputs: {
+            repository_id:       { type: "string", required: true },
+            package_name:        { type: "string", required: true },
+            architectures:       { type: "array",  required: false,
+                                   description: "Defaults to repository.architectures if omitted" },
+            recommends_selected: { type: "array",  required: false,
+                                   description: "Per-edge recommends opt-in list (defaults to none)" },
+            category_id:         { type: "string", required: false }
+          },
+          outputs: {
+            top_level_module_id:  :string,
+            dependency_count:     :integer,
+            recommends_count:     :integer,
+            build_dispatches:     :array,
+            warnings:             :array
+          },
+          requires_approval: true
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy", "System Concierge"
 
-        def execute(repository_id:, package_name:, architectures: nil, recommends_selected: [], category_id: nil)
+        protected
+
+        def perform(repository_id:, package_name:, architectures: nil, recommends_selected: [], category_id: nil)
           repo = ::System::PackageRepository.accessible_to(@account).find_by(id: repository_id)
           return failure("repository not found or not accessible") unless repo
 
@@ -77,11 +73,6 @@ module System
         rescue ::System::PackageModuleMaterializer::NamingConflictError => e
           failure(e.message)
         end
-
-        private
-
-        def success(**data); { success: true, data: data }; end
-        def failure(msg); { success: false, error: msg }; end
       end
     end
   end

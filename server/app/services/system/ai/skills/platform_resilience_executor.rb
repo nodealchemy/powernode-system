@@ -26,46 +26,40 @@ module System
       #
       # Plan reference: chat-driven platform deployment + resilience
       # (D2-ext.2).
-      class PlatformResilienceExecutor
+      class PlatformResilienceExecutor < BaseSkillExecutor
         ACTIONS = %w[drain_instance scale failover_check].freeze
         SCALE_DIRECTIONS = %w[set increment decrement].freeze
 
-        def self.descriptor
-          {
-            name: "platform_resilience",
-            description: "Platform incident response — drain an instance, scale a deployment up/down, or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.",
-            category: "devops",
-            inputs: {
-              action: { type: "string", required: true,
-                        description: "One of: drain_instance, scale, failover_check" },
-              instance_id: { type: "string", required: false,
-                             description: "NodeInstance id (required for drain_instance)" },
-              timeout_seconds: { type: "integer", required: false, default: 600,
-                                 description: "Drain timeout for in-flight work (drain_instance only)" },
-              deployment_id: { type: "string", required: false,
-                               description: "PlatformDeployment id (required for scale)" },
-              direction: { type: "string", required: false,
-                           description: "scale direction: set | increment | decrement (defaults to increment)" },
-              target_replicas: { type: "integer", required: false,
-                                 description: "When direction=set, the new target_replicas value" }
-            },
-            outputs: {
-              action: :string,
-              data: :object,
-              recommendations: [ :string ]
-            },
-            requires_approval: false,
-            blast_radius: :high
+        skill_descriptor(
+          name: "platform_resilience",
+          description: "Platform incident response — drain an instance, scale a deployment up/down, or triage peer/instance health. Use this skill when the operator describes a stress event (instance misbehaving, capacity pressure, peer heartbeats stale) or asks 'what should I do about X'.",
+          category: "devops",
+          inputs: {
+            action: { type: "string", required: true,
+                      description: "One of: drain_instance, scale, failover_check" },
+            instance_id: { type: "string", required: false,
+                           description: "NodeInstance id (required for drain_instance)" },
+            timeout_seconds: { type: "integer", required: false, default: 600,
+                               description: "Drain timeout for in-flight work (drain_instance only)" },
+            deployment_id: { type: "string", required: false,
+                             description: "PlatformDeployment id (required for scale)" },
+            direction: { type: "string", required: false,
+                         description: "scale direction: set | increment | decrement (defaults to increment)" },
+            target_replicas: { type: "integer", required: false,
+                               description: "When direction=set, the new target_replicas value" }
+          },
+          outputs: {
+            action: :string,
+            data: :object,
+            recommendations: [ :string ]
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(action:, **params)
+        protected
+
+        def perform(action:, **params)
           unless ACTIONS.include?(action.to_s)
             return failure("Unknown action: #{action.inspect}; allowed: #{ACTIONS.inspect}")
           end
@@ -75,9 +69,6 @@ module System
           when "scale"           then scale(params)
           when "failover_check"  then failover_check
           end
-        rescue StandardError => e
-          Rails.logger.error("[PlatformResilienceExecutor] #{e.class}: #{e.message}")
-          failure("Resilience action failed: #{e.message}")
         end
 
         private
@@ -278,14 +269,6 @@ module System
           )
         rescue StandardError
           # opportunistic — never block on event emission
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

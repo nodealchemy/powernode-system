@@ -12,38 +12,34 @@ module System
       # ranks. Without a wrapper, the router can't surface this capability for
       # chat queries. Mirrors the pattern for system-suggest-architectures-for-fleet
       # (thin executor over an existing MCP action so semantic discovery works).
-      class ListPackageRepositoriesSummaryExecutor
-        def self.descriptor
-          {
-            name: "list_package_repositories_summary",
-            description: "Summarize the package repositories configured for the operator's account — counts, kinds (apt/rpm/dnf), visibility (shared vs account), sync status. Use for 'how many package repos', 'what package sources', 'list my repositories', or similar inventory queries.",
-            category: "devops",
-            inputs: {
-              intent: { type: "string", required: true,
-                        description: "Free-text query — typically the user's natural-language ask about repositories" }
-            },
-            outputs: {
-              total:           :integer,
-              by_kind:         :object,   # { apt: N, rpm: N, dnf: N }
-              by_visibility:   :object,   # { shared: N, account: N }
-              by_sync_status:  :object,   # { idle: N, syncing: N, failed: N }
-              repositories:    :array,    # full list with name, kind, package_count, sync_status
-              summary:         :string    # one-line operator-friendly summary
-            }
+      class ListPackageRepositoriesSummaryExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "list_package_repositories_summary",
+          description: "Summarize the package repositories configured for the operator's account — counts, kinds (apt/rpm/dnf), visibility (shared vs account), sync status. Use for 'how many package repos', 'what package sources', 'list my repositories', or similar inventory queries.",
+          category: "devops",
+          inputs: {
+            intent: { type: "string", required: true,
+                      description: "Free-text query — typically the user's natural-language ask about repositories" }
+          },
+          outputs: {
+            total:           :integer,
+            by_kind:         :object,   # { apt: N, rpm: N, dnf: N }
+            by_visibility:   :object,   # { shared: N, account: N }
+            by_sync_status:  :object,   # { idle: N, syncing: N, failed: N }
+            repositories:    :array,    # full list with name, kind, package_count, sync_status
+            summary:         :string    # one-line operator-friendly summary
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "System Concierge"
+
+        protected
 
         # `intent` is accepted for AUTO_INVOKABLE_INPUT_KEYS routing compatibility
         # but not actually consumed — this skill always returns the full
         # repository list regardless of query phrasing. The intent text is
         # captured in the audit trail so we can refine search semantics later.
-        def execute(intent: nil)
+        def perform(intent: nil)
           return failure("account is required") unless @account.present?
 
           repos = ::System::PackageRepository.accessible_to(@account).order(:name).to_a
@@ -94,14 +90,6 @@ module System
           status_summary = by_sync_status.any? { |s, _| s == "failed" } ? " (some failing)" : ""
 
           "#{total} package repositories configured (#{kind_parts}; #{vis_part})#{status_summary}."
-        end
-
-        def success(data)
-          { success: true, data: data, requires_approval: false }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

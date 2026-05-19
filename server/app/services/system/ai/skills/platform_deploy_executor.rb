@@ -25,55 +25,49 @@ module System
       # the wizard card naturally as part of a conversation.
       #
       # Plan reference: chat-driven platform deployment (D2).
-      class PlatformDeployExecutor
+      class PlatformDeployExecutor < BaseSkillExecutor
         MODES = %w[standalone federated].freeze
 
-        def self.descriptor
-          {
-            name: "platform_deploy",
-            description: "Deploy a new Powernode platform. Pass mode='standalone' for a sovereign platform or mode='federated' for one that handshakes back with this platform on first boot. With no params, returns a wizard payload describing the form the operator should fill in.",
-            category: "system",
-            inputs: {
-              mode: { type: "string", required: false,
-                      description: "Deployment mode: standalone | federated. Omit to receive a wizard payload." },
-              name: { type: "string", required: false,
-                      description: "Human-readable name for the new platform / deployment." },
-              template_slug: { type: "string", required: false, default: "powernode-hub",
-                               description: "NodeTemplate slug to use (default: powernode-hub)." },
-              parent_url: { type: "string", required: false,
-                            description: "Required for federated mode — reachable URL of THIS platform that the child posts back to." },
-              spawn_mode: { type: "string", required: false,
-                            description: "Required for federated mode — one of: managed_child, autonomous_peer, cluster_member." },
-              region: { type: "string", required: false,
-                        description: "Optional provider region preference." },
-              instance_size: { type: "string", required: false,
-                               description: "Optional provider instance type preference." },
-              service_role: { type: "string", required: false, default: "api",
-                              description: "Service role for the PlatformDeployment row (default: api)." },
-              public_dns_hostname: { type: "string", required: false,
-                                     description: "Optional public DNS hostname for the new platform." },
-              token_ttl_seconds: { type: "integer", required: false,
-                                   description: "Acceptance-token TTL for federated spawns (default: 7 days)." }
-            },
-            outputs: {
-              ok: :boolean,
-              card: :object,
-              deployment: :object,
-              acceptance_token: :string,
-              spawn_payload: :object
-            },
-            requires_approval: false,
-            blast_radius: :high
+        skill_descriptor(
+          name: "platform_deploy",
+          description: "Deploy a new Powernode platform. Pass mode='standalone' for a sovereign platform or mode='federated' for one that handshakes back with this platform on first boot. With no params, returns a wizard payload describing the form the operator should fill in.",
+          category: "system",
+          inputs: {
+            mode: { type: "string", required: false,
+                    description: "Deployment mode: standalone | federated. Omit to receive a wizard payload." },
+            name: { type: "string", required: false,
+                    description: "Human-readable name for the new platform / deployment." },
+            template_slug: { type: "string", required: false, default: "powernode-hub",
+                             description: "NodeTemplate slug to use (default: powernode-hub)." },
+            parent_url: { type: "string", required: false,
+                          description: "Required for federated mode — reachable URL of THIS platform that the child posts back to." },
+            spawn_mode: { type: "string", required: false,
+                          description: "Required for federated mode — one of: managed_child, autonomous_peer, cluster_member." },
+            region: { type: "string", required: false,
+                      description: "Optional provider region preference." },
+            instance_size: { type: "string", required: false,
+                             description: "Optional provider instance type preference." },
+            service_role: { type: "string", required: false, default: "api",
+                            description: "Service role for the PlatformDeployment row (default: api)." },
+            public_dns_hostname: { type: "string", required: false,
+                                   description: "Optional public DNS hostname for the new platform." },
+            token_ttl_seconds: { type: "integer", required: false,
+                                 description: "Acceptance-token TTL for federated spawns (default: 7 days)." }
+          },
+          outputs: {
+            ok: :boolean,
+            card: :object,
+            deployment: :object,
+            acceptance_token: :string,
+            spawn_payload: :object
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(mode: nil, **params)
+        protected
+
+        def perform(mode: nil, **params)
           # No mode → render the wizard card so the operator can fill in the form
           # in chat. Card carries the catalog of templates + spawn modes so the
           # UI doesn't have to refetch.
@@ -239,14 +233,6 @@ module System
           end
           steps << "Watch deployment status in /app/system/compute/platform/scaling. The new instance shows as `starting` initially, then `provisioning` → `running` once the provider acks."
           steps
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

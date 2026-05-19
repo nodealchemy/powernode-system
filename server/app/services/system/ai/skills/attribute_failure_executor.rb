@@ -18,36 +18,32 @@ module System
       # crash signatures from boot replay events.
       #
       # Reference: Golden Eclipse plan F-track creative — fleet "blame" attribution.
-      class AttributeFailureExecutor
+      class AttributeFailureExecutor < BaseSkillExecutor
         # Look-back window. Anything older is unlikely to be the cause
         # (cf. trading post-mortem heuristics).
         DEFAULT_LOOKBACK = 24.hours
 
-        def self.descriptor
-          {
-            name: "attribute_failure",
-            description: "Given a failed NodeInstance, rank recent module changes + promotions by likelihood of being the cause",
-            category: "devops",
-            inputs: {
-              instance_id: { type: "string", required: true },
-              lookback_hours: { type: "integer", required: false, default: 24 }
-            },
-            outputs: {
-              candidates: [ :object ],
-              top_candidate: :object,
-              confidence: :decimal,
-              reasoning: :string
-            }
+        skill_descriptor(
+          name: "attribute_failure",
+          description: "Given a failed NodeInstance, rank recent module changes + promotions by likelihood of being the cause",
+          category: "devops",
+          inputs: {
+            instance_id: { type: "string", required: true },
+            lookback_hours: { type: "integer", required: false, default: 24 }
+          },
+          outputs: {
+            candidates: [ :object ],
+            top_candidate: :object,
+            confidence: :decimal,
+            reasoning: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge"
 
-        def execute(instance_id:, lookback_hours: 24)
+        protected
+
+        def perform(instance_id:, lookback_hours: 24)
           instance = ::System::NodeInstance.joins(:node)
                        .where(system_nodes: { account_id: @account.id })
                        .find_by(id: instance_id)
@@ -85,9 +81,6 @@ module System
             confidence: confidence,
             reasoning: build_reasoning(instance, merged, top, since)
           )
-        rescue StandardError => e
-          Rails.logger.error("[AttributeFailureExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -214,21 +207,7 @@ module System
             "Considered #{candidates.size} candidates touching modules assigned to instance #{instance.id}."
           end
         end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
-        end
       end
     end
   end
 end
-
-# P3.3 discovery-based skill binding (dual-mode with existing seeds).
-System::Ai::Skills::SkillBindings.register(
-  System::Ai::Skills::AttributeFailureExecutor,
-  agents: ["System Concierge", "Fleet Autonomy"]
-)

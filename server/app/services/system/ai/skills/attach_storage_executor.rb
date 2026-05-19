@@ -18,53 +18,74 @@ module System
       # mount_point for observability.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
-      class AttachStorageExecutor
+      class AttachStorageExecutor < BaseSkillExecutor
         DEFAULT_MOUNT_POINT = "/data"
         MIN_GB = 1
         MAX_GB = 16_384
 
-        def self.descriptor
-          {
-            name: "attach_storage",
-            description: "Provision a cloud volume, attach it to a running NodeInstance, and mount it at the requested path. Composes VolumeManagementService.provision/attach + SshExecutionService for filesystem setup.",
-            category: "devops",
-            inputs: {
-              instance_id: { type: "string", required: true,
-                             description: "System::NodeInstance to attach the volume to" },
-              size_gb: { type: "integer", required: true,
-                         description: "Volume size in GiB (#{MIN_GB}-#{MAX_GB})" },
-              volume_type: { type: "string", required: false,
-                             description: "Optional ProviderVolumeType name (e.g. 'gp3'); falls back to provider default when nil" },
-              mount_point: { type: "string", required: false, default: DEFAULT_MOUNT_POINT,
-                             description: "Filesystem mount path on the instance" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no volume creation, no SSH" }
-            },
+        skill_descriptor(
+          name: "attach_storage",
+          description: "Provision a cloud volume, attach it to a running NodeInstance, and mount it at the requested path. Composes VolumeManagementService.provision/attach + SshExecutionService for filesystem setup.",
+          category: "devops",
+          inputs: {
+            instance_id: { type: "string", required: true,
+                           description: "System::NodeInstance to attach the volume to" },
+            size_gb: { type: "integer", required: true,
+                       description: "Volume size in GiB (#{MIN_GB}-#{MAX_GB})" },
+            volume_type: { type: "string", required: false,
+                           description: "Optional ProviderVolumeType name (e.g. 'gp3'); falls back to provider default when nil" },
+            mount_point: { type: "string", required: false, default: DEFAULT_MOUNT_POINT,
+                           description: "Filesystem mount path on the instance" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no volume creation, no SSH" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            count: :integer,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              count: :integer,
-              planned_actions: [ :object ],
-              outputs: {
-                node_instance_ids: [ :string ],
-                storage_volume_ids: [ :string ],
-                mount: :object
-              },
-              failures: [ :object ],
-              partial: :boolean
+              node_instance_ids: [ :string ],
+              storage_volume_ids: [ :string ],
+              mount: :object
             },
-            rollback: :rollback_attach_storage,
-            requires_approval: false,
-            blast_radius: :low
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_attach_storage,
+          blast_radius: :low
+        )
+
+        binds_to "Fleet Autonomy"
+
+        # Rollback contract: detach (best-effort) and delete the volume(s).
+        # node_instance_ids is forwarded by the runner but ignored — we do
+        # NOT terminate the host instance during a storage rollback.
+        def rollback_attach_storage(storage_volume_ids: [], **_extras)
+          errors = []
+
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            detach_result = ::System::VolumeManagementService.detach(volume: volume)
+            unless detach_result.success?
+              # Soft-fail on detach: still attempt delete (some providers
+              # auto-detach on delete; the operator audit log captures this).
+              Rails.logger.warn("[AttachStorageExecutor] detach failed for volume #{volume_id}: #{detach_result.error}")
+            end
+
+            del_result = ::System::VolumeManagementService.delete(volume: volume)
+            errors << { resource: "provider_volume", id: volume_id, error: del_result.error } unless del_result.success?
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
-        def execute(instance_id:, size_gb:, volume_type: nil,
+        def perform(instance_id:, size_gb:, volume_type: nil,
                     mount_point: DEFAULT_MOUNT_POINT, dry_run: false, **_extras)
           size = size_gb.to_i
           return failure("size_gb must be between #{MIN_GB} and #{MAX_GB}") unless size.between?(MIN_GB, MAX_GB)
@@ -101,35 +122,6 @@ module System
 
           run_execute(instance: instance, region: region, volume_type: volume_type_record,
                       size: size, mount: mount)
-        rescue StandardError => e
-          Rails.logger.error("[AttachStorageExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Rollback contract: detach (best-effort) and delete the volume(s).
-        # node_instance_ids is forwarded by the runner but ignored — we do
-        # NOT terminate the host instance during a storage rollback.
-        def rollback_attach_storage(storage_volume_ids: [], **_extras)
-          errors = []
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            detach_result = ::System::VolumeManagementService.detach(volume: volume)
-            unless detach_result.success?
-              # Soft-fail on detach: still attempt delete (some providers
-              # auto-detach on delete; the operator audit log captures this).
-              Rails.logger.warn("[AttachStorageExecutor] detach failed for volume #{volume_id}: #{detach_result.error}")
-            end
-
-            del_result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: del_result.error } unless del_result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -225,14 +217,6 @@ module System
 
         def lookup_volume_type(name)
           ::System::ProviderVolumeType.where(account_id: @account.id).find_by(name: name)
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

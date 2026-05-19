@@ -13,37 +13,33 @@ module System
       # the operator can read or share via Pages.
       #
       # Reference: comprehensive stabilization sweep Phase 10.7.
-      class CveRunbookGenerateExecutor
-        def self.descriptor
-          {
-            name: "cve_runbook_generate",
-            description: "Generate a markdown remediation runbook for a CVE — exposed modules, recommended steps, verification commands",
-            category: "security",
-            inputs: {
-              cve_id: { type: "string", required: true,
-                        description: "Canonical CVE id, e.g. CVE-2026-12345" },
-              persist_as_page: { type: "boolean", required: false, default: false,
-                                 description: "Save the runbook as a Pages document so it's reachable via list_pages" }
-            },
-            outputs: {
-              runbook_markdown: :string,
-              cve_id: :string,
-              exposed_module_count: :integer,
-              exposed_instance_count: :integer,
-              risk_score: :integer,
-              requires_approval: :boolean,
-              persisted_page_id: :string
-            }
+      class CveRunbookGenerateExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "cve_runbook_generate",
+          description: "Generate a markdown remediation runbook for a CVE — exposed modules, recommended steps, verification commands",
+          category: "security",
+          inputs: {
+            cve_id: { type: "string", required: true,
+                      description: "Canonical CVE id, e.g. CVE-2026-12345" },
+            persist_as_page: { type: "boolean", required: false, default: false,
+                               description: "Save the runbook as a Pages document so it's reachable via list_pages" }
+          },
+          outputs: {
+            runbook_markdown: :string,
+            cve_id: :string,
+            exposed_module_count: :integer,
+            exposed_instance_count: :integer,
+            risk_score: :integer,
+            requires_approval: :boolean,
+            persisted_page_id: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "System Concierge", "CVE Responder"
 
-        def execute(cve_id:, persist_as_page: false)
+        protected
+
+        def perform(cve_id:, persist_as_page: false)
           cve = ::System::Cve.find_by(cve_id: cve_id)
           return failure("CVE #{cve_id} not found in DB; ingest via CveOps::FeedIngestService first") unless cve
 
@@ -84,9 +80,6 @@ module System
             requires_approval: gate_for(cve.severity, risk_score),
             persisted_page_id: persisted_page_id
           )
-        rescue StandardError => e
-          Rails.logger.error("[CveRunbookGenerateExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -387,14 +380,6 @@ module System
         rescue StandardError => e
           Rails.logger.warn("[CveRunbookGenerateExecutor] page persist failed: #{e.message}")
           nil
-        end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

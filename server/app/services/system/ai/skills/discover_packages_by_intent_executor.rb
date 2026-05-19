@@ -16,7 +16,7 @@ module System
       # Pure pgvector cosine-distance ranking. Falls back to a clear error
       # if the embedding service is unavailable (no graceful lexical
       # degradation — discovery's premise IS the semantic match).
-      class DiscoverPackagesByIntentExecutor
+      class DiscoverPackagesByIntentExecutor < BaseSkillExecutor
         DEFAULT_TOP_K = 10
         MAX_TOP_K     = 50
 
@@ -33,42 +33,38 @@ module System
         CONFIDENCE_HIGH_BELOW   = 0.30
         CONFIDENCE_MEDIUM_BELOW = 0.50
 
-        def self.descriptor
-          {
-            name: "discover_packages_by_intent",
-            description: "Intent-based package discovery — describe a capability need ('reverse proxy', 'distributed cache') and get ranked packages from accessible repositories. Use system_search_packages instead when you already know the package name and just want filter/browse.",
-            category: "devops",
-            inputs: {
-              intent:         { type: "string",  required: true,
-                                description: "Free-text capability description — what the package should do" },
-              repository_ids: { type: "array",   required: false,
-                                description: "PackageRepository UUIDs to restrict the search to" },
-              kind:           { type: "string",  required: false,
-                                description: "Repository kind filter — apt|rpm|dnf" },
-              architectures:  { type: "array",   required: false,
-                                description: "Canonical arch names (amd64, arm64) to filter against — cross-kind expanded" },
-              license:        { type: "string",  required: false,
-                                description: "Exact license string to require (e.g. 'MIT', 'Apache-2.0')" },
-              top_k:          { type: "integer", required: false,
-                                default: DEFAULT_TOP_K,
-                                description: "Max results to return (1-#{MAX_TOP_K})" }
-            },
-            outputs: {
-              intent:     :string,
-              results:    :array,    # Array<Hash> {package_id, name, version, architecture, summary, similarity, repository_id, reason}
-              seed_count: :integer,  # Raw candidate count before top_k
-              confidence: :string    # high|medium|low
-            }
+        skill_descriptor(
+          name: "discover_packages_by_intent",
+          description: "Intent-based package discovery — describe a capability need ('reverse proxy', 'distributed cache') and get ranked packages from accessible repositories. Use system_search_packages instead when you already know the package name and just want filter/browse.",
+          category: "devops",
+          inputs: {
+            intent:         { type: "string",  required: true,
+                              description: "Free-text capability description — what the package should do" },
+            repository_ids: { type: "array",   required: false,
+                              description: "PackageRepository UUIDs to restrict the search to" },
+            kind:           { type: "string",  required: false,
+                              description: "Repository kind filter — apt|rpm|dnf" },
+            architectures:  { type: "array",   required: false,
+                              description: "Canonical arch names (amd64, arm64) to filter against — cross-kind expanded" },
+            license:        { type: "string",  required: false,
+                              description: "Exact license string to require (e.g. 'MIT', 'Apache-2.0')" },
+            top_k:          { type: "integer", required: false,
+                              default: DEFAULT_TOP_K,
+                              description: "Max results to return (1-#{MAX_TOP_K})" }
+          },
+          outputs: {
+            intent:     :string,
+            results:    :array,    # Array<Hash> {package_id, name, version, architecture, summary, similarity, repository_id, reason}
+            seed_count: :integer,  # Raw candidate count before top_k
+            confidence: :string    # high|medium|low
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy", "System Concierge"
 
-        def execute(intent:, repository_ids: nil, kind: nil, architectures: nil, license: nil, top_k: DEFAULT_TOP_K)
+        protected
+
+        def perform(intent:, repository_ids: nil, kind: nil, architectures: nil, license: nil, top_k: DEFAULT_TOP_K)
           return failure("intent is required") if intent.to_s.strip.empty?
           return failure("account is required for embedding generation") if @account.blank?
 
@@ -168,16 +164,6 @@ module System
           return "medium" if distance < CONFIDENCE_MEDIUM_BELOW
 
           "low"
-        end
-
-        # === Result envelope (matches sibling executors) ==================
-
-        def success(data)
-          { success: true, data: data, requires_approval: false }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

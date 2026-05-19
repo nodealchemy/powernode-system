@@ -10,55 +10,38 @@ module System
       # with only `propose` should use ArchitectureProposeExecutor.
       #
       # Reference: i-would-like-to-zesty-glade.md Tier 1 — T1.A.
-      class ArchitectureCreateExecutor
-        def self.descriptor
-          {
-            name: "architecture_create",
-            description: "Directly create a custom (non-canonical) architecture. Requires system.architectures.manage; surfaces for operator approval via intervention policy.",
-            category: "fleet",
-            inputs: {
-              name:         { type: "string",  required: true },
-              family:       { type: "string",  required: true },
-              apt_name:     { type: "string",  required: false },
-              rpm_name:     { type: "string",  required: false },
-              display_name: { type: "string",  required: false },
-              description:  { type: "string",  required: false },
-              enabled:      { type: "boolean", required: false },
-              public:       { type: "boolean", required: false }
-            },
-            outputs: {
-              architecture: :object
-            }
-          }
-        end
+      class ArchitectureCreateExecutor < CrudFactory
+        skill_descriptor(
+          name: "architecture_create",
+          description: "Directly create a custom (non-canonical) architecture. Requires system.architectures.manage; surfaces for operator approval via intervention policy.",
+          category: "fleet",
+          inputs: {
+            name:         { type: "string",  required: true },
+            family:       { type: "string",  required: true },
+            apt_name:     { type: "string",  required: false },
+            rpm_name:     { type: "string",  required: false },
+            display_name: { type: "string",  required: false },
+            description:  { type: "string",  required: false },
+            enabled:      { type: "boolean", required: false },
+            public:       { type: "boolean", required: false }
+          },
+          outputs: { architecture: :object },
+          requires_approval: true
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy"
 
-        def execute(name:, family:, apt_name: nil, rpm_name: nil, display_name: nil, description: nil, enabled: nil, public: nil)
-          tool = ::Ai::Tools::SystemArchitectureCatalogTool.new(
-            account: @account, agent: @agent, user: @user
-          )
-          params = { action: "system_create_architecture",
-                     name: name, family: family,
-                     apt_name: apt_name, rpm_name: rpm_name,
-                     display_name: display_name, description: description }
-          params[:enabled] = enabled unless enabled.nil?
-          params[:public]  = public  unless public.nil?
+        protected
 
-          result = tool.execute(params: params)
+        def perform(name:, family:, apt_name: nil, rpm_name: nil,
+                    display_name: nil, description: nil, enabled: nil, public: nil)
+          payload = { name: name, family: family,
+                      apt_name: apt_name, rpm_name: rpm_name,
+                      display_name: display_name, description: description }
+          payload[:enabled] = enabled unless enabled.nil?
+          payload[:public]  = public  unless public.nil?
 
-          if result[:success]
-            { success: true, data: result[:data] }
-          else
-            { success: false, error: result[:error] }
-          end
-        rescue StandardError => e
-          Rails.logger.error("[ArchitectureCreateExecutor] #{e.class}: #{e.message}")
-          { success: false, error: e.message }
+          crud_perform(resource: "architecture", operation: "create", payload: payload)
         end
       end
     end

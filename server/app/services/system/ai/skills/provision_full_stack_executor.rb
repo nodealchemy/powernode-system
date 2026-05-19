@@ -21,61 +21,89 @@ module System
       # the source of truth for what was created.
       #
       # Reference: AI-Driven Provisioning plan slice 4 (M0).
-      class ProvisionFullStackExecutor
+      class ProvisionFullStackExecutor < BaseSkillExecutor
         # Hard upper bound on a single skill invocation. Larger fleet rolls go
         # through rolling_module_upgrade with explicit operator confirmation.
         MAX_COUNT = 50
 
-        def self.descriptor
-          {
-            name: "provision_full_stack",
-            description: "Provision a full compute+network+storage stack from a template — composes provision_instance + optional storage volume + optional SDWAN topology compile",
-            category: "devops",
-            inputs: {
-              template_id: { type: "string", required: true,
-                             description: "System::NodeTemplate to instantiate" },
-              count: { type: "integer", required: true,
-                       description: "Number of node instances to provision (1-#{MAX_COUNT})" },
-              provider_region_id: { type: "string", required: true,
-                                    description: "System::ProviderRegion target" },
-              provider_instance_type_id: { type: "string", required: true,
-                                           description: "System::ProviderInstanceType for each instance" },
-              network_id: { type: "string", required: false,
-                            description: "Sdwan::Network — when present, the SDWAN topology is compiled and the resulting peer ids are returned for downstream attach" },
-              with_storage_gb: { type: "integer", required: false,
-                                 description: "When present, provision a per-instance ProviderVolume of this size" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — return projected actions without creating any cloud resources" }
-            },
+        skill_descriptor(
+          name: "provision_full_stack",
+          description: "Provision a full compute+network+storage stack from a template — composes provision_instance + optional storage volume + optional SDWAN topology compile",
+          category: "devops",
+          inputs: {
+            template_id: { type: "string", required: true,
+                           description: "System::NodeTemplate to instantiate" },
+            count: { type: "integer", required: true,
+                     description: "Number of node instances to provision (1-#{MAX_COUNT})" },
+            provider_region_id: { type: "string", required: true,
+                                  description: "System::ProviderRegion target" },
+            provider_instance_type_id: { type: "string", required: true,
+                                         description: "System::ProviderInstanceType for each instance" },
+            network_id: { type: "string", required: false,
+                          description: "Sdwan::Network — when present, the SDWAN topology is compiled and the resulting peer ids are returned for downstream attach" },
+            with_storage_gb: { type: "integer", required: false,
+                               description: "When present, provision a per-instance ProviderVolume of this size" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — return projected actions without creating any cloud resources" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            count: :integer,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              count: :integer,
-              planned_actions: [ :object ],
-              outputs: {
-                node_ids: [ :string ],
-                node_instance_ids: [ :string ],
-                sdwan_peer_ids: [ :string ],
-                storage_volume_ids: [ :string ]
-              },
-              failures: [ :object ],
-              partial: :boolean
+              node_ids: [ :string ],
+              node_instance_ids: [ :string ],
+              sdwan_peer_ids: [ :string ],
+              storage_volume_ids: [ :string ]
             },
-            rollback: :rollback_provision_full_stack,
-            requires_approval: false,
-            blast_radius: :medium
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_provision_full_stack,
+          blast_radius: :medium
+        )
+
+        binds_to "Fleet Autonomy"
+
+        # Instance-method rollback contract — invoked by `SkillCompositionRunner`
+        # via `executor.public_send(:rollback_provision_full_stack, **outputs)`.
+        # Receives the recorded outputs as kwargs so the runner can dispatch
+        # without knowing the executor's internals.
+        # Nodes themselves are cheap shells — left in place so the operator can
+        # inspect the failed run. Only NodeInstances and ProviderVolumes are
+        # reversed.
+        def rollback_provision_full_stack(node_instance_ids: [], storage_volume_ids: [], **_extras)
+          errors = []
+
+          Array(node_instance_ids).reverse_each do |instance_id|
+            instance = ::System::NodeInstance.find_by(id: instance_id)
+            next unless instance
+
+            result = ::System::ProvisioningService.terminate_instance(instance: instance)
+            errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "node_instance", id: instance_id, error: e.message }
+          end
+
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            result = ::System::VolumeManagementService.delete(volume: volume)
+            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
         # `**_extras` swallows context kwargs that PlanComposerService injects
         # into every step's inputs (notably `brief`) so the runner's
         # `executor.execute(**inputs)` invocation doesn't raise ArgumentError.
-        def execute(template_id:, count:, provider_region_id:, provider_instance_type_id:,
+        def perform(template_id:, count:, provider_region_id:, provider_instance_type_id:,
                     network_id: nil, with_storage_gb: nil, dry_run: false, **_extras)
           count = count.to_i
           return failure("count must be between 1 and #{MAX_COUNT}") unless count.between?(1, MAX_COUNT)
@@ -109,42 +137,6 @@ module System
           run_execute(template: template, count: count, region: region,
                       instance_type: instance_type, network: network,
                       with_storage_gb: with_storage_gb)
-        rescue StandardError => e
-          Rails.logger.error("[ProvisionFullStackExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Instance-method rollback contract — invoked by `SkillCompositionRunner`
-        # via `executor.public_send(:rollback_provision_full_stack, **outputs)`.
-        # Receives the recorded outputs as kwargs so the runner can dispatch
-        # without knowing the executor's internals.
-        # Nodes themselves are cheap shells — left in place so the operator can
-        # inspect the failed run. Only NodeInstances and ProviderVolumes are
-        # reversed.
-        def rollback_provision_full_stack(node_instance_ids: [], storage_volume_ids: [], **_extras)
-          errors = []
-
-          Array(node_instance_ids).reverse_each do |instance_id|
-            instance = ::System::NodeInstance.find_by(id: instance_id)
-            next unless instance
-
-            result = ::System::ProvisioningService.terminate_instance(instance: instance)
-            errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "node_instance", id: instance_id, error: e.message }
-          end
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -240,14 +232,6 @@ module System
           end
           steps << { step: "compile_sdwan_topology", network_id: network.id } if network
           steps
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

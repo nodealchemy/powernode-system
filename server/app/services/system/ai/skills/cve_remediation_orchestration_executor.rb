@@ -29,40 +29,36 @@ module System
       #   for the CVE Responder agent's `notify_and_proceed` autonomy path.
       #   The planner remains usable by Concierge for runbook generation and
       #   by humans for triage without side-effects.
-      class CveRemediationOrchestrationExecutor
-        def self.descriptor
-          {
-            name: "cve_remediation_orchestration",
-            description: "Orchestrate the full CVE → exposure → rebuild → rolling-upgrade chain for one CVE",
-            category: "security",
-            inputs: {
-              cve_id: { type: "string", required: true,
-                        description: "Canonical CVE id, e.g. CVE-2026-12345" },
-              severity: { type: "string", required: false,
-                          description: "critical|high|medium|low. Defaults to the persisted Cve.severity" },
-              affected_module_ids: { type: "array", required: false,
-                                     description: "Optional pre-resolved list of module ids — when omitted, derived from CveExposure rows" },
-              exposure_ids: { type: "array", required: false,
-                              description: "Optional list of CveExposure ids to transition to remediating" }
-            },
-            outputs: {
-              cve_id: :string,
-              triage: :object,
-              refresh_dispatches: [ :object ],
-              rolling_upgrade_plans: [ :object ],
-              exposures_remediating: :integer,
-              skipped_reason: :string
-            }
+      class CveRemediationOrchestrationExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "cve_remediation_orchestration",
+          description: "Orchestrate the full CVE → exposure → rebuild → rolling-upgrade chain for one CVE",
+          category: "security",
+          inputs: {
+            cve_id: { type: "string", required: true,
+                      description: "Canonical CVE id, e.g. CVE-2026-12345" },
+            severity: { type: "string", required: false,
+                        description: "critical|high|medium|low. Defaults to the persisted Cve.severity" },
+            affected_module_ids: { type: "array", required: false,
+                                   description: "Optional pre-resolved list of module ids — when omitted, derived from CveExposure rows" },
+            exposure_ids: { type: "array", required: false,
+                            description: "Optional list of CveExposure ids to transition to remediating" }
+          },
+          outputs: {
+            cve_id: :string,
+            triage: :object,
+            refresh_dispatches: [ :object ],
+            rolling_upgrade_plans: [ :object ],
+            exposures_remediating: :integer,
+            skipped_reason: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "CVE Responder"
 
-        def execute(cve_id:, severity: nil, affected_module_ids: nil, exposure_ids: nil)
+        protected
+
+        def perform(cve_id:, severity: nil, affected_module_ids: nil, exposure_ids: nil)
           cve = ::System::Cve.find_by(cve_id: cve_id) if defined?(::System::Cve)
           return failure("cve not found: #{cve_id}") unless cve
 
@@ -103,14 +99,9 @@ module System
             rolling_upgrade_plans: rolling_upgrade_plans,
             exposures_remediating: remediating_count
           )
-        rescue StandardError => e
-          Rails.logger.error("[CveRemediationOrchestrationExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
-
-        attr_reader :account
 
         def resolve_module_ids(explicit_ids, triage_data)
           return Array(explicit_ids).map(&:to_s).uniq if explicit_ids.present?
@@ -122,12 +113,12 @@ module System
           return [] if module_ids.empty?
 
           refresh_executor = ::System::Ai::Skills::PackageModuleRefreshExecutor.new(
-            account: account, agent: @agent, user: @user
+            account: @account, agent: @agent, user: @user
           )
 
           links = ::System::PackageModuleLink
             .joins(:node_module)
-            .where(system_node_modules: { account_id: account.id, id: module_ids })
+            .where(system_node_modules: { account_id: @account.id, id: module_ids })
 
           links.map do |link|
             result = refresh_executor.execute(package_module_link_id: link.id)
@@ -144,12 +135,12 @@ module System
           return [] if module_ids.empty?
 
           rolling_executor = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
-            account: account, agent: @agent, user: @user
+            account: @account, agent: @agent, user: @user
           )
 
           plans = []
           ::System::NodeModule
-            .where(account: account, id: module_ids)
+            .where(account: @account, id: module_ids)
             .includes(versions: :module_artifacts)
             .find_each do |mod|
               blessed = newer_blessed_version_for(mod)
@@ -209,14 +200,6 @@ module System
           scope.find_each.count do |exposure|
             exposure.update!(state: "remediating") if exposure.state == "open"
           end
-        end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

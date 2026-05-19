@@ -22,47 +22,70 @@ module System
       # rollback that releases only the bridges this call newly created.
       #
       # Phase O6 of the OVS+OVN dual-profile networking roadmap.
-      class SdwanHostBridgeComposeExecutor
+      class SdwanHostBridgeComposeExecutor < BaseSkillExecutor
         VALID_KINDS = ::Sdwan::HostBridge::KINDS
         MAX_HOSTS   = 100
 
-        def self.descriptor
-          {
-            name: "sdwan_host_bridge_compose",
-            description: "Allocate per-host SDWAN bridges (Linux for lightweight profile, OVS for heavyweight) for a set of NodeInstances. Composes Sdwan::HostBridgeAllocator. Idempotent.",
-            category: "devops",
-            inputs: {
-              host_node_instance_ids: { type: "array", required: true,
-                                        description: "System::NodeInstance ids to allocate bridges for (1-#{MAX_HOSTS})" },
-              kind: { type: "string", required: false,
-                      description: "Optional explicit bridge kind override: #{VALID_KINDS.join(' | ')}. Wins over the host's network_profile when supplied." },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no Sdwan::HostBridge rows are persisted" }
-            },
+        skill_descriptor(
+          name: "sdwan_host_bridge_compose",
+          description: "Allocate per-host SDWAN bridges (Linux for lightweight profile, OVS for heavyweight) for a set of NodeInstances. Composes Sdwan::HostBridgeAllocator. Idempotent.",
+          category: "devops",
+          inputs: {
+            host_node_instance_ids: { type: "array", required: true,
+                                      description: "System::NodeInstance ids to allocate bridges for (1-#{MAX_HOSTS})" },
+            kind: { type: "string", required: false,
+                    description: "Optional explicit bridge kind override: #{VALID_KINDS.join(' | ')}. Wins over the host's network_profile when supplied." },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no Sdwan::HostBridge rows are persisted" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            bridge_count: :integer,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              bridge_count: :integer,
-              planned_actions: [ :object ],
-              outputs: {
-                host_bridge_ids: [ :string ],
-                allocations: [ :object ]
-              },
-              failures: [ :object ],
-              partial: :boolean
+              host_bridge_ids: [ :string ],
+              allocations: [ :object ]
             },
-            rollback: :rollback_sdwan_host_bridge_compose,
-            requires_approval: false,
-            blast_radius: :low
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_sdwan_host_bridge_compose,
+          blast_radius: :low
+        )
+
+        binds_to "System Topology Designer"
+
+        # Rollback: release only the bridges this call newly created
+        # (allocations with `reused: false`). Re-used bridges are left
+        # alone since other state — VMs, taps, autonomy reconciles — may
+        # depend on them. `force: true` skips the draining grace window
+        # because a never-applied bridge has no in-flight tap traffic to
+        # protect, so the short_id can return to the pool immediately.
+        def rollback_sdwan_host_bridge_compose(allocations: [], **_extras)
+          errors = []
+
+          Array(allocations).each do |alloc|
+            next if alloc[:reused] || alloc["reused"]
+
+            bridge_id = (alloc[:host_bridge_id] || alloc["host_bridge_id"]).to_s
+            next if bridge_id.empty?
+
+            bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find_by(id: bridge_id)
+            next unless bridge
+
+            begin
+              ::Sdwan::HostBridgeAllocator.release!(bridge, force: true)
+            rescue StandardError => e
+              errors << { resource: "host_bridge", id: bridge_id, error: e.message }
+            end
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
-        def execute(host_node_instance_ids:, kind: nil, dry_run: false, **_extras)
+        def perform(host_node_instance_ids:, kind: nil, dry_run: false, **_extras)
           ids = Array(host_node_instance_ids).map(&:to_s).reject(&:empty?)
           return failure("host_node_instance_ids must contain at least one id") if ids.empty?
           return failure("host_node_instance_ids count must be <= #{MAX_HOSTS}") if ids.size > MAX_HOSTS
@@ -95,37 +118,6 @@ module System
           end
 
           run_execute(instances: instances, kind: kind)
-        rescue StandardError => e
-          Rails.logger.error("[SdwanHostBridgeComposeExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Rollback: release only the bridges this call newly created
-        # (allocations with `reused: false`). Re-used bridges are left
-        # alone since other state — VMs, taps, autonomy reconciles — may
-        # depend on them. `force: true` skips the draining grace window
-        # because a never-applied bridge has no in-flight tap traffic to
-        # protect, so the short_id can return to the pool immediately.
-        def rollback_sdwan_host_bridge_compose(allocations: [], **_extras)
-          errors = []
-
-          Array(allocations).each do |alloc|
-            next if alloc[:reused] || alloc["reused"]
-
-            bridge_id = (alloc[:host_bridge_id] || alloc["host_bridge_id"]).to_s
-            next if bridge_id.empty?
-
-            bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find_by(id: bridge_id)
-            next unless bridge
-
-            begin
-              ::Sdwan::HostBridgeAllocator.release!(bridge, force: true)
-            rescue StandardError => e
-              errors << { resource: "host_bridge", id: bridge_id, error: e.message }
-            end
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -221,14 +213,6 @@ module System
             host.network_profile.to_s,
             ::Sdwan::HostBridgeAllocator::DEFAULT_KIND
           )
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

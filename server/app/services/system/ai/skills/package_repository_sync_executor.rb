@@ -6,33 +6,29 @@ module System
       # Skill executor for triggering a single package-repository sync.
       # Bound to Fleet Autonomy; auto-approved per intervention policy
       # (system.package_repository.sync, 1h cooldown).
-      class PackageRepositorySyncExecutor
-        def self.descriptor
-          {
-            name:        "package_repository_sync",
-            description: "Sync upstream apt/rpm metadata for one package repository (account-scoped or shared)",
-            category:    "devops",
-            inputs: {
-              repository_id: { type: "string", required: true,
-                               description: "PackageRepository.id" }
-            },
-            outputs: {
-              ok:            :boolean,
-              upserted:      :integer,
-              obsoleted:     :integer,
-              package_count: :integer,
-              error:         :string
-            }
+      class PackageRepositorySyncExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name:        "package_repository_sync",
+          description: "Sync upstream apt/rpm metadata for one package repository (account-scoped or shared)",
+          category:    "devops",
+          inputs: {
+            repository_id: { type: "string", required: true,
+                             description: "PackageRepository.id" }
+          },
+          outputs: {
+            ok:            :boolean,
+            upserted:      :integer,
+            obsoleted:     :integer,
+            package_count: :integer,
+            error:         :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy"
 
-        def execute(repository_id:)
+        protected
+
+        def perform(repository_id:)
           repo = ::System::PackageRepository.accessible_to(@account).find_by(id: repository_id)
           return failure("repository not found or not accessible") unless repo
 
@@ -46,11 +42,6 @@ module System
             requires_approval: false
           )
         end
-
-        private
-
-        def success(**data); { success: true, data: data }; end
-        def failure(msg); { success: false, error: msg }; end
       end
     end
   end

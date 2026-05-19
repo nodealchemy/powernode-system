@@ -14,36 +14,32 @@ module System
       #   → managed Devops::DockerHost row + client mTLS cert in Vault
       #
       # Reference: spicy-bear plan Phase 1 + skill awareness slice 2.
-      class DockerProvisionExecutor
-        def self.descriptor
-          {
-            name: "docker_provision",
-            description: "Provision a managed Docker daemon on a NodeInstance — auto-registers as a Devops::DockerHost bound to the SDWAN overlay /128",
-            category: "devops",
-            inputs: {
-              node_instance_id: { type: "string", required: true,
-                                  description: "NodeInstance to provision (must already have an Sdwan::Peer with assigned overlay)" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan-only — return projected actions without creating the DockerHost row" }
-            },
-            outputs: {
-              dry_run: :boolean,
-              host_id: :string,
-              host_status: :string,
-              api_endpoint: :string,
-              already_provisioned: :boolean,
-              plan: :object
-            }
+      class DockerProvisionExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "docker_provision",
+          description: "Provision a managed Docker daemon on a NodeInstance — auto-registers as a Devops::DockerHost bound to the SDWAN overlay /128",
+          category: "devops",
+          inputs: {
+            node_instance_id: { type: "string", required: true,
+                                description: "NodeInstance to provision (must already have an Sdwan::Peer with assigned overlay)" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan-only — return projected actions without creating the DockerHost row" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            host_id: :string,
+            host_status: :string,
+            api_endpoint: :string,
+            already_provisioned: :boolean,
+            plan: :object
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "Runtime Manager", "System Concierge"
 
-        def execute(node_instance_id:, dry_run: false)
+        protected
+
+        def perform(node_instance_id:, dry_run: false)
           instance = ::System::NodeInstance
                        .joins(:node)
                        .where(system_nodes: { account_id: @account.id })
@@ -84,9 +80,6 @@ module System
           )
         rescue ::System::DockerDaemonProvisionerService::MissingSdwanPeerError => e
           failure(e.message)
-        rescue StandardError => e
-          Rails.logger.error("[DockerProvisionExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -108,9 +101,6 @@ module System
             ]
           }
         end
-
-        def success(payload) = { success: true, data: payload }
-        def failure(msg) = { success: false, error: msg }
       end
     end
   end

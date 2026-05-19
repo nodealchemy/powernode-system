@@ -17,38 +17,34 @@ module System
       #     granted capabilities
       #
       # Plan reference: Decentralized Federation §"Fix 2" + P4.8.
-      class FederationManagerExecutor
+      class FederationManagerExecutor < BaseSkillExecutor
         CERT_ROTATION_THRESHOLD_RATIO = 0.75
         GRANT_EXPIRY_WARN_WINDOW      = 7.days
         GRANT_REVIEW_THRESHOLD        = 90.days
         BROAD_SCOPES                  = %w[admin migrate].freeze
 
-        def self.descriptor
-          {
-            name: "federation_manager",
-            description: "Survey federation peer + grant + cert health for an account and surface findings the operator (or a future autonomy loop) should action.",
-            category: "federation",
-            inputs: {},
-            outputs: {
-              account_id: :string,
-              ran_at: :string,
-              cert_rotation_candidates: :array,
-              grants_approaching_expiry: :array,
-              grants_overdue_for_review: :array,
-              broad_scope_grants: :array,
-              capability_drift: :array,
-              finding_count: :integer
-            }
+        skill_descriptor(
+          name: "federation_manager",
+          description: "Survey federation peer + grant + cert health for an account and surface findings the operator (or a future autonomy loop) should action.",
+          category: "federation",
+          inputs: {},
+          outputs: {
+            account_id: :string,
+            ran_at: :string,
+            cert_rotation_candidates: :array,
+            grants_approaching_expiry: :array,
+            grants_overdue_for_review: :array,
+            broad_scope_grants: :array,
+            capability_drift: :array,
+            finding_count: :integer
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "SDWAN Manager"
 
-        def execute(**_args)
+        protected
+
+        def perform(**_args)
           cert_rotation     = cert_rotation_candidates
           expiring_grants   = grants_approaching_expiry
           stale_grants      = grants_overdue_for_review
@@ -60,19 +56,16 @@ module System
 
           emit_findings_summary!(findings_total)
 
-          {
-            success: true,
-            data: {
-              account_id: @account.id,
-              ran_at: Time.current.iso8601,
-              cert_rotation_candidates: cert_rotation,
-              grants_approaching_expiry: expiring_grants,
-              grants_overdue_for_review: stale_grants,
-              broad_scope_grants: broad_grants,
-              capability_drift: drifted_peers,
-              finding_count: findings_total
-            }
-          }
+          success(
+            account_id: @account.id,
+            ran_at: Time.current.iso8601,
+            cert_rotation_candidates: cert_rotation,
+            grants_approaching_expiry: expiring_grants,
+            grants_overdue_for_review: stale_grants,
+            broad_scope_grants: broad_grants,
+            capability_drift: drifted_peers,
+            finding_count: findings_total
+          )
         end
 
         private

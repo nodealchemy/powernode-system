@@ -22,34 +22,30 @@
 module System
   module Ai
     module Skills
-      class SdwanPeerRemediateExecutor
-        def self.descriptor
-          {
-            name: "sdwan_peer_remediate",
-            description: "Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on next reconcile",
-            category: "sdwan",
-            inputs: {
-              peer_id: { type: "string", required: true,
-                         description: "Sdwan::Peer to remediate" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan-only mode — return what would happen without rotating keys" }
-            },
-            outputs: {
-              resolved: :boolean,
-              rotated_from_key_id: :string,
-              new_key_id: :string,
-              new_public_key: :string
-            }
+      class SdwanPeerRemediateExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "sdwan_peer_remediate",
+          description: "Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on next reconcile",
+          category: "sdwan",
+          inputs: {
+            peer_id: { type: "string", required: true,
+                       description: "Sdwan::Peer to remediate" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan-only mode — return what would happen without rotating keys" }
+          },
+          outputs: {
+            resolved: :boolean,
+            rotated_from_key_id: :string,
+            new_key_id: :string,
+            new_public_key: :string
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "SDWAN Manager"
 
-        def execute(peer_id:, dry_run: false)
+        protected
+
+        def perform(peer_id:, dry_run: false)
           peer = ::Sdwan::Peer.joins(:network)
                               .where(sdwan_networks: { account_id: @account.id })
                               .find_by(id: peer_id)
@@ -96,19 +92,6 @@ module System
             new_public_key: new_key&.public_key,
             peer_address: peer.assigned_address
           )
-        rescue StandardError => e
-          Rails.logger.error("[SdwanPeerRemediateExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        private
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(error)
-          { success: false, error: error.to_s }
         end
       end
     end

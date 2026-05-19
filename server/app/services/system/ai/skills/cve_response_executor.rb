@@ -13,7 +13,7 @@ module System
       # the M-D2-2 calculator can be swapped in without changing callers.
       #
       # Reference: Golden Eclipse plan M6 — Skills catalog (cve_response row).
-      class CveResponseExecutor
+      class CveResponseExecutor < BaseSkillExecutor
         SEVERITY_WEIGHT = {
           "critical" => 100,
           "high"     => 60,
@@ -27,39 +27,35 @@ module System
         # severity exposures pushes us above this floor.
         AUTO_GATE_RISK_THRESHOLD = 50
 
-        def self.descriptor
-          {
-            name: "cve_response",
-            description: "Triage a CVE entry against the fleet — enumerates exposure, scores risk, proposes a remediation plan",
-            category: "security",
-            inputs: {
-              cve_id: { type: "string", required: true,
-                        description: "Canonical CVE id, e.g. CVE-2026-12345" },
-              severity: { type: "string", required: true,
-                          description: "critical|high|medium|low" },
-              affected_packages: { type: "array", required: true,
-                                   description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
-              summary: { type: "string", required: false }
-            },
-            outputs: {
-              cve_id: :string,
-              severity: :string,
-              risk_score: :integer,
-              exposed_modules: [ :object ],
-              exposed_instance_count: :integer,
-              remediation_plan: :object,
-              requires_approval: :boolean
-            }
+        skill_descriptor(
+          name: "cve_response",
+          description: "Triage a CVE entry against the fleet — enumerates exposure, scores risk, proposes a remediation plan",
+          category: "security",
+          inputs: {
+            cve_id: { type: "string", required: true,
+                      description: "Canonical CVE id, e.g. CVE-2026-12345" },
+            severity: { type: "string", required: true,
+                        description: "critical|high|medium|low" },
+            affected_packages: { type: "array", required: true,
+                                 description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
+            summary: { type: "string", required: false }
+          },
+          outputs: {
+            cve_id: :string,
+            severity: :string,
+            risk_score: :integer,
+            exposed_modules: [ :object ],
+            exposed_instance_count: :integer,
+            remediation_plan: :object,
+            requires_approval: :boolean
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "CVE Responder"
 
-        def execute(cve_id:, severity:, affected_packages:, summary: nil, persist: false)
+        protected
+
+        def perform(cve_id:, severity:, affected_packages:, summary: nil, persist: false)
           severity_norm = severity.to_s.downcase
           weight = SEVERITY_WEIGHT[severity_norm]
           return failure("severity must be one of: #{SEVERITY_WEIGHT.keys.join(', ')}") unless weight
@@ -88,9 +84,6 @@ module System
             exposure_source: source,
             note: source == "persisted" ? "exposures from System::CveExposure rows" : "v0 keyword-overlap stub — persist via CveResponseExecutor#execute(..., persist: true)"
           )
-        rescue StandardError => e
-          Rails.logger.error("[CveResponseExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
 
         private
@@ -129,8 +122,7 @@ module System
           end
 
           # Fall through to the keyword stub.
-          tool = ::Ai::Tools::SystemFleetTool.new(account: @account, agent: @agent, user: @user)
-          modules_resp = tool.execute(params: { action: "system_list_modules" })
+          modules_resp = tool(::Ai::Tools::SystemFleetTool).execute(params: { action: "system_list_modules" })
           return [ [], "module_lookup_failed" ] unless modules_resp[:success]
 
           [ score_exposed_modules(modules_resp[:data][:modules], packages), "keyword_stub" ]
@@ -208,23 +200,7 @@ module System
           return true if severity == "high"
           risk_score >= AUTO_GATE_RISK_THRESHOLD
         end
-
-        def success(payload)
-          { success: true, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
-        end
       end
     end
   end
 end
-
-# P3.3 discovery-based skill binding. The hardcoded slug list in
-# db/seeds/system_cve_responder_agent.rb still works (dual-mode for one
-# release); the new system_skill_bindings_seed.rb walks this registry
-# and binds (CVE Responder, system-cve-response) declaratively.
-System::Ai::Skills::SkillBindings.register(
-  System::Ai::Skills::CveResponseExecutor, agents: ["CVE Responder"]
-)

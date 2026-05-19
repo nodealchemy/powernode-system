@@ -23,38 +23,34 @@ module System
       # The output's `rationale` array gives the agent / UI a per-arch
       # justification ("Top fleet arch with 12 platforms") so the
       # suggestion is auditable.
-      class SuggestArchitecturesForFleetExecutor
+      class SuggestArchitecturesForFleetExecutor < BaseSkillExecutor
         DEFAULT_MAX_SUGGESTIONS = 4
 
-        def self.descriptor
-          {
-            name: "suggest_architectures_for_fleet",
-            description: "Suggest which canonical architectures to materialize a package for, based on the current fleet's NodePlatform coverage and the repository's served architectures.",
-            category: "devops",
-            inputs: {
-              repository_id:    { type: "string",  required: true,
-                                  description: "PackageRepository.id whose architectures bound the suggestion set" },
-              max_suggestions:  { type: "integer", required: false,
-                                  default: DEFAULT_MAX_SUGGESTIONS,
-                                  description: "Cap on the number of suggested arches (1-7)" }
-            },
-            outputs: {
-              repository_id: :string,
-              suggested:     :array,    # Array<String> of canonical names
-              rationale:     :array,    # Array<Hash> per-arch reasoning
-              fallback:      :boolean,  # true ⇔ no fleet overlap; suggesting repo defaults
-              confidence:    :string    # "high" | "medium" | "low"
-            }
+        skill_descriptor(
+          name: "suggest_architectures_for_fleet",
+          description: "Suggest which canonical architectures to materialize a package for, based on the current fleet's NodePlatform coverage and the repository's served architectures.",
+          category: "devops",
+          inputs: {
+            repository_id:    { type: "string",  required: true,
+                                description: "PackageRepository.id whose architectures bound the suggestion set" },
+            max_suggestions:  { type: "integer", required: false,
+                                default: DEFAULT_MAX_SUGGESTIONS,
+                                description: "Cap on the number of suggested arches (1-7)" }
+          },
+          outputs: {
+            repository_id: :string,
+            suggested:     :array,    # Array<String> of canonical names
+            rationale:     :array,    # Array<Hash> per-arch reasoning
+            fallback:      :boolean,  # true ⇔ no fleet overlap; suggesting repo defaults
+            confidence:    :string    # "high" | "medium" | "low"
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent   = agent
-          @user    = user
-        end
+        binds_to "Fleet Autonomy", "System Concierge"
 
-        def execute(repository_id:, max_suggestions: DEFAULT_MAX_SUGGESTIONS)
+        protected
+
+        def perform(repository_id:, max_suggestions: DEFAULT_MAX_SUGGESTIONS)
           max_n = max_suggestions.to_i.clamp(1, 7)
 
           repo = scoped_repos.find_by(id: repository_id)
@@ -153,9 +149,6 @@ module System
             confidence:    confidence
           }
         end
-
-        def success(data); { success: true, data: data, requires_approval: false }; end
-        def failure(msg); { success: false, error: msg }; end
       end
     end
   end

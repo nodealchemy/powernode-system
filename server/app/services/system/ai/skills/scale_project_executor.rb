@@ -22,69 +22,93 @@ module System
       # provisioning skills uniformly.
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
-      class ScaleProjectExecutor
+      class ScaleProjectExecutor < BaseSkillExecutor
         STRATEGIES = %w[add_replicas vertical_resize add_region].freeze
         MAX_DELTA  = 50
 
-        def self.descriptor
-          {
-            name: "scale_project",
-            description: "Adapt a provisioning project's footprint — add replicas in-region, plan a vertical resize, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
-            category: "devops",
-            inputs: {
-              project_id: { type: "string", required: true,
-                            description: "Ai::Mission id (the provisioning project being scaled)" },
-              target_count: { type: "integer", required: true,
-                              description: "Number of new instances (add_replicas / add_region) — bounded 1..#{MAX_DELTA}. Ignored for vertical_resize." },
-              scaling_strategy: { type: "string", required: true,
-                                  description: "One of: #{STRATEGIES.join(', ')}" },
-              template_id: { type: "string", required: false,
-                             description: "System::NodeTemplate to instantiate (add_replicas / add_region) or whose fleet is being resized (vertical_resize)" },
-              provider_region_id: { type: "string", required: false,
-                                    description: "Region for new instances (add_replicas: same as project; add_region: NEW region)" },
-              provider_instance_type_id: { type: "string", required: false,
-                                           description: "Instance type for new instances" },
-              module_id: { type: "string", required: false,
-                           description: "vertical_resize: System::NodeModule whose target_version replaces in-place" },
-              target_version_id: { type: "string", required: false,
-                                   description: "vertical_resize: target System::NodeModuleVersion id" },
-              network_id: { type: "string", required: false,
-                            description: "add_region: optional Sdwan::Network to attach new instances to" },
-              with_storage_gb: { type: "integer", required: false,
-                                 description: "add_region: optional per-instance volume size" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — return projected actions without creating any cloud resources" }
-            },
+        skill_descriptor(
+          name: "scale_project",
+          description: "Adapt a provisioning project's footprint — add replicas in-region, plan a vertical resize, or expand into a new region. Composes ProvisionFullStackExecutor + RollingModuleUpgradeExecutor.",
+          category: "devops",
+          inputs: {
+            project_id: { type: "string", required: true,
+                          description: "Ai::Mission id (the provisioning project being scaled)" },
+            target_count: { type: "integer", required: true,
+                            description: "Number of new instances (add_replicas / add_region) — bounded 1..#{MAX_DELTA}. Ignored for vertical_resize." },
+            scaling_strategy: { type: "string", required: true,
+                                description: "One of: #{STRATEGIES.join(', ')}" },
+            template_id: { type: "string", required: false,
+                           description: "System::NodeTemplate to instantiate (add_replicas / add_region) or whose fleet is being resized (vertical_resize)" },
+            provider_region_id: { type: "string", required: false,
+                                  description: "Region for new instances (add_replicas: same as project; add_region: NEW region)" },
+            provider_instance_type_id: { type: "string", required: false,
+                                         description: "Instance type for new instances" },
+            module_id: { type: "string", required: false,
+                         description: "vertical_resize: System::NodeModule whose target_version replaces in-place" },
+            target_version_id: { type: "string", required: false,
+                                 description: "vertical_resize: target System::NodeModuleVersion id" },
+            network_id: { type: "string", required: false,
+                          description: "add_region: optional Sdwan::Network to attach new instances to" },
+            with_storage_gb: { type: "integer", required: false,
+                               description: "add_region: optional per-instance volume size" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — return projected actions without creating any cloud resources" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            count: :integer,
+            scaling_strategy: :string,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              count: :integer,
-              scaling_strategy: :string,
-              planned_actions: [ :object ],
-              outputs: {
-                node_ids: [ :string ],
-                node_instance_ids: [ :string ],
-                sdwan_peer_ids: [ :string ],
-                storage_volume_ids: [ :string ],
-                rolling_upgrade_plan: :object
-              },
-              failures: [ :object ],
-              partial: :boolean
+              node_ids: [ :string ],
+              node_instance_ids: [ :string ],
+              sdwan_peer_ids: [ :string ],
+              storage_volume_ids: [ :string ],
+              rolling_upgrade_plan: :object
             },
-            rollback: :rollback_scale_project,
-            requires_approval: false,
-            blast_radius: :medium
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_scale_project,
+          blast_radius: :medium
+        )
+
+        binds_to "Fleet Autonomy"
+
+        # Instance-method rollback. Reverses the side effects recorded in the
+        # outputs envelope. vertical_resize returns a plan — it has no side
+        # effects to reverse, so its outputs are empty and rollback no-ops.
+        def rollback_scale_project(node_instance_ids: [], storage_volume_ids: [], **_extras)
+          errors = []
+
+          Array(node_instance_ids).reverse_each do |instance_id|
+            instance = ::System::NodeInstance.find_by(id: instance_id)
+            next unless instance
+
+            result = ::System::ProvisioningService.terminate_instance(instance: instance)
+            errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "node_instance", id: instance_id, error: e.message }
+          end
+
+          Array(storage_volume_ids).reverse_each do |volume_id|
+            volume = ::System::ProviderVolume.find_by(id: volume_id)
+            next unless volume
+
+            result = ::System::VolumeManagementService.delete(volume: volume)
+            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
+          rescue StandardError => e
+            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
         # `**_extras` swallows context kwargs (notably `brief`) that
         # PlanComposerService injects into every step's inputs.
-        def execute(project_id:, target_count:, scaling_strategy:,
+        def perform(project_id:, target_count:, scaling_strategy:,
                     template_id: nil, provider_region_id: nil,
                     provider_instance_type_id: nil, module_id: nil,
                     target_version_id: nil, network_id: nil,
@@ -117,38 +141,6 @@ module System
             run_vertical_resize(template_id: template_id, module_id: module_id,
                                 target_version_id: target_version_id, dry_run: dry_run)
           end
-        rescue StandardError => e
-          Rails.logger.error("[ScaleProjectExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Instance-method rollback. Reverses the side effects recorded in the
-        # outputs envelope. vertical_resize returns a plan — it has no side
-        # effects to reverse, so its outputs are empty and rollback no-ops.
-        def rollback_scale_project(node_instance_ids: [], storage_volume_ids: [], **_extras)
-          errors = []
-
-          Array(node_instance_ids).reverse_each do |instance_id|
-            instance = ::System::NodeInstance.find_by(id: instance_id)
-            next unless instance
-
-            result = ::System::ProvisioningService.terminate_instance(instance: instance)
-            errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "node_instance", id: instance_id, error: e.message }
-          end
-
-          Array(storage_volume_ids).reverse_each do |volume_id|
-            volume = ::System::ProviderVolume.find_by(id: volume_id)
-            next unless volume
-
-            result = ::System::VolumeManagementService.delete(volume: volume)
-            errors << { resource: "provider_volume", id: volume_id, error: result.error } unless result.success?
-          rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -245,14 +237,6 @@ module System
         def prepend_strategy_marker(strategy, planned_actions)
           marker = { step: "scale_project", scaling_strategy: strategy }
           [ marker ] + Array(planned_actions)
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

@@ -21,33 +21,29 @@
 module System
   module Ai
     module Skills
-      class SdwanFailoverExecutor
-        def self.descriptor
-          {
-            name: "sdwan_failover",
-            description: "Plan an SDWAN hub failover for an unreachable network; identifies promotion candidates without auto-flipping",
-            category: "sdwan",
-            inputs: {
-              network_id: { type: "string", required: true },
-              dry_run: { type: "boolean", required: false, default: true,
-                         description: "v1 only supports dry_run=true — auto-promotion deferred" }
-            },
-            outputs: {
-              resolved: :boolean,
-              network_id: :string,
-              current_hub_count: :integer,
-              candidates: { peer_id: :string, endpoint_host: :string, endpoint_port: :integer, last_handshake_at: :string }
-            }
+      class SdwanFailoverExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "sdwan_failover",
+          description: "Plan an SDWAN hub failover for an unreachable network; identifies promotion candidates without auto-flipping",
+          category: "sdwan",
+          inputs: {
+            network_id: { type: "string", required: true },
+            dry_run: { type: "boolean", required: false, default: true,
+                       description: "v1 only supports dry_run=true — auto-promotion deferred" }
+          },
+          outputs: {
+            resolved: :boolean,
+            network_id: :string,
+            current_hub_count: :integer,
+            candidates: { peer_id: :string, endpoint_host: :string, endpoint_port: :integer, last_handshake_at: :string }
           }
-        end
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        binds_to "SDWAN Manager"
 
-        def execute(network_id:, dry_run: true)
+        protected
+
+        def perform(network_id:, dry_run: true)
           network = ::Sdwan::Network.where(account_id: @account.id).find_by(id: network_id)
           return failure("network not found in account") unless network
 
@@ -82,15 +78,7 @@ module System
             candidates: candidate_payload,
             note: "Operator must promote the chosen candidate by PATCHing /sdwan/networks/<id>/peers/<peer_id> with publicly_reachable=true."
           )
-        rescue StandardError => e
-          Rails.logger.error("[SdwanFailoverExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
         end
-
-        private
-
-        def success(payload) = { success: true, data: payload }
-        def failure(error) = { success: false, error: error.to_s }
       end
     end
   end

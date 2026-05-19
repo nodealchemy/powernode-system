@@ -26,48 +26,81 @@ module System
       # operator one-call undo.
       #
       # Phase O6 of the OVS+OVN dual-profile networking roadmap.
-      class SdwanComposeFullTopologyExecutor
-        def self.descriptor
-          {
-            name: "sdwan_compose_full_topology",
-            description: "Orchestrate the three SDWAN composition primitives (HostBridge, OVN, IPFIX) in one tool call. Composes SdwanHostBridgeComposeExecutor + SdwanOvnComposeTopologyExecutor + SdwanIpfixCollectorComposeExecutor.",
-            category: "devops",
-            inputs: {
-              host_node_instance_ids: { type: "array", required: true,
-                                        description: "System::NodeInstance ids — passed through to host_bridge_compose" },
-              kind: { type: "string", required: false,
-                      description: "Optional explicit bridge kind override (linux | ovs) — passed through to host_bridge_compose" },
-              ovn_topology: { type: "object", required: false,
-                              description: "Optional OVN composition payload: {nb_db_endpoint, sb_db_endpoint, northd_host?, switches} — when supplied, runs sdwan_ovn_compose_topology" },
-              ipfix_collector: { type: "object", required: false,
-                                 description: "Optional IPFIX collector payload: {name, host, port, sampling_rate?} — when supplied, runs sdwan_ipfix_collector_compose" },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — invokes each sub-skill in dry_run mode" }
-            },
+      class SdwanComposeFullTopologyExecutor < BaseSkillExecutor
+        skill_descriptor(
+          name: "sdwan_compose_full_topology",
+          description: "Orchestrate the three SDWAN composition primitives (HostBridge, OVN, IPFIX) in one tool call. Composes SdwanHostBridgeComposeExecutor + SdwanOvnComposeTopologyExecutor + SdwanIpfixCollectorComposeExecutor.",
+          category: "devops",
+          inputs: {
+            host_node_instance_ids: { type: "array", required: true,
+                                      description: "System::NodeInstance ids — passed through to host_bridge_compose" },
+            kind: { type: "string", required: false,
+                    description: "Optional explicit bridge kind override (linux | ovs) — passed through to host_bridge_compose" },
+            ovn_topology: { type: "object", required: false,
+                            description: "Optional OVN composition payload: {nb_db_endpoint, sb_db_endpoint, northd_host?, switches} — when supplied, runs sdwan_ovn_compose_topology" },
+            ipfix_collector: { type: "object", required: false,
+                               description: "Optional IPFIX collector payload: {name, host, port, sampling_rate?} — when supplied, runs sdwan_ipfix_collector_compose" },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — invokes each sub-skill in dry_run mode" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              planned_actions: [ :object ],
-              outputs: {
-                host_bridges: :object,
-                ovn: :object,
-                ipfix: :object
-              },
-              failures: [ :object ],
-              partial: :boolean
+              host_bridges: :object,
+              ovn: :object,
+              ipfix: :object
             },
-            rollback: :rollback_sdwan_compose_full_topology,
-            requires_approval: false,
-            blast_radius: :medium
-          }
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_sdwan_compose_full_topology,
+          blast_radius: :medium
+        )
+
+        binds_to "System Topology Designer"
+
+        # Rollback: delegate to each sub-executor's rollback in reverse
+        # dependency order (ipfix → ovn → bridges). Each sub-executor owns
+        # the canonical teardown semantics for its own resources; the
+        # orchestrator just threads the payload shape through.
+        def rollback_sdwan_compose_full_topology(host_bridges: nil, ovn: nil, ipfix: nil, **_extras)
+          errors = []
+
+          if ipfix.present?
+            sub = symbolize(ipfix)[:outputs] || {}
+            r = ipfix_executor.rollback_sdwan_ipfix_collector_compose(
+              ipfix_collector_id: sub[:ipfix_collector_id],
+              created: sub[:created]
+            )
+            errors.concat(Array(r[:errors])) unless r[:success]
+          end
+
+          if ovn.present?
+            sub = symbolize(ovn)[:outputs] || {}
+            r = ovn_executor.rollback_sdwan_ovn_compose_topology(
+              ovn_deployment_id: sub[:ovn_deployment_id],
+              logical_switch_ids: sub[:logical_switch_ids] || [],
+              logical_switch_port_ids: sub[:logical_switch_port_ids] || [],
+              created_deployment: sub[:created_deployment]
+            )
+            errors.concat(Array(r[:errors])) unless r[:success]
+          end
+
+          if host_bridges.present?
+            sub = symbolize(host_bridges)[:outputs] || {}
+            r = bridge_executor.rollback_sdwan_host_bridge_compose(
+              allocations: sub[:allocations] || []
+            )
+            errors.concat(Array(r[:errors])) unless r[:success]
+          end
+
+          { success: errors.empty?, errors: errors }
         end
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
+        protected
 
-        def execute(host_node_instance_ids:, kind: nil, ovn_topology: nil,
+        def perform(host_node_instance_ids:, kind: nil, ovn_topology: nil,
                     ipfix_collector: nil, dry_run: false, **_extras)
           planned_actions = []
           failures = []
@@ -121,47 +154,6 @@ module System
             failures: failures,
             partial: failures.any? && outputs.values.any?(&:present?)
           )
-        rescue StandardError => e
-          Rails.logger.error("[SdwanComposeFullTopologyExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
-
-        # Rollback: delegate to each sub-executor's rollback in reverse
-        # dependency order (ipfix → ovn → bridges). Each sub-executor owns
-        # the canonical teardown semantics for its own resources; the
-        # orchestrator just threads the payload shape through.
-        def rollback_sdwan_compose_full_topology(host_bridges: nil, ovn: nil, ipfix: nil, **_extras)
-          errors = []
-
-          if ipfix.present?
-            sub = symbolize(ipfix)[:outputs] || {}
-            r = ipfix_executor.rollback_sdwan_ipfix_collector_compose(
-              ipfix_collector_id: sub[:ipfix_collector_id],
-              created: sub[:created]
-            )
-            errors.concat(Array(r[:errors])) unless r[:success]
-          end
-
-          if ovn.present?
-            sub = symbolize(ovn)[:outputs] || {}
-            r = ovn_executor.rollback_sdwan_ovn_compose_topology(
-              ovn_deployment_id: sub[:ovn_deployment_id],
-              logical_switch_ids: sub[:logical_switch_ids] || [],
-              logical_switch_port_ids: sub[:logical_switch_port_ids] || [],
-              created_deployment: sub[:created_deployment]
-            )
-            errors.concat(Array(r[:errors])) unless r[:success]
-          end
-
-          if host_bridges.present?
-            sub = symbolize(host_bridges)[:outputs] || {}
-            r = bridge_executor.rollback_sdwan_host_bridge_compose(
-              allocations: sub[:allocations] || []
-            )
-            errors.concat(Array(r[:errors])) unless r[:success]
-          end
-
-          { success: errors.empty?, errors: errors }
         end
 
         private
@@ -188,14 +180,6 @@ module System
           return {} unless h.is_a?(Hash)
 
           h.each_with_object({}) { |(k, v), acc| acc[k.to_sym] = v }
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end

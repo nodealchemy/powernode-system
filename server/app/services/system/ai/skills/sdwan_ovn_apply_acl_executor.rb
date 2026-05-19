@@ -30,7 +30,7 @@ module System
       #
       # Phase O6 follow-up of the OVS+OVN dual-profile networking
       # roadmap. Bound to the System Topology Designer agent.
-      class SdwanOvnApplyAclExecutor
+      class SdwanOvnApplyAclExecutor < BaseSkillExecutor
         VALID_DIRECTIONS = ::Sdwan::OvnAcl::DIRECTIONS
         VALID_ACTIONS    = ::Sdwan::OvnAcl::ACTIONS
         DEFAULT_PRIORITY = ::Sdwan::OvnAcl::DEFAULT_PRIORITY
@@ -38,76 +38,36 @@ module System
         PRIORITY_MAX     = ::Sdwan::OvnAcl::PRIORITY_MAX
         MAX_ACLS         = 100
 
-        def self.descriptor
-          {
-            name: "sdwan_ovn_apply_acl",
-            description: "Apply OVN ACLs (firewall rules) to a logical switch — heavyweight-profile only. Composes Sdwan::OvnAcl entries scoped to one switch and re-compiles the deployment plan. Idempotent on (switch, acl_name).",
-            category: "devops",
-            inputs: {
-              logical_switch_id: { type: "string", required: true,
-                                   description: "Sdwan::OvnLogicalSwitch id the ACLs apply to (must belong to the executing account)" },
-              acls: { type: "array", required: true,
-                      description: "Array of {name, direction, priority?, match, action} (1-#{MAX_ACLS}). direction: #{VALID_DIRECTIONS.join(' | ')}. action: #{VALID_ACTIONS.join(' | ')}. priority: #{PRIORITY_MIN}-#{PRIORITY_MAX}, default #{DEFAULT_PRIORITY}." },
-              dry_run: { type: "boolean", required: false, default: false,
-                         description: "Plan only — no Sdwan::OvnAcl rows are persisted" }
-            },
+        skill_descriptor(
+          name: "sdwan_ovn_apply_acl",
+          description: "Apply OVN ACLs (firewall rules) to a logical switch — heavyweight-profile only. Composes Sdwan::OvnAcl entries scoped to one switch and re-compiles the deployment plan. Idempotent on (switch, acl_name).",
+          category: "devops",
+          inputs: {
+            logical_switch_id: { type: "string", required: true,
+                                 description: "Sdwan::OvnLogicalSwitch id the ACLs apply to (must belong to the executing account)" },
+            acls: { type: "array", required: true,
+                    description: "Array of {name, direction, priority?, match, action} (1-#{MAX_ACLS}). direction: #{VALID_DIRECTIONS.join(' | ')}. action: #{VALID_ACTIONS.join(' | ')}. priority: #{PRIORITY_MIN}-#{PRIORITY_MAX}, default #{DEFAULT_PRIORITY}." },
+            dry_run: { type: "boolean", required: false, default: false,
+                       description: "Plan only — no Sdwan::OvnAcl rows are persisted" }
+          },
+          outputs: {
+            dry_run: :boolean,
+            acl_count: :integer,
+            planned_actions: [ :object ],
             outputs: {
-              dry_run: :boolean,
-              acl_count: :integer,
-              planned_actions: [ :object ],
-              outputs: {
-                logical_switch_id: :string,
-                ovn_acl_ids: [ :string ],
-                allocations: [ :object ],
-                compiled_plan: :object
-              },
-              failures: [ :object ],
-              partial: :boolean
+              logical_switch_id: :string,
+              ovn_acl_ids: [ :string ],
+              allocations: [ :object ],
+              compiled_plan: :object
             },
-            rollback: :rollback_sdwan_ovn_apply_acl,
-            requires_approval: false,
-            blast_radius: :medium
-          }
-        end
+            failures: [ :object ],
+            partial: :boolean
+          },
+          rollback: :rollback_sdwan_ovn_apply_acl,
+          blast_radius: :medium
+        )
 
-        def initialize(account:, agent: nil, user: nil)
-          @account = account
-          @agent = agent
-          @user = user
-        end
-
-        def execute(logical_switch_id:, acls:, dry_run: false, **_extras)
-          if (validation_error = validate_inputs(acls: acls))
-            return validation_error
-          end
-
-          switch_id = logical_switch_id.to_s.strip
-          return failure("logical_switch_id is required") if switch_id.empty?
-
-          switch = lookup_switch(switch_id)
-          return switch if switch.is_a?(Hash) && switch[:success] == false
-
-          if dry_run
-            return success(
-              dry_run: true,
-              acl_count: acls.size,
-              planned_actions: build_plan(switch: switch, acls: acls),
-              outputs: {
-                logical_switch_id: switch.id,
-                ovn_acl_ids: [],
-                allocations: acls.map { |a| project_allocation(a) },
-                compiled_plan: nil
-              },
-              failures: [],
-              partial: false
-            )
-          end
-
-          run_execute(switch: switch, acls: acls)
-        rescue StandardError => e
-          Rails.logger.error("[SdwanOvnApplyAclExecutor] #{e.class}: #{e.message}")
-          failure(e.message)
-        end
+        binds_to "System Topology Designer"
 
         # Rollback: destroy only ACLs this call newly created. Re-used
         # ACLs are left alone because other state (compiler emission,
@@ -134,10 +94,42 @@ module System
           { success: errors.empty?, errors: errors }
         end
 
+        protected
+
+        def perform(logical_switch_id:, acls:, dry_run: false, **_extras)
+          if (validation_error = validate_acls(acls: acls))
+            return validation_error
+          end
+
+          switch_id = logical_switch_id.to_s.strip
+          return failure("logical_switch_id is required") if switch_id.empty?
+
+          switch = lookup_switch(switch_id)
+          return switch if switch.is_a?(Hash) && switch[:success] == false
+
+          if dry_run
+            return success(
+              dry_run: true,
+              acl_count: acls.size,
+              planned_actions: build_plan(switch: switch, acls: acls),
+              outputs: {
+                logical_switch_id: switch.id,
+                ovn_acl_ids: [],
+                allocations: acls.map { |a| project_allocation(a) },
+                compiled_plan: nil
+              },
+              failures: [],
+              partial: false
+            )
+          end
+
+          run_execute(switch: switch, acls: acls)
+        end
+
         private
 
         # Returns nil on success, a failure-shaped hash on rejection.
-        def validate_inputs(acls:)
+        def validate_acls(acls:)
           arr = Array(acls)
           return failure("acls must contain at least one entry") if arr.empty?
           return failure("acls must be <= #{MAX_ACLS}") if arr.size > MAX_ACLS
@@ -294,14 +286,6 @@ module System
             match: (a[:match] || a["match"]).to_s,
             action: (a[:action] || a["action"]).to_s
           }
-        end
-
-        def success(payload)
-          { success: true, requires_approval: false, data: payload }
-        end
-
-        def failure(msg)
-          { success: false, error: msg }
         end
       end
     end
