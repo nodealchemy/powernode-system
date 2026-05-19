@@ -136,7 +136,7 @@ RSpec.describe System::Ai::Skills::DeployAppCodeExecutor do
                          mission_id: mission.id)
 
         expect(r[:success]).to be true
-        expect(r[:requires_approval]).to be false
+        expect(described_class.descriptor[:requires_approval]).to be false
         d = r[:data]
         expect(d[:deployment_id]).to be_present
         expect(d[:commit_sha]).to eq("abc123def456")

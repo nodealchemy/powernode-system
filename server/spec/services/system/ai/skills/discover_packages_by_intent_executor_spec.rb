@@ -36,10 +36,10 @@ RSpec.describe System::Ai::Skills::DiscoverPackagesByIntentExecutor do
         expect(result[:error]).to match(/intent is required/i)
       end
 
-      it "fails when account is nil" do
-        result = described_class.new(account: nil).execute(intent: "anything")
-        expect(result[:success]).to be(false)
-        expect(result[:error]).to match(/account/i)
+      it "raises ArgumentError when account is nil" do
+        # BaseSkillExecutor enforces account presence at construction time.
+        expect { described_class.new(account: nil) }
+          .to raise_error(ArgumentError, /account is required/i)
       end
 
       it "fails when embedding generation returns nil" do
