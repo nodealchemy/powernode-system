@@ -96,28 +96,38 @@ without breaking federation.
 | Operator with `system.federation.spawn` permission | Default for admins |
 | Both networks publicly-reachable (or both behind same NAT with port forward) | For cross-account spawns; intra-account works on local SDWAN |
 
-## Step 1 — Pick the spawn mode
+## Step 1 — Spawn the child platform
 
-For this tutorial, use `autonomous_peer` — simplest and most general.
-Operator picks via:
+This tutorial uses `autonomous_peer` mode (simplest + most general; see [`docs/federation/SPAWN_MODES.md`](../federation/SPAWN_MODES.md) for the full mode comparison).
 
-```javascript
-platform.system_sdwan_propose_federation_peer({
-  spawn_mode: "autonomous_peer",
-  child_template_id: "<powernode-hub-template-id>",
-  child_provider_region_id: "region-...",
-  child_provider_instance_type_id: "type-...",
-  child_hostname: "child-platform-1",
-  proposed_routes: [{ remote_prefix: "fd00:abcd:2::/64", local_prefix: "fd00:abcd:1::/64" }],
-  proposed_capabilities: ["bgp_announce", "vip_failover"]
-})
-// → { federation_peer: { id, status: "proposed", spawn_role: "parent", spawn_mode: "autonomous_peer", ... },
-//     child_instance_id: "...",
-//     acceptance_token: "<one-time-displayed>" }
+**Important: spawning a child platform is distinct from proposing an out-of-band federation peer.** The `system_sdwan_propose_federation_peer` MCP action proposes a *peer record* (no spawn, no platform provisioning — used when both platforms already exist and just need to peer). To spawn a *new* child platform, hit the children-spawn REST endpoint (`POST /api/v1/system/federation/children/spawn`), which routes into `System::SpawnPlatformService.spawn!` to provision the child NodeInstance, stamp its fw-cfg with parent identity + acceptance token, and create the parent-side `System::FederationPeer` row.
+
+```bash
+# Parent platform — spawn the child
+curl -X POST https://parent.example.org/api/v1/system/federation/children/spawn \
+  -H "Authorization: Bearer $PARENT_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spawn_mode": "autonomous_peer",
+    "child_template_id": "<powernode-hub-template-id>",
+    "child_provider_region_id": "region-...",
+    "child_provider_instance_type_id": "type-...",
+    "child_hostname": "child-platform-1"
+  }'
+
+# → {
+#     "federation_peer": { "id": "...", "status": "proposed", "spawn_role": "parent",
+#                          "spawn_mode": "autonomous_peer", ... },
+#     "child_instance_id": "...",
+#     "acceptance_token": "<one-time-displayed>"
+#   }
 ```
 
-**Expected outcome:** parent-side row created in `status: "proposed"`;
-child NodeInstance provisioning starts; acceptance token displayed once.
+**Note on `proposed_routes` / `proposed_capabilities`:** these are not part of the spawn-time payload today. Cross-peer route announcements + capability grants are configured *after* the child boots + completes its handshake (see Step 4 for route grants, [`federation/NETWORK_TRUST.md`](../federation/NETWORK_TRUST.md) for capability grants).
+
+**No MCP wrapper for spawn (yet):** the spawn endpoint is REST-only today. The closely-named `system_sdwan_propose_federation_peer` MCP is for the *propose-existing-peer* path, not spawn.
+
+**Expected outcome:** parent-side row created in `status: "proposed"`; child NodeInstance provisioning starts; acceptance token displayed once.
 
 > **Token handling:** the `acceptance_token` is shown once — never logged,
 > never persisted in plaintext. If you lose it before the handshake

@@ -46,15 +46,11 @@ Minimum viable manifest:
 ```yaml
 schema_version: 1
 
-identity:
-  name: my-nginx
-  category: userland                # references NodeModuleCategory.slug
-  variety: subscription             # subscription | config | instance
-  description: nginx 1.26 with TLS hardening + /healthz endpoint
-
-  # Cosign trust pin: the platform rejects artifacts not signed by these
-  cosign_identity_regexp: '^https://registry.example.com/<account>/modules/my-nginx@.*$'
-  cosign_issuer_regexp:   '^https://gitea\.ipnode\.org$'
+# Identity — flat top-level keys (no `identity:` wrapper).
+name: my-nginx
+display_name: "nginx 1.26 with TLS hardening"
+description: "nginx 1.26 with TLS hardening + /healthz endpoint"
+license: "BSD-2-Clause"
 
 # Packages installed in the Containerfile builder stage via mmdebstrap.
 # These end up in /var/lib/dpkg/status of the resulting rootfs.
@@ -62,40 +58,43 @@ package_spec:
   - nginx
   - nginx-extras
 
-# Which files from rootfs/ to include in the artifact. rsync-glob syntax.
+# Paths this module OWNS in the artifact (rsync-include, flat glob list).
 file_spec:
-  include:
-    - "/etc/nginx/**"
-    - "/var/www/healthz/**"
-  exclude:
-    - "/etc/nginx/sites-enabled/default"   # don't ship the default vhost
+  - "/etc/nginx/**"
+  - "/var/www/healthz/**"
 
-# Files this module owns — higher-priority modules cannot override these.
-# Protects against composition footguns.
+# Paths to EXCLUDE from this module's blob (rsync-style mask, local-only).
+mask:
+  - "/etc/nginx/sites-enabled/default"   # don't ship the default vhost
+
+# Files this module owns — no neighbor may ship these. Folded into every
+# neighbor's effective_mask in both priority directions.
 protected_spec:
   - "/etc/nginx/conf.d/00-security.conf"
 
-# Other modules required for this one to function. Resolved transitively.
-dependency_spec:
-  - name: system-base               # foundational (always-required)
-  - name: security-hardening        # reasonable default
-    optional: false
-  - name: chrony                    # NTP for cert validation
-    optional: true                  # used if present, not required
+# Other modules this one requires/provides. Resolved transitively by
+# DependencyResolutionService. `requires` form: <owner>/<module>@<constraint>.
+dependencies:
+  requires:
+    - "powernode/system-base@^1.0"
+    - "powernode/security-hardening@^1.0"
+    - "powernode/chrony@^1.0"           # NTP for cert validation
+  provides:
+    - "http-server"
 ```
 
 **Field semantics:**
 
-- `identity.name` — globally unique within the account; the platform appends a hash to disambiguate across accounts.
-- `identity.category` — must match a seeded `NodeModuleCategory` slug. Default seeded: `system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`. Position determines composition layer order (lower → mounted earlier).
-- `identity.variety`:
-  - `subscription` — turn it on; always present once assigned. Examples: nginx, k3s-server.
-  - `config` — modifies another module's config without rebuilding it. Examples: `daemon-json-override` for slice 10.
-  - `instance` — per-NodeInstance customization (different host name, different TLS cert). Higher `effective_priority` than `subscription`.
+- `name` — globally unique within the account (platform appends a hash to disambiguate across accounts). The manifest's `name` is the stable identifier; downstream tooling looks up the `NodeModule` row by it.
 - `package_spec` — apt packages installed in the Containerfile builder. Applied via mmdebstrap to the rootfs.
-- `file_spec.include` / `exclude` — rsync-glob patterns. Globs are evaluated relative to the `rootfs/` directory in your repo.
-- `protected_spec` — files this module owns. The composition layer rejects assignments that try to override these from a higher-priority module unless the override module sets `mask: true` (carve-out).
-- `dependency_spec` — modules pulled in transitively by `DependencyResolutionService`. Use `optional: true` for soft dependencies.
+- `file_spec` — **flat array of rsync-style glob strings** identifying paths this module owns. The artifact ships these.
+- `mask` — paths to EXCLUDE from this module's blob at build time. Local-only — does NOT affect neighbor modules' blobs.
+- `protected_spec` — files this module owns that NO neighbor module may ship. The build pipeline folds these into every neighbor's effective_mask in both priority directions, so a sensitive lower-module file (e.g. `/etc/shadow` from system-base) cannot be overridden by a service module's overlay layer.
+- `dependencies.requires` — modules pulled in transitively. Form is `<owner>/<module>@<version-constraint>`.
+
+**Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new` or via the registration MCP action). They are not validated by the manifest schema. The seeded `NodeModuleCategory` slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on the platform-side row, not manifest fields. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
+
+For the authoritative shape see `extensions/system/templates/module-repo/manifest.yaml` and `extensions/system/modules/.schema/module-manifest.schema.json`. The `MODULE_MANIFEST_COMPLETE_SCHEMA.md` doc in this directory is the operator-facing prose reference.
 
 ## Phase 3 — Author Containerfile + rootfs ✅
 
@@ -180,8 +179,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build module artifact
         run: |
-          docker build -t module-builder:${{ github.sha }} .
-          docker run --rm -v $PWD/dist:/work/dist module-builder:${{ github.sha }}
+          # Canonical workflow uses buildah + mkcomposefs, not docker build.
+          # See templates/module-repo/.gitea/workflows/build.yaml for the
+          # authoritative two-stage pipeline (buildah bud → rsync filter →
+          # mkcomposefs → fs-verity → syft + grype → cosign sign → oras push).
+          buildah bud --layers --tag module-builder:${{ github.sha }} .
+          # ... composer stage runs mkcomposefs + emits the artifact bundle ...
 
       - name: Push to OCI registry
         run: |
@@ -195,6 +198,8 @@ jobs:
           COSIGN_EXPERIMENTAL: 1
 ```
 
+**Do not copy the workflow inline** — use the canonical version at [`templates/module-repo/.gitea/workflows/build.yaml`](../../templates/module-repo/.gitea/workflows/build.yaml). The example above sketches the shape; the canonical workflow handles the full two-stage build, SBOM/VEX generation, in-toto provenance attestations, and OCI referrers. Diverging from the canonical workflow risks composing modules that the platform's `ModuleOciIngestService` rejects.
+
 **What happens behind the scenes:**
 
 1. **Builder stage**: mmdebstrap installs packages from `package_spec` into a clean Debian rootfs
@@ -203,14 +208,16 @@ jobs:
 4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
 5. **Cosign signing**: keyless signing via Sigstore Fulcio (no long-lived signing keys; ephemeral OIDC-bound certs tied to the Gitea Actions OIDC issuer)
 
-The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature matching the manifest's `cosign_identity_regexp`, it creates a `NodeModuleVersion` row in `lifecycle_state: draft`.
+The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature matching the `NodeModule`'s registered `cosign_identity_regexp` (set on the DB row, not the manifest), it creates a `NodeModuleVersion` row in `promotion_state: built`.
 
 ## Phase 6 — Verify publication ✅
 
 ```javascript
 platform.system_list_module_versions({ module_name: "my-nginx" })
-// → { versions: [{ id, version_string, lifecycle_state: "draft", composefs_digest, ... }] }
+// → { versions: [{ id, version_string, promotion_state: "built", composefs_digest, ... }] }
 ```
+
+The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`. `built` is the freshly-ingested state; promote through `staging → blessed → live`, demote/rollback to `retired`.
 
 Promote through the lifecycle:
 

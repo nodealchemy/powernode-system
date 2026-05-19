@@ -93,36 +93,59 @@ ingest path expects exactly this shape.
 ```yaml
 schema_version: 1
 
-identity:
-  name: my-redis
-  category: userland
-  variety: subscription
-  description: Redis 7.4 with TLS + persistence
-  cosign_identity_regexp: '^https://registry\.example\.com/<account>/modules/my-redis-module@.*$'
-  cosign_issuer_regexp:   '^https://gitea\.ipnode\.org$'
+# Identity — flat top-level keys (no `identity:` wrapper).
+name: my-redis
+display_name: "Redis 7.4"
+description: "Redis 7.4 with TLS + persistence"
+license: "BSD-3-Clause"
 
+# Packages installed in the Containerfile builder stage via mmdebstrap.
 package_spec:
   - redis-server
   - redis-tools
 
+# Paths this module OWNS in the artifact (rsync-include, flat glob list).
 file_spec:
-  include:
-    - "/etc/redis/**"
-    - "/var/lib/redis/.gitkeep"
-  exclude:
-    - "/etc/redis/sentinel.conf"
+  - "/etc/redis/**"
+  - "/var/lib/redis/.gitkeep"
 
+# Paths to EXCLUDE from this module's blob (rsync-style mask, applied locally).
+mask:
+  - "/etc/redis/sentinel.conf"
+
+# Paths I own that no neighbor module may ship — folded into every
+# neighbor's effective_mask in both priority directions, so this module's
+# /etc/redis/redis.conf cannot be silently overridden by a higher-priority
+# module's overlay.
 protected_spec:
-  - "/etc/redis/redis.conf"          # this module owns the main config
+  - "/etc/redis/redis.conf"
 
-dependency_spec:
-  - name: system-base
-  - name: security-hardening
+# Module dependencies — resolved transitively by DependencyResolutionService.
+# `requires` form is "<owner>/<module>@<version-constraint>".
+dependencies:
+  requires:
+    - "powernode/powernode-base-ruby@^1.0"
+    - "powernode/security-hardening@^1.0"
+  provides: []
+
+# Init lifecycle. Strings here populate NodeModule.init_start/stop/restart;
+# powernode-agent runs them as subprocesses (never eval'd).
+init:
+  start: "systemctl start redis-server"
+  stop:  "systemctl stop redis-server"
+  restart: "systemctl restart redis-server"
+
+reboot_required: false
+
+# Optional build hints (pin Ubuntu base + apt snapshot for reproducibility).
+build:
+  ubuntu_digest: null    # falls back to Containerfile's UBUNTU_DIGEST default
+  apt_snapshot: null     # falls back to Containerfile's APT_SNAPSHOT default
 ```
 
-**Expected outcome:** YAML validates against `MODULE_MANIFEST_COMPLETE_SCHEMA.md`.
-Cosign identity regex must match exactly the path your Gitea Actions runs from —
-mismatches cause ingestion to reject the artifact post-build.
+**Expected outcome:** YAML validates against [`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md) and `modules/.schema/module-manifest.schema.json`.
+
+**Important:** `category`, `variety`, `cosign_identity_regexp`, and `cosign_issuer_regexp` are **NOT** manifest fields. They live on the platform-side `NodeModule` DB row and are set at registration time (Step 5 below — via the UI form or the registration MCP action). The cosign identity regex must match exactly the path your Gitea Actions runs from — mismatches cause ingestion to reject the artifact post-build.
 
 ## Step 3 — Add the rootfs tree
 
@@ -163,22 +186,20 @@ warnings here — they'll fail later much more expensively.
 
 ## Step 5 — Register the module on the platform
 
-```javascript
-// Via MCP (or the operator UI at /app/system/modules/new):
-platform.system_create_module_from_package({
-  name: "my-redis",
-  category_slug: "userland",
-  variety: "subscription",
-  gitea_repo_full_name: "<account>/modules/my-redis-module"
-})
-// → { module: { id, webhook_secret: "<one-time-displayed-secret>", ... } }
-```
+**Use the operator UI today.** Navigate to `/app/system/modules/new` in your platform UI. The form collects:
 
-**Copy the `webhook_secret` immediately** — it's displayed once and used to
-HMAC-sign the build-completion webhook back from Gitea Actions to the platform.
+- `name` — must match the `name` in your `manifest.yaml`
+- `display_name`, `description`
+- `category_id` — pick from the seeded NodeModuleCategory list (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`)
+- `variety` — `subscription` / `config` / `instance`
+- `gitea_repo_full_name` — e.g. `<account>/modules/my-redis-module`
+- `cosign_identity_regexp` + `cosign_issuer_regexp` — set on the DB row (NOT in manifest)
 
-In Gitea: open repo → Settings → Actions → Secrets → add `POWERNODE_WEBHOOK_SECRET`
-with the value from above.
+On save, the UI returns a `webhook_secret`. **Copy it immediately** — it's displayed once and used to HMAC-sign the build-completion webhook back from Gitea Actions to the platform.
+
+In Gitea: open repo → Settings → Actions → Secrets → add `POWERNODE_WEBHOOK_SECRET` with the value from above.
+
+**Note on MCP:** `system_create_module_from_package` does exist as an MCP action but materialises a module from an existing `PackageRepository` (signature: `repository_id`, `package_name`, `architectures`, `recommends_selected`, `category_id`, `dispatch_build`). It is **not** a Gitea-repo-to-NodeModule registration shortcut. The Gitea-driven flow uses the UI form today; a dedicated MCP wrapper for it may land later.
 
 ## Step 6 — Push to Gitea
 
@@ -227,7 +248,7 @@ platform.system_list_module_versions({ module_name: "my-redis" })
 // → { versions: [{
 //      id: "v-redis-0.1.0",
 //      version_string: "0.1.0",
-//      lifecycle_state: "draft",
+//      promotion_state: "built",
 //      composefs_digest: "sha256:abc...",
 //      fsverity_root_hash: "sha256:def...",
 //      cosign_verified: true,
@@ -235,9 +256,7 @@ platform.system_list_module_versions({ module_name: "my-redis" })
 //    }] }
 ```
 
-**Expected outcome:** the version row exists, signature verified, lifecycle
-is `draft`. Promote through staging → blessed → live as you verify the module
-behaves correctly:
+**Expected outcome:** the version row exists, signature verified, `promotion_state` is `built`. Promote through `staging → blessed → live` as you verify the module behaves correctly. The column is `promotion_state` (not `lifecycle_state`); valid states are `built, staging, blessed, live, retired`:
 
 ```javascript
 platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "staging" })
@@ -248,8 +267,7 @@ platform.system_promote_module_version({ id: "v-redis-0.1.0", to: "live" })
 // Now eligible for fleet-wide rollout
 ```
 
-Promotion to `live` is often `require_approval` — check `module_promote_to_live`
-intervention policy.
+Promotion to `live` is often `require_approval` — check `module_promote_to_live` intervention policy. Demoting / rolling back uses the same MCP action with `to: "retired"` (no `archived` state — that's old documentation).
 
 ## Step 9 — Assign to a Template + provision
 

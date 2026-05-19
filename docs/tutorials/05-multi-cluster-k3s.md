@@ -311,10 +311,14 @@ platform.system_sdwan_get_routing_summary({ network_id: "net-tenant-a" })
 WireGuard config has only one `[Peer]` section. Re-import both access
 grants; the resulting config should have one peer block per network.
 
-**Pod-to-pod traffic leaks across clusters via host primary NIC** — same
-caveat as Tutorial 04: flannel CNI uses host NIC, not SDWAN. For true
-SDWAN-encrypted pod traffic, use ovn-kubernetes CNI (see Tutorial 04
-troubleshooting + `smoke_test_ovn_k8s_cni.rb`).
+**Pod-to-pod traffic leaks across clusters via host primary NIC** — flannel
+CNI uses the host NIC, not SDWAN. For SDWAN-isolated pod traffic between
+tenants, bootstrap each tenant's cluster with `cni_plugin: ovn_kubernetes`
+(Phase O4 — auto-defaulted for `network_profile: heavyweight` nodes,
+explicit override on lightweight nodes raises `CniProfileMismatchError`).
+See [`CONTAINER_RUNTIMES.md` §"CNI selection (Phase O4)"](../CONTAINER_RUNTIMES.md#cni-selection-phase-o4--shipped)
+for the full decision table. Mixing CNI plugins across clusters in the same
+SDWAN network is supported — each cluster's pod CIDR is independent.
 
 ## What's next
 
