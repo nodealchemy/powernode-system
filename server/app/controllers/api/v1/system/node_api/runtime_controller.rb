@@ -161,6 +161,15 @@ module Api
           # Devops::KubernetesNode) and pulls cni_plugin from there.
           # Falls back to "flannel" (the K3s default, safe for any
           # unenrolled host) when the host has no cluster yet.
+          #
+          # K3s overlay (2026-05-19) — when the cluster carries a
+          # pod_cidr (set at bootstrap when the SDWAN network has
+          # pod_subnet_prefix + cni_plugin is flannel), also emit
+          # flannel_iface + flannel_backend=host-gw + cluster_cidr so
+          # the agent passes --flannel-iface + --flannel-backend +
+          # --cluster-cidr at k3s install time. Zero-value strings
+          # (empty) mean "k3s defaults" — the agent's InstallArgs is
+          # zero-value safe.
           def k3s_server_bootstrap_config(instance)
             cluster = ::Devops::KubernetesNode
                         .where(node_instance_id: instance.id)
@@ -168,7 +177,23 @@ module Api
                         .first
                         &.kubernetes_cluster
             cni_plugin = cluster&.cni_plugin || "flannel"
-            { cni_plugin: cni_plugin }
+
+            payload = { cni_plugin: cni_plugin, flannel_iface: "", flannel_backend: "", cluster_cidr: "" }
+
+            return payload unless cni_plugin == "flannel"
+            return payload if cluster.blank?
+
+            pod_cidr = cluster.metadata.is_a?(Hash) ? cluster.metadata["pod_cidr"] : nil
+            return payload if pod_cidr.blank?
+
+            peer = ::Sdwan::Peer.where(node_instance_id: instance.id).first
+            return payload unless peer&.network
+
+            payload.merge(
+              flannel_iface: "wg-sdwan-#{peer.network.network_handle}",
+              flannel_backend: "host-gw",
+              cluster_cidr: pod_cidr
+            )
           end
 
           # Defense-in-depth: even if a malicious agent had a valid mTLS

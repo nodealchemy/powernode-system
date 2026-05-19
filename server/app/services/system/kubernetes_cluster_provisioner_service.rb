@@ -168,6 +168,43 @@ module System
       # contradiction loudly instead of silently misconfiguring K3s.
       resolved_cni_plugin = resolve_bootstrap_cni_plugin!(@node_instance, @cni_plugin)
 
+      # K3s overlay (2026-05-19) — when flannel is the CNI and the
+      # bootstrap peer's SDWAN network has pod_subnet_prefix set,
+      # stamp the cluster row with the pod CIDR + sdwan_network_id so
+      # the bootstrap_config endpoint can emit --flannel-iface +
+      # --flannel-backend=host-gw + --cluster-cidr at install time.
+      # ovn-Kubernetes ignores pod_subnet_prefix (its pod-network
+      # layer is OVN-driven) — emit a warning when the field is set
+      # on an ovn-K8s path so operators don't silently assume the
+      # value is in effect.
+      pod_overlay_active = false
+      if bootstrap_peer&.network&.pod_subnet_prefix.present?
+        if resolved_cni_plugin == "flannel"
+          metadata["pod_cidr"] = bootstrap_peer.network.pod_subnet_prefix
+          metadata["sdwan_network_id"] = bootstrap_peer.network_id
+          pod_overlay_active = true
+        elsif resolved_cni_plugin == "ovn_kubernetes" && defined?(::System::Fleet::EventBroadcaster)
+          begin
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: account,
+              kind: "system.cluster_bootstrap.pod_subnet_prefix_ignored",
+              severity: :medium,
+              source: "kubernetes_cluster_provisioner",
+              payload: {
+                cluster_name: cluster_name,
+                node_instance_id: @node_instance.id,
+                cni_plugin: resolved_cni_plugin,
+                network_id: bootstrap_peer.network_id,
+                pod_subnet_prefix: bootstrap_peer.network.pod_subnet_prefix,
+                note: "pod_subnet_prefix is flannel-only in v1; ovn-Kubernetes uses its own pod-network logic"
+              }
+            )
+          rescue StandardError => e
+            Rails.logger.warn("[KubernetesClusterProvisionerService] warning-event emit failed: #{e.class}: #{e.message}")
+          end
+        end
+      end
+
       cluster = nil
       ActiveRecord::Base.transaction do
         cluster = ::Devops::KubernetesCluster.create!(
@@ -196,13 +233,31 @@ module System
         )
 
         cluster.update!(node_count: 1)
+
+        # K3s overlay — emit a SubnetAdvertisement row for the cluster's
+        # pod CIDR sourced from this network. Mirrors the pattern used by
+        # Sdwan::Peer#sync_subnet_advertisements_from_lan_subnets so the
+        # routing pipeline + governance scans treat pod CIDRs the same
+        # way as declared LAN subnets + VIPs.
+        if pod_overlay_active
+          ::Sdwan::SubnetAdvertisement.create!(
+            peer: bootstrap_peer,
+            network: bootstrap_peer.network,
+            account_id: account.id,
+            prefix: bootstrap_peer.network.pod_subnet_prefix,
+            source: "pod_subnet",
+            origin_peer_id: bootstrap_peer.id,
+            first_seen_at: Time.current,
+            last_seen_at: Time.current
+          )
+        end
       end
 
       Rails.logger.info(
         "[KubernetesClusterProvisionerService] bootstrapped cluster " \
         "cluster_id=#{cluster.id} node_instance_id=#{@node_instance.id} " \
         "endpoint=#{cluster.api_endpoint} vip_id=#{api_vip&.id || 'none'} " \
-        "cni_plugin=#{cluster.cni_plugin}"
+        "cni_plugin=#{cluster.cni_plugin} pod_overlay=#{pod_overlay_active}"
       )
       cluster
     end
