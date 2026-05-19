@@ -622,6 +622,12 @@ Rails.application.routes.draw do
           # sweep P5; Golden Eclipse M-D2-3.
           post "gitops/reconcile", to: "gitops#reconcile"
 
+          # Daily compliance snapshot archival — invoked by
+          # SystemComplianceSnapshotJob. Generates a snapshot per account and
+          # emits a FleetEvent (kind="system.compliance.snapshot") so the
+          # existing FleetEvent retention sweep handles pruning. Audit P2.8d.
+          post "compliance/archive", to: "compliance#archive"
+
           # Package repository sync tick — invoked by SystemPackageRepositorySyncJob
           # daily at 5:00 AM UTC. Iterates enabled PackageRepository rows (account-
           # scoped + shared), fetches upstream apt/rpm indexes, upserts Package
