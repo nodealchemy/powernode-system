@@ -25,7 +25,10 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci,disk-image-rpi4,disk-image-arm64-uefi"
-readonly DEFAULT_BASE_IMAGE="ubuntu@sha256:placeholder-pin-via-ci-input"
+# Sentinel: build.sh fails loudly if a real digest isn't supplied (via
+# BASE_IMAGE_DIGEST env, --base-image arg, or CI workflow input). Per M3
+# reproducibility, no placeholder is ever permitted past the build gate.
+readonly DEFAULT_BASE_IMAGE="REQUIRED_PIN_NOT_SET"
 
 ARCH=""
 VARIANTS="${DEFAULT_VARIANTS}"
@@ -109,19 +112,39 @@ build_kernel_initrd() {
     return 1
   fi
 
-  # The agent binary must already be staged at scripts/powernode-agent (built by
-  # the agent CI in extensions/system/agent/.gitea/workflows/build.yaml).
-  if [[ ! -x "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" ]]; then
-    log "WARN: agent binary missing for ${ARCH} — embedding placeholder shim"
-    mkdir -p "${SCRIPT_DIR}/scripts"
-    cat >"${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" <<'SHIM'
-#!/bin/sh
-echo "[powernode-shim] powernode-agent placeholder — replace with cross-compiled binary"
-exec /bin/sh
-SHIM
-    chmod +x "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}"
+  # The agent binary must be present before we can embed it into the initramfs.
+  # Two acceptable sources (checked in order):
+  #   1. scripts/powernode-agent-<arch>          — staged by CI before invoking build.sh
+  #   2. ../agent/dist/powernode-agent-linux-<arch>  — produced by `make -C agent build-<arch>`
+  #
+  # If neither exists, the build FAILS unless POWERNODE_OFFLINE_DEV=1 is set,
+  # in which case we invoke the Makefile target to build the agent. The legacy
+  # placeholder shim path is removed — a /bin/sh exec disguised as powernode-agent
+  # is never acceptable in production (silent non-functional boot).
+  local agent_candidates=(
+    "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}"
+    "${SCRIPT_DIR}/../agent/dist/powernode-agent-linux-${ARCH}"
+  )
+  local agent_bin=""
+  for c in "${agent_candidates[@]}"; do
+    [[ -x "$c" ]] && { agent_bin="$c"; break; }
+  done
+  if [[ -z "$agent_bin" ]]; then
+    if [[ "${POWERNODE_OFFLINE_DEV:-0}" == "1" ]]; then
+      log "OFFLINE-DEV: invoking 'make -C ../agent build-${ARCH}' to produce agent binary"
+      make -C "${SCRIPT_DIR}/../agent" "build-${ARCH}"
+      agent_bin="${SCRIPT_DIR}/../agent/dist/powernode-agent-linux-${ARCH}"
+      [[ -x "$agent_bin" ]] || { log "FATAL: make build-${ARCH} did not produce $agent_bin"; exit 1; }
+    else
+      log "FATAL: agent binary missing for ${ARCH}"
+      log "  Looked at:"
+      for c in "${agent_candidates[@]}"; do log "    - $c"; done
+      log "  CI must stage the artifact before invoking build.sh."
+      log "  For local dev, set POWERNODE_OFFLINE_DEV=1 to auto-build via make."
+      exit 1
+    fi
   fi
-  cp "${SCRIPT_DIR}/scripts/powernode-agent-${ARCH}" /tmp/powernode-agent
+  cp "$agent_bin" /tmp/powernode-agent
 
   local conf_args=("-c" "${shared_conf}")
   [[ -f "${arch_conf}" ]] && conf_args+=("-c" "${arch_conf}")
@@ -278,13 +301,64 @@ for v in "${VARIANT_LIST[@]}"; do
 done
 
 # ── Reproducibility manifest ──────────────────────────────────────────────
-{
-  echo "# Powernode bootloader build manifest"
-  echo "arch=${ARCH}"
-  echo "base_image=${BASE_IMAGE_DIGEST}"
-  echo "variants=${VARIANTS}"
-  echo "build_time=$(date -Iseconds)"
-  echo "git_sha=$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null || echo 'unknown')"
-} >"${ARCH_OUT}/MANIFEST"
+# Emit a machine-readable build-manifest.json that the M3 reproducibility
+# gate diffs between two builds of the same source. Two back-to-back runs
+# with identical pins MUST produce byte-identical manifests (modulo git_sha,
+# which the gate strips before diffing).
+if ! command -v jq >/dev/null 2>&1; then
+  log "FATAL: jq is required to emit build-manifest.json (apt install jq)"
+  exit 1
+fi
 
-log "Build complete: ${ARCH_OUT}"
+artifacts_json="{}"
+while IFS= read -r f; do
+  rel="${f#${ARCH_OUT}/}"
+  sha=$(sha256sum "$f" | awk '{print $1}')
+  size=$(stat -c %s "$f")
+  artifacts_json=$(jq -n \
+    --argjson acc "$artifacts_json" \
+    --arg k "$rel" --arg s "$sha" --argjson n "$size" \
+    '$acc + {($k): {sha256: $s, size_bytes: $n}}')
+done < <(find "${ARCH_OUT}" -type f \
+         \( -name 'kernel' -o -name 'initramfs.cpio.zst' \
+            -o -name '*.img' -o -name '*.iso' -o -name '*.qcow2' \) \
+         | sort)
+
+# OCI image digest (buildah inspect) if the oci variant ran.
+oci_digest="null"
+if command -v buildah >/dev/null 2>&1 \
+   && buildah images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q "powernode-bootc:${ARCH}"; then
+  d=$(buildah inspect --format '{{.FromImageDigest}}' "powernode-bootc:${ARCH}" 2>/dev/null)
+  [[ -n "$d" ]] && oci_digest=$(jq -nc --arg v "$d" '$v')
+fi
+
+# fs-verity root hash for the composefs blob (if Stage-2 composer produced one).
+fsverity_hash="null"
+if [[ -f "${ARCH_OUT}/oci/composefs.blob" ]] && command -v fsverity >/dev/null 2>&1; then
+  h=$(fsverity digest "${ARCH_OUT}/oci/composefs.blob" 2>/dev/null | awk '{print $1}')
+  [[ -n "$h" ]] && fsverity_hash=$(jq -nc --arg v "$h" '$v')
+fi
+
+jq -n \
+  --arg arch "${ARCH}" \
+  --arg base "${BASE_IMAGE_DIGEST}" \
+  --arg apt "${APT_SNAPSHOT:-unknown}" \
+  --arg kver "${KERNEL_VERSION:-$(uname -r)}" \
+  --arg git "$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  --arg variants "${VARIANTS}" \
+  --argjson artifacts "$artifacts_json" \
+  --argjson oci "$oci_digest" \
+  --argjson fsverity "$fsverity_hash" \
+  '{schema_version: 1,
+    arch: $arch,
+    base_image_digest: $base,
+    apt_snapshot: $apt,
+    kernel_version: $kver,
+    git_sha: $git,
+    variants: ($variants | split(",")),
+    artifacts: $artifacts,
+    oci_digest: $oci,
+    fsverity_root_hash: $fsverity}' \
+  >"${ARCH_OUT}/build-manifest.json"
+
+log "Build complete: ${ARCH_OUT} (manifest: build-manifest.json)"

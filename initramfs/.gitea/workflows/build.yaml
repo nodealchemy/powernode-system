@@ -44,11 +44,28 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest || 'ubuntu@sha256:placeholder-pin-via-ci-input' }}
+      # BASE_IMAGE_DIGEST must be explicitly pinned per M3 reproducibility:
+      #   - workflow_dispatch inputs.base_image_digest (operator-supplied)
+      #   - vars.POWERNODE_UBUNTU_BASE_DIGEST (long-lived repo variable)
+      # The verify-base-image-digest-is-pinned step fails the run if neither
+      # is set or if the value doesn't match the expected sha256 shape.
+      BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest || vars.POWERNODE_UBUNTU_BASE_DIGEST }}
       APT_SNAPSHOT:      ${{ inputs.apt_snapshot || '20260430T000000Z' }}
       REGISTRY:          ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
 
     steps:
+      - name: Verify BASE_IMAGE_DIGEST is pinned
+        run: |
+          if [[ ! "${BASE_IMAGE_DIGEST}" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]; then
+            echo "FATAL: BASE_IMAGE_DIGEST must be 'ubuntu@sha256:<64-hex>'"
+            echo "       Got: '${BASE_IMAGE_DIGEST}'"
+            echo ""
+            echo "Set via workflow_dispatch input 'base_image_digest' or via the"
+            echo "repository variable POWERNODE_UBUNTU_BASE_DIGEST."
+            exit 1
+          fi
+          echo "BASE_IMAGE_DIGEST OK: ${BASE_IMAGE_DIGEST}"
+
       - uses: actions/checkout@v4
 
       - name: Install build deps
@@ -66,23 +83,29 @@ jobs:
           platforms: arm64
 
       - name: Stage cross-compiled powernode-agent binary
+        env:
+          POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
         run: |
-          mkdir -p extensions/system/initramfs/scripts
-          # The agent CI publishes binaries as workflow artifacts; this
-          # step downloads them via the platform agent registry. v0
-          # placeholder until the agent CI's release artifacts are wired.
-          ARCH_OUT="extensions/system/initramfs/scripts/powernode-agent-${{ matrix.arch }}"
           if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
-            echo "WARN: POWERNODE_AGENT_BINARY_URL not set — using placeholder shim"
-            cat >"$ARCH_OUT" <<'SHIM'
-          #!/bin/sh
-          echo "[powernode-shim] powernode-agent placeholder"
-          exec /bin/sh
-          SHIM
-          else
-            curl -fsSL "$POWERNODE_AGENT_BINARY_URL" -o "$ARCH_OUT"
+            echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured"
+            echo "       Point at the agent release directory that publishes"
+            echo "       powernode-agent-linux-<arch> + .sha256 + .cosign-bundle."
+            exit 1
           fi
-          chmod +x "$ARCH_OUT"
+          mkdir -p initramfs/scripts
+          OUT="initramfs/scripts/powernode-agent-${{ matrix.arch }}"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-${{ matrix.arch }}" -o "$OUT"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-${{ matrix.arch }}.sha256" -o "$OUT.sha256"
+          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-${{ matrix.arch }}.cosign-bundle" \
+                 -o "$OUT.cosign-bundle" 2>/dev/null; then
+            cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
+              || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
+          else
+            echo "WARN: .cosign-bundle absent at release URL — skipping signature verify."
+            echo "      Re-publish the agent binary with a cosign bundle to enforce."
+          fi
+          chmod +x "$OUT"
 
       - name: Build all artifact variants
         working-directory: extensions/system/initramfs
@@ -144,15 +167,75 @@ jobs:
           path: extensions/system/initramfs/build/${{ matrix.arch }}/
 
   reproducibility-gate:
-    # M1 reproducibility requirement — build the same source twice on
-    # one arch (amd64) and assert digest equality. Fails the run if
-    # SHA256SUMS diverge between runs.
+    # M3 reproducibility gate — re-build the same source on a clean runner
+    # with the identical pins from the build job, then diff the resulting
+    # build-manifest.json (strip git_sha; everything else MUST match).
     needs: build
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        arch: [amd64]
+    env:
+      BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest }}
+      APT_SNAPSHOT:      ${{ inputs.apt_snapshot }}
+      POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Reproducibility re-build (amd64)
+      - name: Verify BASE_IMAGE_DIGEST is pinned
         run: |
-          echo "Reproducibility gate placeholder — full implementation pulls the prior"
-          echo "run's SHA256SUMS, re-runs build.sh with the same pins, and diffs."
+          if [[ ! "${BASE_IMAGE_DIGEST}" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]; then
+            echo "FATAL: BASE_IMAGE_DIGEST must be pinned for reproducibility gate"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (mirror build job)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dracut-core composefs-tools \
+            xorriso isolinux qemu-utils sgdisk \
+            buildah cosign syft grype \
+            jq zstd
+
+      - name: Download first build's manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: powernode-initramfs-${{ matrix.arch }}-${{ github.sha }}
+          path: first-build/
+
+      - name: Stage cross-compiled powernode-agent binary
+        run: |
+          [ -n "${POWERNODE_AGENT_BINARY_URL:-}" ] || { echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured"; exit 1; }
+          mkdir -p extensions/system/initramfs/scripts
+          OUT="extensions/system/initramfs/scripts/powernode-agent-${{ matrix.arch }}"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-${{ matrix.arch }}" -o "$OUT"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-${{ matrix.arch }}.sha256" -o "$OUT.sha256"
+          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          chmod +x "$OUT"
+
+      - name: Re-build on clean runner with identical pins
+        working-directory: extensions/system/initramfs
+        run: |
+          ./build.sh \
+            --arch ${{ matrix.arch }} \
+            --base-image "${BASE_IMAGE_DIGEST}" \
+            --variants kernel-initrd,raw,iso,oci \
+            --output-dir "${GITHUB_WORKSPACE}/second-build"
+
+      - name: Diff manifests (must be byte-identical except git_sha)
+        run: |
+          # Strip git_sha; everything else must match. apt_snapshot, base
+          # image digest, kernel version, every artifact's sha256 + size,
+          # OCI digest, fsverity root hash — all must be reproducible.
+          jq -S 'del(.git_sha)' "first-build/build-manifest.json" > /tmp/first.json
+          jq -S 'del(.git_sha)' "second-build/${{ matrix.arch }}/build-manifest.json" > /tmp/second.json
+          if diff -u /tmp/first.json /tmp/second.json; then
+            echo "✓ reproducibility gate passed"
+          else
+            echo ""
+            echo "FATAL: reproducibility gate failed — manifests diverge between"
+            echo "       back-to-back builds of the same source. Investigate any"
+            echo "       timestamp leakage, locale variation, or unpinned tooling."
+            exit 1
+          fi

@@ -130,22 +130,28 @@ jobs:
           platforms: arm64
 
       - name: Stage cross-compiled powernode-agent (arm64)
-        run: |
-          mkdir -p initramfs/scripts
-          ARCH_OUT="initramfs/scripts/powernode-agent-arm64"
-          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
-            echo "WARN: POWERNODE_AGENT_BINARY_URL not set — using placeholder shim"
-            cat >"$ARCH_OUT" <<'SHIM'
-          #!/bin/sh
-          echo "[powernode-shim] powernode-agent placeholder"
-          exec /bin/sh
-          SHIM
-          else
-            curl -fsSL "$POWERNODE_AGENT_BINARY_URL" -o "$ARCH_OUT"
-          fi
-          chmod +x "$ARCH_OUT"
         env:
           POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
+        run: |
+          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
+            echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured"
+            echo "       Disk image builds bake the agent into the on-node rootfs;"
+            echo "       a placeholder shim would silently produce non-bootable images."
+            exit 1
+          fi
+          mkdir -p initramfs/scripts
+          OUT="initramfs/scripts/powernode-agent-arm64"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64" -o "$OUT"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256"
+          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.cosign-bundle" \
+                 -o "$OUT.cosign-bundle" 2>/dev/null; then
+            cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
+              || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
+          else
+            echo "WARN: .cosign-bundle absent — skipping signature verify."
+          fi
+          chmod +x "$OUT"
 
       - name: Build rpi4-firmware module rootfs
         # Direct curl fetch — no need for buildah/QEMU when we just want
