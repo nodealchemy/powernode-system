@@ -45,8 +45,19 @@ const (
 // chosen CNI's manifests — that's a separate runtime step. Its job
 // here is solely to gate the K3s install so the right pieces are
 // or are not provisioned by K3s itself.
+//
+// FlannelIface, FlannelBackend, and ClusterCidr (added 2026-05-19,
+// k3s overlay feature) carry the optional pod-network-over-SDWAN
+// arguments. When the SDWAN network the host is on has a
+// pod_subnet_prefix set, the platform stamps these three fields so
+// k3s starts flannel in host-gw mode bound to the SDWAN WireGuard
+// interface. Empty strings preserve the upstream K3s default
+// behavior (flannel VXLAN on host primary NIC) — zero-value safe.
 type BootstrapConfig struct {
-	CniPlugin string `json:"cni_plugin"`
+	CniPlugin      string `json:"cni_plugin"`
+	FlannelIface   string `json:"flannel_iface"`
+	FlannelBackend string `json:"flannel_backend"`
+	ClusterCidr    string `json:"cluster_cidr"`
 }
 
 // InstallArgs returns the extra positional args that should be
@@ -60,15 +71,50 @@ type BootstrapConfig struct {
 // `k3s server` invocation's argv. So `--flannel-backend=none
 // --disable-network-policy` here translates 1:1 to the running
 // daemon's flags.
+//
+// When the platform stamps FlannelIface + FlannelBackend +
+// ClusterCidr (the SDWAN k3s overlay path), append them so flannel
+// runs in host-gw mode bound to the SDWAN WireGuard interface. The
+// kernel's existing AllowedIPs entries for the /64 then carry pod
+// traffic through the encrypted overlay rather than the host's
+// primary NIC.
 func (c BootstrapConfig) InstallArgs() (args []string, ok bool) {
+	var base []string
 	switch c.CniPlugin {
 	case "", CniPluginFlannel:
-		return nil, true
+		base = nil
 	case CniPluginOvnKubernetes:
-		return []string{"--flannel-backend=none", "--disable-network-policy"}, true
+		base = []string{"--flannel-backend=none", "--disable-network-policy"}
 	default:
 		return nil, false
 	}
+
+	// K3s overlay extras — emitted only when the platform stamped
+	// them (zero-value strings mean "no extra arg"). The order matters
+	// for downstream k3s arg parsing; append after the base args.
+	extras := c.flannelOverlayArgs()
+	if len(extras) == 0 {
+		return base, true
+	}
+	return append(base, extras...), true
+}
+
+// flannelOverlayArgs builds the optional flannel-over-SDWAN flags from
+// the three new fields. Each is independent — an operator might stamp
+// just FlannelIface (use a custom interface) without forcing host-gw,
+// for instance. Empty fields produce no flag.
+func (c BootstrapConfig) flannelOverlayArgs() []string {
+	out := make([]string, 0, 3)
+	if c.FlannelIface != "" {
+		out = append(out, "--flannel-iface="+c.FlannelIface)
+	}
+	if c.FlannelBackend != "" {
+		out = append(out, "--flannel-backend="+c.FlannelBackend)
+	}
+	if c.ClusterCidr != "" {
+		out = append(out, "--cluster-cidr="+c.ClusterCidr)
+	}
+	return out
 }
 
 // ServerApplier is the agent's local-side surface for the K3s server

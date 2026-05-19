@@ -430,3 +430,83 @@ func TestBootstrapConfig_InstallArgs_UnknownReturnsNotOk(t *testing.T) {
 		t.Fatal("empty CniPlugin InstallArgs() should return ok=true")
 	}
 }
+
+// K3s overlay (2026-05-19) — flannel + pod-traffic-over-SDWAN args.
+func TestBootstrapConfig_InstallArgs_FlannelOverlay(t *testing.T) {
+	cfg := BootstrapConfig{
+		CniPlugin:      CniPluginFlannel,
+		FlannelIface:   "wg-sdwan-abc123",
+		FlannelBackend: "host-gw",
+		ClusterCidr:    "10.42.0.0/16",
+	}
+	args, ok := cfg.InstallArgs()
+	if !ok {
+		t.Fatal("flannel + overlay args should return ok=true")
+	}
+	want := []string{
+		"--flannel-iface=wg-sdwan-abc123",
+		"--flannel-backend=host-gw",
+		"--cluster-cidr=10.42.0.0/16",
+	}
+	for _, w := range want {
+		found := false
+		for _, a := range args {
+			if a == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in InstallArgs output, got %v", w, args)
+		}
+	}
+}
+
+// Zero-value safety — empty overlay fields produce no extra flags so
+// existing flannel clusters (pre-feature) keep their default behavior.
+func TestBootstrapConfig_InstallArgs_OverlayZeroValueOmitsFlags(t *testing.T) {
+	cfg := BootstrapConfig{CniPlugin: CniPluginFlannel} // overlay fields empty
+	args, ok := cfg.InstallArgs()
+	if !ok {
+		t.Fatal("zero-value flannel should return ok=true")
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "--flannel-iface") ||
+			strings.HasPrefix(a, "--flannel-backend") ||
+			strings.HasPrefix(a, "--cluster-cidr") {
+			t.Fatalf("expected no overlay flags on zero-value config, got %q", a)
+		}
+	}
+}
+
+// Mixed: ovn_kubernetes base args + overlay fields. The base args
+// (--flannel-backend=none --disable-network-policy) must precede the
+// overlay extras so K3s arg parsing sees the ovn-K8s posture first.
+// In practice an operator wouldn't stamp overlay fields on ovn-K8s
+// (the platform skips them), but the agent must be robust against
+// unexpected combinations.
+func TestBootstrapConfig_InstallArgs_OvnPlusOverlayDoesNotCrash(t *testing.T) {
+	cfg := BootstrapConfig{
+		CniPlugin:      CniPluginOvnKubernetes,
+		FlannelIface:   "wg-sdwan-abc123",
+		FlannelBackend: "host-gw",
+		ClusterCidr:    "10.42.0.0/16",
+	}
+	args, ok := cfg.InstallArgs()
+	if !ok {
+		t.Fatal("ovn-K8s + overlay should still return ok=true (defense-in-depth)")
+	}
+	// Confirm OVN base args + overlay extras both appear.
+	for _, expect := range []string{"--flannel-backend=none", "--disable-network-policy", "--flannel-iface=wg-sdwan-abc123"} {
+		found := false
+		for _, a := range args {
+			if a == expect {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in InstallArgs output, got %v", expect, args)
+		}
+	}
+}
