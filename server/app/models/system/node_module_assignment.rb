@@ -38,6 +38,12 @@ module System
     # registrar is idempotent so re-creating an assignment is safe.
     after_commit :register_module_skills, on: :create
     after_commit :unregister_module_skills_if_last, on: :destroy
+    # Audit plan P2.8c — auto-fire CanaryModuleService.observe_access! when a
+    # honeypot canary module gets attached to a node, so the operator dashboard
+    # sees the trigger without depending on every call site to remember the
+    # manual invocation. Non-canary modules are a graceful no-op (the service
+    # short-circuits via `canary?`).
+    after_commit :observe_canary_access, on: :create
 
     # === Methods ===
 
@@ -58,6 +64,21 @@ module System
       ::System::ModuleSkillRegistrar.unregister_for_module!(node_module: node_module)
     rescue StandardError => e
       emit_skill_event_failure!(operation: :unregister, error: e)
+    end
+
+    # Audit plan P2.8c — automatic CanaryModuleService.observe_access! hook
+    # for honeypot canaries. No-op if (a) the service isn't loaded, (b) the
+    # module isn't a canary. Rescues all StandardError so a honeypot signal
+    # failure never blocks a regular module assignment.
+    def observe_canary_access
+      return unless defined?(::System::Honeypot::CanaryModuleService)
+      ::System::Honeypot::CanaryModuleService.observe_access!(
+        node_module: node_module,
+        source: "node_module_assignment",
+        context: { node_id: node_id, assignment_id: id }
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[NodeModuleAssignment] honeypot observe_access failed: #{e.class}: #{e.message}")
     end
 
     # Surface skill registrar failures via FleetEvent in addition to the
