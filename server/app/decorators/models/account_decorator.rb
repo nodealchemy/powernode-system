@@ -38,6 +38,15 @@ Account.class_eval do
   has_many :system_node_scripts, class_name: "System::NodeScript", dependent: :restrict_with_error
   has_many :system_node_mount_points, class_name: "System::NodeMountPoint", dependent: :restrict_with_error
 
+  # Storage assignments (Phase S5 — operator-facing CRUD over file_storage ×
+  # node_instance pairings). Controller scopes via `current_account.system_storage_assignments`;
+  # without this declaration the index/show actions raise NoMethodError that
+  # the global rescue_from masks as a generic 500. Caught by P0.1 wave 1
+  # controller spec.
+  has_many :system_storage_assignments,
+           class_name: "System::StorageAssignment",
+           dependent: :restrict_with_error
+
   # Modules
   has_many :system_node_modules, class_name: "System::NodeModule", dependent: :restrict_with_error
   has_many :system_node_module_categories, class_name: "System::NodeModuleCategory", dependent: :restrict_with_error
