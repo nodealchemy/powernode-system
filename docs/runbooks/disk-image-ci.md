@@ -147,6 +147,23 @@ platform.system_set_default_disk_image_publication({
 })
 ```
 
+### Rollback to a previous publication
+
+If a newly-promoted publication regresses, swap the default back to a
+prior known-good publication using the same action — pass the previous
+`publication_id`:
+
+```javascript
+platform.system_set_default_disk_image_publication({
+  node_platform_id: "<platform-id>",
+  publication_id: "<previous-pub-id>"
+})
+```
+
+For the agent-driven path (sensor `system.disk_image_regression_reported`
+→ approval-gated rollback), see [`DISK_IMAGE_MANAGER_AGENT.md` →
+Rollback / Revert Workflow](../DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow).
+
 ## Phase 6 — Retention tuning ✅
 
 Default retention: 90 days for routine publications, 365 days for any publication marked `critical: true`. Operators tune via the platform configuration:

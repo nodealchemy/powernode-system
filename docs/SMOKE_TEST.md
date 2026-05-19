@@ -53,7 +53,7 @@ states what it adds beyond the previous.
 
 ## Smoke test catalog
 
-All 16 smoke seeds, grouped by pass. Each is idempotent and DB-level
+All 18 smoke seeds, grouped by pass. Each is idempotent and DB-level
 unless marked **VM**; VM-spawning seeds require the boot prerequisites
 listed in [Pass 1](#pass-1--single-node-qemu).
 
@@ -75,6 +75,8 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_storage_assignment_self_hosted.rb` | 6 | S7a | `FileManagement::Storage` → SDWAN attachment → assignment materialization | no |
 | `smoke_test_storage_assignment_gateway.rb` | 6 | S7b | External NFS proxied through SDWAN-peered gateway | no |
 | `smoke_test_membership_credentials.rb` | 7 | N0 | Membership credential issue / verify / refresh / revoke | no |
+| `smoke_test_bare_metal_claim.rb` | 8 | P3.5 | Bare-metal physical-device claim flow: `record_discovery!` → `confirm_claim!` → `poll_status` returns bootstrap token | no |
+| `smoke_test_disk_image_build_to_publication.rb` | 8 | P2.15c | Disk-image CI webhook round-trip: HMAC-signed POST → DiskImagePublication upserted with matching git_sha + sha256; bad-sig correctly rejected with 200 status=error | no |
 
 Most seeds run in **DB-level** mode and complete in under a minute. The VM-spawning
 seeds (Pass 1 + Powernode Hub + cluster_member HA) require the boot prerequisites and

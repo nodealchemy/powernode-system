@@ -156,6 +156,50 @@ sequenceDiagram
 
 ---
 
+## Rollback / Revert Workflow
+
+The `system_revert_disk_image` MCP tool is aspirational — see
+[`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). Today's
+rollback uses the existing `system_set_default_disk_image_publication`
+action with the previous publication ID.
+
+### Operator-driven (incident response)
+
+1. List recent publications to identify the last known-good:
+   ```javascript
+   platform.system_list_disk_image_publications({ node_platform_id: "<id>" })
+   ```
+2. Pick the `publication_id` from the prior `status: "published"` row.
+3. Swap the default back:
+   ```javascript
+   platform.system_set_default_disk_image_publication({
+     node_platform_id: "<id>",
+     publication_id: "<previous-pub-id>"
+   })
+   ```
+
+New instances booting from this NodePlatform will use the previous image
+on next netboot.
+
+### Agent-driven (autonomy loop)
+
+When a sensor emits `system.disk_image_regression_reported`, the policy
+`system.disk_image_publication_rollback` (default `require_approval` per
+the Sensor → Action Map above) opens an `ApprovalRequest` proposing the
+previous publication as the new default. An operator confirms; the agent
+then invokes `set_default_disk_image_publication` automatically.
+
+### Why no dedicated revert wrapper today
+
+`set_default_disk_image_publication` already atomically swaps the
+NodePlatform's default. A `system_revert_disk_image` wrapper would need
+to remember "previous default" server-side — adding persistent state for
+ergonomics only. When the wrapper eventually ships (see audit plan
+P2.16), it will preserve the existing semantics: it's a thin
+look-up-and-swap on top of the existing action.
+
+---
+
 ## Observability
 
 Every Disk Image Manager decision lands in three places:
