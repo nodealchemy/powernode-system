@@ -152,7 +152,9 @@ module System
 
       # Get provider adapter through the registry
       provider_adapter = begin
-        Providers::Registry.for_node(nil, region: region) # TODO: Update registry to support region-only lookup
+        # TODO(unscheduled): extend Providers::Registry to support a
+        # region-only lookup path; passing nil node here is a workaround.
+        Providers::Registry.for_node(nil, region: region)
       rescue Providers::Registry::UnknownProviderError => e
         return { success: false, error: e.message }
       end

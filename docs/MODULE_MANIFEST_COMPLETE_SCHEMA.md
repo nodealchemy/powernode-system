@@ -514,7 +514,42 @@ When attaching this module, the operator UI surfaces the privileged flag and req
 
 ## Validation
 
-`System::ManifestImportService.import!` validates:
+Manifests are validated at **two distinct moments**: at PR/CI time by a JSON Schema gate, and again at OCI ingest time by the Rails-side `System::ManifestImportService`.
+
+### Build-time (CI schema gate)
+
+**Schema:** [`modules/.schema/module-manifest.schema.json`](../modules/.schema/module-manifest.schema.json) — JSON Schema draft 2020-12. This is the machine-readable mirror of the prose reference in this document.
+
+**Workflow:** [`.gitea/workflows/module-validate.yaml`](../.gitea/workflows/module-validate.yaml) runs on every PR or push that touches `modules/**/manifest.yaml`, `templates/example-modules/**/manifest.yaml`, `templates/module-repo/manifest.yaml`, or the schema itself. It walks every manifest in the extension, converts YAML → JSON via `yq`, then validates with `ajv-cli@5` (draft 2020-12, `--all-errors`).
+
+**What this catches before runtime:**
+
+- Top-level typos (`fil_spec:` instead of `file_spec:`) — `additionalProperties: false` at every level rejects unknown keys
+- Bad enum values (`restart_policy: "sometimes"`)
+- Bad `name` format (`BadName` rejected — must match `^[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
+- Bad Linux capability spelling (`NET_ADMIN` rejected — must match `^CAP_[A-Z_]+$`)
+- Missing required fields (`schema_version`, `name`)
+- Wrong schema version (only `1` is supported today)
+- Bad `build.ubuntu_digest` format (must be `sha256:<64-hex>` or null)
+- Bad `build.apt_snapshot` format (must be `YYYYMMDDTHHMMSSZ` or null)
+
+**Run locally:**
+
+```bash
+cd extensions/system
+schema="modules/.schema/module-manifest.schema.json"
+for m in $(find modules templates -name manifest.yaml); do
+  tmp="/tmp/$(echo "$m" | tr '/' '_').json"
+  python3 -c "import yaml,json; print(json.dumps(yaml.safe_load(open('$m'))))" > "$tmp"
+  npx --yes ajv-cli@5 validate -s "$schema" -d "$tmp" --spec=draft2020 --all-errors
+done
+```
+
+(In CI the workflow uses `yq` instead of Python; either works.)
+
+### Runtime (`System::ManifestImportService`)
+
+When the platform ingests a new OCI artifact, `System::ManifestImportService.import!` runs a second pass that adds semantic checks the schema can't express:
 
 - `schema_version` is a known integer (currently `1`)
 - `name` matches the platform's `NodeModule.name`

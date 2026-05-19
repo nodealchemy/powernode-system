@@ -1,0 +1,80 @@
+name: validate-module-manifests
+
+# Schema-validates every NodeModule manifest.yaml at PR time so typos
+# (e.g. `fil_spec:` vs `file_spec:`, missing required fields, bad enum
+# values) fail at review rather than at runtime on a fleet node.
+#
+# Schema: extensions/system/modules/.schema/module-manifest.schema.json
+# Schema reference docs: extensions/system/docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md
+# Audit plan item: P1.3 (~/.claude/plans/forform-a-deep-examination-fizzy-lobster.md)
+#
+# Trigger: any PR or push that touches a manifest or the schema itself.
+
+on:
+  pull_request:
+    paths:
+      - 'modules/**/manifest.yaml'
+      - 'templates/example-modules/**/manifest.yaml'
+      - 'templates/module-repo/manifest.yaml'
+      - 'modules/.schema/**'
+  push:
+    branches: [develop, master, main]
+    paths:
+      - 'modules/**/manifest.yaml'
+      - 'templates/example-modules/**/manifest.yaml'
+      - 'templates/module-repo/manifest.yaml'
+      - 'modules/.schema/**'
+  workflow_dispatch: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js (for ajv-cli)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install yq (for YAML → JSON)
+        run: |
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Validate every manifest against the schema
+        run: |
+          set -euo pipefail
+          schema="modules/.schema/module-manifest.schema.json"
+          if [[ ! -f "$schema" ]]; then
+            echo "FATAL: schema missing at $schema"
+            exit 1
+          fi
+
+          fail=0
+          total=0
+          while IFS= read -r m; do
+            total=$((total + 1))
+            tmp="/tmp/$(echo "$m" | tr '/' '_').json"
+            yq -o=json '.' "$m" > "$tmp"
+            if npx --yes ajv-cli@5 validate \
+                 -s "$schema" \
+                 -d "$tmp" \
+                 --spec=draft2020 \
+                 --all-errors >/tmp/ajv.out 2>&1; then
+              echo "OK:   $m"
+            else
+              echo "FAIL: $m"
+              cat /tmp/ajv.out
+              fail=1
+            fi
+          done < <(find modules templates -name manifest.yaml | sort)
+
+          echo ""
+          echo "Validated $total manifest(s)."
+          if [[ $fail -ne 0 ]]; then
+            echo "::error::One or more manifests failed schema validation"
+            exit 1
+          fi

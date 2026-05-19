@@ -97,6 +97,22 @@ This is the part that bites everyone the first time:
 | YAML | 2-space indent, no tabs |
 | Migrations | Use `t.references` with built-in indexes; never `add_index` for FKs separately |
 
+## TODO Discipline
+
+Every standalone `# TODO` comment in `server/app/` or `worker/app/` Ruby source **must** use the labeled form:
+
+```ruby
+# TODO(<label>): <description>
+```
+
+Run the gate locally before pushing:
+
+```bash
+bash extensions/system/scripts/audit-todos.sh
+```
+
+Valid labels: `M<N>-<slug>` (milestone), `P<N>-<slug>` (phase), `security-review`, `refactor`, `unscheduled`. Inline TODOs embedded mid-prose inside contextful comments are not gated. Full convention + examples in [`docs/TODO_TAXONOMY.md`](docs/TODO_TAXONOMY.md). CI rejects bare TODOs via the `todo-audit` job in [`.gitea/workflows/ci.yaml`](.gitea/workflows/ci.yaml).
+
 ## Permission-based access control
 
 **This is non-negotiable in the platform's frontend:** check permissions, never roles.
@@ -116,6 +132,34 @@ Backend uses `current_user.has_permission?('name')`.
 - All new services + controllers need rspec coverage
 - Frontend specs use Vitest + React Testing Library
 - E2E flows go in `frontend/cypress/e2e/` (parent platform's cypress)
+
+## Coverage tracking (opt-in)
+
+Coverage tracking is opt-in via the `COVERAGE=1` environment variable. The extension ships a SimpleCov config at [`server/spec/support/simplecov.rb`](server/spec/support/simplecov.rb) and a wrapper script at [`scripts/run-coverage.sh`](scripts/run-coverage.sh).
+
+**One-time setup** (parent platform changes — coordinate with the platform owner):
+
+1. Add to `powernode-platform/server/Gemfile`:
+   ```ruby
+   gem 'simplecov', require: false, group: :test
+   ```
+2. Add to the top of `powernode-platform/server/spec/spec_helper.rb` (FIRST require, before anything else):
+   ```ruby
+   require_relative '../../extensions/system/server/spec/support/simplecov'
+   ```
+3. `bundle install` in `powernode-platform/server/`.
+
+**Per-run:**
+
+```bash
+# Full extension suite with coverage
+bash extensions/system/scripts/run-coverage.sh
+
+# Subset
+bash extensions/system/scripts/run-coverage.sh ../extensions/system/server/spec/controllers
+```
+
+Open `extensions/system/coverage/index.html`. The minimum-coverage gate is permissive (60%) while the test pyramid is being built — see audit plan P3.7d for the tightening schedule.
 
 ## Submitting a PR
 

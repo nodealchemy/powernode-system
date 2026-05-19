@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powernode.org/schemas/module-manifest.v1.json",
+  "title": "Powernode Module Manifest",
+  "description": "Authoritative schema for extensions/system/modules/*/manifest.yaml and extensions/system/templates/{module-repo,example-modules}/*/manifest.yaml. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md for prose reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name"],
+  "properties": {
+    "schema_version": {
+      "description": "Schema version. Only v1 is supported today.",
+      "const": 1
+    },
+
+    "name": {
+      "description": "Stable identifier. Lowercase letters, digits, hyphens; must start with a letter and not end in a hyphen.",
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "display_name": { "type": "string", "maxLength": 200 },
+    "description":  { "type": "string" },
+    "license":      { "type": "string" },
+
+    "mask":            { "type": "array", "items": { "type": "string" } },
+    "file_spec":       { "type": "array", "items": { "type": "string" } },
+    "protected_spec":  { "type": "array", "items": { "type": "string" } },
+    "dependency_spec": { "type": "array", "items": { "type": "string" } },
+    "package_spec":    { "type": "array", "items": { "type": "string" } },
+
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Form: <owner>/<module>@<version-constraint>, e.g. 'powernode/powernode-base-ruby@^1.0'."
+          }
+        },
+        "provides": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "init": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start":   { "type": "string" },
+        "stop":    { "type": "string" },
+        "restart": { "type": "string" }
+      }
+    },
+
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "start_command":  { "type": "string" },
+          "stop_command":   { "type": "string" },
+          "restart_policy": { "enum": ["never", "on-failure", "always"] },
+          "user":           { "type": "string" },
+          "working_directory": { "type": "string" },
+          "env": {
+            "description": "Environment variables passed to the service. Values are forwarded to systemd which interprets them as strings; YAML scalar values of any type are accepted here.",
+            "type": "object",
+            "additionalProperties": true
+          },
+          "exposed_ports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port", "protocol"],
+              "properties": {
+                "port":     { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "protocol": { "enum": ["tcp", "udp", "sctp"] },
+                "name":     { "type": "string" }
+              }
+            }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^CAP_[A-Z_]+$"
+            }
+          },
+          "health": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "endpoint":              { "type": "string" },
+              "method":                { "enum": ["GET", "POST", "PUT", "TCP"] },
+              "interval_seconds":      { "type": "integer", "minimum": 1 },
+              "timeout_seconds":       { "type": "integer", "minimum": 1 },
+              "initial_delay_seconds": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "metadata": { "type": "object" }
+        }
+      }
+    },
+
+    "reboot_required": { "type": "boolean" },
+
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^CAP_[A-Z_]+$"
+          }
+        },
+        "selinux_profile":  { "type": ["string", "null"] },
+        "apparmor_profile": { "type": ["string", "null"] },
+        "seccomp_profile":  { "type": ["string", "null"] },
+        "egress_allow":     { "type": "array", "items": { "type": "string" } },
+        "privileged":       { "type": "boolean" },
+        "user_namespace":   { "type": "boolean" }
+      }
+    },
+
+    "skills": {
+      "type": "array",
+      "description": "AI Skills this module ships. Each entry is an object whose schema is owned by the skill subsystem; this manifest only validates that it's an array."
+    },
+
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ubuntu_digest": {
+          "description": "Pinned Ubuntu base image digest. Format: sha256:<64-hex>, or null to inherit Containerfile default.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          ]
+        },
+        "apt_snapshot": {
+          "description": "Pinned snapshot.debian.org / Ubuntu APT snapshot timestamp. Format: YYYYMMDDTHHMMSSZ, or null to inherit Containerfile default.",
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z$" }
+          ]
+        },
+        "firmware_repo": { "type": "string" },
+        "firmware_ref":  { "type": "string" },
+        "k3s_version":   { "type": "string" }
+      }
+    }
+  }
+}
