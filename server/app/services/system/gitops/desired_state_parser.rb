@@ -48,6 +48,14 @@ module System
         raw = {} if raw.nil?
         return Result.new(ok?: false, error: "fleet.yaml must be a YAML mapping (Hash)") unless raw.is_a?(Hash)
 
+        # P2.6 schema gate — catches authoring bugs (typos, bad enums, wrong
+        # types) at parse time so the reconciler surfaces structured errors
+        # rather than ActiveRecord::RecordInvalid at apply time.
+        validation = DesiredStateValidator.call(raw)
+        unless validation.ok?
+          return Result.new(ok?: false, error: "fleet.yaml schema errors — #{validation.error_summary}")
+        end
+
         Result.new(
           ok?: true,
           desired_state: DesiredState.new(
