@@ -187,13 +187,15 @@ Worker NodeInstances (N varies):
 
 **Workaround**: use K3s. K3s pods get pod networking via flannel (or Cilium in Phase 3) which handles cross-host transparently.
 
-### Use Case 9 — Encrypted pod-to-pod via SDWAN ❌
+### Use Case 9 — Encrypted pod-to-pod via SDWAN ✅ (opt-in)
 
-**Reality**: K3s' default flannel CNI uses VXLAN over the host's primary NIC, not the SDWAN overlay. Pod-to-pod traffic between K3s nodes traverses whatever underlying network the hosts share.
+**Reality**: K3s' default flannel CNI uses VXLAN over the host's primary NIC. **Opt-in encryption via SDWAN overlay** (shipped 2026-05-19): set `pod_subnet_prefix` on the `Sdwan::Network`; the platform then stamps the cluster's bootstrap config with `--flannel-iface=wg-sdwan-<handle>`, `--flannel-backend=host-gw`, `--cluster-cidr=<pod_subnet_prefix>` at install time so pod-to-pod traffic flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No double-encapsulation** (host-gw mode injects direct kernel routes; the WG tunnels do the encryption work). ovn-Kubernetes ignores `pod_subnet_prefix` and uses its own pod-network layer.
 
-**Future**: Phase 2 slice 9 (`pod_subnet_prefix` on `Sdwan::Network` + custom CNI) will route pod prefixes via the FRR iBGP daemon over SDWAN. Until then, treat pod plane as "not encrypted by Powernode."
+**Default posture**: when `pod_subnet_prefix` is null (default), flannel falls back to VXLAN on host primary NIC — same as pre-2026-05-19 behavior. Operators must explicitly set the field per network to opt in.
 
-**Mitigation**: for sensitive workloads, use NetworkPolicy + service mesh (Linkerd/Istio) on top of K3s for app-layer encryption.
+**Operator path**: create the SDWAN network with `pod_subnet_prefix: "10.42.0.0/16"` (or any non-overlapping RFC1918 CIDR), then bootstrap k3s with `cni_plugin: "flannel"` on that network. See [`CONTAINER_RUNTIMES.md` §"CNI selection — Routing pod traffic over SDWAN"](./CONTAINER_RUNTIMES.md#routing-pod-traffic-over-sdwan-pod_subnet_prefix--shipped-2026-05-19).
+
+**Additional mitigation** (orthogonal): use NetworkPolicy + service mesh (Linkerd/Istio) on top of K3s for app-layer authorization between pods. This feature secures the *transport* between nodes; mesh policies enforce *authorization* between pods.
 
 ### Use Case 10 — Workload-image CVE coverage ❌
 

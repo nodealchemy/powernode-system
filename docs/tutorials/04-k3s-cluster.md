@@ -279,8 +279,77 @@ the same SDWAN network. Either:
 - Use a federation peer if the cluster is on a remote account (see Tutorial 11)
 
 **Pods can't reach each other across nodes** — flannel CNI uses the host's
-primary NIC by default, not SDWAN. For SDWAN-encrypted pod-to-pod, switch
-to ovn-kubernetes CNI (see `smoke_test_ovn_k8s_cni.rb` + Tutorial 05).
+primary NIC by default, not SDWAN. To switch to ovn-kubernetes CNI (encrypted
+pod traffic over OVN tunnels), bootstrap the cluster with the `cni_plugin`
+override:
+
+```javascript
+platform.system_provision_instance({
+  node_id: "<bootstrap-node-id>",
+  // ... usual args ...
+  // The provisioner reads cni_plugin from the template/operator hint
+  // and validates against the bootstrap node's network_profile.
+})
+```
+
+The provisioner auto-defaults the CNI from `network_profile`: heavyweight
+nodes (≥4 GB RAM) get `ovn_kubernetes`; lightweight nodes get `flannel`.
+Explicit overrides are validated — passing `ovn_kubernetes` on a lightweight
+node raises `CniProfileMismatchError`. See [`CONTAINER_RUNTIMES.md` §"CNI
+selection (Phase O4)"](../CONTAINER_RUNTIMES.md#cni-selection-phase-o4--shipped)
+for the full table.
+
+## Pod traffic over SDWAN (encrypted pod-to-pod)
+
+For flannel clusters, you can route pod-to-pod traffic over the SDWAN
+WireGuard overlay instead of the host's primary NIC. This is opt-in per
+SDWAN network.
+
+**Set `pod_subnet_prefix` on the SDWAN network** (must not overlap the
+SDWAN /64, peer LAN subnets, VIP CIDRs, or another network's
+`pod_subnet_prefix`):
+
+```javascript
+platform.system_sdwan_create_network({
+  name: "k3s-prod-net",
+  pod_subnet_prefix: "10.42.0.0/16",     // flannel default size
+  routing_mode: "ibgp"                   // recommended for >2 hosts (direct peer-to-peer)
+})
+```
+
+**Bootstrap the cluster with `cni_plugin: "flannel"`** on a NodeInstance
+peered to this network. The provisioner stamps the cluster's metadata
+with `pod_cidr` + `sdwan_network_id`; the agent then receives extra
+flannel args (`--flannel-iface=wg-sdwan-<handle>`,
+`--flannel-backend=host-gw`, `--cluster-cidr=10.42.0.0/16`) at install
+time. K3s starts flannel in host-gw mode, which installs per-node /24
+routes pointing at each node's overlay IP. The kernel routes those
+overlay IPs through the existing WG tunnels via the SDWAN AllowedIPs.
+
+**Verify pod traffic on the WG interface** (live smoke):
+
+```bash
+# On node A (kubectl gives you the WG iface name from --flannel-iface output)
+kubectl get pods -A -o wide                          # find pods on node A + node B
+tcpdump -i wg-sdwan-<handle> 'host <pod-IP-node-B>'  # should show traffic during pod-to-pod test
+```
+
+**Migration of an existing flannel cluster**: setting `pod_subnet_prefix`
+on a network that already has running flannel clusters triggers the
+agent's reconcile loop to re-install k3s with the new flags on next
+heartbeat (~60 s). This causes a brief 30–60 s pod-network outage per
+node as k3s restarts. The operator's act of setting the field IS the
+explicit opt-in; if you can't tolerate the outage, drain workloads first
+or wait for a maintenance window.
+
+**Immutability**: `pod_subnet_prefix` cannot change once any cluster
+references the network — k3s pod CIDR is immutable post-bootstrap.
+Destroy + rebuild the cluster to migrate to a different pod CIDR.
+
+ovn-Kubernetes ignores `pod_subnet_prefix` (its OVN layer owns the
+pod-network); setting the field on an ovn-K8s path emits a
+`system.cluster_bootstrap.pod_subnet_prefix_ignored` warning event but
+otherwise bootstraps normally.
 
 ## What's next
 

@@ -294,13 +294,71 @@ platform.system_execute_task({
 
 The output streams back through the worker API and lands in the operator dashboard task pane.
 
-### Pod-to-pod networking is unencrypted (slice 9 caveat)
+### CNI selection (Phase O4 — shipped)
 
-K3s default flannel CNI uses VXLAN over the host's primary NIC, **not** the SDWAN overlay — pod-to-pod traffic between nodes is plaintext on the underlying network. This is a known gap (see `USE_CASE_MATRIX.md` use case 9). Workarounds until pod_subnet_prefix lands:
+K3s clusters today support two CNI plugins, auto-selected from the bootstrap NodeInstance's `network_profile` and overridable explicitly. The `KubernetesClusterProvisionerService` enforces the choice + raises `CniProfileMismatchError` when an operator-supplied override would be incompatible with the host profile.
 
-- Use `NetworkPolicy` to restrict pod-to-pod cross-namespace traffic.
-- Layer a service mesh (Linkerd, Istio) for app-layer mTLS.
-- For sensitive workloads, run them on the same node (anti-affinity off, affinity on) until pod traffic over SDWAN ships.
+| `network_profile` | Auto-default CNI | Rationale |
+|---|---|---|
+| `heavyweight` (≥4 GB RAM, x86/Pi5/server-class) | `ovn_kubernetes` | Headroom for OVN-controller + OVN-K8s; supports encrypted pod-to-pod via OVN tunnels |
+| `lightweight` (constrained / Pi-class) | `flannel` | Bundled with K3s; no OVN footprint |
+| (anything else / unset) | `flannel` (`DEFAULT_CNI_PLUGIN`) | Conservative fallback |
+
+**Explicit operator override** (passed at bootstrap via the `cni_plugin` argument):
+
+```javascript
+platform.system_provision_instance({
+  node_id: "<bootstrap-node-id>",
+  // ... other args ...
+  // For K3s bootstrap, the provisioner reads cni_plugin from the
+  // template/operator hint and validates against network_profile.
+})
+```
+
+If the operator-supplied `cni_plugin` is `ovn_kubernetes` and the bootstrap node has `network_profile: "lightweight"`, the service raises `CniProfileMismatchError` rather than silently degrading. Same check runs at join time: a `KubernetesNode` whose profile mismatches the cluster's CNI is refused with the same error class. The valid `cni_plugin` set is the union of the values in `NETWORK_PROFILE_TO_CNI` plus `DEFAULT_CNI_PLUGIN` (i.e., `flannel`, `ovn_kubernetes`).
+
+**Pod-to-pod encryption posture:**
+
+- `flannel` (default for lightweight) — VXLAN over the host's primary NIC by default. **Optional encryption via SDWAN overlay**: when the cluster's `Sdwan::Network` has `pod_subnet_prefix` set, the provisioner stamps the cluster's bootstrap config with `--flannel-iface=wg-sdwan-<handle>`, `--flannel-backend=host-gw`, and `--cluster-cidr=<pod_subnet_prefix>` so flannel runs in host-gw mode bound to the SDWAN WireGuard interface. Pod traffic between nodes then flows through the existing WireGuard tunnels via the AllowedIPs covering the SDWAN /64. **No VXLAN encapsulation, no MTU computation, no nested-header fragmentation** — the kernel's per-node /24 routes (installed by flannel host-gw from the K8s API) point at the other node's overlay IP, which WG already routes correctly.
+- `ovn_kubernetes` (default for heavyweight) — pod traffic flows over OVN tunnels with native encryption support; pairs cleanly with the SDWAN overlay for hub-to-hub paths. `pod_subnet_prefix` is ignored on ovn-K8s clusters (OVN owns its own pod-network layer); the provisioner emits a `system.cluster_bootstrap.pod_subnet_prefix_ignored` warning event when the field is set on an ovn-K8s path.
+
+#### Routing pod traffic over SDWAN (`pod_subnet_prefix` — shipped 2026-05-19)
+
+Operator workflow:
+
+1. **Declare the pod CIDR on the SDWAN network** at create time (or update an existing network — but see "Migration" note below):
+   ```javascript
+   platform.system_sdwan_create_network({
+     name: "tokyo-edge",
+     pod_subnet_prefix: "10.42.0.0/16",   // RFC1918 pod CIDR — flannel default size
+     // other fields per usual
+   })
+   ```
+   The platform validates that `pod_subnet_prefix` does NOT overlap (a) the SDWAN /64, (b) any peer's `lan_subnets`, (c) any VIP /128, (d) any other network's `pod_subnet_prefix` in the same account.
+
+2. **Bootstrap the k3s cluster with `cni_plugin: "flannel"`** on a NodeInstance attached to the network. The provisioner detects the network's `pod_subnet_prefix`, stamps the cluster's `metadata["pod_cidr"]` + `metadata["sdwan_network_id"]`, and emits a `SubnetAdvertisement(source: "pod_subnet")` row.
+
+3. **The agent receives the new flannel args via the bootstrap_config endpoint** on its next heartbeat:
+   - `flannel_iface: "wg-sdwan-<handle>"`
+   - `flannel_backend: "host-gw"`
+   - `cluster_cidr: "<pod_subnet_prefix>"`
+
+   The agent appends `--flannel-iface --flannel-backend=host-gw --cluster-cidr` to its k3s install args. Subsequent k3s installs (idempotent on content_hash) carry the new posture.
+
+**Migration model for existing clusters:** setting `pod_subnet_prefix` on a network that already has running flannel clusters triggers the agent's reconcile loop to re-install k3s with the new flags on next heartbeat. This causes a brief (~30–60 s per node) pod-network outage as k3s restarts. The operator's act of setting the field IS the explicit opt-in; the platform doesn't auto-migrate without operator action.
+
+**Routing topology trade-off:**
+
+| Network `routing_protocol` | Pod-traffic path |
+|---|---|
+| `static` (default — hub-and-spoke) | Spoke A → Hub → Spoke B (hub-hairpinned) |
+| `ibgp` (slice 9c) | Spoke A → Spoke B directly (FRR-advertised /24s) |
+
+iBGP is the recommended posture for clusters with non-trivial pod-to-pod traffic; static-mode hub-hairpinning works but adds a round-trip per pod packet.
+
+**Immutability:** once a Devops::KubernetesCluster references the network, `pod_subnet_prefix` cannot be changed (k3s pod CIDR is immutable post-bootstrap — same constraint as `cni_plugin`). Destroy + rebuild the cluster to migrate to a different pod CIDR.
+
+See `USE_CASE_MATRIX.md` use cases 9 + 10 for the operator-facing summary; `runbooks/multi-cluster-k3s.md` for per-tenant `pod_subnet_prefix` isolation patterns; `tutorials/04-k3s-cluster.md` §"Pod traffic over SDWAN" for the live operator walkthrough.
 
 ### Daemon can't pull from registry
 

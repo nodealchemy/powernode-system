@@ -1,6 +1,6 @@
 # SDWAN Network Setup Runbook
 
-End-to-end operator guide for the system extension's SDWAN layer: WireGuard-based overlay networks with first-class VIPs, port mappings, firewall rules, route policies, iBGP/FRR routing, and cross-account federation. Covers slices 1–9 (per memory `project_sdwan_routing_state` — slice 9 a–f fully complete; slice 11 federation acceptance in active sweep).
+End-to-end operator guide for the system extension's SDWAN layer: WireGuard-based overlay networks with first-class VIPs, port mappings, firewall rules, route policies, iBGP/FRR routing, and cross-account federation. Covers slices 1–9 (per memory `project_sdwan_routing_state` — slice 9 a–f fully complete) plus slice 11 federation acceptance (also live; `system_sdwan_propose_federation_peer`, `system_sdwan_accept_federation_peer`, and `system_sdwan_revoke_federation_peer` are all registered MCP actions).
 
 **Audience:** external operators, internal SREs, network engineers configuring multi-region overlays.
 
@@ -19,7 +19,7 @@ End-to-end operator guide for the system extension's SDWAN layer: WireGuard-base
 | **UserDevice** | A WireGuard endpoint authenticated via AccessGrant | `Sdwan::UserDevice` |
 | **AccountBgp** | Per-account AS number + BGP global config | `Sdwan::AccountBgp` |
 | **BgpSession** | iBGP session between two peers; state machine | `Sdwan::BgpSession` |
-| **FederationPeer** | Cross-account peer (slice 11 acceptance flow) | `Sdwan::FederationPeer` |
+| **FederationPeer** | Cross-account peer (slice 11 acceptance flow) | `System::FederationPeer` (note: `System::` namespace — there is no `Sdwan::FederationPeer` class) |
 | **SubnetAdvertisement** | LAN subnet a peer announces over iBGP | `Sdwan::SubnetAdvertisement` |
 
 ## Phase 1 — Create an overlay network ✅
@@ -30,7 +30,7 @@ platform.system_sdwan_create_network({
   description: "CDN edge fabric across us-east-1 + ap-tokyo-1",
   prefix: "fd00:abcd:1::/64",          // optional; auto-allocated if omitted
   routing_mode: "static",              // "static" | "ibgp"
-  pod_subnet_prefix: null              // slice 9: pod traffic routing (future)
+  pod_subnet_prefix: "10.42.0.0/16"    // optional; enables k3s flannel-over-SDWAN routing
 })
 // → { network: { id, name, prefix, status: "active", ... } }
 ```
@@ -39,6 +39,7 @@ platform.system_sdwan_create_network({
 - The `prefix` must be unique per account. If omitted, the platform allocates a `/64` from the account's pool.
 - `routing_mode: "ibgp"` enables iBGP/FRR (slice 9c). All peers on the network get `bgpd` in their userspace and announce subnets to each other. Use this for multi-region fleets or when you have LAN segments behind peers. Single-FRR-per-host model: only the first iBGP network's `BgpConf` is active per host.
 - Don't enable iBGP on a network with <3 peers — overhead outweighs benefit.
+- **`pod_subnet_prefix`** (shipped 2026-05-19) — when set, k3s clusters bootstrapped on this network with `cni_plugin: "flannel"` route pod-to-pod traffic over the SDWAN WireGuard overlay (via flannel host-gw bound to `wg-sdwan-<handle>`). Validation rejects values overlapping the SDWAN /64, any peer `lan_subnets`, any VIP /128, or any other network's `pod_subnet_prefix` in the account. Immutable once any cluster references the network (k3s pod CIDR is immutable post-bootstrap). See [`CONTAINER_RUNTIMES.md` §"CNI selection — Routing pod traffic over SDWAN"](../CONTAINER_RUNTIMES.md#routing-pod-traffic-over-sdwan-pod_subnet_prefix--shipped-2026-05-19) for the full walkthrough. **Setting `pod_subnet_prefix` on a network with existing flannel clusters triggers a brief ~30–60s pod-network outage per node** as k3s reinstalls with the new flags — operator-driven opt-in by setting the field.
 
 ## Phase 2 — Attach NodeInstance peers ✅
 
@@ -283,27 +284,38 @@ platform.execute_skill({
 
 The skill is intentionally planning-only in v1 — operators run the recommended `vtysh` command after review.
 
-## Phase 9 — Federation peers (slice 11, in sweep) ◐
+## Phase 9 — Federation peers (slice 11 — live) ✅
 
-Cross-account peering. Account A proposes; Account B accepts. **Acceptance flow gated on slice 11.**
+Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; both endpoints route through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
 
 ```javascript
 // Account A proposes
 platform.system_sdwan_propose_federation_peer({
-  network_id: "<account-a-network-id>",
-  remote_account_id: "<account-b-id>",
-  remote_network_id: "<account-b-network-id>"
+  attributes: {
+    network_id:        "<account-a-network-id>",
+    remote_account_id: "<account-b-id>",
+    remote_network_id: "<account-b-network-id>",
+    peer_kind:         "sdwan_only"   // or "platform" for full platform-peer (uses children spawn flow instead)
+  }
 })
 // → { federation_peer: { id, status: "proposed", ... } }
 
-// Account B reviews via UI → accepts (UI not yet wired in slice 11; manual SQL update for now)
-// platform.system_sdwan_accept_federation_peer({ id: "<fed-peer-id>" })  // future
+// Account B reviews via UI → accepts via MCP:
+platform.system_sdwan_accept_federation_peer({ id: "<fed-peer-id>" })
+// → { federation_peer: { id, status: "active", ... } }
 
-// Once accepted, both accounts see the cross-account peer
+// Either side can revoke:
+platform.system_sdwan_revoke_federation_peer({ id: "<fed-peer-id>" })
+
+// List the cross-account peers:
 platform.system_sdwan_list_federation_peers({ network_id: "<network-id>" })
 ```
 
-**What works today:** propose flow, list, revoke. Acceptance is operator-driven via SQL until slice 11 lands.
+**Notes on the `peer_kind`:**
+- `sdwan_only` peers are pure SDWAN cross-account bridges (Account A's overlay reaches Account B's overlay, nothing else).
+- `platform` peers form a federation between two Powernode platforms (e.g. parent ↔ child spawn). For `platform` peers, the propose endpoint is `POST /api/v1/system/federation/children/spawn` (via `System::SpawnPlatformService`), not the SDWAN propose action — see [`federation-setup.md`](./federation-setup.md) for that flow.
+
+**Slice 11 status:** the SDWAN acceptance path is implemented + UI wired. Earlier doc revisions framed acceptance as "operator-driven via SQL"; that's no longer current.
 
 ## Troubleshooting
 

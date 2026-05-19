@@ -10,8 +10,20 @@ Multi-cluster is the right architecture when:
 
 - You need **environment isolation** (prod vs staging) — separate clusters means independent upgrade cadences and failure domains
 - You're running **multi-region** workloads — a cluster per region keeps API latency low
-- You're providing **multi-tenant** Kubernetes-as-a-service — one cluster per tenant means clean trust boundaries
+- You're providing **multi-tenant** Kubernetes-as-a-service — one cluster per tenant means clean trust boundaries (and a separate `Sdwan::Network` per tenant lets you use per-tenant `pod_subnet_prefix` for encrypted-pod-plane isolation — see "Per-tenant pod plane" below)
 - You need **independent K3s versions** across workloads
+
+### Per-tenant pod plane (encrypted pod-to-pod between tenants)
+
+For multi-tenant K8s-as-a-service, the cleanest isolation pattern is:
+
+1. **One `Sdwan::Network` per tenant** — each tenant's k3s nodes peer on their own /64 overlay
+2. **A distinct `pod_subnet_prefix` per network** — e.g., tenant A gets `10.42.0.0/16`, tenant B gets `10.43.0.0/16`
+3. **k3s clusters bootstrap with `cni_plugin: "flannel"`** — the platform stamps each cluster's `flannel_iface` / `flannel_backend=host-gw` / `cluster_cidr` from its network's `pod_subnet_prefix`
+
+Result: tenant A's pod traffic flows over `wg-sdwan-<tenant-a-handle>` (encrypted by A's WG tunnels), tenant B's over `wg-sdwan-<tenant-b-handle>` (encrypted by B's WG tunnels). No shared transport for pod traffic. The platform's overlap validation refuses any operator attempt to assign the same `pod_subnet_prefix` to two networks in the same account.
+
+For ovn-Kubernetes clusters (heavyweight tenants), the per-tenant `pod_subnet_prefix` is ignored — OVN owns its own pod-network layer. ovn-K8s tenants get OVN-tunnel-level encryption automatically.
 
 Stick to single-cluster when:
 
