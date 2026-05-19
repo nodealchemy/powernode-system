@@ -17,7 +17,15 @@ permissions:
 
 jobs:
   rspec:
+    # Split into 3 parallel suites (controllers/requests, services, models+lib+
+    # integration) so wall-clock is max-of-three rather than sum-of-all. Each
+    # matrix entry pays the bundle-install + db-setup cost independently but
+    # they run concurrently on separate runners. Target <10 min per suite.
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [controllers, services, models-lib]
     services:
       postgres:
         image: postgres:16
@@ -87,9 +95,38 @@ jobs:
             end
           '
 
-      - name: Run system extension specs
+      - name: Run system extension specs (${{ matrix.suite }})
         working-directory: powernode-platform/server
-        run: bundle exec rspec ../extensions/system/server/spec/ --format progress
+        # Each suite runs a disjoint subset. Adding a new spec directory?
+        # Slot it into the closest-matching bucket here so total coverage stays
+        # at 100% across the matrix.
+        run: |
+          case "${{ matrix.suite }}" in
+            controllers)
+              paths="../extensions/system/server/spec/controllers ../extensions/system/server/spec/requests"
+              ;;
+            services)
+              paths="../extensions/system/server/spec/services"
+              ;;
+            models-lib)
+              paths="../extensions/system/server/spec/models ../extensions/system/server/spec/lib ../extensions/system/server/spec/integration"
+              ;;
+            *)
+              echo "FATAL: unknown matrix.suite=${{ matrix.suite }}"
+              exit 1
+              ;;
+          esac
+          # No-op gracefully if a directory doesn't exist yet (e.g. before P0.1
+          # controller specs land).
+          existing=""
+          for p in $paths; do
+            [ -d "$p" ] && existing="$existing $p"
+          done
+          if [ -z "$existing" ]; then
+            echo "no spec directories present for matrix suite ${{ matrix.suite }} — skipping"
+            exit 0
+          fi
+          bundle exec rspec $existing --format progress
 
   frontend-typecheck:
     runs-on: ubuntu-24.04
@@ -131,6 +168,51 @@ jobs:
             echo "no tsconfig.check.json — skipping (this is expected for extension-only PRs)"
           fi
 
+  frontend-jest:
+    # Mirrors frontend-typecheck's mount-into-parent layout (the extension's
+    # jest.config.js extends the parent's; it cannot resolve without the parent
+    # checked out at extensions/system's neighbor path). Runs the extension's
+    # component/page test suite via the parent's jest runner. Per
+    # project_extension_jest_infra.md, the invocation pattern is
+    # `npx --prefix ../../../frontend jest --config=jest.config.js`.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          mv extensions/system powernode-platform/extensions/system
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: powernode-platform/frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: powernode-platform/frontend
+        run: npm ci
+
+      - name: Run extension Jest suite
+        working-directory: powernode-platform/extensions/system/frontend
+        env:
+          CI: "true"
+        run: |
+          if [ -f jest.config.js ]; then
+            npx --prefix ../../../frontend jest --config=jest.config.js
+          else
+            echo "no jest.config.js — skipping (extension may not have a jest harness yet)"
+          fi
+
   go-agent:
     runs-on: ubuntu-24.04
     steps:
@@ -162,6 +244,13 @@ jobs:
             ruby -c "$f" >/dev/null || { echo "syntax error: $f"; fail=1; }
           done < <(find server worker -name '*.rb' 2>/dev/null)
           exit $fail
+
+  todo-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject unlabeled standalone TODO comments
+        run: bash scripts/audit-todos.sh
 
   rubocop:
     runs-on: ubuntu-24.04
@@ -200,3 +289,49 @@ jobs:
             ../extensions/system/server/lib \
             ../extensions/system/server/spec \
             ../extensions/system/worker/app
+
+  # Per audit plan P3.7b — run the 12 system_*_spec.rb files that landed
+  # in P0.2. They live under the parent worker (worker/spec/jobs/) because
+  # the extension's worker jobs are autoloaded by the parent worker app;
+  # there's no separate spec harness for extension-only worker jobs.
+  worker-specs:
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+    env:
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: Check out the system extension
+        uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - name: Check out the parent platform
+        uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+          submodules: recursive
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          mv extensions/system powernode-platform/extensions/system
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+          bundler-cache: true
+          working-directory: powernode-platform/worker
+
+      - name: Run system worker job specs
+        working-directory: powernode-platform/worker
+        run: |
+          # Run only the system_*_spec.rb files. Other parent-worker jobs
+          # (ai_*, mission_*, etc.) are out of this extension's scope.
+          bundle exec rspec spec/jobs/system_*_spec.rb --format progress
