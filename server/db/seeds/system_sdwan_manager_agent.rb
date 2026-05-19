@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the SDWAN Manager AI agent + per-action policies + dedicated approval
 # chain. Carved out of Fleet Autonomy (2026-05-10) so SDWAN operations have
 # their own intervention queue + can be paused independently during network
@@ -11,54 +13,12 @@
 
 puts "\n  Seeding SDWAN Manager agent + policies..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping SDWAN Manager seed"
-  return
-end
-
-def ensure_sdwan_trust_score!(account, agent)
-  return if Ai::AgentTrustScore.exists?(agent_id: agent.id)
-
-  Ai::AgentTrustScore.create!(
-    account: account, agent: agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
-
-def upsert_sdwan_policies!(account, agent, policies)
-  return 0 unless agent
-
-  changed = 0
-  policies.each do |action_category, policy_type|
-    policy = Ai::InterventionPolicy.find_or_initialize_by(
-      account: account,
-      action_category: action_category,
-      scope: "agent",
-      ai_agent_id: agent.id
-    )
-    policy.assign_attributes(
-      policy: policy_type,
-      priority: 10,
-      is_active: true,
-      conditions: { "trust_tier_minimum" => "monitored" },
-      preferred_channels: %w[notification]
-    )
-    if policy.new_record? || policy.changed?
-      policy.save!
-      changed += 1
-    end
-  end
-  changed
-end
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding SDWAN Manager — skipping"
-  return
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 sdwan_agent = admin_account.ai_agents.find_or_initialize_by(
   name: "SDWAN Manager",
@@ -74,7 +34,13 @@ if sdwan_agent.new_record?
   sdwan_agent.provider = provider
 end
 sdwan_agent.save!
-ensure_sdwan_trust_score!(admin_account, sdwan_agent)
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: sdwan_agent,
+  tier: "trusted", overall: 0.78,
+  dimensions: {
+    reliability: 0.75, cost_efficiency: 0.75, safety: 0.88, quality: 0.75, speed: 0.75
+  }
+)
 puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created' : 'updated'}"
 
 # Action category registration happens in System::Engine#after_initialize so
@@ -133,17 +99,15 @@ sdwan_policies = {
   "sdwan.federation_peer_revoke"      => "require_approval"
 }
 
-count = upsert_sdwan_policies!(admin_account, sdwan_agent, sdwan_policies)
-puts "  ✅ SDWAN Manager policies: #{count} created/updated (#{sdwan_policies.size} total)"
-
-stale = Ai::InterventionPolicy
-  .where(account: admin_account, ai_agent_id: sdwan_agent.id, scope: "agent")
-  .where.not(action_category: sdwan_policies.keys)
-if stale.any?
-  stale_count = stale.count
-  stale.destroy_all
-  puts "  🧹 Cleaned #{stale_count} stale SDWAN Manager policies"
-end
+count = System::Seeds::AgentSetupHelpers.upsert_policies!(
+  account: admin_account, agent: sdwan_agent,
+  definitions: sdwan_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_policies!(
+  account: admin_account, agent: sdwan_agent,
+  keep_keys: sdwan_policies.keys
+)
+puts "  ✅ SDWAN Manager policies: #{count} changed (#{sdwan_policies.size} total)"
 
 sdwan_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

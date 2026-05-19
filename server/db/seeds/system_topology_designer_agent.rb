@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the System Topology Designer AI agent — specialized cross-cutting
 # topology design agent. Owns SDWAN composition (host bridges + OVN logical
 # networks + IPFIX collectors) today; designed to absorb future networking
@@ -29,18 +31,12 @@
 
 puts "\n  Seeding System Topology Designer agent..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping System Topology Designer seed"
-  return
-end
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding the System Topology Designer — skipping"
-  return
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 system_prompt = <<~PROMPT
   You are the **System Topology Designer** — a specialist agent that
@@ -182,41 +178,12 @@ topology_agent.save!
 # composition skills already gate via require_approval=false (additive
 # idempotent operations); the trust score affects approval queue weighting
 # rather than gating individual skill invocations.
-unless ::Ai::AgentTrustScore.exists?(agent_id: topology_agent.id)
-  ::Ai::AgentTrustScore.create!(
-    account: admin_account, agent: topology_agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: topology_agent,
+  tier: "monitored", overall: 0.72,
+  dimensions: {
+    reliability: 0.70, cost_efficiency: 0.70, safety: 0.85, quality: 0.75, speed: 0.70
+  }
+)
 
 puts "  ✅ System Topology Designer agent: #{topology_agent.previously_new_record? ? 'created' : 'updated'} (id=#{topology_agent.id})"
-
-# ── Skill bindings ────────────────────────────────────────────────────
-# Bind the 4 SDWAN compose skills directly. Bindings make the skills
-# appear in the agent's prompt-context skill catalog so the LLM can
-# decide to invoke them. New SDWAN compose skills (e.g., a future
-# `sdwan_apply_acl`) should be added to this list when they ship.
-
-compose_skills = %w[
-  system-sdwan-host-bridge-compose
-  system-sdwan-ovn-compose-topology
-  system-sdwan-ipfix-collector-compose
-  system-sdwan-compose-full-topology
-  system-sdwan-ovn-apply-acl
-]
-bound = 0
-compose_skills.each_with_index do |slug, i|
-  skill = ::Ai::Skill.find_by(slug: slug)
-  unless skill
-    puts "  ⚠️  Skill #{slug} not found — run system_skills_seed.rb first"
-    next
-  end
-  binding = ::Ai::AgentSkill.find_or_initialize_by(
-    ai_agent_id: topology_agent.id, ai_skill_id: skill.id
-  )
-  binding.assign_attributes(priority: 100 + i, is_active: true)
-  binding.save!
-  bound += 1
-end
-puts "  ✅ Bound #{bound} compose skills to System Topology Designer"

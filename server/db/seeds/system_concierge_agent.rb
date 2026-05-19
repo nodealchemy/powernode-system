@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the System Concierge AI agent — operator-facing chat agent that
 # can answer questions about the fleet (nodes, instances, modules, tasks,
 # CVE exposures) and SDWAN overlay (networks, peers, firewall rules,
@@ -18,18 +20,12 @@
 
 puts "\n  Seeding System Concierge agent..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping System Concierge seed"
-  return
-end
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding the System Concierge — skipping"
-  return
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 system_prompt = <<~PROMPT
   You are the **System Concierge** — an operator-facing assistant for the Powernode platform's
@@ -171,28 +167,19 @@ concierge_agent.assign_attributes(
   description: "Operator chat agent for the full system extension surface (fleet, SDWAN, container runtimes, modules, disk image CI) — read-only by default, dispatches state-changing skills with operator confirmation",
   status: "active",
   system_prompt: system_prompt,
-  metadata: (concierge_agent.metadata || {}).merge(
-    # Tool filter expanded for spicy-bear plan slice 3b. Operators chat in
-    # natural language ("list my docker containers", "show my k8s
-    # kubeconfig"); the LLM needs to see those tool names to decide to
-    # call them. The `request_confirmation` gate still protects mutations.
-    "concierge_tool_filter" => %w[
-      system_*
-      docker_*
-      kubernetes_*
-      discover_skills
-      get_skill_context
-      request_confirmation
-      execute_agent
-      list_agents
-    ],
-    "concierge_kind" => "system_concierge",
-    "extension" => "system",
-    "capability_domains" => %w[
-      node_lifecycle modules container_runtimes sdwan fleet_ops
-      disk_image_ci ci_workers skills tasks autonomy
-    ]
-  )
+  # Strip the legacy `concierge_tool_filter` key — moved to
+  # Ai::ConciergeToolBridge::SYSTEM_CONCIERGE_TOOL_FILTER constant
+  # (single source of truth, runtime-owned by the bridge).
+  metadata: (concierge_agent.metadata || {})
+    .except("concierge_tool_filter", :concierge_tool_filter)
+    .merge(
+      "concierge_kind" => "system_concierge",
+      "extension" => "system",
+      "capability_domains" => %w[
+        node_lifecycle modules container_runtimes sdwan fleet_ops
+        disk_image_ci ci_workers skills tasks autonomy
+      ]
+    )
 )
 if concierge_agent.new_record?
   concierge_agent.creator  = creator
@@ -200,45 +187,12 @@ if concierge_agent.new_record?
 end
 concierge_agent.save!
 
-# Bootstrap trust score so existing approval/intervention flows can score
-# the agent's actions. "monitored" tier mirrors fleet_autonomy_agent.
-unless ::Ai::AgentTrustScore.exists?(agent_id: concierge_agent.id)
-  ::Ai::AgentTrustScore.create!(
-    account: admin_account, agent: concierge_agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: concierge_agent,
+  tier: "monitored", overall: 0.75,
+  dimensions: {
+    reliability: 0.75, cost_efficiency: 0.75, safety: 0.80, quality: 0.80, speed: 0.70
+  }
+)
 
 puts "  ✅ System Concierge agent: #{concierge_agent.previously_new_record? ? 'created' : 'updated'} (id=#{concierge_agent.id})"
-
-# ── Skill bindings (slice 3c) ─────────────────────────────────────────
-# Bind the read-shape skills so the LLM can see them in its skill
-# catalog when assembling responses. These skills don't gate mutations
-# directly — they generate runbooks, recommendations, and diagnoses
-# that the operator can review.
-
-read_shape_skills = %w[
-  system-capacity-recommend
-  system-attribute-failure
-  system-runbook-generate
-  system-cve-runbook-generate
-  system-platform-deploy
-  system-platform-maintenance
-  system-platform-resilience
-]
-bound = 0
-read_shape_skills.each_with_index do |slug, i|
-  skill = ::Ai::Skill.find_by(slug: slug)
-  unless skill
-    puts "  ⚠️  Skill #{slug} not found — run system_skills_seed.rb first"
-    next
-  end
-  binding = ::Ai::AgentSkill.find_or_initialize_by(
-    ai_agent_id: concierge_agent.id, ai_skill_id: skill.id
-  )
-  binding.assign_attributes(priority: 100 + i, is_active: true)
-  binding.save!
-  bound += 1
-end
-puts "  ✅ Bound #{bound} read-shape skills to System Concierge"

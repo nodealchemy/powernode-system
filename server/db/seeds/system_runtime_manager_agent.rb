@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the Runtime Manager AI agent — specialized monitor agent for
 # container runtime lifecycle (Phase 1 Docker + Phase 2 K3s; Phase 3
 # kubeadm follows the same shape).
@@ -16,54 +18,14 @@
 
 puts "\n  Seeding Runtime Manager agent + policies..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping Runtime Manager seed"
-  return
-end
-
-# ── Helpers (duplicated from fleet_autonomy_agent for self-containment) ─
-
-def ensure_runtime_trust_score!(account, agent)
-  return if Ai::AgentTrustScore.exists?(agent_id: agent.id)
-
-  Ai::AgentTrustScore.create!(
-    account: account, agent: agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
-
-def upsert_runtime_policies!(account, agent, policies)
-  return 0 unless agent
-
-  changed = 0
-  policies.each do |action_category, policy_type|
-    policy = Ai::InterventionPolicy.find_or_initialize_by(
-      account: account, action_category: action_category,
-      scope: "agent", ai_agent_id: agent.id
-    )
-    policy.assign_attributes(
-      policy: policy_type, priority: 10, is_active: true,
-      conditions: { "trust_tier_minimum" => "monitored" },
-      preferred_channels: %w[notification]
-    )
-    if policy.new_record? || policy.changed?
-      policy.save!
-      changed += 1
-    end
-  end
-  changed
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 # ── Runtime Manager agent ────────────────────────────────────────────
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding the Runtime Manager — skipping"
-  return
-end
 
 runtime_agent = admin_account.ai_agents.find_or_initialize_by(
   name: "Runtime Manager",
@@ -87,7 +49,13 @@ if runtime_agent.new_record?
   runtime_agent.provider = provider
 end
 runtime_agent.save!
-ensure_runtime_trust_score!(admin_account, runtime_agent)
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: runtime_agent,
+  tier: "monitored", overall: 0.72,
+  dimensions: {
+    reliability: 0.68, cost_efficiency: 0.65, safety: 0.85, quality: 0.70, speed: 0.70
+  }
+)
 puts "  ✅ Runtime Manager agent: #{runtime_agent.previously_new_record? ? 'created' : 'updated'} (id=#{runtime_agent.id[0, 8]})"
 
 # ── Default action policies ───────────────────────────────────────────
@@ -128,18 +96,15 @@ runtime_policies = {
   "system.runtime_k8s_runtime_upgrade"     => "require_approval"
 }
 
-count = upsert_runtime_policies!(admin_account, runtime_agent, runtime_policies)
-puts "  ✅ Runtime Manager policies: #{count} created/updated (#{runtime_policies.size} total)"
-
-# Clean stale policies for actions removed from this agent
-stale = Ai::InterventionPolicy
-  .where(account: admin_account, ai_agent_id: runtime_agent.id, scope: "agent")
-  .where.not(action_category: runtime_policies.keys)
-if stale.any?
-  stale_count = stale.count
-  stale.destroy_all
-  puts "  🧹 Cleaned #{stale_count} stale Runtime Manager policies"
-end
+count = System::Seeds::AgentSetupHelpers.upsert_policies!(
+  account: admin_account, agent: runtime_agent,
+  definitions: runtime_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_policies!(
+  account: admin_account, agent: runtime_agent,
+  keep_keys: runtime_policies.keys
+)
+puts "  ✅ Runtime Manager policies: #{count} changed (#{runtime_policies.size} total)"
 
 # ── Runtime Manager Approval Chain ────────────────────────────────────
 # Single-step chain for runtime require_approval actions. Surfaces in
@@ -168,28 +133,5 @@ if runtime_chain.new_record? || runtime_chain.changed?
 else
   puts "  ✅ Runtime Manager Approval Chain: already up to date"
 end
-
-# ── Skill bindings ────────────────────────────────────────────────────
-# Bind the container runtime skills (provision_cluster + docker_provision)
-# to this agent. system_skills_seed.rb defers these bindings to here
-# because the Runtime Manager doesn't exist until this seed runs.
-
-%w[
-  system-provision-cluster
-  system-docker-provision
-].each_with_index do |slug, i|
-  skill = ::Ai::Skill.find_by(slug: slug)
-  unless skill
-    puts "  ⚠️  Skill #{slug} not found — run system_skills_seed.rb first"
-    next
-  end
-
-  binding = ::Ai::AgentSkill.find_or_initialize_by(
-    ai_agent_id: runtime_agent.id, ai_skill_id: skill.id
-  )
-  binding.assign_attributes(priority: 100 + i, is_active: true)
-  binding.save!
-end
-puts "  ✅ Bound 2 container-runtime skills to Runtime Manager"
 
 puts "  Done seeding Runtime Manager agent."

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the Disk Image Manager AI agent — owns disk image CI publication
 # promotion, rollback, and retention. Carved out of Fleet Autonomy
 # (2026-05-10) so image-publishing automations have their own queue
@@ -7,48 +9,12 @@
 
 puts "\n  Seeding Disk Image Manager agent + policies..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping Disk Image Manager seed"
-  return
-end
-
-def ensure_disk_image_trust_score!(account, agent)
-  return if Ai::AgentTrustScore.exists?(agent_id: agent.id)
-  Ai::AgentTrustScore.create!(
-    account: account, agent: agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
-
-def upsert_disk_image_policies!(account, agent, policies)
-  return 0 unless agent
-  changed = 0
-  policies.each do |action_category, policy_type|
-    policy = Ai::InterventionPolicy.find_or_initialize_by(
-      account: account, action_category: action_category,
-      scope: "agent", ai_agent_id: agent.id
-    )
-    policy.assign_attributes(
-      policy: policy_type, priority: 10, is_active: true,
-      conditions: { "trust_tier_minimum" => "monitored" },
-      preferred_channels: %w[notification]
-    )
-    if policy.new_record? || policy.changed?
-      policy.save!
-      changed += 1
-    end
-  end
-  changed
-end
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding Disk Image Manager — skipping"
-  return
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 disk_image_agent = admin_account.ai_agents.find_or_initialize_by(
   name: "Disk Image Manager",
@@ -64,7 +30,13 @@ if disk_image_agent.new_record?
   disk_image_agent.provider = provider
 end
 disk_image_agent.save!
-ensure_disk_image_trust_score!(admin_account, disk_image_agent)
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: disk_image_agent,
+  tier: "monitored", overall: 0.70,
+  dimensions: {
+    reliability: 0.65, cost_efficiency: 0.70, safety: 0.80, quality: 0.70, speed: 0.70
+  }
+)
 puts "  ✅ Disk Image Manager agent: #{disk_image_agent.previously_new_record? ? 'created' : 'updated'}"
 
 disk_image_policies = {
@@ -76,17 +48,15 @@ disk_image_policies = {
   "system.disk_image_webhook_rotate_secret" => "notify_and_proceed" # invalidates old, but recoverable
 }
 
-count = upsert_disk_image_policies!(admin_account, disk_image_agent, disk_image_policies)
-puts "  ✅ Disk Image Manager policies: #{count} created/updated (#{disk_image_policies.size} total)"
-
-stale = Ai::InterventionPolicy
-  .where(account: admin_account, ai_agent_id: disk_image_agent.id, scope: "agent")
-  .where.not(action_category: disk_image_policies.keys)
-if stale.any?
-  stale_count = stale.count
-  stale.destroy_all
-  puts "  🧹 Cleaned #{stale_count} stale Disk Image Manager policies"
-end
+count = System::Seeds::AgentSetupHelpers.upsert_policies!(
+  account: admin_account, agent: disk_image_agent,
+  definitions: disk_image_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_policies!(
+  account: admin_account, agent: disk_image_agent,
+  keep_keys: disk_image_policies.keys
+)
+puts "  ✅ Disk Image Manager policies: #{count} changed (#{disk_image_policies.size} total)"
 
 disk_image_chain = Ai::ApprovalChain.find_or_initialize_by(
   account: admin_account,

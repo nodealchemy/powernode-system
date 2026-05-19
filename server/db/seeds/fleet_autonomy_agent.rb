@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "concerns/agent_setup_helpers"
+
 # Seeds the Fleet Autonomy AI agent, intervention policies (per-action
 # default behavior), and the fleet approval chain.
 #
@@ -9,62 +11,18 @@
 
 puts "\n  Seeding Fleet Autonomy agent + policies..."
 
-admin_account = Account.first
-unless admin_account
-  puts "  ⚠️  No account found — skipping fleet autonomy seed"
-  return
-end
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def ensure_trust_score!(account, agent)
-  return if Ai::AgentTrustScore.exists?(agent_id: agent.id)
-
-  Ai::AgentTrustScore.create!(
-    account: account, agent: agent, tier: "monitored",
-    reliability: 0.7, cost_efficiency: 0.7, safety: 0.85,
-    quality: 0.7, speed: 0.7, overall_score: 0.74
-  )
-end
-
-def upsert_fleet_policies!(account, agent, policies)
-  return 0 unless agent
-
-  changed = 0
-  policies.each do |action_category, policy_type|
-    policy = Ai::InterventionPolicy.find_or_initialize_by(
-      account: account,
-      action_category: action_category,
-      scope: "agent",
-      ai_agent_id: agent.id
-    )
-    policy.assign_attributes(
-      policy: policy_type,
-      priority: 10,
-      is_active: true,
-      conditions: { "trust_tier_minimum" => "monitored" },
-      preferred_channels: %w[notification]
-    )
-    if policy.new_record? || policy.changed?
-      policy.save!
-      changed += 1
-    end
-  end
-  changed
-end
+ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
+  preferred_provider_types: ["anthropic", "openai"]
+)
+admin_account = ctx[:account]
+creator       = ctx[:creator]
+provider      = ctx[:provider]
 
 # ── Fleet Autonomy agent ─────────────────────────────────────────────────
 #
 # Ai::Agent requires a creator (User) + provider (Ai::Provider) at create
 # time. Pick the admin user + first available provider as defaults; an
 # operator can swap the provider later in the agents UI.
-
-creator  = admin_account.users.find_by(email: "admin@powernode.org") || admin_account.users.first
-provider = ::Ai::Provider.first
-unless creator && provider
-  puts "  ⚠️  Need at least one user + Ai::Provider before seeding the Fleet Autonomy agent — skipping"
-  return
-end
 
 fleet_agent = admin_account.ai_agents.find_or_initialize_by(
   name: "Fleet Autonomy",
@@ -81,7 +39,13 @@ if fleet_agent.new_record?
   fleet_agent.provider = provider
 end
 fleet_agent.save!
-ensure_trust_score!(admin_account, fleet_agent)
+System::Seeds::AgentSetupHelpers.ensure_trust_score!(
+  account: admin_account, agent: fleet_agent,
+  tier: "monitored", overall: 0.74,
+  dimensions: {
+    reliability: 0.70, cost_efficiency: 0.70, safety: 0.85, quality: 0.70, speed: 0.70
+  }
+)
 puts "  ✅ Fleet Autonomy agent: #{fleet_agent.previously_new_record? ? 'created' : 'updated'}"
 
 # ── Default action policies (mirrors plan M7 vocabulary) ────────────────
@@ -135,18 +99,15 @@ fleet_policies = {
   # without halting fleet ops.
 }
 
-count = upsert_fleet_policies!(admin_account, fleet_agent, fleet_policies)
-puts "  ✅ Fleet Autonomy policies: #{count} created/updated (#{fleet_policies.size} total)"
-
-# Clean stale policies for actions removed from this agent
-stale = Ai::InterventionPolicy
-  .where(account: admin_account, ai_agent_id: fleet_agent.id, scope: "agent")
-  .where.not(action_category: fleet_policies.keys)
-if stale.any?
-  stale_count = stale.count
-  stale.destroy_all
-  puts "  🧹 Cleaned #{stale_count} stale Fleet Autonomy policies"
-end
+count = System::Seeds::AgentSetupHelpers.upsert_policies!(
+  account: admin_account, agent: fleet_agent,
+  definitions: fleet_policies
+)
+System::Seeds::AgentSetupHelpers.clean_stale_policies!(
+  account: admin_account, agent: fleet_agent,
+  keep_keys: fleet_policies.keys
+)
+puts "  ✅ Fleet Autonomy policies: #{count} changed (#{fleet_policies.size} total)"
 
 # ── Fleet Approval Chain ────────────────────────────────────────────────
 # Single-step chain for fleet require_approval actions. The trading approval

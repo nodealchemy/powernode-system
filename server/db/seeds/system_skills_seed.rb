@@ -157,6 +157,22 @@ SKILLS_DATA = [
     PROMPT
   },
   {
+    name: "Federation Manager",
+    slug: "system-federation-manager",
+    description: "Survey federation peer + grant + cert health for an account and surface findings — feeds the SDWAN Manager autonomy loop and the operator dashboard",
+    category: "sre_observability",
+    subdomain: "sdwan",
+    executor: "System::Ai::Skills::FederationManagerExecutor",
+    tags: %w[federation sdwan peers grants certs health],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to survey federation health for an account — peer cert
+      rotation candidates, grants approaching expiry, grants overdue for
+      review, broad-scope grants, capability drift. Inputs: none (scoped
+      to current account). Returns ranked findings the operator or SDWAN
+      Manager autonomy loop should action.
+    PROMPT
+  },
+  {
     name: "Module Compose",
     slug: "system-module-compose",
     description: "Compose a Template draft from a workload description — keyword-matches modules and proposes a composition with conflict checks",
@@ -717,137 +733,10 @@ end
 
 puts "    ✓ Skills: #{created_count} created, #{updated_count} updated (#{SKILLS_DATA.size} total system extension skills)"
 
-# ─────────────────────────────────────────────────────────────────────
-# Agent skill bindings
-# Bind read-shape skills to System Concierge (chat-driven). Bind broad
-# autonomous skills to Fleet Autonomy. Container runtime skills
-# (docker_provision, provision_cluster) get bound to the Runtime Manager
-# agent in slice 3a; we set up *placeholder* bindings here only if the
-# Runtime Manager already exists, otherwise slice 3a's seed creates
-# them.
-# ─────────────────────────────────────────────────────────────────────
-
-# Concierge — read-shape: capacity_recommend, attribute_failure, runbook_generate, cve_runbook_generate
-concierge = ::Ai::Agent.where(account: account).find_by(name: "System Concierge")
-if concierge
-  # Read-shape skills — System Concierge handles these in single-turn Q&A.
-  concierge_read_skill_slugs = %w[
-    system-capacity-recommend
-    system-attribute-failure
-    system-runbook-generate
-    system-cve-runbook-generate
-    system-suggest-architectures-for-fleet
-    system-discover-packages-by-intent
-    system-list-package-repositories-summary
-  ]
-
-  # Workflow_step skills — also bound to System Concierge so the router can
-  # delegate operator-initiated workflow chat queries to it. (Fleet Autonomy
-  # also binds these for autonomous cron-driven execution; the two
-  # bindings serve different paths: autonomous vs. operator-driven via chat.)
-  concierge_workflow_skill_slugs = %w[
-    system-package-module-create
-    system-package-module-refresh
-    system-rolling-module-upgrade
-    system-docker-provision
-    system-provision-cluster
-  ]
-
-  concierge_skill_slugs = concierge_read_skill_slugs + concierge_workflow_skill_slugs
-
-  concierge_skill_slugs.each_with_index do |slug, i|
-    skill = ::Ai::Skill.find_by(slug: slug)
-    next unless skill
-
-    binding = ::Ai::AgentSkill.find_or_initialize_by(
-      ai_agent_id: concierge.id, ai_skill_id: skill.id
-    )
-    binding.assign_attributes(priority: 100 + i, is_active: true)
-    binding.save!
-  end
-  puts "    ✓ Bound #{concierge_skill_slugs.size} skills to System Concierge " \
-       "(#{concierge_read_skill_slugs.size} read-shape + #{concierge_workflow_skill_slugs.size} workflow-step for router delegation)"
-else
-  puts "    = System Concierge not seeded yet — skipping concierge bindings"
-end
-
-# Fleet Autonomy — broad autonomous: drift_remediate, all 4 SDWAN, module_compose,
-# rolling_module_upgrade, package_repository/module ops. CVE bindings moved to
-# CVE Responder agent block (2026-05-11) as part of the 5-agent split.
-fleet_autonomy = ::Ai::Agent.where(account: account).find_by(name: "Fleet Autonomy")
-if fleet_autonomy
-  fleet_autonomy_slugs = %w[
-    system-drift-remediate
-    system-sdwan-failover
-    system-sdwan-peer-remediate
-    system-sdwan-bgp-session-remediate
-    system-sdwan-vip-failover
-    system-module-compose
-    system-rolling-module-upgrade
-    system-package-repository-sync
-    system-package-module-create
-    system-package-module-refresh
-    system-architecture-propose
-    system-architecture-create
-    system-architecture-update
-    system-architecture-delete
-    system-suggest-architectures-for-fleet
-    system-discover-packages-by-intent
-  ]
-
-  fleet_autonomy_slugs.each_with_index do |slug, i|
-    skill = ::Ai::Skill.find_by(slug: slug)
-    next unless skill
-
-    binding = ::Ai::AgentSkill.find_or_initialize_by(
-      ai_agent_id: fleet_autonomy.id, ai_skill_id: skill.id
-    )
-    binding.assign_attributes(priority: 100 + i, is_active: true)
-    binding.save!
-  end
-  puts "    ✓ Bound #{fleet_autonomy_slugs.size} autonomous-action skills to Fleet Autonomy"
-
-  # Clean up the legacy `system-cve-response` binding now that ownership
-  # moved to the CVE Responder agent. Idempotent — destroy_all returns 0
-  # rows after the first run.
-  cve_response_skill = ::Ai::Skill.find_by(slug: "system-cve-response")
-  if cve_response_skill
-    removed = ::Ai::AgentSkill
-      .where(ai_agent_id: fleet_autonomy.id, ai_skill_id: cve_response_skill.id)
-      .destroy_all
-    puts "    🧹 Removed #{removed.size} legacy CVE bindings from Fleet Autonomy" if removed.any?
-  end
-else
-  puts "    = Fleet Autonomy not seeded yet — skipping fleet bindings"
-end
-
-# CVE Responder — security-focused autonomous: cve_response, cve_remediation_orchestration,
-# rolling_module_upgrade, package_module_refresh. Added 2026-05-11 to complete
-# the 5-agent split — the CVE Responder agent was seeded 2026-05-10 with policies
-# but no skill bindings; this block finishes the wiring.
-cve_responder = ::Ai::Agent.where(account: account).find_by(name: "CVE Responder")
-if cve_responder
-  cve_responder_slugs = %w[
-    system-cve-response
-    system-cve-remediation-orchestration
-    system-cve-runbook-generate
-    system-rolling-module-upgrade
-    system-package-module-refresh
-  ]
-
-  cve_responder_slugs.each_with_index do |slug, i|
-    skill = ::Ai::Skill.find_by(slug: slug)
-    next unless skill
-
-    binding = ::Ai::AgentSkill.find_or_initialize_by(
-      ai_agent_id: cve_responder.id, ai_skill_id: skill.id
-    )
-    binding.assign_attributes(priority: 100 + i, is_active: true)
-    binding.save!
-  end
-  puts "    ✓ Bound #{cve_responder_slugs.size} security skills to CVE Responder"
-else
-  puts "    = CVE Responder not seeded yet — skipping CVE Responder bindings"
-end
+# Agent ↔ skill bindings live in `system_skill_bindings_seed.rb`, which
+# walks the SkillBindings registry (populated by each executor's
+# `binds_to "Agent Name"` DSL call) and creates Ai::AgentSkill rows.
+# That seed is the single source of truth — this file only creates the
+# Ai::Skill rows above.
 
 puts "  Done seeding System extension AI skills."
