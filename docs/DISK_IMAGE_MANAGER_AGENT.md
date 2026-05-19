@@ -10,7 +10,9 @@ For the upstream CI pipeline (Gitea workflows, OCI artifact format, cosign signi
 
 ## Charter
 
-The Disk Image Manager is a **monitor** agent (no chat surface). It ticks every **300 seconds** (5 minutes) under autonomy scope `disk_image`. The longer interval reflects the slower nature of image promotion — minutes between ticks is fine because publication state doesn't drift at the millisecond scale of network telemetry.
+The Disk Image Manager is a **monitor** agent (no chat surface). It carries the intervention-policy table + approval chain below and runs deferred-operation executors when operators approve.
+
+**Autonomy-tick status (2026-05-19):** the agent declares `interval_seconds: 300, scope: "disk_image"` in its seed, but the autonomy-tick loop in `FleetAutonomyService` does **not** currently route any `system.disk_image_*` signals to this agent — the policies + approval chain are live and gate operator-initiated actions correctly, but no sensor today emits the disk-image-scoped signals listed in the §"Sensor → Action Map" below (those signals are aspirational and will land alongside `DiskImagePublishedSensor` + `DiskImageWebhookSecretStaleSensor` work). For now, the agent's value is in the intervention-policy table: every operator-initiated promote/rollback/retention-update/webhook-revoke/webhook-rotate flows through this agent's chain rather than the Fleet Autonomy chain, keeping disk-image work routable separately.
 
 What it owns:
 - **Publication promotion** — moving a verified disk image from `staging` to `default` (the version new instances boot from)

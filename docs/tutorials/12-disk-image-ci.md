@@ -84,46 +84,70 @@ images, applying retention, alerting on stuck builds.
 | Tutorial 01 + 02 worked | You understand initramfs build + cosign + module CI |
 | Gitea account with admin to create repos under your account | Permission to create runners |
 | `docker`, `oras`, `cosign` CLIs (already from Tutorial 02) | — |
-| Provider quota for one additional NodeInstance (the runner) | Self-hosted runner runs on a Powernode-provisioned VM |
+| A Linux host with Docker available where you'll install + register the Gitea Actions runner | The runner is NOT a managed NodeInstance; operator-owned (see Step 1) |
 | Operator permission `system.disk_image_ci.bootstrap` | Default for admins |
 
-## Step 1 — Bootstrap the CI worker
+## Step 1 — Bootstrap the CI worker + webhook (one-shot setup)
 
 ```javascript
 platform.bootstrap_disk_image_ci({
-  account_id: "<your-account-id>"
+  owner: "<your-account-name>",          // Gitea owner
+  repo: "disk-images",                    // build repo (will be created if missing)
+  label: "ubuntu-2404-amd64-builder",    // operator-chosen identifier
+  platform_api_base: "https://platform.example.org",  // optional; defaults to POWERNODE_PUBLIC_URL
+  create_platform_read_token: true       // mints a read-scoped JWT for the runner
 })
-// → { task_id: "...", runner_repo: "<account>/disk-images", runner_status: "provisioning" }
+// → {
+//     ok: true,
+//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
+//     webhook_secret: "<one-time-displayed-secret>",
+//     ci_worker_token: "<token>",
+//     gitea_secrets_set: ["POWERNODE_WEBHOOK_SECRET", "POWERNODE_WEBHOOK_URL", ...]
+//   }
 ```
 
-**Expected outcome:** a `System::Task` of type `ci_worker_provision` is
-created. The runner provisions as a NodeInstance, registers itself with
-Gitea, and gets repository secrets for cosign + OCI registry auth.
+**Expected outcome:** the action is **synchronous + idempotent on `label`** (re-running rotates secrets without creating duplicates). It creates a `System::DiskImageWebhook` row, a `Worker` row with role `ci_worker`, and sets repo Actions secrets. It does **not** create a `System::Task` and does **not** provision a NodeInstance — the runner is operator-installed on a host of their choosing.
 
-Watch via:
+**Install + register the Gitea Actions runner** on a Docker-capable Linux host using the returned `ci_worker_token`:
+
+```bash
+mkdir -p /opt/gitea-runner && cd /opt/gitea-runner
+curl -LO https://gitea.com/gitea/act_runner/.../act_runner   # or use your distro's package
+./act_runner register \
+  --instance https://gitea.example.org \
+  --token "<ci_worker_token>" \
+  --labels "disk-image-builder,amd64"
+systemctl --user enable --now act_runner.service             # or run ./act_runner daemon
+```
+
+**Verify the runner registered:**
 
 ```javascript
 platform.system_list_ci_workers()
-// → { workers: [{ id, status: "provisioning" → "ready", runner_repo, ... }] }
+// → { workers: [{ id, name, role: "ci_worker", status: "online", ... }] }
 ```
 
-Wait for `status: "ready"` (~5 min).
+The `webhook_secret` is shown only once — copy it now (it is also already set in the repo's Actions secrets as `POWERNODE_WEBHOOK_SECRET`).
 
-## Step 2 — Provision the build webhook
+If you need a separate webhook for another build pipeline, use Step 2's standalone `provision_disk_image_webhook` action. Otherwise this single bootstrap call covered both.
+
+## Step 2 — (Optional) Provision an additional webhook
+
+Step 1 already provisioned a webhook + set the repo secrets. Skip this step unless you need a second webhook for an additional pipeline (different arch, different platform image variant, etc.).
 
 ```javascript
 platform.provision_disk_image_webhook({
-  node_platform_id: "<your-NodePlatform-id>"
+  label: "ubuntu-2404-arm64-builder"   // operator-chosen identifier
+  // platform_api_base optional; defaults to POWERNODE_PUBLIC_URL
 })
 // → {
-//     webhook_url: "https://platform.example.com/api/v1/system/webhooks/disk_image_built",
+//     webhook_id: "<uuid>",
+//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
 //     webhook_secret: "<HMAC-secret-shown-once>"
 //   }
 ```
 
-**Expected outcome:** webhook URL + secret returned. Copy the secret
-immediately — it's shown once and used to HMAC-sign the build-completion
-callback.
+Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The action does not accept `node_platform_id`. Copy the secret immediately — it's shown once.
 
 ## Step 3 — Author the build repo
 
@@ -227,28 +251,27 @@ After the workflow's webhook step succeeds:
 ```javascript
 platform.recent_events({ kind_prefix: "system.disk_image", limit: 20 })
 // → events: [
-//      { kind: "system.disk_image.webhook_received",   ... },
-//      { kind: "system.disk_image.cosign_verified",    ... },
-//      { kind: "system.disk_image.publication_created", payload: { id, oci_digest, ... } },
-//      { kind: "system.disk_image.platform_updated",   payload: { node_platform_id, disk_image_oci_ref } }
+//      { kind: "system.disk_image_published",
+//        payload: { publication_id, node_platform_id, oci_ref, sha256, ... } }
 //    ]
+// (failure path emits: system.disk_image_publish_failed with error_message)
+// (retention emits: system.disk_image_retention_swept)
 ```
 
-**Expected outcome:** `DiskImagePublication` row exists; `NodePlatform.disk_image_oci_ref`
-points at the new OCI artifact.
+**Expected outcome:** `DiskImagePublication` row exists with `status: "published"`; `NodePlatform`'s `disk_image_publication_status` is `published` and `disk_image_oci_ref` points at the new OCI artifact. The actual emitted events are `system.disk_image_published` (success) and `system.disk_image_publish_failed` (failure); earlier doc revisions referenced finer-grained `webhook_received` / `cosign_verified` / `publication_created` / `platform_updated` events — those don't exist.
 
 ## Step 6 — Set retention policy
 
 ```javascript
 platform.system_set_disk_image_retention({
   node_platform_id: "<your-platform-id>",
-  retention_count: 5,           // keep last 5 publications
-  retention_days: 90            // OR keep everything <90 days old
+  retention_count: 5            // keep last 5 publications
 })
 ```
 
-**Expected outcome:** the Disk Image Manager agent (5-min tick) will
-prune publications beyond these bounds on its next pass.
+The action accepts only `retention_count` — there is no `retention_days` parameter. Pruning grace is fixed at 7 days (the OCI blob is removed from the registry 7 days after the publication transitions to `retired`).
+
+**Expected outcome:** `DiskImageRetentionService` (daily Sidekiq cron) will prune publications beyond the count on its next pass; emits `system.disk_image_retention_swept` per-pruned row. The Disk Image Manager agent's tick interval (5 min) is for its other concerns (publication promote/rollback approvals); retention runs on its own cron.
 
 ## Step 7 — Promote a publication to default
 
@@ -284,7 +307,15 @@ platform.system_provision_instance({
 
 ```javascript
 platform.system_get_instance({ id: "<new-instance>" })
-// → { instance: { booted_from_oci_ref: "registry.example.com/.../...@sha256:...", ... } }
+// → { instance: { status: "running", node_platform_id, ... } }
+
+// Verify the booted artifact by inspecting the NodePlatform's current default publication:
+platform.system_list_disk_image_publications({
+  node_platform_id: "<your-platform-id>",
+  status: "published"
+})
+// (NodeInstance does not have a booted_from_oci_ref column; trace through node_platform_id
+// to the platform's current default publication for the boot image identity.)
 ```
 
 ## Cleanup
@@ -323,8 +354,12 @@ Common cause: webhook URL has a typo (parent platform vs child).
 requires approval for retention prunes (default in some setups). Check:
 
 ```javascript
-platform.agent_introspect({ agent_id: "disk_image_manager_agent" })
-// → look for system.disk_image.retention_prune policy
+// agent_introspect takes a UUID, not a string slug. First find the agent:
+platform.list_agents({ name_contains: "Disk Image Manager" })
+// → { agents: [{ id: "<uuid>", name: "Disk Image Manager", ... }] }
+
+platform.agent_introspect({ agent_id: "<uuid>" })
+// → look for the disk_image_* intervention policies + their default settings
 ```
 
 If `require_approval`, an `ApprovalRequest` per prune awaits in

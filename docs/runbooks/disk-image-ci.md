@@ -44,52 +44,64 @@ booting from this NodePlatform
 
 ## Phase 1 — Provision a CI worker ✅
 
-The platform-managed CI worker is itself a NodeInstance with the `gitea-runner` module assigned, plus elevated Docker socket access for building images.
+The CI worker is a `Worker` row (role `ci_worker`) — **not** a NodeInstance. The platform issues a registration token; the operator installs and registers a Gitea Actions runner against it on a host of their choosing (any docker-capable Linux box; doesn't have to be a Powernode-managed node).
 
 ```javascript
 platform.system_provision_ci_worker({
-  hostname: "image-builder-1",
-  provider_region_id: "region-aws-us-east-1",
-  provider_instance_type_id: "type-c5-2xlarge",      // beefier for builds
-  build_targets: ["amd64", "arm64"]                   // arch labels for Gitea Actions
+  name: "image-builder-1"   // operator-chosen identifier; this is the ONLY parameter
 })
-// → { instance: {...}, runner_token: "...", registration_url: "..." }
+// → { worker: { id, name, role: "ci_worker", token: "<one-time-displayed>" }, ... }
 ```
 
-The worker's `gitea-runner` module reads the token from systemd environment, registers with `registry.example.com`, and starts polling for jobs.
+Earlier doc revisions implied the action took `hostname`, `provider_region_id`, `provider_instance_type_id`, and `build_targets` and provisioned a managed NodeInstance — none of that is correct. The action is synchronous and just mints a `Worker` row + token.
 
-**Verify:**
+**Install + register the runner manually** (per Gitea Actions docs) using the returned token:
+
+```bash
+# On the operator's chosen host
+mkdir -p /opt/gitea-runner && cd /opt/gitea-runner
+curl -LO https://gitea.com/.../act_runner
+./act_runner register --instance https://gitea.example.org --token "<the-token>" \
+  --labels "amd64,arm64,disk-image-builder"
+./act_runner daemon &
+```
+
+**Verify the runner is registered:**
 
 ```javascript
 platform.system_list_ci_workers()
-// → { workers: [{ id, status: "online", labels: ["amd64", "arm64", "docker"], ... }] }
+// → { workers: [{ id, name, role: "ci_worker", status: "online", ... }] }
 ```
 
-For multi-arch builds, you can either:
-- One worker with multi-arch QEMU emulation (cross-build amd64 from arm64 via binfmt)
-- Two workers, one per arch (faster but more cost)
-
-Recommend: one worker with QEMU for low-volume; two workers for daily builds.
+For multi-arch builds, you can either use one runner with multi-arch QEMU emulation (cross-build amd64 from arm64 via binfmt) or two runners (faster but more setup). Recommend: one for low-volume; two for daily builds.
 
 ## Phase 2 — Provision the disk image webhook ✅
 
-The webhook is how the platform learns about new published images.
+The webhook is how the platform learns about new published images. Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform.
 
 ```javascript
 platform.provision_disk_image_webhook({
-  node_platform_id: "<platform-id>",
-  webhook_url: "https://platform.ipnode.org/api/v1/system/webhooks/disk_image_built",
-  shared_secret: "..."                                // generated; rotate via this same call
+  label: "ubuntu-2404-amd64-builder"
+  // platform_api_base optional; defaults to POWERNODE_PUBLIC_URL
 })
-// → { webhook: { id, secret_fingerprint, ... } }
+// → {
+//     webhook_id: "<uuid>",
+//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
+//     webhook_secret: "<one-time-displayed-secret>"
+//   }
 ```
 
-Configure the same webhook URL + secret in the Gitea repo's webhook settings. The CI workflow's last step posts to this webhook on successful publication.
+The action does **not** accept `node_platform_id`, `webhook_url`, or `shared_secret`: the URL is built server-side from `POWERNODE_PUBLIC_URL` + the issued webhook id, and the secret is mint-once.
+
+Configure the returned webhook URL + secret as repository secrets in the Gitea repo's Actions settings (`POWERNODE_WEBHOOK_URL` + `POWERNODE_WEBHOOK_SECRET`). The CI workflow's last step posts to this URL on successful publication.
+
+**Tip:** if you ran `bootstrap_disk_image_ci` above, the webhook was already provisioned + the secrets were already set in the repo. Use this standalone action only to attach additional pipelines.
 
 **Verify the webhook is registered:**
 
 ```javascript
-platform.system_list_disk_image_webhooks({ node_platform_id: "<platform-id>" })
+platform.system_list_disk_image_webhooks()
+// → { webhooks: [{ id, label, last_delivery_at, ... }] }
 ```
 
 ## Phase 3 — Trigger a build ✅
@@ -101,13 +113,15 @@ git push origin v0.3.0
 # → Gitea Actions kicks off the workflow
 ```
 
-Or via the dispatcher MCP action:
+Or via the workflow-dispatch MCP action (`bootstrap_disk_image_ci` is NOT a build trigger — it's a one-shot setup action; the trigger is `dispatch_gitea_workflow`):
 
 ```javascript
-platform.bootstrap_disk_image_ci({
-  node_platform_id: "<platform-id>",
-  ref: "v0.3.0",                                       // git ref to build from
-  arches: ["amd64", "arm64"]
+platform.dispatch_gitea_workflow({
+  owner: "<account>",
+  repo: "disk-images",
+  workflow: "build-disk-image.yml",
+  ref: "v0.3.0",
+  inputs: { platform_slug: "ubuntu-2404-base", arch: "amd64" }
 })
 // → { run_id: "<gitea-run-id>", status: "queued" }
 ```
@@ -132,11 +146,12 @@ After the workflow completes successfully, the webhook fires and the platform cr
 ```javascript
 platform.system_list_disk_image_publications({ node_platform_id: "<platform-id>" })
 // → { publications: [
-//      { id, version: "v0.3.0", status: "published", composefs_digest, signed_at, ... }
+//      { id, node_platform_id, status: "published", arch: "amd64", git_sha,
+//        oci_ref, sha256, size_bytes, published_at, retired_at, error_message }
 //    ] }
 ```
 
-`status: "published"` means the publication passed all verification checks (Cosign signature, fs-verity, manifest integrity). NodeInstances booting from this `NodePlatform` will use this image on next netboot.
+`status: "published"` means the publication passed cosign signature + SHA256 verification. The publication's status enum is `queued/awaiting_upload/verifying/published/failed/retired/purged`. NodeInstances booting from this `NodePlatform` will use this image on next netboot. (Earlier doc revisions referenced `version`, `composefs_digest`, and `signed_at` fields — those don't exist on the row today; composefs verification is a future addition.)
 
 **Promote the publication as the "default" for new instances:**
 
@@ -166,17 +181,16 @@ Rollback / Revert Workflow](../DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-work
 
 ## Phase 6 — Retention tuning ✅
 
-Default retention: 90 days for routine publications, 365 days for any publication marked `critical: true`. Operators tune via the platform configuration:
+Retention is **count-based**, not time-based. The `NodePlatform.disk_image_retention_count` column controls how many publications are kept per platform (default: 3). The `DiskImageRetentionService` runs daily (Sidekiq cron) and prunes publications past the count, with a fixed 7-day grace window (`DiskImageRetentionService::DEFAULT_GRACE_DAYS`) before the OCI blob is purged from the registry.
 
 ```javascript
 platform.system_set_disk_image_retention({
   node_platform_id: "<platform-id>",
-  routine_days: 60,
-  critical_days: 730                                   // 2 years
+  retention_count: 5      // keep the 5 most recent publications
 })
 ```
 
-The `DiskImageRetentionService` runs daily (Sidekiq cron) and prunes old publications + their OCI artifacts. Pruning is conservative — never deletes a publication currently set as default for a NodePlatform.
+The action accepts only `retention_count` — there is no `routine_days` / `critical_days` / publication-criticality framing today. Pruning is conservative: never deletes the publication currently set as default for a NodePlatform.
 
 ## Phase 7 — Decommission a CI worker ⚠️
 
@@ -194,10 +208,10 @@ Triggers:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Build fails at "mmdebstrap" stage | Network issue to debian.org mirror, or out-of-disk on builder | Check `system_get_instance_stats` on the CI worker; resize via `provider_instance_type_id` change |
-| Build succeeds but webhook doesn't fire | `.gitea/workflows/build.yaml` last step missing or shared_secret mismatch | Verify the workflow's "Post to platform" step; rotate secret via `provision_disk_image_webhook` |
-| Webhook fires but `DiskImagePublication` not created | Cosign signature verification failed | Check `recent_events` for `disk_image_publication_failed` with reason; usually OIDC issuer mismatch |
-| Cosign signature mismatch | NodePlatform's `cosign_identity_regexp` doesn't match the CI runner's OIDC URL | Update via `system_update_node_platform`; or update the CI workflow to use the right OIDC scope |
+| Build fails at "mmdebstrap" stage | Network issue to debian.org mirror, or out-of-disk on builder | SSH the host running the Gitea Actions runner; check disk + network. Resizing is operator-managed (the CI worker is not a managed NodeInstance — see Phase 1) |
+| Build succeeds but webhook doesn't fire | `.gitea/workflows/build.yaml` last step missing or webhook secret mismatch | Verify the workflow's "Post to platform" step; rotate secret by re-running `bootstrap_disk_image_ci` with the same `label` (idempotent — rotates secrets) |
+| Webhook fires but `DiskImagePublication` not created | Cosign signature verification failed | Use `platform.recent_events({ kind_prefix: "system.disk_image_publish_failed" })` to find the failure; common cause is OIDC issuer mismatch |
+| Cosign signature mismatch | NodePlatform's `cosign_identity_regexp` doesn't match the CI runner's OIDC URL | Edit the NodePlatform row via the operator UI or `PATCH /api/v1/system/node_platforms/<id>` (no dedicated `system_update_node_platform` MCP wrapper yet); or update the CI workflow to use the right OIDC scope |
 | fs-verity digest mismatch | Artifact corrupted in transit (rare; oras has retry built-in) | Re-trigger the build; the deduper detects identical artifacts and skips redundant ingestion |
 | CI worker offline | gitea-runner systemd unit failed | SSH (if SDWAN attached) → `journalctl -u gitea-runner.service`; common: token expired, network |
 | Reproducibility check fails | Same source produces different output (timestamp leakage, locale, dpkg state) | Use SOURCE_DATE_EPOCH everywhere in build scripts; pin tool versions in Containerfile |

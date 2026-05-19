@@ -85,35 +85,48 @@ flowchart LR
 
 ```javascript
 platform.bootstrap_disk_image_ci({
-  account_id: "<account>",
-  // Provisions a Gitea Actions runner registered to the account's
-  // disk-image build repo, with appropriate secrets (Cosign keys,
-  // OCI registry credentials)
+  owner: "<account>",                              // Gitea owner (account name)
+  repo: "disk-images",                             // Gitea repo containing the build workflow
+  label: "ubuntu-2404-amd64-builder",              // operator-chosen identifier; webhook + worker rows key off this
+  platform_api_base: "https://platform.example.org", // optional; defaults to POWERNODE_PUBLIC_URL
+  create_platform_read_token: true                 // mints a read-scoped JWT for the runner to call back
 })
+// → {
+//     ok: true,
+//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
+//     webhook_secret: "<one-time-displayed-secret>",   // HMAC key for the runner
+//     ci_worker_token: "<token>",                       // runner registration token
+//     gitea_secrets_set: ["POWERNODE_WEBHOOK_SECRET", "POWERNODE_WEBHOOK_URL", ...]
+//   }
 ```
 
-This creates:
-- A `System::Task` of type `ci_worker_provision`
-- A self-hosted Gitea Actions runner labeled `disk-image-builder`
-- Repository secrets for Cosign + OCI registry auth (rotated independently)
+This action is **idempotent on `label`** (re-running rotates secrets + token without creating duplicates) and is a **one-shot setup**, not a build trigger. It creates:
+
+- A `System::DiskImageWebhook` row (per-pipeline; the URL above embeds its UUID)
+- A `Worker` row with role `ci_worker` (NOT a `System::Task`, and NOT a NodeInstance — the operator installs and registers a Gitea Actions runner against the returned token themselves)
+- Gitea repo Actions secrets (webhook secret + URL + optional read token + OCI registry creds if configured)
+
+Triggering an actual build is a separate action (`dispatch_gitea_workflow` — see "Triggering a build" below). `bootstrap_disk_image_ci` does not have `account_id`, `force`, or `ref`/`arches` parameters; those framings in earlier doc revisions were aspirational.
 
 ### Step 2: Provision the build webhook
 
+When `bootstrap_disk_image_ci` provisions the webhook for you, you do not need this action — it returned the URL + secret already. To provision a webhook standalone (e.g., to attach a second build pipeline to the same account):
+
 ```javascript
 platform.provision_disk_image_webhook({
-  node_platform_id: "<platform-id>"
+  label: "ubuntu-2404-arm64-builder"   // operator-chosen identifier
+  // platform_api_base optional; defaults to POWERNODE_PUBLIC_URL
 })
+// → {
+//     webhook_id: "<uuid>",
+//     webhook_url: "https://platform.example.org/api/v1/system/webhooks/disk_image/built/<webhook_id>",
+//     webhook_secret: "<one-time-displayed-secret>"
+//   }
 ```
 
-Returns:
-```json
-{
-  "webhook_url": "https://platform.powernode.org/api/v1/system/webhooks/disk_image_built",
-  "webhook_secret": "shared-secret-for-HMAC-signing"
-}
-```
+Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePlatform. The action does **not** accept `node_platform_id`, `webhook_url`, or `shared_secret` — the URL is built server-side from `POWERNODE_PUBLIC_URL` + the issued webhook id; the secret is mint-once and returned.
 
-Operator configures this webhook URL + secret in the build repo's CI workflow YAML so the runner can call back after a successful build.
+Operator configures the webhook URL + secret in the build repo's CI workflow YAML so the runner can call back after a successful build.
 
 ## Operator Workflow
 
@@ -155,13 +168,20 @@ curl "/api/v1/system/node_platforms/<id>/disk_image_publications" \
   -H "Authorization: Bearer $JWT"
 ```
 
-Each publication carries:
-- `oci_ref` — fully-qualified registry path (e.g. `registry.example.com/account/disk-images@sha256:...`)
+Each publication carries (full row shape):
+- `id` — publication UUID
+- `node_platform_id` — owning NodePlatform
+- `status` — one of `queued, awaiting_upload, verifying, published, failed, retired, purged`
+- `arch` — `amd64` / `arm64`
 - `git_sha` — source commit
-- `built_at` — timestamp
-- `cosign_identity` — who signed (Gitea Actions OIDC identity)
-- `sbom_url` — SBOM artifact URL
-- `size_bytes`, `sha256` — artifact integrity
+- `oci_ref` — fully-qualified registry path (e.g. `registry.example.com/account/disk-images@sha256:...`)
+- `sha256` — artifact content digest
+- `size_bytes` — artifact size
+- `published_at` — UTC timestamp when the publication transitioned to `published`
+- `retired_at` — UTC timestamp when a newer publication superseded this one (nil while current)
+- `error_message` — populated when `status = failed` (e.g. cosign verify failure detail)
+
+Fields **not** in the serialized row: `built_at` (use `published_at`), `cosign_identity` (verification result is in `error_message` on failure; the identity used is recorded elsewhere), `sbom_url`, `version`, `signed_at`, `composefs_digest` (composefs verification is a future addition; the current pipeline verifies cosign signature + SHA256 over the OCI manifest). Doc revisions before 2026-05-19 listed those fields aspirationally.
 
 ### Promoting a publication
 
@@ -213,8 +233,11 @@ Three secret types in this pipeline:
 The webhook didn't reach the platform (firewall? wrong URL?) or HMAC signature mismatch. Check:
 
 ```bash
-# Last webhook attempts
-curl /api/v1/system/disk_image_webhooks/recent -H "Authorization: Bearer $JWT"
+# List webhook deliveries (filter to recent or by webhook id):
+curl "/api/v1/system/disk_image_webhooks?recent=true" -H "Authorization: Bearer $JWT"
+
+# Or via MCP:
+# platform.system_list_disk_image_webhooks({ recent: true })
 ```
 
 If signature mismatched, rotate the webhook secret.
@@ -228,20 +251,34 @@ If signature mismatched, rotate the webhook secret.
 Inspect:
 ```bash
 curl /api/v1/system/disk_image_publications/<id> -H "Authorization: Bearer $JWT"
-# Look for publication_status="cosign_verify_failed" + publication_error
+# Look for status="failed" + error_message containing the cosign failure detail.
+# The publication's status enum is queued/awaiting_upload/verifying/published/failed/retired/purged
+# (there is no separate cosign_verify_failed sub-status).
+#
+# The NodePlatform row also carries the last attempt:
+#   disk_image_publication_status — overall publication state on the platform
+#   disk_image_publication_error — last failure detail surfaced to operators
 ```
 
 ### Runner stuck in pending
 
 Gitea Actions runner provisioned but not online. Check:
 
-```javascript
-platform.system_list_tasks({ task_type: "ci_worker_provision", status: "pending" })
+CI worker provisioning is synchronous in the MCP tool (no `System::Task` row is created), so a "pending" task wouldn't appear in `system_list_tasks`. Instead check the `Worker` row directly via the operator API:
+
+```bash
+curl "/api/v1/workers?role=ci_worker" -H "Authorization: Bearer $JWT"
 ```
 
-Reprovision if necessary:
+If the worker exists but the Gitea Actions runner side hasn't registered, the operator's manual runner install is the missing step (the platform issues the token; the operator must install + register the runner against it). Reprovisioning the bootstrap (rotates secrets + issues a fresh worker token) — `force` is not a parameter; just re-run with the same `label`:
+
 ```javascript
-platform.bootstrap_disk_image_ci({ account_id: "<account>", force: true })
+platform.bootstrap_disk_image_ci({
+  owner: "<account>",
+  repo: "disk-images",
+  label: "ubuntu-2404-amd64-builder"
+})
+// Idempotent on label — rotates secrets + token, returns fresh values.
 ```
 
 ## Source Files
