@@ -12,14 +12,14 @@ It complements [README.md](../README.md) (operator-facing summary) and
 flowchart TB
     subgraph Surface["Operator + AI surface"]
         UI[UI: Template Composer<br/>Fleet Dashboard<br/>Module Detail / Autonomy]
-        MCP[MCP: ~25 system_* tools]
+        MCP[MCP: ~170 system_* tools]
         REST[REST: /api/v1/system/*<br/>+ /worker_api]
         AC[ActionCable: SystemChannel<br/>+ SystemFleetChannel]
     end
 
     subgraph Control["Control plane (Rails 8)"]
-        Models[~50 models<br/>Node, NodeInstance, NodeTemplate<br/>NodeModule + NodeModuleVersion AASM<br/>NodeModuleAssignment, BootstrapToken<br/>NodeCertificate, FleetEvent<br/>Cve, CveExposure, Slo::Definition]
-        Services[~80 services<br/>ProvisioningService<br/>ModuleBuildDispatchService<br/>ModuleOciIngestService<br/>InternalCaService<br/>FleetAutonomyService<br/>DecisionEngine, EventBroadcaster<br/>AttributionFeedbackService<br/>ConsentBudgetService]
+        Models[~96 models<br/>Node, NodeInstance, NodeTemplate<br/>NodeModule + NodeModuleVersion AASM<br/>NodeModuleAssignment, BootstrapToken<br/>NodeCertificate, FleetEvent<br/>Cve, CveExposure, Slo::Definition]
+        Services[~187 services<br/>ProvisioningService<br/>ModuleBuildDispatchService<br/>ModuleOciIngestService<br/>InternalCaService<br/>FleetAutonomyService<br/>DecisionEngine, EventBroadcaster<br/>AttributionFeedbackService<br/>ConsentBudgetService]
         Ctrl[3 controller surfaces:<br/>operator JWT<br/>worker token<br/>node mTLS]
         Worker[Worker:<br/>SystemFleetReconcileJob 60s<br/>SystemCveFeedJob 1h<br/>SystemFleetEventRetentionJob 4:30 AM<br/>SystemTaskReaperJob 1h]
     end
@@ -175,21 +175,24 @@ calls authenticate via mTLS with certificate pinning.
 - Event telemetry to `/node_api/events`
 - Module-as-Skill registrar (declared skills register with `Ai::Skill`)
 
-**NodeInstance lifecycle** (high-level — the polymorphic Task model carries the AASM detail):
+**NodeInstance lifecycle.** `NodeInstance` defines its own AASM (states + events distinct from the polymorphic Task model). The Task model carries provisioning-step state (`pending → provisioning → running`); NodeInstance carries instance-level state below. Note that `draining` belongs to operator-initiated drain workflow (a Task transition), not the NodeInstance state set.
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending: create_node + create_instance
     pending --> provisioning: provider VM create
-    provisioning --> running: kernel boot +<br/>agent enroll +<br/>first heartbeat
-    provisioning --> failed: provider error<br/>or boot timeout
-    running --> draining: operator drain
-    draining --> stopped: workloads<br/>terminated
-    running --> stopped: operator stop
-    stopped --> running: operator start
+    provisioning --> starting: kernel boot dispatched
+    starting --> running: agent enroll +<br/>first heartbeat
+    provisioning --> error: provider error<br/>or boot timeout
+    starting --> error: enroll fails
+    running --> stopping: operator stop dispatched
+    stopping --> stopped: workloads<br/>terminated
+    running --> rebooting: operator reboot
+    rebooting --> running: agent re-attaches
+    stopped --> starting: operator start
     running --> terminated: operator terminate<br/>(cascade FK cleanup)
     stopped --> terminated: operator terminate
-    failed --> terminated: operator abandon
+    error --> terminated: operator abandon
     terminated --> [*]
 ```
 
@@ -213,15 +216,21 @@ by `System::NetbootService.render_ipxe_script` with a fresh
 
 ### 4. Fleet autonomy
 
-Six sensors detect operational signals:
+Eighteen sensors detect operational signals (16 are registered in the live tick loop via `FleetAutonomyService::SENSORS`; two on-disk sensors run via separate invocation paths). See [FLEET_SENSORS.md](./FLEET_SENSORS.md) for the full reference. Representative examples:
+
 - `InstanceStatusSensor` — heartbeat older than 3 × interval → `system.instance_silent`
 - `ModuleDriftSensor` — `running_module_digests` ≠ assigned digests → `system.module_drift`
 - `CertificateExpirySensor` — cert within advisory/urgent window → `system.cert_expiring`
 - `ModulePromotionSensor` — staging version meets PromotionCriteria → `system.module_promotion_ready`
 - `ConfigDriftSensor` — assignment changed without dispatched task → `system.config_drift`
-- `SloViolationSensor` — Slo::Definition target not met → `system.slo_violation`
+- `SloViolationSensor` / `ProjectSloSensor` — SLO target not met → `system.slo_violation` / `project.slo_violation`
 - `HoneypotAccessSensor` — canary module accessed → `system.honeypot_access`
-- `ExternalPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions
+- `GitopsDriftSensor` — fleet.yaml-declared state vs effective fleet diverges → `gitops.drift_detected`
+- `PackageDriftSensor` — package repository freshness → `system.package_drift_pressure`
+- `InstanceStateDriftSensor` — DB-recorded status disagrees with provider truth → `system.instance_state_drift`
+- `StorageAssignmentDriftSensor` — volume assignment freshness window expires → `system.storage_assignment_drift`
+- `SdwanReachabilitySensor`, `SdwanDriftSensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `SdwanCredentialExpirySensor` — SDWAN-side reachability, drift, BGP, VIP, credential expiry
+- `TradingPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions (originally trading-specific; broader cross-domain refactor pending)
 
 Each signal routes through `DecisionEngine` (binds signal → skill →
 action_category) → `FleetAutonomyService.gate_action!` (consults
@@ -284,7 +293,7 @@ bus.
 - `system.region_busy:<region_id>` — per-region instance saturation
 
 **Fleet consumes:**
-- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `ExternalPressureSensor` aggregates → `ExternalAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0
+- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `TradingPressureSensor` aggregates → `TradingAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0 (naming preserved from initial trading integration; cross-domain refactor would unify these names)
 
 **Sibling extension consumes** (when integrated):
 - `system.capacity_pressure` → consumer-side pressure perceiver returns
@@ -300,8 +309,8 @@ flowchart LR
     subgraph Fleet["Fleet (system extension)"]
         Recon[Fleet reconciler<br/>60s tick]
         FleetEmit[Pressure emitter]
-        ExtSensor[ExternalPressureSensor]
-        Throttle[ExternalAwareThrottle]
+        ExtSensor[TradingPressureSensor]
+        Throttle[TradingAwareThrottle]
     end
 
     subgraph Bus["Stigmergic signal bus"]
@@ -378,10 +387,10 @@ modules in the catalog: `docker-engine`, `k3s-server`, `k3s-agent`.
     UI for kubectl access.
 
 - **Dedicated agent**: `Runtime Manager` (monitor-type AI agent) owns
-  container runtime autonomy with 8 intervention policies — separate
+  container runtime autonomy with 7 intervention policies — separate
   trust score + approval queue from Fleet Autonomy. Allows
-  per-domain policy tuning (e.g. auto-rotate `docker_daemon_tls`
-  certs while keeping `kubernetes_cluster_decommission` gated).
+  per-domain policy tuning (e.g. `notify_and_proceed` for docker
+  provisioning while keeping `kubernetes_cluster_decommission` gated).
 
 - **Phase 3 kubeadm** uses the same shape — extends `RUNTIME_MODULES`
   in the runtime/handshake controller, adds parallel kubeadm
@@ -432,9 +441,14 @@ fallback to instance JWT during transition.
 
 ### 4. MCP (`mcp__powernode__platform_system_*`)
 
-25+ tool actions exposed via the platform's MCP server, callable from
-any AI agent or Claude Code MCP client. See [MCP_TOOL_CATALOG.md](../../../docs/platform/MCP_TOOL_CATALOG.md)
-in the parent platform.
+170+ tool actions exposed via the platform's MCP server, callable from
+any AI agent or Claude Code MCP client. The catalog is split into
+`system_*` (102 actions) + `system_sdwan_*` (69) + `kubernetes_*` (5) +
+`docker_*` (52). The auto-generated tool catalog lives at
+`docs/platform/MCP_TOOL_CATALOG.md` in the **parent platform tree**
+(gitignored — regenerate via `cd server && bundle exec rails mcp:generate_tool_catalog`
+from parent root). For an operator-curated subset see
+[`MCP_API_REFERENCE.md`](./MCP_API_REFERENCE.md) in this directory.
 
 ---
 
@@ -522,7 +536,7 @@ flowchart TB
 
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
-- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (16 seeds, 7 passes)
+- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (18 seeds, 8 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
 - [docs/history/](./history/) — archived phase plans + acceptance reports
 - [Parent platform's CLAUDE.md](https://github.com/nodealchemy/powernode-platform/blob/master/CLAUDE.md) — full platform context

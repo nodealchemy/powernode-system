@@ -12,7 +12,7 @@ Why this exists: per [`feedback_no_host_dependencies.md`](../../../../../.claude
 |---|---|---|---|
 | **Traefik** | `agent/Makefile:64` → `TRAEFIK_VERSION` | `dist/powernode-reverse-proxy-linux-{amd64,arm64}` | `make -C agent bump-traefik NEW=vX.Y.Z` |
 | **rpi4-firmware** | `templates/example-modules/rpi4-firmware/manifest.yaml` → `build.firmware_ref` | `/boot/firmware/*` blobs in the rpi4 disk image | manual edit + smoke (see below) |
-| **dracut** | `initramfs/.gitea/workflows/build.yaml:48` → `APT_SNAPSHOT` | initramfs builder version (build-host only) | manual edit + reproducibility re-run |
+| **dracut** | `initramfs/.gitea/workflows/build.yaml:53` → `APT_SNAPSHOT` | initramfs builder version (build-host only) | manual edit + reproducibility re-run |
 | **Kernel** | `initramfs/build.sh` → host's `/boot/vmlinuz-*` selected via `APT_SNAPSHOT` pin | kernel image bundled into the initramfs artifact | manual edit + boot smoke |
 | **k3s** (Phase 3, deferred) | `modules/powernode-k3s-binary/manifest.yaml` → `build.k3s_version` | `/usr/local/bin/k3s` on cluster nodes | playbook to be added when the module ships |
 
@@ -94,7 +94,7 @@ The firmware blobs come from `github.com/raspberrypi/firmware` at a pinned commi
    ```
 4. Boot smoke (one of):
    - **Real Pi 4**: flash `build/arm64/disk-image-rpi4/powernode-rpi4.img` to SD card, boot, verify SSH access + agent heartbeat
-   - **QEMU aarch64**: use [P2.13](../../../../.claude/plans/forform-a-deep-examination-fizzy-lobster.md) bare-metal smoke pattern
+   - **QEMU aarch64**: use the bare-metal physical-device claim smoke (`smoke_test_bare_metal_claim.rb`) — see [SMOKE_TEST.md §"Pass 8 — Hardware / CI extras"](../SMOKE_TEST.md#pass-8--hardware--ci-extras)
 
 **Why bump?**
 
@@ -111,7 +111,7 @@ The firmware blobs come from `github.com/raspberrypi/firmware` at a pinned commi
 **Procedure:**
 
 1. Find the snapshot timestamp at <https://snapshot.ubuntu.com/> (or your mirror)
-2. Edit `extensions/system/initramfs/.gitea/workflows/build.yaml:48`:
+2. Edit `extensions/system/initramfs/.gitea/workflows/build.yaml:53`:
    ```yaml
    APT_SNAPSHOT: ${{ inputs.apt_snapshot || '<new-YYYYMMDDTHHMMSSZ>' }}
    ```
@@ -121,7 +121,7 @@ The firmware blobs come from `github.com/raspberrypi/firmware` at a pinned commi
 
 ## Kernel
 
-Kernel selection happens in `build_kernel_initrd()` (`initramfs/build.sh:94–110`): prefers `KERNEL_VERSION` env, then running kernel, then newest kernel with modules + `/boot/vmlinuz-*`.
+Kernel selection happens in `build_kernel_initrd()` (`initramfs/build.sh:79-110`): prefers `KERNEL_VERSION` env, then running kernel, then newest kernel with modules + `/boot/vmlinuz-*`.
 
 **Procedure:**
 
@@ -140,14 +140,14 @@ Kernel selection happens in `build_kernel_initrd()` (`initramfs/build.sh:94–11
 
 ## k3s (deferred — Phase 3)
 
-When the `powernode-k3s-binary` module ships per [audit plan P2.14](../../../../.claude/plans/forform-a-deep-examination-fizzy-lobster.md), add a `k3s` section here following the Traefik pattern: pin in module manifest's `build.k3s_version`, smoke via [`tutorials/04-k3s-cluster.md`](../tutorials/04-k3s-cluster.md), rollback by reverting the module-version promotion.
+When the `powernode-k3s-binary` module ships (planned: package the k3s binary as a versioned NodeModule so the on-node install path doesn't depend on a `curl | sh` of an upstream artifact), add a `k3s` section here following the Traefik pattern: pin in module manifest's `build.k3s_version`, smoke via [`tutorials/04-k3s-cluster.md`](../tutorials/04-k3s-cluster.md), rollback by reverting the module-version promotion.
 
-Until then, k3s on-node is installed via `curl|sh` (`agent/internal/k3sd/shell_applier.go:113–131`) — see audit plan P2.14 for the migration recipe.
+Until then, k3s on-node is installed via `curl | sh` (`agent/internal/k3sd/shell_applier.go:113–131`). The migration recipe will replace that with a `manifest.Service` entry pointing at the module-bundled binary path.
 
 ## Related
 
-- [`feedback_no_host_dependencies.md`](../../../../.claude/projects/-home-rett-Drive-Projects-powernode-platform/memory/feedback_no_host_dependencies.md) — the "ship-with-platform" rule this playbook serves
+- The platform's "ship-with-platform" rule this playbook serves: external binaries the platform depends on must ship WITH the platform (Ruby gem, Go binary in `agent/cmd/`, or vendored release artifact via this playbook) — never as a host-side install (apt/brew).
 - [`../MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md) — manifest `build:` block fields
 - [`../../initramfs/build.sh`](../../initramfs/build.sh) — kernel selection logic
 - [`../../agent/Makefile`](../../agent/Makefile) — Traefik + ACME + agent build targets
-- Audit plan items [P3.4](../../../../../.claude/plans/forform-a-deep-examination-fizzy-lobster.md) (this playbook), P2.14 (k3s on-node), P1.1 (reproducibility gate)
+- Related forthcoming work: k3s on-node bundling (covered above under "k3s — deferred Phase 3"), reproducibility gate (M3 byte-identical builds via APT snapshot pinning — already wired into the build workflow).

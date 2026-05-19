@@ -1,11 +1,11 @@
 # System Extension Smoke Test
 
 End-to-end validation that the System extension can boot a node, attach a
-runtime, build an overlay network, federate, issue certs, and provision
-storage — exercised through 16 seeded smoke scripts grouped into seven
-passes. Each pass is independently runnable; a clean run of all seven means
-the platform's primary capability surface works against your local
-environment.
+runtime, build an overlay network, federate, issue certs, provision
+storage, and exercise hardware / CI publication paths — exercised through
+19 seeded smoke scripts grouped into eight passes. Each pass is
+independently runnable; a clean run of all eight means the platform's
+primary capability surface works against your local environment.
 
 ## What this validates — and what it doesn't
 
@@ -46,14 +46,14 @@ tail -f /tmp/smoke-serial/domain-serial.log
 Expected outcome: VM reaches `multi-user.target` in ~3–5 s with KVM,
 ~30 s under TCG (software emulation, no `/dev/kvm`).
 
-For broader validation, work through Pass 1 → Pass 7. Each pass below
+For broader validation, work through Pass 1 → Pass 8. Each pass below
 states what it adds beyond the previous.
 
 ---
 
 ## Smoke test catalog
 
-All 18 smoke seeds, grouped by pass. Each is idempotent and DB-level
+All 19 smoke seeds, grouped by pass. Each is idempotent and DB-level
 unless marked **VM**; VM-spawning seeds require the boot prerequisites
 listed in [Pass 1](#pass-1--single-node-qemu).
 
@@ -77,6 +77,7 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_membership_credentials.rb` | 7 | N0 | Membership credential issue / verify / refresh / revoke | no |
 | `smoke_test_bare_metal_claim.rb` | 8 | P3.5 | Bare-metal physical-device claim flow: `record_discovery!` → `confirm_claim!` → `poll_status` returns bootstrap token | no |
 | `smoke_test_disk_image_build_to_publication.rb` | 8 | P2.15c | Disk-image CI webhook round-trip: HMAC-signed POST → DiskImagePublication upserted with matching git_sha + sha256; bad-sig correctly rejected with 200 status=error | no |
+| `smoke_test_flannel_over_sdwan.rb` | 8 | K3s overlay | Sdwan::Network pod_subnet_prefix + flannel cluster bootstrap → cluster.metadata["pod_cidr"] stamped + SubnetAdvertisement(source: "pod_subnet") created + bootstrap_config returns flannel_iface/flannel_backend=host-gw/cluster_cidr | no |
 
 Most seeds run in **DB-level** mode and complete in under a minute. The VM-spawning
 seeds (Pass 1 + Powernode Hub + cluster_member HA) require the boot prerequisites and
@@ -338,9 +339,40 @@ bundle exec rails runner \
   "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_membership_credentials.rb')"
 ```
 
-There is also a companion VM-mesh smoke (`smoke_test_membership_credentials_vm.rb`,
-referenced in the seed header) that spawns nodes and exercises mTLS handshakes
-across the mesh; it's out of scope for this in-tree pass.
+A companion VM-mesh smoke that spawns nodes and exercises mTLS handshakes
+across the mesh is a future addition (the file is not present on disk
+today; the seed header for `smoke_test_membership_credentials.rb` reserves
+the name `smoke_test_membership_credentials_vm.rb` for when the VM
+companion lands). Until it ships, this in-tree DB-level pass is the only
+in-tree exerciser for the credential lifecycle.
+
+---
+
+## Pass 8 — Hardware / CI extras
+
+Two DB-level smokes that exercise the hardware-claim path (without
+requiring real hardware) and the disk-image CI publication round-trip
+(without requiring a Gitea runner). Both are recent additions covering
+P3.5 (bare-metal claim) and P2.15c (disk image CI publication).
+
+| Seed | Validates |
+|---|---|
+| `smoke_test_bare_metal_claim.rb` | P3.5 — bare-metal physical-device claim flow: `record_discovery!` → `confirm_claim!` → `poll_status` returns bootstrap token |
+| `smoke_test_disk_image_build_to_publication.rb` | P2.15c — disk image CI webhook round-trip: HMAC-signed POST → `DiskImagePublication` upserted with matching `git_sha` + `sha256`; bad-signature requests correctly rejected with HTTP 200 status `error` (the inbound-webhook never-500 rule per parent CLAUDE.md) |
+| `smoke_test_flannel_over_sdwan.rb` | K3s overlay (2026-05-19) — `Sdwan::Network.pod_subnet_prefix` set + flannel cluster bootstrap stamps `cluster.metadata["pod_cidr"]` + creates `Sdwan::SubnetAdvertisement(source: "pod_subnet")` + bootstrap_config returns `flannel_iface` / `flannel_backend=host-gw` / `cluster_cidr` for the agent |
+
+```bash
+cd server
+for seed in bare_metal_claim disk_image_build_to_publication; do
+  bundle exec rails runner \
+    "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_${seed}.rb')"
+done
+```
+
+Pass 8 is the lightest by runtime (each completes in <10 s) and the highest
+operational leverage for confirming that the bare-metal onboarding and
+disk-image publication paths still resolve against current code as
+operator-visible APIs evolve.
 
 ---
 
@@ -362,6 +394,7 @@ Each event has a `kind` (event type), `severity` (`info` / `warn` / `error` / `c
 | 5 — ACME | `system.acme.preflight_passed`, `system.acme.certificate.issued`, `system.acme.certificate.renewed`, `system.acme.certificate.revoked` |
 | 6 — storage | `system.storage.assignment.materialized`, `system.storage.gateway.proxied` |
 | 7 — credentials | `system.credential.issued`, `system.credential.refreshed`, `system.credential.revoked` |
+| 8 — hardware / CI extras | `system.physical_device.discovered`, `system.physical_device.claimed`, `system.bootstrap_token.issued`, `system.disk_image_published`, `system.disk_image_publish_failed` |
 
 Inspect after a smoke run:
 
@@ -652,11 +685,14 @@ workflow.
 | 2 | Container runtime — K3s | [`tutorials/04-k3s-cluster.md`](./tutorials/04-k3s-cluster.md), [`tutorials/05-multi-cluster-k3s.md`](./tutorials/05-multi-cluster-k3s.md) |
 | 3 | SDWAN | [`tutorials/05-multi-cluster-k3s.md`](./tutorials/05-multi-cluster-k3s.md) (per-tenant network), [`tutorials/11-federation.md`](./tutorials/11-federation.md) |
 | 4 | Federation | [`tutorials/11-federation.md`](./tutorials/11-federation.md) |
-| 5 | ACME | (forthcoming `docs/runbooks/acme-issuance.md`) |
+| 5 | ACME | [`docs/runbooks/acme-issuance.md`](./runbooks/acme-issuance.md) |
 | 6 | Storage | covered inline within [`tutorials/03-docker-runtime.md`](./tutorials/03-docker-runtime.md) when persistent volumes are introduced |
 | 7 | Membership credentials | covered inline within [`tutorials/11-federation.md`](./tutorials/11-federation.md) |
 
 All 12 tutorials are live; the seed catalog above remains the
 authoritative source for platform-level smoke validation, while the
 tutorials cover the operator-facing workflows that exercise the same
-capabilities.
+capabilities. Pass 8 (hardware / CI extras) has no dedicated tutorial yet
+— the bare-metal claim flow is exercised inline within
+[`tutorials/12-disk-image-ci.md`](./tutorials/12-disk-image-ci.md) when
+the operator publishes a platform image.

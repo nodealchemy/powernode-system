@@ -35,7 +35,7 @@ git submodule update --init --recursive
 
 # Set up the extension's dev branch in the submodule
 cd extensions/system
-git checkout master         # or develop, if you have a branch strategy
+git checkout develop        # canonical working branch (master is release-only)
 git remote -v               # verify origin (Gitea) + github
 ```
 

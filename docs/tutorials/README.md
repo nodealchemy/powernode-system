@@ -44,8 +44,8 @@ re-learning the layout:
 ## Companion surfaces
 
 - [`../SMOKE_TEST.md`](../SMOKE_TEST.md) — platform-level smoke catalog
-  (16 seeded scripts); every tutorial cross-references the smoke that
-  validates the same capability at the platform layer.
+  (18 seeded scripts across 8 passes); every tutorial cross-references the
+  smoke that validates the same capability at the platform layer.
 - [`../runbooks/`](../runbooks/) — operator workflows for specific
   scenarios (CVE response, vault credential rotation, federation
   troubleshooting). Tutorials introduce concepts; runbooks reference them

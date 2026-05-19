@@ -62,4 +62,4 @@ flowchart TD
 
 - [`README.md`](./README.md) — the full sequence with builds-on graph
 - [`../SMOKE_TEST.md`](../SMOKE_TEST.md) — what gets validated at the platform layer
-- [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) — what works / what doesn't for 14 NodeInstance scenarios
+- [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) — what works / what doesn't for 10 NodeInstance scenarios

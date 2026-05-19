@@ -49,10 +49,12 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **12 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **18 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
-  trading pressure (cross-extension stigmergic coordination), and SDWAN
-  health (peer reachability, BGP session, VIP reachability, drift)
+  trading pressure (cross-extension stigmergic coordination), instance state
+  drift, GitOps drift, package repository drift, project SLO breaches, SDWAN
+  health (peer reachability, BGP session, VIP reachability, drift, credential
+  expiry), and storage assignment drift
 - **40 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
@@ -86,9 +88,9 @@ To operate this extension you need a running Powernode platform installation.
 See [the parent platform repo][platform] for installation instructions.
 
 This extension contributes:
-- Rails models, services, controllers (98 models across `system::*` + `sdwan::*`,
-  ~285 service classes incl. 40 skill executors across 11 subdomains, ~138
-  controllers across operator API + on-node API + worker API)
+- Rails models, services, controllers (120 models across `system::*` (74) +
+  `sdwan::*` (46), ~274 service classes excl. 40 skill executors across 11
+  subdomains, 135 controllers across operator API + on-node API + worker API)
 - React/TypeScript frontend (~250 TS/TSX files including 11 page components +
   ~156 reusable components + custom hooks + API client services)
 - Worker jobs (12): `system_task_reaper`, `system_fleet_reconcile`,
@@ -97,7 +99,7 @@ This extension contributes:
   `system_gitops_sync`, `system_package_embedding`,
   `system_package_module_materialize`, `system_package_module_refresh`,
   `system_package_repository_sync`
-- Database migrations (131)
+- Database migrations (137)
 - Sidekiq cron schedule entries
 
 ---
@@ -133,7 +135,7 @@ extensions/system/
 | [`docs/USE_CASE_MATRIX.md`](./docs/USE_CASE_MATRIX.md) | What works / doesn't / what to expect for 10 NodeInstance container scenarios — **READ FIRST when designing a deployment** |
 | [`docs/CONTAINER_RUNTIMES.md`](./docs/CONTAINER_RUNTIMES.md) | Phase 1 Docker + Phase 2 K3s lifecycle + operator troubleshooting |
 | [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (40 executors with descriptors and example I/O) |
-| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 12 fleet sensors + intervention policy reference table |
+| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 18 fleet sensors + intervention policy reference table |
 | [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md) | Webhook + CI worker + OCI artifact pipeline |
 | [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md) | All `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions |
 
@@ -181,14 +183,14 @@ Start with [`docs/tutorials/INDEX.md`](./docs/tutorials/INDEX.md) for a Mermaid 
 
 ### Subsystem-specific
 
-- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — platform-level smoke catalog (16 seeded scripts across 7 passes; covers boot, container runtimes, SDWAN, federation, ACME, storage, credentials)
+- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — platform-level smoke catalog (18 seeded scripts across 8 passes; covers boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
 - [`docs/credential-restoration.md`](./docs/credential-restoration.md) — Vault transit credential design
 - [`docs/agent-peering.md`](./docs/agent-peering.md) — NodeInstance-as-Agent design
 - [`docs/agent-internals.md`](./docs/agent-internals.md) — Go agent package-by-package reference (23 internal packages)
 - [`docs/gitops.md`](./docs/gitops.md) — GitOps reconciler design
 - [`docs/history/`](./docs/history/) — archived phase plans + acceptance reports
 - [`initramfs/README.md`](./initramfs/README.md) — multi-arch boot artifact builder
-- [`agent/README.md`](./agent/README.md) — Go agent build + 16 subcommands (architecture in `docs/agent-internals.md`)
+- [`agent/README.md`](./agent/README.md) — Go agent build + 17 subcommands (architecture in `docs/agent-internals.md`)
 - [`templates/module-repo/README.md`](./templates/module-repo/README.md) — canonical module-source layout
 
 ---
@@ -272,15 +274,16 @@ viewer in active sweep).
 
 - **M0** — Foundation contracts + legacy spec porting (BootstrapToken,
   NodeCertificate, ModuleArtifact, mTLS, AASM)
-- **M2** — Go agent v0 (~4,400 LOC across 9 packages including security)
+- **M2** — Go agent v0 (~4,400 LOC across 9 packages including security; now expanded to 23 packages)
 - **M3** — Multi-arch image builder (six artifact families × amd64/arm64)
 - **M4** — QEMU thin slice (LocalQemuProvider with Libvirt/Recorder/Disabled
   runner triplet, virtio-fw-cfg seed, 15-spec integration coverage)
 - **M5** — MCP CRUD surface (SystemFleetTool, ~25 actions, per-action
   permission gates)
 - **M6** — AI Skills catalog (8 executors)
-- **M7** — FleetAutonomyService (gate_action!, 8 sensors, DecisionEngine,
-  approval chains)
+- **M7** — FleetAutonomyService (gate_action!, 8 sensors at M7 completion; now
+  expanded to 18 across the autonomy + cross-domain pressure exchange surface,
+  DecisionEngine, approval chains)
 - **M8** — Compound learning extraction (LearningExtractor wired into tick
   loop, auto-evolve trigger after 3 matching learnings)
 

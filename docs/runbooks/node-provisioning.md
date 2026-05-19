@@ -71,7 +71,7 @@ platform.system_create_node({
 ```
 
 **What to watch:**
-- `lifecycle_class` is **immutable after first instance provisions** (per `feedback_local_qemu_default_test_target` memory). Choose carefully: `persistent` for control-plane / database / SaaS tenant; `ephemeral` for batch / CI / replaceable workers; `spot` for provider-preemptible workloads.
+- `lifecycle_class` is set at creation time (`persistent` for control-plane / database / SaaS tenant; `ephemeral` for batch / CI / replaceable workers; `spot` for provider-preemptible workloads). The model validates against the allowed set but does not enforce immutability after first provision — operators should still treat the class as fixed in practice, since changing it after instances exist would invalidate downstream allocation assumptions.
 - `node_template_id` determines which modules will be assigned at bootstrap. To reuse an existing fleet template, query first: `platform.system_list_templates`.
 - A `Node` with no `NodeInstance` is harmless — bookkeeping only.
 
@@ -102,8 +102,9 @@ Status transitions: `pending → provisioning → running` (via Task AASM).
 platform.system_get_instance({ id: "<instance-id>" })
 // → { instance: { status: "provisioning", task_id, last_heartbeat_at: null, ... } }
 
-// Or watch the task progress:
-platform.system_get_task({ id: "<task-id>" })
+// To watch task progress, list current tasks for the instance and read the matching row:
+platform.system_list_tasks({ resource_type: "system_node_instance", resource_id: "<instance-id>" })
+// (system_get_task as a single-record fetch is in ASPIRATIONAL_MCP.md — use system_list_tasks filtered to the resource for now)
 ```
 
 **What to watch:**
@@ -116,7 +117,7 @@ platform.system_get_task({ id: "<task-id>" })
 The provider VM POSTs to `runtime/handshake` once the kernel boots:
 
 1. **Identity discovery** — agent reads from `cmdline` / `virtio-fw-cfg` / cloud metadata; selects the appropriate `IdentityStrategy`
-2. **Enrollment** — agent generates Ed25519 keypair, POSTs CSR to `/api/v1/system/node_api/enrollment` with bootstrap token; receives signed mTLS cert
+2. **Enrollment** — agent generates Ed25519 keypair, POSTs CSR to `/api/v1/system/node_api/enroll` with bootstrap token; receives signed mTLS cert
 3. **Module pull** — agent fetches OCI artifacts for assigned modules from `registry.example.com` registry; verifies `cosign` signatures + fs-verity digests
 4. **Mount union root** — composefs lower layer + tmpfs (or `/persist`) overlay; `pivot_root` into composed userspace
 5. **Service start** — `systemctl start powernode-agent.service`; agent posts `phase=ready` heartbeat
@@ -206,15 +207,22 @@ Cascade actions (FK + service-level):
 | `draining` (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate with explicit `force: true` |
 | `terminating` (>5 min) | Provider VM teardown stuck | Check provider console; in worst case, mark task `failed` via `system_cancel_task` and clean orphan rows |
 
-For all stuck states, use `attribute_failure` skill to enumerate recent module/version changes that may have caused the failure:
+For all stuck states, use the `attribute_failure` skill (bound to the System Concierge) to enumerate recent module/version changes that may have caused the failure. The skill is invoked through the System Concierge chat agent (operator describes the failure; Concierge calls the executor internally and returns the analysis):
 
 ```javascript
-platform.execute_skill({
-  skill: "system-attribute-failure",
-  inputs: { instance_id: "<instance-id>", lookback_hours: 24 }
+// Find the Concierge agent and invoke it with a natural-language ask:
+platform.list_agents({ name_contains: "Concierge" })
+// → { agents: [{ id: "<concierge-uuid>", name: "System Concierge", ... }] }
+
+platform.execute_agent({
+  agent_id: "<concierge-uuid>",
+  prompt: "Attribute the recent failure on instance <instance-id> looking back 24 hours; surface the top candidate module/version change and confidence."
 })
+// The Concierge calls the system-attribute-failure executor internally and returns:
 // → { candidates: [...], top_candidate: {...}, confidence: "medium", reasoning: "..." }
 ```
+
+There is no direct `execute_skill` MCP action — skills are executor-shape, invoked by their owning agent. Operators interact with skills by talking to the agent that binds them.
 
 ## LocalQemuProvider variant (smoke / dev)
 
