@@ -59,7 +59,15 @@ module System
             build_exposed_modules_section(exposed_modules),
             build_remediation_plan_section(exposed_modules, cve.severity),
             build_approval_gate_section(cve.severity, risk_score),
-            build_verification_section(cve)
+            build_verification_section(cve),
+            # Audit plan P2.9b — operator needs a clear "what if this breaks
+            # production" plan before greenlighting a fleet-wide rolling
+            # upgrade. Spells out exact MCP commands to revert.
+            build_rollback_section(exposed_modules),
+            # P2.9b — audit/governance sign-off checklist. Closing a CVE
+            # remediation needs both security + ops attestation, not just
+            # "I ran the script and it succeeded."
+            build_sign_off_checklist_section(cve)
           ].compact
 
           markdown = sections.join("\n\n---\n\n")
@@ -255,6 +263,102 @@ module System
             CveExposure rows transition to `remediated` once the patched
             module version replaces the exposed one on every assignment.
             Re-run this runbook to confirm `exposed_module_count == 0`.
+          MD
+        end
+
+        # Audit plan P2.9b — Rollback section. Operator-actionable plan for
+        # reverting if a CVE remediation breaks production. Spells out exact
+        # MCP commands per module rather than leaving it as an exercise.
+        def build_rollback_section(exposed_modules)
+          if exposed_modules.empty?
+            <<~MD
+              ## Rollback Plan
+
+              No remediation was applied; nothing to roll back.
+            MD
+          else
+            module_lines = exposed_modules.map do |m|
+              # current_version_id captures the version that was live BEFORE
+              # the remediation kicked off — the id to revert to.
+              prev_id = m[:current_version_id] || "(unknown — check NodeModuleVersion history)"
+              "  - **#{m[:name]}** → previous NodeModuleVersion id: `#{prev_id}`"
+            end
+
+            <<~MD
+              ## Rollback Plan
+
+              If the remediation produces operational regressions (services failing
+              to start, unexpected restart loops, new error spikes), revert each
+              affected module to its pre-remediation version:
+
+              #{module_lines.join("\n")}
+
+              **Per-module rollback commands:**
+
+              ```
+              # For each module above, repromote the previous version:
+              mcp__powernode__platform_system_promote_module_version(
+                node_module_id: "<module_id>",
+                node_module_version_id: "<previous_version_id>",
+                target_state: "live"
+              )
+
+              # Then redrive the rolling upgrade with the previous version,
+              # using a CONSERVATIVE batch (5%) since the population may
+              # already be partially mid-upgrade:
+              mcp__powernode__platform_system_rolling_module_upgrade(
+                node_module_id: "<module_id>",
+                batch_pct: 5,
+                pause_on_error: true
+              )
+              ```
+
+              **Verification of rollback:** the FleetEvent stream should show
+              `system.module.version_changed` rows for each affected node within
+              60–120s. If a node still reports the (broken) new version after
+              5 min, drain + reprovision via `system_provision_instance` against
+              the prior NodePlatform disk image.
+            MD
+          end
+        end
+
+        # Audit plan P2.9b — Sign-Off Checklist. Closing a CVE remediation
+        # properly needs both security + ops attestation; this section gives
+        # the reviewer a copy-pasteable checklist plus the exact MCP queries
+        # to verify each item.
+        def build_sign_off_checklist_section(cve)
+          <<~MD
+            ## Sign-Off Checklist
+
+            Audit + governance evidence — both sign-offs are required to mark
+            the CVE responder workflow as closed.
+
+            **Security review (required):**
+
+            - [ ] All listed exposed modules are now reporting `state: remediated`
+              in `System::CveExposure` (run `system_get_cve_exposure(cve_id: "#{cve.cve_id}")`)
+            - [ ] No new CveExposure rows have appeared for this CVE in the
+              48h post-remediation window (check via `query_learnings` or the
+              CVE Responder dashboard)
+            - [ ] Cosign signatures + SBOM attestations on the patched module
+              versions verified
+
+            **Operations attestation (required):**
+
+            - [ ] Fleet decision audit trail captured — `system.cve_critical_published`
+              → `system.cve_remediate` → `system.rolling_upgrade_complete` chain
+              visible in `platform.recent_events`
+            - [ ] Per-instance heartbeat continuity confirmed — no instance
+              dropped heartbeat for >180s during the upgrade window
+            - [ ] SLO impact assessed — `latency_p99_ms` + `error_rate_pct`
+              for affected modules within target through the 30-min window
+              after rolling upgrade completion
+
+            **Sign-offs:**
+
+            - Security reviewer: `_________________` (name) `_______` (date) `__:__` (UTC)
+            - Operations reviewer: `_________________` (name) `_______` (date) `__:__` (UTC)
+            - Optional: link to incident ticket / Slack thread: `_____________`
           MD
         end
 
