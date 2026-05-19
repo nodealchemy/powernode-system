@@ -81,11 +81,13 @@ Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerPro
 |---|---|
 | `system_list_templates` | List NodeTemplates |
 | `system_get_template` | Fetch a Template + its module assignments |
+| `system_update_template` | Edit Template metadata (description, environment, default region) |
 | `system_assign_module_to_template` | Add a module to a Template (with optional metadata like `target_cluster_id`) |
 | `system_list_modules` | List NodeModules |
 | `system_get_module` | Fetch a Module + its categories + dependencies |
 | `system_list_module_versions` | List versions of a module |
-| `system_promote_module_version` | Move a version through lifecycle states (draft → staging → blessed → live) |
+| `system_promote_module_version` | Move a version through lifecycle states (built → staging → blessed → live) |
+| `system_validate_module_manifest` | Dry-run validation of a `manifest.yaml` payload against the manifest schema before publishing |
 
 #### Tasks
 
@@ -102,7 +104,9 @@ Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerPro
 | `system_get_instance_pool` | Fetch a pool + its members |
 | `system_create_instance_pool` | Create a new pool (target_size, min, max, region, type, template) |
 | `system_drain_instance_pool` | Stop replenishing + destroy/release members |
+| `system_delete_instance_pool` | Remove a drained pool (refuses while members are still attached) |
 | `system_acquire_pooled_instance` | Atomic claim of a `ready` member |
+| `system_return_pooled_instance` | Return a claimed member to the pool (reaper resets state) |
 | `system_replenish_instance_pool` | Manual trigger of the reaper for this pool |
 
 #### Container runtimes
@@ -250,6 +254,8 @@ See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spaw
 | Action | What it does | Audience |
 |---|---|---|
 | `system_destroy_instance` | Tear down a NodeInstance immediately (skips drain — operator must accept blast radius) | operator |
+| `system_drain_instance` | Graceful shutdown — cordon + drain workloads, then stop services | operator |
+| `system_get_silent_instances` | Audit query — list NodeInstances whose `last_heartbeat_at` exceeds the silent threshold | operator, agent |
 | `system_refresh_instance_modules` | Force the agent to re-reconcile its module set against the platform's view | operator, agent |
 | `system_module_mark_canary` | Mark a module as a honeypot canary (any access emits a high-severity FleetEvent) | operator |
 | `system_recycle_pool` | Drain + replace all instances in an `InstancePool` (slice 7 — pool refresh) | operator |
@@ -258,7 +264,26 @@ See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spaw
 | `system_delete_module` | Remove a NodeModule (refuses while assigned) | operator |
 | `system_delete_node` | Remove a Node row (refuses if any NodeInstance still exists; cascade delete is `system_terminate_instance` first) | operator |
 
-**Permissions:** the action verb on the matching resource (`system.{node_instances,node_modules,instance_pools,…}.{view,destroy,delete,recycle,refresh,mark_canary}`).
+**Permissions:** the action verb on the matching resource (`system.{node_instances,node_modules,instance_pools,…}.{view,destroy,delete,recycle,refresh,mark_canary,drain}`).
+
+#### CVE management
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_get_cve` | Fetch a single CVE row (CVE-id, severity, affected packages, references) | operator, agent |
+| `system_create_cve` | Create a CVE row manually (typically driven by the NVD feed worker; operator override path) | operator |
+| `system_delete_cve` | Remove a CVE row (audit-cleanup) | operator |
+| `system_get_cve_exposure` | Per-NodeInstance exposure detail — which assigned modules ship the affected packages | operator, agent |
+
+**Permissions:** `system.cves.{view,create,delete}`, `system.cve_exposures.view`. CVE remediation runs through the CVE Responder agent's intervention policies (see [`FLEET_SENSORS.md` §"CVE Responder agent (5 policies)"](./FLEET_SENSORS.md#cve-responder-agent-5-policies)) rather than direct MCP actions.
+
+#### Vault credential rotation
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_rotate_vault_transit_pepper` | Rotate the Vault transit pepper used for per-account encryption-key wrapping (DR scenario; rare) | operator |
+
+**Permissions:** `system.vault.rotate_transit_pepper`. See [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md) for the broader rotation workflow.
 
 ### `system_sdwan_*` — SDWAN networking + OVN + IPFIX + host bridges + federation accept (69 actions)
 

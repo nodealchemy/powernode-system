@@ -346,6 +346,8 @@ or wait for a maintenance window.
 references the network — k3s pod CIDR is immutable post-bootstrap.
 Destroy + rebuild the cluster to migrate to a different pod CIDR.
 
+**Agent binary requirement**: the new `--flannel-iface` / `--flannel-backend=host-gw` / `--cluster-cidr` arguments are consumed by the on-node Go agent's `k3sd` package. Existing NodeInstances running an older agent binary will ignore the new fields (the JSON is zero-value-safe — unknown fields are skipped). **For the feature to take effect on existing instances**, the agent binary must be rebuilt + the initramfs republished + instances rebooted (or re-provisioned) so they pick up the new binary. New instances provisioned after the agent binary rebuild get the feature automatically. The agent binary is built via the system extension's CI; see `extensions/system/agent/Makefile` for the build flow and `runbooks/disk-image-ci.md` for the initramfs republish path.
+
 ovn-Kubernetes ignores `pod_subnet_prefix` (its OVN layer owns the
 pod-network); setting the field on an ovn-K8s path emits a
 `system.cluster_bootstrap.pod_subnet_prefix_ignored` warning event but

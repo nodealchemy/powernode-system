@@ -137,21 +137,29 @@ curl -X POST https://parent.example.org/api/v1/system/federation/children/spawn 
 ## Step 2 — Watch the child boot + handshake
 
 ```javascript
-platform.recent_events({ kind_prefix: "system.federation", limit: 20 })
+platform.recent_events({ kind_prefix: "federation.", limit: 20 })
 // → events: [
-//      { kind: "system.federation.peer.proposed",   ... },
-//      { kind: "system.instance.provisioned",       payload: { spawn_child_of: peer_id }, ... },
-//      { kind: "system.federation.spawn.fwcfg_stamped", ... },
-//      { kind: "system.federation.handshake.received",  ... },
-//      { kind: "system.federation.schema_negotiated",   payload: { agreed_version: "1.0" }, ... },
-//      { kind: "system.federation.peer.accepted",       ... },
-//      { kind: "system.federation.peer.active",         ... }
+//      // Emitted on the parent side when the child completes its
+//      // acceptance handshake against the AcceptController:
+//      { kind: "federation.peer.accepted", payload: { peer_id, peer_kind: "platform",
+//        spawn_role: "parent", spawn_mode: "autonomous_peer", contract_version, ... } },
+//
+//      // Future on-tick events (heartbeat_stale, grant.archived, etc.) will
+//      // appear here as the federation governance loop runs.
 //    ]
 ```
 
-**Expected outcome:** ~5–10 min wall clock for full sequence on a warm
-instance + reachable parent. Final state: parent + child both see the
-peer as `active`.
+**Note (2026-05-19 doc audit):** earlier revisions of this step listed a richer event stream (`system.federation.spawn.fwcfg_stamped`, `system.federation.schema_negotiated`, `system.federation.peer.active`, etc.) — those events are not currently emitted. The actual federation event surface today uses the `federation.` prefix (not `system.federation.`) and includes:
+
+- `federation.peer.accepted` / `federation.peer.revoked` — emitted by `Api::V1::System::FederationApi::AcceptController#emit_event!` when a peer transitions
+- `federation.peer.heartbeat_stale` — emitted by `System::Federation::HeartbeatSweepService` when a peer's last_heartbeat_at exceeds the stale threshold
+- `federation.grant.archived` — emitted by `System::Federation::GrantArchivalService`
+- `federation.review.<key>` — emitted by `System::Federation::GrantReviewService`
+- `federation.manager.review_completed` — emitted by `FederationManagerExecutor`
+
+Spawn-side events (the child NodeInstance's provisioning + fw-cfg stamping + handshake) are NOT currently surfaced as `FleetEvent` rows; operators monitor spawn progress via `system_get_instance` polling on the child NodeInstance instead. A future change may add structured spawn events; until then, the stream above is the authoritative one.
+
+**Expected outcome:** ~5–10 min wall clock for full sequence on a warm instance + reachable parent. Final state: parent + child both see the peer as `active` (status column on `System::FederationPeer`); the `federation.peer.accepted` event lands when the child's acceptance handshake completes.
 
 ## Step 3 — Verify the peering
 
