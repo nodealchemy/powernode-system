@@ -1,0 +1,49 @@
+schema_version: 1
+name: powernode-storage-tools
+display_name: Powernode Storage Tools (fscrypt, s3fs, gcsfuse, rclone, keyutils)
+description: >
+  On-node tooling required by the agent's storage subsystem: fscrypt for
+  at-rest encryption (per P2.10), s3fs/gcsfuse/rclone for object-storage
+  FUSE mounts (per P2.11), and keyutils for kernel keyring management.
+  Pure package_spec — no rootfs config; the binaries are invoked directly
+  by the Go agent.
+license: MIT
+package_spec:
+  - fscrypt
+  - s3fs
+  - gcsfuse
+  - rclone
+  - keyutils
+file_spec: []
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires: []
+  provides:
+    - storage.fscrypt
+    - storage.fuse.s3fs
+    - storage.fuse.gcsfuse
+    - storage.fuse.rclone
+
+# No services — the binaries are invoked imperatively by powernode-agent's
+# internal/storage/{encryption,s3fs}.go reconciler, never as long-running
+# systemd services.
+services: []
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

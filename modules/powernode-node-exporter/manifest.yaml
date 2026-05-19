@@ -1,0 +1,51 @@
+schema_version: 1
+name: powernode-node-exporter
+display_name: Prometheus node_exporter
+description: >
+  Hardware + OS metrics endpoint on :9100. Operator-opt-in observability
+  module; fleets without a Prometheus scrape target should NOT attach this
+  module (it costs ~20MB RSS per node). Pairs with a Prometheus instance
+  (deployed separately) configured to scrape this port over the SDWAN mesh.
+license: Apache-2.0
+package_spec:
+  - prometheus-node-exporter
+file_spec:
+  - /etc/systemd/system/node_exporter.service
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires: []
+  provides:
+    - observability.metrics
+
+services:
+  - name: node-exporter
+    start_command: "/usr/bin/prometheus-node-exporter --web.listen-address=:9100 --collector.disable-defaults --collector.cpu --collector.meminfo --collector.diskstats --collector.filesystem --collector.netstat --collector.loadavg --collector.uname"
+    restart_policy: always
+    user: prometheus
+    working_directory: /var/lib/prometheus
+    exposed_ports:
+      - { port: 9100, protocol: tcp, name: metrics }
+    capabilities: []
+    health:
+      endpoint: "/metrics"
+      method: GET
+      interval_seconds: 60
+      timeout_seconds: 5
+      initial_delay_seconds: 15
+
+security:
+  # node_exporter reads /proc and /sys but doesn't need extra caps beyond
+  # the systemd unit's User= sandboxing.
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

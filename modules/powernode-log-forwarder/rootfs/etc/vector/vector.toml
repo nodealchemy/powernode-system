@@ -1,0 +1,34 @@
+# Powernode log forwarder — Vector config.
+#
+# Reads journald + the powernode-agent log file, ships to the upstream
+# HTTP collector defined in /etc/vector/upstream.toml (a dependant child
+# module of powernode-log-forwarder provides this file).
+#
+# To customize per-fleet without forking this module, ship a child module
+# with parent_module: powernode-log-forwarder + the override file.
+
+data_dir = "/var/lib/vector"
+
+[api]
+enabled = true
+address = "127.0.0.1:8686"
+
+# ── Sources ───────────────────────────────────────────────────────────────
+
+[sources.journald]
+type = "journald"
+current_boot_only = true
+# Skip noisy kernel + dbus chatter; specific fleets can override via the
+# dependant child config if they want to capture more.
+exclude_units = ["dbus.service", "systemd-journald.service"]
+
+[sources.powernode_agent]
+type = "file"
+include = ["/var/log/powernode/agent.log"]
+read_from = "end"
+
+# ── Sinks ─────────────────────────────────────────────────────────────────
+
+# Upstream config (`[sinks.platform]` body) is supplied by the dependant
+# child module's /etc/vector/upstream.toml. If absent, this sink stays
+# unconfigured and vector emits a startup warning; the agent still runs.

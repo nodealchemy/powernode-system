@@ -1,0 +1,56 @@
+schema_version: 1
+name: powernode-log-forwarder
+display_name: Powernode Log Forwarder (Vector)
+description: >
+  Tails journald + the powernode-agent log file; forwards to a platform log
+  aggregator via HTTP. Vector chosen over fluent-bit for the smaller memory
+  footprint on edge nodes. The upstream URL is set via a dependant child
+  module's /etc/vector/upstream.toml (declared in dependency_spec) so
+  per-fleet override doesn't require a custom build.
+license: MPL-2.0
+package_spec:
+  - vector
+file_spec:
+  - /etc/vector/vector.toml
+  - /etc/systemd/system/vector.service
+mask: []
+dependency_spec:
+  - /etc/vector/upstream.toml
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires: []
+  provides:
+    - observability.logs
+
+services:
+  - name: vector
+    start_command: "/usr/bin/vector --config /etc/vector/vector.toml"
+    restart_policy: always
+    user: vector
+    working_directory: /var/lib/vector
+    exposed_ports: []
+    capabilities:
+      - CAP_DAC_READ_SEARCH
+    health:
+      endpoint: "/health"
+      method: GET
+      interval_seconds: 30
+      timeout_seconds: 3
+      initial_delay_seconds: 10
+
+security:
+  # Vector reads journald via its dbus socket + agent log files. CAP_DAC_
+  # READ_SEARCH lets it bypass mode-0640 log files owned by other users
+  # without needing to be root.
+  capabilities:
+    - CAP_DAC_READ_SEARCH
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
