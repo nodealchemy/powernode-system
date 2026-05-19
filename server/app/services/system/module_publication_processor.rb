@@ -44,7 +44,9 @@ module System
         oci_ref: oci_ref
       )
 
-      if ingest.success?
+      # NOTE: see disk_image_publication_processor.rb — Result struct exposes
+      # `.ok?` not `.success?`. Same bug pattern, fixed here in parallel.
+      if ingest.ok?
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, ingest.module_artifacts, tag)
         Result.new(

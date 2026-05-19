@@ -39,7 +39,11 @@ module System
       publication.start_verifying!
 
       ingest = run_ingest!(publication)
-      return mark_failed!(publication, ingest.error) unless ingest.success?
+      # NOTE: DiskImageOciIngestService::Result exposes `.ok?` (the struct's
+      # first member, see disk_image_oci_ingest_service.rb), NOT `.success?`.
+      # Calling `.success?` raises NoMethodError — caught by smoke_test_disk_
+      # image_build_to_publication.rb which exercises the inline ingest path.
+      return mark_failed!(publication, ingest.error) unless ingest.ok?
 
       file_object = upload_to_storage!(publication, ingest.local_path)
       publish!(publication, file_object, ingest)
