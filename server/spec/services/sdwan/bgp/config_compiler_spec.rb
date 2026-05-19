@@ -299,4 +299,45 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
       expect(text).to include("router bgp #{account_bgp.as_number} vrf #{hva.vrf_name}")
     end
   end
+
+  # K3s overlay (2026-05-19) — pod_subnet_prefix folds into the iBGP
+  # announce set for peers running k3s-server / k3s-agent modules so other
+  # hosts learn the cluster's pod CIDR + install routes via flannel host-gw.
+  # Tested via the rendered FRR text (compile_for_peer's frr_text output).
+  describe "k3s pod_subnet_prefix in compiled FRR text" do
+    let!(:k3s_module) do
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100,
+                            description: "k3s-server test seed")
+      end
+    end
+
+    def attach_k3s(host_node)
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: host_node, node_module: k3s_module
+      ) { |a| a.enabled = true }
+    end
+
+    it "includes pod_subnet_prefix in the FRR text for a k3s host" do
+      net = network!("pod-overlay-net", cidr: "fd00:42:1::/64")
+      net.update!(pod_subnet_prefix: "10.42.0.0/16")
+      hub = peer!(network: net, host: host_a, hub: true)
+      attach_k3s(host_a.node)
+      assign_vrf!(host: host_a, network: net)
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).to include("10.42.0.0/16")
+    end
+
+    it "omits pod_subnet_prefix from FRR text for non-k3s peers" do
+      net = network!("pod-overlay-net-non-k3s", cidr: "fd00:42:2::/64")
+      net.update!(pod_subnet_prefix: "10.42.0.0/16")
+      hub = peer!(network: net, host: host_a, hub: true)
+      # Note: NOT attaching k3s module to host_a's node.
+      assign_vrf!(host: host_a, network: net)
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).not_to include("10.42.0.0/16")
+    end
+  end
 end

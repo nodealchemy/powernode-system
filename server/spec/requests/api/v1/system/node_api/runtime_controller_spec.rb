@@ -157,11 +157,60 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       get "/api/v1/system/node_api/runtime/k3s_server/config"
       expect(response).to have_http_status(:ok)
       body = JSON.parse(response.body)
-      # Phase O4: k3s_server now returns bootstrap_config carrying
-      # cni_plugin. Unenrolled hosts (no Devops::KubernetesNode link)
-      # default to "flannel" — safe K3s default.
-      expect(body.dig("data", "bootstrap_config")).to eq("cni_plugin" => "flannel")
+      # Phase O4: k3s_server returns bootstrap_config carrying cni_plugin.
+      # K3s overlay (2026-05-19): the three flannel-over-SDWAN fields
+      # default to empty strings (k3s defaults preserved) when the host
+      # has no cluster + no pod_subnet_prefix path.
+      cfg = body.dig("data", "bootstrap_config")
+      expect(cfg).to include("cni_plugin" => "flannel")
+      expect(cfg["flannel_iface"]).to eq("")
+      expect(cfg["flannel_backend"]).to eq("")
+      expect(cfg["cluster_cidr"]).to eq("")
       expect(body.dig("data", "content_hash")).to be_a(String)
+    end
+
+    # K3s overlay (2026-05-19) — when a cluster has metadata["pod_cidr"]
+    # set + cni_plugin=flannel + the host has an Sdwan::Peer on the
+    # network, bootstrap_config emits the three flannel-over-SDWAN args.
+    it "k3s_server bootstrap_config emits flannel_iface + host-gw + cluster_cidr when pod overlay is active" do
+      # Seed the k3s-server module + assignment so the runtime config
+      # endpoint authorizes the request.
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100)
+      end
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: node,
+        node_module: ::System::NodeModule.find_by(account: account, name: "k3s-server")
+      ) { |a| a.enabled = true }
+
+      # Set up pod_subnet_prefix on the existing sdwan_network (the let!
+      # block created a peer for node_instance on it already), then create
+      # a flannel cluster row referencing this network via
+      # metadata["sdwan_network_id"].
+      sdwan_network.update!(pod_subnet_prefix: "10.42.0.0/16")
+
+      cluster = ::Devops::KubernetesCluster.create!(
+        account: account, name: "k3s-pod-overlay-#{SecureRandom.hex(3)}",
+        flavor: "k3s", environment: "production", status: "bootstrapping",
+        cni_plugin: "flannel",
+        api_endpoint: "https://[fd00::1]:6443",
+        encrypted_kubeconfig: "kc",
+        encrypted_server_token: "tok",
+        encrypted_agent_token: "tok",
+        metadata: { "pod_cidr" => "10.42.0.0/16", "sdwan_network_id" => sdwan_network.id }
+      )
+      ::Devops::KubernetesNode.create!(
+        kubernetes_cluster: cluster, node_instance: node_instance,
+        name: "k-#{node_instance.id[0,6]}", role: "server", status: "active"
+      )
+
+      get "/api/v1/system/node_api/runtime/k3s_server/config"
+      expect(response).to have_http_status(:ok)
+      cfg = JSON.parse(response.body).dig("data", "bootstrap_config")
+      expect(cfg["cni_plugin"]).to eq("flannel")
+      expect(cfg["flannel_iface"]).to eq("wg-sdwan-#{sdwan_network.network_handle}")
+      expect(cfg["flannel_backend"]).to eq("host-gw")
+      expect(cfg["cluster_cidr"]).to eq("10.42.0.0/16")
     end
   end
 

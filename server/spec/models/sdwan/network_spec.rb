@@ -62,4 +62,76 @@ RSpec.describe Sdwan::Network, type: :model do
       expect(compilable).to contain_exactly("active-net", "registered-net")
     end
   end
+
+  # K3s overlay (2026-05-19) — pod_subnet_prefix validation + overlap + immutability.
+  describe "#pod_subnet_prefix validation" do
+    before do
+      Sdwan::Configuration.where(account_id: account.id).delete_all
+      Sdwan::Network.where(account_id: account.id).delete_all
+    end
+
+    let(:network) do
+      described_class.create!(
+        account_id: account.id,
+        name: "pod-net-#{SecureRandom.hex(4)}",
+        cidr_64: "fd00:abcd:1::/64"
+      )
+    end
+
+    it "accepts an IPv4 pod CIDR (the flannel default shape)" do
+      network.update(pod_subnet_prefix: "10.42.0.0/16")
+      expect(network).to be_valid
+      expect(network.pod_overlay_enabled?).to be true
+    end
+
+    it "accepts a null pod_subnet_prefix (overlay disabled, default)" do
+      network.update(pod_subnet_prefix: nil)
+      expect(network).to be_valid
+      expect(network.pod_overlay_enabled?).to be false
+    end
+
+    it "rejects malformed CIDRs" do
+      network.pod_subnet_prefix = "not-a-cidr"
+      expect(network).not_to be_valid
+      expect(network.errors[:pod_subnet_prefix].join).to match(/CIDR/)
+    end
+
+    it "rejects IPv4 CIDRs smaller than /28 (pods need address space)" do
+      network.pod_subnet_prefix = "10.42.0.0/30"
+      expect(network).not_to be_valid
+      expect(network.errors[:pod_subnet_prefix].join).to match(%r{/28 or larger})
+    end
+
+    it "rejects pod CIDRs that overlap the SDWAN /64" do
+      # The SDWAN /64 is IPv6 fd00:abcd:1::/64; using an IPv6 pod CIDR that
+      # falls within it should be rejected.
+      network.pod_subnet_prefix = "fd00:abcd:1::/96"
+      expect(network).not_to be_valid
+      expect(network.errors[:pod_subnet_prefix].join).to match(/SDWAN/)
+    end
+
+    it "rejects pod CIDRs that overlap another network's pod_subnet_prefix in the same account" do
+      other = described_class.create!(
+        account_id: account.id,
+        name: "other-pod-net-#{SecureRandom.hex(4)}",
+        cidr_64: "fd00:abcd:2::/64",
+        pod_subnet_prefix: "10.42.0.0/16"
+      )
+      _ = other
+      network.pod_subnet_prefix = "10.42.5.0/24" # overlaps 10.42.0.0/16
+      expect(network).not_to be_valid
+      expect(network.errors[:pod_subnet_prefix].join).to match(/overlap/)
+    end
+
+    it "allows non-overlapping pod_subnet_prefix in different networks" do
+      described_class.create!(
+        account_id: account.id,
+        name: "first-pod-net-#{SecureRandom.hex(4)}",
+        cidr_64: "fd00:abcd:2::/64",
+        pod_subnet_prefix: "10.42.0.0/16"
+      )
+      network.pod_subnet_prefix = "10.43.0.0/16"
+      expect(network).to be_valid
+    end
+  end
 end

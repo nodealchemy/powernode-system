@@ -87,4 +87,59 @@ RSpec.describe Sdwan::TopologyCompiler, type: :service do
       expect(views.size).to eq(2)
     end
   end
+
+  # K3s overlay (2026-05-19) — when the network has pod_subnet_prefix +
+  # the spoke is a k3s host, the spoke's allowed_ips through the hub
+  # include the pod CIDR so the spoke's kernel routes pod traffic
+  # through the WireGuard tunnel rather than the host primary NIC.
+  describe "spoke_view with k3s pod overlay" do
+    let!(:hub_peer) do
+      Sdwan::PeerEnroller.call(
+        network: network, node_instance: hub_instance,
+        publicly_reachable: true,
+        endpoint_host: "203.0.113.10", endpoint_port: 51820
+      )
+    end
+    let!(:spoke_peer) do
+      Sdwan::PeerEnroller.call(network: network, node_instance: spoke_instance, publicly_reachable: false)
+    end
+
+    let!(:k3s_module) do
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100,
+                            description: "k3s-agent test seed")
+      end
+    end
+
+    it "includes pod_subnet_prefix in spoke allowed_ips when spoke is a k3s host" do
+      network.update!(pod_subnet_prefix: "10.42.0.0/16")
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: spoke_instance.node, node_module: k3s_module
+      ) { |a| a.enabled = true }
+
+      view = described_class.compile_for_peer(spoke_peer.reload)
+      hub_view = view[:peers].first
+      expect(hub_view[:allowed_ips]).to include("10.42.0.0/16")
+    end
+
+    it "omits pod_subnet_prefix from spoke allowed_ips when spoke is NOT a k3s host" do
+      network.update!(pod_subnet_prefix: "10.42.0.0/16")
+      # NOT attaching k3s-agent to spoke
+
+      view = described_class.compile_for_peer(spoke_peer.reload)
+      hub_view = view[:peers].first
+      expect(hub_view[:allowed_ips]).not_to include("10.42.0.0/16")
+    end
+
+    it "omits pod_subnet_prefix from spoke allowed_ips when network has no pod_subnet_prefix" do
+      # NOT setting network.pod_subnet_prefix
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: spoke_instance.node, node_module: k3s_module
+      ) { |a| a.enabled = true }
+
+      view = described_class.compile_for_peer(spoke_peer.reload)
+      hub_view = view[:peers].first
+      expect(hub_view[:allowed_ips].none? { |p| p.to_s.start_with?("10.42.") }).to be true
+    end
+  end
 end
