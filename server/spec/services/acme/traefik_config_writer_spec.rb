@@ -86,4 +86,60 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         .to eq(File.join(tmp_cert_dir, account.id, "#{cert.id}.key"))
     end
   end
+
+  # Router host matcher — covers the POWERNODE_PROXY_EXTRA_HOSTS path which
+  # is critical for deployments behind an external proxy that preserves the
+  # public Host header upstream (Traefik v3 rejects multi-arg Host() so
+  # this needs the OR'd form, not the v2 comma form).
+  describe "router rule with POWERNODE_PROXY_EXTRA_HOSTS" do
+    let(:cert) do
+      create(:system_acme_certificate, :valid,
+             account: account, dns_credential: dns_cred,
+             common_name: "internal.example.test")
+    end
+
+    around do |example|
+      original = ENV["POWERNODE_PROXY_EXTRA_HOSTS"]
+      example.run
+    ensure
+      if original.nil?
+        ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS")
+      else
+        ENV["POWERNODE_PROXY_EXTRA_HOSTS"] = original
+      end
+    end
+
+    it "emits single-host rules when no extras are configured" do
+      ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS")
+      cert # touch the let block
+      result = described_class.write!(account: account,
+                                       dynamic_dir: tmp_dynamic_dir,
+                                       cert_dir: tmp_cert_dir)
+      parsed = YAML.load_file(result[:output_path])
+      rules = parsed["http"]["routers"].values.map { |r| r["rule"] }
+      expect(rules).to all(include("Host(`internal.example.test`)"))
+      expect(rules).to all(satisfy { |r| !r.include?("||") })
+    end
+
+    it "emits OR'd Host() matchers (v3 syntax) when extras are configured" do
+      ENV["POWERNODE_PROXY_EXTRA_HOSTS"] = "public.example.org, alias.example.net"
+      cert # touch the let block
+      result = described_class.write!(account: account,
+                                       dynamic_dir: tmp_dynamic_dir,
+                                       cert_dir: tmp_cert_dir)
+      parsed = YAML.load_file(result[:output_path])
+      frontend_rule = parsed["http"]["routers"].values
+                        .find { |r| r["service"] == "powernode-frontend" }["rule"]
+      expect(frontend_rule).to eq(
+        "(Host(`internal.example.test`) || Host(`public.example.org`) || Host(`alias.example.net`))"
+      )
+
+      api_rule = parsed["http"]["routers"].values
+                   .find { |r| r["service"] == "powernode-backend" && r["rule"].include?("/api") }["rule"]
+      # Parentheses are load-bearing — without them, && PathPrefix would
+      # bind only to the last Host() call instead of the OR'd group.
+      expect(api_rule).to start_with("(Host(")
+      expect(api_rule).to end_with("&& PathPrefix(`/api`)")
+    end
+  end
 end

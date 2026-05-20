@@ -194,6 +194,23 @@ module Acme
       ENV["POWERNODE_PROXY_FRONTEND_URL"].presence || "http://127.0.0.1:3001"
     end
 
+    # Additional hostnames Traefik should route to the same backend/frontend
+    # services as the cert's common_name. Used when the platform sits behind
+    # an external reverse proxy that terminates a public hostname's TLS and
+    # forwards HTTP requests with the original Host header preserved.
+    #
+    # Example (ops): cert is for `ops.ipnode.net` (internal), but the public
+    # face `ops.powernode.org` lands here via the external proxy. Setting
+    # POWERNODE_PROXY_EXTRA_HOSTS=ops.powernode.org makes the router rule
+    # match both Host values without claiming to have a cert for the public
+    # name (TLS for the public hostname is the external proxy's job).
+    #
+    # Comma-separated; whitespace trimmed; empty entries dropped.
+    def self.extra_hosts
+      raw = ENV["POWERNODE_PROXY_EXTRA_HOSTS"].to_s
+      raw.split(",").map(&:strip).reject(&:empty?)
+    end
+
     private
 
     def render_cert_entry(cert)
@@ -215,27 +232,41 @@ module Acme
     # no explicit priority needed.
     def render_routers(cert)
       slug = router_slug(cert)
-      host = cert.common_name
+      hosts_matcher = build_hosts_matcher(cert.common_name)
       [
         [ "#{slug}-api", {
-          "rule"        => "Host(`#{host}`) && PathPrefix(`/api`)",
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/api`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-cable", {
-          "rule"        => "Host(`#{host}`) && PathPrefix(`/cable`)",
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-frontend", {
-          "rule"        => "Host(`#{host}`)",
+          "rule"        => hosts_matcher,
           "service"     => "powernode-frontend",
           "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ]
       ]
+    end
+
+    # Builds Traefik's host matcher. Without extra hosts configured, emits
+    # the single-host form `Host(\`cn\`)`. With extras, emits OR'd matchers
+    # `(Host(\`cn\`) || Host(\`extra1\`) || Host(\`extra2\`))` because
+    # Traefik v3's `Host()` only accepts one hostname per invocation —
+    # multi-arg `Host(a, b)` was a v2 form that v3 rejects with
+    # "unexpected number of parameters". Parentheses wrap the OR so the
+    # operator precedence with the trailing `&& PathPrefix(...)` is right.
+    def build_hosts_matcher(primary_host)
+      hosts = [ primary_host ] + self.class.extra_hosts
+      return "Host(`#{primary_host}`)" if hosts.size == 1
+      formatted = hosts.map { |h| "Host(`#{h}`)" }.join(" || ")
+      "(#{formatted})"
     end
 
     def render_services
