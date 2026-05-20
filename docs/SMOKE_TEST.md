@@ -2,10 +2,11 @@
 
 End-to-end validation that the System extension can boot a node, attach a
 runtime, build an overlay network, federate, issue certs, provision
-storage, and exercise hardware / CI publication paths — exercised through
-19 seeded smoke scripts grouped into eight passes. Each pass is
-independently runnable; a clean run of all eight means the platform's
-primary capability surface works against your local environment.
+storage, exercise hardware / CI publication paths, and run a full
+K3s lifecycle smoke — exercised through 28 seeded smoke scripts grouped
+into nine passes. Each pass is independently runnable; a clean run of
+all nine means the platform's primary capability surface works against
+your local environment.
 
 ## What this validates — and what it doesn't
 
@@ -53,13 +54,14 @@ states what it adds beyond the previous.
 
 ## Smoke test catalog
 
-All 19 smoke seeds, grouped by pass. Each is idempotent and DB-level
+All 28 smoke seeds, grouped by pass. Each is idempotent and DB-level
 unless marked **VM**; VM-spawning seeds require the boot prerequisites
 listed in [Pass 1](#pass-1--single-node-qemu).
 
 | Seed | Pass | Phase | Validates | Spawns VM? |
 |------|------|-------|-----------|------------|
 | `smoke_test_provision.rb` | 1 | M4 | Catalog → LocalQemuProvider → libvirt → kernel → initramfs → systemd `multi-user.target` | **VM** |
+| `smoke_test_agent_overhaul.rb` | 1 | M5 | On-node Go agent runtime update + reconciliation cycle | no |
 | `smoke_test_docker_runtime.rb` | 2 | Phase 1 | Managed `Devops::DockerHost` provisioning, mTLS handshake, daemon config | no |
 | `smoke_test_k3s_runtime.rb` | 2 | Phase 2 | K3s server bootstrap, agent reconciler state machine, multi-cluster `target_cluster_id` | no |
 | `smoke_test_ovn_k8s_cni.rb` | 2 | O4 | K3s bootstrap config per `cni_plugin` with profile-based auto-defaults | no |
@@ -78,10 +80,21 @@ listed in [Pass 1](#pass-1--single-node-qemu).
 | `smoke_test_bare_metal_claim.rb` | 8 | P3.5 | Bare-metal physical-device claim flow: `record_discovery!` → `confirm_claim!` → `poll_status` returns bootstrap token | no |
 | `smoke_test_disk_image_build_to_publication.rb` | 8 | P2.15c | Disk-image CI webhook round-trip: HMAC-signed POST → DiskImagePublication upserted with matching git_sha + sha256; bad-sig correctly rejected with 200 status=error | no |
 | `smoke_test_flannel_over_sdwan.rb` | 8 | K3s overlay | Sdwan::Network pod_subnet_prefix + flannel cluster bootstrap → cluster.metadata["pod_cidr"] stamped + SubnetAdvertisement(source: "pod_subnet") created + bootstrap_config returns flannel_iface/flannel_backend=host-gw/cluster_cidr | no |
+| `smoke_test_k3s_site_bootstrap.rb` | 9 | K3s lifecycle ph.1 | SDWAN network + pod_subnet_prefix + k3s-server bootstrap + VIP + SubnetAdvertisement; site-parameterizable via `SMOKE_K3S_SITE=a\|b` | site+ (db tier: synth) |
+| `smoke_test_k3s_ha_control_plane.rb` | 9 | K3s lifecycle ph.2 | 3-server HA cluster + VIP failover candidates + synthetic `VirtualIp#failover!` | site+ (db tier: synth) |
+| `smoke_test_k3s_agent_join.rb` | 9 | K3s lifecycle ph.3 | 2 k3s-agents join via target_cluster_id + CniProfileMismatch negative test | site+ (db tier: synth) |
+| `smoke_test_k3s_pod_plane.rb` | 9 | K3s lifecycle ph.4 | runtime bootstrap_config payload + (site+) nginx deploy + tcpdump on wg-sdwan-* | site+ (db tier: contract only) |
+| `smoke_test_k3s_federation.rb` | 9 | K3s lifecycle ph.5 | Sdwan::FederationPeer propose/accept (Site A ↔ Site B) + (site+) cross-site API plane | full (db tier: skip-clean) |
+| `smoke_test_k3s_rolling_upgrade.rb` | 9 | K3s lifecycle ph.6 | rolling_module_upgrade executor descriptor + plan synthesis (canary-first batch sequencing) | site+ (db tier: plan only) |
+| `smoke_test_k3s_cve_drill.rb` | 9 | K3s lifecycle ph.7 | Synthetic CVE → CveResponseExecutor triage + CveRunbookGenerateExecutor runbook | no |
+| `smoke_test_k3s_drain_reprovision.rb` | 9 | K3s lifecycle ph.8 | drain (mark_node_stopped) → terminate → reprovision → re-join → node_count restored | site+ (db tier: synth) |
 
 Most seeds run in **DB-level** mode and complete in under a minute. The VM-spawning
 seeds (Pass 1 + Powernode Hub + cluster_member HA) require the boot prerequisites and
-run for several minutes per invocation.
+run for several minutes per invocation. Pass 9 seeds are tier-gated via
+`SMOKE_K3S_LEVEL` (`db` | `single` | `site` | `full`); at db tier each phase runs in
+operator-driven mode synthesizing the agent-side state transitions, at site+ tiers
+the phases boot real VMs and let the on-node agent drive the lifecycle.
 
 ---
 
@@ -376,6 +389,53 @@ operator-visible APIs evolve.
 
 ---
 
+## Pass 9 — K3s full-lifecycle smoke
+
+Tier-gated end-to-end smoke that exercises the full K3s + SDWAN capability
+surface: bootstrap, HA control plane with VIP failover, agent join,
+flannel-over-SDWAN pod plane, cross-site federation, rolling module
+upgrade, CVE drill, and drain + reprovision. Operates in operator-driven
+mode at db tier (no VMs, ~5 min) and agent-driven mode at single+ tiers
+(real VM boot + on-VM agent → runtime_controller handshake).
+
+| Phase | Seed | Min tier | Validates at db tier |
+|-------|------|----------|----------------------|
+| 1 | `smoke_test_k3s_site_bootstrap.rb` | db | bootstrap + pod_cidr + VIP + SubnetAdvertisement |
+| 2 | `smoke_test_k3s_ha_control_plane.rb` | db | 3-server cluster + synthetic VIP failover |
+| 3 | `smoke_test_k3s_agent_join.rb` | db | target_cluster_id join + CniProfileMismatch negative |
+| 4 | `smoke_test_k3s_pod_plane.rb` | site | bootstrap_config contract; full kubectl/tcpdump at site+ |
+| 5 | `smoke_test_k3s_federation.rb` | full | (skipped at db; requires both sites + federation) |
+| 6 | `smoke_test_k3s_rolling_upgrade.rb` | db | executor descriptor + plan synthesis (canary-first) |
+| 7 | `smoke_test_k3s_cve_drill.rb` | db | synthetic CVE → triage + runbook generation |
+| 8 | `smoke_test_k3s_drain_reprovision.rb` | db | drain → terminate → reprovision → node_count restored |
+
+### Quick invocation (db tier, ~5 min, no VMs)
+
+```bash
+cd server
+export SMOKE_K3S_AUTO_CLEAN=1 SMOKE_K3S_LEVEL=db
+for phase in site_bootstrap ha_control_plane agent_join pod_plane federation \
+             rolling_upgrade cve_drill drain_reprovision; do
+  bundle exec rails runner \
+    "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_k3s_${phase}.rb')"
+done
+```
+
+Expected outcome: phases 1, 2, 3, 4, 6, 7, 8 print `✅ Phase N complete`;
+phase 5 (federation) prints `⊘ skipped (phase requires SMOKE_K3S_LEVEL >= full)`.
+
+### Higher tiers
+
+For `single` / `site` / `full` tiers (real VM boot via LocalQemuProvider),
+see [`runbooks/k3s-smoke-full-lifecycle.md`](runbooks/k3s-smoke-full-lifecycle.md)
+for the full env template + per-phase invocation + troubleshooting.
+
+State sidecar at `/tmp/smoke-k3s-state.json` accumulates cluster IDs across
+phases; delete it to start over from phase 1. Setting `SMOKE_K3S_PAUSE=1`
+adds checkpoints between phase sections for step-through debugging.
+
+---
+
 ## Observability — what each pass emits
 
 Every smoke pass emits `FleetEvent` rows persisted to the
@@ -395,6 +455,7 @@ Each event has a `kind` (event type), `severity` (`info` / `warn` / `error` / `c
 | 6 — storage | `system.storage.assignment.materialized`, `system.storage.gateway.proxied` |
 | 7 — credentials | `system.credential.issued`, `system.credential.refreshed`, `system.credential.revoked` |
 | 8 — hardware / CI extras | `system.physical_device.discovered`, `system.physical_device.claimed`, `system.bootstrap_token.issued`, `system.disk_image_published`, `system.disk_image_publish_failed` |
+| 9 — K3s lifecycle | `system.cluster_bootstrap.pod_subnet_prefix_ignored` (ovn-K8s warning), `system.federation.peer.proposed`, `system.federation.peer.accepted`. Cluster-level diagnostic also persists to `cluster.metadata["bootstrap_events"]` (capped at most-recent 50) with phase/status/message entries for each lifecycle transition. |
 
 Inspect after a smoke run:
 
