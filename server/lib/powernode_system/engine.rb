@@ -11,6 +11,13 @@ module PowernodeSystem
     initializer "powernode_system.autoload", before: :set_autoload_paths do |app|
       engine_root = root
 
+      # NOTE: `decorators` is intentionally NOT in this list — those files
+      # monkey-patch core classes (e.g. `Account.class_eval do ... end`)
+      # and don't define a constant matching their path. Zeitwerk's
+      # eager_load_all in production raises Zeitwerk::NameError on each
+      # one. They're loaded explicitly via the `config.to_prepare` block
+      # below, which uses `load` (path-based) and doesn't require the
+      # directory to be on autoload_paths.
       %w[
         models
         models/concerns
@@ -21,7 +28,6 @@ module PowernodeSystem
         serializers
         channels
         jobs
-        decorators
       ].each do |subdir|
         path = engine_root.join("app", subdir)
         app.config.autoload_paths << path.to_s if path.exist?
@@ -34,7 +40,20 @@ module PowernodeSystem
       app.config.autoload_paths << lib_path.to_s if lib_path.exist?
     end
 
-    # Load decorators that extend core models (none expected initially).
+    # Tell Zeitwerk to ignore the decorators directory entirely. Rails
+    # Engine convention auto-adds every `app/*` subdir to autoload paths,
+    # but our decorators use `Class.class_eval do ... end` which doesn't
+    # define a constant Zeitwerk can autoload by path. The `ignore` call
+    # must run during the loader-config phase (before eager_load), so
+    # we wire it as an initializer rather than to_prepare.
+    initializer "powernode_system.ignore_decorators", before: :set_autoload_paths do |_app|
+      decorators_path = root.join("app", "decorators")
+      Rails.autoloaders.main.ignore(decorators_path.to_s) if decorators_path.exist?
+    end
+
+    # Load decorators that extend core models — explicitly via `load` (path-
+    # based, not autoload-based). Decorator files use `Account.class_eval do ... end`
+    # and similar reopen patterns that don't define their own constant.
     config.to_prepare do
       Dir[PowernodeSystem::Engine.root.join("app", "decorators", "**", "*_decorator.rb")].each do |decorator|
         load decorator
