@@ -14,6 +14,7 @@ module System
         "gcp" => "System::Providers::GcpProvider",
         "azure" => "System::Providers::AzureProvider",
         "openstack" => "System::Providers::OpenStackProvider",
+        "proxmox" => "System::Providers::ProxmoxProvider",
         "mock" => "System::Providers::MockProvider",
         "local_qemu" => "System::Providers::LocalQemuProvider",
         "pro_cloud" => "System::Providers::ProCloudProvider"
