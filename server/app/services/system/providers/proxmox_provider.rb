@@ -912,7 +912,22 @@ module System
           return val if val
         end
         return default unless connection
-        credential(column: column.to_sym, config_key: config_key, default: default)
+
+        # Standard ProviderConnection-level lookup: typed column, then config JSONB.
+        via_connection = credential(column: column.to_sym, config_key: config_key, default: nil)
+        return via_connection unless via_connection.nil?
+
+        # Fallback to the parent Provider's config — this lets operators set
+        # endpoint / verify_ssl / default_* once on the Provider (via the
+        # ProviderFormModal General tab) and have every ProviderConnection
+        # inherit them without re-entering on each Credentials tab visit.
+        provider_cfg = connection.provider&.config
+        if provider_cfg.is_a?(Hash)
+          inherited = provider_cfg[config_key.to_s] || provider_cfg[config_key.to_sym]
+          return inherited unless inherited.nil?
+        end
+
+        default
       end
 
       def missing_credentials_failure

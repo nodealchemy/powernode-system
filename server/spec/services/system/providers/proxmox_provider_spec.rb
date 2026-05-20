@@ -4,12 +4,19 @@ require "rails_helper"
 require_relative "shared_examples"
 
 RSpec.describe System::Providers::ProxmoxProvider do
+  # Parent Provider record — pve_credential consults `connection.provider.config`
+  # as a fallback so operators can set endpoint/verify_ssl/default_* on the
+  # Provider via the ProviderFormModal and have every ProviderConnection
+  # inherit them. Tests stub this with an empty config so the fallback is a
+  # no-op unless a specific test exercises inheritance.
+  let(:proxmox_provider) { instance_double("System::Provider", config: {}) }
   let(:connection) do
     instance_double("System::ProviderConnection",
       access_key: "root@pam!powernode",
       secret_key: "00000000-0000-0000-0000-000000000000",
       endpoint_url: "https://pve.example:8006",
-      config: { "verify_ssl" => "false" }
+      config: { "verify_ssl" => "false" },
+      provider: proxmox_provider
     )
   end
   let(:region) { instance_double("System::ProviderRegion", region_code: "dna") }
@@ -71,7 +78,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
     context "when credentials are missing entirely" do
       let(:connection) do
         instance_double("System::ProviderConnection",
-          access_key: nil, secret_key: nil, endpoint_url: nil, config: {})
+          access_key: nil, secret_key: nil, endpoint_url: nil, config: {},
+          provider: proxmox_provider)
       end
 
       it "returns false without making any API calls" do

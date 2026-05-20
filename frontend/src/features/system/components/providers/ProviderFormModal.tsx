@@ -71,13 +71,22 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     public: false,
     config: '{}',
     capabilities: '{}',
-    // local_qemu-only convenience fields. When the form is submitted these
+    // Per-provider-type convenience fields. When the form is submitted these
     // get merged into the parsed `config` JSON so the backend stores them
-    // under System::Provider#config["network_mode"] / ["bridge_name"]. The
-    // raw Configuration JSON textarea below remains the source of truth
-    // for everything else.
+    // under System::Provider#config[…]. The raw Configuration JSON textarea
+    // (inside Advanced) remains the source of truth for anything not covered.
+    //
+    // local_qemu:
     network_mode: '' as '' | 'user' | 'network' | 'bridge' | 'routed',
     bridge_name: '',
+    // proxmox: connection + lifecycle defaults. endpoint + verify_ssl drive
+    // adapter authentication; default_* are used by create_instance when the
+    // caller doesn't specify them.
+    proxmox_endpoint: '',
+    proxmox_verify_ssl: 'true' as 'true' | 'false',
+    proxmox_default_node: '',
+    proxmox_default_storage: '',
+    proxmox_default_bridge: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -126,6 +135,8 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
       if (editProvider) {
         const cfg = (editProvider.config || {}) as Record<string, unknown>;
         const nm = typeof cfg.network_mode === 'string' ? cfg.network_mode : '';
+        const verifyRaw = cfg.verify_ssl;
+        const verifySsl: 'true' | 'false' = verifyRaw === false || verifyRaw === 'false' ? 'false' : 'true';
         setFormData({
           name: editProvider.name,
           description: editProvider.description || '',
@@ -136,6 +147,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           capabilities: JSON.stringify(editProvider.capabilities || {}, null, 2),
           network_mode: (['user', 'network', 'bridge', 'routed'].includes(nm) ? nm : '') as '' | 'user' | 'network' | 'bridge' | 'routed',
           bridge_name: typeof cfg.bridge_name === 'string' ? cfg.bridge_name : '',
+          proxmox_endpoint: typeof cfg.endpoint === 'string' ? cfg.endpoint : (typeof cfg.endpoint_url === 'string' ? cfg.endpoint_url : ''),
+          proxmox_verify_ssl: verifySsl,
+          proxmox_default_node: typeof cfg.default_node === 'string' ? cfg.default_node : '',
+          proxmox_default_storage: typeof cfg.default_storage === 'string' ? cfg.default_storage : '',
+          proxmox_default_bridge: typeof cfg.default_bridge === 'string' ? cfg.default_bridge : '',
         });
       } else {
         setFormData({
@@ -148,6 +164,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           capabilities: '{}',
           network_mode: '',
           bridge_name: '',
+          proxmox_endpoint: '',
+          proxmox_verify_ssl: 'true',
+          proxmox_default_node: '',
+          proxmox_default_storage: '',
+          proxmox_default_bridge: '',
         });
       }
       setErrors({});
@@ -192,6 +213,15 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
       newErrors.provider_type = 'Provider type is required';
     }
 
+    // Proxmox requires an endpoint URL — the adapter can't authenticate
+    // without it, and putting it on the General tab means we surface the
+    // validation before the operator even reaches the Credentials tab.
+    if (formData.provider_type === 'proxmox' && !formData.proxmox_endpoint.trim()) {
+      newErrors.proxmox_endpoint = 'PVE API endpoint URL is required for Proxmox providers';
+    } else if (formData.provider_type === 'proxmox' && !/^https?:\/\//.test(formData.proxmox_endpoint.trim())) {
+      newErrors.proxmox_endpoint = 'Endpoint must start with http:// or https://';
+    }
+
     // Validate JSON fields
     let jsonValid = true;
     if (!validateJson(formData.config, 'config')) jsonValid = false;
@@ -228,6 +258,24 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         } else {
           delete parsedConfig.bridge_name;
         }
+      } else if (formData.provider_type === 'proxmox') {
+        // Merge Proxmox connection + lifecycle defaults into config. The
+        // ProxmoxProvider adapter reads these from connection.provider.config
+        // when not present on the per-connection record. Empty values are
+        // deleted so we don't write empty strings.
+        const setOrDel = (key: string, value: string) => {
+          if (value && value.trim()) {
+            parsedConfig[key] = value.trim();
+          } else {
+            delete parsedConfig[key];
+          }
+        };
+        setOrDel('endpoint', formData.proxmox_endpoint);
+        // verify_ssl is always a definite "true" or "false" string — write it.
+        parsedConfig.verify_ssl = formData.proxmox_verify_ssl;
+        setOrDel('default_node', formData.proxmox_default_node);
+        setOrDel('default_storage', formData.proxmox_default_storage);
+        setOrDel('default_bridge', formData.proxmox_default_bridge);
       }
 
       const submitData = {
@@ -568,6 +616,126 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       </p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Proxmox VE connection settings — structured form fields that
+                  merge into Configuration JSON. ProxmoxProvider#pve_credential
+                  reads these from connection.provider.config when not present
+                  on the per-connection record. */}
+              {formData.provider_type === 'proxmox' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    Proxmox VE connection
+                  </p>
+
+                  <div>
+                    <label htmlFor="proxmox_endpoint" className="block text-sm font-medium text-theme-primary mb-1">
+                      PVE API Endpoint <span className="text-theme-error">*</span>
+                    </label>
+                    <input
+                      id="proxmox_endpoint"
+                      type="text"
+                      name="proxmox_endpoint"
+                      value={formData.proxmox_endpoint}
+                      onChange={handleChange}
+                      placeholder="https://pve.example.com:8006"
+                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
+                        errors.proxmox_endpoint ? 'border-theme-error' : 'border-theme'
+                      }`}
+                      data-testid="provider-form-proxmox-endpoint"
+                    />
+                    {errors.proxmox_endpoint ? (
+                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        {errors.proxmox_endpoint}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Base URL of the Proxmox VE REST API. Include scheme and port (8006 by default).
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="proxmox_verify_ssl" className="block text-sm font-medium text-theme-primary mb-1">
+                      TLS certificate verification
+                    </label>
+                    <select
+                      id="proxmox_verify_ssl"
+                      name="proxmox_verify_ssl"
+                      value={formData.proxmox_verify_ssl}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus"
+                      data-testid="provider-form-proxmox-verify-ssl"
+                    >
+                      <option value="true">Verify certificate (default — publicly-trusted cert)</option>
+                      <option value="false">Skip verification (self-signed PVE cert)</option>
+                    </select>
+                    <p className="mt-1 text-xs text-theme-tertiary">
+                      Most homelab PVE installs ship a self-signed cert — set to "Skip verification" for those.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label htmlFor="proxmox_default_node" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default node
+                      </label>
+                      <input
+                        id="proxmox_default_node"
+                        type="text"
+                        name="proxmox_default_node"
+                        value={formData.proxmox_default_node}
+                        onChange={handleChange}
+                        placeholder="(auto)"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        PVE node to provision VMs/LXCs on by default.
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="proxmox_default_storage" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default storage
+                      </label>
+                      <input
+                        id="proxmox_default_storage"
+                        type="text"
+                        name="proxmox_default_storage"
+                        value={formData.proxmox_default_storage}
+                        onChange={handleChange}
+                        placeholder="(auto)"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Storage pool for new disks (e.g. <code>local-lvm</code>).
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="proxmox_default_bridge" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default bridge
+                      </label>
+                      <input
+                        id="proxmox_default_bridge"
+                        type="text"
+                        name="proxmox_default_bridge"
+                        value={formData.proxmox_default_bridge}
+                        onChange={handleChange}
+                        placeholder="vmbr0"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Network bridge (Linux or OVS).
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    API token credentials (USER@REALM!TOKENNAME + UUID secret) go on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
                 </div>
               )}
 
