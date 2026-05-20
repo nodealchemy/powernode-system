@@ -9,9 +9,16 @@ import {
   PROVIDER_FIELD_SCHEMAS,
   ProviderCredentialForm,
   type CredentialTestStatus,
+  type ProviderFieldScope,
   type ProviderTypeSlug,
   type ProviderCredentialValues,
 } from '@/features/onboarding/ProviderCredentialForm';
+
+// Module-scoped so the reference stays stable across renders and ProviderCredentialForm's
+// memoization keys don't churn. The Credentials tab hides every config-scope field
+// (endpoint URLs, regions, verify_ssl, subscription IDs) because those live on the
+// General tab and are written to Provider.config directly.
+const CREDENTIAL_TAB_EXCLUDE_SCOPES: ProviderFieldScope[] = ['config'];
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProvider } from '@system/features/system/types/system.types';
 
@@ -87,6 +94,26 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
     proxmox_default_node: '',
     proxmox_default_storage: '',
     proxmox_default_bridge: '',
+    // aws: typical regional defaults. Region is also in the AWS credentials
+    // schema; the General-tab value writes to Provider.config["default_region"]
+    // and acts as the fallback when a connection doesn't override it.
+    aws_default_region: '',
+    aws_default_vpc_id: '',
+    aws_default_subnet_id: '',
+    // gcp: project_id is required for any GCP API call.
+    gcp_project_id: '',
+    gcp_default_region: '',
+    gcp_default_zone: '',
+    // azure: subscription_id often differs per-tenant; common to set once.
+    azure_subscription_id: '',
+    azure_default_location: '',
+    // openstack: Keystone v3 endpoint + project + region are the minimum.
+    openstack_auth_url: '',
+    openstack_default_project: '',
+    openstack_default_region: '',
+    // digitalocean / vultr: just a default region slug.
+    digitalocean_default_region: '',
+    vultr_default_region: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -152,6 +179,19 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           proxmox_default_node: typeof cfg.default_node === 'string' ? cfg.default_node : '',
           proxmox_default_storage: typeof cfg.default_storage === 'string' ? cfg.default_storage : '',
           proxmox_default_bridge: typeof cfg.default_bridge === 'string' ? cfg.default_bridge : '',
+          aws_default_region: typeof cfg.default_region === 'string' ? cfg.default_region : '',
+          aws_default_vpc_id: typeof cfg.default_vpc_id === 'string' ? cfg.default_vpc_id : '',
+          aws_default_subnet_id: typeof cfg.default_subnet_id === 'string' ? cfg.default_subnet_id : '',
+          gcp_project_id: typeof cfg.project_id === 'string' ? cfg.project_id : '',
+          gcp_default_region: typeof cfg.default_region === 'string' ? cfg.default_region : '',
+          gcp_default_zone: typeof cfg.default_zone === 'string' ? cfg.default_zone : '',
+          azure_subscription_id: typeof cfg.subscription_id === 'string' ? cfg.subscription_id : '',
+          azure_default_location: typeof cfg.default_location === 'string' ? cfg.default_location : '',
+          openstack_auth_url: typeof cfg.auth_url === 'string' ? cfg.auth_url : '',
+          openstack_default_project: typeof cfg.default_project === 'string' ? cfg.default_project : '',
+          openstack_default_region: typeof cfg.default_region === 'string' ? cfg.default_region : '',
+          digitalocean_default_region: typeof cfg.default_region === 'string' ? cfg.default_region : '',
+          vultr_default_region: typeof cfg.default_region === 'string' ? cfg.default_region : '',
         });
       } else {
         setFormData({
@@ -169,6 +209,19 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
           proxmox_default_node: '',
           proxmox_default_storage: '',
           proxmox_default_bridge: '',
+          aws_default_region: 'us-east-1',
+          aws_default_vpc_id: '',
+          aws_default_subnet_id: '',
+          gcp_project_id: '',
+          gcp_default_region: 'us-central1',
+          gcp_default_zone: '',
+          azure_subscription_id: '',
+          azure_default_location: 'eastus',
+          openstack_auth_url: '',
+          openstack_default_project: '',
+          openstack_default_region: '',
+          digitalocean_default_region: 'nyc3',
+          vultr_default_region: 'ewr',
         });
       }
       setErrors({});
@@ -222,6 +275,20 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
       newErrors.proxmox_endpoint = 'Endpoint must start with http:// or https://';
     }
 
+    // GCP cannot create resources without a project; require it up front so
+    // the failure surfaces in the form rather than from the backend adapter.
+    if (formData.provider_type === 'gcp' && !formData.gcp_project_id.trim()) {
+      newErrors.gcp_project_id = 'GCP project ID is required';
+    }
+
+    // OpenStack needs the Keystone auth URL to even attempt authentication —
+    // the username/password on the Credentials tab is useless without it.
+    if (formData.provider_type === 'openstack' && !formData.openstack_auth_url.trim()) {
+      newErrors.openstack_auth_url = 'Keystone auth URL is required for OpenStack providers';
+    } else if (formData.provider_type === 'openstack' && !/^https?:\/\//.test(formData.openstack_auth_url.trim())) {
+      newErrors.openstack_auth_url = 'Auth URL must start with http:// or https://';
+    }
+
     // Validate JSON fields
     let jsonValid = true;
     if (!validateJson(formData.config, 'config')) jsonValid = false;
@@ -258,11 +325,10 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         } else {
           delete parsedConfig.bridge_name;
         }
-      } else if (formData.provider_type === 'proxmox') {
-        // Merge Proxmox connection + lifecycle defaults into config. The
-        // ProxmoxProvider adapter reads these from connection.provider.config
-        // when not present on the per-connection record. Empty values are
-        // deleted so we don't write empty strings.
+      } else {
+        // Per-provider config merge. Each branch writes its structured form
+        // fields back into the Provider.config JSONB under stable keys.
+        // setOrDel keeps the JSON tidy (no empty-string keys littering it).
         const setOrDel = (key: string, value: string) => {
           if (value && value.trim()) {
             parsedConfig[key] = value.trim();
@@ -270,12 +336,34 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
             delete parsedConfig[key];
           }
         };
-        setOrDel('endpoint', formData.proxmox_endpoint);
-        // verify_ssl is always a definite "true" or "false" string — write it.
-        parsedConfig.verify_ssl = formData.proxmox_verify_ssl;
-        setOrDel('default_node', formData.proxmox_default_node);
-        setOrDel('default_storage', formData.proxmox_default_storage);
-        setOrDel('default_bridge', formData.proxmox_default_bridge);
+
+        if (formData.provider_type === 'proxmox') {
+          setOrDel('endpoint', formData.proxmox_endpoint);
+          // verify_ssl is always a definite "true" or "false" — write it.
+          parsedConfig.verify_ssl = formData.proxmox_verify_ssl;
+          setOrDel('default_node', formData.proxmox_default_node);
+          setOrDel('default_storage', formData.proxmox_default_storage);
+          setOrDel('default_bridge', formData.proxmox_default_bridge);
+        } else if (formData.provider_type === 'aws') {
+          setOrDel('default_region', formData.aws_default_region);
+          setOrDel('default_vpc_id', formData.aws_default_vpc_id);
+          setOrDel('default_subnet_id', formData.aws_default_subnet_id);
+        } else if (formData.provider_type === 'gcp') {
+          setOrDel('project_id', formData.gcp_project_id);
+          setOrDel('default_region', formData.gcp_default_region);
+          setOrDel('default_zone', formData.gcp_default_zone);
+        } else if (formData.provider_type === 'azure') {
+          setOrDel('subscription_id', formData.azure_subscription_id);
+          setOrDel('default_location', formData.azure_default_location);
+        } else if (formData.provider_type === 'openstack') {
+          setOrDel('auth_url', formData.openstack_auth_url);
+          setOrDel('default_project', formData.openstack_default_project);
+          setOrDel('default_region', formData.openstack_default_region);
+        } else if (formData.provider_type === 'digitalocean') {
+          setOrDel('default_region', formData.digitalocean_default_region);
+        } else if (formData.provider_type === 'vultr') {
+          setOrDel('default_region', formData.vultr_default_region);
+        }
       }
 
       const submitData = {
@@ -443,6 +531,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                     category="cloud"
                     providerType={onboardingType}
                     providerId={effectiveProvider.id}
+                    excludeScopes={CREDENTIAL_TAB_EXCLUDE_SCOPES}
                     onChange={(values, valid) => {
                       setCredentialValues(values);
                       setCredentialsValid(valid);
@@ -733,6 +822,355 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <p className="text-xs text-theme-tertiary">
                     API token credentials (USER@REALM!TOKENNAME + UUID secret) go on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* AWS regional defaults. Access key + secret go on the Credentials
+                  tab; these are just the per-provider deployment defaults. */}
+              {formData.provider_type === 'aws' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    AWS deployment defaults
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label htmlFor="aws_default_region" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default region
+                      </label>
+                      <input
+                        id="aws_default_region"
+                        type="text"
+                        name="aws_default_region"
+                        value={formData.aws_default_region}
+                        onChange={handleChange}
+                        placeholder="us-east-1"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        AWS region code (e.g. <code>us-east-1</code>, <code>us-west-2</code>).
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="aws_default_vpc_id" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default VPC
+                      </label>
+                      <input
+                        id="aws_default_vpc_id"
+                        type="text"
+                        name="aws_default_vpc_id"
+                        value={formData.aws_default_vpc_id}
+                        onChange={handleChange}
+                        placeholder="(auto)"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        VPC ID (<code>vpc-...</code>) — defaults to account default-VPC.
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="aws_default_subnet_id" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default subnet
+                      </label>
+                      <input
+                        id="aws_default_subnet_id"
+                        type="text"
+                        name="aws_default_subnet_id"
+                        value={formData.aws_default_subnet_id}
+                        onChange={handleChange}
+                        placeholder="(auto)"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Subnet ID (<code>subnet-...</code>) for new instances.
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    AWS access key + secret go on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* GCP project + regional defaults. Service account JSON goes on
+                  the Credentials tab. */}
+              {formData.provider_type === 'gcp' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    GCP project + deployment defaults
+                  </p>
+
+                  <div>
+                    <label htmlFor="gcp_project_id" className="block text-sm font-medium text-theme-primary mb-1">
+                      Project ID <span className="text-theme-error">*</span>
+                    </label>
+                    <input
+                      id="gcp_project_id"
+                      type="text"
+                      name="gcp_project_id"
+                      value={formData.gcp_project_id}
+                      onChange={handleChange}
+                      placeholder="my-gcp-project-12345"
+                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
+                        errors.gcp_project_id ? 'border-theme-error' : 'border-theme'
+                      }`}
+                    />
+                    {errors.gcp_project_id ? (
+                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        {errors.gcp_project_id}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        GCP project ID where instances will be created.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="gcp_default_region" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default region
+                      </label>
+                      <input
+                        id="gcp_default_region"
+                        type="text"
+                        name="gcp_default_region"
+                        value={formData.gcp_default_region}
+                        onChange={handleChange}
+                        placeholder="us-central1"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        GCP region (e.g. <code>us-central1</code>).
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="gcp_default_zone" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default zone
+                      </label>
+                      <input
+                        id="gcp_default_zone"
+                        type="text"
+                        name="gcp_default_zone"
+                        value={formData.gcp_default_zone}
+                        onChange={handleChange}
+                        placeholder="(auto)"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Zone within the region (e.g. <code>us-central1-a</code>).
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    Service account JSON goes on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* Azure subscription + location. Service principal credentials on
+                  the Credentials tab. */}
+              {formData.provider_type === 'azure' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    Azure subscription + deployment defaults
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="azure_subscription_id" className="block text-sm font-medium text-theme-primary mb-1">
+                        Subscription ID
+                      </label>
+                      <input
+                        id="azure_subscription_id"
+                        type="text"
+                        name="azure_subscription_id"
+                        value={formData.azure_subscription_id}
+                        onChange={handleChange}
+                        placeholder="00000000-0000-0000-0000-000000000000"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Azure subscription UUID for resource creation.
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="azure_default_location" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default location
+                      </label>
+                      <input
+                        id="azure_default_location"
+                        type="text"
+                        name="azure_default_location"
+                        value={formData.azure_default_location}
+                        onChange={handleChange}
+                        placeholder="eastus"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Azure region (e.g. <code>eastus</code>, <code>westus2</code>).
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    Tenant ID + client ID + client secret go on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* OpenStack Keystone endpoint + project/region. Username + password
+                  + domain on the Credentials tab. */}
+              {formData.provider_type === 'openstack' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    OpenStack Keystone + deployment defaults
+                  </p>
+
+                  <div>
+                    <label htmlFor="openstack_auth_url" className="block text-sm font-medium text-theme-primary mb-1">
+                      Keystone auth URL <span className="text-theme-error">*</span>
+                    </label>
+                    <input
+                      id="openstack_auth_url"
+                      type="text"
+                      name="openstack_auth_url"
+                      value={formData.openstack_auth_url}
+                      onChange={handleChange}
+                      placeholder="https://keystone.example.com:5000/v3"
+                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
+                        errors.openstack_auth_url ? 'border-theme-error' : 'border-theme'
+                      }`}
+                    />
+                    {errors.openstack_auth_url ? (
+                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        {errors.openstack_auth_url}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Keystone v3 endpoint URL — include the <code>/v3</code> suffix.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="openstack_default_project" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default project
+                      </label>
+                      <input
+                        id="openstack_default_project"
+                        type="text"
+                        name="openstack_default_project"
+                        value={formData.openstack_default_project}
+                        onChange={handleChange}
+                        placeholder="admin"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Project (tenant) name to scope deployments to.
+                      </p>
+                    </div>
+                    <div>
+                      <label htmlFor="openstack_default_region" className="block text-sm font-medium text-theme-primary mb-1">
+                        Default region
+                      </label>
+                      <input
+                        id="openstack_default_region"
+                        type="text"
+                        name="openstack_default_region"
+                        value={formData.openstack_default_region}
+                        onChange={handleChange}
+                        placeholder="RegionOne"
+                        className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                      />
+                      <p className="mt-1 text-xs text-theme-tertiary">
+                        Keystone region (often <code>RegionOne</code>).
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    Username + password + user-domain go on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* DigitalOcean: only regional default. API token on Credentials. */}
+              {formData.provider_type === 'digitalocean' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    DigitalOcean deployment defaults
+                  </p>
+
+                  <div>
+                    <label htmlFor="digitalocean_default_region" className="block text-sm font-medium text-theme-primary mb-1">
+                      Default region
+                    </label>
+                    <input
+                      id="digitalocean_default_region"
+                      type="text"
+                      name="digitalocean_default_region"
+                      value={formData.digitalocean_default_region}
+                      onChange={handleChange}
+                      placeholder="nyc3"
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                    />
+                    <p className="mt-1 text-xs text-theme-tertiary">
+                      DigitalOcean region slug (e.g. <code>nyc3</code>, <code>sfo3</code>, <code>ams3</code>).
+                    </p>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    Personal access token goes on the
+                    <span className="font-medium text-theme-secondary"> Credentials </span>
+                    tab after saving.
+                  </p>
+                </div>
+              )}
+
+              {/* Vultr: only regional default. API key on Credentials. */}
+              {formData.provider_type === 'vultr' && (
+                <div className="rounded-md border border-theme bg-theme-background-secondary p-3 space-y-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-theme-tertiary">
+                    Vultr deployment defaults
+                  </p>
+
+                  <div>
+                    <label htmlFor="vultr_default_region" className="block text-sm font-medium text-theme-primary mb-1">
+                      Default region
+                    </label>
+                    <input
+                      id="vultr_default_region"
+                      type="text"
+                      name="vultr_default_region"
+                      value={formData.vultr_default_region}
+                      onChange={handleChange}
+                      placeholder="ewr"
+                      className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus"
+                    />
+                    <p className="mt-1 text-xs text-theme-tertiary">
+                      Vultr region code (e.g. <code>sea</code> Seattle, <code>ewr</code> New Jersey, <code>lax</code>).
+                    </p>
+                  </div>
+
+                  <p className="text-xs text-theme-tertiary">
+                    Vultr API key goes on the
                     <span className="font-medium text-theme-secondary"> Credentials </span>
                     tab after saving.
                   </p>
