@@ -46,6 +46,8 @@ const providerTypes = [
   { value: 'gcp', label: 'Google Cloud Platform' },
   { value: 'azure', label: 'Microsoft Azure' },
   { value: 'digitalocean', label: 'DigitalOcean' },
+  { value: 'vultr', label: 'Vultr' },
+  { value: 'proxmox', label: 'Proxmox VE' },
   { value: 'local_qemu', label: 'Local QEMU/KVM (libvirt)' },
   { value: 'custom', label: 'Custom Provider' }
 ];
