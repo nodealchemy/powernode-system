@@ -6,6 +6,11 @@
 # the dev database — service layer, MCP tools, controller phases —
 # without needing real k3s install.
 #
+# For end-to-end coverage with real VMs (HA + agents + pod plane + tcpdump),
+# see Pass 9 (`smoke_test_k3s_site_bootstrap.rb` → `_drain_reprovision.rb`)
+# and runbooks/k3s-smoke-full-lifecycle.md. This seed covers the
+# DB-level state machine + MCP tool surface; Pass 9 covers the live flow.
+#
 # Coverage:
 #
 #   1. Bootstrap a fresh cluster via KubernetesClusterProvisionerService
@@ -377,8 +382,61 @@ puts "    - MCP kubernetes_decommission_cluster cascade-deletes nodes"
 puts "    - SDWAN-less bootstrap rejected"
 puts "    - join_request without cluster rejected"
 puts ""
+puts "  For real-VM coverage (single+ tier with LocalQemu boot + on-VM"
+puts "  agent → runtime_controller bootstrap handshake + HA control plane"
+puts "  + tcpdump on wg-sdwan-* + drain/reprovision), run Pass 9:"
+puts "    docs/runbooks/k3s-smoke-full-lifecycle.md"
+puts ""
 puts "  NOT validated by this smoke (requires QEMU + composefs blob build):"
 puts "    - Real k3s install + bootstrap on a NodeInstance"
 puts "    - Agent-driven phase=bootstrap via runtime/handshake HTTP"
 puts "    - Pod sync (deferred to slice 5 worker job)"
 puts "    - kubectl over the SDWAN overlay"
+
+# ──────────────────────────────────────────────────────────────────────
+# Single+ tier extension — agent-driven path verification
+# ──────────────────────────────────────────────────────────────────────
+#
+# At SMOKE_K3S_LEVEL >= single, additionally boot a VM via
+# LocalQemuProvider and verify the agent-driven bootstrap contract:
+# the on-VM Go agent POSTs phase=bootstrap to runtime_controller,
+# which internally calls bootstrap!. Seed polls cluster status.
+require_relative "_smoke_k3s_helpers"
+
+h = ::System::Seeds::SmokeK3sHelpers
+
+if h.tier_at_least?("single")
+  puts "\n  ── Single+ tier: agent-driven path verification ──────────────"
+  h.preflight!(level: h.current_tier)
+
+  # Use a distinct network so we don't disrupt the prior cluster state
+  ext_account = h.discover_or_create_account!
+  ext_network_name = "k3s-runtime-smoke-ext"
+  ext_network = ::Sdwan::Network.find_or_create_by!(
+    account_id: ext_account.id, name: ext_network_name
+  ) do |n|
+    n.routing_protocol = "static"
+    n.pod_subnet_prefix = ENV.fetch("SMOKE_K3S_EXT_POD_PREFIX", "172.29.0.0/16")
+  end
+
+  h.step("Provision agent-driven bootstrap NodeInstance + boot VM")
+  ext_instance, ext_peer = h.bootstrap_node_instance!(
+    name: "k3s-runtime-ext-server", network: ext_network, role: :server
+  )
+
+  ext_cluster = h.run_bootstrap_phase(
+    account: ext_account, instance: ext_instance, network: ext_network,
+    cni_plugin: "flannel"
+  )
+
+  h.assert(ext_cluster.status == "active",
+           "single+ cluster reached active (got #{ext_cluster.status})")
+  h.assert(ext_cluster.metadata["pod_cidr"] == ext_network.pod_subnet_prefix,
+           "agent-driven path stamped pod_cidr correctly")
+
+  events = Array(ext_cluster.metadata["bootstrap_events"])
+  h.assert(events.any? { |e| e["phase"] == "bootstrap" },
+           "bootstrap_events captured the agent-driven bootstrap event")
+
+  puts "  ✅ Single+ tier agent-driven path validated"
+end

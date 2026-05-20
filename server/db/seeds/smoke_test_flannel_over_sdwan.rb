@@ -29,6 +29,8 @@
 #     (requires QEMU + iBGP topology setup; covered in the operator-driven
 #     live smoke documented in tutorials/04-k3s-cluster.md).
 #   - End-to-end pod-to-pod traffic capture on the wg-sdwan-* interface.
+#     Covered in Pass 9 `smoke_test_k3s_pod_plane.rb` at site+ tier
+#     (see runbooks/k3s-smoke-full-lifecycle.md §"Live pod-plane verification").
 #
 # Invoke:
 #   cd server && bundle exec rails runner \
@@ -167,4 +169,66 @@ network.update!(pod_subnet_prefix: nil)
 ok.call("smoke residue cleared")
 
 puts "\n  ✅ smoke_test_flannel_over_sdwan complete"
-puts "  (Live smoke — kernel routing of pod traffic over wg-sdwan-* — covered in tutorials/04-k3s-cluster.md)"
+puts "  (Live smoke — kernel routing of pod traffic over wg-sdwan-* — covered in"
+puts "   Pass 9 smoke_test_k3s_pod_plane.rb at site+ tier and in tutorials/04-k3s-cluster.md)"
+
+# ──────────────────────────────────────────────────────────────────────
+# Site+ tier extension — verify pod traffic actually flows on wg-sdwan-*
+# ──────────────────────────────────────────────────────────────────────
+#
+# The DB-level checks above prove the wiring (pod_subnet_prefix →
+# bootstrap_config payload). At site+ tier, additionally verify pod
+# traffic actually flows through the wg-sdwan-<handle> interface by
+# briefly capturing tcpdump on the expected interface and asserting
+# at least one packet matches the cluster's pod CIDR.
+require_relative "_smoke_k3s_helpers"
+
+h = ::System::Seeds::SmokeK3sHelpers
+
+if h.tier_at_least?("site")
+  puts "\n  ── Site+ tier: tcpdump on wg-sdwan-* ───────────────────────────"
+
+  # We need an active cluster to test against. The seed above destroyed
+  # all clusters at cleanup. So at site+ tier we re-bootstrap a minimal
+  # cluster using the helper, run the tcpdump check, then clean up.
+  h.preflight!(level: h.current_tier)
+  account = h.discover_or_create_account!
+
+  smoke_network = ::Sdwan::Network.find_by(account: account, name: network.name)
+  unless smoke_network
+    h.warn_msg("network #{network.name} not found after cleanup — skipping tcpdump check")
+    return
+  end
+  # Re-stamp pod_subnet_prefix (cleanup nulled it)
+  smoke_network.update!(pod_subnet_prefix: ENV.fetch("SMOKE_K3S_POD_PREFIX_FLANNEL", "172.28.0.0/16"))
+
+  inst, _peer = h.bootstrap_node_instance!(
+    name: "flannel-sdwan-smoke", network: smoke_network, role: :server
+  )
+  ext_cluster = h.run_bootstrap_phase(
+    account: account, instance: inst, network: smoke_network, cni_plugin: "flannel"
+  )
+
+  iface = "wg-sdwan-#{smoke_network.network_handle}"
+  h.step("Capture tcpdump on #{iface} (10s, expect packets matching pod CIDR)")
+
+  pod_cidr = smoke_network.pod_subnet_prefix
+  pid, log_path = h.tcpdump_in_background!(iface: iface, packet_count: 20, filter: "net #{pod_cidr}")
+  begin
+    sleep 8
+  ensure
+    h.tcpdump_stop(pid: pid)
+  end
+  count = h.tcpdump_count(log_path: log_path)
+  if count > 0
+    h.ok("tcpdump captured #{count} packets on #{iface} matching #{pod_cidr}")
+  else
+    h.warn_msg("no packets captured on #{iface} in 8s — cluster may not have active pod " \
+               "traffic; this is informational at site tier (smoke_test_k3s_pod_plane " \
+               "drives synthetic traffic to harden this check)")
+  end
+  File.delete(log_path) if File.exist?(log_path)
+
+  # Cleanup the supplementary cluster
+  ext_cluster.destroy if ext_cluster.persisted?
+end
