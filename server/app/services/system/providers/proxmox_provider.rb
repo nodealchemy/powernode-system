@@ -745,8 +745,18 @@ module System
       end
 
       # URL-encodes keys joined by newline for PVE's sshkeys / ssh-public-keys param.
+      # PVE's sshkeys validator wants URI-style encoding (%20 for space, not "+").
+      # CGI.escape uses form-encoding (+ for space), which PVE's validator rejects
+      # as "invalid urlencoded string" / "SSH public key validation error".
+      # So we use a manual RFC 3986-style encoder that produces %20 for space.
+      # Faraday's url_encoded middleware then wraps the body in form encoding,
+      # so on the wire we get %2520 (the wrapped %20). PVE form-decodes once
+      # (→ %20), then sshkeys validator URI-decodes (→ space). Plain keys
+      # arrive intact. (project_pve_api_learnings.md item #4.)
       def url_encode_keys(keys)
-        CGI.escape(keys.join("\n") + "\n")
+        plain = keys.join("\n") + "\n"
+        # RFC 3986 unreserved: A-Za-z0-9-._~. Everything else → %XX (uppercase hex).
+        plain.gsub(/[^A-Za-z0-9\-._~]/) { |c| "%%%02X" % c.ord }
       end
 
       # ============================================================

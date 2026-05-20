@@ -83,6 +83,13 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('general');
 
+  // Local "just-created" tracker. When the operator saves a NEW provider, we
+  // stash the returned record here, switch them to the Credentials tab, and
+  // keep the modal open so they can enter credentials in a single flow rather
+  // than re-opening the modal in edit mode. The Credentials tab uses the
+  // effective provider (editProvider ?? createdProvider) for lookups.
+  const [createdProvider, setCreatedProvider] = useState<SystemProvider | null>(null);
+
   // Credentials tab state — kept in this scope so switching tabs preserves entry.
   const [credentialValues, setCredentialValues] = useState<ProviderCredentialValues>({});
   const [credentialsValid, setCredentialsValid] = useState(false);
@@ -90,7 +97,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [credentialSaved, setCredentialSaved] = useState(false);
 
-  const isEditMode = !!editProvider;
+  // `isEditMode` historically meant "the prop was set" — we now also flip to
+  // true once a newly-created provider lands in local state, so the Credentials
+  // tab unlocks without requiring the parent to re-render with the prop.
+  const effectiveProvider = editProvider ?? createdProvider;
+  const isEditMode = !!effectiveProvider;
 
   const onboardingType = useMemo(
     () => toOnboardingType(formData.provider_type),
@@ -98,14 +109,17 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   );
 
   // Reset credentials tab whenever a different provider is being edited so the
-  // previous record's keys can't leak into the next save.
+  // previous record's keys can't leak into the next save. Also clears the
+  // local createdProvider when the modal is opened for a different editProvider
+  // (otherwise stale "just-created" state would survive across opens).
   useEffect(() => {
     setCredentialValues({});
     setCredentialsValid(false);
     setTestStatus('idle');
     setCredentialSaved(false);
     setActiveTab('general');
-  }, [editProvider?.id]);
+    setCreatedProvider(null);
+  }, [editProvider?.id, isOpen]);
 
   useEffect(() => {
     if (isOpen) {
@@ -228,22 +242,27 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
       let result: SystemProvider;
 
-      if (isEditMode && editProvider) {
+      if (editProvider) {
         result = await systemApi.updateProvider(editProvider.id, submitData);
         addNotification({
           type: 'success',
           message: `Provider "${result.name}" updated successfully`
         });
+        onProviderSaved?.(result);
+        onClose();
       } else {
         result = await systemApi.createProvider(submitData);
         addNotification({
           type: 'success',
-          message: `Provider "${result.name}" created successfully`
+          message: `Provider "${result.name}" created — add credentials next`
         });
+        // Notify the parent (so its provider list refreshes) but keep the modal
+        // open. Stash the result locally + switch to Credentials so the operator
+        // can finish the flow in one go instead of re-opening the modal.
+        setCreatedProvider(result);
+        onProviderSaved?.(result);
+        setActiveTab('credentials');
       }
-
-      onProviderSaved?.(result);
-      onClose();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       addNotification({
@@ -258,23 +277,23 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
   };
 
   const handleSaveCredentials = async () => {
-    if (!editProvider) return;
+    if (!effectiveProvider) return;
     if (!credentialsValid) return;
     setSavingCredentials(true);
     try {
       await apiClient.post('/system/provider_credentials', {
-        provider_id: editProvider.id,
-        provider_type: editProvider.provider_type,
+        provider_id: effectiveProvider.id,
+        provider_type: effectiveProvider.provider_type,
         credentials: credentialValues,
       });
       setCredentialSaved(true);
       addNotification({
         type: 'success',
-        message: `Credentials saved for ${editProvider.name}`,
+        message: `Credentials saved for ${effectiveProvider.name}`,
       });
     } catch (error) {
       logger.error('ProviderFormModal: failed to save credentials', error, {
-        providerId: editProvider.id,
+        providerId: effectiveProvider.id,
       });
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       addNotification({
@@ -288,10 +307,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Credentials tab is only meaningful once the provider record exists (we need
-  // its UUID to associate the credential record). For new providers we still
-  // show the tab disabled with a hint, so operators discover it after save.
-  const credentialsTabAvailable = isEditMode;
+  // Credentials tab needs the provider record (for its UUID) to associate
+  // credentials. Available once editing OR once a new provider has been
+  // successfully created in this session (createdProvider is populated by
+  // handleSubmit on a successful POST). For the truly-empty case the tab is
+  // disabled with a hint pointing to the Save button.
+  const credentialsTabAvailable = !!effectiveProvider;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -351,17 +372,29 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
             </button>
           </div>
 
-          {activeTab === 'credentials' && credentialsTabAvailable && editProvider ? (
+          {activeTab === 'credentials' && credentialsTabAvailable && effectiveProvider ? (
             <div
               className="p-4 space-y-4 max-h-[70vh] overflow-y-auto"
               data-testid="provider-form-credentials-panel"
             >
+              {!editProvider && createdProvider && (
+                <div className="rounded-lg border border-theme-success/40 bg-theme-success/10 p-3 text-sm text-theme-secondary">
+                  <p className="font-medium text-theme-primary">
+                    Provider "{createdProvider.name}" created.
+                  </p>
+                  <p className="mt-1 text-xs">
+                    Fill in credentials below and click <span className="font-medium text-theme-secondary">Test</span>{' '}
+                    then <span className="font-medium text-theme-secondary">Save credentials</span> to finish,
+                    or click <span className="font-medium text-theme-secondary">Close</span> to add them later.
+                  </p>
+                </div>
+              )}
               {onboardingType ? (
                 <>
                   <ProviderCredentialForm
                     category="cloud"
                     providerType={onboardingType}
-                    providerId={editProvider.id}
+                    providerId={effectiveProvider.id}
                     onChange={(values, valid) => {
                       setCredentialValues(values);
                       setCredentialsValid(valid);
@@ -538,51 +571,71 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                 </div>
               )}
 
-              {/* Configuration */}
-              <div>
-                <label htmlFor="config" className="block text-sm font-medium text-theme-primary mb-1">
-                  Configuration (JSON)
-                </label>
-                <textarea
-                  id="config"
-                  name="config"
-                  value={formData.config}
-                  onChange={handleChange}
-                  rows={4}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.config ? 'border-theme-error' : 'border-theme'
-                  }`}
-                />
-                {errors.config && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.config}
+              {/* Advanced configuration — collapsed by default. Most operators don't
+                  need to set anything here; provider-type-specific fields (above)
+                  and the Credentials tab cover the common case. The JSON shapes
+                  are stored in System::Provider#config / #capabilities respectively. */}
+              <details className="rounded-lg border border-theme bg-theme-background-secondary">
+                <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-theme-primary hover:bg-theme-surface-hover">
+                  Advanced configuration (raw JSON)
+                </summary>
+                <div className="space-y-4 px-3 pb-3 pt-1">
+                  <p className="text-xs text-theme-tertiary">
+                    Most providers don't need anything here. Credentials live on the{' '}
+                    <span className="font-medium text-theme-secondary">Credentials</span> tab; the
+                    fields below are escape hatches for provider-specific metadata. Leave both as{' '}
+                    <code className="rounded bg-theme-surface px-1 py-0.5">{'{}'}</code> if unsure.
                   </p>
-                )}
-              </div>
 
-              {/* Capabilities */}
-              <div>
-                <label htmlFor="capabilities" className="block text-sm font-medium text-theme-primary mb-1">
-                  Capabilities (JSON)
-                </label>
-                <textarea
-                  id="capabilities"
-                  name="capabilities"
-                  value={formData.capabilities}
-                  onChange={handleChange}
-                  rows={4}
-                  className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.capabilities ? 'border-theme-error' : 'border-theme'
-                  }`}
-                />
-                {errors.capabilities && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {errors.capabilities}
-                  </p>
-                )}
-              </div>
+                  {/* Configuration */}
+                  <div>
+                    <label htmlFor="config" className="block text-sm font-medium text-theme-primary mb-1">
+                      Configuration <span className="text-xs font-normal text-theme-tertiary">(stored as JSON in <code>System::Provider#config</code>)</span>
+                    </label>
+                    <textarea
+                      id="config"
+                      name="config"
+                      value={formData.config}
+                      onChange={handleChange}
+                      rows={4}
+                      placeholder='{}'
+                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
+                        errors.config ? 'border-theme-error' : 'border-theme'
+                      }`}
+                    />
+                    {errors.config && (
+                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        {errors.config}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Capabilities */}
+                  <div>
+                    <label htmlFor="capabilities" className="block text-sm font-medium text-theme-primary mb-1">
+                      Capabilities <span className="text-xs font-normal text-theme-tertiary">(usually <code>{'{"supports": [...]}'}</code>; informational metadata)</span>
+                    </label>
+                    <textarea
+                      id="capabilities"
+                      name="capabilities"
+                      value={formData.capabilities}
+                      onChange={handleChange}
+                      rows={4}
+                      placeholder='{}'
+                      className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
+                        errors.capabilities ? 'border-theme-error' : 'border-theme'
+                      }`}
+                    />
+                    {errors.capabilities && (
+                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                        <AlertCircle className="w-4 h-4" />
+                        {errors.capabilities}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </details>
 
               {/* Checkboxes */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
