@@ -117,6 +117,9 @@ module System
       existing_node = ::Devops::KubernetesNode.find_by(node_instance_id: @node_instance.id)
       if existing_node && existing_node.server?
         update_credentials!(existing_node.kubernetes_cluster)
+        record_bootstrap_event!(existing_node.kubernetes_cluster,
+                                phase: "bootstrap", status: "credentials_refreshed",
+                                message: "node_instance=#{@node_instance.id}")
         return existing_node.kubernetes_cluster
       end
 
@@ -259,6 +262,11 @@ module System
         "endpoint=#{cluster.api_endpoint} vip_id=#{api_vip&.id || 'none'} " \
         "cni_plugin=#{cluster.cni_plugin} pod_overlay=#{pod_overlay_active}"
       )
+      record_bootstrap_event!(cluster,
+                              phase: "bootstrap", status: "completed",
+                              message: "node_instance=#{@node_instance.id} " \
+                                       "cni=#{cluster.cni_plugin} " \
+                                       "pod_overlay=#{pod_overlay_active}")
       cluster
     end
 
@@ -338,6 +346,7 @@ module System
       enforce_cni_profile_compatibility!(cluster, @node_instance)
 
       node = ::Devops::KubernetesNode.find_by(node_instance_id: @node_instance.id)
+      created_new_node = false
       if node
         node.update!(
           kubernetes_cluster: cluster,
@@ -356,6 +365,7 @@ module System
           last_heartbeat_at: Time.current
         )
         cluster.increment!(:node_count)
+        created_new_node = true
       end
 
       # Phase 2.5 (slice 3) — HA control plane awareness. When a
@@ -365,6 +375,10 @@ module System
       # kube-apiserver).
       add_to_vip_failover_candidates!(cluster) if @role == "server"
 
+      record_bootstrap_event!(cluster,
+                              phase: "register_node_join",
+                              status: created_new_node ? "created" : "updated",
+                              message: "node_instance=#{@node_instance.id} role=#{@role}")
       node
     end
 
@@ -387,10 +401,16 @@ module System
       # If this was the bootstrap server flipping to active, promote
       # the cluster status from bootstrapping to active too.
       cluster = node.kubernetes_cluster
+      cluster_was_promoted = false
       if cluster.bootstrapping? && node.server? && node.active?
         cluster.update!(status: "active")
+        cluster_was_promoted = true
       end
 
+      record_bootstrap_event!(cluster,
+                              phase: "mark_node_ready",
+                              status: cluster_was_promoted ? "node_ready_cluster_promoted" : "node_ready",
+                              message: "node_instance=#{@node_instance.id} role=#{node.role}")
       node
     end
 
@@ -405,6 +425,9 @@ module System
       return nil unless node
 
       node.update!(status: "disconnected", last_heartbeat_at: Time.current)
+      record_bootstrap_event!(node.kubernetes_cluster,
+                              phase: "mark_node_stopped", status: "disconnected",
+                              message: "node_instance=#{@node_instance.id} role=#{node.role}")
       node
     end
 
@@ -625,6 +648,41 @@ module System
       host_low = 0xdead_beef_0000_0000 | (suffix_16 & 0xffff)
       vip_int = (base.to_i & ((2**128 - 1) ^ ((1 << 64) - 1))) | host_low
       "#{::IPAddr.new(vip_int, ::Socket::AF_INET6)}/128"
+    end
+
+    # Append-only diagnostic event log on cluster.metadata["bootstrap_events"].
+    # Capped at most-recent 50 entries to bound JSONB size — older events
+    # fall off the head. Used by the smoke-test helpers' wait_for_cluster_active!
+    # to surface a meaningful failure trace on timeout, and by operators
+    # for post-mortem analysis of stuck clusters.
+    #
+    # Best-effort: any failure here is logged and swallowed. The event log
+    # is instrumentation, not load-bearing — a failed metadata write must
+    # never cascade up into the bootstrap/join lifecycle. Concurrent
+    # writers race on last-write-wins; the cap-at-50 invariant is per-call,
+    # not cluster-wide.
+    EVENT_LOG_CAP = 50
+    BOOTSTRAP_EVENT_KEY = "bootstrap_events"
+
+    def record_bootstrap_event!(cluster, phase:, status:, message: nil)
+      return unless cluster&.persisted?
+
+      cluster.reload
+      events = Array((cluster.metadata || {})[BOOTSTRAP_EVENT_KEY])
+      entry = {
+        "ts"     => Time.current.utc.iso8601,
+        "phase"  => phase.to_s,
+        "status" => status.to_s
+      }
+      entry["message"] = message if message.present?
+      events << entry
+      events = events.last(EVENT_LOG_CAP)
+      cluster.update!(metadata: (cluster.metadata || {}).merge(BOOTSTRAP_EVENT_KEY => events))
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[KubernetesClusterProvisionerService] event recording failed: " \
+        "#{e.class}: #{e.message} (cluster_id=#{cluster&.id} phase=#{phase})"
+      )
     end
   end
 end

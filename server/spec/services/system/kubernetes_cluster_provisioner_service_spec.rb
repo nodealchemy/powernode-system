@@ -682,4 +682,162 @@ RSpec.describe System::KubernetesClusterProvisionerService do
       expect(cluster.flavor).to eq("k3s")
     end
   end
+
+  # bootstrap_events instrumentation (2026-05-19) — append-only event log
+  # on cluster.metadata["bootstrap_events"]. Used by smoke-test helpers'
+  # wait_for_cluster_active! to surface failure context on timeout. Each
+  # entry has ts/phase/status (+ optional message); capped at 50 entries.
+  describe "bootstrap_events instrumentation" do
+    before { server_peer }
+
+    it "records a completed event when bootstrap succeeds" do
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      events = Array(cluster.metadata["bootstrap_events"])
+      expect(events.size).to eq(1)
+      expect(events.first["phase"]).to eq("bootstrap")
+      expect(events.first["status"]).to eq("completed")
+      expect(events.first["ts"]).to match(/\A\d{4}-\d{2}-\d{2}T/)
+      expect(events.first["message"]).to include("node_instance=#{server_instance.id}")
+    end
+
+    it "records a credentials_refreshed event on idempotent re-bootstrap" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc-1", server_token: "tok-1", agent_token: "atok-1",
+        k8s_version: "v1.30"
+      )
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc-2", server_token: "tok-2", agent_token: "atok-2",
+        k8s_version: "v1.30.5"
+      )
+      events = Array(cluster.metadata["bootstrap_events"])
+      expect(events.size).to eq(2)
+      expect(events.last["phase"]).to eq("bootstrap")
+      expect(events.last["status"]).to eq("credentials_refreshed")
+    end
+
+    it "records a register_node_join event with created status for a new node" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      described_class.register_node_join!(
+        node_instance: agent_instance, role: "agent", k8s_version: "v1.30"
+      )
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      join_events = events.select { |e| e["phase"] == "register_node_join" }
+      expect(join_events.size).to eq(1)
+      expect(join_events.first["status"]).to eq("created")
+      expect(join_events.first["message"]).to include("role=agent")
+    end
+
+    it "records an updated status on idempotent re-registration of the same node" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent")
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent")
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      join_events = events.select { |e| e["phase"] == "register_node_join" }
+      expect(join_events.map { |e| e["status"] }).to eq(%w[created updated])
+    end
+
+    it "records a node_ready_cluster_promoted event when bootstrap server reports ready" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      described_class.mark_node_ready!(node_instance: server_instance, k8s_version: "v1.30")
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      ready_events = events.select { |e| e["phase"] == "mark_node_ready" }
+      expect(ready_events.size).to eq(1)
+      expect(ready_events.first["status"]).to eq("node_ready_cluster_promoted")
+    end
+
+    it "records a node_ready (not promoted) event for a non-bootstrap node" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent")
+      described_class.mark_node_ready!(node_instance: agent_instance)
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      ready_events = events.select { |e| e["phase"] == "mark_node_ready" }
+      expect(ready_events.size).to eq(1)
+      expect(ready_events.first["status"]).to eq("node_ready")
+    end
+
+    it "records a mark_node_stopped event" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      described_class.mark_node_stopped!(node_instance: server_instance)
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      stopped_events = events.select { |e| e["phase"] == "mark_node_stopped" }
+      expect(stopped_events.size).to eq(1)
+      expect(stopped_events.first["status"]).to eq("disconnected")
+    end
+
+    it "is a no-op for non-member orphan instances on mark_node_stopped (no crash)" do
+      described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      orphan = sdwan_test_node_instance(node: node, name: "i-orphan-#{SecureRandom.hex(3)}")
+      expect {
+        described_class.mark_node_stopped!(node_instance: orphan)
+      }.not_to raise_error
+      cluster = ::Devops::KubernetesCluster.where(account: account).last
+      events = Array(cluster.metadata["bootstrap_events"])
+      # Only the bootstrap event was recorded — no stopped event for the orphan
+      expect(events.map { |e| e["phase"] }).to eq(%w[bootstrap])
+    end
+
+    it "caps the event log at 50 entries (older entries fall off the head)" do
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30"
+      )
+      # Already 1 event from bootstrap; add 55 more mark_node_ready cycles
+      55.times do
+        described_class.mark_node_ready!(node_instance: server_instance)
+      end
+      cluster.reload
+      events = Array(cluster.metadata["bootstrap_events"])
+      expect(events.size).to eq(50)
+      # The most-recent entry is a mark_node_ready event (newest is preserved)
+      expect(events.last["phase"]).to eq("mark_node_ready")
+    end
+
+    it "preserves prior metadata keys (pod_cidr, api_vip_id) alongside events" do
+      network.update!(pod_subnet_prefix: "10.42.0.0/16")
+      cluster = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc", server_token: "tok", agent_token: "atok",
+        k8s_version: "v1.30", cni_plugin: "flannel"
+      )
+      expect(cluster.metadata["pod_cidr"]).to eq("10.42.0.0/16")
+      expect(cluster.metadata["api_vip_id"]).to be_present
+      expect(cluster.metadata["bootstrap_events"]).to be_an(Array)
+    end
+  end
 end
