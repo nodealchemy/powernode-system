@@ -6,15 +6,55 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
 	"github.com/go-acme/lego/v4/registration"
 )
+
+// buildChallengeOptions assembles DNS-01 ChallengeOptions from env vars set
+// by the caller (typically Rails via systemd unit env). Two knobs:
+//
+//   - POWERNODE_ACME_DNS_RESOLVERS: comma-separated list of host:port
+//     entries used by lego when polling propagation. Set this to a public
+//     resolver (e.g. "1.1.1.1:53,1.0.0.1:53") on hosts with split-brain DNS
+//     where the system resolver returns an internal authoritative NS that
+//     can't see the public TXT record written by the DNS provider API.
+//
+//   - POWERNODE_ACME_DISABLE_PROPAGATION_CHECK=true: skip lego's "all
+//     authoritative NS must agree" pre-check. Use sparingly — LE's own
+//     external validation still has to succeed.
+//
+// Returns an empty slice when no overrides are configured, preserving
+// lego's defaults.
+func buildChallengeOptions() []dns01.ChallengeOption {
+	var opts []dns01.ChallengeOption
+
+	if raw := os.Getenv("POWERNODE_ACME_DNS_RESOLVERS"); raw != "" {
+		entries := strings.Split(raw, ",")
+		resolvers := entries[:0]
+		for _, e := range entries {
+			if trimmed := strings.TrimSpace(e); trimmed != "" {
+				resolvers = append(resolvers, trimmed)
+			}
+		}
+		if len(resolvers) > 0 {
+			opts = append(opts, dns01.AddRecursiveNameservers(resolvers))
+		}
+	}
+
+	if os.Getenv("POWERNODE_ACME_DISABLE_PROPAGATION_CHECK") == "true" {
+		opts = append(opts, dns01.DisableAuthoritativeNssPropagationRequirement())
+	}
+
+	return opts
+}
 
 // IssueParams is everything the issuer needs to obtain a cert. All
 // fields are populated by the Rails caller (Acme::LegoClient) from
@@ -67,7 +107,7 @@ func Issue(params IssueParams) (*IssueResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+	if err := client.Challenge.SetDNS01Provider(provider, buildChallengeOptions()...); err != nil {
 		return nil, fmt.Errorf("acme: set DNS-01 provider: %w", err)
 	}
 
