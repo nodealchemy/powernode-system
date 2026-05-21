@@ -85,6 +85,43 @@ jobs:
           # provenance; oras push also reads the tag for tagging.
           fetch-depth: 0
 
+      - name: Install build tools (buildah + composefs + fsverity + cosign + oras)
+        run: |
+          set -euo pipefail
+          # The Gitea runner ships base Ubuntu 24.04 without supply-chain
+          # build tooling. Install the OCI-layer + content-addressed-FS +
+          # signing toolchain here. ~30s per matrix entry, but avoids
+          # baking a custom runner image which is its own ops chore.
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -q
+          apt-get install -y --no-install-recommends \
+            buildah \
+            composefs \
+            fsverity-utils \
+            jq \
+            rsync \
+            python3-yaml \
+            ca-certificates \
+            curl \
+            tar
+          # cosign — Sigstore keyless signing. Pin to a known-good release.
+          COSIGN_VERSION="2.4.1"
+          curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" \
+            -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          # oras — OCI Registry as Storage. Pin to 1.2.0 (matches the
+          # `oras push --artifact-type` flag shape we use below).
+          ORAS_VERSION="1.2.0"
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin oras
+          chmod +x /usr/local/bin/oras
+          # Sanity print
+          buildah --version
+          mkcomposefs --version || true
+          fsverity --version
+          cosign version | head -1
+          oras version | head -1
+
       - name: Parse manifest for ${{ matrix.module }}
         id: manifest
         run: |
