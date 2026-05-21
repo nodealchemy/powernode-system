@@ -62,6 +62,12 @@ jobs:
   # defined once in modules/ on disk; the workflow mirrors it.
   build:
     runs-on: ubuntu-24.04
+    # `runs-on` is just a label in Gitea Actions 1.x — it doesn't control
+    # the actual environment. The underlying runner image happens to be
+    # Debian-based without composefs/fsverity-utils. Force a real Ubuntu
+    # 24.04 container so the apt-install step below finds the packages.
+    container:
+      image: docker.io/library/ubuntu:24.04
     strategy:
       fail-fast: false
       matrix:
