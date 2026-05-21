@@ -37,7 +37,10 @@ module System
       # @param region [System::ProviderRegion, nil] Optional region override
       def initialize(connection, region: nil)
         @connection = connection
-        @region = region || connection.provider_regions.first
+        # provider_regions lives on Provider, not ProviderConnection — go
+        # through the belongs_to. Nil-safe so providers without regions
+        # (proxmox, local_qemu) yield @region = nil.
+        @region = region || connection.provider&.provider_regions&.first
         @logger = Rails.logger
       end
 

@@ -30,7 +30,14 @@ module System
         return [ false, "no adapter for provider_type=#{provider_type_label}" ]
       end
 
-      instance = adapter_class.with_credentials(@credentials)
+      # Merge persisted Provider.config (endpoint_url, verify_ssl, region,
+      # etc.) UNDER the form's credentials. Form-supplied keys win; provider
+      # config fills config-scope fields that the UI Credentials tab excludes
+      # (those live on the General tab and are already persisted on Provider).
+      # Without this, adapters like ProxmoxProvider that require endpoint_url
+      # bail with "Missing credentials" because with_credentials zeros the
+      # @connection and the inheritance fallback can't reach Provider.config.
+      instance = adapter_class.with_credentials(effective_credentials)
 
       if instance.authenticate?
         [ true, "credentials valid" ]
@@ -42,6 +49,21 @@ module System
     end
 
     private
+
+    def effective_credentials
+      provider_config_hash.merge(stringified_credentials)
+    end
+
+    def provider_config_hash
+      return {} unless @provider.respond_to?(:config)
+      cfg = @provider.config
+      return {} unless cfg.is_a?(Hash)
+      cfg.transform_keys(&:to_s)
+    end
+
+    def stringified_credentials
+      (@credentials || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+    end
 
     def provider_type_label
       @provider.respond_to?(:provider_type) ? @provider.provider_type : @provider.to_s
