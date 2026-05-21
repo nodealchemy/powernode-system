@@ -328,6 +328,26 @@ module System
           value = cfg if cfg.respond_to?(:present?) ? cfg.present? : !cfg.nil?
         end
 
+        # BYOC fallback: an operator may have saved credentials via the M2
+        # ProviderCredential flow (Credentials tab in ProviderFormModal),
+        # which writes to ::System::ProviderCredential — a separate store
+        # from this ProviderConnection's typed columns / config JSONB.
+        # Without consulting it here, BYOC-saved keys are invisible to the
+        # adapter even though they're the operator's canonical credentials.
+        if value.nil?
+          byoc = ::System::ProviderCredential.for(
+            account: connection.account,
+            provider: connection.provider
+          ) rescue nil
+          if byoc&.credentials.is_a?(Hash)
+            [column, config_key].compact.each do |key|
+              next unless value.nil?
+              v = byoc.credentials[key.to_s] || byoc.credentials[key.to_sym]
+              value = v if v.respond_to?(:present?) ? v.present? : !v.nil?
+            end
+          end
+        end
+
         value = default if value.nil? && !default.nil?
 
         if required && (value.respond_to?(:blank?) ? value.blank? : value.nil?)

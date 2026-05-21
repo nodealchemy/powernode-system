@@ -603,6 +603,94 @@ module System
         body["searchdomain"] = params[:searchdomain] if params[:searchdomain]
         body["cipassword"]   = params[:ci_password]  if params[:ci_password]
 
+        # cicustom: arbitrary cloud-init user-data via snippets. PVE has no
+        # REST API for snippet upload — they must reach the storage's
+        # snippets/ directory through the filesystem. We assume the operator
+        # has mounted a snippets-enabled storage (typically NFS shared
+        # across the cluster) at `:snippets_local_path` and configured the
+        # matching PVE storage name as `:snippets_storage`. Defaults assume
+        # the Powernode-platform-on-ops shape: dsm-data NFS at
+        # /mnt/pve-data/snippets. Sub-volume IDs in cicustom are relative
+        # to the storage root, hence `snippets/<filename>`.
+        if params[:user_data].present? || params[:meta_data].present?
+          snippets_storage = params[:snippets_storage] ||
+                             connection&.config&.dig("snippets_storage") ||
+                             "dsm-data"
+          snippets_local   = params[:snippets_local_path] ||
+                             connection&.config&.dig("snippets_local_path") ||
+                             "/mnt/pve-data/snippets"
+          cicustom_parts = []
+          if params[:user_data].present?
+            user_path = File.join(snippets_local, "#{vmid}-user.yml")
+            File.write(user_path, params[:user_data], mode: "w", perm: 0o644)
+            cicustom_parts << "user=#{snippets_storage}:snippets/#{vmid}-user.yml"
+          end
+          if params[:meta_data].present?
+            meta_path = File.join(snippets_local, "#{vmid}-meta.yml")
+            File.write(meta_path, params[:meta_data], mode: "w", perm: 0o644)
+            cicustom_parts << "meta=#{snippets_storage}:snippets/#{vmid}-meta.yml"
+          end
+          if params[:network_config].present?
+            net_path = File.join(snippets_local, "#{vmid}-net.yml")
+            File.write(net_path, params[:network_config], mode: "w", perm: 0o644)
+            cicustom_parts << "network=#{snippets_storage}:snippets/#{vmid}-net.yml"
+          end
+          body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?
+        end
+
+        # fw_cfg_entries: virtio-fw-cfg seed entries (the LocalQemu CloudSeed
+        # pattern, mirrored for PVE). The Go agent at
+        # extensions/system/agent/internal/federation/config.go reads each
+        # entry from /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/<key>.
+        #
+        # PVE doesn't expose a structured fw-cfg config field — we go through
+        # the `args` escape-hatch, passing `-fw_cfg name=...,file=<path>` per
+        # entry. The files MUST live on a PVE-side filesystem path; we stage
+        # them on the same NFS-shared snippets storage used by cicustom so a
+        # single mount on ops covers both seeding mechanisms. The PVE-side
+        # mount path follows the `/mnt/pve/<storage>/` convention.
+        # Derive fw_cfg entries from spawn_payload when the provisioner
+        # passed one (Federation::SpawnProvisioner). Direct
+        # params[:fw_cfg_entries] takes precedence — operator can
+        # extend/override the default federation set.
+        fw_cfg = params[:fw_cfg_entries].is_a?(Hash) ? params[:fw_cfg_entries].dup : {}
+        spawn_payload = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0
+          fw_cfg["opt/com.powernode/parent_url"]       ||= spawn_payload["parent_url"].to_s
+          fw_cfg["opt/com.powernode/acceptance_token"] ||= spawn_payload["acceptance_token"].to_s
+          fw_cfg["opt/com.powernode/spawn_mode"]       ||= spawn_payload["spawn_mode"].to_s
+          fw_cfg["opt/com.powernode/parent_peer_id"]   ||= spawn_payload["parent_peer_id"].to_s
+          fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
+        end
+
+        if fw_cfg.any?
+          snippets_storage = params[:snippets_storage] ||
+                             connection&.config&.dig("snippets_storage") ||
+                             "dsm-data"
+          snippets_local   = params[:snippets_local_path] ||
+                             connection&.config&.dig("snippets_local_path") ||
+                             "/mnt/pve-data/snippets"
+          pve_side_root    = "/mnt/pve/#{snippets_storage}/snippets"
+
+          fwcfg_subdir_ops = File.join(snippets_local, "#{vmid}-fwcfg")
+          fwcfg_subdir_pve = "#{pve_side_root}/#{vmid}-fwcfg"
+          FileUtils.mkdir_p(fwcfg_subdir_ops, mode: 0o755)
+
+          fw_args = []
+          fw_cfg.each do |key, value|
+            # Sanitize key for filename — "opt/com.powernode/parent_url" →
+            # "opt_com_powernode_parent_url"
+            safe = key.to_s.gsub(/[^A-Za-z0-9_.\-]/, "_")
+            entry_path_ops = File.join(fwcfg_subdir_ops, safe)
+            entry_path_pve = "#{fwcfg_subdir_pve}/#{safe}"
+            File.write(entry_path_ops, value.to_s, mode: "w", perm: 0o644)
+            fw_args << "-fw_cfg name=#{key},file=#{entry_path_pve}"
+          end
+
+          existing = body["args"].to_s
+          body["args"] = [existing, fw_args.join(" ")].reject(&:empty?).join(" ")
+        end
+
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
         c.wait_task(node: node, upid: create_upid)
 
