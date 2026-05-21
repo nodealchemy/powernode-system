@@ -603,6 +603,27 @@ module System
         body["searchdomain"] = params[:searchdomain] if params[:searchdomain]
         body["cipassword"]   = params[:ci_password]  if params[:ci_password]
 
+        # Federation spawn auto-render: when SpawnPlatformService forwards a
+        # spawn_payload via options[:spawn_payload] and the caller didn't
+        # provide explicit user_data, render a #cloud-config that downloads
+        # the agent + enables the systemd service. The spawn payload itself
+        # reaches the agent via the fw-cfg block below. Operators can
+        # override by passing params[:user_data] (or :ssh_authorized_keys
+        # to inject keys into the auto-rendered output).
+        if params[:user_data].blank?
+          sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+          if sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
+            params = params.merge(
+              user_data: ::System::Providers::Proxmox::CloudSeed.render(
+                spawn_payload:       sp,
+                hostname:            params[:hostname] || params[:name],
+                agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
+                ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
+              )
+            )
+          end
+        end
+
         # cicustom: arbitrary cloud-init user-data via snippets. PVE has no
         # REST API for snippet upload — they must reach the storage's
         # snippets/ directory through the filesystem. We assume the operator
