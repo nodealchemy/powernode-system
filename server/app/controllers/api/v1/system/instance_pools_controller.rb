@@ -139,17 +139,21 @@ module Api
           )
         end
 
-        # No service-account branch — service accounts call the worker_api
-        # namespace, never this operator-facing controller. The phantom
-        # `service_account?` method on User was undefined and would 500 on
-        # any non-permission-holder request.
+        # Worker callers (Sidekiq InstancePoolReplenisherJob etc.) authenticate
+        # via the worker JWT, which doesn't resolve a current_user — so the
+        # has_permission? calls below would NoMethodError on nil. The
+        # `worker_authenticated?` short-circuit is the standard carve-out
+        # used across Reports/Analytics/Accounts/WebhookEvents controllers
+        # for the same reason. See feedback_worker_callback_auth in MEMORY.
         def authorize_read!
+          return if worker_authenticated?
           unless current_user.has_permission?("system.node_instances.read")
             render_error("permission denied: system.node_instances.read", :forbidden) and return
           end
         end
 
         def authorize_write!
+          return if worker_authenticated?
           unless current_user.has_permission?("system.instances.create") ||
                  current_user.has_permission?("system.instances.control")
             render_error("permission denied: system.instances.create or .control", :forbidden) and return
