@@ -35,12 +35,19 @@ RSpec.describe System::Ai::Skills::ModuleComposeExecutor do
 
     context "with description matching multiple modules" do
       before do
-        create(:system_node_module, account: account, node_platform: platform,
-               category: category, variety: "subscription", name: "nginx")
-        create(:system_node_module, account: account, node_platform: platform,
-               category: category, variety: "subscription", name: "certbot")
-        create(:system_node_module, account: account, node_platform: platform,
-               category: category, variety: "subscription", name: "postgresql")
+        # Account creation auto-seeds default modules (system-base, nginx,
+        # apache, etc) via the post-create hook. Use find_or_create_by so
+        # the test tolerates the auto-seeded "nginx" while still ensuring
+        # the other candidate names exist for the ranker.
+        %w[nginx certbot postgresql].each do |module_name|
+          ::System::NodeModule.find_or_create_by!(account: account, name: module_name) do |m|
+            m.node_platform = platform
+            m.category      = category
+            m.variety       = "subscription"
+            m.enabled       = true
+            m.priority      = 50
+          end
+        end
       end
 
       it "ranks matches by token overlap" do

@@ -61,10 +61,15 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
     end
 
     context "in execute mode (provisioning stubbed at the service layer)" do
+      let(:fake_instance) do
+        instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x",
+                        node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
+                        architecture: "amd64", private_ip_address: nil,
+                        public_ip_address: nil, last_heartbeat_at: nil,
+                        mtls_subject: nil, agent_version: nil)
+      end
       let(:fake_result) do
-        Struct.new(:ok?, :data, :error).new(
-          true, { instance: instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x", node_id: SecureRandom.uuid, variety: nil, status: "provisioning", architecture: "amd64", private_ip_address: nil, public_ip_address: nil, last_heartbeat_at: nil, mtls_subject: nil, agent_version: nil), cloud_instance_id: "ci-abc" }, nil
-        )
+        ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-abc" })
       end
 
       before do
@@ -85,8 +90,15 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
     end
 
     context "when provisioning partially fails" do
-      let(:ok_result)  { Struct.new(:ok?, :data, :error).new(true, { instance: instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x", node_id: SecureRandom.uuid, variety: nil, status: "provisioning", architecture: "amd64", private_ip_address: nil, public_ip_address: nil, last_heartbeat_at: nil, mtls_subject: nil, agent_version: nil), cloud_instance_id: "ci-1" }, nil) }
-      let(:bad_result) { Struct.new(:ok?, :data, :error).new(false, nil, "region unavailable") }
+      let(:fake_instance) do
+        instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x",
+                        node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
+                        architecture: "amd64", private_ip_address: nil,
+                        public_ip_address: nil, last_heartbeat_at: nil,
+                        mtls_subject: nil, agent_version: nil)
+      end
+      let(:ok_result)  { ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-1" }) }
+      let(:bad_result) { ::System::Runtime::Result.err(error: "region unavailable") }
 
       before do
         call_count = 0
