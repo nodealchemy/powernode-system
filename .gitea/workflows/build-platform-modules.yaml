@@ -53,38 +53,31 @@ permissions:
   packages: write    # oras push
 
 jobs:
-  discover:
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.collect.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: collect
-        name: Discover modules to build
-        run: |
-          set -euo pipefail
-          modules_root="modules"
-          if [ -n "${{ inputs.module }}" ]; then
-            # Single-module rebuild path.
-            if [ ! -d "$modules_root/${{ inputs.module }}" ]; then
-              echo "::error::Module not found: ${{ inputs.module }}"
-              exit 1
-            fi
-            entries=$(printf '"%s"' "${{ inputs.module }}")
-          else
-            # Discover every directory that has a manifest.yaml.
-            entries=$(find "$modules_root" -mindepth 2 -maxdepth 2 -name manifest.yaml \
-                       -printf '%h\n' | sort | xargs -n1 basename \
-                       | jq -R . | paste -sd,)
-          fi
-          echo "matrix={\"module\":[$entries]}" >> "$GITHUB_OUTPUT"
-
+  # Static matrix — Gitea Actions 1.x doesn't reliably substitute
+  # ${{ matrix.foo }} when matrix is provided via fromJson(needs.x.outputs.y)
+  # from a previous job (the values resolve to empty strings, breaking
+  # every per-module step). Static enumeration is the workaround; the
+  # tradeoff is that adding a new module here must accompany the new
+  # modules/<name>/manifest.yaml in the same PR. The complete list is
+  # defined once in modules/ on disk; the workflow mirrors it.
   build:
-    needs: discover
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+      matrix:
+        module:
+          - powernode-base-ruby
+          - powernode-extension-system
+          - powernode-hub-backend
+          - powernode-hub-frontend
+          - powernode-hub-worker
+          - powernode-log-forwarder
+          - powernode-node-exporter
+          - powernode-pg-replica
+          - powernode-postgres
+          - powernode-redis
+          - powernode-reverse-proxy
+          - powernode-storage-tools
     steps:
       - uses: actions/checkout@v4
         with:
