@@ -116,7 +116,7 @@ jobs:
             git \
             buildah \
             erofs-utils \
-            fsverity-utils \
+            fsverity \
             jq \
             rsync \
             python3-yaml \
