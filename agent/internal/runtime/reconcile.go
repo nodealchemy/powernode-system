@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"sync"
 	"time"
 
@@ -60,6 +61,12 @@ type ReconcilerConfig struct {
 	// errors stay in the reconciler's lastErrors field for heartbeat
 	// reporting.
 	OnError func(stage string, err error)
+	// PlatformURL is the base URL the agent's runtime client speaks to
+	// (heartbeat, task-lease, federation, module pulls). The reconciler
+	// passes the host portion of this into Policy.ProtectedHosts so the
+	// egress chain never drops the agent's own control-plane traffic
+	// even when a strict module attaches with an empty EgressAllow list.
+	PlatformURL string
 }
 
 // Reconciler is the long-lived module-state reconcile loop. Pulls the
@@ -256,6 +263,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		current.AttachedModules = filtered
 	}
 
+	// Compose the overlay union at SysRoot from all attached modules
+	// in priority order. overlayfs lower-dir is highest-priority-first
+	// (LowerDirString handles the reversal). On a fresh tick this is a
+	// new mount; on subsequent ticks with stack changes this remounts
+	// with a new lowerdir (live remount where supported, full
+	// umount+mount fallback otherwise).
+	//
+	// Skipped when no modules are attached — the sysroot has nothing
+	// to union and overlay's lowerdir requires at least one entry.
+	if !r.cfg.DryRun && len(current.AttachedModules) > 0 {
+		overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
+		if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
+			r.cfg.OnError("reconciler:union_mount", err)
+		}
+	}
+
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		r.lastError = fmt.Errorf("save state: %w", err)
 		return r.lastError
@@ -268,13 +291,19 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 // attachModule pulls + verifies + mounts a single module.
 func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+	if mf.Format == "" {
+		return fmt.Errorf("manifest for module %s has no format — server didn't pick a publishable artifact", mod.ID)
+	}
 	ref := &oci.ModuleArtifactRef{
 		ModuleID: mod.ID,
 		Digest:   mod.Digest,
-		// DownloadURL filled by the FetchManifest path; for now use the
-		// platform endpoint shape (manifest.json carries the URL when
-		// the artifact is published).
-		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s", mod.ID),
+		Format:   mf.Format,
+		// DownloadURL: per-format endpoint. ?format=<f> tells the
+		// FilesController which blob to stream — the manifest digest
+		// + cosign bundle returned in headers must match the format
+		// the server picked, so passing the same value here keeps
+		// the pull deterministic from the agent's view.
+		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s?format=%s", mod.ID, mf.Format),
 		Size:        0,
 	}
 	cfsPath, bundlePath, err := r.cfg.Puller.Pull(ref)
@@ -290,10 +319,44 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		}
 	}
 
+	// Mount this module's blob at the per-module path
+	// (`/run/powernode/modules/<digest>`). Idempotent — if the previous
+	// reconcile tick already mounted it, the format-specific helper's
+	// IsMountpoint check returns nil immediately. The overlay union
+	// (assembled at `Layout.SysRoot` post-loop) reads from these
+	// per-module mountpoints in priority order regardless of which
+	// format produced them — overlayfs sees just a read-only lower-dir.
+	//
+	// Direct mount, no extraction: squashfs uses `mount -t squashfs
+	// -o loop,ro` (kernel allocates the loop device automatically);
+	// composefs uses `mount -t composefs -o basedir=<store>` against
+	// the metadata image + CAS objects.
+	switch mf.Format {
+	case "composefs":
+		if err := mount.MountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
+			return fmt.Errorf("mount composefs: %w", err)
+		}
+	case "squashfs":
+		if err := mount.MountModuleSquashfs(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
+			return fmt.Errorf("mount squashfs: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported manifest format %q for module %s", mf.Format, mod.ID)
+	}
+
 	// Apply security policy. SeccompProfile is a path inside the
 	// module's mounted root; the drop-in for each unit is written
 	// here so subsequent systemctl start picks it up.
 	policy := buildPolicy(mf)
+	// Surface the agent's control-plane URL host as a protected
+	// destination so the host-wide egress chain doesn't drop the
+	// agent's own heartbeat / task-lease / federation traffic when a
+	// restrictive module attaches. Without this we observed the agent
+	// firewalling itself off on first reconcile in cloud-VM dogfood
+	// runs (dial 10.x.x.x:443 i/o timeout after policy.Apply).
+	if h := hostFromURL(r.cfg.PlatformURL); h != "" {
+		policy.ProtectedHosts = append(policy.ProtectedHosts, h)
+	}
 	if errs := policy.Validate(); len(errs) > 0 {
 		return fmt.Errorf("policy invalid: %v", errs)
 	}
@@ -304,6 +367,23 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		for _, unit := range mf.UnitNames() {
 			if err := security.WriteSeccompDropIn(unit, sanitizeProfileName(policy.SeccompProfile), policy.SeccompProfile); err != nil {
 				r.cfg.OnError("reconciler:seccomp_dropin", fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+			}
+		}
+	}
+	// Capability bounding + ambient sets enforce via per-unit systemd
+	// drop-ins (mirrors the seccomp pattern above). Privileged modules
+	// skip this — they opt into ALL caps by design. We always write the
+	// drop-in for non-privileged modules even when the allowlist is
+	// empty, because an empty CapabilityBoundingSet= is the strictest
+	// (and safest default) posture and an absent drop-in would inherit
+	// systemd's full caps. Drop-in failures are non-fatal — surface via
+	// OnError so the operator sees them; the service still starts with
+	// whatever caps systemd's defaults give it.
+	if !policy.Privileged {
+		for _, unit := range mf.UnitNames() {
+			if err := security.WriteCapabilityDropIn(unit, policy.Capabilities); err != nil {
+				r.cfg.OnError("reconciler:capability_dropin",
+					fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
 			}
 		}
 	}
@@ -345,8 +425,41 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 				fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
+	// Unmount the module's blob. The union overlay above SysRoot
+	// holds an open reference to this mountpoint, so we MUST be called
+	// after the union is recomposed (which is the case — RunOnce reaps
+	// detached modules first, then rebuilds the overlay with the
+	// remaining stack). Best-effort: log + continue on failure. Both
+	// composefs and squashfs use the same `umount` shape under the
+	// hood, but route through the format-specific helper so the loop
+	// device cleanup happens correctly for squashfs.
+	unmountErr := error(nil)
+	if mf != nil && mf.Format == "squashfs" {
+		unmountErr = mount.UnmountModuleSquashfs(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest)
+	} else {
+		unmountErr = mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest)
+	}
+	if unmountErr != nil {
+		r.cfg.OnError("reconciler:unmount_module",
+			fmt.Errorf("module %s: %w", mod.ID, unmountErr))
+	}
 	_ = current // current state held by caller; best-effort detach
 	return nil
+}
+
+// hostFromURL parses a URL and returns the host (without port).
+// Returns "" for invalid / empty URLs so callers can chain `if h != ""`
+// without an extra nil check.
+func hostFromURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Hostname()
+	return host
 }
 
 // buildPolicy constructs a security.Policy from the manifest's
