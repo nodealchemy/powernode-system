@@ -73,6 +73,14 @@ jobs:
     # source builds.
     container:
       image: docker.io/library/debian:trixie-slim
+      # buildah's user-namespace setup (CLONE_NEWUSER) needs
+      # CAP_SYS_ADMIN; the default Gitea runner container runs without
+      # it, which surfaces as:
+      #   Error during unshare(CLONE_NEWUSER): Operation not permitted
+      # --privileged grants the runner container the full capability
+      # set + access to /dev so buildah can manage its own user
+      # namespace. Acceptable in CI where we control the workflow tree.
+      options: --privileged
     # Gitea Actions defaults `run:` steps to `sh -e {0}` which doesn't
     # support `set -o pipefail`. Force bash so every step gets the
     # strict-mode triad (errexit + nounset + pipefail). Ubuntu 24.04
