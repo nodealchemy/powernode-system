@@ -85,24 +85,26 @@ jobs:
           - powernode-reverse-proxy
           - powernode-storage-tools
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # cosign needs the full history for keyless signing's commit
-          # provenance; oras push also reads the tag for tagging.
-          fetch-depth: 0
-
-      - name: Install build tools (buildah + composefs + fsverity + cosign + oras)
+      # Bootstrap the container with all the tooling the workflow needs.
+      # `actions/checkout@v4` is intentionally skipped — it pulls in a
+      # node runtime requirement (the action is a Node.js bundle) which
+      # adds ~80MB of base image surface for one git clone. A raw
+      # `git clone` does the same job in two seconds AND keeps the
+      # container Debian-base-image clean.
+      - name: Install build tools (git + buildah + composefs + squashfs + fsverity + cosign + oras)
         run: |
           set -euo pipefail
-          # The Gitea runner ships base Ubuntu 24.04 without supply-chain
-          # build tooling. Install the OCI-layer + content-addressed-FS +
-          # signing toolchain here. ~30s per matrix entry, but avoids
-          # baking a custom runner image which is its own ops chore.
+          # The Gitea runner mounts base Ubuntu 24.04. Install the
+          # OCI-layer + content-addressed-FS + signing toolchain here.
+          # ~30s per matrix entry, but avoids baking a custom runner
+          # image (which is its own ops chore).
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -q
           apt-get install -y --no-install-recommends \
+            git \
             buildah \
             composefs \
+            squashfs-tools \
             fsverity-utils \
             jq \
             rsync \
@@ -110,6 +112,44 @@ jobs:
             ca-certificates \
             curl \
             tar
+
+      - name: Clone repo (full history for cosign provenance)
+        env:
+          # Gitea injects GITHUB_TOKEN for workflows running on private
+          # repos. Threading it through the clone URL covers the
+          # private-mirror case without an SSH key in the runner.
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Gitea Actions usually pre-allocates GITHUB_WORKSPACE; if the
+          # dir is empty (no checkout action ran), clone into it.
+          # safe.directory='*' silences the dubious-ownership warning
+          # that surfaces when uid mismatches inside containers.
+          git config --global --add safe.directory '*'
+          ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          mkdir -p "$ws"
+          # Construct the clone URL with token auth when GIT_TOKEN is
+          # set (private repos); fall back to anonymous HTTPS for
+          # public repos.
+          base="${GITHUB_SERVER_URL:-https://git.ipnode.org}"
+          if [ -n "${GIT_TOKEN:-}" ]; then
+            clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
+          else
+            clone_url="${base}/${GITHUB_REPOSITORY}.git"
+          fi
+          # Clone into a temp dir then move so GITHUB_WORKSPACE retains
+          # any prior mount-points Gitea set up. fetch-depth=0 keeps the
+          # full git history for cosign keyless provenance.
+          tmp="$(mktemp -d)"
+          git clone "${clone_url}" "$tmp/repo"
+          cp -a "$tmp/repo/." "$ws/"
+          rm -rf "$tmp"
+          cd "$ws"
+          git checkout "${GITHUB_SHA}"
+
+      - name: Install signing toolchain (cosign + oras)
+        run: |
+          set -euo pipefail
           # cosign — Sigstore keyless signing. Pin to a known-good release.
           COSIGN_VERSION="2.4.1"
           curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" \
