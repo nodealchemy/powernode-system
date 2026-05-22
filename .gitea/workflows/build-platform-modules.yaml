@@ -304,17 +304,23 @@ jobs:
           REGISTRY_NS="git.ipnode.org/powernode"
           EROFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}"
 
+          # oras complains about absolute paths in source operands.
+          # Run from /tmp so the file operands are bare names; the
+          # registry sees them with the same shape it always has
+          # (the colon-suffix is the mediaType annotation).
+          cd /tmp
           oras push "$EROFS_REF" \
             --artifact-type application/vnd.powernode.module.v1 \
-            "/tmp/${{ matrix.module }}.erofs:application/vnd.powernode.erofs" \
-            "/tmp/${{ matrix.module }}.erofs.meta:application/vnd.powernode.module.meta"
+            "${{ matrix.module }}.erofs:application/vnd.powernode.erofs" \
+            "${{ matrix.module }}.erofs.meta:application/vnd.powernode.module.meta"
           cosign sign --yes "$EROFS_REF"
+          cd - >/dev/null
 
           echo "erofs_ref=$EROFS_REF" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
         env:
-          ORAS_REGISTRY_USERNAME: ${{ secrets.GITEA_REGISTRY_USERNAME }}
-          ORAS_REGISTRY_PASSWORD: ${{ secrets.GITEA_REGISTRY_PASSWORD }}
+          ORAS_REGISTRY_USERNAME: ${{ secrets.POWERNODE_REGISTRY_USER }}
+          ORAS_REGISTRY_PASSWORD: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
           COSIGN_EXPERIMENTAL: "1"
 
       - name: Notify platform — module published
@@ -344,8 +350,17 @@ jobs:
                  }
                }
              }')
-          curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ secrets.POWERNODE_WEBHOOK_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "$payload" \
-            "${{ secrets.POWERNODE_WEBHOOK_URL }}/api/v1/system/module_publications"
+          # Skip the notify step gracefully if the API base isn't
+          # configured — the platform also ingests via the Gitea push
+          # webhook (GiteaModuleController). The notify call here is
+          # an additional fast-path that bypasses the webhook hop.
+          if [ -n "${{ secrets.POWERNODE_API_BASE }}" ]; then
+            curl -fsS -X POST \
+              -H "Authorization: Bearer ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$payload" \
+              "${{ secrets.POWERNODE_API_BASE }}/api/v1/system/module_publications" \
+              || echo "notify skipped: $? (platform Gitea webhook is the fallback)"
+          else
+            echo "POWERNODE_API_BASE secret unset; relying on Gitea push webhook"
+          fi
