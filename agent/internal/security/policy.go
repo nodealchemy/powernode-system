@@ -46,6 +46,15 @@ type Policy struct {
 	// possible. Defaults to true. Some workloads (raw socket access) need
 	// the host namespace.
 	UserNamespace bool
+
+	// ProtectedHosts are destinations that must remain reachable
+	// regardless of the module's EgressAllow list. Set by the reconciler
+	// from the agent's platform URL — without this the host-wide egress
+	// chain would block the agent's own control-plane traffic on the
+	// very next reconcile tick after a restrictive module attaches.
+	// Per-host only (no port restriction), so HTTPS + WebSocket + future
+	// protocols all pass without manifest changes.
+	ProtectedHosts []string
 }
 
 // Apply runs each enforcement step against the system. The order matters:
@@ -113,7 +122,7 @@ func (p *Policy) dropCapabilities(ctx context.Context, runner mount.Runner) erro
 }
 
 func (p *Policy) applyEgress(ctx context.Context, runner mount.Runner) error {
-	return ApplyEgressAllowlist(ctx, runner, p.EgressAllow)
+	return ApplyEgressAllowlistWithProtected(ctx, runner, p.EgressAllow, p.ProtectedHosts)
 }
 
 // Validate sanity-checks the policy fields before Apply runs. Returns the

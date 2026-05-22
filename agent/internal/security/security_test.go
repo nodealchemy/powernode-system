@@ -14,27 +14,38 @@ func TestPolicy_Apply_DropAllByDefault(t *testing.T) {
 	if err := p.Apply(context.Background(), rec); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	// At minimum, capsh should run with --drop=all and nft should set up egress
-	if !invokedWith(rec, "capsh", "--drop=all") {
-		t.Errorf("expected capsh --drop=all; got %+v", rec.Invocations)
-	}
+	// Apply no longer shells out to capsh — capability enforcement moved
+	// to per-unit systemd drop-ins written by WriteCapabilityDropIn
+	// (covered by TestWriteCapabilityDropIn_* below). Apply should still
+	// install egress + MAC rules, so nft must run.
 	if !invokedWith(rec, "nft", "add") {
 		t.Errorf("expected nft add invocation; got %+v", rec.Invocations)
 	}
+	if invokedWith(rec, "capsh", "--drop=all") {
+		t.Errorf("did not expect legacy capsh shellout (replaced by systemd drop-in)")
+	}
 }
 
-func TestPolicy_Apply_AllowedCapsPassedToCapsh(t *testing.T) {
+func TestPolicy_Apply_AllowedCapsValidatedOnly(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	p := &Policy{Capabilities: []string{"CAP_NET_BIND_SERVICE", "CAP_CHOWN"}}
 	if err := p.Apply(context.Background(), rec); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	caps := findCapsArg(rec)
-	if !strings.Contains(caps, "net_bind_service") {
-		t.Errorf("expected net_bind_service in caps arg, got %q", caps)
+	// Apply validates cap names — no capsh side-effect. Per-unit
+	// enforcement is exercised by TestWriteCapabilityDropIn_* below.
+	for _, inv := range rec.Invocations {
+		if inv.Name == "capsh" {
+			t.Errorf("did not expect capsh invocation (caps now enforced via systemd drop-ins); got %+v", inv)
+		}
 	}
-	if !strings.Contains(caps, "chown") {
-		t.Errorf("expected chown in caps arg, got %q", caps)
+}
+
+func TestDropCapabilitiesExcept_RejectsUnknownCap(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	err := DropCapabilitiesExcept(context.Background(), rec, []string{"CAP_TOTALLY_FAKE"})
+	if err == nil || !strings.Contains(err.Error(), "CAP_TOTALLY_FAKE") {
+		t.Errorf("expected error mentioning CAP_TOTALLY_FAKE; got %v", err)
 	}
 }
 
@@ -168,6 +179,10 @@ func invokedWith(r *mount.RecorderRunner, name string, argSubstr string) bool {
 	return false
 }
 
+// findCapsArg is retained for any out-of-tree callers that historically
+// inspected the legacy capsh args. The agent no longer invokes capsh,
+// so this helper will always return "" in current builds. Kept to avoid
+// breaking imports; remove on the next major test refactor.
 func findCapsArg(r *mount.RecorderRunner) string {
 	for _, inv := range r.Invocations {
 		if inv.Name != "capsh" {
