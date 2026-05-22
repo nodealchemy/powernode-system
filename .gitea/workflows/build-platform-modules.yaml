@@ -167,7 +167,7 @@ jobs:
         env:
           STORAGE_DRIVER: vfs    # rootless-safe; CI runners don't have overlayfs
 
-      - name: Stage 2 — composer (rsync filter + mkcomposefs + fs-verity)
+      - name: Stage 2 — composer (rsync filter + mkcomposefs + mksquashfs + fs-verity)
         run: |
           set -euo pipefail
           # 1. Mount the stage-1 image so we can rsync out of it
@@ -182,27 +182,66 @@ jobs:
           if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
             rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/slim/
           fi
-          # 4. mkcomposefs + fs-verity (requires the host kernel; CI
-          #    runners have fs-verity enabled per the M1 spec)
+          # 4a. mkcomposefs — composefs metadata image + shared CAS
+          # (requires the runner kernel >= 6.5 with composefs enabled)
           mkcomposefs --digest-store=/tmp/objects /tmp/slim /tmp/${{ matrix.module }}.cfs
-          # 5. Compute the Merkle root and stash for the manifest
-          ROOT=$(fsverity digest --hash-alg=sha256 /tmp/${{ matrix.module }}.cfs | awk '{print $1}')
-          echo "fsverity_root=$ROOT" > /tmp/${{ matrix.module }}.meta
+          CFS_ROOT=$(fsverity digest --hash-alg=sha256 /tmp/${{ matrix.module }}.cfs | awk '{print $1}')
+          CFS_SIZE=$(stat -c%s /tmp/${{ matrix.module }}.cfs)
+          {
+            echo "fsverity_root=$CFS_ROOT"
+            echo "size=$CFS_SIZE"
+          } > /tmp/${{ matrix.module }}.composefs.meta
+          # 4b. mksquashfs — universal lowerdir for kernels without
+          # composefs (every Ubuntu LTS up to 24.04 ships overlayfs +
+          # squashfs but disables composefs). Captures the same /tmp/slim
+          # tree so the runtime view is identical across both paths.
+          # zstd compression balances speed + ratio; -all-root keeps
+          # ownership stable across hosts; -noappend ensures a clean
+          # rebuild rather than incremental update.
+          mksquashfs /tmp/slim /tmp/${{ matrix.module }}.sqfs \
+            -comp zstd -no-progress -all-root -noappend
+          SQFS_ROOT=$(fsverity digest --hash-alg=sha256 /tmp/${{ matrix.module }}.sqfs | awk '{print $1}')
+          SQFS_SIZE=$(stat -c%s /tmp/${{ matrix.module }}.sqfs)
+          {
+            echo "fsverity_root=$SQFS_ROOT"
+            echo "size=$SQFS_SIZE"
+          } > /tmp/${{ matrix.module }}.squashfs.meta
 
-      - name: Cosign sign + oras push
+      - name: Cosign sign + oras push (both formats)
+        id: push
         run: |
           set -euo pipefail
           # Tag = workflow input, else commit SHA short.
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
-          REF="git.ipnode.org/powernode/${{ matrix.module }}:$TAG"
-          # Push composefs blob + manifest meta as OCI artifact
-          oras push "$REF" \
+          REGISTRY_NS="git.ipnode.org/powernode"
+          # Format-tagged refs let each artifact have its own cosign
+          # signature + lifecycle. Every published module ships in BOTH
+          # formats — agents detect at startup which one to mount and
+          # request that format via the ModulesController#show response.
+          COMPOSEFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}-composefs"
+          SQUASHFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}-squashfs"
+
+          # Composefs — metadata-image + shared CAS for kernels that
+          # support it (Fedora 39+, custom-kernel Ubuntu, etc.).
+          oras push "$COMPOSEFS_REF" \
             --artifact-type application/vnd.powernode.module.v1 \
             "/tmp/${{ matrix.module }}.cfs:application/vnd.powernode.composefs" \
-            "/tmp/${{ matrix.module }}.meta:application/vnd.powernode.module.meta"
-          # Sign keylessly via Sigstore Fulcio
-          cosign sign --yes "$REF"
+            "/tmp/${{ matrix.module }}.composefs.meta:application/vnd.powernode.module.meta"
+          cosign sign --yes "$COMPOSEFS_REF"
+
+          # Squashfs — self-contained loop-mountable image for every
+          # kernel with overlayfs + squashfs (Ubuntu 24.04 stock,
+          # Debian, every cloud VM image).
+          oras push "$SQUASHFS_REF" \
+            --artifact-type application/vnd.powernode.module.v1 \
+            "/tmp/${{ matrix.module }}.sqfs:application/vnd.powernode.squashfs" \
+            "/tmp/${{ matrix.module }}.squashfs.meta:application/vnd.powernode.module.meta"
+          cosign sign --yes "$SQUASHFS_REF"
+
+          echo "composefs_ref=$COMPOSEFS_REF" >> "$GITHUB_OUTPUT"
+          echo "squashfs_ref=$SQUASHFS_REF"  >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
         env:
           ORAS_REGISTRY_USERNAME: ${{ secrets.GITEA_REGISTRY_USERNAME }}
           ORAS_REGISTRY_PASSWORD: ${{ secrets.GITEA_REGISTRY_PASSWORD }}
@@ -211,10 +250,44 @@ jobs:
       - name: Notify platform — module published
         if: success()
         run: |
-          # POST to the platform's disk-image-style webhook so the new
-          # NodeModuleVersion lands at promotion_state: "built".
-          curl -sS -X POST \
+          # POSTs both artifact refs so the platform's ingest service
+          # records them into NodeModuleVersion.artifacts JSONB. The
+          # webhook handler verifies cosign signatures + populates one
+          # entry per format. Both formats are mandatory for every
+          # module — partial publishes fail the publication.
+          CFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.composefs.meta | cut -d= -f2)
+          CFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.composefs.meta | cut -d= -f2)
+          SQFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.squashfs.meta | cut -d= -f2)
+          SQFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.squashfs.meta | cut -d= -f2)
+          payload=$(jq -nc \
+            --arg name      "${{ matrix.module }}" \
+            --arg tag       "${{ steps.push.outputs.tag }}" \
+            --arg cfs_ref   "${{ steps.push.outputs.composefs_ref }}" \
+            --arg cfs_root  "$CFS_ROOT" \
+            --arg cfs_size  "$CFS_SIZE" \
+            --arg sqfs_ref  "${{ steps.push.outputs.squashfs_ref }}" \
+            --arg sqfs_root "$SQFS_ROOT" \
+            --arg sqfs_size "$SQFS_SIZE" \
+            '{
+               module_name: $name,
+               tag:         $tag,
+               artifacts: {
+                 composefs: {
+                   oci_ref:       $cfs_ref,
+                   fsverity_root: $cfs_root,
+                   size:          ($cfs_size | tonumber),
+                   media_type:    "application/vnd.powernode.composefs"
+                 },
+                 squashfs: {
+                   oci_ref:       $sqfs_ref,
+                   fsverity_root: $sqfs_root,
+                   size:          ($sqfs_size | tonumber),
+                   media_type:    "application/vnd.powernode.squashfs"
+                 }
+               }
+             }')
+          curl -fsS -X POST \
             -H "Authorization: Bearer ${{ secrets.POWERNODE_WEBHOOK_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{\"module_name\":\"${{ matrix.module }}\",\"tag\":\"${TAG:-unknown}\",\"fsverity_root\":\"$(cat /tmp/${{ matrix.module }}.meta | cut -d= -f2)\"}" \
-            "${{ secrets.POWERNODE_WEBHOOK_URL }}/api/v1/system/module_publications" || true
+            -d "$payload" \
+            "${{ secrets.POWERNODE_WEBHOOK_URL }}/api/v1/system/module_publications"
