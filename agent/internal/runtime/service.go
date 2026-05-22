@@ -52,7 +52,8 @@ type Config struct {
 // Service is the top-level long-running agent loop. Run blocks until
 // ctx is canceled, then returns the first error any goroutine surfaced.
 type Service struct {
-	cfg Config
+	cfg          Config
+	capabilities *NodeCapabilities
 }
 
 func New(cfg Config) *Service {
@@ -68,7 +69,10 @@ func New(cfg Config) *Service {
 	if cfg.OnError == nil {
 		cfg.OnError = func(_ string, _ error) {}
 	}
-	return &Service{cfg: cfg}
+	// Detect kernel capabilities ONCE at construction. Stable across
+	// the agent's lifetime — kernel features don't change without
+	// a reboot, which restarts the agent process anyway.
+	return &Service{cfg: cfg, capabilities: DetectCapabilities()}
 }
 
 // Run starts the service goroutines and blocks until ctx is canceled.
@@ -233,6 +237,11 @@ func (s *Service) Run(ctx context.Context) error {
 		StatePath:   s.cfg.StatePath,
 		Interval:    60 * time.Second,
 		OnError:     s.cfg.OnError,
+		// PlatformURL flows down to reconciler.attachModule which adds
+		// the host to Policy.ProtectedHosts before applying egress
+		// rules — keeps the agent's own control-plane traffic outside
+		// the default-drop zone of any restrictive module policy.
+		PlatformURL: client.PlatformURL,
 	})
 	if err != nil {
 		return fmt.Errorf("build reconciler: %w", err)
@@ -373,6 +382,10 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		Architecture:  runtime.GOARCH,
 		ModuleDigests: digests,
 		MountState:    mountState,
+		// Capabilities are detected once and cached on the Service.
+		// Stable across heartbeats — kernel features don't change
+		// without a reboot, which restarts the agent.
+		Capabilities: s.capabilities,
 	}
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()

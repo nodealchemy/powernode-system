@@ -21,15 +21,23 @@ import (
 // HeartbeatPayload is the body the agent POSTs to /status/heartbeat.
 // Mirrors the platform's M0.M NodeInstance#record_heartbeat! parameters.
 type HeartbeatPayload struct {
-	BootID         string                  `json:"boot_id"`
-	AgentVersion   string                  `json:"agent_version"`
-	Architecture   string                  `json:"architecture,omitempty"`
-	UptimeSeconds  int64                   `json:"uptime_seconds"`
-	ModuleDigests  map[string]string       `json:"module_digests"` // node_module_id → oci_digest
-	MountState     string                  `json:"mount_state"`    // "mounted" | "unmounted" | "transitioning"
-	LoadAverage    string                  `json:"load_average,omitempty"`
-	MemoryFreeKB   int64                   `json:"memory_free_kb,omitempty"`
-	SdwanState     []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	BootID        string                  `json:"boot_id"`
+	AgentVersion  string                  `json:"agent_version"`
+	Architecture  string                  `json:"architecture,omitempty"`
+	UptimeSeconds int64                   `json:"uptime_seconds"`
+	ModuleDigests map[string]string       `json:"module_digests"` // node_module_id → oci_digest
+	MountState    string                  `json:"mount_state"`    // "mounted" | "unmounted" | "transitioning"
+	LoadAverage   string                  `json:"load_average,omitempty"`
+	MemoryFreeKB  int64                   `json:"memory_free_kb,omitempty"`
+	SdwanState    []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
+	// Capabilities is the agent-detected kernel capability set. The
+	// server reads this on every heartbeat to decide which module
+	// artifact format to surface in ModulesController#show — e.g.
+	// composefs-capable nodes get the metadata-image + CAS path; the
+	// fallback nodes get the squashfs path. Detection runs once at
+	// service startup (see internal/runtime/capabilities.go) and is
+	// stable across reboots until the kernel changes.
+	Capabilities *NodeCapabilities `json:"node_capabilities,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at
