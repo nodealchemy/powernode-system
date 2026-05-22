@@ -39,13 +39,15 @@ func DetectCapabilities() *NodeCapabilities {
 		caps.KernelVersion = strings.TrimSpace(string(b))
 	}
 
-	// Parse /proc/filesystems for the kernel-registered filesystem
-	// names. erofs and overlay show up in column 2 when the driver
-	// is built in or already loaded as a module; for built-in
-	// drivers that haven't been used yet, they'll still appear.
+	// Filesystem availability check — covers both built-in drivers
+	// (always in /proc/filesystems) and modular drivers (only show
+	// up after they've been loaded). On Ubuntu 24.04 erofs ships as
+	// a loadable module at /lib/modules/<release>/kernel/fs/erofs/;
+	// it won't appear in /proc/filesystems until something mounts it
+	// for the first time. So we also probe the module file on disk.
 	fs := readProcFilesystems()
-	caps.ErofsAvailable = fs["erofs"]
-	caps.OverlayfsAvailable = fs["overlay"]
+	caps.ErofsAvailable = fs["erofs"] || hasKernelModule(caps.KernelVersion, "fs/erofs")
+	caps.OverlayfsAvailable = fs["overlay"] || hasKernelModule(caps.KernelVersion, "fs/overlayfs")
 
 	// fs-verity is a per-superblock feature, not a "filesystem" in
 	// /proc/filesystems. The reliable check is "does the running
@@ -136,4 +138,35 @@ func stripNonDigits(s string) string {
 		}
 	}
 	return s
+}
+
+// hasKernelModule reports whether a kernel module exists on disk
+// under /lib/modules/<release>/kernel/<subpath>/. Handles the
+// common `.ko`, `.ko.zst`, and `.ko.xz` packing variants distros
+// use. Returns false on any read failure.
+//
+// The on-disk check covers the case where the FS is built as a
+// loadable module (Ubuntu's default for erofs/overlay/squashfs) and
+// isn't currently loaded into /proc/filesystems. Combined with the
+// /proc/filesystems probe, the agent flags the FS available whether
+// it's already loaded or merely loadable.
+func hasKernelModule(kernelVersion, subpath string) bool {
+	if kernelVersion == "" || subpath == "" {
+		return false
+	}
+	dir := "/lib/modules/" + kernelVersion + "/kernel/" + subpath
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasSuffix(n, ".ko") ||
+			strings.HasSuffix(n, ".ko.zst") ||
+			strings.HasSuffix(n, ".ko.xz") ||
+			strings.HasSuffix(n, ".ko.gz") {
+			return true
+		}
+	}
+	return false
 }
