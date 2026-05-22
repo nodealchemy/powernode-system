@@ -26,7 +26,15 @@ type Manifest struct {
 	Variety           string         `json:"variety,omitempty"` // config|instance|subscription
 	Priority          int            `json:"priority"`
 	EffectivePriority int            `json:"effective_priority"`
-	Digest            string         `json:"digest,omitempty"` // OCI digest from current_version
+	Digest            string         `json:"digest,omitempty"` // OCI layer digest for the selected format
+	// Format is "composefs" or "squashfs". The server picks based on
+	// the agent's heartbeat-reported capabilities; the agent uses it
+	// to dispatch MountModule vs MountModuleSquashfs at attach time.
+	// Read-only from the agent's perspective.
+	Format            string         `json:"format,omitempty"`
+	// FsverityRootHash is the per-format fs-verity Merkle root of the
+	// blob the agent will pull. Anchors the on-node read path.
+	FsverityRootHash  string         `json:"fsverity_root_hash,omitempty"`
 	RebootRequired    bool           `json:"reboot_required,omitempty"`
 	DataFileName      string         `json:"data_file_name,omitempty"`
 	DataChecksum      string         `json:"data_checksum,omitempty"`

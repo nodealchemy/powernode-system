@@ -33,7 +33,7 @@ func MountModule(ctx context.Context, runner Runner, l Layout, m Module) error {
 		return nil
 	}
 
-	cfsPath := l.ModuleCachePath(m.Digest)
+	cfsPath := l.ModuleCachePath(m.Digest, "composefs")
 	if _, err := os.Stat(cfsPath); err != nil {
 		return fmt.Errorf("composefs blob missing at %s — pull it before mounting: %w", cfsPath, err)
 	}

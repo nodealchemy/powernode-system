@@ -61,10 +61,22 @@ func (l Layout) ModuleMountPath(digest string) string {
 	return filepath.Join(l.ModulesMountRoot, sanitizeDigest(digest))
 }
 
-// ModuleCachePath returns the local-cache path of a module's composefs
-// metadata file (the .cfs blob).
-func (l Layout) ModuleCachePath(digest string) string {
-	return filepath.Join(l.ModulesCacheRoot, sanitizeDigest(digest)+".cfs")
+// ModuleCachePath returns the local-cache path of a module's pulled
+// blob — either a composefs metadata image (.cfs) or a squashfs image
+// (.sqfs). The format is determined by the publishing pipeline and
+// surfaced in the manifest's `format` field; this helper just maps
+// (digest, format) → local cache path.
+//
+// The digest alone uniquely identifies the content (it's the sha256
+// of the blob bytes), but the file extension keeps the cache
+// human-inspectable when an operator goes looking for "which format
+// did the agent actually pull?".
+func (l Layout) ModuleCachePath(digest, format string) string {
+	ext := "cfs"
+	if format == "squashfs" {
+		ext = "sqfs"
+	}
+	return filepath.Join(l.ModulesCacheRoot, sanitizeDigest(digest)+"."+ext)
 }
 
 // DigestStorePath returns the shared content-addressed store directory

@@ -39,10 +39,17 @@ type Client interface {
 type ModuleArtifactRef struct {
 	ModuleID    string
 	OCIRef      string // optional; when set, prefer the OCI registry path
-	Digest      string // sha256 hex (without "sha256:" prefix); REQUIRED
+	Digest      string // sha256 hex (with or without "sha256:" prefix); REQUIRED
 	DownloadURL string // platform-proxied artifact URL (used when OCI unreachable)
 	Size        int64
-	Checksum    string // legacy checksum field (sha256 hex)
+	Checksum    string // sha256 hex (legacy field; redundant with Digest)
+	// Format selects the cache file extension (.cfs for composefs,
+	// .sqfs for squashfs). The platform's manifest response includes
+	// this so the agent's cache layout stays human-inspectable per-
+	// format. Empty defaults to composefs for backward compat with
+	// the pre-dual-format era — but with legacy stripped, callers
+	// MUST set this explicitly.
+	Format string
 }
 
 // Puller downloads OCI artifacts to a local cache.
@@ -142,7 +149,11 @@ func (p *Puller) Pull(ref *ModuleArtifactRef) (cfsPath, bundlePath string, err e
 	}
 
 	digestFs := sanitizeDigest(ref.Digest)
-	cfsPath = filepath.Join(p.Cache, digestFs+".cfs")
+	ext := "cfs"
+	if ref.Format == "squashfs" {
+		ext = "sqfs"
+	}
+	cfsPath = filepath.Join(p.Cache, digestFs+"."+ext)
 	bundlePath = filepath.Join(p.Cache, digestFs+".cosign-bundle")
 
 	// Idempotency: already cached at the right digest?
