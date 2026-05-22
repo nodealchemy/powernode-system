@@ -68,6 +68,13 @@ jobs:
     # 24.04 container so the apt-install step below finds the packages.
     container:
       image: docker.io/library/ubuntu:24.04
+    # Gitea Actions defaults `run:` steps to `sh -e {0}` which doesn't
+    # support `set -o pipefail`. Force bash so every step gets the
+    # strict-mode triad (errexit + nounset + pipefail). Ubuntu 24.04
+    # ships bash by default.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
