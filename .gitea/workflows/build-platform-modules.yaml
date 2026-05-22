@@ -304,6 +304,15 @@ jobs:
           REGISTRY_NS="git.ipnode.org/powernode"
           EROFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}"
 
+          # `oras` reads credentials from ~/.docker/config.json or
+          # via explicit `oras login` — it does NOT pick up
+          # ORAS_REGISTRY_USERNAME / PASSWORD env vars on its own.
+          # Authenticate first so the subsequent `oras push` against
+          # the private Gitea registry doesn't 401.
+          oras login git.ipnode.org \
+            --username "$ORAS_REGISTRY_USERNAME" \
+            --password-stdin <<< "$ORAS_REGISTRY_PASSWORD"
+
           # oras complains about absolute paths in source operands.
           # Run from /tmp so the file operands are bare names; the
           # registry sees them with the same shape it always has
