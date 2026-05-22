@@ -54,15 +54,15 @@ module Api
               return render_error("Module has no data file or OCI artifact")
             end
 
-            payload = { file: {} }
-            if @module.data_file_name.present?
-              payload[:file] = {
-                name: @module.data_file_name,
-                size: @module.data_file_size,
-                checksum: @module.data_checksum,
-                download_url: module_download_url(@module)
-              }
-            end
+            # The agent's oci.Puller streams from data.file.download_url
+            # regardless of pathway — the bare /files/modules/:id URL
+            # backs both the M1 OCI proxy and legacy data-file cases on
+            # the server side. Populate file.* from whichever source has
+            # the canonical metadata (OCI artifact's checksum/size when
+            # present, falls back to data_file metadata otherwise).
+            payload = {
+              file: build_file_payload(@module, artifact)
+            }
             if artifact
               payload[:oci] = {
                 ref: artifact.oci_ref,
@@ -188,9 +188,33 @@ module Api
             resolved << mod
           end
 
+          # Combines legacy data_file metadata with M1 OCI artifact
+          # metadata so the agent always has a usable file.* block.
+          # When both pathways exist the OCI artifact wins (the M1
+          # publish flow is the canonical source of truth for new
+          # modules); legacy data_file fields fill in only when OCI
+          # didn't run.
+          def build_file_payload(mod, artifact)
+            return {} if mod.data_file_name.blank? && artifact.nil?
+            base = {
+              name: mod.data_file_name.presence || "#{mod.name}.cfs",
+              size: (artifact&.size_bytes || mod.data_file_size).to_i,
+              checksum: artifact ? artifact.oci_digest.to_s.sub(/^sha256:/, "") : mod.data_checksum,
+              download_url: module_download_url(mod)
+            }
+            base[:content_type] = ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE if artifact
+            base.compact
+          end
+
+          # URL the agent's oci.Puller streams from. Single-segment form
+          # `/files/modules/:id` triggers the M1 OCI proxy path (the
+          # composefs blob — see System::OciBlobProxyService). The
+          # legacy two-segment form `/files/modules/:id/:filename` is
+          # preserved for back-compat with operator-uploaded data files.
           def module_download_url(mod)
-            # Generate URL for file download
-            "/api/v1/system/node_api/files/modules/#{mod.id}/#{mod.data_file_name}"
+            base = "/api/v1/system/node_api/files/modules/#{mod.id}"
+            return base unless mod.data_file_name.present?
+            "#{base}/#{mod.data_file_name}"
           end
 
           # render_rsync_fallback synthesizes a minimal rsync filter
@@ -291,14 +315,40 @@ module Api
               data_file_name: mod.data_file_name,
               data_file_size: mod.data_file_size,
               data_checksum: mod.data_checksum,
-              # M1: OCI digest from the current published version so the
-              # agent's manifest.LoadOrFetch populates Manifest.Digest
-              # (without it, reconciler line ~184 trips "module has no
-              # digest (not published)" and skips the module).
-              digest: mod.current_version&.oci_digest,
+              # M1: the agent's reconciler stores this as mount.Module#Digest
+              # AND the puller compares streamed-blob sha256 against it.
+              # That means we MUST emit the composefs LAYER digest (the
+              # sha256 of the .cfs bytes the agent receives), NOT the OCI
+              # manifest digest (which is sha256 of the manifest JSON).
+              # composefs_layer_digest_for() resolves this via the OCI
+              # registry and Rails-caches the result — the digest is
+              # immutable for a given artifact so the cache TTL is generous.
+              digest: composefs_layer_digest_for(mod),
               fsverity_root_hash: mod.current_version&.fsverity_root_hash,
               puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
             )
+          end
+
+          # Resolves the composefs layer's sha256 by introspecting the
+          # OCI manifest server-side. Cached because the layer digest is
+          # content-addressed and never changes for a published artifact.
+          # Returns nil when no artifact is published (callers tolerate
+          # nil digest by skipping the module in their desired state).
+          def composefs_layer_digest_for(mod)
+            artifact = preferred_artifact(mod)
+            return nil unless artifact
+
+            ::Rails.cache.fetch(
+              "system:module:composefs_layer_digest:#{artifact.id}:#{artifact.oci_digest}",
+              expires_in: 1.day
+            ) do
+              ::System::OciBlobProxyService.new(artifact).composefs_layer_digest!
+            rescue ::System::OciBlobProxyService::PullError => e
+              ::Rails.logger.warn(
+                "[ModulesController] composefs_layer_digest lookup failed for #{artifact.id}: #{e.message}"
+              )
+              nil
+            end
           end
 
           # Render each ModuleService row in the shape the agent's

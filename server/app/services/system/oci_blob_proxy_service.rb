@@ -1,0 +1,367 @@
+# frozen_string_literal: true
+
+require "net/http"
+require "uri"
+require "json"
+require "base64"
+require "digest"
+require "fileutils"
+require "securerandom"
+
+module System
+  # Proxies OCI artifact composefs-blob downloads from the upstream
+  # registry (Gitea container registry at git.ipnode.org today) to
+  # on-node agents. The agent's existing oci.Puller streams from the
+  # URL returned by /api/v1/system/node_api/modules/:id/download —
+  # this service is the backing implementation that actually fetches
+  # the composefs layer.
+  #
+  # Design choices:
+  #
+  # - **Cache-by-digest**: blobs land at
+  #   `<CACHE_ROOT>/<sha256>.cfs` (immutable on disk). Repeat reconciles
+  #   for the same digest are zero-network. Cache eviction is the
+  #   operator's concern; nothing here ever deletes.
+  #
+  # - **Concurrency safety**: a flock-based lock per digest prevents
+  #   two simultaneous requests for the same artifact from racing on
+  #   the same tmp file. Lock is released as soon as the rename succeeds.
+  #
+  # - **Verification**: every fetch validates (a) HTTP Content-Length
+  #   matches the manifest layer size, (b) bytes written match expected
+  #   size, (c) streamed sha256 matches the manifest digest. Any
+  #   mismatch fails the request AND deletes the tmp file. A truncated
+  #   blob never reaches the cache path.
+  #
+  # - **Auth**: HTTP Basic with username + access_token. Username comes
+  #   from (in order): credential.external_username (preferred —
+  #   discovered + persisted), POWERNODE_REGISTRY_USERNAME env var
+  #   (operator override), or auto-discovery via Gitea `/api/v1/user`.
+  #   Auto-discovery persists the result back to the credential so the
+  #   next request short-circuits.
+  #
+  # - **Index manifests**: when the upstream serves an OCI index manifest
+  #   (multi-arch), we recurse into the per-arch image manifest matching
+  #   the supplied architecture (default amd64 — matching the platform's
+  #   System::ModuleArtifact::SUPPORTED_ARCHITECTURES default order).
+  #
+  # - **Telemetry**: emits FleetEvent records on cache miss + on pull
+  #   failures so operators can audit what crossed the wire.
+  #
+  # NOT implemented here (tracked separately):
+  #
+  # - Cosign signature verification (the agent-side Verifier interface
+  #   handles this; this service is a transport, not a trust root).
+  # - Garbage collection of stale cache entries.
+  # - Multiple-credential support per provider (we use the first
+  #   active Devops::GitProviderCredential).
+  class OciBlobProxyService
+    class PullError < StandardError; end
+    class AuthError < PullError; end
+    class ManifestError < PullError; end
+    class VerificationError < PullError; end
+
+    CACHE_ROOT = ENV.fetch("POWERNODE_OCI_CACHE_DIR", "/var/lib/powernode/oci-cache").freeze
+    COMPOSEFS_MEDIA_TYPE = "application/vnd.powernode.composefs"
+    MANIFEST_IMAGE_TYPES = %w[
+      application/vnd.oci.image.manifest.v1+json
+      application/vnd.docker.distribution.manifest.v2+json
+    ].freeze
+    MANIFEST_INDEX_TYPES = %w[
+      application/vnd.oci.image.index.v1+json
+      application/vnd.docker.distribution.manifest.list.v2+json
+    ].freeze
+    MANIFEST_ACCEPT = (MANIFEST_IMAGE_TYPES + MANIFEST_INDEX_TYPES).join(", ").freeze
+    DEFAULT_ARCH = "amd64"
+    HTTP_OPEN_TIMEOUT = 10
+    HTTP_READ_TIMEOUT = 300
+    BLOB_BUFFER_BYTES = 65_536
+
+    # @param artifact [System::ModuleArtifact]
+    # @param architecture [String, nil] preferred arch when the upstream
+    #   serves an index manifest (default: artifact.architecture or amd64)
+    def initialize(artifact, architecture: nil)
+      raise ArgumentError, "artifact required" unless artifact
+      @artifact = artifact
+      @architecture = (architecture || artifact.architecture.presence || DEFAULT_ARCH).to_s
+    end
+
+    # Returns the local filesystem path of the cached composefs blob.
+    # Idempotent: cached path is keyed by layer digest, so repeat calls
+    # for the same artifact short-circuit after the first pull.
+    #
+    # @return [String] absolute path to the cached .cfs file
+    # @raise [PullError] on any failure (network, auth, verification)
+    def fetch_blob!
+      manifest = fetch_image_manifest!
+      layer = composefs_layer!(manifest)
+      digest = layer.fetch("digest").to_s
+      expected_size = layer.fetch("size").to_i
+      cached = cache_path_for(digest)
+
+      return cached if cached_complete?(cached, expected_size, digest)
+
+      with_cache_lock(digest) do
+        # Re-check after acquiring lock — another request may have
+        # populated the cache while we were waiting.
+        return cached if cached_complete?(cached, expected_size, digest)
+
+        emit_event(severity: "low", kind: "oci.blob.fetch_start",
+                   payload: { module_id: @artifact.node_module_version&.node_module_id,
+                              oci_ref: @artifact.oci_ref, digest: digest,
+                              size_bytes: expected_size })
+
+        stream_blob_to_cache!(digest: digest, target: cached, expected_size: expected_size)
+
+        emit_event(severity: "low", kind: "oci.blob.fetch_complete",
+                   payload: { module_id: @artifact.node_module_version&.node_module_id,
+                              oci_ref: @artifact.oci_ref, digest: digest,
+                              size_bytes: expected_size, cache_path: cached })
+      end
+      cached
+    rescue StandardError => e
+      emit_event(severity: "high", kind: "oci.blob.fetch_failed",
+                 payload: { oci_ref: @artifact.oci_ref, error: e.message })
+      raise
+    end
+
+    # Returns the layer-digest sha256 (with sha256: prefix) without
+    # forcing a blob pull. Used by callers that only need to set
+    # ETag / digest headers without pre-fetching the blob.
+    def composefs_layer_digest!
+      composefs_layer!(fetch_image_manifest!).fetch("digest").to_s
+    end
+
+    private
+
+    # Fetches the manifest and follows index manifests to the per-arch
+    # image manifest. Returns the IMAGE manifest (with a layers array).
+    def fetch_image_manifest!
+      manifest = fetch_manifest_raw!(reference)
+      media = manifest["mediaType"] || manifest["schemaVersion"]
+      if MANIFEST_INDEX_TYPES.include?(manifest["mediaType"])
+        manifests = Array(manifest["manifests"])
+        entry = manifests.find { |m| m.dig("platform", "architecture") == @architecture }
+        entry ||= manifests.find { |m| m["mediaType"] && MANIFEST_IMAGE_TYPES.include?(m["mediaType"]) }
+        raise ManifestError, "index manifest #{@artifact.oci_ref} has no entry for #{@architecture}" unless entry
+        return fetch_manifest_raw!(entry["digest"])
+      end
+      unless MANIFEST_IMAGE_TYPES.include?(manifest["mediaType"])
+        # Some registries omit mediaType — accept the layers array if present.
+        return manifest if manifest["layers"].is_a?(Array)
+        raise ManifestError, "unsupported manifest mediaType #{media.inspect} for #{@artifact.oci_ref}"
+      end
+      manifest
+    end
+
+    def fetch_manifest_raw!(ref)
+      uri = registry_uri("/v2/#{repo_path}/manifests/#{ref}")
+      headers = { "Accept" => MANIFEST_ACCEPT, "Authorization" => basic_auth! }
+      resp = http_get(uri, headers: headers)
+      unless resp.is_a?(Net::HTTPSuccess)
+        raise ManifestError, "manifest fetch #{uri} status #{resp.code}: #{resp.body.to_s[0..200]}"
+      end
+      JSON.parse(resp.body)
+    rescue JSON::ParserError => e
+      raise ManifestError, "manifest decode failed: #{e.message}"
+    end
+
+    def composefs_layer!(manifest)
+      layers = Array(manifest["layers"])
+      raise ManifestError, "manifest #{@artifact.oci_ref} has no layers array" if layers.empty?
+      layer = layers.find { |l| l["mediaType"] == COMPOSEFS_MEDIA_TYPE }
+      raise ManifestError, "no composefs layer in manifest #{@artifact.oci_ref}" unless layer
+      layer
+    end
+
+    def stream_blob_to_cache!(digest:, target:, expected_size:)
+      FileUtils.mkdir_p(File.dirname(target))
+      tmp = "#{target}.tmp.#{SecureRandom.hex(8)}"
+      hasher = ::Digest::SHA256.new
+      written = 0
+
+      begin
+        uri = registry_uri("/v2/#{repo_path}/blobs/#{digest}")
+        File.open(tmp, "wb") do |f|
+          Net::HTTP.start(uri.host, uri.port,
+                          use_ssl: uri.scheme == "https",
+                          open_timeout: HTTP_OPEN_TIMEOUT,
+                          read_timeout: HTTP_READ_TIMEOUT) do |http|
+            req = Net::HTTP::Get.new(uri.request_uri)
+            req["Authorization"] = basic_auth!
+            http.request(req) do |resp|
+              unless resp.is_a?(Net::HTTPSuccess)
+                body_preview = resp.body.to_s[0..200] rescue ""
+                raise PullError, "blob fetch #{uri} status #{resp.code}: #{body_preview}"
+              end
+              content_length = resp["Content-Length"]&.to_i
+              if content_length && content_length != expected_size
+                raise VerificationError,
+                      "Content-Length #{content_length} != manifest size #{expected_size} for #{digest}"
+              end
+              resp.read_body do |chunk|
+                f.write(chunk)
+                hasher.update(chunk)
+                written += chunk.bytesize
+              end
+            end
+          end
+        end
+
+        if written != expected_size
+          raise VerificationError, "size mismatch: expected #{expected_size}, wrote #{written}"
+        end
+        got_digest = "sha256:#{hasher.hexdigest}"
+        if got_digest != digest
+          raise VerificationError, "digest mismatch: expected #{digest}, got #{got_digest}"
+        end
+
+        File.rename(tmp, target)
+      ensure
+        File.delete(tmp) if File.exist?(tmp)
+      end
+    end
+
+    def http_get(uri, headers: {})
+      Net::HTTP.start(uri.host, uri.port,
+                      use_ssl: uri.scheme == "https",
+                      open_timeout: HTTP_OPEN_TIMEOUT,
+                      read_timeout: HTTP_READ_TIMEOUT) do |http|
+        req = Net::HTTP::Get.new(uri.request_uri)
+        headers.each { |k, v| req[k] = v }
+        http.request(req)
+      end
+    end
+
+    def cached_complete?(path, expected_size, _expected_digest)
+      File.exist?(path) && File.size(path) == expected_size
+    end
+
+    def cache_path_for(digest)
+      safe = digest.sub(/^sha256:/, "")
+      raise ArgumentError, "invalid digest #{digest.inspect}" unless safe.match?(/\A[a-f0-9]{64}\z/i)
+      File.join(CACHE_ROOT, "#{safe}.cfs")
+    end
+
+    # Flock-based per-digest lock. Lock file lives next to the cache
+    # entry (suffixed .lock) so collision is impossible across digests.
+    def with_cache_lock(digest)
+      FileUtils.mkdir_p(CACHE_ROOT)
+      lock_path = File.join(CACHE_ROOT, "#{digest.sub(/^sha256:/, "")}.lock")
+      File.open(lock_path, File::RDWR | File::CREAT, 0o644) do |lock_file|
+        lock_file.flock(File::LOCK_EX)
+        yield
+      end
+    end
+
+    def registry_uri(path)
+      URI.parse("https://#{registry_host}#{path}")
+    end
+
+    def registry_host
+      host = @artifact.oci_ref.to_s.split("/").first
+      raise PullError, "oci_ref #{@artifact.oci_ref.inspect} missing registry host" if host.blank?
+      host
+    end
+
+    # oci_ref shape: "git.ipnode.org/powernode/<name>:<tag>" or
+    # "git.ipnode.org/powernode/<name>@sha256:<digest>". Strip the host
+    # and the tag/digest suffix to get the repo path used in
+    # /v2/<repo_path>/manifests/... URLs.
+    def repo_path
+      ref = @artifact.oci_ref.to_s.sub(%r{\A[^/]+/}, "")
+      if ref.include?("@")
+        ref.split("@", 2).first
+      else
+        ref.sub(/:[^:]+\z/, "")
+      end
+    end
+
+    # The reference is the tag (after final `:`) OR digest (after `@`).
+    def reference
+      ref = @artifact.oci_ref.to_s
+      if ref.include?("@")
+        ref.split("@", 2).last
+      else
+        ref.split(":").last
+      end
+    end
+
+    def basic_auth!
+      cred = active_credential!
+      username = resolve_registry_username!(cred)
+      "Basic " + Base64.strict_encode64("#{username}:#{cred.access_token}")
+    end
+
+    def active_credential!
+      @credential ||= ::Devops::GitProviderCredential.active.first
+      raise AuthError, "no active Devops::GitProviderCredential" unless @credential
+      raise AuthError, "credential #{@credential.id} has empty access_token" if @credential.access_token.blank?
+      @credential
+    end
+
+    # Comprehensive username resolution:
+    #   1. operator override via POWERNODE_REGISTRY_USERNAME env (escape hatch)
+    #   2. credential.external_username (cached from prior discovery)
+    #   3. live discovery via Gitea's /api/v1/user (persisted back for reuse)
+    #
+    # Persistence step #3 means the next request finds the username at
+    # step 2 with no extra round-trip.
+    def resolve_registry_username!(cred)
+      override = ENV["POWERNODE_REGISTRY_USERNAME"].presence
+      return override if override
+
+      cached = cred.external_username.presence
+      return cached if cached
+
+      discovered = discover_gitea_username!(cred)
+      cred.update_columns(external_username: discovered, updated_at: Time.current)
+      discovered
+    end
+
+    def discover_gitea_username!(cred)
+      base = gitea_api_base(cred)
+      uri = URI.parse("#{base}/user")
+      resp = http_get(uri, headers: { "Authorization" => "token #{cred.access_token}",
+                                       "Accept" => "application/json" })
+      unless resp.is_a?(Net::HTTPSuccess)
+        raise AuthError,
+              "Gitea /api/v1/user lookup failed (HTTP #{resp.code}); " \
+              "set POWERNODE_REGISTRY_USERNAME or credential.external_username manually"
+      end
+      data = JSON.parse(resp.body)
+      username = data["login"].to_s
+      raise AuthError, "Gitea /api/v1/user returned no login field" if username.blank?
+      username
+    end
+
+    # Resolves the Gitea API base from the credential's provider. Falls
+    # back to a host derived from the artifact's oci_ref so the lookup
+    # works even when the provider record has neither api_base_url nor
+    # web_base_url populated. GitProvider schema uses these two URL
+    # columns (no plain `base_url`).
+    def gitea_api_base(cred)
+      provider = cred.provider
+      api = provider&.api_base_url.presence
+      return api.chomp("/") if api
+      web = provider&.web_base_url.presence
+      return "#{web.chomp('/')}/api/v1" if web
+
+      "https://#{registry_host}/api/v1"
+    end
+
+    def emit_event(severity:, kind:, payload:)
+      return unless defined?(::System::Fleet::EventBroadcaster)
+      account = @artifact.account rescue nil
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: kind,
+        severity: severity,
+        source: "oci_blob_proxy_service",
+        payload: payload
+      )
+    rescue StandardError => e
+      ::Rails.logger.warn("[OciBlobProxyService] event emit failed: #{e.message}")
+    end
+  end
+end

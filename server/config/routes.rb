@@ -765,7 +765,11 @@ Rails.application.routes.draw do
           get "puppet/manifest", to: "puppet#manifest"
 
           # File downloads (binary)
-          get "files/modules/:id", to: "files#module_file"
+          # Optional :filename segment preserves the legacy data_file
+          # URL shape `/files/modules/:id/:filename` for back-compat
+          # while the M1 OCI artifact path uses bare `/files/modules/:id`.
+          get "files/modules/:id(/:filename)", to: "files#module_file",
+              constraints: { filename: %r{[^/]+} }
           get "files/scripts/:id", to: "files#script_file"
           get "files/node_modules", to: "files#node_modules"
           get "files/node_scripts", to: "files#node_scripts"
