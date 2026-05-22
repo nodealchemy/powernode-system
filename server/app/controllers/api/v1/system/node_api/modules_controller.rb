@@ -23,8 +23,15 @@ module Api
 
           # GET /api/v1/system/node_api/modules/:id
           # Get specific module details
+          #
+          # Response shape: render_success splats the serialized fields at
+          # data.* (NOT data.module.*) so the agent's manifest.FetchAndCache
+          # can decode `data` directly into its Manifest struct. Wrapping
+          # under `data.module` produced an empty Manifest (no top-level
+          # id/name/digest), tripping writeCache's "nil or empty ID" guard
+          # and starving the reconciler of any actionable data.
           def show
-            render_success(module: serialize_module_full(@module))
+            render_success(**serialize_module_full(@module))
           end
 
           # GET /api/v1/system/node_api/modules/:id/download
@@ -38,19 +45,25 @@ module Api
           # back to download_url-only when no artifact has been
           # published yet (back-compat with pre-M1 modules).
           def download
-            unless @module.data_file_name.present?
-              return render_error("Module has no data file")
+            artifact = preferred_artifact(@module)
+            # Accept the request if EITHER pathway has a blob — the legacy
+            # operator-uploaded data file OR an M1 OCI artifact. Refuse only
+            # when neither is present (operator hasn't attached + nothing
+            # published yet).
+            if @module.data_file_name.blank? && artifact.nil?
+              return render_error("Module has no data file or OCI artifact")
             end
 
-            payload = {
-              file: {
+            payload = { file: {} }
+            if @module.data_file_name.present?
+              payload[:file] = {
                 name: @module.data_file_name,
                 size: @module.data_file_size,
                 checksum: @module.data_checksum,
                 download_url: module_download_url(@module)
               }
-            }
-            if (artifact = preferred_artifact(@module))
+            end
+            if artifact
               payload[:oci] = {
                 ref: artifact.oci_ref,
                 digest: artifact.oci_digest,
@@ -228,7 +241,13 @@ module Api
               # Copy-path destination if set — agent writes this module's
               # data file into <destination_path> at attach time.
               copy_path_destination: mod.copy_path&.destination_path,
-              has_data_file: mod.data_file_name.present?,
+              # has_data_file is the agent reconciler's gate for "this module
+              # has a blob to mount" (reconcile.go: `if !mod.HasDataFile { continue }`).
+              # Truthy when EITHER the legacy operator-uploaded data file is
+              # attached OR an M1 OCI artifact is published — both pathways
+              # produce a mountable blob.
+              has_data_file: mod.data_file_name.present? ||
+                             (mod.current_version&.module_artifacts&.exists? || false),
               current_version: mod.current_version_number,
               dependencies: mod.dependencies.map(&:id)
             }
@@ -272,6 +291,12 @@ module Api
               data_file_name: mod.data_file_name,
               data_file_size: mod.data_file_size,
               data_checksum: mod.data_checksum,
+              # M1: OCI digest from the current published version so the
+              # agent's manifest.LoadOrFetch populates Manifest.Digest
+              # (without it, reconciler line ~184 trips "module has no
+              # digest (not published)" and skips the module).
+              digest: mod.current_version&.oci_digest,
+              fsverity_root_hash: mod.current_version&.fsverity_root_hash,
               puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
             )
           end
