@@ -1,11 +1,11 @@
 schema_version: 1
 name: powernode-base-ruby
 display_name: Powernode Base Ruby Runtime
-description: Ruby 3.3 + bundler + system dependencies for Rails workloads
+description: Ruby (noble default — currently 3.2) + bundler + system dependencies for Rails workloads
 license: MIT
 package_spec:
-  - ruby3.3
-  - ruby3.3-dev
+  - ruby
+  - ruby-dev
   - bundler
   - build-essential
   - libpq-dev

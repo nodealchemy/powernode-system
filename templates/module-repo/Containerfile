@@ -12,24 +12,41 @@
 # (TODO: ship as part of the module SDK) tracks ubuntu:24.04 LTS point releases.
 
 # renovate: datasource=docker depName=docker.io/library/ubuntu
-ARG UBUNTU_DIGEST=sha256:0e5e4a57c2499249aafcbb6a527eb1c86e4e3c0af3d5a7f7a2c9b9d1a9c0e5c7
+# Default pin tracks docker.io/library/ubuntu:24.04 as of 2026-05-21.
+# Override via --build-arg UBUNTU_DIGEST=sha256:... for older builds.
+ARG UBUNTU_DIGEST=sha256:cdb5fd928fced577cfecf12c8966e830fcdf42ee481fb0b91904eeddc2fe5eff
 FROM docker.io/library/ubuntu@${UBUNTU_DIGEST}
 
 LABEL io.powernode.role="module-builder" \
       io.powernode.schema="v1"
 
-# Snapshot pin for reproducible apt installs. Set via build-arg to override
-# (snapshot.debian.org rotates archives; pin to a recent timestamp for each
-# module release tag).
-ARG APT_SNAPSHOT="20260415T000000Z"
+# Snapshot pin for reproducible apt installs. snapshot.ubuntu.com is gated
+# behind Ubuntu Pro auth (returns 401 to anonymous fetches), so this is
+# opt-in — leave empty for the standard public archive.ubuntu.com, set to a
+# YYYYMMDDTHHMMSSZ timestamp ONLY when builds run with a Canonical token
+# wired into apt's auth.conf.d. TODO: ship a snapshot-auth setup script in
+# the module SDK so SLSA-level reproducibility becomes turnkey.
+ARG APT_SNAPSHOT=""
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
-# Reroute apt to the pinned snapshot so package versions are deterministic.
+# Install ca-certificates before rerouting apt: the bare ubuntu base image
+# ships without root certs, and snapshot.ubuntu.com 301-redirects HTTP→HTTPS,
+# so any apt-get update after the source rewrite would fail with "No system
+# certificates available" until ca-certificates is in place.
 RUN set -eux; \
-    sed -ri "s|http://(archive\|security)\.ubuntu\.com|http://snapshot.ubuntu.com/${APT_SNAPSHOT}|g" \
-        /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+# Reroute apt to the pinned snapshot ONLY if APT_SNAPSHOT is set + non-empty.
+# (snapshot.ubuntu.com is auth-gated — anonymous fetches return 401.)
+RUN set -eux; \
+    if [ -n "${APT_SNAPSHOT}" ]; then \
+      sed -ri "s|http://(archive\|security)\.ubuntu\.com|http://snapshot.ubuntu.com/${APT_SNAPSHOT}|g" \
+          /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true; \
+    fi
 
 # Install packages from the dispatched package_spec. The composer stage
 # writes the spec to /workspace/package_spec.txt before invoking buildah.
