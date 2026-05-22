@@ -116,11 +116,18 @@ module System
 
             [Service]
             Type=simple
-            ExecStart=/usr/local/bin/powernode-agent service
+            ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{spawn_payload['parent_url']} --pki-dir=/var/lib/powernode/pki
             Restart=on-failure
             RestartSec=10s
-            # Allow reading fw-cfg sysfs
-            ReadOnlyPaths=/sys/firmware/qemu_fw_cfg
+            # NOTE: previously had `ReadOnlyPaths=/sys/firmware/qemu_fw_cfg`
+            # here to constrain the agent's view of fw-cfg. On PVE-spawned
+            # VMs that path doesn't exist (PVE token-auth can't set the
+            # `args` field needed to surface fw-cfg), so the directive
+            # caused systemd to fail with code=226/NAMESPACE on every
+            # restart. The fw-cfg path is now the file fallback at
+            # /etc/powernode/federation-payload.json (read by the agent's
+            # federation.LoadConfig); no sandboxing for that path is
+            # needed here.
 
             [Install]
             WantedBy=multi-user.target
