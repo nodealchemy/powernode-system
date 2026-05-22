@@ -218,7 +218,15 @@ jobs:
         run: |
           set -euo pipefail
           cp /tmp/package_spec.txt modules/${{ matrix.module }}/package_spec.txt
-          buildah bud \
+          # `--isolation=chroot` bypasses buildah's default OCI runtime
+          # (runc/crun) which needs CAP_SYS_ADMIN + CLONE_NEWUSER. The
+          # Gitea Actions runner container can't grant userns even with
+          # --privileged in container.options (the host's unprivileged
+          # userns sysctl gate is off). chroot isolation does the build
+          # in a plain chroot — no namespaces, no userns dance. Slightly
+          # less hermetic but produces an identical Containerfile build
+          # output for our `apt-install package_spec.txt` use case.
+          buildah --isolation=chroot bud \
             --file templates/module-repo/Containerfile \
             --build-arg APT_SNAPSHOT=${{ steps.manifest.outputs.apt_snapshot }} \
             --tag powernode-${{ matrix.module }}-builder:ci \
