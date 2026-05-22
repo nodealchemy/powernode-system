@@ -38,29 +38,35 @@ module System
       resolved_deps = refresh_manifest!(node_module, tag)
       node_module_version = find_or_create_version(node_module, tag)
 
-      oci_ref = build_oci_ref(node_module, tag)
-      ingest = ::System::ModuleOciIngestService.ingest!(
-        node_module_version: node_module_version,
-        oci_ref: oci_ref
-      )
+      # Dual-format ingest: each CI publish produces sibling refs
+      # `<base>:<tag>-composefs` and `<base>:<tag>-squashfs`. The
+      # platform tries to ingest each; whichever exist populate
+      # NodeModuleVersion.artifacts. Failure on one format does NOT
+      # abort the other — modules can ship in just one format during
+      # the transition window. The bare `:<tag>` ref still aliases the
+      # composefs side for backward compat with un-migrated paths.
+      ingest = ingest_all_formats!(node_module, node_module_version, tag)
 
-      # NOTE: see disk_image_publication_processor.rb — Result struct exposes
-      # `.ok?` not `.success?`. Same bug pattern, fixed here in parallel.
-      if ingest.ok?
+      # The legacy `oci_ref` field on the Result struct points at the
+      # canonical (preferred) format's ref for downstream consumers
+      # that haven't migrated to the artifacts hash yet.
+      canonical_ref = ingest[:canonical_ref] || build_oci_ref(node_module, tag)
+
+      if ingest[:any_ok?]
         register_skills_for(node_module)
-        emit_published_event(node_module, node_module_version, oci_ref, ingest.module_artifacts, tag)
+        emit_published_event(node_module, node_module_version, canonical_ref, ingest[:module_artifacts], tag)
         Result.new(
           ok?: true,
           node_module_version: node_module_version,
-          artifacts: ingest.module_artifacts,
+          artifacts: ingest[:module_artifacts],
           resolved_dependencies: resolved_deps
         )
       else
-        Rails.logger.warn "[ModulePublicationProcessor] ingest failed: #{ingest.error}"
-        emit_publish_failed_event(node_module, tag, ingest.error)
+        Rails.logger.warn "[ModulePublicationProcessor] ingest failed: #{ingest[:errors].join('; ')}"
+        emit_publish_failed_event(node_module, tag, ingest[:errors].join("; "))
         Result.new(
           ok?: false,
-          error: ingest.error,
+          error: ingest[:errors].join("; "),
           node_module_version: node_module_version,
           resolved_dependencies: resolved_deps
         )
@@ -68,6 +74,60 @@ module System
     end
 
     private
+
+    # Per-format ingest dispatcher. Every published module MUST ship
+    # in both composefs and squashfs — partial publishes fail the
+    # publication so an operator can't accidentally land a module that
+    # only works on one half of the fleet.
+    #
+    # Returns a hash with:
+    #   :ok?              — true iff every format ingested cleanly
+    #   :module_artifacts — combined per-arch ModuleArtifact rows
+    #   :errors           — collected error messages per failed format
+    def ingest_all_formats!(node_module, node_module_version, tag)
+      formats = ::System::NodeModuleVersion::SUPPORTED_ARTIFACT_FORMATS
+      all_artifacts = []
+      errors = []
+      artifacts_hash = {}
+
+      formats.each do |format|
+        format_ref = build_oci_ref(node_module, "#{tag}-#{format}")
+        result = ::System::ModuleOciIngestService.ingest!(
+          node_module_version: node_module_version,
+          oci_ref: format_ref
+        )
+        if result.ok?
+          all_artifacts.concat(Array(result.module_artifacts))
+          canonical = result.module_artifacts.find { |a| a.architecture == "amd64" } ||
+                      result.module_artifacts.first
+          unless canonical
+            errors << "#{format}: ingest produced no ModuleArtifact rows"
+            next
+          end
+          artifacts_hash[format] = {
+            "oci_ref"       => format_ref,
+            "oci_digest"    => canonical.oci_digest,
+            "fsverity_root" => canonical.fsverity_root_hash,
+            "size"          => canonical.size_bytes,
+            "media_type"    => canonical.media_type
+          }
+        else
+          Rails.logger.warn "[ModulePublicationProcessor] format=#{format} ingest failed: #{result.error}"
+          errors << "#{format}: #{result.error}"
+        end
+      end
+
+      ok = errors.empty? && artifacts_hash.size == formats.size
+      if ok
+        node_module_version.update_columns(artifacts: artifacts_hash)
+      end
+
+      {
+        ok?:              ok,
+        module_artifacts: all_artifacts,
+        errors:           errors
+      }
+    end
 
     def failure(message)
       Result.new(ok?: false, error: message, resolved_dependencies: [])

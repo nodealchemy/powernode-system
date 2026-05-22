@@ -62,7 +62,6 @@ module System
     class VerificationError < PullError; end
 
     CACHE_ROOT = ENV.fetch("POWERNODE_OCI_CACHE_DIR", "/var/lib/powernode/oci-cache").freeze
-    COMPOSEFS_MEDIA_TYPE = "application/vnd.powernode.composefs"
     MANIFEST_IMAGE_TYPES = %w[
       application/vnd.oci.image.manifest.v1+json
       application/vnd.docker.distribution.manifest.v2+json
@@ -77,13 +76,34 @@ module System
     HTTP_READ_TIMEOUT = 300
     BLOB_BUFFER_BYTES = 65_536
 
-    # @param artifact [System::ModuleArtifact]
+    # @param oci_ref [String]
+    # @param media_type [String] the layer mediaType to extract from the
+    #   image manifest (e.g. "application/vnd.powernode.composefs" or
+    #   "application/vnd.powernode.squashfs")
     # @param architecture [String, nil] preferred arch when the upstream
-    #   serves an index manifest (default: artifact.architecture or amd64)
-    def initialize(artifact, architecture: nil)
-      raise ArgumentError, "artifact required" unless artifact
-      @artifact = artifact
-      @architecture = (architecture || artifact.architecture.presence || DEFAULT_ARCH).to_s
+    #   serves an index manifest (defaults to "amd64")
+    # @param node_module [System::NodeModule, nil] for event context only
+    # @param account [Account, nil] for FleetEvent emission scoping
+    def initialize(oci_ref:, media_type:, architecture: nil, node_module: nil, account: nil)
+      raise ArgumentError, "oci_ref required" if oci_ref.to_s.empty?
+      raise ArgumentError, "media_type required" if media_type.to_s.empty?
+      @oci_ref      = oci_ref
+      @media_type   = media_type
+      @architecture = (architecture || DEFAULT_ARCH).to_s
+      @node_module  = node_module
+      @account      = account || node_module&.account
+    end
+
+    # Builds an OciBlobProxyService for a (node_module, format) tuple.
+    # `format_artifact` is the per-format hash from
+    # NodeModuleVersion.artifacts: {"oci_ref", "oci_digest",
+    # "fsverity_root", "size", "media_type"}.
+    def self.from_format(node_module:, format:, format_artifact:)
+      new(
+        oci_ref:    format_artifact.fetch("oci_ref"),
+        media_type: format_artifact.fetch("media_type"),
+        node_module: node_module
+      )
     end
 
     # Returns the local filesystem path of the cached composefs blob.
@@ -94,7 +114,7 @@ module System
     # @raise [PullError] on any failure (network, auth, verification)
     def fetch_blob!
       manifest = fetch_image_manifest!
-      layer = composefs_layer!(manifest)
+      layer = target_layer!(manifest)
       digest = layer.fetch("digest").to_s
       expected_size = layer.fetch("size").to_i
       cached = cache_path_for(digest)
@@ -107,29 +127,29 @@ module System
         return cached if cached_complete?(cached, expected_size, digest)
 
         emit_event(severity: "low", kind: "oci.blob.fetch_start",
-                   payload: { module_id: @artifact.node_module_version&.node_module_id,
-                              oci_ref: @artifact.oci_ref, digest: digest,
+                   payload: { module_id: @node_module&.id,
+                              oci_ref: @oci_ref, digest: digest,
                               size_bytes: expected_size })
 
         stream_blob_to_cache!(digest: digest, target: cached, expected_size: expected_size)
 
         emit_event(severity: "low", kind: "oci.blob.fetch_complete",
-                   payload: { module_id: @artifact.node_module_version&.node_module_id,
-                              oci_ref: @artifact.oci_ref, digest: digest,
+                   payload: { module_id: @node_module&.id,
+                              oci_ref: @oci_ref, digest: digest,
                               size_bytes: expected_size, cache_path: cached })
       end
       cached
     rescue StandardError => e
       emit_event(severity: "high", kind: "oci.blob.fetch_failed",
-                 payload: { oci_ref: @artifact.oci_ref, error: e.message })
+                 payload: { oci_ref: @oci_ref, error: e.message })
       raise
     end
 
     # Returns the layer-digest sha256 (with sha256: prefix) without
     # forcing a blob pull. Used by callers that only need to set
     # ETag / digest headers without pre-fetching the blob.
-    def composefs_layer_digest!
-      composefs_layer!(fetch_image_manifest!).fetch("digest").to_s
+    def layer_digest!
+      target_layer!(fetch_image_manifest!).fetch("digest").to_s
     end
 
     private
@@ -143,13 +163,13 @@ module System
         manifests = Array(manifest["manifests"])
         entry = manifests.find { |m| m.dig("platform", "architecture") == @architecture }
         entry ||= manifests.find { |m| m["mediaType"] && MANIFEST_IMAGE_TYPES.include?(m["mediaType"]) }
-        raise ManifestError, "index manifest #{@artifact.oci_ref} has no entry for #{@architecture}" unless entry
+        raise ManifestError, "index manifest #{@oci_ref} has no entry for #{@architecture}" unless entry
         return fetch_manifest_raw!(entry["digest"])
       end
       unless MANIFEST_IMAGE_TYPES.include?(manifest["mediaType"])
         # Some registries omit mediaType — accept the layers array if present.
         return manifest if manifest["layers"].is_a?(Array)
-        raise ManifestError, "unsupported manifest mediaType #{media.inspect} for #{@artifact.oci_ref}"
+        raise ManifestError, "unsupported manifest mediaType #{media.inspect} for #{@oci_ref}"
       end
       manifest
     end
@@ -166,11 +186,15 @@ module System
       raise ManifestError, "manifest decode failed: #{e.message}"
     end
 
-    def composefs_layer!(manifest)
+    # Finds the layer matching this proxy's @media_type. Same lookup
+    # logic for composefs (application/vnd.powernode.composefs) and
+    # squashfs (application/vnd.powernode.squashfs) — the layer the
+    # CI pushed is what comes back here.
+    def target_layer!(manifest)
       layers = Array(manifest["layers"])
-      raise ManifestError, "manifest #{@artifact.oci_ref} has no layers array" if layers.empty?
-      layer = layers.find { |l| l["mediaType"] == COMPOSEFS_MEDIA_TYPE }
-      raise ManifestError, "no composefs layer in manifest #{@artifact.oci_ref}" unless layer
+      raise ManifestError, "manifest #{@oci_ref} has no layers array" if layers.empty?
+      layer = layers.find { |l| l["mediaType"] == @media_type }
+      raise ManifestError, "no #{@media_type} layer in manifest #{@oci_ref}" unless layer
       layer
     end
 
@@ -259,8 +283,8 @@ module System
     end
 
     def registry_host
-      host = @artifact.oci_ref.to_s.split("/").first
-      raise PullError, "oci_ref #{@artifact.oci_ref.inspect} missing registry host" if host.blank?
+      host = @oci_ref.to_s.split("/").first
+      raise PullError, "oci_ref #{@oci_ref.inspect} missing registry host" if host.blank?
       host
     end
 
@@ -269,7 +293,7 @@ module System
     # and the tag/digest suffix to get the repo path used in
     # /v2/<repo_path>/manifests/... URLs.
     def repo_path
-      ref = @artifact.oci_ref.to_s.sub(%r{\A[^/]+/}, "")
+      ref = @oci_ref.to_s.sub(%r{\A[^/]+/}, "")
       if ref.include?("@")
         ref.split("@", 2).first
       else
@@ -279,7 +303,7 @@ module System
 
     # The reference is the tag (after final `:`) OR digest (after `@`).
     def reference
-      ref = @artifact.oci_ref.to_s
+      ref = @oci_ref.to_s
       if ref.include?("@")
         ref.split("@", 2).last
       else
@@ -352,7 +376,7 @@ module System
 
     def emit_event(severity:, kind:, payload:)
       return unless defined?(::System::Fleet::EventBroadcaster)
-      account = @artifact.account rescue nil
+      account = @account
       ::System::Fleet::EventBroadcaster.emit!(
         account: account,
         kind: kind,
