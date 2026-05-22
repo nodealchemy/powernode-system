@@ -74,18 +74,25 @@ module Api
             # the powernode-hub first-run handler.
             auto_issue_managed_child_grant!(peer)
 
+            # Issue a single-use bootstrap_token so the child agent can
+            # immediately enroll against /node_api/enroll and pick up its
+            # mTLS cert. Without this the agent has no auth to fetch
+            # module assignments — federation accept alone establishes
+            # peer trust but not node-api access.
+            node_enrollment = issue_node_enrollment_for!(peer)
+
             emit_event!(peer, action: "accepted")
 
-            render_success(
-              data: {
-                peer_id: peer.id,
-                status: peer.status,
-                peer_kind: peer.peer_kind,
-                contract_version_agreed: peer.contract_version_agreed,
-                accepted_at: peer.signed_at&.iso8601,
-                handshake_at: peer.last_handshake_at&.iso8601
-              }
-            )
+            payload = {
+              peer_id: peer.id,
+              status: peer.status,
+              peer_kind: peer.peer_kind,
+              contract_version_agreed: peer.contract_version_agreed,
+              accepted_at: peer.signed_at&.iso8601,
+              handshake_at: peer.last_handshake_at&.iso8601
+            }
+            payload[:node_enrollment] = node_enrollment if node_enrollment
+            render_success(data: payload)
           end
 
           private
@@ -161,6 +168,53 @@ module Api
             Rails.logger.warn(
               "[FederationApi::AcceptController] managed_child auto-grant failed for peer #{peer.id}: #{e.message}"
             )
+          end
+
+          # Bootstrap-token issuance for the federation-spawned child's
+          # node_api enrollment. Only fires for managed_child spawns
+          # (parent side) where SpawnProvisioner stamped node_id +
+          # node_instance_id into peer.metadata. Returns a hash suitable
+          # for inclusion in the accept response, or nil when the lookup
+          # data is absent (out-of-band-invited peers etc.).
+          #
+          # The token is single-use, scoped to the child's Node, and
+          # carries the node's name as intended_subject — the agent
+          # presents it on /node_api/enroll and receives an mTLS cert
+          # bound to that Node's identity.
+          def issue_node_enrollment_for!(peer)
+            return nil unless peer.spawn_role == "parent"
+            return nil unless peer.spawn_mode == "managed_child"
+
+            node_id = peer.metadata&.dig("node_id")
+            node_instance_id = peer.metadata&.dig("node_instance_id")
+            return nil if node_id.blank?
+
+            node = ::System::Node.find_by(id: node_id, account_id: peer.account_id)
+            return nil unless node
+
+            instance = node_instance_id.present? ?
+                       ::System::NodeInstance.find_by(id: node_instance_id) : nil
+
+            token, plaintext = ::System::BootstrapToken.issue!(
+              node: node,
+              node_instance: instance,
+              intended_subject: node.name,
+              ttl: 1.hour,
+              single_use: true,
+              purpose: "federation_managed_child_accept"
+            )
+
+            {
+              bootstrap_token:   plaintext,
+              platform_url:      peer.remote_instance_url,
+              intended_subject:  node.name,
+              expires_at:        token.expires_at.iso8601
+            }
+          rescue StandardError => e
+            ::Rails.logger.warn(
+              "[FederationApi::AcceptController] node_enrollment issuance failed for peer #{peer.id}: #{e.class}: #{e.message}"
+            )
+            nil
           end
 
           def emit_event!(peer, action:)
