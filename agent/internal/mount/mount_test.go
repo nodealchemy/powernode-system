@@ -294,7 +294,7 @@ func TestMountModule_WithBlob_IssuesComposefsMount(t *testing.T) {
 	if err := os.MkdirAll(l.ModulesCacheRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(l.ModuleCachePath(digest, "composefs"), []byte("fake cfs"), 0o644); err != nil {
+	if err := os.WriteFile(l.ModuleCachePath(digest), []byte("fake erofs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

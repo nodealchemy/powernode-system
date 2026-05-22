@@ -7,9 +7,10 @@ import (
 )
 
 // NodeCapabilities is the kernel-feature snapshot the agent advertises
-// in every heartbeat. The server reads it to pick which module artifact
-// format to surface in the manifest response (composefs metadata image
-// vs. squashfs lower-dir blob — see Phase 1.5 of the dual-format plan).
+// in every heartbeat. The platform reads it for fleet introspection
+// ("which nodes can mount erofs?") and as a sanity gate before
+// reconciling modules onto a node — if the kernel can't mount erofs,
+// the module assignment is rejected before any blob is pulled.
 //
 // Detection runs once at service startup. The set is stable across
 // agent restarts until the kernel itself changes (kexec, upgrade,
@@ -17,18 +18,16 @@ import (
 // re-detect on each boot for simplicity.
 type NodeCapabilities struct {
 	KernelVersion      string `json:"kernel_version,omitempty"`
-	ComposefsAvailable bool   `json:"composefs_available"`
-	SquashfsAvailable  bool   `json:"squashfs_available"`
+	ErofsAvailable     bool   `json:"erofs_available"`
 	OverlayfsAvailable bool   `json:"overlayfs_available"`
 	FsverityAvailable  bool   `json:"fsverity_available"`
 }
 
-// DetectCapabilities scans /proc/filesystems + uname() to figure out
-// what the on-node kernel supports. Each capability check is
-// independent — a partial failure (e.g. /proc/filesystems unreadable)
+// DetectCapabilities scans /proc/filesystems + /proc/sys/kernel/osrelease
+// to figure out what the on-node kernel supports. Each capability check
+// is independent — a partial failure (e.g. /proc/filesystems unreadable)
 // returns a struct with conservative defaults rather than an error,
-// because every kernel that runs systemd has the basics enabled and
-// the safe fallback is "assume squashfs only" (works everywhere).
+// because every kernel that runs systemd has the basics enabled.
 func DetectCapabilities() *NodeCapabilities {
 	caps := &NodeCapabilities{}
 
@@ -41,28 +40,27 @@ func DetectCapabilities() *NodeCapabilities {
 	}
 
 	// Parse /proc/filesystems for the kernel-registered filesystem
-	// names. Composefs/squashfs/overlay show up in column 2 when the
-	// driver is built in or already loaded as a module; for built-in
+	// names. erofs and overlay show up in column 2 when the driver
+	// is built in or already loaded as a module; for built-in
 	// drivers that haven't been used yet, they'll still appear.
 	fs := readProcFilesystems()
-	caps.ComposefsAvailable = fs["composefs"]
-	caps.SquashfsAvailable = fs["squashfs"]
+	caps.ErofsAvailable = fs["erofs"]
 	caps.OverlayfsAvailable = fs["overlay"]
 
 	// fs-verity is a per-superblock feature, not a "filesystem" in
 	// /proc/filesystems. The reliable check is "does the running
-	// kernel have the syscall registered" — testing this without
+	// kernel have the syscall registered" — testing without
 	// touching real files is non-trivial, so we infer from the
 	// kernel version (>=5.4 ships fs-verity unconditionally in
-	// Ubuntu's generic config). Conservative: false if uname failed.
+	// stock distro configs). Conservative: false if uname failed.
 	caps.FsverityAvailable = kernelAtLeast(caps.KernelVersion, 5, 4)
 
 	return caps
 }
 
 // readProcFilesystems returns a name → present? map for the kernel's
-// registered filesystems. Returns nil on read failure (caller treats
-// missing keys as "unavailable").
+// registered filesystems. Returns empty map on read failure (caller
+// treats missing keys as "unavailable").
 func readProcFilesystems() map[string]bool {
 	f, err := os.Open("/proc/filesystems")
 	if err != nil {

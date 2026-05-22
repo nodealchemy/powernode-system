@@ -291,19 +291,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 // attachModule pulls + verifies + mounts a single module.
 func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
-	if mf.Format == "" {
-		return fmt.Errorf("manifest for module %s has no format — server didn't pick a publishable artifact", mod.ID)
-	}
 	ref := &oci.ModuleArtifactRef{
-		ModuleID: mod.ID,
-		Digest:   mod.Digest,
-		Format:   mf.Format,
-		// DownloadURL: per-format endpoint. ?format=<f> tells the
-		// FilesController which blob to stream — the manifest digest
-		// + cosign bundle returned in headers must match the format
-		// the server picked, so passing the same value here keeps
-		// the pull deterministic from the agent's view.
-		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s?format=%s", mod.ID, mf.Format),
+		ModuleID:    mod.ID,
+		Digest:      mod.Digest,
+		DownloadURL: fmt.Sprintf("/api/v1/system/node_api/files/modules/%s", mod.ID),
 		Size:        0,
 	}
 	cfsPath, bundlePath, err := r.cfg.Puller.Pull(ref)
@@ -319,29 +310,18 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		}
 	}
 
-	// Mount this module's blob at the per-module path
-	// (`/run/powernode/modules/<digest>`). Idempotent — if the previous
-	// reconcile tick already mounted it, the format-specific helper's
+	// Mount this module's erofs blob at the per-module path
+	// (`/run/powernode/modules/<digest>`). Idempotent — if the
+	// previous reconcile tick already mounted it, MountModule's
 	// IsMountpoint check returns nil immediately. The overlay union
 	// (assembled at `Layout.SysRoot` post-loop) reads from these
-	// per-module mountpoints in priority order regardless of which
-	// format produced them — overlayfs sees just a read-only lower-dir.
+	// per-module mountpoints in priority order — overlayfs sees just
+	// a read-only lower-dir, agnostic to what produced it.
 	//
-	// Direct mount, no extraction: squashfs uses `mount -t squashfs
-	// -o loop,ro` (kernel allocates the loop device automatically);
-	// composefs uses `mount -t composefs -o basedir=<store>` against
-	// the metadata image + CAS objects.
-	switch mf.Format {
-	case "composefs":
-		if err := mount.MountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
-			return fmt.Errorf("mount composefs: %w", err)
-		}
-	case "squashfs":
-		if err := mount.MountModuleSquashfs(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
-			return fmt.Errorf("mount squashfs: %w", err)
-		}
-	default:
-		return fmt.Errorf("unsupported manifest format %q for module %s", mf.Format, mod.ID)
+	// Direct loop mount, no extraction: `mount -t erofs -o loop,ro`.
+	// Kernel allocates the loop device automatically.
+	if err := mount.MountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
+		return fmt.Errorf("mount erofs: %w", err)
 	}
 
 	// Apply security policy. SeccompProfile is a path inside the
@@ -425,23 +405,16 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 				fmt.Errorf("module %s: %w", mod.ID, err))
 		}
 	}
-	// Unmount the module's blob. The union overlay above SysRoot
+	// Unmount the module's erofs blob. The union overlay above SysRoot
 	// holds an open reference to this mountpoint, so we MUST be called
 	// after the union is recomposed (which is the case — RunOnce reaps
 	// detached modules first, then rebuilds the overlay with the
-	// remaining stack). Best-effort: log + continue on failure. Both
-	// composefs and squashfs use the same `umount` shape under the
-	// hood, but route through the format-specific helper so the loop
-	// device cleanup happens correctly for squashfs.
-	unmountErr := error(nil)
-	if mf != nil && mf.Format == "squashfs" {
-		unmountErr = mount.UnmountModuleSquashfs(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest)
-	} else {
-		unmountErr = mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest)
-	}
-	if unmountErr != nil {
+	// remaining stack). Best-effort: log + continue on failure. The
+	// kernel cleans up the loop device automatically when umount
+	// releases the mount.
+	if err := mount.UnmountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod.Digest); err != nil {
 		r.cfg.OnError("reconciler:unmount_module",
-			fmt.Errorf("module %s: %w", mod.ID, unmountErr))
+			fmt.Errorf("module %s: %w", mod.ID, err))
 	}
 	_ = current // current state held by caller; best-effort detach
 	return nil

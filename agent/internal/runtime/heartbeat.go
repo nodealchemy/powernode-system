@@ -30,13 +30,13 @@ type HeartbeatPayload struct {
 	LoadAverage   string                  `json:"load_average,omitempty"`
 	MemoryFreeKB  int64                   `json:"memory_free_kb,omitempty"`
 	SdwanState    []sdwan.HeartbeatStatus `json:"sdwan_state,omitempty"`
-	// Capabilities is the agent-detected kernel capability set. The
-	// server reads this on every heartbeat to decide which module
-	// artifact format to surface in ModulesController#show — e.g.
-	// composefs-capable nodes get the metadata-image + CAS path; the
-	// fallback nodes get the squashfs path. Detection runs once at
-	// service startup (see internal/runtime/capabilities.go) and is
-	// stable across reboots until the kernel changes.
+	// Capabilities is the agent-detected kernel capability set
+	// (erofs, overlayfs, fs-verity). The server records this on every
+	// heartbeat for fleet introspection ("which nodes can mount
+	// erofs?") and as a sanity gate before reconciling modules onto
+	// a node. Detection runs once at service startup (see
+	// internal/runtime/capabilities.go) and is stable across reboots
+	// until the kernel changes.
 	Capabilities *NodeCapabilities `json:"node_capabilities,omitempty"`
 }
 
