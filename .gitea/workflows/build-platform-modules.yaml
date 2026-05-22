@@ -123,6 +123,7 @@ jobs:
             git \
             mmdebstrap \
             arch-test \
+            ubuntu-keyring \
             erofs-utils \
             fsverity \
             jq \
@@ -239,6 +240,7 @@ jobs:
             --variant=minbase \
             --components=main,universe \
             --include="$pkgs" \
+            --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
             --aptopt='Acquire::http::Pipeline-Depth "0"' \
             noble /tmp/fat \
             "$base_url"
