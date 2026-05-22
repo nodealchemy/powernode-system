@@ -352,7 +352,11 @@ module System
       def create_volume(params)
         log_operation("create_volume", params: params)
         c = require_client!
-        node = params[:node] || params[:availability_zone] || first_online_node!(c)
+        # params[:node] semantic collision — ProvisioningService passes the
+        # System::Node AR record for adapters that need template/platform
+        # access (LocalQemuProvider), but PVE expects a node-name STRING.
+        # Only accept a string here; fall back to the cluster picker otherwise.
+        node = pve_node_name(params) || params[:availability_zone] || first_online_node!(c)
         storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
         format = params[:format] || "qcow2"
         vmid = params[:vmid] || allocate_next_vmid!(c)
@@ -564,7 +568,11 @@ module System
 
       def create_vm_instance(params, preset:)
         c = require_client!
-        node = params[:node] || first_online_node!(c)
+        # params[:node] is overloaded — ProvisioningService passes the
+        # System::Node AR record there for adapters that need template/
+        # platform access, but PVE expects a node-name STRING. Filter
+        # to strings only; fall back to first_online_node! otherwise.
+        node = pve_node_name(params) || first_online_node!(c)
         vmid = params[:vmid] || allocate_next_vmid!(c)
         storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
@@ -674,9 +682,18 @@ module System
         # passed one (Federation::SpawnProvisioner). Direct
         # params[:fw_cfg_entries] takes precedence — operator can
         # extend/override the default federation set.
+        #
+        # PVE restricts the `args` config field (the only fw-cfg escape
+        # hatch) to root@pam. API-token spawns get a 500 "only root can
+        # set 'args' config" error. Default behavior is therefore to SKIP
+        # fw-cfg payload injection — the agent reads the federation payload
+        # from cloud-init file fallback (CloudSeed writes /etc/powernode/
+        # federation-payload.json). Opt back in by setting
+        # POWERNODE_PVE_USE_FWCFG=1 (operator with root@pam credentials).
         fw_cfg = params[:fw_cfg_entries].is_a?(Hash) ? params[:fw_cfg_entries].dup : {}
         spawn_payload = params.dig(:options, :spawn_payload) || params[:spawn_payload]
-        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0
+        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0 &&
+           ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
           fw_cfg["opt/com.powernode/parent_url"]       ||= spawn_payload["parent_url"].to_s
           fw_cfg["opt/com.powernode/acceptance_token"] ||= spawn_payload["acceptance_token"].to_s
           fw_cfg["opt/com.powernode/spawn_mode"]       ||= spawn_payload["spawn_mode"].to_s
@@ -904,6 +921,16 @@ module System
       def allocate_next_vmid!(c)
         result = c.get("/api2/json/cluster/nextid")
         Integer(result.to_s)
+      end
+
+      # PVE expects a node-name STRING (e.g. "pve1", "dna"). Filter out
+      # non-string values that downstream callers (ProvisioningService)
+      # pass via params[:node] for adapters that need the System::Node
+      # AR record (e.g. LocalQemuProvider). Returns nil so callers can
+      # chain `|| first_online_node!(c)` for the cluster-picker fallback.
+      def pve_node_name(params)
+        v = params[:node]
+        v if v.is_a?(String) && !v.empty?
       end
 
       def first_shared_storage_with_content!(c, node:, content:)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "yaml"
+require "json"
 
 module System
   module Providers
@@ -80,7 +81,7 @@ module System
         end
 
         def write_files
-          [
+          files = [
             {
               "path"        => "/etc/systemd/system/powernode-agent.service",
               "permissions" => "0644",
@@ -88,6 +89,21 @@ module System
               "content"     => systemd_unit_content
             }
           ]
+          # Federation payload disk fallback. PVE restricts the `args` config
+          # field (the fw-cfg escape hatch) to root@pam, so API-token spawns
+          # can't use fw-cfg. We stage the payload as a JSON file at the
+          # canonical PayloadFilePath in extensions/system/agent/internal/federation/config.go;
+          # the agent's LoadConfig falls back to this file when fw-cfg yields
+          # no parent_url.
+          if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length.positive?
+            files << {
+              "path"        => "/etc/powernode/federation-payload.json",
+              "permissions" => "0600",
+              "owner"       => "root:root",
+              "content"     => JSON.dump(spawn_payload)
+            }
+          end
+          files
         end
 
         def systemd_unit_content
@@ -118,10 +134,14 @@ module System
             # mirror it onto their own static-asset host if desired.
             "curl -fsSL --retry 3 --retry-delay 5 -o /usr/local/bin/powernode-agent #{agent_url}",
             "chmod +x /usr/local/bin/powernode-agent",
-            # First-boot federation accept. The agent's `boot` subcommand
-            # reads fw-cfg (set by ProxmoxProvider via PVE args) and POSTs
-            # the acceptance_token to parent_url's /federation_api/accept.
-            "/usr/local/bin/powernode-agent boot || true",
+            # First-boot federation accept. The `federation-accept` subcommand
+            # reads /etc/powernode/federation-payload.json (cloud-init wrote
+            # it via write_files since PVE token-auth can't use fw-cfg) and
+            # POSTs the AcceptRequest to parent_url's /federation_api/accept.
+            # Standard TLS verification — the parent's cert must be valid for
+            # the SAN in parent_url. Operators with internal CAs should pass
+            # a CA bundle via --ca-bundle (the platform's mTLS CA when wired).
+            "/usr/local/bin/powernode-agent federation-accept || true",
             # Then enable the long-lived service loop (heartbeat, task lease,
             # module reconcile, cert rotation).
             "systemctl daemon-reload",
