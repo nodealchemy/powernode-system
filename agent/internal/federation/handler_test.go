@@ -53,7 +53,7 @@ func TestHandlerRun_HappyPath_WritesMarker(t *testing.T) {
 		ContractVersion: "v1",
 	}
 
-	if err := h.Run(context.Background(), cfg); err != nil {
+	if _, err := h.Run(context.Background(), cfg); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestHandlerRun_Idempotent_WhenMarkerPresent(t *testing.T) {
 	h := &Handler{Client: ts.Client(), MarkerPath: markerPath}
 	cfg := &Config{ParentURL: ts.URL, AcceptanceToken: "tok"}
 
-	if err := h.Run(context.Background(), cfg); err != nil {
+	if _, err := h.Run(context.Background(), cfg); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if callCount != 0 {
@@ -117,7 +117,7 @@ func TestHandlerRun_ReturnsError_OnNon2xx(t *testing.T) {
 	h := &Handler{Client: ts.Client(), MarkerPath: markerPath}
 	cfg := &Config{ParentURL: ts.URL, AcceptanceToken: "bad-tok"}
 
-	err := h.Run(context.Background(), cfg)
+	_, err := h.Run(context.Background(), cfg)
 	if err == nil {
 		t.Fatalf("expected error on 401")
 	}
@@ -133,7 +133,7 @@ func TestHandlerRun_ReturnsError_OnNon2xx(t *testing.T) {
 func TestHandlerRun_ReturnsError_OnNilConfig(t *testing.T) {
 	h := NewHandler()
 	h.MarkerPath = filepath.Join(t.TempDir(), "marker")
-	if err := h.Run(context.Background(), nil); err == nil {
+	if _, err := h.Run(context.Background(), nil); err == nil {
 		t.Fatalf("expected error on nil config")
 	}
 }
@@ -142,7 +142,7 @@ func TestHandlerRun_ReturnsError_OnEmptyParentURL(t *testing.T) {
 	h := NewHandler()
 	h.MarkerPath = filepath.Join(t.TempDir(), "marker")
 	cfg := &Config{AcceptanceToken: "tok"}
-	if err := h.Run(context.Background(), cfg); err == nil {
+	if _, err := h.Run(context.Background(), cfg); err == nil {
 		t.Fatalf("expected error on empty parent_url")
 	}
 }
@@ -162,7 +162,7 @@ func TestHandlerRun_HonorsCtxCancellation(t *testing.T) {
 	h := &Handler{Client: ts.Client(), MarkerPath: filepath.Join(t.TempDir(), "marker")}
 	cfg := &Config{ParentURL: ts.URL, AcceptanceToken: "tok"}
 
-	err := h.Run(ctx, cfg)
+	_, err := h.Run(ctx, cfg)
 	if err == nil {
 		t.Fatalf("expected error on cancelled ctx")
 	}
@@ -184,7 +184,7 @@ func TestHandlerRun_HandlesTrailingSlashOnParentURL(t *testing.T) {
 		ContractVersion: "v1",
 	}
 
-	if err := h.Run(context.Background(), cfg); err != nil {
+	if _, err := h.Run(context.Background(), cfg); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
 	if capturedPath != "/api/v1/system/federation_api/accept" {

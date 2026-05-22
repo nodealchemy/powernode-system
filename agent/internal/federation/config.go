@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -41,10 +42,21 @@ var ErrNotConfigured = errors.New("federation: no spawn payload in fw-cfg")
 // tests + non-standard layouts.
 const FwCfgRoot = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode"
 
+// PayloadFilePath is the disk fallback for environments where fw-cfg
+// isn't usable (e.g. Proxmox spawn under a non-root API token — PVE
+// restricts the `args` field to root@pam, so the provider writes the
+// payload as a cloud-init file instead). LoadConfig checks fw-cfg
+// first, then falls back to this JSON file.
+const PayloadFilePath = "/etc/powernode/federation-payload.json"
+
 // LoadConfig reads the federation spawn payload from fw-cfg under
 // root (defaults to FwCfgRoot). Returns ErrNotConfigured when no
 // parent_url is present — the legitimate steady-state for a child
 // that wasn't spawned by a parent.
+//
+// File fallback: if fw-cfg yields no parent_url, LoadConfig tries
+// PayloadFilePath (a JSON-marshaled Config). This supports providers
+// that can't write fw-cfg with their available API privileges.
 func LoadConfig(root string) (*Config, error) {
 	if root == "" {
 		root = FwCfgRoot
@@ -55,6 +67,11 @@ func LoadConfig(root string) (*Config, error) {
 		return nil, err
 	}
 	if parentURL == "" {
+		// Try the disk fallback before giving up. The file is written
+		// by cloud-init write_files when the provider can't use fw-cfg.
+		if cfg, fileErr := loadConfigFromFile(PayloadFilePath); fileErr == nil && cfg != nil {
+			return cfg, nil
+		}
 		return nil, ErrNotConfigured
 	}
 
@@ -78,6 +95,33 @@ func LoadConfig(root string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadConfigFromFile parses the JSON payload at path. Returns
+// (nil, nil) when the file is absent (treated as "no fallback present"
+// rather than an error so the caller falls through to ErrNotConfigured).
+func loadConfigFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.ParentURL == "" {
+		return nil, nil
+	}
+	if cfg.AcceptanceToken == "" {
+		return nil, errors.New("federation: payload file has parent_url but missing acceptance_token")
+	}
+	if cfg.ContractVersion == "" {
+		cfg.ContractVersion = "v1"
+	}
+	return &cfg, nil
 }
 
 // readFwCfg reads a single fw-cfg blob from its raw file. Empty

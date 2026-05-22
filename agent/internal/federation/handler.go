@@ -61,14 +61,27 @@ type Endpoint struct {
 type AcceptResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
-		PeerID                string `json:"peer_id"`
-		Status                string `json:"status"`
-		PeerKind              string `json:"peer_kind"`
-		ContractVersionAgreed int    `json:"contract_version_agreed"`
-		AcceptedAt            string `json:"accepted_at,omitempty"`
-		HandshakeAt           string `json:"handshake_at,omitempty"`
+		PeerID                string          `json:"peer_id"`
+		Status                string          `json:"status"`
+		PeerKind              string          `json:"peer_kind"`
+		ContractVersionAgreed int             `json:"contract_version_agreed"`
+		AcceptedAt            string          `json:"accepted_at,omitempty"`
+		HandshakeAt           string          `json:"handshake_at,omitempty"`
+		NodeEnrollment        *NodeEnrollment `json:"node_enrollment,omitempty"`
 	} `json:"data"`
 	Error string `json:"error,omitempty"`
+}
+
+// NodeEnrollment is the optional bootstrap-token block the parent
+// includes in the accept response for managed_child spawns. The agent
+// uses these fields to immediately call /api/v1/system/node_api/enroll
+// and obtain its mTLS identity — without this step the agent has
+// federation-peer trust but no node-api auth to fetch module assignments.
+type NodeEnrollment struct {
+	BootstrapToken   string `json:"bootstrap_token"`
+	PlatformURL      string `json:"platform_url"`
+	IntendedSubject  string `json:"intended_subject"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
 }
 
 // DefaultMarkerPath is where the success marker lives. Once written,
@@ -87,18 +100,19 @@ func NewHandler() *Handler {
 
 // Run completes the federation handshake. Behavior:
 //
-//   - If the marker file already exists, returns nil immediately
-//     (handshake done; idempotent).
-//   - If LoadConfig returns ErrNotConfigured, returns nil (this child
-//     wasn't spawned via federation; legitimate steady-state).
+//   - If the marker file already exists, returns nil (idempotent).
+//   - If LoadConfig returns ErrNotConfigured, the caller should not
+//     reach Run (handled at federation-accept subcommand entry).
 //   - Otherwise, POSTs to <parent_url>/api/v1/system/federation_api/accept
 //     and on 2xx writes the marker file.
 //
+// Returns the parsed AcceptResponse so the caller can inspect
+// Data.NodeEnrollment to chain into node-api enrollment when present.
 // A non-nil error means the handshake actively failed (network error,
 // non-2xx response, marker write failure). Callers should retry with
 // backoff; the bootstrap token's TTL is hours so retries within that
 // window are well within tolerance.
-func (h *Handler) Run(ctx context.Context, cfg *Config) error {
+func (h *Handler) Run(ctx context.Context, cfg *Config) (*AcceptResponse, error) {
 	if h.Logf == nil {
 		h.Logf = func(string, ...any) {}
 	}
@@ -108,21 +122,21 @@ func (h *Handler) Run(ctx context.Context, cfg *Config) error {
 
 	if alreadyDone(h.MarkerPath) {
 		h.Logf("federation: marker present at %s; skipping handshake", h.MarkerPath)
-		return nil
+		return nil, nil
 	}
 
 	if cfg == nil {
-		return errors.New("federation: nil config")
+		return nil, errors.New("federation: nil config")
 	}
 	if cfg.ParentURL == "" || cfg.AcceptanceToken == "" {
-		return errors.New("federation: parent_url and acceptance_token required")
+		return nil, errors.New("federation: parent_url and acceptance_token required")
 	}
 
 	client := h.Client
 	if client == nil {
 		c, err := buildClient(h.CABundlePEM)
 		if err != nil {
-			return fmt.Errorf("federation: build http client: %w", err)
+			return nil, fmt.Errorf("federation: build http client: %w", err)
 		}
 		client = c
 	}
@@ -141,20 +155,20 @@ func (h *Handler) Run(ctx context.Context, cfg *Config) error {
 
 	respData, err := h.postJSON(ctx, client, endpoint, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if !respData.Success {
-		return fmt.Errorf("federation: parent rejected accept: %s", respData.Error)
+		return respData, fmt.Errorf("federation: parent rejected accept: %s", respData.Error)
 	}
 
 	if err := writeMarker(h.MarkerPath, respData); err != nil {
-		return fmt.Errorf("federation: write marker: %w", err)
+		return respData, fmt.Errorf("federation: write marker: %w", err)
 	}
 
 	h.Logf("federation: handshake complete peer_id=%s status=%s",
 		respData.Data.PeerID, respData.Data.Status)
-	return nil
+	return respData, nil
 }
 
 // postJSON marshals body, POSTs it, and decodes the response. Returns
