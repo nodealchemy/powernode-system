@@ -94,17 +94,6 @@ module System
       @account      = account || node_module&.account
     end
 
-    # Builds an OciBlobProxyService for a (node_module, format) tuple.
-    # `format_artifact` is the per-format hash from
-    # NodeModuleVersion.artifacts: {"oci_ref", "oci_digest",
-    # "fsverity_root", "size", "media_type"}.
-    def self.from_format(node_module:, format:, format_artifact:)
-      new(
-        oci_ref:    format_artifact.fetch("oci_ref"),
-        media_type: format_artifact.fetch("media_type"),
-        node_module: node_module
-      )
-    end
 
     # Returns the local filesystem path of the cached composefs blob.
     # Idempotent: cached path is keyed by layer digest, so repeat calls

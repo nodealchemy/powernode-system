@@ -430,12 +430,13 @@ module System
     public
 
     # === Capability helpers (agent-reported, refreshed each heartbeat) ===
-    # See AddArtifactsAndCapabilitiesForDualFormat migration for shape.
-    # Used by ModulesController#show to pick which module artifact
-    # format to surface in the manifest response. `public` keyword
-    # restores visibility since these helpers landed after the
-    # `private` block above; the heartbeat controller calls
-    # `record_capabilities!` directly so it MUST be public.
+    # The agent advertises kernel features (erofs, overlayfs, fs-verity)
+    # on every heartbeat. The platform records them for fleet
+    # introspection ("which nodes can mount erofs?") and as a sanity
+    # gate before assigning modules. `public` keyword restores
+    # visibility since these helpers landed after the `private` block
+    # above; the heartbeat controller calls `record_capabilities!`
+    # directly so it MUST be public.
 
     # Reads a capability value. Stringifies the key for forgiveness;
     # returns nil when the capabilities hash is empty or the key is
@@ -445,39 +446,20 @@ module System
       capabilities[key.to_s]
     end
 
-    # True iff the agent has reported it can mount composefs. False
-    # for any node that hasn't checked in yet (safe default — server
-    # falls back to squashfs which works everywhere).
-    def supports_composefs?
-      capability("composefs_available") == true
-    end
-
-    # True iff the agent reports squashfs availability. Should be true
-    # on every Linux kernel in production use, but check defensively
-    # in case the heartbeat hasn't arrived.
-    def supports_squashfs?
-      # An empty caps hash (no heartbeat yet) is treated as "assume
-      # squashfs works" — overlayfs/squashfs are in every mainline
-      # kernel since 2.6.x, and this avoids deadlocking the very first
-      # reconcile cycle which happens BEFORE the agent's first
-      # heartbeat lands.
+    # True iff the agent reports erofs availability. An empty caps
+    # hash (no heartbeat yet) is treated as "assume available" —
+    # erofs has been in mainline since 5.4 (2019), enabled in every
+    # distro we target. This avoids deadlocking the very first
+    # reconcile cycle which happens BEFORE the agent's first heartbeat
+    # lands.
+    def supports_erofs?
       return true if capabilities.blank?
-      capability("squashfs_available") == true
-    end
-
-    # The preferred module artifact format for this node. Used by
-    # ModulesController#show as the default when a version has both
-    # formats published. Composefs preferred only when the kernel
-    # supports it AND we have a fresh-ish heartbeat to confirm
-    # (otherwise stale "composefs=true" cap from a kernel downgrade
-    # could mis-route).
-    def preferred_module_format
-      supports_composefs? ? "composefs" : "squashfs"
+      capability("erofs_available") == true
     end
 
     # Replace the capabilities hash with a fresh agent report. Merges
-    # the detected_at timestamp so we can detect stale caps in heartbeat
-    # cadence reviews.
+    # the detected_at timestamp so we can detect stale caps in
+    # heartbeat-cadence reviews.
     def record_capabilities!(caps)
       return if caps.blank?
       merged = caps.stringify_keys.merge("detected_at" => Time.current.iso8601)

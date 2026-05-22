@@ -124,57 +124,29 @@ module System
 
     class InvalidTransition < StandardError; end
 
-    # === Dual-format artifact helpers (composefs + squashfs) ===
-    # Module versions can carry multiple artifact formats so each
-    # managed-instance picks the one its kernel supports. See
-    # AddArtifactsAndCapabilitiesForDualFormat migration for the JSONB
-    # shape under `artifacts`.
-
-    SUPPORTED_ARTIFACT_FORMATS = %w[composefs squashfs].freeze
-
-    # Returns the artifact hash for `format`, or nil when this version
-    # hasn't been published in that format. Stringifies the key so
-    # callers can pass either :composefs or "composefs".
-    def artifact_for(format)
-      return nil if artifacts.blank?
-      artifacts[format.to_s] || artifacts[format.to_sym]
-    end
-
-    # True iff this version has a published artifact in `format`.
-    def supports_format?(format)
-      artifact_for(format).present?
-    end
-
-    # Array of all formats this version is published in, sorted with
-    # the "preferred" format first. Composefs ranks ahead of squashfs
-    # because it carries the CAS-sharing benefit on capable kernels.
-    def available_formats
-      return [] if artifacts.blank?
-      SUPPORTED_ARTIFACT_FORMATS.select { |f| artifacts.key?(f) }
-    end
-
-    # Picks the artifact format the calling node can actually mount.
-    # `node_caps` is the NodeInstance#capabilities hash; an empty hash
-    # (no heartbeat yet) gets squashfs, which is the only format every
-    # mainline Linux kernel mounts without distro-specific config.
+    # === erofs artifact helpers ===
+    # Module versions carry one artifact format — erofs (Enhanced
+    # Read-Only File System), universal across every Linux kernel
+    # since 5.4. See AddArtifactsAndCapabilitiesForDualFormat
+    # migration for the JSONB shape under `artifacts`.
     #
-    # Returns the [format, artifact_hash] pair. Every published module
-    # ships both formats by contract, so this always succeeds when the
-    # version has been published. A version whose artifacts hash is
-    # empty (not yet published) returns [nil, nil] — the caller's
-    # has_data_file gate keeps unpublished versions out of the agent's
-    # desired-state set, so this branch shouldn't be reached in
-    # production.
-    def pick_format_for(node_caps)
-      caps = node_caps || {}
-      preferred = caps["composefs_available"] ? "composefs" : "squashfs"
-      return [preferred, artifact_for(preferred)] if supports_format?(preferred)
+    # The schema was originally designed for a dual-format world
+    # (composefs + squashfs); the single-key erofs JSONB shape is the
+    # current implementation but leaves room for future formats if
+    # they're ever needed.
 
-      # Preferred format not published — this is a publication-pipeline
-      # bug (every module must ship both formats). Return nil so the
-      # caller surfaces a clear error rather than silently picking a
-      # format the kernel can't mount.
-      [nil, nil]
+    PRIMARY_ARTIFACT_FORMAT = "erofs"
+
+    # Returns the artifact hash for the canonical format, or nil when
+    # this version hasn't been published yet.
+    def artifact
+      return nil if artifacts.blank?
+      artifacts[PRIMARY_ARTIFACT_FORMAT] || artifacts[PRIMARY_ARTIFACT_FORMAT.to_sym]
+    end
+
+    # True iff this version has a published erofs artifact.
+    def published?
+      artifact.present?
     end
 
     private

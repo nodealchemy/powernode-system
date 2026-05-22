@@ -39,26 +39,21 @@ module Api
           # registry coordinates when the M1 publish pipeline has
           # produced an artifact.
           #
-          # Returns format-aware metadata. The selected format is
-          # determined by the calling node's heartbeat-reported
-          # capabilities (composefs vs squashfs). The agent's
-          # internal/oci.Puller consumes the response's `file` block
-          # for streaming + sha256 verify and the `oci` block for
-          # cosign material.
+          # Returns the erofs artifact metadata. The agent's
+          # internal/oci.Puller consumes the `file` block for
+          # streaming + sha256 verify and the `oci` block for cosign
+          # material.
           def download
-            format, format_artifact = pick_artifact_for_node(@module)
-            if format.nil? || format_artifact.nil?
-              return render_error("Module has no published artifact for node format")
-            end
+            artifact = @module.current_version&.artifact
+            return render_error("Module has no published artifact") unless artifact
 
             render_success(
-              file: build_file_payload(@module, format, format_artifact),
+              file: build_file_payload(@module, artifact),
               oci:  {
-                ref:                format_artifact["oci_ref"],
-                digest:             format_artifact["oci_digest"],
-                fsverity_root_hash: format_artifact["fsverity_root"],
-                size_bytes:         format_artifact["size"],
-                format:             format
+                ref:                artifact["oci_ref"],
+                digest:             artifact["oci_digest"],
+                fsverity_root_hash: artifact["fsverity_root"],
+                size_bytes:         artifact["size"]
               }
             )
           end
@@ -171,22 +166,16 @@ module Api
           # Combines legacy data_file metadata with M1 OCI artifact
           # metadata so the agent always has a usable file.* block.
           # Builds the `file` block of the modules/:id/download response.
-          # Format-aware: pulls size + checksum from the selected
-          # format's artifact entry. The agent's oci.Puller consumes
-          # this for streaming + sha256 verification.
-          def build_file_payload(mod, format, format_artifact)
-            digest = format_artifact["oci_digest"].to_s
-            extension = case format
-                        when "composefs" then "cfs"
-                        when "squashfs"  then "sqfs"
-                        else format
-                        end
+          # The agent's oci.Puller consumes this for streaming + sha256
+          # verification.
+          def build_file_payload(mod, artifact)
+            digest = artifact["oci_digest"].to_s
             {
-              name: "#{mod.name}.#{extension}",
-              size: format_artifact["size"].to_i,
+              name: "#{mod.name}.erofs",
+              size: artifact["size"].to_i,
               checksum: digest.sub(/^sha256:/, ""),
-              download_url: "/api/v1/system/node_api/files/modules/#{mod.id}?format=#{format}",
-              content_type: format_artifact["media_type"]
+              download_url: "/api/v1/system/node_api/files/modules/#{mod.id}",
+              content_type: artifact["media_type"]
             }.compact
           end
 
@@ -222,14 +211,7 @@ module Api
           end
 
           def serialize_module_full(mod)
-            # Pick the artifact format for THIS calling node based on
-            # capabilities it advertised in its last heartbeat. Both
-            # formats are mandatory on every published module, so
-            # pick_format_for never returns nil for a publishable
-            # version — but we guard with the has_data_file gate
-            # upstream (serialize_module sets it false for unpublished
-            # versions, so the agent skips them before reaching here).
-            format, format_artifact = pick_artifact_for_node(mod)
+            artifact = mod.current_version&.artifact
 
             serialize_module(mod).merge(
               description: mod.description,
@@ -261,35 +243,18 @@ module Api
               # entry maps to one `system_module_services` row + its
               # outgoing dependencies for topological start order.
               services: serialize_module_services(mod),
-              # Sized + checksummed metadata per the SELECTED format.
-              data_file_size: format_artifact&.dig("size"),
-              # Dual-format dispatch — agent's reconciler uses this to
-              # pick MountModule (composefs) vs MountModuleSquashfs.
-              # Always set; no default — caller errors loudly on
-              # missing format rather than silently picking composefs.
-              format: format,
-              # Format-specific blob digest. For composefs that's the
-              # .cfs sha256; for squashfs that's the .sqfs sha256.
-              # The agent uses it for (a) Pull verification and
-              # (b) /run/powernode/modules/<digest> mountpoint pathing.
-              digest: format_artifact&.dig("oci_digest"),
-              fsverity_root_hash: format_artifact&.dig("fsverity_root"),
-              # artifacts: full hash so the agent (or any inspector) can
-              # see what's available across all formats. Invaluable for
-              # diagnostics when a capability mismatch surfaces.
+              data_file_size: artifact&.dig("size"),
+              # erofs blob digest. The agent uses it for (a) Pull
+              # verification and (b) /run/powernode/modules/<digest>
+              # mountpoint pathing.
+              digest: artifact&.dig("oci_digest"),
+              fsverity_root_hash: artifact&.dig("fsverity_root"),
+              # artifacts: full hash so the agent (or operator
+              # inspecting the API) can see what's published. Useful
+              # for diagnostics; the agent reads `digest` directly.
               artifacts: mod.current_version&.artifacts || {},
               puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
             )
-          end
-
-          # Returns the [format, artifact_hash] pair for the calling
-          # node's capabilities. Composefs preferred when node + version
-          # both support it; squashfs otherwise.
-          def pick_artifact_for_node(mod)
-            return [nil, nil] unless mod.current_version
-
-            node_caps = current_instance&.capabilities || {}
-            mod.current_version.pick_format_for(node_caps)
           end
 
           # Render each ModuleService row in the shape the agent's

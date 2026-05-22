@@ -32,24 +32,10 @@ module Api
           def module_file
             module_id = params[:id] || params[:module_id]
             node_module = node_modules.find(module_id)
+            artifact = node_module.current_version&.artifact
+            return render_not_found("ModuleArtifact") unless artifact
 
-            # Format dispatch — agent passes ?format=composefs or
-            # ?format=squashfs based on its detected kernel capability.
-            # When unspecified, fall through to the node-caps-based
-            # picker so legacy clients (no format param) still get
-            # something mountable.
-            format = params[:format].presence
-            if format.nil?
-              format, _ = pick_format_for_current_node(node_module)
-            end
-            unless ::System::NodeModuleVersion::SUPPORTED_ARTIFACT_FORMATS.include?(format)
-              return render_error("unknown or unavailable format: #{format.inspect}", :bad_request)
-            end
-
-            format_artifact = node_module.current_version&.artifact_for(format)
-            return render_not_found("ModuleArtifact[#{format}]") unless format_artifact
-
-            stream_format_blob(node_module, format, format_artifact)
+            stream_erofs_blob(node_module, artifact)
           rescue ActiveRecord::RecordNotFound
             render_record_not_found("NodeModule")
           rescue ::System::OciBlobProxyService::PullError => e
@@ -77,43 +63,26 @@ module Api
 
           private
 
-          # Picks the [format, artifact] pair for the calling node's
-          # capabilities. Mirrors ModulesController#pick_artifact_for_node
-          # so the two endpoints agree on which format represents "this
-          # module" — drift between them would let the agent pull a
-          # blob in a different format than the manifest response
-          # advertised. Both formats are mandatory on every published
-          # module, so neither return value is nil for a publishable
-          # version.
-          def pick_format_for_current_node(mod)
-            version = mod.current_version
-            return [nil, nil] unless version
-            version.pick_format_for(current_instance&.capabilities || {})
-          end
-
-          # Streams the format-specific blob through OciBlobProxyService.
-          # send_file uses Rails's chunked transfer encoding so the full
-          # blob never lives in Rails memory. X-Module-Digest +
-          # X-Module-Format + ETag headers let the agent's verifier
-          # short-circuit on already-cached blobs without re-hashing
-          # and confirm which format actually streamed.
-          def stream_format_blob(node_module, format, format_artifact)
-            path = ::System::OciBlobProxyService.from_format(
-              node_module: node_module,
-              format: format,
-              format_artifact: format_artifact
+          # Streams the erofs blob through OciBlobProxyService.
+          # send_file uses Rails's chunked transfer encoding so the
+          # full blob never lives in Rails memory. X-Module-Digest +
+          # ETag headers let the agent's verifier short-circuit on
+          # already-cached blobs without re-hashing.
+          def stream_erofs_blob(node_module, artifact)
+            path = ::System::OciBlobProxyService.new(
+              oci_ref: artifact["oci_ref"],
+              media_type: artifact["media_type"],
+              node_module: node_module
             ).fetch_blob!
-            response.headers["X-Module-Digest"] = format_artifact["oci_digest"].to_s
-            response.headers["X-Module-OCI-Ref"] = format_artifact["oci_ref"].to_s
-            response.headers["X-Module-Format"] = format
-            response.headers["X-Module-Fsverity-Root"] = format_artifact["fsverity_root"].to_s if format_artifact["fsverity_root"].present?
-            response.headers["ETag"] = %("#{format_artifact["oci_digest"]}")
-            extension = format == "squashfs" ? "sqfs" : "cfs"
+            response.headers["X-Module-Digest"] = artifact["oci_digest"].to_s
+            response.headers["X-Module-OCI-Ref"] = artifact["oci_ref"].to_s
+            response.headers["X-Module-Fsverity-Root"] = artifact["fsverity_root"].to_s if artifact["fsverity_root"].present?
+            response.headers["ETag"] = %("#{artifact["oci_digest"]}")
             send_file(
               path,
-              type: format_artifact["media_type"],
+              type: artifact["media_type"],
               disposition: "attachment",
-              filename: "#{node_module.name}.#{extension}",
+              filename: "#{node_module.name}.erofs",
               stream: true,
               buffer_size: 65_536
             )
