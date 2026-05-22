@@ -32,31 +32,24 @@ module Api
           def module_file
             module_id = params[:id] || params[:module_id]
             node_module = node_modules.find(module_id)
-            filename = params[:filename]
 
-            artifact = preferred_artifact(node_module)
-            if artifact
-              return stream_oci_artifact(artifact, node_module)
+            # Format dispatch — agent passes ?format=composefs or
+            # ?format=squashfs based on its detected kernel capability.
+            # When unspecified, fall through to the node-caps-based
+            # picker so legacy clients (no format param) still get
+            # something mountable.
+            format = params[:format].presence
+            if format.nil?
+              format, _ = pick_format_for_current_node(node_module)
+            end
+            unless ::System::NodeModuleVersion::SUPPORTED_ARTIFACT_FORMATS.include?(format)
+              return render_error("unknown or unavailable format: #{format.inspect}", :bad_request)
             end
 
-            if filename.blank? || node_module.data_file_name != filename
-              return render_not_found("File")
-            end
+            format_artifact = node_module.current_version&.artifact_for(format)
+            return render_not_found("ModuleArtifact[#{format}]") unless format_artifact
 
-            # Legacy data-file pathway. Streaming the actual bytes is still
-            # operator-storage-dependent (S3/local FS); for now we expose
-            # the metadata + checksum so the agent can verify what it
-            # downloads out-of-band. This branch never fires for M1 modules.
-            render_success(
-              file: {
-                id: node_module.id,
-                name: filename,
-                size: node_module.data_file_size,
-                checksum: node_module.data_checksum,
-                content_type: detect_content_type(filename)
-              },
-              message: "Legacy data_file metadata only — OCI artifact path is the supported transport"
-            )
+            stream_format_blob(node_module, format, format_artifact)
           rescue ActiveRecord::RecordNotFound
             render_record_not_found("NodeModule")
           rescue ::System::OciBlobProxyService::PullError => e
@@ -84,39 +77,43 @@ module Api
 
           private
 
-          # Picks the best ModuleArtifact for the calling node's
-          # architecture. Mirrors the same-named helper in
-          # ModulesController so the two endpoints agree on which
-          # artifact represents "this module" — drift between them
-          # would let the agent pull a different blob than what the
-          # download endpoint advertises.
-          def preferred_artifact(mod)
+          # Picks the [format, artifact] pair for the calling node's
+          # capabilities. Mirrors ModulesController#pick_artifact_for_node
+          # so the two endpoints agree on which format represents "this
+          # module" — drift between them would let the agent pull a
+          # blob in a different format than the manifest response
+          # advertised. Both formats are mandatory on every published
+          # module, so neither return value is nil for a publishable
+          # version.
+          def pick_format_for_current_node(mod)
             version = mod.current_version
-            return nil unless version
-
-            artifacts = version.module_artifacts
-            return nil if artifacts.blank?
-
-            arch = current_instance&.architecture.presence
-            (arch && artifacts.find { |a| a.architecture == arch }) || artifacts.first
+            return [nil, nil] unless version
+            version.pick_format_for(current_instance&.capabilities || {})
           end
 
-          # Streams the composefs blob through OciBlobProxyService.
-          # send_file uses Rails's chunked transfer encoding so the
-          # full blob never lives in Rails memory. X-Module-Digest +
-          # ETag headers let the agent's verifier short-circuit on
-          # already-cached blobs without re-hashing.
-          def stream_oci_artifact(artifact, node_module)
-            path = ::System::OciBlobProxyService.new(artifact).fetch_blob!
-            response.headers["X-Module-Digest"] = artifact.oci_digest.to_s
-            response.headers["X-Module-OCI-Ref"] = artifact.oci_ref.to_s
-            response.headers["X-Module-Fsverity-Root"] = artifact.fsverity_root_hash.to_s if artifact.fsverity_root_hash.present?
-            response.headers["ETag"] = %("#{artifact.oci_digest}")
+          # Streams the format-specific blob through OciBlobProxyService.
+          # send_file uses Rails's chunked transfer encoding so the full
+          # blob never lives in Rails memory. X-Module-Digest +
+          # X-Module-Format + ETag headers let the agent's verifier
+          # short-circuit on already-cached blobs without re-hashing
+          # and confirm which format actually streamed.
+          def stream_format_blob(node_module, format, format_artifact)
+            path = ::System::OciBlobProxyService.from_format(
+              node_module: node_module,
+              format: format,
+              format_artifact: format_artifact
+            ).fetch_blob!
+            response.headers["X-Module-Digest"] = format_artifact["oci_digest"].to_s
+            response.headers["X-Module-OCI-Ref"] = format_artifact["oci_ref"].to_s
+            response.headers["X-Module-Format"] = format
+            response.headers["X-Module-Fsverity-Root"] = format_artifact["fsverity_root"].to_s if format_artifact["fsverity_root"].present?
+            response.headers["ETag"] = %("#{format_artifact["oci_digest"]}")
+            extension = format == "squashfs" ? "sqfs" : "cfs"
             send_file(
               path,
-              type: ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
+              type: format_artifact["media_type"],
               disposition: "attachment",
-              filename: "#{node_module.name}.cfs",
+              filename: "#{node_module.name}.#{extension}",
               stream: true,
               buffer_size: 65_536
             )

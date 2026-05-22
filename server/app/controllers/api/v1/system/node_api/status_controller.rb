@@ -67,6 +67,15 @@ module Api
               architecture:   params[:architecture]
             )
 
+            # Record kernel-capability detection from the agent — used by
+            # ModulesController#show to pick which artifact format
+            # (composefs vs squashfs) to surface in the manifest
+            # response. Empty / absent payload is fine; the helper
+            # short-circuits and the existing capabilities row stays.
+            caps = params[:node_capabilities]
+            caps = caps.to_unsafe_h if caps.respond_to?(:to_unsafe_h)
+            current_instance.record_capabilities!(caps) if caps.present?
+
             # Transition pending → running on first heartbeat post-enrollment.
             current_instance.mark_running! if current_instance.may_mark_running?
 

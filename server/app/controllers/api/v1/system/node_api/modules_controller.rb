@@ -39,41 +39,28 @@ module Api
           # registry coordinates when the M1 publish pipeline has
           # produced an artifact.
           #
-          # Phase 1 extension: oci block exposes the data the agent's
-          # internal/oci.Puller needs for streaming + sha256 verify
-          # (oci_ref, digest, architecture, fsverity_root_hash). Falls
-          # back to download_url-only when no artifact has been
-          # published yet (back-compat with pre-M1 modules).
+          # Returns format-aware metadata. The selected format is
+          # determined by the calling node's heartbeat-reported
+          # capabilities (composefs vs squashfs). The agent's
+          # internal/oci.Puller consumes the response's `file` block
+          # for streaming + sha256 verify and the `oci` block for
+          # cosign material.
           def download
-            artifact = preferred_artifact(@module)
-            # Accept the request if EITHER pathway has a blob — the legacy
-            # operator-uploaded data file OR an M1 OCI artifact. Refuse only
-            # when neither is present (operator hasn't attached + nothing
-            # published yet).
-            if @module.data_file_name.blank? && artifact.nil?
-              return render_error("Module has no data file or OCI artifact")
+            format, format_artifact = pick_artifact_for_node(@module)
+            if format.nil? || format_artifact.nil?
+              return render_error("Module has no published artifact for node format")
             end
 
-            # The agent's oci.Puller streams from data.file.download_url
-            # regardless of pathway — the bare /files/modules/:id URL
-            # backs both the M1 OCI proxy and legacy data-file cases on
-            # the server side. Populate file.* from whichever source has
-            # the canonical metadata (OCI artifact's checksum/size when
-            # present, falls back to data_file metadata otherwise).
-            payload = {
-              file: build_file_payload(@module, artifact)
-            }
-            if artifact
-              payload[:oci] = {
-                ref: artifact.oci_ref,
-                digest: artifact.oci_digest,
-                architecture: artifact.architecture,
-                fsverity_root_hash: artifact.fsverity_root_hash,
-                size_bytes: artifact.size_bytes,
-                cosign_bundle_url: artifact.cosign_bundle.present? ? "/api/v1/system/node_api/files/modules/#{@module.id}/cosign-bundle" : nil
-              }.compact
-            end
-            render_success(payload)
+            render_success(
+              file: build_file_payload(@module, format, format_artifact),
+              oci:  {
+                ref:                format_artifact["oci_ref"],
+                digest:             format_artifact["oci_digest"],
+                fsverity_root_hash: format_artifact["fsverity_root"],
+                size_bytes:         format_artifact["size"],
+                format:             format
+              }
+            )
           end
 
           # GET /api/v1/system/node_api/modules/:id/rsync_spec
@@ -89,13 +76,6 @@ module Api
           # lifecycle commands have a uniform metadata source.
           def rsync_spec
             render plain: @module.rsync_spec(target: current_instance),
-                   content_type: "text/plain"
-          rescue NoMethodError => e
-            # NodeModule#rsync_spec target: signature lands in the
-            # commit-CLI prep work; until then, fall back to the
-            # spec-only render if the model doesn't have the helper.
-            Rails.logger.warn("[ModulesController#rsync_spec] falling back: #{e.message}")
-            render plain: render_rsync_fallback(@module),
                    content_type: "text/plain"
           end
 
@@ -190,58 +170,24 @@ module Api
 
           # Combines legacy data_file metadata with M1 OCI artifact
           # metadata so the agent always has a usable file.* block.
-          # When both pathways exist the OCI artifact wins (the M1
-          # publish flow is the canonical source of truth for new
-          # modules); legacy data_file fields fill in only when OCI
-          # didn't run.
-          def build_file_payload(mod, artifact)
-            return {} if mod.data_file_name.blank? && artifact.nil?
-            base = {
-              name: mod.data_file_name.presence || "#{mod.name}.cfs",
-              size: (artifact&.size_bytes || mod.data_file_size).to_i,
-              checksum: artifact ? artifact.oci_digest.to_s.sub(/^sha256:/, "") : mod.data_checksum,
-              download_url: module_download_url(mod)
-            }
-            base[:content_type] = ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE if artifact
-            base.compact
-          end
-
-          # URL the agent's oci.Puller streams from. Single-segment form
-          # `/files/modules/:id` triggers the M1 OCI proxy path (the
-          # composefs blob — see System::OciBlobProxyService). The
-          # legacy two-segment form `/files/modules/:id/:filename` is
-          # preserved for back-compat with operator-uploaded data files.
-          def module_download_url(mod)
-            base = "/api/v1/system/node_api/files/modules/#{mod.id}"
-            return base unless mod.data_file_name.present?
-            "#{base}/#{mod.data_file_name}"
-          end
-
-          # render_rsync_fallback synthesizes a minimal rsync filter
-          # file from the module's mask + file_spec when the model's
-          # full rsync_spec helper isn't present (transitional —
-          # remove once the helper lands platform-wide).
-          def render_rsync_fallback(mod)
-            lines = []
-            Array(mod.mask).each       { |p| lines << "- #{p}" }
-            Array(mod.file_spec).each  { |p| lines << "+ #{p}" }
-            lines << "- *"
-            lines.join("\n") + "\n"
-          end
-
-          # preferred_artifact picks the ModuleArtifact whose architecture
-          # matches the calling instance, falling back to any artifact
-          # if no arch-specific match exists. Returns nil when the
-          # module has no current_version or no artifacts yet.
-          def preferred_artifact(mod)
-            version = mod.current_version
-            return nil unless version
-
-            artifacts = version.module_artifacts
-            return nil if artifacts.blank?
-
-            arch = current_instance.architecture.presence
-            (arch && artifacts.find { |a| a.architecture == arch }) || artifacts.first
+          # Builds the `file` block of the modules/:id/download response.
+          # Format-aware: pulls size + checksum from the selected
+          # format's artifact entry. The agent's oci.Puller consumes
+          # this for streaming + sha256 verification.
+          def build_file_payload(mod, format, format_artifact)
+            digest = format_artifact["oci_digest"].to_s
+            extension = case format
+                        when "composefs" then "cfs"
+                        when "squashfs"  then "sqfs"
+                        else format
+                        end
+            {
+              name: "#{mod.name}.#{extension}",
+              size: format_artifact["size"].to_i,
+              checksum: digest.sub(/^sha256:/, ""),
+              download_url: "/api/v1/system/node_api/files/modules/#{mod.id}?format=#{format}",
+              content_type: format_artifact["media_type"]
+            }.compact
           end
 
           def serialize_module(mod)
@@ -267,17 +213,24 @@ module Api
               copy_path_destination: mod.copy_path&.destination_path,
               # has_data_file is the agent reconciler's gate for "this module
               # has a blob to mount" (reconcile.go: `if !mod.HasDataFile { continue }`).
-              # Truthy when EITHER the legacy operator-uploaded data file is
-              # attached OR an M1 OCI artifact is published — both pathways
-              # produce a mountable blob.
-              has_data_file: mod.data_file_name.present? ||
-                             (mod.current_version&.module_artifacts&.exists? || false),
+              # Truthy iff the current version has been published in at least
+              # one supported format (composefs / squashfs).
+              has_data_file: mod.current_version&.artifacts.present? || false,
               current_version: mod.current_version_number,
               dependencies: mod.dependencies.map(&:id)
             }
           end
 
           def serialize_module_full(mod)
+            # Pick the artifact format for THIS calling node based on
+            # capabilities it advertised in its last heartbeat. Both
+            # formats are mandatory on every published module, so
+            # pick_format_for never returns nil for a publishable
+            # version — but we guard with the has_data_file gate
+            # upstream (serialize_module sets it false for unpublished
+            # versions, so the agent skips them before reaching here).
+            format, format_artifact = pick_artifact_for_node(mod)
+
             serialize_module(mod).merge(
               description: mod.description,
               # All five spec fields — base64-encoded jsonb arrays. The
@@ -308,47 +261,35 @@ module Api
               # entry maps to one `system_module_services` row + its
               # outgoing dependencies for topological start order.
               services: serialize_module_services(mod),
-              # Legacy `.info` sidecar — key=value lines in the order the
-              # legacy on-node tooling expected. Kept for parity until the
-              # Go agent fully migrates to the JSON shape above.
-              info: mod.info,
-              data_file_name: mod.data_file_name,
-              data_file_size: mod.data_file_size,
-              data_checksum: mod.data_checksum,
-              # M1: the agent's reconciler stores this as mount.Module#Digest
-              # AND the puller compares streamed-blob sha256 against it.
-              # That means we MUST emit the composefs LAYER digest (the
-              # sha256 of the .cfs bytes the agent receives), NOT the OCI
-              # manifest digest (which is sha256 of the manifest JSON).
-              # composefs_layer_digest_for() resolves this via the OCI
-              # registry and Rails-caches the result — the digest is
-              # immutable for a given artifact so the cache TTL is generous.
-              digest: composefs_layer_digest_for(mod),
-              fsverity_root_hash: mod.current_version&.fsverity_root_hash,
+              # Sized + checksummed metadata per the SELECTED format.
+              data_file_size: format_artifact&.dig("size"),
+              # Dual-format dispatch — agent's reconciler uses this to
+              # pick MountModule (composefs) vs MountModuleSquashfs.
+              # Always set; no default — caller errors loudly on
+              # missing format rather than silently picking composefs.
+              format: format,
+              # Format-specific blob digest. For composefs that's the
+              # .cfs sha256; for squashfs that's the .sqfs sha256.
+              # The agent uses it for (a) Pull verification and
+              # (b) /run/powernode/modules/<digest> mountpoint pathing.
+              digest: format_artifact&.dig("oci_digest"),
+              fsverity_root_hash: format_artifact&.dig("fsverity_root"),
+              # artifacts: full hash so the agent (or any inspector) can
+              # see what's available across all formats. Invaluable for
+              # diagnostics when a capability mismatch surfaces.
+              artifacts: mod.current_version&.artifacts || {},
               puppet_modules: mod.puppet_modules.enabled.map { |p| { id: p.id, name: p.name } }
             )
           end
 
-          # Resolves the composefs layer's sha256 by introspecting the
-          # OCI manifest server-side. Cached because the layer digest is
-          # content-addressed and never changes for a published artifact.
-          # Returns nil when no artifact is published (callers tolerate
-          # nil digest by skipping the module in their desired state).
-          def composefs_layer_digest_for(mod)
-            artifact = preferred_artifact(mod)
-            return nil unless artifact
+          # Returns the [format, artifact_hash] pair for the calling
+          # node's capabilities. Composefs preferred when node + version
+          # both support it; squashfs otherwise.
+          def pick_artifact_for_node(mod)
+            return [nil, nil] unless mod.current_version
 
-            ::Rails.cache.fetch(
-              "system:module:composefs_layer_digest:#{artifact.id}:#{artifact.oci_digest}",
-              expires_in: 1.day
-            ) do
-              ::System::OciBlobProxyService.new(artifact).composefs_layer_digest!
-            rescue ::System::OciBlobProxyService::PullError => e
-              ::Rails.logger.warn(
-                "[ModulesController] composefs_layer_digest lookup failed for #{artifact.id}: #{e.message}"
-              )
-              nil
-            end
+            node_caps = current_instance&.capabilities || {}
+            mod.current_version.pick_format_for(node_caps)
           end
 
           # Render each ModuleService row in the shape the agent's
@@ -363,7 +304,11 @@ module Api
                 start_command:                 svc.start_command,
                 stop_command:                  svc.stop_command,
                 restart_policy:                svc.restart_policy,
-                user:                          svc.user,
+                # ModuleService schema uses `run_as_user` (avoiding `user`
+                # which conflicts with Ruby's User constant in some
+                # autoload paths). Agent's Service.User struct key
+                # matches "user" in JSON, so emit under that name.
+                user:                          svc.run_as_user,
                 working_directory:             svc.working_directory,
                 env:                           svc.env || {},
                 exposed_ports:                 svc.exposed_ports || [],
