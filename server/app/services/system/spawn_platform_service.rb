@@ -85,11 +85,21 @@ module System
       # provisioner is injected (Provider-specific impls land in P6+).
       provision_response = provision_child!(payload, spawn_target)
 
-      peer.update!(
-        metadata: peer.metadata.merge(
-          "provisioner_response" => provision_response.is_a?(Hash) ? provision_response : { "raw" => provision_response.to_s }
-        )
-      )
+      # Promote node_id + node_instance_id to top-level peer.metadata so
+      # the AcceptController can find the child's Node when issuing the
+      # node_api bootstrap_token. (provisioner_response keeps the full
+      # raw shape for debugging.) Tolerant of provisioners that don't
+      # return these fields — only the federation half is required.
+      meta_updates = {
+        "provisioner_response" => provision_response.is_a?(Hash) ? provision_response : { "raw" => provision_response.to_s }
+      }
+      if provision_response.is_a?(Hash)
+        node_id          = provision_response[:node_id] || provision_response["node_id"]
+        node_instance_id = provision_response[:node_instance_id] || provision_response["node_instance_id"]
+        meta_updates["node_id"]          = node_id          if node_id.present?
+        meta_updates["node_instance_id"] = node_instance_id if node_instance_id.present?
+      end
+      peer.update!(metadata: peer.metadata.merge(meta_updates))
 
       Result.new(
         ok?: true,

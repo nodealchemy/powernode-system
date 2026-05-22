@@ -22,7 +22,7 @@ module Federation
   #
   # Plan reference: Decentralized Federation §H + P6.7.
   class SpawnProvisioner
-    Result = Struct.new(:ok?, :node_instance_id, :provider_type,
+    Result = Struct.new(:ok?, :node_id, :node_instance_id, :provider_type,
                         :cloud_id, :error, keyword_init: true)
 
     def initialize(account:, current_user: nil)
@@ -60,7 +60,13 @@ module Federation
         provider_instance_type_id: instance_type.id,
         options: {
           spawn_payload: payload,
-          name: spawn_target[:name] || "federation-spawn"
+          name: spawn_target[:name] || "federation-spawn",
+          # Forward ssh_authorized_keys when the operator passed them on
+          # spawn_target so providers can inject them into the cloud-init
+          # users block (allows operator ssh-in for diagnostics on
+          # opaque/headless cloud images).
+          ssh_authorized_keys: Array(spawn_target[:ssh_authorized_keys] ||
+                                     spawn_target["ssh_authorized_keys"])
         }
       )
 
@@ -68,24 +74,29 @@ module Federation
       # ProvisioningService; data is a Hash with :instance_id etc.
       if provisioning_result.respond_to?(:success?) && provisioning_result.success?
         data = provisioning_result.respond_to?(:data) ? provisioning_result.data : {}
-        instance_id = data[:instance_id] || data["instance_id"]
+        # ProvisioningService returns `data[:instance]` (the AR row) rather than
+        # `data[:instance_id]` — accept either. Prior code only looked at the
+        # latter, so node_instance_id silently came back as nil, breaking the
+        # downstream federation_spawn stamp + the AcceptController's
+        # node_enrollment lookup.
+        instance = data[:instance] || data["instance"]
+        instance_id = data[:instance_id] || data["instance_id"] || instance&.id
+        instance ||= ::System::NodeInstance.find_by(id: instance_id) if instance_id
 
         # Stamp federation_spawn under NodeInstance#config (the jsonb
         # column on system_node_instances; there is no `metadata`
         # column). Downstream reconciliation correlates by reading
         # `config["federation_spawn"]`.
-        if instance_id
-          instance = ::System::NodeInstance.find_by(id: instance_id)
-          if instance
-            instance.update!(
-              config: (instance.config || {}).merge(
-                "federation_spawn" => payload
-              )
+        if instance
+          instance.update!(
+            config: (instance.config || {}).merge(
+              "federation_spawn" => payload
             )
-          end
+          )
         end
 
         success(
+          node_id: node.id,
           node_instance_id: instance_id,
           provider_type: resolve_provider_type(node, region),
           cloud_id: data[:cloud_instance_id] || data["cloud_instance_id"]
@@ -168,9 +179,10 @@ module Federation
         .first
     end
 
-    def success(node_instance_id:, provider_type:, cloud_id: nil)
+    def success(node_id: nil, node_instance_id:, provider_type:, cloud_id: nil)
       Result.new(
         ok?: true,
+        node_id: node_id,
         node_instance_id: node_instance_id,
         provider_type: provider_type,
         cloud_id: cloud_id
