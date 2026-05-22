@@ -73,14 +73,6 @@ jobs:
     # source builds.
     container:
       image: docker.io/library/debian:trixie-slim
-      # buildah's user-namespace setup (CLONE_NEWUSER) needs
-      # CAP_SYS_ADMIN; the default Gitea runner container runs without
-      # it, which surfaces as:
-      #   Error during unshare(CLONE_NEWUSER): Operation not permitted
-      # --privileged grants the runner container the full capability
-      # set + access to /dev so buildah can manage its own user
-      # namespace. Acceptable in CI where we control the workflow tree.
-      options: --privileged
     # Gitea Actions defaults `run:` steps to `sh -e {0}` which doesn't
     # support `set -o pipefail`. Force bash so every step gets the
     # strict-mode triad (errexit + nounset + pipefail). Ubuntu 24.04
@@ -111,18 +103,26 @@ jobs:
       # adds ~80MB of base image surface for one git clone. A raw
       # `git clone` does the same job in two seconds AND keeps the
       # container Debian-base-image clean.
-      - name: Install build tools (git + buildah + erofs-utils + fsverity + cosign + oras)
+      - name: Install build tools (git + mmdebstrap + erofs-utils + fsverity + cosign + oras)
         run: |
           set -euo pipefail
           # The Gitea runner container is Debian Trixie. Install the
-          # OCI-layer + read-only-FS + signing toolchain here.
+          # rootfs bootstrap + read-only-FS + signing toolchain here.
           # ~30s per matrix entry, but avoids baking a custom runner
           # image (which is its own ops chore).
+          #
+          # mmdebstrap replaces buildah for the rootfs build step.
+          # buildah needed CLONE_NEWUSER which the Gitea Actions
+          # container can't grant (kernel's unprivileged userns gate
+          # is off, --privileged in container.options doesn't make it
+          # through). mmdebstrap in --mode=root just chroots; no
+          # namespaces, no userns.
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -q
           apt-get install -y --no-install-recommends \
             git \
-            buildah \
+            mmdebstrap \
+            arch-test \
             erofs-utils \
             fsverity \
             jq \
@@ -181,7 +181,7 @@ jobs:
             | tar -xz -C /usr/local/bin oras
           chmod +x /usr/local/bin/oras
           # Sanity print
-          buildah --version
+          mmdebstrap --version || true
           mkfs.erofs --version || true
           fsverity --version
           cosign version | head -1
@@ -214,37 +214,53 @@ jobs:
           # Module-name slug (alphanumeric + hyphens) for image tag.
           echo "slug=${{ matrix.module }}" >> "$GITHUB_OUTPUT"
 
-      - name: Stage 1 — builder image (apt install package_spec)
+      - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
         run: |
           set -euo pipefail
-          cp /tmp/package_spec.txt modules/${{ matrix.module }}/package_spec.txt
-          # `--isolation=chroot` bypasses buildah's default OCI runtime
-          # (runc/crun) which needs CAP_SYS_ADMIN + CLONE_NEWUSER. The
-          # Gitea Actions runner container can't grant userns even with
-          # --privileged in container.options (the host's unprivileged
-          # userns sysctl gate is off). chroot isolation does the build
-          # in a plain chroot — no namespaces, no userns dance. Slightly
-          # less hermetic but produces an identical Containerfile build
-          # output for our `apt-install package_spec.txt` use case.
-          buildah --isolation=chroot bud \
-            --file templates/module-repo/Containerfile \
-            --build-arg APT_SNAPSHOT=${{ steps.manifest.outputs.apt_snapshot }} \
-            --tag powernode-${{ matrix.module }}-builder:ci \
-            modules/${{ matrix.module }}/
-        env:
-          STORAGE_DRIVER: vfs    # rootless-safe; CI runners don't have overlayfs
+          # mmdebstrap produces a minimal Ubuntu noble rootfs at
+          # /tmp/fat with `ca-certificates` + every package the
+          # module's manifest declared in package_spec. --mode=root
+          # avoids any namespace setup (we're running as root inside
+          # the Trixie CI container).
+          #
+          # The mmdebstrap output is functionally identical to what
+          # `buildah bud` against templates/module-repo/Containerfile
+          # produced — pinned base image + apt install + static
+          # ca-certs. We trade buildah's OCI-runtime isolation for a
+          # plain chroot, which is fine for the CI hermeticity envelope
+          # (the runner container itself is the security boundary).
+          base_url="http://archive.ubuntu.com/ubuntu/"
+          pkgs="ca-certificates"
+          if [ -s /tmp/package_spec.txt ]; then
+            pkgs="${pkgs},$(tr '\n' ',' < /tmp/package_spec.txt | sed 's/,$//')"
+          fi
+          mmdebstrap \
+            --mode=root \
+            --variant=minbase \
+            --components=main,universe \
+            --include="$pkgs" \
+            --aptopt='Acquire::http::Pipeline-Depth "0"' \
+            noble /tmp/fat \
+            "$base_url"
 
       - name: Stage 2 — composer (rsync filter + mkfs.erofs + fs-verity)
         run: |
           set -euo pipefail
-          # 1. Mount the stage-1 image so we can rsync out of it
-          mountpoint=$(buildah mount powernode-${{ matrix.module }}-builder:ci)
+          # 1. Layer the module's static rootfs/ contents onto the
+          # bootstrapped /tmp/fat. Anything in rootfs/ overrides the
+          # apt-installed equivalent — that's how a module customizes
+          # its package's defaults.
+          if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
+            rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/fat/
+          fi
           # 2. Apply rsync filter to carve the slim module rootfs
+          # from the fat tree. Same filter that the buildah-mounted
+          # flow used.
           mkdir -p /tmp/slim
           rsync -a \
             --filter='. /tmp/rsync_spec.txt' \
             --filter='+ */' \
-            "$mountpoint/" /tmp/slim/
+            /tmp/fat/ /tmp/slim/
           # 3. Layer the module's static rootfs/ contents on top
           if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
             rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/slim/
