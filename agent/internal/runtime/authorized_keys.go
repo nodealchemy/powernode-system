@@ -28,9 +28,11 @@ type AuthorizedKeysOptions struct {
 // the correct mode (0600 file, 0700 dir) and ownership.
 //
 // The target user is taken from the response's `target_user` field
-// (instance.config["admin_user"] → node.config["admin_user"] → "root"
-// on the platform side). When absent, defaults to "root" for back-
-// compat with pre-Golden-Eclipse-M0.H servers.
+// (instance.config["admin_user"] → node.config["admin_user"] →
+// "operator" on the platform side). When absent, defaults to
+// "operator" — the platform's standardized human-login account at
+// UID 1000 (see etcidentity.Baseline). Per-instance overrides
+// (admin_user: "ubuntu" on cloud-image-derived nodes) still apply.
 //
 // Idempotent: writes only when the on-disk content differs from the
 // platform response. Safe to call on every heartbeat tick — propagates
@@ -66,7 +68,9 @@ func FetchAuthorizedKeys(ctx context.Context, opts AuthorizedKeysOptions) error 
 
 	targetUser := ak.Data.TargetUser
 	if targetUser == "" {
-		targetUser = "root"
+		// Platform-standardized human-login account; always present
+		// in the agent's etcidentity baseline at UID 1000.
+		targetUser = "operator"
 	}
 
 	dir, uid, gid, err := resolveSSHDir(targetUser)

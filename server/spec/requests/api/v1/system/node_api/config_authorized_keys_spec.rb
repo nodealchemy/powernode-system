@@ -43,9 +43,9 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
       expect(JSON.parse(response.body).dig("data", "authorized_keys")).to include(operator_key)
     end
 
-    it "defaults target_user to 'root' when no admin_user is configured" do
+    it "defaults target_user to 'operator' when no admin_user is configured" do
       get "/api/v1/system/node_api/config/authorized_keys", headers: headers
-      expect(JSON.parse(response.body).dig("data", "target_user")).to eq("root")
+      expect(JSON.parse(response.body).dig("data", "target_user")).to eq("operator")
     end
 
     it "honors instance-level admin_user override" do

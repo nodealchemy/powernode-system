@@ -37,7 +37,7 @@ module System
       validate_instance!(instance)
 
       ssh_ip = instance.ssh_ip_address
-      admin_user = instance.admin_user || "root"
+      admin_user = instance.admin_user || "operator"
       ssh_key = get_ssh_key(instance)
 
       return Runtime::Result.err(error: "No SSH IP address available", data: { exit_code: -1 }) unless ssh_ip.present?
@@ -77,7 +77,7 @@ module System
       return Runtime::Result.err(error: "Local file not found: #{local_path}", data: { exit_code: -1 }) unless File.exist?(local_path)
 
       ssh_ip = instance.ssh_ip_address
-      admin_user = instance.admin_user || "root"
+      admin_user = instance.admin_user || "operator"
       ssh_key = get_ssh_key(instance)
 
       return Runtime::Result.err(error: "No SSH IP address available", data: { exit_code: -1 }) unless ssh_ip.present?

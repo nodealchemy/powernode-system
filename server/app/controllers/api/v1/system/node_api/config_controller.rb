@@ -155,13 +155,15 @@ module Api
 
           # The unix user whose ~/.ssh/authorized_keys the on-node agent
           # should manage. Resolution order: instance-level override →
-          # node-level default → "root". Matches the cloud-init convention
-          # where AWS images use "ubuntu"/"ec2-user" while bare-metal
-          # bootstraps run as root.
+          # node-level default → "operator". The platform standardizes
+          # the human-operator login account name to "operator" (UID
+          # 1000, present in the on-node agent's etcidentity baseline).
+          # Per-instance/per-node overrides still work for legacy or
+          # cloud-image-derived bootstraps (e.g., admin_user: "ubuntu").
           def target_admin_user
             current_instance.config&.dig("admin_user").presence ||
               current_node.config&.dig("admin_user").presence ||
-              "root"
+              "operator"
           end
         end
       end
