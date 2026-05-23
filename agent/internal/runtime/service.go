@@ -17,6 +17,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/k3sd"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -80,6 +81,16 @@ func New(cfg Config) *Service {
 // via cfg.OnError but don't abort the service (this is a long-running
 // agent — we want graceful degradation, not crash-on-flake).
 func (s *Service) Run(ctx context.Context) error {
+	// Break-glass: apply BEFORE bootstrap so it takes effect even when
+	// the platform is unreachable, the JWT is expired, or the agent
+	// itself is being recovered. Env-flag controlled
+	// (POWERNODE_OPERATOR_BREAK_GLASS=1) so production deployments leave
+	// it off and rely on module-declared SudoersGrant rows instead.
+	// Idempotent: re-running with the same on-disk state is a no-op.
+	if err := etcsudoers.ApplyOperatorBreakGlass(etcsudoers.OperatorBreakGlassEnabledFromEnv()); err != nil {
+		s.cfg.OnError("operator_break_glass", err)
+	}
+
 	paths := enroll.PathsUnder(s.cfg.PKIDir)
 	client, err := s.bootstrap(ctx, paths)
 	if err != nil {
