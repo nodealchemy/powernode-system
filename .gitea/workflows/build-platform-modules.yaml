@@ -322,7 +322,15 @@ jobs:
             --artifact-type application/vnd.powernode.module.v1 \
             "${{ matrix.module }}.erofs:application/vnd.powernode.erofs" \
             "${{ matrix.module }}.erofs.meta:application/vnd.powernode.module.meta"
-          cosign sign --yes "$EROFS_REF"
+          # Static-key cosign signing — keyless mode against
+          # Sigstore's public-good Fulcio doesn't work for
+          # Gitea-hosted CI (Gitea isn't on Fulcio's trusted-issuer
+          # list). The keypair was generated via cosign generate-key-pair,
+          # pushed to Gitea secrets as COSIGN_PRIVATE_KEY (encrypted at
+          # rest with COSIGN_PASSWORD), COSIGN_PUBLIC_KEY, COSIGN_PASSWORD.
+          # The agent verifies signatures against COSIGN_PUBLIC_KEY at
+          # module attach time (see ModuleOciIngestService).
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$EROFS_REF"
           cd - >/dev/null
 
           echo "erofs_ref=$EROFS_REF" >> "$GITHUB_OUTPUT"
@@ -330,7 +338,8 @@ jobs:
         env:
           ORAS_REGISTRY_USERNAME: ${{ secrets.POWERNODE_REGISTRY_USER }}
           ORAS_REGISTRY_PASSWORD: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       - name: Notify platform — module published
         if: success()
