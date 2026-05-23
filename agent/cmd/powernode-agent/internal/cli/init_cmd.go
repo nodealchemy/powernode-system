@@ -60,9 +60,15 @@ func RunInit(ctx context.Context, opts InitOptions) (Result, error) {
 			Errorf(ExitGeneric, "init:load_manifest", "module %s not attached or manifest missing (run `attach` first): %w", opts.ModuleID, err)
 	}
 
+	// Operator-initiated `init <verb>` on a content-only module has
+	// nothing to act on — the module's contribution is its rootfs
+	// content, not running services. Return a clear-message error
+	// (not a bug; the operator's intent doesn't match the module's
+	// nature) so the CLI exits cleanly. The reconciler treats the
+	// same condition as a silent no-op (see reconcile.go).
 	if len(mf.Services) == 0 {
-		return errResult("init", ExitGeneric, "no_services", errors.New("no services")),
-			Errorf(ExitGeneric, "init:no_services", "module %s manifest has no services (system_module_services rows)", opts.ModuleID)
+		return errResult("init", ExitGeneric, "no_services", errors.New("content-only module")),
+			Errorf(ExitGeneric, "init:no_services", "module %s is content-only (manifest declares no services); nothing to %s", opts.ModuleID, opts.Action)
 	}
 
 	type unitResult struct {

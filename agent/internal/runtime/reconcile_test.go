@@ -48,19 +48,32 @@ func (s *stubModulesClient) GetJSON(path string) (*http.Response, error) {
 }
 
 // stubPuller pretends to pull modules without touching the network.
+// Mimics the real *oci.Puller: writes an empty placeholder blob at
+// the layout-derived cache path so the subsequent MountModule call
+// finds something to loop-mount. Tests that don't exercise the
+// attach path can leave cacheDir empty and skip the file write.
 type stubPuller struct {
 	mu       sync.Mutex
 	calls    []string
-	cacheDir string
+	cacheDir string // typically Layout.ModulesCacheRoot
 }
 
 func (s *stubPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, ref.ModuleID)
-	cfs := filepath.Join(s.cacheDir, ref.Digest+".cfs")
-	bundle := filepath.Join(s.cacheDir, ref.Digest+".cosign-bundle")
-	return cfs, bundle, nil
+	// Mirror the real puller's filename convention exactly: prefix
+	// `sha256_` (the mount-side `sanitizeDigest` does this), `.erofs`
+	// extension. Tests that pass bare-hex digests get the bare hex
+	// straight through (no colons to substitute).
+	digestFs := strings.ReplaceAll(strings.ReplaceAll(ref.Digest, ":", "_"), "/", "_")
+	erofsPath := filepath.Join(s.cacheDir, digestFs+".erofs")
+	bundlePath := filepath.Join(s.cacheDir, digestFs+".cosign-bundle")
+	if s.cacheDir != "" {
+		_ = osMkdirAll(s.cacheDir, 0o755)
+		_ = osWriteFile(erofsPath, []byte("stub-erofs-blob"), 0o644)
+	}
+	return erofsPath, bundlePath, nil
 }
 
 func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
@@ -91,7 +104,14 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 			}`,
 		},
 	}
-	puller := &stubPuller{cacheDir: tmpRoot}
+	// Layout rooted under tmpRoot so the reconciler's MountModule
+	// (which calls layout.ModuleCachePath) looks for the staged blob
+	// inside tmpRoot, not /persist/cache/modules. stubPuller writes
+	// the placeholder blob at the same path.
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
 	runner := &mount.RecorderRunner{}
 
 	cfg := ReconcilerConfig{
@@ -101,6 +121,7 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 		Puller:         puller,
 		Verifier:       verify.AlwaysOK{},
 		MountRunner:    runner,
+		Layout:         layout,
 		StatePath:      statePath,
 	}
 	r, err := NewReconciler(cfg)

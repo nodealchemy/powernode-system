@@ -371,12 +371,17 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	// P8.1 — Service lifecycle. lifecycle.AttachServices writes one
 	// systemd unit file per system_module_services row, runs
 	// daemon-reload, then starts services in topological order over
-	// declared dependencies. Modules without services are an
-	// authoring error and surface as an empty-attach no-op (logged
-	// via OnError).
+	// declared dependencies.
+	//
+	// Modules with an empty services list are content-only by design
+	// (e.g. powernode-base-ruby ships the Ruby runtime that hub-backend
+	// + hub-worker layer on top of, powernode-extension-system ships
+	// Ruby code, powernode-hub-frontend ships static assets served by
+	// reverse-proxy). For these, the mount itself is the contribution —
+	// silent no-op is the right behavior. The detach path below mirrors
+	// this: it skips DetachServices when Services is empty without
+	// surfacing anything to OnError.
 	if len(mf.Services) == 0 {
-		r.cfg.OnError("reconciler:no_services",
-			fmt.Errorf("module %s has no services; nothing to attach (authoring bug — every module must declare at least one system_module_services row)", mod.ID))
 		return nil
 	}
 	if _, err := lifecycle.AttachServices(ctx, r.cfg.MountRunner, mod.ID, mf.Services); err != nil {
@@ -396,9 +401,10 @@ func (r *Reconciler) detachModule(ctx context.Context, current *mount.State, mod
 		mf, _ = manifest.LoadFromDisk(r.cfg.ManifestRoot, mod.ID)
 	}
 	// P8.1 — Service detach via lifecycle.DetachServices: reverse
-	// topological stop + unit-file removal + daemon-reload. Modules
-	// without services (authoring bug or stale on-disk manifest)
-	// degrade to no-op silently — there's nothing to stop.
+	// topological stop + unit-file removal + daemon-reload. Content-only
+	// modules (empty Services list — see attachModule for examples) or
+	// stale on-disk manifests degrade to no-op silently here; there's
+	// nothing to stop.
 	if mf != nil && len(mf.Services) > 0 {
 		if _, err := lifecycle.DetachServices(ctx, r.cfg.MountRunner, mod.ID, mf.Services); err != nil {
 			r.cfg.OnError("reconciler:detach_services",
