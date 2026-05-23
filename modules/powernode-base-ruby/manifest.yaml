@@ -12,7 +12,20 @@ package_spec:
   - libssl-dev
   - libyaml-dev
   - zlib1g-dev
-file_spec: []
+# Ship the full apt-installed tree under the four standard FHS roots.
+# /usr covers ruby + bundler + gcc/g++ toolchain (build-essential) +
+# Ruby stdlib + bundled gems + dev headers (ruby-dev, libpq-dev,
+# libssl-dev, libyaml-dev). /lib + /lib64 cover libc + libruby + ssl
+# + crypto runtime libs. /etc carries package-installed configs.
+# This module is FS-only (services: []) — it's the substrate lower
+# layer hub-backend + hub-worker overlay-stack on top of, so the
+# blob needs every transitive dep for `bundle exec puma`/`sidekiq`
+# to resolve at runtime.
+file_spec:
+  - /usr/**
+  - /lib/**
+  - /lib64/**
+  - /etc/**
 mask: []
 dependency_spec: []
 protected_spec: []

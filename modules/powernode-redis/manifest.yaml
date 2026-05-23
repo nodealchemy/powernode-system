@@ -5,7 +5,17 @@ description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
 license: BSD-3-Clause
 package_spec:
   - redis-server
-file_spec: []
+# Ship the full apt-installed tree under the four standard FHS roots.
+# /usr covers redis-server + redis-cli + libs under /usr/lib. /lib +
+# /lib64 cover early-boot libs (libc, libsystemd, libssl) that the
+# binary dynamically links. /etc carries package-installed configs.
+# /var is intentionally omitted — runtime state (data dirs, logs)
+# materializes on first boot into the overlay's writable upper layer.
+file_spec:
+  - /usr/**
+  - /lib/**
+  - /lib64/**
+  - /etc/**
 mask: []
 dependency_spec: []
 protected_spec:

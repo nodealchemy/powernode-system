@@ -7,7 +7,20 @@ package_spec:
   - postgresql-16
   - postgresql-contrib-16
   - postgresql-client-16
-file_spec: []
+# Ship the full apt-installed tree under the four standard FHS roots.
+# /usr covers /usr/lib/postgresql/16/bin/postgres + initdb + pg_ctl
+# + extension .so plugins + /usr/share/postgresql. /lib + /lib64
+# cover libc, libssl, libxml2, libldap, libreadline, libgssapi-krb5
+# that postgres dynamically links. /etc carries /etc/postgresql/16/
+# + /etc/postgresql-common/ helpers. /var is omitted — the data dir
+# at /var/lib/postgresql/16/main initializes on first boot into the
+# overlay's writable upper layer (initdb runs from a wrapper script
+# at module startup).
+file_spec:
+  - /usr/**
+  - /lib/**
+  - /lib64/**
+  - /etc/**
 mask: []
 dependency_spec: []
 protected_spec:
