@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestApplyOperatorBreakGlass_WritesFileWhenEnabled(t *testing.T) {
@@ -101,6 +102,34 @@ func TestApplyOperatorBreakGlass_DoesNotTouchOtherFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(manifestDriven); err != nil {
 		t.Errorf("manifest-driven file removed by break-glass disable: %v", err)
+	}
+}
+
+func TestApplyOperatorBreakGlass_SurvivesSweep(t *testing.T) {
+	// Regression: the break-glass file uses the "powernode-" prefix so
+	// it's recognizable as Powernode-managed. Apply()'s sweep removes
+	// any powernode-* file not in its keep-set; without the explicit
+	// exclusion in sweep(), the break-glass file gets deleted on every
+	// reconcile cycle (the file is enabled by ApplyOperatorBreakGlass,
+	// not by Apply, so it never appears in the keep-set).
+	dir := t.TempDir()
+	if err := ApplyOperatorBreakGlassAt(true, dir); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	path := filepath.Join(dir, OperatorBreakGlassFilename)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file should exist after enable: %v", err)
+	}
+
+	// Apply with NO grants — simulates the reconcile cycle when the
+	// platform has no manifest-declared sudoers entries (typical for
+	// most modules). Sweep() will iterate; should leave the
+	// break-glass file alone.
+	if err := ApplyAt(nil, dir, time.Now); err != nil {
+		t.Fatalf("ApplyAt(empty): %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("break-glass file removed by Apply()'s sweep: %v", err)
 	}
 }
 

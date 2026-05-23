@@ -77,7 +77,9 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 
 // sweep removes any /etc/sudoers.d/powernode-* file whose path is not
 // in `kept`. Non-Powernode files (no powernode- prefix) are NEVER
-// touched.
+// touched. The break-glass file (managed by ApplyOperatorBreakGlass
+// independently of manifest-driven grants) is also excluded so the
+// reconcile loop doesn't delete it between agent restarts.
 func sweep(dir string, kept map[string]struct{}) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -92,6 +94,13 @@ func sweep(dir string, kept map[string]struct{}) error {
 		}
 		name := e.Name()
 		if !strings.HasPrefix(name, ManagedPrefix) {
+			continue
+		}
+		// Break-glass file is operator-controlled via env var, not
+		// manifest-driven. Apply() doesn't know about it; only
+		// ApplyOperatorBreakGlass does. Excluding here prevents the
+		// reconcile loop from racing with the agent-startup write.
+		if name == OperatorBreakGlassFilename {
 			continue
 		}
 		path := filepath.Join(dir, name)
