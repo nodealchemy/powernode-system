@@ -51,7 +51,15 @@ module System
           # Cloud-init expects the literal string `#cloud-config` on the
           # FIRST line (not the YAML header). YAML.dump emits `---` first,
           # so we concatenate manually.
-          "#cloud-config\n" + YAML.dump(payload).sub(/\A---\n/, "")
+          #
+          # line_width: -1 disables YAML line-folding of long scalars
+          # (e.g. SSH public keys which run ~90 chars). cloud-init's
+          # parser theoretically handles folded plain scalars but in
+          # practice some versions of cloud-init silently fail to parse
+          # the ssh_authorized_keys value when it's folded across lines,
+          # leaving the user with no installed key. Disable folding so
+          # every key + write_files content stays on one line.
+          "#cloud-config\n" + YAML.dump(payload, line_width: -1).sub(/\A---\n/, "")
         end
 
         private
@@ -107,6 +115,21 @@ module System
               "permissions" => "0600",
               "owner"       => "root:root",
               "content"     => JSON.dump(spawn_payload)
+            }
+          end
+          # Belt-and-suspenders: also write the operator's
+          # authorized_keys directly. cloud-init's users: block already
+          # passes ssh_authorized_keys through, but some images/cloud-init
+          # versions silently drop folded-YAML scalars and leave the
+          # account keyless. Writing via write_files (runs AFTER users:
+          # creates /home/operator) guarantees the file lands.
+          if ssh_authorized_keys.any?
+            files << {
+              "path"        => "/home/operator/.ssh/authorized_keys",
+              "permissions" => "0600",
+              "owner"       => "operator:operator",
+              "defer"       => true, # wait until operator's home dir exists
+              "content"     => ssh_authorized_keys.join("\n") + "\n"
             }
           end
           files
