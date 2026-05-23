@@ -89,9 +89,16 @@ if ! $PSQL -c "SELECT 1 FROM pg_database WHERE datname='powernode_production'" 2
 fi
 
 # --- Vendor gems (first-boot only; ~5 min cold) ---
+# NOT using --deployment because parent's Gemfile.lock includes
+# all extension submodules' path gems (powernode_business, etc.)
+# whereas ops2 only mounts extension-system. Gemfile dynamically
+# resolves via discover_extension_gems so the in-memory Gemfile
+# diverges from the on-disk Gemfile.lock; --deployment treats
+# that divergence as fatal. Without --deployment, bundle adapts
+# the lock at install time to match the actual mounted extensions.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
   echo "[rails-start] Vendoring gems (first boot)"
-  /usr/bin/bundle config set --local deployment 'true'
+  /usr/bin/bundle config set --local path 'vendor/bundle'
   /usr/bin/bundle config set --local without 'development:test'
   /usr/bin/bundle install --jobs 4 --retry 2
 fi

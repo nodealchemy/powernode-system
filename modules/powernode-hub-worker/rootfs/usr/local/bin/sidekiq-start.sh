@@ -36,9 +36,10 @@ set +a
 cd "$WORKER_DIR"
 
 # Worker's own bundle (independent from backend's).
+# Same --path-not-deployment rationale as rails-start.sh.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
   echo "[sidekiq-start] Vendoring worker gems (first boot)"
-  /usr/bin/bundle config set --local deployment 'true'
+  /usr/bin/bundle config set --local path 'vendor/bundle'
   /usr/bin/bundle config set --local without 'development:test'
   /usr/bin/bundle install --jobs 4 --retry 2
 fi
