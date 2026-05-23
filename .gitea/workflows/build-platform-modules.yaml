@@ -81,7 +81,15 @@ jobs:
       run:
         shell: bash
     strategy:
-      fail-fast: false
+      # fail-fast: true so the first failure (e.g. a broken notify step,
+      # a manifest schema regression) auto-cancels the remaining matrix
+      # entries instead of grinding through all 12 modules serially.
+      # Cuts wasted CI time when a systemic problem hits — the cost of
+      # losing diagnostic info on later modules is acceptable because
+      # the failure pattern almost always repeats across the matrix.
+      # Operators iterate faster: fix → push → see result in ~5 min
+      # instead of ~50 min.
+      fail-fast: true
       matrix:
         module:
           - powernode-base-ruby
