@@ -27,9 +27,14 @@ dependencies:
 
 services:
   - name: sidekiq
-    start_command: "bundle exec sidekiq -C config/sidekiq.yml"
+    # Wrapper waits for hub-backend's rails-start.sh to publish
+    # /etc/powernode/backend-default.conf (shared secrets file),
+    # then sources it and vendors worker gems before exec'ing
+    # sidekiq. Worker has its own Gemfile so it needs its own
+    # vendor/bundle, separate from the backend's.
+    start_command: "/usr/local/bin/sidekiq-start.sh"
     restart_policy: on-failure
-    user: powernode
+    user: root
     working_directory: /opt/powernode/worker
     env:
       RAILS_ENV: production

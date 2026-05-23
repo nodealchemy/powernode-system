@@ -53,10 +53,14 @@ sudoers:
 
 services:
   - name: postgres
-    start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf"
+    # The wrapper handles first-boot initdb (the module deliberately
+    # omits /var from file_spec, so data dir is empty on first start).
+    # Runs as root so it can mkdir + chown /var/lib/postgresql before
+    # dropping to the postgres user via runuser.
+    start_command: "/usr/local/bin/postgres-start.sh"
     stop_command: "/usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
     restart_policy: always
-    user: postgres
+    user: root
     working_directory: /var/lib/postgresql
     exposed_ports:
       - { port: 5432, protocol: tcp, name: postgres }

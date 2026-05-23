@@ -33,9 +33,12 @@ users:
 
 services:
   - name: redis
-    start_command: "/usr/bin/redis-server /etc/redis/redis.conf"
+    # Wrapper creates /var/lib/redis with redis ownership before
+    # exec'ing redis-server. /var is intentionally not shipped in
+    # the erofs (runtime state lives in overlay's writable upper).
+    start_command: "/usr/local/bin/redis-start.sh"
     restart_policy: always
-    user: redis
+    user: root
     exposed_ports:
       - { port: 6379, protocol: tcp, name: redis }
     capabilities: []
