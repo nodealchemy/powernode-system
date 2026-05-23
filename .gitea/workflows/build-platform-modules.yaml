@@ -466,10 +466,13 @@ jobs:
       - name: Notify platform — module published
         if: success()
         run: |
+          set -euo pipefail
           # POSTs the erofs artifact reference so the platform's ingest
-          # service records it into NodeModuleVersion.artifacts JSONB.
-          # The webhook handler verifies the cosign signature + populates
-          # the artifacts entry.
+          # service (ModulePublicationsController) records it into the
+          # NodeModuleVersion.artifacts JSONB. Without this call, the
+          # platform's record stays stale and the agent's reconcile
+          # pulls outdated blobs — there is NO viable fallback (Gitea
+          # registry pushes don't fire git-push webhooks).
           EROFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
           EROFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
           payload=$(jq -nc \
@@ -490,17 +493,32 @@ jobs:
                  }
                }
              }')
-          # Skip the notify step gracefully if the API base isn't
-          # configured — the platform also ingests via the Gitea push
-          # webhook (GiteaModuleController). The notify call here is
-          # an additional fast-path that bypasses the webhook hop.
-          if [ -n "${{ secrets.POWERNODE_API_BASE }}" ]; then
-            curl -fsS -X POST \
-              -H "Authorization: Bearer ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              -d "$payload" \
-              "${{ secrets.POWERNODE_API_BASE }}/api/v1/system/module_publications" \
-              || echo "notify skipped: $? (platform Gitea webhook is the fallback)"
-          else
-            echo "POWERNODE_API_BASE secret unset; relying on Gitea push webhook"
+          API_BASE="${{ secrets.POWERNODE_API_BASE }}"
+          API_BASE="${API_BASE:-https://ops.powernode.org}"
+          CI_TOKEN="${{ secrets.POWERNODE_CI_WORKER_TOKEN }}"
+          if [ -z "$CI_TOKEN" ]; then
+            echo "::error::POWERNODE_CI_WORKER_TOKEN secret unset — cannot authenticate with platform ingest endpoint"
+            exit 1
           fi
+          URL="${API_BASE}/api/v1/system/module_publications"
+          echo "POSTing to $URL (token redacted)..."
+          # --fail-with-body returns response body even on HTTP error so the
+          # actual server-side message (auth, validation, etc.) lands in the
+          # CI log instead of getting swallowed.
+          if ! curl --fail-with-body -sS -X POST \
+                 -H "Authorization: Bearer $CI_TOKEN" \
+                 -H "Content-Type: application/json" \
+                 -d "$payload" \
+                 "$URL" \
+                 -o /tmp/notify-response.json \
+                 -w "http=%{http_code} time=%{time_total}s\n"; then
+            echo "::error::Notify POST to $URL failed:"
+            cat /tmp/notify-response.json 2>/dev/null || true
+            echo
+            echo "Payload was:"
+            echo "$payload" | jq -c .
+            exit 1
+          fi
+          echo "Response:"
+          cat /tmp/notify-response.json
+          echo
