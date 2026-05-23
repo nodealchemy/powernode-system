@@ -266,9 +266,14 @@ func absoluteURL(base, urlPath string) string {
 
 // sanitizeDigest replaces characters that are unsafe in filesystem
 // paths. OCI digests are typically "sha256:abc..."; the colon is
-// fine on Linux but trips up some tools when unquoted.
+// fine on Linux but trips up some tools when unquoted, so substitute
+// underscore. MUST match mount.Layout's identically-named function
+// (see internal/mount/layout.go) so the pull-step's output filename
+// matches the mount-step's lookup filename — `sha256:abc...` becomes
+// `sha256_abc...`, NOT `abc...`. An earlier version stripped the
+// `sha256:` prefix before substitution, which produced bare-hex
+// filenames the mount step couldn't find.
 func sanitizeDigest(d string) string {
-	d = strings.TrimPrefix(d, "sha256:")
 	out := make([]byte, 0, len(d))
 	for _, c := range []byte(d) {
 		switch {

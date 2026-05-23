@@ -8,17 +8,28 @@ import (
 // Layout describes the canonical mount-point layout the agent maintains.
 // Defaults follow the Golden Eclipse hybrid upper-layer design:
 //
-//	/sysroot              — overlay merged view (the running rootfs)
-//	/run/powernode/upper  — tmpfs upperdir (ephemeral)
-//	/run/powernode/work   — tmpfs workdir (overlayfs internal)
-//	/run/powernode/modules/<digest>  — composefs lower per module
-//	/persist/var          — persistent /var (bind-mounted onto /sysroot/var)
-//	/persist/cache/modules — composefs blob cache (digest store)
+//	/sysroot                       — overlay merged view (the running rootfs)
+//	/run/powernode/scratch         — single shared tmpfs (parent of upper + work)
+//	/run/powernode/scratch/upper   — overlayfs upperdir (ephemeral)
+//	/run/powernode/scratch/work    — overlayfs workdir (overlayfs internal)
+//	/run/powernode/modules/<digest> — erofs lower per module
+//	/persist/var                   — persistent /var (bind-mounted onto /sysroot/var)
+//	/persist/cache/modules         — erofs blob cache (digest store)
+//
+// Upper and work share ONE tmpfs because overlayfs requires
+// `upperdir` and `workdir` to be on the same MOUNT (not just the
+// same filesystem). Earlier code mounted a separate tmpfs at each
+// path; the kernel rejected the overlay with "workdir and upperdir
+// must reside under the same mount". Quotas are now applied to the
+// shared scratch pool (size=512m) rather than per-path; in practice
+// upper is the only thing that grows materially, work just holds
+// overlay's internal whiteout state.
 type Layout struct {
 	Root              string // default: ""
 	SysRoot           string // default: "/sysroot"
-	UpperDir          string // default: "/run/powernode/upper"
-	WorkDir           string // default: "/run/powernode/work"
+	ScratchRoot       string // default: "/run/powernode/scratch"
+	UpperDir          string // default: "/run/powernode/scratch/upper"
+	WorkDir           string // default: "/run/powernode/scratch/work"
 	ModulesMountRoot  string // default: "/run/powernode/modules"
 	ModulesCacheRoot  string // default: "/persist/cache/modules"
 	PersistentVarRoot string // default: "/persist/var"
@@ -28,8 +39,9 @@ type Layout struct {
 func DefaultLayout() Layout {
 	return Layout{
 		SysRoot:           "/sysroot",
-		UpperDir:          "/run/powernode/upper",
-		WorkDir:           "/run/powernode/work",
+		ScratchRoot:       "/run/powernode/scratch",
+		UpperDir:          "/run/powernode/scratch/upper",
+		WorkDir:           "/run/powernode/scratch/work",
 		ModulesMountRoot:  "/run/powernode/modules",
 		ModulesCacheRoot:  "/persist/cache/modules",
 		PersistentVarRoot: "/persist/var",
@@ -41,6 +53,7 @@ func DefaultLayout() Layout {
 func (l Layout) Resolve() Layout {
 	r := l
 	r.SysRoot = join(l.Root, l.SysRoot)
+	r.ScratchRoot = join(l.Root, l.ScratchRoot)
 	r.UpperDir = join(l.Root, l.UpperDir)
 	r.WorkDir = join(l.Root, l.WorkDir)
 	r.ModulesMountRoot = join(l.Root, l.ModulesMountRoot)

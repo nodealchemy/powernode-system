@@ -27,28 +27,44 @@ func LowerDirString(layout Layout, stack ModuleStack) string {
 	return strings.Join(parts, ":")
 }
 
-// EnsureUpperWorkDirs creates upperdir + workdir as tmpfs mounts.
-// Idempotent: skip if already mounted.
+// EnsureUpperWorkDirs mounts a single shared tmpfs at ScratchRoot
+// and creates upper + work as direct subdirectories.
+//
+// overlayfs's kernel-side check requires upperdir and workdir to
+// reside under the SAME mount — not just the same filesystem.
+// Bind-mounting two paths from one tmpfs doesn't satisfy this; the
+// kernel treats bind mounts as distinct mount points. So the only
+// layout that works is one tmpfs mount whose subdirectories are
+// upper + work.
+//
+// Idempotent: skips the mount if ScratchRoot is already a mount point.
 func (o *Overlay) EnsureUpperWorkDirs(ctx context.Context) error {
-	for _, p := range []string{o.Layout.UpperDir, o.Layout.WorkDir} {
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", p, err)
-		}
-		alreadyMounted, err := IsMountpoint(ctx, o.Runner, p)
-		if err != nil {
-			return err
-		}
-		if alreadyMounted {
-			continue
-		}
-		// upper + work each get their own tmpfs so a write storm to one
-		// doesn't pressure the other.
+	scratch := o.Layout.ScratchRoot
+	if scratch == "" {
+		return errors.New("EnsureUpperWorkDirs: Layout.ScratchRoot is empty (Layout not initialized?)")
+	}
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", scratch, err)
+	}
+	scratchMounted, err := IsMountpoint(ctx, o.Runner, scratch)
+	if err != nil {
+		return err
+	}
+	if !scratchMounted {
+		// size applies to upper + work pooled; in practice upper is
+		// the only thing that grows, work just holds overlayfs
+		// whiteout state.
 		if err := o.Runner.Run(ctx, "mount",
 			"-t", "tmpfs",
-			"-o", "size=512m,nosuid,nodev",
-			"tmpfs-powernode", p,
+			"-o", "size=512m,nosuid,nodev,mode=755",
+			"tmpfs-powernode-scratch", scratch,
 		); err != nil {
-			return err
+			return fmt.Errorf("mount scratch tmpfs at %s: %w", scratch, err)
+		}
+	}
+	for _, sub := range []string{o.Layout.UpperDir, o.Layout.WorkDir} {
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", sub, err)
 		}
 	}
 	return nil

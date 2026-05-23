@@ -67,18 +67,32 @@ func TestEnsureUpperWorkDirs_RecordsMounts(t *testing.T) {
 		t.Fatalf("EnsureUpperWorkDirs: %v", err)
 	}
 
+	// Expect exactly ONE tmpfs mount call (for ScratchRoot). Upper +
+	// work are subdirs of that single mount — overlayfs requires
+	// upperdir and workdir under the same mount point.
 	mountCalls := []Invocation{}
 	for _, inv := range rec.Invocations {
 		if inv.Op == "Run" && inv.Name == "mount" {
 			mountCalls = append(mountCalls, inv)
 		}
 	}
-	if len(mountCalls) != 2 {
-		t.Errorf("expected 2 tmpfs mount calls, got %d: %+v", len(mountCalls), mountCalls)
+	if len(mountCalls) != 1 {
+		t.Errorf("expected 1 tmpfs mount call (ScratchRoot), got %d: %+v", len(mountCalls), mountCalls)
 	}
-	for _, mc := range mountCalls {
+	if len(mountCalls) > 0 {
+		mc := mountCalls[0]
 		if !contains(mc.Args, "tmpfs") {
 			t.Errorf("expected -t tmpfs arg in: %v", mc.Args)
+		}
+		if !contains(mc.Args, l.ScratchRoot) {
+			t.Errorf("expected ScratchRoot=%s in mount args: %v", l.ScratchRoot, mc.Args)
+		}
+	}
+
+	// Both upper and work must exist as subdirs of ScratchRoot after the call.
+	for _, sub := range []string{l.UpperDir, l.WorkDir} {
+		if _, err := os.Stat(sub); err != nil {
+			t.Errorf("expected %s to exist as subdir of ScratchRoot, got: %v", sub, err)
 		}
 	}
 }
@@ -255,14 +269,14 @@ func TestMountModule_MissingBlob_FailsClearly(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing blob")
 	}
-	if !strings.Contains(err.Error(), "composefs blob missing") {
+	if !strings.Contains(err.Error(), "erofs blob missing") {
 		t.Errorf("error message = %q", err.Error())
 	}
 }
 
 func TestMountModule_AlreadyMounted_NoOp(t *testing.T) {
 	// Idempotency: when findmnt reports the mountpoint is already a mount,
-	// MountModule must skip the actual `mount -t composefs` invocation.
+	// MountModule must skip the actual `mount -t erofs` invocation.
 	l := DefaultLayout()
 	l.Root = t.TempDir()
 	l = l.Resolve()
@@ -271,7 +285,7 @@ func TestMountModule_AlreadyMounted_NoOp(t *testing.T) {
 
 	rec := &RecorderRunner{
 		StubOutput: map[string][]byte{
-			"findmnt --noheadings " + mountpoint: []byte(mountpoint + " composefs ro,...\n"),
+			"findmnt --noheadings " + mountpoint: []byte(mountpoint + " erofs ro,...\n"),
 		},
 	}
 	if err := MountModule(context.Background(), rec, l, Module{Digest: digest}); err != nil {
@@ -284,12 +298,12 @@ func TestMountModule_AlreadyMounted_NoOp(t *testing.T) {
 	}
 }
 
-func TestMountModule_WithBlob_IssuesComposefsMount(t *testing.T) {
+func TestMountModule_WithBlob_IssuesErofsMount(t *testing.T) {
 	l := DefaultLayout()
 	l.Root = t.TempDir()
 	l = l.Resolve()
 
-	// Stage a fake .cfs blob so the existence check passes
+	// Stage a fake .erofs blob so the existence check passes.
 	digest := "sha256:abc"
 	if err := os.MkdirAll(l.ModulesCacheRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -304,15 +318,18 @@ func TestMountModule_WithBlob_IssuesComposefsMount(t *testing.T) {
 	}
 	found := false
 	for _, inv := range rec.Invocations {
-		if inv.Op == "Run" && inv.Name == "mount" && contains(inv.Args, "composefs") {
+		if inv.Op == "Run" && inv.Name == "mount" && contains(inv.Args, "erofs") {
 			found = true
-			if !contains(inv.Args, "basedir="+l.DigestStorePath()) {
-				t.Errorf("expected basedir arg with %s, got %v", l.DigestStorePath(), inv.Args)
+			// erofs uses `-o loop,ro` (kernel handles loop-device
+			// allocation automatically); no basedir/digest-store
+			// arg like composefs needed.
+			if !contains(inv.Args, "loop,ro") {
+				t.Errorf("expected loop,ro mount option, got %v", inv.Args)
 			}
 		}
 	}
 	if !found {
-		t.Errorf("no composefs mount call recorded; got %+v", rec.Invocations)
+		t.Errorf("no erofs mount call recorded; got %+v", rec.Invocations)
 	}
 }
 

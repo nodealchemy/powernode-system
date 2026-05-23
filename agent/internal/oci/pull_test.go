@@ -143,8 +143,8 @@ func TestPullStreamsAndVerifies(t *testing.T) {
 	if string(got) != string(payload) {
 		t.Errorf("payload mismatch")
 	}
-	if !strings.HasSuffix(cfsPath, digest+".cfs") {
-		t.Errorf("cfsPath: %q does not end with digest.cfs", cfsPath)
+	if !strings.HasSuffix(cfsPath, digest+".erofs") {
+		t.Errorf("cfsPath: %q does not end with digest.erofs", cfsPath)
 	}
 	if !strings.HasSuffix(bundlePath, digest+".cosign-bundle") {
 		t.Errorf("bundlePath: %q", bundlePath)
@@ -171,14 +171,14 @@ func TestPullDigestMismatchDeletesTmp(t *testing.T) {
 		t.Errorf("expected digest mismatch error")
 	}
 
-	// Cache dir must contain no leftover .tmp or .cfs file from the failed pull.
+	// Cache dir must contain no leftover .tmp or .erofs file from the failed pull.
 	entries, _ := os.ReadDir(cache)
 	for _, e := range entries {
 		if strings.Contains(e.Name(), ".tmp") {
 			t.Errorf("temp file leaked: %s", e.Name())
 		}
-		if strings.HasSuffix(e.Name(), ".cfs") {
-			t.Errorf("cfs file should not exist after digest mismatch: %s", e.Name())
+		if strings.HasSuffix(e.Name(), ".erofs") {
+			t.Errorf("erofs file should not exist after digest mismatch: %s", e.Name())
 		}
 	}
 }
@@ -190,7 +190,7 @@ func TestPullIdempotentReturnsCached(t *testing.T) {
 
 	// Pre-seed cache file at the expected path.
 	digestFs := sanitizeDigest(digest)
-	cached := filepath.Join(cache, digestFs+".cfs")
+	cached := filepath.Join(cache, digestFs+".erofs")
 	if err := os.WriteFile(cached, payload, 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
