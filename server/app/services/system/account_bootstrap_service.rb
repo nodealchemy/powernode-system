@@ -297,7 +297,12 @@ module System
           tmpl.node_platform = spec[:platform] || platform
           tmpl.enabled       = true
           tmpl.public        = false
-          tmpl.admin_user    = "ubuntu"
+          # Seeded templates default to Powernode's standardized
+          # operator user (UID 1000, present in the agent's etcidentity
+          # baseline). Cloud-image-derived templates that need to keep
+          # the distro default user (ubuntu, ec2-user, debian, ...)
+          # override admin_user explicitly after creation.
+          tmpl.admin_user    = "operator"
           tmpl.description   = spec[:description]
           tmpl.config        = {}
         end

@@ -24,10 +24,30 @@ package etcidentity
 //     packages chown to bin during postinst.
 //   - sys (UID 3): historical owner of system files; matches Debian's
 //     base-passwd defaults.
+//   - sshd (UID 105): OpenSSH's privilege-separated child runs as
+//     this user; without it sshd accepts the TCP connection then
+//     closes immediately at kex_exchange_identification, producing
+//     "Connection reset by peer" with no useful sshd log line.
+//     A managed-child instance becomes unreachable for ssh-based
+//     recovery without this entry. UID 105 matches Ubuntu cloud
+//     image convention; group is nogroup (65534).
 //
-// Add to this list only when a baseline user is genuinely required to
-// boot — e.g., systemd-network if a future deployment expects it
-// pre-populated. Otherwise let modules declare what they need.
+// Standard groups present:
+//   - root/daemon/bin/sys/adm/tty/disk/shadow: traditional Unix groups.
+//     adm reads system logs, tty controls terminals, disk owns block
+//     devices, shadow gates /etc/shadow read access (required for
+//     getpwent in some setups).
+//   - sudo (GID 27): Ubuntu/Debian convention for the sudoers group.
+//     Even though Powernode's operator has no implicit %sudo grant,
+//     the GROUP must exist so cloud-init's standard /etc/sudoers
+//     line "%sudo ALL=(ALL:ALL) ALL" doesn't error at sudoers parse
+//     time. Without this group, `sudo -ln` returns "user X may not
+//     run sudo" even for a user explicitly granted via a drop-in.
+//
+// Add to this list only when a baseline user/group is genuinely
+// required to boot — e.g., systemd-network if a future deployment
+// expects it pre-populated. Otherwise let modules declare what
+// they need.
 func Baseline() *Set {
 	return &Set{
 		Users: []User{
@@ -35,6 +55,7 @@ func Baseline() *Set {
 			{Name: "daemon", UID: 1, PrimaryGID: 1, PrimaryGroup: "daemon", Shell: "/usr/sbin/nologin", Home: "/usr/sbin", Gecos: "daemon"},
 			{Name: "bin", UID: 2, PrimaryGID: 2, PrimaryGroup: "bin", Shell: "/usr/sbin/nologin", Home: "/bin", Gecos: "bin"},
 			{Name: "sys", UID: 3, PrimaryGID: 3, PrimaryGroup: "sys", Shell: "/usr/sbin/nologin", Home: "/dev", Gecos: "sys"},
+			{Name: "sshd", UID: 105, PrimaryGID: 65534, PrimaryGroup: "nogroup", Shell: "/usr/sbin/nologin", Home: "/run/sshd", Gecos: ""},
 			{Name: "operator", UID: 1000, PrimaryGID: 1000, PrimaryGroup: "operator", Shell: "/bin/bash", Home: "/home/operator", Gecos: "Powernode operator"},
 			{Name: "nobody", UID: 65534, PrimaryGID: 65534, PrimaryGroup: "nogroup", Shell: "/usr/sbin/nologin", Home: "/nonexistent", Gecos: "nobody"},
 		},
@@ -46,6 +67,7 @@ func Baseline() *Set {
 			{Name: "adm", GID: 4},
 			{Name: "tty", GID: 5},
 			{Name: "disk", GID: 6},
+			{Name: "sudo", GID: 27},
 			{Name: "shadow", GID: 42}, // /etc/shadow group-ownership — read by getpwent
 			{Name: "operator", GID: 1000},
 			{Name: "nogroup", GID: 65534},

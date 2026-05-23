@@ -604,7 +604,14 @@ module System
           "ide2"     => "#{storage}:cloudinit,media=cdrom",
           "serial0"  => "socket",
           "vga"      => "serial0",
-          "ciuser"   => params[:ci_user] || "ubuntu",
+          # ciuser is the cloud-init "default user" — cloud-init creates
+          # this user on first boot with the SSH keys + (optional)
+          # password. Standardized on "operator" (UID 1000 in the agent's
+          # etcidentity baseline) so the cloud-init-created user matches
+          # the long-lived account the agent maintains. Caller can
+          # override via :ci_user (e.g., to "ubuntu" for legacy
+          # cloud-image workflows).
+          "ciuser"   => params[:ci_user] || "operator",
           "ipconfig0" => ip_config
         }
         body["nameserver"]   = params[:nameserver]   if params[:nameserver]

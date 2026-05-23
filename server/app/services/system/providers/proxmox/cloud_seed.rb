@@ -64,9 +64,15 @@ module System
             "manage_etc_hosts"  => true,
             "package_update"    => false,
             "package_upgrade"   => false,
+            # operator is Powernode's standardized login user (UID 1000,
+            # baked into agent etcidentity baseline). Cloud-init creates
+            # it with NOPASSWD sudo at first boot so the operator has
+            # a working escalation path before any module-declared
+            # SudoersGrant has been applied — break-glass at the
+            # cloud-init layer rather than depending on agent code.
             "users" => [
               {
-                "name"                => "ubuntu",
+                "name"                => "operator",
                 "sudo"                => "ALL=(ALL) NOPASSWD:ALL",
                 "shell"               => "/bin/bash",
                 "ssh_authorized_keys" => ssh_authorized_keys
