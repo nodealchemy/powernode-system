@@ -132,6 +132,22 @@ module System
               "content"     => ssh_authorized_keys.join("\n") + "\n"
             }
           end
+          # Direct operator NOPASSWD sudoers grant. cloud-init's
+          # users: sudo field SHOULD write /etc/sudoers.d/90-cloud-init-users
+          # for us, but on this PVE-spawned VM topology that file
+          # consistently doesn't materialize (likely the standard
+          # ciuser + cicustom interaction skips the sudoers step).
+          # The agent's break-glass file (when POWERNODE_OPERATOR_BREAK_GLASS=1
+          # is set) covers this, but baking the same grant via cloud-init
+          # makes operator sudoable from first boot, before the agent
+          # has finished its first reconcile. Non-powernode- filename
+          # so the agent's etcsudoers sweep never touches it.
+          files << {
+            "path"        => "/etc/sudoers.d/91-operator-cloudinit",
+            "permissions" => "0440",
+            "owner"       => "root:root",
+            "content"     => "operator ALL=(ALL) NOPASSWD: ALL\n"
+          }
           files
         end
 
@@ -145,6 +161,13 @@ module System
 
             [Service]
             Type=simple
+            # POWERNODE_OPERATOR_BREAK_GLASS=1 writes /etc/sudoers.d/
+            # powernode-operator-break-glass so the operator user can
+            # sudo without going through a module-declared SudoersGrant.
+            # Intended for dev/recovery loops on managed-child instances;
+            # production deployments should rely on module SudoersGrant
+            # rows and unset this flag.
+            Environment=POWERNODE_OPERATOR_BREAK_GLASS=1
             ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{spawn_payload['parent_url']} --pki-dir=/var/lib/powernode/pki
             Restart=on-failure
             RestartSec=10s

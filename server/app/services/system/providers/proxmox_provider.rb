@@ -602,8 +602,29 @@ module System
           "boot"     => "order=scsi0",
           "onboot"   => params.fetch(:onboot, 1),
           "ide2"     => "#{storage}:cloudinit,media=cdrom",
+          # Console standardization: provide BOTH a serial console
+          # (qm terminal / IPMI-style text) AND a VGA console (noVNC
+          # via PVE web UI). Previously vga was set to "serial0" which
+          # disabled VGA entirely — fine for headless servers but
+          # leaves no recovery path when sshd is broken and the host
+          # has no qemu-guest-agent. With both consoles wired:
+          #
+          #   - `qm terminal <vmid>` → serial console for scripted
+          #     boot-time login (operator + cipassword required since
+          #     cipassword isn't typed via VGA in our seed)
+          #   - PVE web UI noVNC → graphical console, falls back to
+          #     text-mode at boot when VGA is the kernel's console
+          #
+          # Ubuntu cloud images enable serial-getty@ttyS0.service by
+          # default so the serial path has a getty waiting; the VGA
+          # path uses getty@tty1 which is also enabled by default.
+          # Both consoles can be active simultaneously — kernel logs
+          # output to whichever is set in /boot/cmdline (default
+          # tty0 on Ubuntu cloud, override via cloud-init runcmd to
+          # add `console=ttyS0,115200n8` if serial-side kernel logs
+          # are needed).
           "serial0"  => "socket",
-          "vga"      => "serial0",
+          "vga"      => params[:vga] || "std",
           # ciuser is the cloud-init "default user" — cloud-init creates
           # this user on first boot with the SSH keys + (optional)
           # password. Standardized on "operator" (UID 1000 in the agent's

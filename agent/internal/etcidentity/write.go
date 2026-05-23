@@ -1,8 +1,10 @@
 package etcidentity
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"syscall"
 	"time"
 
@@ -71,7 +73,15 @@ func ApplyAt(set *Set, paths Paths) error {
 	}
 	defer unlock()
 
-	if err := fsutil.AtomicWrite(paths.Passwd, RenderPasswd(set), 0644); err != nil {
+	// Capture the existing passwd contents before rewrite. If the
+	// content actually changes, we need to restart sshd at the end
+	// (see comment on restartSSHDIfNeeded). Errors from this read
+	// are non-fatal — we'll just always restart sshd if the read
+	// fails, which is the safer default.
+	prevPasswd, _ := os.ReadFile(paths.Passwd)
+
+	newPasswd := RenderPasswd(set)
+	if err := fsutil.AtomicWrite(paths.Passwd, newPasswd, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", paths.Passwd, err)
 	}
 	if err := fsutil.AtomicWrite(paths.Group, RenderGroup(set), 0644); err != nil {
@@ -83,7 +93,47 @@ func ApplyAt(set *Set, paths Paths) error {
 	if err := writeShadow(paths.Gshadow, RenderGshadow(set)); err != nil {
 		return err
 	}
+
+	// If we just rewrote /etc/passwd (real /etc, not a test tmpdir),
+	// nudge sshd to re-read it. sshd opens /etc/passwd on each child
+	// fork, but the LONG-LIVED sshd parent process keeps its initial
+	// uid resolution cached; if our rewrite gave the `sshd` user a
+	// different UID than what the cloud image baked in (Ubuntu uses
+	// 105, Debian 105, RHEL 74, Alpine 22 — there's no fleet-wide
+	// stable value), the parent's privsep fork's setuid lands on an
+	// orphan UID and the connection hangs at kex_exchange_identification.
+	// A best-effort restart at the end of each Apply where passwd
+	// actually changed converges the running sshd onto the new UID.
+	if paths.Passwd == "/etc/passwd" && !bytes.Equal(prevPasswd, newPasswd) {
+		restartSSHDIfNeeded()
+	}
+
 	return nil
+}
+
+// restartSSHDIfNeeded does a best-effort `systemctl restart` of the
+// sshd unit. Both unit names are tried (ssh on Ubuntu/Debian, sshd
+// on RHEL/Alpine/etc.). Failures are silent — if neither unit
+// exists, the host isn't running sshd and there's nothing to do.
+//
+// We use restart (full process replacement) instead of reload-or-restart
+// because SIGHUP (the reload path) only re-reads sshd_config; the
+// running parent process keeps its boot-time uid->name resolution
+// cached. After a passwd rewrite changed the `sshd` user's UID,
+// the long-lived parent's privsep fork still does setuid(oldUID)
+// which lands on an orphan UID, hangs the kex exchange, and looks
+// to the client like "Connection reset by peer". A full restart
+// forks a fresh sshd that reads the new /etc/passwd from scratch.
+// Existing connections survive because the new sshd inherits the
+// listening socket via systemd socket activation; in-flight clients
+// finish their session, new connections land on the fresh process.
+func restartSSHDIfNeeded() {
+	for _, unit := range []string{"ssh", "sshd"} {
+		cmd := exec.Command("systemctl", "restart", unit)
+		if err := cmd.Run(); err == nil {
+			return
+		}
+	}
 }
 
 // writeShadow writes a shadow-family file with 0640 root:root,
