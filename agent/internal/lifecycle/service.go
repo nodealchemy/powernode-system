@@ -226,6 +226,26 @@ func RenderUnit(svc manifest.Service, moduleID string) string {
 
 	b.WriteString("\n[Service]\n")
 	b.WriteString("Type=simple\n")
+	// RootDirectory makes systemd resolve ExecStart paths + working
+	// directory + reads inside the overlay-composed rootfs rather
+	// than the live /. Module manifests' start_command paths
+	// (/usr/bin/redis-server, /usr/local/bin/traefik, etc.) live
+	// in the module's erofs layer, not in the cloud image at /;
+	// without RootDirectory= systemd would exec the LIVE root's
+	// (nonexistent) /usr/bin/redis-server and fail 203/EXEC.
+	//
+	// User=/Group= resolution still uses the LIVE /etc/passwd
+	// (systemd looks up the UID before chrooting), so the agent's
+	// etcidentity-rendered live-root passwd is consulted — the
+	// service users (postgres@70110, redis@70140, traefik@70240,
+	// etc.) the agent added to /etc/passwd resolve correctly.
+	//
+	// Process namespaces (network, IPC, PID) stay shared with the
+	// host; only filesystem view is chrooted. That's the right
+	// trade-off — networking + signal delivery + process discovery
+	// stay normal, ExecStart + library loading + open(2) all see
+	// the module's content.
+	b.WriteString("RootDirectory=/sysroot\n")
 	if svc.User != "" {
 		fmt.Fprintf(&b, "User=%s\n", svc.User)
 	}
