@@ -660,6 +660,18 @@ Rails.application.routes.draw do
           # Slice 5 (deferred reaper) of the SDWAN plan — daily 90-day
           # audit retention sweep over revoked Sdwan::UserDevice rows.
           post "sdwan/reap_user_devices", to: "sdwan#reap_user_devices"
+
+          # Fleet-wide Unix identity reaper — daily sweep over
+          # System::ServiceUser/ServiceGroup rows that have been
+          # draining past the 24h grace window AND have no remaining
+          # module declaration. Invoked by System::IdentityReaperJob.
+          post "identity/reap", to: "identity_reaper#create"
+
+          # Storage chown completion — the on-node agent POSTs here
+          # after finishing a storage.chown task. Transitions the
+          # StorageAssignment's chown_state and re-renders NFS exports
+          # with the now-effective anonuid/anongid.
+          post "storage/chown_complete", to: "storage_chown_complete#create"
         end
 
         # === Node API (instance-token-authenticated running instances) ===

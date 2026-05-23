@@ -48,6 +48,9 @@ RSpec.describe System::ManifestImportService, type: :service do
       build:
         ubuntu_digest: null
         apt_snapshot: "20260415T000000Z"
+      users:
+        - name: powernode
+        - name: postgres
     YAML
   end
 
@@ -149,9 +152,15 @@ RSpec.describe System::ManifestImportService, type: :service do
     end
 
     context "dependency resolution" do
+      # System::AccountBootstrapService auto-creates "system-base" in
+      # every new account via Account.after_create_commit, so we look
+      # it up rather than recreate (would hit uniqueness validation).
       let!(:base_module) do
-        create(:system_node_module, account: account, node_platform: platform,
-               category: category, name: "system-base")
+        ::System::NodeModule.find_or_create_by!(account: account, name: "system-base") do |m|
+          m.node_platform = platform
+          m.category      = category
+          m.variety       = "subscription"
+        end
       end
 
       it "creates ModuleDependency rows for deps that resolve by name" do
@@ -218,7 +227,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         rails = mod.module_services.find_by(name: "rails")
         expect(rails.start_command).to eq("bundle exec puma -C config/puma.rb")
         expect(rails.restart_policy).to eq("always")
-        expect(rails.run_as_user).to eq("powernode")
+        expect(rails.service_user.username).to eq("powernode")
         expect(rails.exposed_ports).to eq([ { "port" => 3000, "protocol" => "tcp", "name" => "http" } ])
         expect(rails.health_endpoint).to eq("/up")
         expect(rails.health_interval_seconds).to eq(30)
@@ -250,6 +259,7 @@ RSpec.describe System::ManifestImportService, type: :service do
             - name: rails
               start_command: "bundle exec puma -C config/puma.rb"
               restart_policy: always
+              user: powernode
         YAML
         described_class.import!(node_module: mod, yaml: rails_only)
         expect(mod.reload.module_services.pluck(:name)).to eq([ "rails" ])
@@ -298,12 +308,123 @@ RSpec.describe System::ManifestImportService, type: :service do
           services:
             - name: rails
               start_command: "x"
+              user: powernode
               dependencies:
                 - { service: ghost, kind: requires_health }
         YAML
         result = described_class.import!(node_module: mod, yaml: bad)
         expect(result.ok?).to be false
         expect(result.error).to include("references unknown service")
+      end
+    end
+
+    context "identity parsing (users / groups / sudoers)" do
+      before do
+        ::System::ModuleUserDeclaration.delete_all
+        ::System::ServiceUserGroupMembership.delete_all
+        ::System::ServiceUser.delete_all
+        ::System::ServiceGroup.delete_all
+      end
+
+      let(:identity_yaml) do
+        manifest_yaml + <<~YAML
+          groups:
+            - name: ssl-cert
+          sudoers:
+            - id: reload
+              user: postgres
+              runas: root
+              commands:
+                - /usr/bin/systemctl reload postgresql.service
+        YAML
+      end
+
+      it "allocates ServiceUser + ServiceGroup rows for each declared identity" do
+        result = described_class.import!(node_module: mod, yaml: identity_yaml)
+        expect(result.ok?).to be true
+        # manifest_yaml declares powernode + postgres; identity_yaml adds ssl-cert.
+        # Each user gets an auto-allocated same-name primary group, so we expect 3 groups
+        # (postgres, powernode, ssl-cert) and 2 users (postgres, powernode).
+        expect(::System::ServiceUser.pluck(:username)).to contain_exactly("postgres", "powernode")
+        expect(::System::ServiceGroup.pluck(:groupname))
+          .to contain_exactly("postgres", "powernode", "ssl-cert")
+      end
+
+      it "creates one ModuleUserDeclaration per declared user + per declared/auto-allocated group" do
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        decls = mod.reload.module_user_declarations
+        # 2 user declarations: postgres + powernode.
+        expect(decls.where.not(service_user_id: nil).count).to eq(2)
+        # 3 group declarations: ssl-cert (explicit) + postgres + powernode
+        # (auto-allocated same-name primary groups). The auto-allocated
+        # ones ALSO get declarations so they drain when the user does.
+        expect(decls.where.not(service_group_id: nil).count).to eq(3)
+      end
+
+      it "creates SudoersGrant rows from the sudoers: block" do
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        grant = mod.reload.sudoers_grants.find_by(grant_id: "reload")
+        expect(grant).to be_present
+        expect(grant.service_user.username).to eq("postgres")
+        expect(grant.runas_user).to eq("root")
+        expect(grant.commands).to eq(["/usr/bin/systemctl reload postgresql.service"])
+      end
+
+      it "is idempotent — re-importing reuses identity rows by name" do
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        users_before = ::System::ServiceUser.pluck(:id).sort
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        expect(::System::ServiceUser.pluck(:id).sort).to eq(users_before)
+      end
+
+      it "drains an identity when no module declaration still references it" do
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        described_class.import!(node_module: mod, yaml: manifest_yaml)
+        # manifest_yaml has no groups: block, so ssl-cert's only declarer
+        # disappears -> it transitions to draining (kept for 24h reaper).
+        ssl = ::System::ServiceGroup.find_by(groupname: "ssl-cert")
+        expect(ssl.state).to eq("draining")
+      end
+
+      it "destroys sudoers grants immediately (no drain) on re-import without them" do
+        described_class.import!(node_module: mod, yaml: identity_yaml)
+        expect(mod.reload.sudoers_grants.count).to eq(1)
+        described_class.import!(node_module: mod, yaml: manifest_yaml)
+        expect(mod.reload.sudoers_grants.count).to eq(0)
+      end
+
+      it "rejects a sudoers grant with a non-absolute command path" do
+        bad = manifest_yaml + <<~YAML
+          sudoers:
+            - id: bad
+              user: postgres
+              commands: [systemctl reload postgres]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("must be an absolute path")
+      end
+
+      it "rejects a sudoers grant containing the literal ALL token" do
+        bad = manifest_yaml + <<~YAML
+          sudoers:
+            - id: bad
+              user: postgres
+              commands: ["/bin/foo ALL"]
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("ALL")
+      end
+
+      it "rejects a user name that doesn't match the POSIX format regex" do
+        bad = manifest_yaml + <<~YAML
+          users:
+            - name: BadName
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to match(/users\[\d+\]\.name/)
       end
     end
   end

@@ -243,6 +243,13 @@ module Api
               # entry maps to one `system_module_services` row + its
               # outgoing dependencies for topological start order.
               services: serialize_module_services(mod),
+              # Fleet-managed Unix identities + sudoers declared by this
+              # module — the agent unions these across all installed
+              # modules to render /etc/passwd, /etc/group, /etc/shadow,
+              # /etc/gshadow, and /etc/sudoers.d/powernode-* on the node.
+              users:    serialize_module_users(mod),
+              groups:   serialize_module_groups(mod),
+              sudoers:  serialize_module_sudoers(mod),
               data_file_size: artifact&.dig("size"),
               # erofs blob digest. The agent uses it for (a) Pull
               # verification and (b) /run/powernode/modules/<digest>
@@ -269,11 +276,10 @@ module Api
                 start_command:                 svc.start_command,
                 stop_command:                  svc.stop_command,
                 restart_policy:                svc.restart_policy,
-                # ModuleService schema uses `run_as_user` (avoiding `user`
-                # which conflicts with Ruby's User constant in some
-                # autoload paths). Agent's Service.User struct key
-                # matches "user" in JSON, so emit under that name.
-                user:                          svc.run_as_user,
+                # ModuleService now references a ServiceUser FK; the
+                # agent only needs the username here (it pairs against
+                # the platform-managed /etc/passwd it just rendered).
+                user:                          svc.service_user&.username,
                 working_directory:             svc.working_directory,
                 env:                           svc.env || {},
                 exposed_ports:                 svc.exposed_ports || [],
@@ -289,6 +295,96 @@ module Api
             end
           rescue StandardError => e
             ::Rails.logger.warn("[ModulesController#serialize_module_services] #{e.class}: #{e.message}")
+            []
+          end
+
+          # Fleet-managed Unix users declared by this module. Includes
+          # the user's primary group + any supplementary groups so the
+          # agent can render /etc/passwd lines (and resolve the supp
+          # group memberships when building /etc/group). Only `live`
+          # users (pending/active/draining) are emitted — `removed`
+          # users have already been swept from /etc/passwd by the
+          # reaper and should not be rendered again.
+          def serialize_module_users(mod)
+            return [] unless mod.respond_to?(:declared_service_users)
+            users = mod.declared_service_users
+                       .where(state: %w[pending active draining])
+                       .includes(:primary_group, :supplementary_groups)
+            users.map do |u|
+              {
+                name:                 u.username,
+                uid:                  u.uid,
+                primary_gid:          u.primary_gid,
+                primary_group:        u.primary_groupname,
+                shell:                u.shell,
+                home:                 u.home,
+                gecos:                u.gecos,
+                supplementary_groups: u.supplementary_groups.pluck(:groupname)
+              }
+            end
+          rescue StandardError => e
+            ::Rails.logger.warn("[ModulesController#serialize_module_users] #{e.class}: #{e.message}")
+            []
+          end
+
+          # Groups declared by this module (whether directly via the
+          # manifest's groups: block, or auto-allocated as a same-name
+          # primary group for a declared user). `members` is the
+          # server-rendered list of usernames whose primary OR
+          # supplementary group is this group — agent doesn't need
+          # cross-module visibility to build correct /etc/group lines.
+          def serialize_module_groups(mod)
+            return [] unless mod.respond_to?(:declared_service_groups)
+            groups = mod.declared_service_groups
+                        .where(state: %w[pending active draining])
+            groups.map do |g|
+              {
+                name:    g.groupname,
+                gid:     g.gid,
+                members: group_members(g)
+              }
+            end
+          rescue StandardError => e
+            ::Rails.logger.warn("[ModulesController#serialize_module_groups] #{e.class}: #{e.message}")
+            []
+          end
+
+          # Union of primary-group users + supplementary-membership
+          # users for the given group. Scoped to live ServiceUser rows
+          # so a draining-but-not-yet-removed user still appears in
+          # /etc/group (matches the user being temporarily preserved
+          # to avoid breaking in-flight processes).
+          def group_members(group)
+            primary  = ::System::ServiceUser
+                         .where(primary_group_id: group.id, state: %w[pending active draining])
+                         .pluck(:username)
+            via_supp = ::System::ServiceUser
+                         .joins(:user_group_memberships)
+                         .where(state: %w[pending active draining],
+                                system_service_user_group_memberships: { service_group_id: group.id })
+                         .pluck(:username)
+            (primary + via_supp).uniq.sort
+          end
+
+          # Per-command sudo grants owned by this module. The agent
+          # writes one /etc/sudoers.d/powernode-<module>-<id> file per
+          # grant; only active grants are emitted (removed grants are
+          # swept off disk by the agent's sweep step).
+          def serialize_module_sudoers(mod)
+            return [] unless mod.respond_to?(:sudoers_grants)
+            grants = mod.sudoers_grants.active.includes(:service_user)
+            grants.map do |g|
+              {
+                id:          g.grant_id,
+                user:        g.service_user&.username,
+                runas_user:  g.runas_user,
+                runas_group: g.runas_group,
+                commands:    Array(g.commands),
+                flags:       Array(g.flags)
+              }
+            end
+          rescue StandardError => e
+            ::Rails.logger.warn("[ModulesController#serialize_module_sudoers] #{e.class}: #{e.message}")
             []
           end
         end

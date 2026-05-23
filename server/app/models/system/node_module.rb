@@ -126,6 +126,23 @@ module System
              class_name: "System::ModuleService",
              dependent: :destroy
 
+    # Fleet-wide Unix identity declarations: each row claims a
+    # ServiceUser or ServiceGroup whose lifecycle is partially anchored
+    # to this module (last declarer destroyed -> identity drains 24h).
+    has_many :module_user_declarations,
+             class_name: "System::ModuleUserDeclaration",
+             dependent: :destroy
+    has_many :declared_service_users,
+             through: :module_user_declarations, source: :service_user
+    has_many :declared_service_groups,
+             through: :module_user_declarations, source: :service_group
+
+    # Narrow per-command sudo grants owned by this module. Destroyed
+    # immediately on module destroy (no drain — sudo is runtime-only).
+    has_many :sudoers_grants,
+             class_name: "System::SudoersGrant",
+             dependent: :destroy
+
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
     validates :variety, presence: true, inclusion: { in: VARIETIES }

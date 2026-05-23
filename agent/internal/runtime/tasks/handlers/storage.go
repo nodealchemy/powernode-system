@@ -91,9 +91,74 @@ func (h *StorageHandler) Execute(ctx context.Context, task *tasks.Task) (tasks.R
 		}
 		return tasks.Result{"storage_id": gd.StorageID, "gateway_deprovisioned": true}, nil
 
+	case "storage.chown":
+		var ct storage.ChownTask
+		if err := json.Unmarshal(body, &ct); err != nil {
+			return nil, fmt.Errorf("storage.chown unmarshal: %w", err)
+		}
+		err := storage.ApplyChown(ctx, &ct)
+		// Whether the chown succeeds or fails, the agent POSTs to the
+		// platform's callback so the StorageAssignment's chown_state
+		// transitions correctly. Failures are reported as a non-nil
+		// task error AND a callback with status=failed so the operator
+		// sees the diagnostic in both surfaces.
+		reportErr := postChownCompletion(client, &ct, err)
+		if err != nil {
+			return tasks.Result{
+				"assignment_id": ct.StorageAssignmentID,
+				"chown_status":  "failed",
+				"error":         err.Error(),
+			}, err
+		}
+		if reportErr != nil {
+			return nil, fmt.Errorf("storage.chown completed but callback POST failed: %w", reportErr)
+		}
+		return tasks.Result{
+			"assignment_id": ct.StorageAssignmentID,
+			"chown_status":  "complete",
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported storage command: %s", task.Command)
 	}
+}
+
+// postChownCompletion POSTs the storage.chown task outcome to the
+// platform's worker_api callback. Called regardless of success — the
+// platform-side state machine flips to complete or failed based on
+// the body. If runErr is nil, status=complete; otherwise failed +
+// error message.
+func postChownCompletion(client tasks.HTTPClient, ct *storage.ChownTask, runErr error) error {
+	if client == nil || ct == nil {
+		return nil // no platform connection (e.g. dry-run / test)
+	}
+	path := ct.CallbackPath
+	if path == "" {
+		path = "/api/v1/system/worker_api/storage/chown_complete"
+	}
+	body := map[string]any{
+		"storage_assignment_id": ct.StorageAssignmentID,
+		"status":                "complete",
+	}
+	if runErr != nil {
+		body["status"] = "failed"
+		body["error_message"] = runErr.Error()
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal chown callback body: %w", err)
+	}
+	resp, err := client.PostJSON(path, encoded)
+	if err != nil {
+		return err
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return fmt.Errorf("chown callback returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // RegisterStorage binds every storage.* command to a single shared
@@ -107,6 +172,7 @@ func RegisterStorage(r *tasks.Registry, deps tasks.Dependencies) {
 		"storage.smb_user.apply",
 		"storage.gateway.provision",
 		"storage.gateway.deprovision",
+		"storage.chown",
 	} {
 		r.Register(cmd, h)
 	}

@@ -14,6 +14,30 @@ protected_spec:
   - /etc/postgresql/16/main/postgresql.conf
 reboot_required: false
 
+# Platform-allocated fleet-wide Unix identities. postgres maps to UID
+# 70110 (reserved-table slot for databases); ssl-cert is a supplementary
+# group postgres joins so it can read certificates issued by the ACME
+# pipeline into /etc/ssl/private/.
+users:
+  - name: postgres
+    shell: /bin/bash
+    home: /var/lib/postgresql
+    gecos: PostgreSQL administrator
+    supplementary_groups: [ssl-cert]
+groups:
+  - name: ssl-cert
+
+# Narrow per-command sudo grant: postgres needs to invoke systemctl
+# reload after the ACME pipeline rotates certificates (postgres only
+# notices new cert files after SIGHUP). No restart grant — that would
+# let postgres drop user connections at will.
+sudoers:
+  - id: reload
+    user: postgres
+    runas: root
+    commands:
+      - /usr/bin/systemctl reload postgresql.service
+
 services:
   - name: postgres
     start_command: "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf"

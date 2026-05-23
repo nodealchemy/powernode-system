@@ -638,6 +638,22 @@ FactoryBot.define do
     last_synced_at { Time.current }
   end
 
+  # Platform-allocated Unix groups for the identity system. Uses the
+  # real allocator so the row gets a valid GID in the 70000..99999
+  # range (or a reserved-table slot for well-known names). Idempotent
+  # by groupname — calling twice returns the same row.
+  factory :system_service_group, class: "System::ServiceGroup" do
+    sequence(:groupname) { |n| "svc-grp-#{n}-#{SecureRandom.hex(2)}" }
+    initialize_with { ::System::Identity::GroupAllocator.allocate!(groupname: groupname) }
+    skip_create
+  end
+
+  factory :system_service_user, class: "System::ServiceUser" do
+    sequence(:username) { |n| "svc-usr-#{n}-#{SecureRandom.hex(2)}" }
+    initialize_with { ::System::Identity::UserAllocator.allocate!(username: username) }
+    skip_create
+  end
+
   factory :system_module_service, class: "System::ModuleService" do
     association :node_module, factory: :system_node_module
     account { node_module&.account }
@@ -652,6 +668,8 @@ FactoryBot.define do
     exposed_ports { [] }
     capabilities { [] }
     metadata { {} }
+    # Every service MUST run as a platform-managed Unix user (system_module_services.service_user_id is NOT NULL).
+    service_user { association :system_service_user }
 
     trait :rails do
       name { "rails" }
@@ -673,7 +691,7 @@ FactoryBot.define do
       start_command { "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main" }
       health_endpoint { nil }
       exposed_ports { [{ "port" => 5432, "protocol" => "tcp", "name" => "postgres" }] }
-      run_as_user { "postgres" }
+      service_user { ::System::Identity::UserAllocator.allocate!(username: "postgres") }
     end
   end
 

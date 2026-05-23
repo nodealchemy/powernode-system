@@ -82,6 +82,7 @@ module System
       schema_version name display_name description license
       mask file_spec package_spec dependency_spec protected_spec
       dependencies init reboot_required security skills build services
+      users groups sudoers
     ].freeze
 
     SPEC_FIELDS = %w[mask file_spec package_spec dependency_spec protected_spec].freeze
@@ -91,6 +92,10 @@ module System
       name start_command stop_command restart_policy user working_directory
       env exposed_ports capabilities health dependencies metadata
     ].freeze
+
+    USER_KNOWN_KEYS    = %w[name shell home gecos primary_group supplementary_groups].freeze
+    GROUP_KNOWN_KEYS   = %w[name].freeze
+    SUDOERS_KNOWN_KEYS = %w[id user runas commands flags].freeze
 
     class << self
       def import!(node_module:, yaml:, create_version: false, version_changelog: nil)
@@ -128,7 +133,9 @@ module System
         node_module.save!
 
         resolved = resolve_dependencies(node_module, manifest)
-        apply_services(node_module, manifest)
+        identity_index = apply_identities(node_module, manifest)
+        apply_services(node_module, manifest, identity_index)
+        apply_sudoers_grants(node_module, manifest, identity_index)
 
         if create_version
           version = snapshot_version(node_module, manifest, version_changelog)
@@ -212,8 +219,152 @@ module System
       end
 
       validate_services(manifest, errors)
+      validate_groups(manifest, errors)
+      validate_users(manifest, errors)
+      validate_sudoers(manifest, errors)
 
       errors
+    end
+
+    # Validates `users:` key (fleet-managed Unix users). Caught here so
+    # the operator sees the full error set in one round-trip.
+    def validate_users(manifest, errors)
+      users = manifest["users"]
+      return if users.nil?
+
+      unless users.is_a?(Array)
+        errors << "users must be an array"
+        return
+      end
+
+      group_names = Array(manifest["groups"]).filter_map { |g| g.is_a?(Hash) ? g["name"] : nil }.to_set
+      seen = Set.new
+      users.each_with_index do |entry, i|
+        prefix = "users[#{i}]"
+        unless entry.is_a?(Hash)
+          errors << "#{prefix} must be a hash"
+          next
+        end
+
+        name = entry["name"]
+        if name.blank?
+          errors << "#{prefix}.name is required"
+        elsif !name.is_a?(String) || !name.match?(::System::ServiceUser::USERNAME_RX)
+          errors << "#{prefix}.name #{name.inspect} must match #{::System::ServiceUser::USERNAME_RX.inspect}"
+        elsif seen.include?(name)
+          errors << "#{prefix}.name #{name.inspect} duplicates an earlier user"
+        else
+          seen << name
+        end
+
+        %w[shell home gecos].each do |k|
+          v = entry[k]
+          errors << "#{prefix}.#{k} must be a string" if v && !v.is_a?(String)
+        end
+
+        pg = entry["primary_group"]
+        if pg && !pg.is_a?(String)
+          errors << "#{prefix}.primary_group must be a string"
+        elsif pg && pg != name && !group_names.include?(pg) &&
+              !::System::ServiceGroup.live.exists?(groupname: pg)
+          errors << "#{prefix}.primary_group #{pg.inspect} is not declared in this manifest and not allocated platform-wide"
+        end
+
+        Array(entry["supplementary_groups"]).each_with_index do |sg, j|
+          ref = "#{prefix}.supplementary_groups[#{j}]"
+          if !sg.is_a?(String) || !sg.match?(::System::ServiceGroup::GROUPNAME_RX)
+            errors << "#{ref} #{sg.inspect} must match #{::System::ServiceGroup::GROUPNAME_RX.inspect}"
+          elsif !group_names.include?(sg) && !::System::ServiceGroup.live.exists?(groupname: sg)
+            errors << "#{ref} #{sg.inspect} is not declared in this manifest and not allocated platform-wide"
+          end
+        end
+      end
+    end
+
+    def validate_groups(manifest, errors)
+      groups = manifest["groups"]
+      return if groups.nil?
+
+      unless groups.is_a?(Array)
+        errors << "groups must be an array"
+        return
+      end
+
+      seen = Set.new
+      groups.each_with_index do |entry, i|
+        prefix = "groups[#{i}]"
+        unless entry.is_a?(Hash)
+          errors << "#{prefix} must be a hash"
+          next
+        end
+
+        name = entry["name"]
+        if name.blank?
+          errors << "#{prefix}.name is required"
+        elsif !name.is_a?(String) || !name.match?(::System::ServiceGroup::GROUPNAME_RX)
+          errors << "#{prefix}.name #{name.inspect} must match #{::System::ServiceGroup::GROUPNAME_RX.inspect}"
+        elsif seen.include?(name)
+          errors << "#{prefix}.name #{name.inspect} duplicates an earlier group"
+        else
+          seen << name
+        end
+      end
+    end
+
+    def validate_sudoers(manifest, errors)
+      grants = manifest["sudoers"]
+      return if grants.nil?
+
+      unless grants.is_a?(Array)
+        errors << "sudoers must be an array"
+        return
+      end
+
+      user_names = Array(manifest["users"]).filter_map { |u| u.is_a?(Hash) ? u["name"] : nil }.to_set
+      seen_ids = Set.new
+      grants.each_with_index do |entry, i|
+        prefix = "sudoers[#{i}]"
+        unless entry.is_a?(Hash)
+          errors << "#{prefix} must be a hash"
+          next
+        end
+
+        gid = entry["id"]
+        if gid.blank?
+          errors << "#{prefix}.id is required"
+        elsif !gid.is_a?(String) || !gid.match?(::System::SudoersGrant::GRANT_ID_RX)
+          errors << "#{prefix}.id #{gid.inspect} must match #{::System::SudoersGrant::GRANT_ID_RX.inspect}"
+        elsif seen_ids.include?(gid)
+          errors << "#{prefix}.id #{gid.inspect} duplicates an earlier grant"
+        else
+          seen_ids << gid
+        end
+
+        u = entry["user"]
+        if u.blank?
+          errors << "#{prefix}.user is required"
+        elsif !u.is_a?(String)
+          errors << "#{prefix}.user must be a string"
+        elsif !user_names.include?(u) && !::System::ServiceUser.live.exists?(username: u)
+          errors << "#{prefix}.user #{u.inspect} is not declared in this manifest and not allocated platform-wide"
+        end
+
+        cmds = entry["commands"]
+        if !cmds.is_a?(Array) || cmds.empty?
+          errors << "#{prefix}.commands must be a non-empty array"
+        else
+          cmds.each_with_index do |cmd, j|
+            cref = "#{prefix}.commands[#{j}]"
+            if !cmd.is_a?(String)
+              errors << "#{cref} must be a string"
+            elsif !cmd.start_with?("/")
+              errors << "#{cref} must be an absolute path (starts with /)"
+            elsif cmd.split(/[\s,]+/).include?("ALL")
+              errors << "#{cref} contains the literal token ALL (broad grants forbidden)"
+            end
+          end
+        end
+      end
     end
 
     # Validates `services:` key. Catches schema issues before any DB writes
@@ -366,7 +517,13 @@ module System
     # services declared in the DB but absent from the manifest are deleted
     # (manifest_yaml is the authoritative source for service definitions).
     # Cross-service dependencies are resolved within this manifest only.
-    def apply_services(mod, manifest)
+    #
+    # identity_index is the {users:, groups:} hash returned by
+    # apply_identities — used to resolve svc["user"] to a ServiceUser FK.
+    # A service whose declared user is neither in this manifest nor
+    # already allocated platform-wide raises ImportError (the manifest
+    # is incomplete).
+    def apply_services(mod, manifest, identity_index = { users: {}, groups: {} })
       services_yaml = Array(manifest["services"])
       declared_names = services_yaml.map { |s| s["name"] }.compact
 
@@ -381,7 +538,7 @@ module System
         record.start_command = svc["start_command"]
         record.stop_command  = svc["stop_command"]
         record.restart_policy = svc.fetch("restart_policy", "always")
-        record.run_as_user = svc["user"]
+        record.service_user = resolve_service_user!(mod, svc, identity_index)
         record.working_directory = svc["working_directory"]
         record.env           = svc["env"] || {}
         record.exposed_ports = svc["exposed_ports"] || []
@@ -425,6 +582,137 @@ module System
         (existing_targets - declared_targets).each do |stale_id|
           source.outgoing_dependencies.where(depends_on_module_service_id: stale_id).destroy_all
         end
+      end
+    end
+
+    # Allocates ServiceGroup + ServiceUser rows for everything declared
+    # in manifest["groups"] and manifest["users"], reconciles the
+    # ModuleUserDeclaration join rows for this module, and returns an
+    # index callers can use to resolve names without re-hitting the DB.
+    #
+    # Groups are allocated FIRST so user.primary_group_id can be
+    # satisfied without a second pass. Auto-creation of a same-name
+    # primary group lives inside UserAllocator (debian USERGROUPS_ENAB
+    # behavior); explicit primary_group references must resolve to a
+    # group declared here or already allocated platform-wide
+    # (validation enforces this).
+    def apply_identities(mod, manifest)
+      index = { users: {}, groups: {} }
+      groups_yaml = Array(manifest["groups"])
+      users_yaml  = Array(manifest["users"])
+
+      groups_yaml.each do |entry|
+        group = ::System::Identity::GroupAllocator.allocate!(groupname: entry["name"])
+        index[:groups][entry["name"]] = group
+      end
+
+      users_yaml.each do |entry|
+        primary = if entry["primary_group"].present?
+                    index[:groups][entry["primary_group"]] ||
+                      ::System::ServiceGroup.live.find_by!(groupname: entry["primary_group"])
+                  end
+        user = ::System::Identity::UserAllocator.allocate!(
+          username:             entry["name"],
+          primary_group:        primary,
+          shell:                entry["shell"],
+          home:                 entry["home"],
+          gecos:                entry["gecos"].to_s,
+          supplementary_groups: Array(entry["supplementary_groups"]).map do |sg|
+            index[:groups][sg] ||
+              ::System::ServiceGroup.live.find_by!(groupname: sg)
+          end
+        )
+        index[:users][entry["name"]] = user
+        # Auto-created primary group from UserAllocator isn't in the
+        # manifest's groups: list — capture it in the index so apply_
+        # sudoers_grants and serializers can find it.
+        index[:groups][user.primary_groupname] ||= user.primary_group
+      end
+
+      reconcile_module_declarations!(mod, index)
+
+      index
+    end
+
+    # Track the set of (module, identity) declarations so the reaper can
+    # tell when no module still claims a given user/group. Adds rows for
+    # the current manifest; destroys rows that no longer match. The
+    # ModuleUserDeclaration#before_destroy hook starts a 24h drain on
+    # any identity left without a declarer.
+    def reconcile_module_declarations!(mod, index)
+      desired_user_ids  = index[:users].values.map(&:id).to_set
+      desired_group_ids = index[:groups].values.map(&:id).to_set
+
+      mod.module_user_declarations
+         .where.not(service_user_id: nil)
+         .where.not(service_user_id: desired_user_ids.to_a)
+         .destroy_all
+      mod.module_user_declarations
+         .where.not(service_group_id: nil)
+         .where.not(service_group_id: desired_group_ids.to_a)
+         .destroy_all
+
+      desired_user_ids.each do |uid|
+        ::System::ModuleUserDeclaration.find_or_create_by!(node_module_id: mod.id, service_user_id: uid)
+      end
+      desired_group_ids.each do |gid|
+        ::System::ModuleUserDeclaration.find_or_create_by!(node_module_id: mod.id, service_group_id: gid)
+      end
+    end
+
+    # Resolves a service's declared `user:` string into a ServiceUser
+    # row, using the in-flight allocation index first and falling back
+    # to a global lookup for transitive-dependency references. Also
+    # creates a ModuleUserDeclaration linking this module → that user
+    # so the reaper treats consumer references as keep-alive — without
+    # this, uninstalling the *declaring* module would orphan running
+    # services that consume the identity.
+    def resolve_service_user!(mod, svc, identity_index)
+      raw = svc["user"]
+      raise ImportError, "services[#{svc['name']}].user is required" if raw.blank?
+
+      user = identity_index[:users][raw] ||
+             ::System::ServiceUser.live.find_by(username: raw)
+      raise ImportError,
+            "services[#{svc['name']}].user #{raw.inspect} is not declared in this manifest and not allocated platform-wide" unless user
+
+      ::System::ModuleUserDeclaration.find_or_create_by!(
+        node_module_id:  mod.id,
+        service_user_id: user.id
+      )
+      user
+    end
+
+    # Upserts SudoersGrant rows from manifest.sudoers[]. Idempotent
+    # per (module, grant_id). Removed grants are destroyed immediately
+    # (no drain) — see plan §8: sudo is a runtime check with no
+    # persistent state, so revocation MUST be effective on the next
+    # reconcile tick. Model validations enforce absolute paths +
+    # rejection of the ALL keyword; the agent runs visudo -cf before
+    # writing each file to catch anything model validation misses.
+    def apply_sudoers_grants(mod, manifest, identity_index)
+      grants_yaml = Array(manifest["sudoers"])
+      declared_ids = grants_yaml.filter_map { |g| g["id"] }
+
+      mod.sudoers_grants.where.not(grant_id: declared_ids).destroy_all if declared_ids.any?
+      mod.sudoers_grants.destroy_all if grants_yaml.empty?
+
+      grants_yaml.each do |entry|
+        user = identity_index[:users][entry["user"]] ||
+               ::System::ServiceUser.live.find_by(username: entry["user"])
+        raise ImportError,
+              "sudoers[#{entry['id']}].user #{entry['user'].inspect} is not declared in this manifest and not allocated platform-wide" unless user
+
+        record = ::System::SudoersGrant.find_or_initialize_by(
+          node_module_id: mod.id, grant_id: entry["id"]
+        )
+        record.service_user = user
+        record.runas_user   = entry["runas"].presence || "root"
+        record.runas_group  = nil
+        record.commands     = Array(entry["commands"])
+        record.flags        = Array(entry["flags"])
+        record.state        = "active"
+        record.save!
       end
     end
 

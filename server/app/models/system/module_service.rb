@@ -17,6 +17,7 @@ module System
     HEALTH_METHODS   = %w[GET POST PUT].freeze
 
     belongs_to :node_module, class_name: "System::NodeModule"
+    belongs_to :service_user, class_name: "System::ServiceUser"
 
     has_many :outgoing_dependencies,
              class_name: "System::ModuleServiceDependency",

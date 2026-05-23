@@ -81,8 +81,12 @@ module System
           entries: [
             {
               peer_ip: peer_ip,
-              uid: @assignment.derived_uid,
-              gid: @assignment.derived_uid,
+              # During an in-flight chown, NFS export keeps using the
+              # PREVIOUS owner so consumers don't see EACCES while the
+              # agent rewrites file ownership. After completion, the
+              # standard anonuid/anongid take effect.
+              uid: @assignment.effective_export_uid,
+              gid: @assignment.effective_export_gid,
               options: %w[rw sync no_subtree_check all_squash sec=sys]
             }
           ]
@@ -125,8 +129,8 @@ module System
           instance_id: assignment.node_instance_id,
           instance_hostname: assignment.node_instance&.name,
           peer_ip: peer&.assigned_address,
-          uid: assignment.derived_uid,
-          gid: assignment.derived_uid,
+          uid: assignment.anonuid,
+          gid: assignment.anongid,
           account_id: assignment.account_id,
           sdwan_network_id: assignment.sdwan_network_id,
           virtual_ip_address: assignment.sdwan_virtual_ip&.cidr&.split("/")&.first,

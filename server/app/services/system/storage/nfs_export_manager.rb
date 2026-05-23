@@ -57,8 +57,12 @@ module System
 
               {
                 peer_ip: cred.vault_credentials.dig("peer_ip") || cred.metadata["peer_ip"],
-                uid: a.derived_uid,
-                gid: a.derived_uid,
+                # effective_export_uid/gid preserves OLD ownership
+                # during an in-flight chown so consumers don't see
+                # EACCES storms; otherwise the assignment's current
+                # anonuid/anongid take effect (see StorageAssignment).
+                uid: a.effective_export_uid,
+                gid: a.effective_export_gid,
                 options: %w[rw sync no_subtree_check all_squash sec=sys]
               }
             end

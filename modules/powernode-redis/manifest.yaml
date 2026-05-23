@@ -12,6 +12,15 @@ protected_spec:
   - /etc/redis/redis.conf
 reboot_required: false
 
+# Platform-allocated fleet-wide Unix identity. redis maps to UID 70140
+# (reserved-table slot for databases). Locked shell — redis is daemon-
+# only, no interactive access expected.
+users:
+  - name: redis
+    shell: /usr/sbin/nologin
+    home: /var/lib/redis
+    gecos: Redis server
+
 services:
   - name: redis
     start_command: "/usr/bin/redis-server /etc/redis/redis.conf"

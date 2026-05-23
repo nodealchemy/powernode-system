@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -231,6 +233,30 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			r.cfg.OnError("reconciler:detach", fmt.Errorf("module %s: %w", mod.ID, err))
 			// Continue — best-effort detach; partial failure shouldn't block other detaches.
 		}
+	}
+
+	// Render /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow from
+	// the post-detach manifest set BEFORE any attach kicks off systemd
+	// units that reference platform-managed users via `User=`. Sudoers
+	// follows so any grant referencing the just-rendered users is in
+	// place before service start. Both renderers are idempotent and
+	// run every reconcile tick — atomic writes are no-ops if contents
+	// match.
+	manifestsSlice := make([]*manifest.Manifest, 0, len(manifests))
+	for _, m := range manifests {
+		manifestsSlice = append(manifestsSlice, m)
+	}
+	identitySet, conflicts := etcidentity.Collect(manifestsSlice)
+	for _, c := range conflicts {
+		r.cfg.OnError("reconciler:identity_conflict",
+			fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
+				c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
+	}
+	if err := etcidentity.Apply(identitySet); err != nil {
+		r.cfg.OnError("reconciler:identity_write", err)
+	}
+	if err := etcsudoers.Apply(etcsudoers.CollectFromManifests(manifestsSlice)); err != nil {
+		r.cfg.OnError("reconciler:sudoers_write", err)
 	}
 
 	// Attaches in priority order (low → high).

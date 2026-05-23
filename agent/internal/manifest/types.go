@@ -51,6 +51,53 @@ type Manifest struct {
 	// The agent's internal/lifecycle package emits one systemd unit
 	// file per service at attach time and tears them down on detach.
 	Services []Service `json:"services"`
+
+	// Fleet-managed Unix identities declared by this module's
+	// manifest's users:/groups: blocks (plus any auto-allocated
+	// same-name primary groups). The agent's internal/etcidentity
+	// package unions these across all installed modules to render
+	// /etc/passwd, /etc/group, /etc/shadow, /etc/gshadow.
+	//
+	// Fields use embedded types from internal/etcidentity to avoid an
+	// import cycle — etcidentity imports manifest, not the other way.
+	// Mirrored manually here to keep the dependency direction clean.
+	Users   []ManifestUser   `json:"users,omitempty"`
+	Groups  []ManifestGroup  `json:"groups,omitempty"`
+	Sudoers []ManifestSudoer `json:"sudoers,omitempty"`
+}
+
+// ManifestUser mirrors the platform's serialize_module_users payload.
+// Kept here (not in internal/etcidentity) to preserve the
+// manifest → etcidentity import direction.
+type ManifestUser struct {
+	Name                string   `json:"name"`
+	UID                 int      `json:"uid"`
+	PrimaryGID          int      `json:"primary_gid"`
+	PrimaryGroup        string   `json:"primary_group"`
+	Shell               string   `json:"shell"`
+	Home                string   `json:"home"`
+	Gecos               string   `json:"gecos"`
+	SupplementaryGroups []string `json:"supplementary_groups,omitempty"`
+}
+
+// ManifestGroup mirrors the platform's serialize_module_groups payload.
+type ManifestGroup struct {
+	Name    string   `json:"name"`
+	GID     int      `json:"gid"`
+	Members []string `json:"members,omitempty"`
+}
+
+// ManifestSudoer mirrors the platform's serialize_module_sudoers payload.
+// One row per declared sudo grant. The agent's internal/etcsudoers
+// package validates each via visudo -cf and writes one
+// /etc/sudoers.d/powernode-<module>-<id> file per grant.
+type ManifestSudoer struct {
+	ID         string   `json:"id"`
+	User       string   `json:"user"`
+	RunasUser  string   `json:"runas_user"`
+	RunasGroup string   `json:"runas_group,omitempty"`
+	Commands   []string `json:"commands"`
+	Flags      []string `json:"flags,omitempty"`
 }
 
 // Service mirrors the server-side serialize_module_services payload.
