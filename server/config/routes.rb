@@ -9,6 +9,15 @@ Rails.application.routes.draw do
   namespace :api do
     namespace :v1 do
       namespace :system do
+        # === CI-direct module publication webhook ===
+        # POSTed by .gitea/workflows/build-platform-modules.yaml after
+        # each successful `oras push + cosign sign`. Authenticated via
+        # Bearer POWERNODE_CI_WORKER_TOKEN. Triggers the same
+        # ModulePublicationProcessor flow that the Gitea push webhook
+        # uses, but skips the git-event hop (CI publishes OCI artifacts,
+        # not git pushes — Gitea's push webhook doesn't fire for these).
+        post "module_publications", to: "module_publications#create"
+
         # === Operator-facing CRUD ===
         # Public-facing tasks API: list/show/create/cancel only.
         # State mutations (start/complete/fail/abort) are worker-only via
