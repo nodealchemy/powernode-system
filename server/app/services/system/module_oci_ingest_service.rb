@@ -222,11 +222,29 @@ module System
       def verify_signature(oci_ref, expected_signers: nil, issuer_regexp: nil)
         ensure_binary!("cosign")
         cmd = [ "cosign", "verify", "--output", "json", oci_ref ]
-        if expected_signers&.any?
-          cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
-        end
-        if issuer_regexp.present?
-          cmd += [ "--certificate-oidc-issuer-regexp", issuer_regexp ]
+        # Static-key verification — Gitea isn't on Sigstore Fulcio's
+        # trusted-issuer list, so the platform's CI uses a static
+        # cosign key. The public key is provisioned via
+        # POWERNODE_COSIGN_PUBLIC_KEY env var (or a file path via
+        # POWERNODE_COSIGN_PUBLIC_KEY_FILE). When neither is set the
+        # verifier falls back to the keyless flow for any modules
+        # that DID get signed by a Fulcio-trusted issuer (legacy +
+        # third-party).
+        if (pubkey_inline = ENV["POWERNODE_COSIGN_PUBLIC_KEY"]).present?
+          # cosign accepts `--key env://VAR` for an inline key value.
+          ENV["__COSIGN_PUB_KEY_INLINE"] = pubkey_inline
+          cmd += [ "--key", "env://__COSIGN_PUB_KEY_INLINE" ]
+        elsif (pubkey_path = ENV["POWERNODE_COSIGN_PUBLIC_KEY_FILE"]).present?
+          cmd += [ "--key", pubkey_path ]
+        else
+          # Keyless fallback path — only works for modules signed by
+          # an issuer Sigstore Fulcio trusts (GitHub, GitLab.com, etc).
+          if expected_signers&.any?
+            cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
+          end
+          if issuer_regexp.present?
+            cmd += [ "--certificate-oidc-issuer-regexp", issuer_regexp ]
+          end
         end
         out, err, status = Open3.capture3(*cmd)
         return { error: err.presence || "cosign exit #{status.exitstatus}" } unless status.success?
