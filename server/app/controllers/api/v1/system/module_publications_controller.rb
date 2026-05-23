@@ -49,11 +49,19 @@ module Api
           artifacts   = artifacts.to_unsafe_h if artifacts.respond_to?(:to_unsafe_h)
           return render_error("module_name + tag required", :bad_request) if module_name.empty? || tag.empty?
 
-          # Module repos publish under names matching their Gitea repo
-          # short name (system extension convention: NodeModule.name
-          # equals the slug used in the OCI ref + Gitea repo).
-          node_module = ::System::NodeModule.find_by(name: module_name)
-          return render_not_found("NodeModule #{module_name.inspect}") unless node_module
+          # Scope by gitea_repo_full_name first — the OCI namespace
+          # uniquely identifies which account's NodeModule row owns
+          # the registry slot. Multiple accounts can carry rows for
+          # the same module name (multi-tenant seeds, demo data), and
+          # an unscoped find_by(name:) returns whichever the DB sorts
+          # first — non-deterministic, and we've seen it land on the
+          # wrong row. The platform-admin account's rows are the ones
+          # the CI publishes for; their gitea_repo_full_name matches
+          # the OCI namespace.
+          gitea_repo = "powernode/#{module_name}"
+          node_module = ::System::NodeModule.find_by(gitea_repo_full_name: gitea_repo) ||
+                        ::System::NodeModule.find_by(name: module_name)
+          return render_not_found("NodeModule for gitea_repo=#{gitea_repo} (or name=#{module_name.inspect})") unless node_module
 
           # Fast path: CI already signed with cosign + produced the
           # artifact descriptors. Trust the payload and write directly.
