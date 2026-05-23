@@ -4,11 +4,17 @@ display_name: Powernode Hub Worker (Sidekiq)
 description: Sidekiq worker process; communicates with hub-backend via HTTP API only
 license: MIT
 package_spec: []
+# Ship the parent's worker/ tree into /opt/powernode/worker — matches
+# production install layout. The Sidekiq config loads via bundle exec
+# from this directory; gems resolve through hub-backend's bundled
+# Gemfile (worker reuses backend's bundle).
 file_spec:
-  - /opt/powernode-worker
+  - /opt/powernode/worker/**
 mask:
-  - /opt/powernode-worker/tmp
-  - /opt/powernode-worker/log
+  - /opt/powernode/worker/tmp/***
+  - /opt/powernode/worker/log/***
+  - /opt/powernode/worker/.git/***
+  - /opt/powernode/worker/vendor/bundle/cache/***
 dependency_spec: []
 protected_spec: []
 reboot_required: false
@@ -24,7 +30,7 @@ services:
     start_command: "bundle exec sidekiq -C config/sidekiq.yml"
     restart_policy: on-failure
     user: powernode
-    working_directory: /opt/powernode-worker
+    working_directory: /opt/powernode/worker
     env:
       RAILS_ENV: production
       BACKEND_API_URL: "http://localhost:3000"

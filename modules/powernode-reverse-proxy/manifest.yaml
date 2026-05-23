@@ -4,10 +4,13 @@ display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
 package_spec: []
+# Vendored Traefik binary lives at extensions/system/agent/dist/. CI
+# stages it into /tmp/fat/usr/local/bin/traefik before the composer
+# pass. The systemd unit is rendered by the agent from `services:` —
+# we don't ship a static .service file.
 file_spec:
   - /usr/local/bin/traefik
-  - /etc/traefik/traefik.yml
-  - /etc/systemd/system/traefik.service
+  - /etc/traefik/**
 mask: []
 dependency_spec: []
 protected_spec:

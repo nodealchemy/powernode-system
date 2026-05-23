@@ -245,6 +245,128 @@ jobs:
             noble /tmp/fat \
             "$base_url"
 
+      - name: Stage 1.5 — stage parent platform content (Class B modules)
+        # Class B modules ship source-code or vendored binaries that
+        # don't come from apt. mmdebstrap left /tmp/fat with just
+        # ca-certificates (since these manifests have package_spec: [])
+        # — this step layers the actual deliverable on top before the
+        # composer step's rsync filter trims to file_spec.
+        #
+        # hub-backend / hub-worker / hub-frontend / extension-system
+        # need the parent powernode-platform repo (server/, worker/,
+        # frontend/, extensions_loader_helper.rb, scripts/). The PAT
+        # in POWERNODE_PARENT_PAT (or POWERNODE_REGISTRY_TOKEN as a
+        # fallback) needs read access to that repo.
+        #
+        # reverse-proxy ships the vendored traefik binary that lives
+        # in THIS submodule's agent/dist/.
+        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy'
+        env:
+          PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          cd "$ws"
+
+          needs_parent=0
+          case "${{ matrix.module }}" in
+            powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend) needs_parent=1 ;;
+          esac
+
+          if [ "$needs_parent" = "1" ]; then
+            parent_host="${POWERNODE_PARENT_HOST:-git.ipnode.org}"
+            parent_path="${POWERNODE_PARENT_PATH:-powernode/powernode-platform}"
+            clone_url="https://x-access-token:${PARENT_PAT}@${parent_host}/${parent_path}.git"
+            echo "Cloning parent ${parent_host}/${parent_path}..."
+            git clone --depth 1 "$clone_url" /tmp/parent
+          fi
+
+          case "${{ matrix.module }}" in
+            powernode-hub-backend)
+              mkdir -p /tmp/fat/opt/powernode
+              rsync -a \
+                --exclude='.git' --exclude='node_modules' --exclude='tmp' \
+                --exclude='log' --exclude='coverage' --exclude='extensions' \
+                /tmp/parent/server/ /tmp/fat/opt/powernode/server/
+              # extensions_loader_helper.rb is required by the Gemfile
+              cp /tmp/parent/extensions_loader_helper.rb /tmp/fat/opt/powernode/extensions_loader_helper.rb
+              # Startup scripts (powernode-backend.sh etc.)
+              if [ -d /tmp/parent/scripts ]; then
+                rsync -a /tmp/parent/scripts/ /tmp/fat/opt/powernode/scripts/
+              fi
+              ;;
+            powernode-hub-worker)
+              mkdir -p /tmp/fat/opt/powernode
+              rsync -a \
+                --exclude='.git' --exclude='node_modules' --exclude='tmp' --exclude='log' \
+                /tmp/parent/worker/ /tmp/fat/opt/powernode/worker/
+              ;;
+            powernode-hub-frontend)
+              # Vite build needs node — install if missing. dist/ is
+              # the only deliverable; if the build fails the module
+              # still ships (just with an empty dist that traefik
+              # serves a default error page from).
+              mkdir -p /tmp/fat/opt/powernode/frontend/dist
+              if ! command -v npm >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get install -y --no-install-recommends nodejs npm || true
+              fi
+              if command -v npm >/dev/null 2>&1 && [ -f /tmp/parent/frontend/package.json ]; then
+                (cd /tmp/parent/frontend && npm ci --no-audit --prefer-offline 2>&1 | tail -20 && npm run build 2>&1 | tail -20) || echo "frontend build failed — shipping empty dist"
+                if [ -d /tmp/parent/frontend/dist ]; then
+                  rsync -a /tmp/parent/frontend/dist/ /tmp/fat/opt/powernode/frontend/dist/
+                fi
+              else
+                echo "no npm or no frontend package.json — shipping empty dist"
+              fi
+              ;;
+            powernode-extension-system)
+              # THIS submodule (powernode-system) IS the system extension.
+              # Stage its server/ + extension.json into the parent's
+              # extensions/system/ tree shape.
+              mkdir -p /tmp/fat/opt/powernode/extensions/system
+              rsync -a \
+                --exclude='.git' --exclude='tmp' --exclude='log' \
+                --exclude='node_modules' --exclude='coverage' \
+                server/ /tmp/fat/opt/powernode/extensions/system/server/
+              if [ -f extension.json ]; then
+                cp extension.json /tmp/fat/opt/powernode/extensions/system/extension.json
+              fi
+              ;;
+            powernode-reverse-proxy)
+              mkdir -p /tmp/fat/usr/local/bin /tmp/fat/etc/traefik/dynamic
+              if [ -f agent/dist/powernode-reverse-proxy-linux-amd64 ]; then
+                cp agent/dist/powernode-reverse-proxy-linux-amd64 /tmp/fat/usr/local/bin/traefik
+                chmod +x /tmp/fat/usr/local/bin/traefik
+              else
+                echo "WARN: agent/dist/powernode-reverse-proxy-linux-amd64 missing — module ships without traefik binary"
+              fi
+              # Default static config — dynamic configs land in /etc/traefik/dynamic/
+              # Use printf to avoid YAML/heredoc indent conflicts.
+              printf '%s\n' \
+                'api:' \
+                '  dashboard: true' \
+                'ping: {}' \
+                'entryPoints:' \
+                '  web:' \
+                '    address: ":80"' \
+                '  websecure:' \
+                '    address: ":443"' \
+                'providers:' \
+                '  file:' \
+                '    directory: /etc/traefik/dynamic' \
+                '    watch: true' \
+                'log:' \
+                '  level: INFO' \
+                > /tmp/fat/etc/traefik/traefik.yml
+              ;;
+          esac
+
+          echo "=== /tmp/fat top-level layout after stage 1.5 ==="
+          find /tmp/fat -maxdepth 3 -type d | sort | head -30
+          echo "=== file count ==="
+          find /tmp/fat -type f | wc -l
+
       - name: Stage 2 — composer (rsync filter + mkfs.erofs + fs-verity)
         run: |
           set -euo pipefail

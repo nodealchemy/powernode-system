@@ -4,8 +4,11 @@ display_name: Powernode Hub Frontend (Vite static assets)
 description: React TypeScript frontend built artifacts; served as static files by powernode-reverse-proxy
 license: MIT
 package_spec: []
+# Ships the Vite build output at /opt/powernode/frontend/dist — the
+# reverse-proxy module's traefik picks up these static assets via its
+# dynamic-config router (`service: powernode-frontend`).
 file_spec:
-  - /opt/powernode-frontend/dist
+  - /opt/powernode/frontend/dist/**
 mask: []
 dependency_spec: []
 protected_spec: []

@@ -4,10 +4,19 @@ display_name: Powernode System Extension
 description: The Powernode System extension Rails engine (nodes, modules, SDWAN, fleet autonomy, Go agent control plane)
 license: MIT
 package_spec: []
+# Ships THIS submodule's content under /opt/powernode/extensions/system/.
+# The extension.json sibling is what extensions_loader_helper.rb scans
+# (it walks /opt/powernode/extensions/*/extension.json). server/ is the
+# Rails engine the helper turns into a path-gem in hub-backend's Gemfile.
 file_spec:
-  - /opt/powernode-rails/extensions/system
+  - /opt/powernode/extensions/system/**
 mask:
-  - /opt/powernode-rails/extensions/system/tmp
+  - /opt/powernode/extensions/system/tmp/***
+  - /opt/powernode/extensions/system/.git/***
+  - /opt/powernode/extensions/system/agent/dist/***
+  - /opt/powernode/extensions/system/modules/***
+  - /opt/powernode/extensions/system/initramfs/***
+  - /opt/powernode/extensions/system/docs/***
 dependency_spec: []
 protected_spec: []
 reboot_required: false

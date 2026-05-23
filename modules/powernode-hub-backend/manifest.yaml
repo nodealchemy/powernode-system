@@ -4,16 +4,27 @@ display_name: Powernode Hub Backend (Rails 8 API)
 description: The Powernode platform's Rails 8 API server with ActionCable; backed by powernode-postgres and powernode-redis
 license: MIT
 package_spec: []
+# Aligns with the production install layout (/opt/powernode/ with
+# server/ + extensions/ + worker/ as siblings) — the Gemfile uses
+# `require_relative "../extensions_loader_helper"` from server/Gemfile
+# which only resolves when the helper sits one dir up from server/.
+# hub-backend ships the helper + scripts/ alongside server/ so the
+# overlay rootfs has the same shape the systemd-installer creates.
 file_spec:
-  - /opt/powernode-rails
+  - /opt/powernode/server/**
+  - /opt/powernode/extensions_loader_helper.rb
+  - /opt/powernode/scripts/**
 mask:
-  - /opt/powernode-rails/tmp
-  - /opt/powernode-rails/log
-  - /opt/powernode-rails/node_modules
+  - /opt/powernode/server/tmp/***
+  - /opt/powernode/server/log/***
+  - /opt/powernode/server/node_modules/***
+  - /opt/powernode/server/.git/***
+  - /opt/powernode/server/coverage/***
+  - /opt/powernode/server/vendor/bundle/cache/***
 dependency_spec: []
 protected_spec:
-  - /opt/powernode-rails/config/master.key
-  - /opt/powernode-rails/config/credentials
+  - /opt/powernode/server/config/master.key
+  - /opt/powernode/server/config/credentials
 reboot_required: false
 
 dependencies:
@@ -27,7 +38,7 @@ services:
     start_command: "bundle exec puma -C config/puma.rb"
     restart_policy: always
     user: powernode
-    working_directory: /opt/powernode-rails
+    working_directory: /opt/powernode/server
     env:
       RAILS_ENV: production
       RAILS_LOG_TO_STDOUT: "1"
