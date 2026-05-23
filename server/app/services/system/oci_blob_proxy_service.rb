@@ -78,34 +78,58 @@ module System
 
     # @param oci_ref [String]
     # @param media_type [String] the layer mediaType to extract from the
-    #   image manifest (e.g. "application/vnd.powernode.composefs" or
-    #   "application/vnd.powernode.squashfs")
+    #   image manifest (e.g. "application/vnd.powernode.erofs"). Only
+    #   consulted when `digest:` is not supplied — the digest path
+    #   bypasses the manifest entirely.
+    # @param digest [String, nil] sha256 digest of the layer to pull.
+    #   When set, skip the manifest fetch and pull directly from
+    #   /v2/<repo>/blobs/<digest>. The platform's stored oci_digest
+    #   (from artifacts JSONB) is the canonical caller. Avoids the
+    #   tag-race where mmdebstrap CI republishes a tag with new bytes
+    #   between the time the platform recorded the digest and the
+    #   agent's pull — blobs are content-addressable so pulling by
+    #   digest can't return the wrong bytes (or the registry is
+    #   broken). With/without sha256: prefix both accepted.
+    # @param size [Integer, nil] expected blob size in bytes. Used by
+    #   the digest path for an additional sanity check; when nil the
+    #   service trusts the sha256 verification alone.
     # @param architecture [String, nil] preferred arch when the upstream
-    #   serves an index manifest (defaults to "amd64")
+    #   serves an index manifest (defaults to "amd64"). Manifest-path only.
     # @param node_module [System::NodeModule, nil] for event context only
     # @param account [Account, nil] for FleetEvent emission scoping
-    def initialize(oci_ref:, media_type:, architecture: nil, node_module: nil, account: nil)
+    def initialize(oci_ref:, media_type:, digest: nil, size: nil,
+                   architecture: nil, node_module: nil, account: nil)
       raise ArgumentError, "oci_ref required" if oci_ref.to_s.empty?
       raise ArgumentError, "media_type required" if media_type.to_s.empty?
       @oci_ref      = oci_ref
       @media_type   = media_type
+      @digest       = digest.presence && normalize_digest(digest)
+      @size         = size&.to_i
       @architecture = (architecture || DEFAULT_ARCH).to_s
       @node_module  = node_module
       @account      = account || node_module&.account
     end
 
 
-    # Returns the local filesystem path of the cached composefs blob.
+    # Returns the local filesystem path of the cached erofs blob.
     # Idempotent: cached path is keyed by layer digest, so repeat calls
     # for the same artifact short-circuit after the first pull.
+    #
+    # Two modes:
+    # - **Digest mode** (preferred): caller supplies @digest at construction.
+    #   Skips the manifest fetch and pulls directly from /v2/.../blobs/<digest>.
+    #   Bytes are guaranteed to hash to <digest> by registry semantics, so
+    #   there's no tag-republish race to worry about.
+    # - **Manifest mode** (legacy): caller knows only the tag-form oci_ref.
+    #   Fetches manifest, picks the layer matching @media_type, then pulls.
+    #   Susceptible to tag-republish races (mmdebstrap CI produces a fresh
+    #   blob digest on each rebuild) — prefer digest mode for any caller
+    #   that has a stored oci_digest.
     #
     # @return [String] absolute path to the cached .cfs file
     # @raise [PullError] on any failure (network, auth, verification)
     def fetch_blob!
-      manifest = fetch_image_manifest!
-      layer = target_layer!(manifest)
-      digest = layer.fetch("digest").to_s
-      expected_size = layer.fetch("size").to_i
+      digest, expected_size = resolve_digest_and_size!
       cached = cache_path_for(digest)
 
       return cached if cached_complete?(cached, expected_size, digest)
@@ -118,7 +142,8 @@ module System
         emit_event(severity: "low", kind: "oci.blob.fetch_start",
                    payload: { module_id: @node_module&.id,
                               oci_ref: @oci_ref, digest: digest,
-                              size_bytes: expected_size })
+                              size_bytes: expected_size,
+                              mode: @digest ? "digest" : "manifest" })
 
         stream_blob_to_cache!(digest: digest, target: cached, expected_size: expected_size)
 
@@ -132,6 +157,23 @@ module System
       emit_event(severity: "high", kind: "oci.blob.fetch_failed",
                  payload: { oci_ref: @oci_ref, error: e.message })
       raise
+    end
+
+    # Returns [normalized_digest, expected_size]. When the caller supplied
+    # @digest at construction time, skip the manifest fetch and trust the
+    # caller's pre-stored digest. Otherwise fall back to the manifest path
+    # (legacy behavior for callers that only have a tag-form oci_ref).
+    #
+    # expected_size returns -1 when unknown (digest mode + caller did not
+    # pass size); stream_blob_to_cache! treats -1 as "skip the pre-check,
+    # rely on sha256 verification of the streamed bytes".
+    def resolve_digest_and_size!
+      if @digest
+        [@digest, @size || -1]
+      else
+        layer = target_layer!(fetch_image_manifest!)
+        [layer.fetch("digest").to_s, layer.fetch("size").to_i]
+      end
     end
 
     # Returns the layer-digest sha256 (with sha256: prefix) without
@@ -207,10 +249,14 @@ module System
                 body_preview = resp.body.to_s[0..200] rescue ""
                 raise PullError, "blob fetch #{uri} status #{resp.code}: #{body_preview}"
               end
+              # expected_size = -1 means "unknown" (digest-mode caller
+              # didn't pass size). Skip the Content-Length pre-check in
+              # that case — sha256 verification below is sufficient,
+              # since matching the digest implies matching the size.
               content_length = resp["Content-Length"]&.to_i
-              if content_length && content_length != expected_size
+              if expected_size >= 0 && content_length && content_length != expected_size
                 raise VerificationError,
-                      "Content-Length #{content_length} != manifest size #{expected_size} for #{digest}"
+                      "Content-Length #{content_length} != expected size #{expected_size} for #{digest}"
               end
               resp.read_body do |chunk|
                 f.write(chunk)
@@ -221,7 +267,7 @@ module System
           end
         end
 
-        if written != expected_size
+        if expected_size >= 0 && written != expected_size
           raise VerificationError, "size mismatch: expected #{expected_size}, wrote #{written}"
         end
         got_digest = "sha256:#{hasher.hexdigest}"
@@ -246,14 +292,30 @@ module System
       end
     end
 
+    # expected_size = -1 means "unknown" (digest-mode caller didn't pass
+    # size). In that case fall back to a presence check — the file's
+    # existence at the digest-keyed path is the cache-hit signal; the
+    # write path only renames into place after sha256 verification, so
+    # any file at this path has been verified.
     def cached_complete?(path, expected_size, _expected_digest)
-      File.exist?(path) && File.size(path) == expected_size
+      return false unless File.exist?(path)
+      return true if expected_size < 0
+      File.size(path) == expected_size
     end
 
     def cache_path_for(digest)
-      safe = digest.sub(/^sha256:/, "")
+      safe = normalize_digest(digest).sub(/^sha256:/, "")
       raise ArgumentError, "invalid digest #{digest.inspect}" unless safe.match?(/\A[a-f0-9]{64}\z/i)
       File.join(CACHE_ROOT, "#{safe}.cfs")
+    end
+
+    # Coerces any of (sha256:<hex>, <hex>) into the canonical sha256:<hex>
+    # form. Lowercases the hex per OCI spec; raises if the input isn't a
+    # 64-char hex string (with or without the sha256: prefix).
+    def normalize_digest(digest)
+      raw = digest.to_s.sub(/^sha256:/, "").downcase
+      raise ArgumentError, "invalid digest #{digest.inspect}" unless raw.match?(/\A[a-f0-9]{64}\z/)
+      "sha256:#{raw}"
     end
 
     # Flock-based per-digest lock. Lock file lives next to the cache

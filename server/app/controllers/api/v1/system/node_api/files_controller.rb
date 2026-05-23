@@ -69,9 +69,20 @@ module Api
           # ETag headers let the agent's verifier short-circuit on
           # already-cached blobs without re-hashing.
           def stream_erofs_blob(node_module, artifact)
+            # Prefer pull-by-digest when the platform has a recorded
+            # oci_digest (the standard case after ingest). Bypasses
+            # the manifest fetch + sidesteps the tag-republish race
+            # that bit ops2's first dogfood pass — mmdebstrap-built
+            # blobs change bytes on every rebuild, so a stored digest
+            # can be stale relative to the registry's current
+            # /v2/<repo>/manifests/<tag> response. /v2/<repo>/blobs/<digest>
+            # is content-addressable; the registry can't return wrong
+            # bytes for a given digest.
             path = ::System::OciBlobProxyService.new(
-              oci_ref: artifact["oci_ref"],
+              oci_ref:    artifact["oci_ref"],
               media_type: artifact["media_type"],
+              digest:     artifact["oci_digest"],
+              size:       artifact["size"],
               node_module: node_module
             ).fetch_blob!
             response.headers["X-Module-Digest"] = artifact["oci_digest"].to_s
