@@ -8,8 +8,17 @@ description: >
   module's /etc/vector/upstream.toml (declared in dependency_spec) so
   per-fleet override doesn't require a custom build.
 license: MPL-2.0
-package_spec:
-  - vector
+# vector intentionally not in package_spec: mmdebstrap's --include applies
+# a `?narrow(?archive(^noble$))` filter on the apt-get install command that
+# excludes the Datadog vector apt repo (which has Codename: stable, not
+# noble). Five iterations on essential-hook variants surfaced gpg-missing,
+# 404 URLs, premature chroot apt, and finally this narrow-filter rejection
+# — all of which prevent vector from installing via the mmdebstrap pass.
+# Either bypass the filter via a customize-hook (chroot $ROOT apt-get
+# install vector after main install) or vendor the vector binary into
+# rootfs/usr/bin. Tracked separately so log-forwarder can stub-publish
+# and the matrix isn't blocked on it. See task #64 in the TaskList.
+package_spec: []
 file_spec:
   - /etc/vector/vector.toml
   - /etc/systemd/system/vector.service
