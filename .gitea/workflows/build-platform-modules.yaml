@@ -382,13 +382,12 @@ jobs:
               fi
               ;;
             powernode-reverse-proxy)
-              mkdir -p /tmp/fat/usr/local/bin /tmp/fat/etc/traefik/dynamic
-              if [ -f agent/dist/powernode-reverse-proxy-linux-amd64 ]; then
-                cp agent/dist/powernode-reverse-proxy-linux-amd64 /tmp/fat/usr/local/bin/traefik
-                chmod +x /tmp/fat/usr/local/bin/traefik
-              else
-                echo "WARN: agent/dist/powernode-reverse-proxy-linux-amd64 missing — module ships without traefik binary"
-              fi
+              # Traefik binary now comes from Stage 1 via package_spec:
+              # [traefik] → /usr/bin/traefik. The vendored-binary path
+              # under agent/dist/ was a stopgap before that; removing
+              # it keeps the build hermetic (no hand-checked-in binaries
+              # in git) and inherits Debian's CVE patching.
+              mkdir -p /tmp/fat/etc/traefik/dynamic
               # Default static config — dynamic configs land in /etc/traefik/dynamic/
               # Use printf to avoid YAML/heredoc indent conflicts.
               printf '%s\n' \
