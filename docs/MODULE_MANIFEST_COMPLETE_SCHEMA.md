@@ -141,7 +141,7 @@ package_spec:
 dependencies:
   requires:
     - powernode/powernode-base-ubuntu@^1.0
-    - powernode/powernode-postgres@^1.0
+    - powernode/postgres-primary@^1.0
   provides:
     - rails-runtime
     - http.port:3000

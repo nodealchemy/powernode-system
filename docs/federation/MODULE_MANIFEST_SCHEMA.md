@@ -40,8 +40,8 @@ protected_spec:
 # Module-to-module dependencies (Gitea repo @ version constraint)
 dependencies:
   requires:
-    - powernode/powernode-base-ruby@^1.0
-    - powernode/powernode-postgres@^1.0
+    - powernode/runtime-ruby@^1.0
+    - powernode/postgres-primary@^1.0
   provides:
     - rails-runtime
 

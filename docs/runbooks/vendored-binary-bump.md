@@ -10,7 +10,7 @@ Why this exists: per [`feedback_no_host_dependencies.md`](../../../../../.claude
 
 | Item | Where pinned | What ships | Bump command |
 |---|---|---|---|
-| **Traefik** | `agent/Makefile:64` → `TRAEFIK_VERSION` | `dist/powernode-reverse-proxy-linux-{amd64,arm64}` | `make -C agent bump-traefik NEW=vX.Y.Z` |
+| **Traefik** | `agent/Makefile:64` → `TRAEFIK_VERSION` | `dist/reverse-proxy-traefik-linux-{amd64,arm64}` | `make -C agent bump-traefik NEW=vX.Y.Z` |
 | **rpi4-firmware** | `templates/example-modules/rpi4-firmware/manifest.yaml` → `build.firmware_ref` | `/boot/firmware/*` blobs in the rpi4 disk image | manual edit + smoke (see below) |
 | **dracut** | `initramfs/.gitea/workflows/build.yaml:53` → `APT_SNAPSHOT` | initramfs builder version (build-host only) | manual edit + reproducibility re-run |
 | **Kernel** | `initramfs/build.sh` → host's `/boot/vmlinuz-*` selected via `APT_SNAPSHOT` pin | kernel image bundled into the initramfs artifact | manual edit + boot smoke |
@@ -46,14 +46,14 @@ The target:
 **Smoke (manual):**
 
 ```bash
-file extensions/system/agent/dist/powernode-reverse-proxy-linux-amd64
+file extensions/system/agent/dist/reverse-proxy-traefik-linux-amd64
 # Expect: ELF 64-bit LSB executable, x86-64, statically linked
-extensions/system/agent/dist/powernode-reverse-proxy-linux-amd64 version
+extensions/system/agent/dist/reverse-proxy-traefik-linux-amd64 version
 # Expect: the new version string
 
-# End-to-end: deploy powernode-reverse-proxy module to a NodeInstance and
+# End-to-end: deploy reverse-proxy-traefik module to a NodeInstance and
 # verify the traefik service starts + serves :80 / :443. See
-# extensions/system/modules/powernode-reverse-proxy/manifest.yaml for the
+# extensions/system/modules/reverse-proxy-traefik/manifest.yaml for the
 # service definition.
 ```
 

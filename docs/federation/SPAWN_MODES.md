@@ -112,11 +112,11 @@ without ongoing privilege.
 A horizontal-scale + HA mode. The child runs `powernode-hub-cluster-member`
 (per `powernode_platform_templates`) which includes:
 
-- `powernode-reverse-proxy` (Traefik)
-- `powernode-base-ruby` (shared)
+- `reverse-proxy-traefik` (Traefik)
+- `runtime-ruby` (shared)
 - `powernode-hub-backend` + `powernode-hub-worker` (full-stack child)
-- `powernode-pg-replica` — **streams from the parent's primary**
-- No `powernode-postgres` (child does not run its own primary)
+- `postgres-replica` — **streams from the parent's primary**
+- No `postgres-primary` (child does not run its own primary)
 
 At spawn time, the parent enqueues `ClusterMemberPgReplicaSetupJob`
 which materializes:

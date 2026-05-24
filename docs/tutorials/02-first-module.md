@@ -124,7 +124,7 @@ protected_spec:
 # `requires` form is "<owner>/<module>@<version-constraint>".
 dependencies:
   requires:
-    - "powernode/powernode-base-ruby@^1.0"
+    - "powernode/runtime-ruby@^1.0"
     - "powernode/security-hardening@^1.0"
   provides: []
 

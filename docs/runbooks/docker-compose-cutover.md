@@ -19,12 +19,12 @@ the per-service Docker images.
 
 | Legacy (docker-compose.prod.yml) | New (P8 module-based) |
 |---|---|
-| `postgres` image container | `powernode-postgres` module — composefs blob + systemd unit |
-| `redis` image container | `powernode-redis` module |
+| `postgres` image container | `postgres-primary` module — composefs blob + systemd unit |
+| `redis` image container | `redis` module |
 | `backend` Docker build | `powernode-hub-backend` module — Rails 8 API + ActionCable |
 | `worker` Docker build | `powernode-hub-worker` module — Sidekiq |
 | `frontend` Docker build | `powernode-hub-frontend` module — Vite static assets |
-| `traefik` image container | `powernode-reverse-proxy` module — Traefik + ACME DNS-01 |
+| `traefik` image container | `reverse-proxy-traefik` module — Traefik + ACME DNS-01 |
 | Docker networks | SDWAN networks (Sdwan::Network rows) |
 | `postgres_data` named volume | NFS / block ProviderVolume bound at deployment time |
 | Image tags (mutable) | Cosign-signed OCI artifacts (immutable digests) |
@@ -85,7 +85,7 @@ running stack.
 While the legacy stack is still serving:
 
 ```bash
-docker exec powernode-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+docker exec postgres-primary pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
   | gzip > /backup/cutover-$(date +%Y%m%d-%H%M%S).sql.gz
 ```
 
@@ -110,7 +110,7 @@ flushed its queues (~30 seconds is typically sufficient).
 ### 3.4 Final dump + restore into the new Postgres
 
 ```bash
-docker exec powernode-postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
+docker exec postgres-primary pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
   > /tmp/cutover-final.dump
 
 # Stop the legacy postgres
@@ -179,7 +179,7 @@ After a 7-day soak with the new stack running cleanly:
 ```bash
 # Confirm no critical data was created on the legacy postgres after
 # the cutover snapshot — if anything was, restore it manually.
-diff <(docker exec powernode-postgres psql -tAc "SELECT MAX(updated_at) FROM users") \
+diff <(docker exec postgres-primary psql -tAc "SELECT MAX(updated_at) FROM users") \
      <(ssh prod-hub-1 'psql -tAc "SELECT MAX(updated_at) FROM users"')
 
 # If clean: remove the legacy stack
