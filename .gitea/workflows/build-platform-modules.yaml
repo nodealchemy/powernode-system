@@ -111,17 +111,26 @@ jobs:
           - powernode-redis
           - powernode-reverse-proxy
           - powernode-storage-tools
-          # system-base is the Powernode-as-OS foundation: every pivot_root
-          # node mounts this as the lowest overlay layer (highest priority
-          # = mounted first = effectively `/`). Owns /etc, /usr, /sbin,
-          # /lib (the Linux userland) + the post-switch_root
-          # powernode-agent.service that takes over the long-lived
-          # reconcile loop once /sbin/init runs from inside /sysroot.
-          # Stage 1.5 cross-compiles the Go agent and bakes it into
-          # rootfs/usr/sbin/powernode-agent so the version that lands in
-          # the erofs blob is always lockstep with the source tree the
-          # build was triggered from.
+          # Powernode-as-OS foundation, layered:
+          #
+          #   powernode-system-base               — truly minimal: cross-
+          #     compiled Go agent at /usr/sbin/powernode-agent + an
+          #     /etc/powernode/ skeleton. Capability: powernode.agent.
+          #     Not bootable alone — designed as the shared substrate
+          #     that every OS-specific base depends on.
+          #
+          #   powernode-system-base-ubuntu-noble  — Ubuntu 24.04 LTS
+          #     userland on top: systemd, sshd, networkd, ca-certs, libssl,
+          #     coreutils. Capability: base.os, init.systemd, sshd. Pulls
+          #     the agent from the minimal module via overlay union.
+          #
+          # Future variants (powernode-system-base-debian-trixie,
+          # -alpine, etc.) follow the same pattern: depend on the
+          # minimal, layer OS-specific apt/apk packages + init scripts,
+          # provide the `base.os` capability. App modules requires:
+          # [base.os] and the resolver picks the right variant per node.
           - powernode-system-base
+          - powernode-system-base-ubuntu-noble
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
@@ -326,7 +335,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy' || matrix.module == 'powernode-system-base'
+        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy' || matrix.module == 'powernode-system-base' || matrix.module == 'powernode-system-base-ubuntu-noble'
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -426,19 +435,21 @@ jobs:
                 > /tmp/fat/etc/traefik/traefik.yml
               ;;
             powernode-system-base)
-              # Cross-compile the Go agent and bake it into the rootfs
-              # so the version in this erofs blob is always lockstep
-              # with the source tree that triggered the build. After
-              # switch_root, this binary at /usr/sbin/powernode-agent
-              # IS the platform on a pivot_root node — it's what
-              # services Phase G smoke, federation control plane, drift
-              # remediation, every long-lived reconcile. The unit file
-              # in rootfs/etc/systemd/system/powernode-agent.service
-              # references this exact path.
+              # Truly-minimal foundation: only the cross-compiled Go
+              # agent + the /etc/powernode/ skeleton. No userland, no
+              # init system, no apt packages — those land in
+              # powernode-system-base-ubuntu-noble (or future
+              # -debian-trixie, -alpine variants) which depend on
+              # this module via the Powernode dependency resolver
+              # and inherit /usr/sbin/powernode-agent through the
+              # overlay union.
+              #
+              # CGO_ENABLED=0 + -trimpath + -s -w produces a static
+              # binary that runs on every glibc/musl Linux without
+              # additional deps — the whole point of decoupling the
+              # agent from any specific base-OS.
               if ! command -v go >/dev/null 2>&1; then
-                # Debian trixie ships golang-1.22 in main. mmdebstrap
-                # also has go in its source tree but installing locally
-                # is faster than mucking with the chroot.
+                # Debian trixie ships golang-1.22 in main.
                 apt-get install -y --no-install-recommends golang-1.22 git
                 export PATH=/usr/lib/go-1.22/bin:$PATH
               fi
@@ -447,23 +458,34 @@ jobs:
                 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
                 go build -trimpath -ldflags '-s -w' \
                   -o /tmp/powernode-agent ./cmd/powernode-agent )
-              mkdir -p /tmp/fat/usr/sbin /tmp/fat/sbin
+              mkdir -p /tmp/fat/usr/sbin /tmp/fat/sbin /tmp/fat/etc/powernode
               install -m 0755 /tmp/powernode-agent /tmp/fat/usr/sbin/powernode-agent
-              # /sbin/powernode-agent symlink — boot.go's initramfs
-              # phase looks for the binary at /sbin first, then
-              # /usr/sbin; the post-switch_root systemd unit references
-              # /usr/sbin/. Both paths kept so either codepath finds it.
+              # /sbin/powernode-agent symlink — initramfs/dracut
+              # hook looks at /sbin first; post-switch_root systemd
+              # unit uses /usr/sbin/. Both paths kept for either
+              # codepath.
               ln -sf /usr/sbin/powernode-agent /tmp/fat/sbin/powernode-agent
-              # /etc/powernode/ is where the agent reads platform-url
-              # + ca pem + identity. Pre-create the dir; first-boot
-              # writes the config from initramfs identity discovery.
-              mkdir -p /tmp/fat/etc/powernode
+              ;;
+            powernode-system-base-ubuntu-noble)
+              # OS-specific layer: Ubuntu's apt-installed userland
+              # comes from Stage 1's mmdebstrap (package_spec). The
+              # rootfs/ overlay adds the Powernode-curated systemd
+              # units (powernode-agent.service, ssh-host-keygen.service,
+              # powernode-network-reload.service) + sshd config +
+              # systemd-networkd DHCP profile.
+              #
+              # No agent binary baked here — it's inherited from
+              # powernode-system-base via overlay union when both are
+              # mounted on a node. Keeps the cross-compile in exactly
+              # one place.
+              #
               # /sbin/init → systemd symlink. mmdebstrap installs
-              # systemd at /usr/lib/systemd/systemd, but the kernel +
-              # initramfs hand off to /sbin/init by convention. The
-              # systemd-sysv package normally creates this symlink but
-              # in minbase it may not — make it explicit.
+              # systemd at /usr/lib/systemd/systemd. The systemd-sysv
+              # package normally creates /sbin/init but in minbase
+              # it may not — make it explicit so switch_root finds
+              # an init binary at the conventional path.
               if [ ! -e /tmp/fat/sbin/init ]; then
+                mkdir -p /tmp/fat/sbin
                 ln -sf /usr/lib/systemd/systemd /tmp/fat/sbin/init
               fi
               ;;

@@ -1,111 +1,57 @@
 schema_version: 1
 
 name: powernode-system-base
-display_name: "Powernode System Base (Ubuntu 24.04 minbase)"
-description: "Minimal Ubuntu 24.04 LTS rootfs — systemd-networkd, openssh, powernode-agent. The foundation module every Powernode-as-OS node pivots into. Provides /sbin/init (systemd), the post-switch_root powernode-agent service, and the userland (coreutils, sshd, networking, libssl, ca-certificates) every other module assumes."
+display_name: "Powernode System Base (minimal — agent runtime only)"
+description: "The truly-minimal Powernode base — ships the cross-compiled Go agent binary at /sbin/powernode-agent and an /etc/powernode/ skeleton. NOT bootable alone (no init system, no userland). Designed as the shared substrate that every OS-specific base module (powernode-system-base-ubuntu-noble, -debian-trixie, -alpine, etc.) depends on, so the agent binary is built once + signed once + verified once regardless of which OS variant a node runs. Capability provided: powernode.agent."
 license: "MIT"
 
-mask:
-  - "/var/cache/apt/**"
-  - "/var/lib/apt/lists/**"
-  - "/usr/share/doc/**"
-  - "/usr/share/man/**"
-  - "/usr/share/locale/**"
-  - "/var/log/**"
+# No apt packages — this module is hermetic, built from a fresh
+# mmdebstrap that contributes nothing but the ca-certificates floor
+# (which Stage 2's rsync filter discards because the file_spec below
+# only keeps /sbin/powernode-agent + /etc/powernode/).
+package_spec: []
 
+# Only ships what's needed for the agent contract:
+#   /usr/sbin/powernode-agent — canonical location, what the
+#                                post-switch_root systemd unit invokes
+#   /sbin/powernode-agent     — symlink to /usr/sbin/powernode-agent
+#                                for the initramfs/dracut hook + legacy
+#                                lookups that still expect /sbin
+#   /etc/powernode/           — config skeleton; OS variants + boot.go fill it
 file_spec:
-  - "/etc/**"
-  - "/usr/bin/**"
-  - "/usr/sbin/**"
-  - "/usr/lib/**"
-  - "/lib/**"
-  - "/sbin/**"
-  - "/bin/**"
-
-# Sensitive paths that NO higher-priority module may override at union mount.
-# Build pipeline folds these into every higher neighbor's effective_mask, so
-# their blobs cannot ship these files. Anything machine-identity, account
-# policy, or trust-boundary lives here.
-protected_spec:
-  # Identity + account policy
-  - "/etc/passwd"
-  - "/etc/shadow"
-  - "/etc/group"
-  - "/etc/gshadow"
-  - "/etc/sudoers"
-  - "/etc/sudoers.d/**"
-  # Authentication policy
-  - "/etc/pam.d/**"
-  - "/etc/security/**"
-  - "/etc/login.defs"
-  # SSH machine identity + policy
-  - "/etc/ssh/sshd_config"
-  - "/etc/ssh/sshd_config.d/**"
-  - "/etc/ssh/ssh_host_*_key"
-  - "/etc/ssh/ssh_host_*_key.pub"
-  # Powernode-agent identity + binary
-  - "/etc/systemd/system/powernode-agent.service"
   - "/usr/sbin/powernode-agent"
   - "/sbin/powernode-agent"
-  # SUID trust boundary binaries
-  - "/usr/bin/sudo"
-  - "/usr/bin/su"
-  - "/usr/sbin/sshd"
+  - "/etc/powernode/**"
 
-package_spec:
-  - bash
-  - coreutils
-  - util-linux
-  - systemd
-  - systemd-sysv
-  - systemd-networkd
-  - systemd-resolved
-  - dbus
-  - iputils-ping
-  - iproute2
-  - openssh-server
-  - ca-certificates
-  - curl
-  - dosfstools
-  - kmod
-  - udev
+mask: []
+dependency_spec: []
 
-dependencies:
-  requires: []
-  # Capability tags that hub / app modules can match against. The
-  # dependency resolver picks any module providing `base.os` that also
-  # matches the node's arch + base-OS combination — e.g.
-  # powernode-system-base (ubuntu noble amd64) today, future
-  # powernode-system-base-trixie-arm64, powernode-system-base-alpine,
-  # etc. Operators don't pin the slug; they declare the capability
-  # they need and the resolver picks the variant compatible with the
-  # node it's being assigned to.
-  provides:
-    - base.os
-    - base.os.ubuntu-noble
-    - net.systemd-networkd
-    - sshd
-    - init.systemd
-
-# Deliberately empty. The post-switch_root agent service is shipped
-# as a HAND-CURATED unit file at rootfs/etc/systemd/system/
-# powernode-agent.service rather than a generated one from
-# lifecycle/service.go. Rationale: system-base IS the platform on a
-# pivot_root node — there's no higher-priority module to layer a
-# generated unit on top of, and generated units use a
-# `powernode-<module-uuid>-<name>.service` namespace that's noise here.
-# Letting the agent reconcile loop create a parallel unit alongside
-# the curated one would result in two competing instances of the same
-# binary; instead leave services: empty and rely on the rootfs/ overlay.
-services: []
+# /sbin/powernode-agent is the platform-trust boundary — NO higher
+# module may overlay-replace it. The cosign signature on this erofs
+# blob is the only authority the agent runtime accepts; if an OS
+# variant could shadow this path, an attacker who compromised the
+# OS variant could swap the agent for a backdoored copy.
+protected_spec:
+  - "/usr/sbin/powernode-agent"
+  - "/sbin/powernode-agent"
 
 reboot_required: false
 
+dependencies:
+  requires: []
+  # Capability tag that OS variants + standalone consumers depend on.
+  # When a node template asks for `powernode.agent`, the resolver
+  # picks this module (it's the only one that provides it). When a
+  # template asks for `base.os`, the resolver picks one of the
+  # OS-specific variants which transitively pull this one in via
+  # their own requires.
+  provides:
+    - powernode.agent
+
+services: []
+
 security:
-  capabilities:
-    - CAP_NET_ADMIN
-    - CAP_NET_BIND_SERVICE
-    - CAP_SYS_ADMIN
+  capabilities: []
   egress_allow: []
   privileged: false
   user_namespace: false
@@ -113,5 +59,4 @@ security:
 skills: []
 
 build:
-  ubuntu_digest: null
   apt_snapshot: "20260415T000000Z"

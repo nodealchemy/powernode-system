@@ -1,0 +1,126 @@
+schema_version: 1
+
+name: powernode-system-base-ubuntu-noble
+display_name: "Powernode Base — Ubuntu 24.04 (Noble) userland"
+description: "OS-specific layer on top of powernode-system-base — Ubuntu 24.04 LTS minbase userland: systemd as PID 1, systemd-networkd for DHCP, openssh-server, ca-certificates, libssl, coreutils, the standard Debian filesystem layout. Inherits /sbin/powernode-agent from the minimal powernode-system-base via overlay union; this module only owns the OS-specific bits. Sibling modules for Debian (trixie), Alpine, and other base images will provide the same `base.os` capability."
+license: "MIT"
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/var/log/**"
+
+file_spec:
+  - "/etc/**"
+  - "/usr/bin/**"
+  - "/usr/sbin/**"
+  - "/usr/lib/**"
+  - "/lib/**"
+  - "/sbin/**"
+  - "/bin/**"
+
+# Sensitive paths that NO higher-priority module may override at union mount.
+# Build pipeline folds these into every higher neighbor's effective_mask, so
+# their blobs cannot ship these files. Anything machine-identity, account
+# policy, or trust-boundary lives here.
+protected_spec:
+  # Identity + account policy
+  - "/etc/passwd"
+  - "/etc/shadow"
+  - "/etc/group"
+  - "/etc/gshadow"
+  - "/etc/sudoers"
+  - "/etc/sudoers.d/**"
+  # Authentication policy
+  - "/etc/pam.d/**"
+  - "/etc/security/**"
+  - "/etc/login.defs"
+  # SSH machine identity + policy
+  - "/etc/ssh/sshd_config"
+  - "/etc/ssh/sshd_config.d/**"
+  - "/etc/ssh/ssh_host_*_key"
+  - "/etc/ssh/ssh_host_*_key.pub"
+  # Powernode-agent identity + binary
+  - "/etc/systemd/system/powernode-agent.service"
+  - "/usr/sbin/powernode-agent"
+  - "/sbin/powernode-agent"
+  # SUID trust boundary binaries
+  - "/usr/bin/sudo"
+  - "/usr/bin/su"
+  - "/usr/sbin/sshd"
+
+package_spec:
+  - bash
+  - coreutils
+  - util-linux
+  - systemd
+  - systemd-sysv
+  - systemd-networkd
+  - systemd-resolved
+  - dbus
+  - iputils-ping
+  - iproute2
+  - openssh-server
+  - ca-certificates
+  - curl
+  - dosfstools
+  - kmod
+  - udev
+
+dependencies:
+  # Depends on the truly-minimal powernode-system-base for the
+  # /sbin/powernode-agent binary itself. The split lets multiple
+  # base-OS variants (this one, debian-trixie, alpine, etc.) share
+  # a single source-of-truth for the Powernode agent without
+  # duplicating the Go cross-compile in every variant's CI step.
+  # The Powernode dependency resolver mounts powernode-system-base
+  # at a lower-priority layer so its /sbin/powernode-agent appears
+  # in /sysroot under this module's /sbin (which is a directory
+  # from the apt-installed coreutils — no file conflict).
+  requires:
+    - powernode/powernode-system-base@^1.0
+  # Capability tags that hub / app modules can match against. The
+  # dependency resolver picks any module providing `base.os` that
+  # matches the node's arch + base-OS combination — e.g. this module
+  # (ubuntu noble amd64) today, future powernode-system-base-trixie-arm64,
+  # powernode-system-base-alpine, etc. Operators don't pin the slug;
+  # they declare the capability they need and the resolver picks the
+  # variant compatible with the node it's being assigned to.
+  provides:
+    - base.os
+    - base.os.ubuntu-noble
+    - net.systemd-networkd
+    - sshd
+    - init.systemd
+
+# Deliberately empty. The post-switch_root agent service is shipped
+# as a HAND-CURATED unit file at rootfs/etc/systemd/system/
+# powernode-agent.service rather than a generated one from
+# lifecycle/service.go. Rationale: system-base IS the platform on a
+# pivot_root node — there's no higher-priority module to layer a
+# generated unit on top of, and generated units use a
+# `powernode-<module-uuid>-<name>.service` namespace that's noise here.
+# Letting the agent reconcile loop create a parallel unit alongside
+# the curated one would result in two competing instances of the same
+# binary; instead leave services: empty and rely on the rootfs/ overlay.
+services: []
+
+reboot_required: false
+
+security:
+  capabilities:
+    - CAP_NET_ADMIN
+    - CAP_NET_BIND_SERVICE
+    - CAP_SYS_ADMIN
+  egress_allow: []
+  privileged: false
+  user_namespace: false
+
+skills: []
+
+build:
+  ubuntu_digest: null
+  apt_snapshot: "20260415T000000Z"
