@@ -38,7 +38,9 @@ type Context struct {
 // `attach`, `exec`, etc.) work on a provisioned node without the
 // operator having to know or type --platform-url.
 //
-// pkiDir defaults to enroll.PKIDir when empty.
+// pkiDir defaults to enroll.ResolveDefaultPKIDir() when empty — picks
+// the persist-layer path in initramfs/pivot contexts, the FHS path in
+// cloud-VM contexts. See enroll/storage.go for the resolver rationale.
 func BuildContext(platformURL, pkiDir string) (*Context, error) {
 	if platformURL == "" {
 		ident, err := identity.DefaultResolver().Resolve(context.Background())
@@ -51,7 +53,7 @@ func BuildContext(platformURL, pkiDir string) (*Context, error) {
 		platformURL = ident.PlatformURL
 	}
 	if pkiDir == "" {
-		pkiDir = enroll.PKIDir
+		pkiDir = enroll.ResolveDefaultPKIDir()
 	}
 	paths := enroll.PathsUnder(pkiDir)
 	client, err := transport.LoadFromPKIDir(platformURL, paths)

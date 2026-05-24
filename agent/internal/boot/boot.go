@@ -46,7 +46,8 @@ type Orchestrator struct {
 	// Layout describes mount points (sysroot, modules cache, etc.).
 	Layout mount.Layout
 	// PKIDir is where to persist enrollment material. Defaults to
-	// enroll.PKIDir.
+	// enroll.ResolveDefaultPKIDir() — picks the persist-layer path in
+	// initramfs/pivot contexts, the FHS path in cloud-VM contexts.
 	PKIDir string
 	// AgentVersion is reported during enrollment for log correlation.
 	AgentVersion string
@@ -77,7 +78,7 @@ type Orchestrator struct {
 // constructing the resolver/enroll client.
 func (o Orchestrator) Default() Orchestrator {
 	if o.PKIDir == "" {
-		o.PKIDir = enroll.PKIDir
+		o.PKIDir = enroll.ResolveDefaultPKIDir()
 	}
 	if o.MountRunner == nil {
 		o.MountRunner = mount.ExecRunner{}

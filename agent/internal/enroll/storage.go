@@ -7,11 +7,54 @@ import (
 	"path/filepath"
 )
 
-// PKIDir is the canonical on-node location for the agent's mTLS material.
-// Lives under /persist/var (the bind-mounted persistent layer per Golden
-// Eclipse hybrid upper-layer design) so it survives reboots while the
-// rest of root stays ephemeral.
-const PKIDir = "/persist/var/lib/powernode/pki"
+// Two filesystem layouts host the agent's mTLS material:
+//
+//   - PKIDirInitramfs lives under /persist (a separate tmpfs mounted by
+//     the initramfs's persist.mount unit and rbind-mounted into /sysroot
+//     during prepare-root). The pivot_root design counts on this path
+//     surviving the initramfs→pivot transition.
+//   - PKIDirFHS is the conventional FHS path for cloud-VM hosts that
+//     don't have /persist mounted (e.g. ProxmoxProvider's file-fallback
+//     spawn path; Vultr/AWS/GCP cutovers).
+//
+// New code should call ResolveDefaultPKIDir() instead of hardcoding
+// either constant — that way callers stay coherent across both layouts.
+// PKIDir remains as a back-compat alias for the initramfs path so older
+// references compile unchanged.
+const (
+	PKIDirInitramfs = "/persist/var/lib/powernode/pki"
+	PKIDirFHS       = "/var/lib/powernode/pki"
+	PKIDir          = PKIDirInitramfs // legacy alias — prefer ResolveDefaultPKIDir()
+)
+
+// ResolveDefaultPKIDir returns the PKI directory appropriate for the
+// current filesystem layout. Picks the persist-layer path when
+// /persist/var/lib/powernode is reachable (the initramfs + post-pivot
+// contexts, which rbind-mount /persist forward across switch_root),
+// otherwise falls back to the FHS path for cloud-VM hosts.
+//
+// Resolving at runtime (instead of baking a constant into systemd units
+// and cobra flag defaults) avoids the cross-context PKI-drift bug where
+// federation-accept writes to one path but the mount-gate or post-pivot
+// service expects another — that drift previously held back the
+// pivot_root dogfood until both halves were taught to agree.
+func ResolveDefaultPKIDir() string {
+	if dirExists("/persist/var/lib/powernode") {
+		return PKIDirInitramfs
+	}
+	return PKIDirFHS
+}
+
+// ResolveDefaultPKIPaths is the canonical-paths wrapper around
+// ResolveDefaultPKIDir — saves callers from a two-step dance.
+func ResolveDefaultPKIPaths() PKIPaths {
+	return PathsUnder(ResolveDefaultPKIDir())
+}
+
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
 
 // PKIPaths are the canonical filenames within PKIDir.
 type PKIPaths struct {

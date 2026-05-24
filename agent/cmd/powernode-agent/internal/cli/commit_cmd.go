@@ -58,7 +58,11 @@ var hardcodedDenyList = []string{
 	"/etc/ssh/ssh_host_*_key",
 	"/etc/ssh/ssh_host_*_key.pub",
 	"/root/.ssh",
+	// PKI can land at either path depending on filesystem layout — see
+	// enroll.ResolveDefaultPKIDir(). Deny both to prevent a commit from
+	// accidentally capturing node mTLS material into a module rootfs.
 	"/persist/var/lib/powernode/pki",
+	"/var/lib/powernode/pki",
 	"/var/lib/cloud",
 }
 

@@ -146,9 +146,13 @@ func chainNodeEnrollment(ctx context.Context, ne *federation.NodeEnrollment, caB
 	// the host CA bundle (it's faster + survives host CA churn).
 	identity.CABundlePEM = caPEM
 
-	// Cloud VMs don't have /persist/var; land the PKI under the standard
-	// FHS path instead. The service subcommand reads --pki-dir to pick it up.
-	paths := enroll.PathsUnder("/var/lib/powernode/pki")
+	// Pick the path that matches the current filesystem layout — initramfs
+	// hosts get /persist/var/lib/powernode/pki (the mount-gate at
+	// powernode-mount.service:22 explicitly waits on that path before
+	// pivoting), cloud-VM hosts get the FHS path. Hardcoding either side
+	// would silently misroute PKI for the other context; ResolveDefaultPKIDir
+	// keeps the two halves coherent.
+	paths := enroll.ResolveDefaultPKIPaths()
 	if err := enroll.Save(identity, paths); err != nil {
 		return fmt.Errorf("enroll.Save: %w", err)
 	}

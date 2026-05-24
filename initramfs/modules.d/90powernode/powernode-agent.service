@@ -9,7 +9,13 @@ Wants=basic.target systemd-networkd-wait-online.service
 
 [Service]
 Type=simple
-ExecStart=/sbin/powernode-agent service --pki-dir /var/lib/powernode/pki
+# Intentionally no --pki-dir flag — enroll.ResolveDefaultPKIDir() picks
+# /persist/var/lib/powernode/pki in the initramfs context (where
+# persist.mount has staged the persistent tmpfs), matching the path
+# powernode-mount.service waits on before pivot. Hardcoding a path here
+# previously diverged from federation-accept's write target and blocked
+# the pivot_root smoke until both halves were taught to agree.
+ExecStart=/sbin/powernode-agent service
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal+console

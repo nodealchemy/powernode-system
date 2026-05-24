@@ -45,7 +45,7 @@ type Config struct {
 	PlatformURL       string
 	AgentVersion      string
 	HeartbeatInterval time.Duration
-	PKIDir            string  // defaults to enroll.PKIDir
+	PKIDir            string  // defaults to enroll.ResolveDefaultPKIDir()
 	StatePath         string  // defaults to mount.StatePath
 	OnError           func(string, error)
 }
@@ -62,7 +62,7 @@ func New(cfg Config) *Service {
 		cfg.HeartbeatInterval = 30 * time.Second
 	}
 	if cfg.PKIDir == "" {
-		cfg.PKIDir = enroll.PKIDir
+		cfg.PKIDir = enroll.ResolveDefaultPKIDir()
 	}
 	if cfg.StatePath == "" {
 		cfg.StatePath = mount.StatePath
