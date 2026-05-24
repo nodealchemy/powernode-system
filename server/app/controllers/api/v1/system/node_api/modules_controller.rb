@@ -276,10 +276,16 @@ module Api
                 start_command:                 svc.start_command,
                 stop_command:                  svc.stop_command,
                 restart_policy:                svc.restart_policy,
-                # ModuleService now references a ServiceUser FK; the
-                # agent only needs the username here (it pairs against
-                # the platform-managed /etc/passwd it just rendered).
-                user:                          svc.service_user&.username,
+                # ModuleService maps to either a platform-allocated
+                # System::ServiceUser FK (module-declared) or a
+                # WELL_KNOWN_SYSTEM_USERS string (root/nobody/etc).
+                # `effective_user` resolves the two paths in the model
+                # so the agent always sees the same string-shaped
+                # `user` field — it pairs against the platform-managed
+                # /etc/passwd the agent just rendered for ServiceUser
+                # rows, or against the kernel's built-in passwd entry
+                # for well-known users.
+                user:                          svc.effective_user,
                 working_directory:             svc.working_directory,
                 env:                           svc.env || {},
                 exposed_ports:                 svc.exposed_ports || [],

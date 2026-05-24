@@ -538,7 +538,7 @@ module System
         record.start_command = svc["start_command"]
         record.stop_command  = svc["stop_command"]
         record.restart_policy = svc.fetch("restart_policy", "always")
-        record.service_user = resolve_service_user!(mod, svc, identity_index)
+        assign_service_user!(record, mod, svc, identity_index)
         record.working_directory = svc["working_directory"]
         record.env           = svc["env"] || {}
         record.exposed_ports = svc["exposed_ports"] || []
@@ -660,16 +660,31 @@ module System
       end
     end
 
-    # Resolves a service's declared `user:` string into a ServiceUser
-    # row, using the in-flight allocation index first and falling back
-    # to a global lookup for transitive-dependency references. Also
-    # creates a ModuleUserDeclaration linking this module → that user
-    # so the reaper treats consumer references as keep-alive — without
-    # this, uninstalling the *declaring* module would orphan running
-    # services that consume the identity.
-    def resolve_service_user!(mod, svc, identity_index)
+    # Assigns the right user-source field on a ModuleService row from
+    # the manifest's `services[].user:` value. There are two paths:
+    #
+    #   1. Well-known system users (root, nobody, daemon, etc.) live
+    #      outside System::ServiceUser's 70_000+ allocation range and
+    #      already exist on every Linux rootfs — these go in the
+    #      `system_user` string column and leave service_user_id NULL.
+    #      No ModuleUserDeclaration: the agent never renders these to
+    #      /etc/passwd, so there's nothing for the reaper to keep alive.
+    #
+    #   2. Module-declared users (allocated via manifest's `users:`
+    #      block, surfaced through identity_index) get an FK to the
+    #      matching System::ServiceUser plus a ModuleUserDeclaration
+    #      so the reaper treats consumer references as keep-alive —
+    #      without that join, uninstalling the *declaring* module
+    #      would orphan running services that consume the identity.
+    def assign_service_user!(record, mod, svc, identity_index)
       raw = svc["user"]
       raise ImportError, "services[#{svc['name']}].user is required" if raw.blank?
+
+      if ::System::ModuleService::WELL_KNOWN_SYSTEM_USERS.include?(raw)
+        record.system_user  = raw
+        record.service_user = nil
+        return
+      end
 
       user = identity_index[:users][raw] ||
              ::System::ServiceUser.live.find_by(username: raw)
@@ -680,7 +695,8 @@ module System
         node_module_id:  mod.id,
         service_user_id: user.id
       )
-      user
+      record.service_user = user
+      record.system_user  = nil
     end
 
     # Upserts SudoersGrant rows from manifest.sudoers[]. Idempotent

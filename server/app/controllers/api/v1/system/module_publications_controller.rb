@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+require "base64"
+require "json"
+require "net/http"
+require "uri"
+
 module Api
   module V1
     module System
@@ -19,8 +24,9 @@ module Api
       # "Notify platform" step):
       #
       #   {
-      #     "module_name": "powernode-hub-backend",
-      #     "tag":         "c71ebc3",
+      #     "module_name":       "powernode-hub-backend",
+      #     "tag":               "c71ebc3",
+      #     "manifest_yaml_b64": "<base64 of modules/<slug>/manifest.yaml>",
       #     "artifacts": {
       #       "erofs": {
       #         "oci_ref":       "git.ipnode.org/powernode/powernode-hub-backend:c71ebc3",
@@ -31,9 +37,17 @@ module Api
       #     }
       #   }
       #
-      # The processor does the heavy lifting: pulls OCI manifest,
-      # verifies cosign signature against COSIGN_PUBLIC_KEY_FILE,
-      # populates NodeModuleVersion.artifacts JSONB.
+      # Three side effects on a successful publish:
+      #   1. NodeModuleVersion row created with the artifacts payload.
+      #   2. NodeModule + ModuleService rows re-synced from
+      #      manifest_yaml_b64 via ManifestImportService — keeps
+      #      DB columns aligned with the source-tree manifest that the
+      #      Stage 2 rsync filter just used to carve this erofs blob.
+      #   3. artifacts.erofs.oci_digest populated by HEAD-ing the OCI
+      #      manifest at oci_ref — the CI workflow doesn't ship the
+      #      layer digest itself (oras push only emits the artifact
+      #      digest), but the agent needs the layer digest to address
+      #      the blob during pull + verify.
       class ModulePublicationsController < ApplicationController
         skip_before_action :authenticate_request, raise: false
         skip_before_action :verify_authenticity_token, raise: false
@@ -63,15 +77,31 @@ module Api
                         ::System::NodeModule.find_by(name: module_name)
           return render_not_found("NodeModule for gitea_repo=#{gitea_repo} (or name=#{module_name.inspect})") unless node_module
 
-          # Fast path: CI already signed with cosign + produced the
-          # artifact descriptors. Trust the payload and write directly.
-          # The heavy ModuleOciIngestService flow (OCI manifest fetch,
-          # server-side cosign re-verify) is reserved for the Gitea
-          # push webhook path where the server doesn't have CI-side
-          # provenance to start from.
+          # Side effect 1 — apply the source-tree manifest BEFORE
+          # creating the version row, so the version inherits the
+          # current file_spec/mask/protected_spec from the NodeModule
+          # (find_or_create_version snapshots from those columns).
+          # Without this, every CI publish under a refactor would
+          # snapshot stale specs and trip up the agent's reconcile.
+          manifest_import_error = apply_manifest_yaml(node_module, params[:manifest_yaml_b64])
+
           version = find_or_create_version(node_module, tag)
           if artifacts.is_a?(Hash) && artifacts.any?
             normalized = artifacts.transform_values { |h| h.is_a?(Hash) ? h.stringify_keys : h }
+            # Side effect 3 — fill in the OCI layer digest (the only
+            # piece CI can't supply cheaply; oras push reports the
+            # artifact digest, not the per-layer one). Best-effort:
+            # failure here doesn't abort the publish — the digest can
+            # be backfilled later, and the agent will simply refuse to
+            # mount until it shows up.
+            erofs_layer = fetch_oci_layer_digest(node_module, normalized.dig("erofs", "oci_ref"))
+            if erofs_layer && normalized["erofs"].is_a?(Hash)
+              normalized["erofs"] = normalized["erofs"].merge(
+                "oci_digest" => erofs_layer[:digest],
+                "size"       => erofs_layer[:size],
+                "media_type" => erofs_layer[:media_type]
+              )
+            end
             version.update_columns(artifacts: normalized)
           else
             Rails.logger.warn "[ModulePublicationsController] empty artifacts hash for #{module_name}@#{tag}"
@@ -82,11 +112,90 @@ module Api
           render_success(
             node_module_version_id: version.id,
             version_number:         version.version_number,
-            artifacts_keys:         Array(version.artifacts.keys)
+            artifacts_keys:         Array(version.artifacts.keys),
+            manifest_applied:       manifest_import_error.nil?,
+            manifest_import_error:  manifest_import_error,
+            oci_digest_resolved:    version.artifacts.dig("erofs", "oci_digest").present?
           )
         end
 
         private
+
+        # Re-applies the manifest YAML carried in the payload via
+        # ManifestImportService — keeps NodeModule + ModuleService rows
+        # aligned with the source-tree manifest that CI just packaged.
+        # Returns nil on success (or no-op when the field is absent),
+        # otherwise a short human-readable error message that lands in
+        # the response body so CI failures are diagnosable from the
+        # workflow log without SSHing into the platform.
+        def apply_manifest_yaml(node_module, encoded)
+          return nil if encoded.blank?
+
+          yaml = begin
+            ::Base64.strict_decode64(encoded.to_s)
+          rescue ArgumentError => e
+            return "manifest_yaml_b64 not valid base64: #{e.message}"
+          end
+
+          result = ::System::ManifestImportService.import!(node_module: node_module, yaml: yaml)
+          return nil if result.ok?
+
+          msg = "ManifestImportService refused module=#{node_module.name}: #{result.error}"
+          if Array(result.validation_errors).any?
+            msg += " — validation: #{result.validation_errors.join('; ')}"
+          end
+          Rails.logger.warn "[ModulePublicationsController] #{msg}"
+          msg
+        rescue StandardError => e
+          msg = "ManifestImportService crashed module=#{node_module.name}: #{e.class}: #{e.message}"
+          Rails.logger.warn "[ModulePublicationsController] #{msg}"
+          msg
+        end
+
+        # HEADs the OCI manifest at oci_ref and returns the descriptor
+        # for the erofs layer (or nil if it can't authenticate / parse).
+        # The agent uses {digest, size, media_type} during pull —
+        # everything else in the manifest is informational here.
+        #
+        # Auth: reuses the account's Gitea PAT (the same credential the
+        # operator configured for git operations); registries hosted on
+        # the same Gitea instance accept that PAT as Basic-auth password
+        # with any username. No new secret surface.
+        def fetch_oci_layer_digest(node_module, oci_ref)
+          return nil if oci_ref.blank?
+          m = oci_ref.match(%r{\A([^/]+)/(.+):([^:]+)\z})
+          return nil unless m
+          registry, repo, tag = m[1], m[2], m[3]
+
+          pat = node_module.account.git_provider_credentials.where(auth_type: "personal_access_token").first&.access_token
+          return nil if pat.blank?
+
+          uri = URI("https://#{registry}/v2/#{repo}/manifests/#{tag}")
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = (uri.scheme == "https")
+          http.open_timeout = 5
+          http.read_timeout = 10
+          req = Net::HTTP::Get.new(uri.path)
+          req["Authorization"] = "Basic " + ::Base64.strict_encode64("ci:#{pat}")
+          req["Accept"] = [
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json"
+          ].join(",")
+          res = http.request(req)
+          return nil unless res.is_a?(Net::HTTPSuccess)
+
+          manifest = JSON.parse(res.body)
+          layers = Array(manifest["layers"])
+          erofs_layer = layers.find { |l| l["mediaType"].to_s =~ /erofs/ } || layers.first
+          return nil unless erofs_layer
+
+          { digest:     erofs_layer["digest"].to_s,
+            size:       erofs_layer["size"].to_i,
+            media_type: erofs_layer["mediaType"].to_s }
+        rescue StandardError => e
+          Rails.logger.warn "[ModulePublicationsController] fetch_oci_layer_digest #{oci_ref}: #{e.class}: #{e.message}"
+          nil
+        end
 
         # Mirror of ModulePublicationProcessor#find_or_create_version
         # so this controller doesn't need the whole processor's

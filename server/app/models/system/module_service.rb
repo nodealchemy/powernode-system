@@ -15,9 +15,16 @@ module System
 
     RESTART_POLICIES = %w[always on-failure never].freeze
     HEALTH_METHODS   = %w[GET POST PUT].freeze
+    # Standard Unix users that exist on every Linux rootfs and live
+    # outside System::ServiceUser's 70_000..99_999 allocation range.
+    # Manifests can name these directly in `services[].user` without
+    # declaring them under `users:` (root in particular is the common
+    # case for setup/init services like rails-start.sh that need to
+    # bootstrap secrets + DB roles before dropping privileges).
+    WELL_KNOWN_SYSTEM_USERS = %w[root nobody daemon bin sys mail news uucp man].freeze
 
     belongs_to :node_module, class_name: "System::NodeModule"
-    belongs_to :service_user, class_name: "System::ServiceUser"
+    belongs_to :service_user, class_name: "System::ServiceUser", optional: true
 
     has_many :outgoing_dependencies,
              class_name: "System::ModuleServiceDependency",
@@ -49,6 +56,9 @@ module System
     validates :health_interval_seconds,      numericality: { greater_than: 0 }
     validates :health_timeout_seconds,       numericality: { greater_than: 0 }
     validates :health_initial_delay_seconds, numericality: { greater_than_or_equal_to: 0 }
+    validates :system_user, inclusion: { in: WELL_KNOWN_SYSTEM_USERS },
+                            allow_nil: true
+    validate :exactly_one_user_source
     validate :account_matches_node_module
 
     scope :with_health_check, -> { where.not(health_endpoint: nil) }
@@ -59,7 +69,31 @@ module System
       "#{health_method} #{health_endpoint}"
     end
 
+    # The username the service should run as. Resolves the
+    # ServiceUser→system_user fallback in one place so the serializer
+    # and any other consumer (heartbeat, dashboard, dependency planner)
+    # gets a consistent string regardless of which path populated the
+    # row.
+    def effective_user
+      service_user&.username || system_user
+    end
+
     private
+
+    # Either an allocated ServiceUser (module-declared) or a
+    # WELL_KNOWN_SYSTEM_USERS entry (root/nobody/etc.) — never both,
+    # never neither. Without this, ManifestImportService could create
+    # an ambiguous row where the serializer would have to pick a
+    # winner.
+    def exactly_one_user_source
+      has_su  = service_user_id.present?
+      has_sys = system_user.present?
+      if has_su && has_sys
+        errors.add(:base, "service_user_id and system_user are mutually exclusive")
+      elsif !has_su && !has_sys
+        errors.add(:base, "service_user_id or system_user is required")
+      end
+    end
 
     # The denormalized account_id MUST match the parent NodeModule's account.
     # Service modules are tenant-scoped through their module; this guard

@@ -535,17 +535,29 @@ jobs:
           # platform's record stays stale and the agent's reconcile
           # pulls outdated blobs — there is NO viable fallback (Gitea
           # registry pushes don't fire git-push webhooks).
+          #
+          # We also ship the raw manifest YAML (base64-encoded for safe
+          # JSON transit) so the controller can re-apply it via
+          # ManifestImportService — keeping NodeModule.{file_spec, mask,
+          # services, manifest_yaml, ...} aligned with the same manifest
+          # that the Stage 2 rsync filter used to carve THIS erofs blob.
+          # Without this sync, the DB columns get pinned to whatever the
+          # initial db:seed wrote and drift away from the manifests in
+          # the source tree on every refactor.
           EROFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
           EROFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
+          MANIFEST_B64=$(base64 -w0 "modules/${{ matrix.module }}/manifest.yaml")
           payload=$(jq -nc \
             --arg name       "${{ matrix.module }}" \
             --arg tag        "${{ steps.push.outputs.tag }}" \
             --arg ref        "${{ steps.push.outputs.erofs_ref }}" \
             --arg root       "$EROFS_ROOT" \
             --arg size       "$EROFS_SIZE" \
+            --arg manifest   "$MANIFEST_B64" \
             '{
                module_name: $name,
                tag:         $tag,
+               manifest_yaml_b64: $manifest,
                artifacts: {
                  erofs: {
                    oci_ref:       $ref,
