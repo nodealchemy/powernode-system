@@ -3,13 +3,19 @@ name: powernode-reverse-proxy
 display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
-# Traefik is in Ubuntu noble's universe repo at /usr/bin/traefik.
-# Using the apt-packaged binary instead of a vendored build under
-# extensions/system/agent/dist/ avoids a separate cross-arch release
-# pipeline + keeps cosign provenance scoped to the OCI artifact (no
-# hand-checked-in binaries in git).
-package_spec:
-  - traefik
+# Traefik is technically in Ubuntu noble's universe repo, but
+# mmdebstrap's --include constructs an apt-get install command with
+# ?narrow(?or(?archive(^noble$),?codename(^noble$)),?priority(required))
+# baked in — non-required-priority universe packages like traefik get
+# filtered out and apt reports "Unable to locate package traefik".
+# Same structural blocker as vector + gcsfuse (see log-forwarder +
+# storage-tools manifests). Module publishes as a stub for now;
+# traefik binary needs to be either (a) vendored into rootfs/usr/bin
+# at build time via Stage 1.5 (cross-platform fetch + verify), or
+# (b) installed via a customize-hook that bypasses the narrow filter
+# (chroot $ROOT apt-get install traefik after main mmdebstrap pass).
+# Tracked as a follow-up to CI selective-rebuild task #82.
+package_spec: []
 file_spec:
   - /usr/bin/traefik
   - /usr/share/traefik/**

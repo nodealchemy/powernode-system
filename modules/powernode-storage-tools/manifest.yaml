@@ -8,10 +8,16 @@ description: >
   Pure package_spec — no rootfs config; the binaries are invoked directly
   by the Go agent.
 license: MIT
+# gcsfuse dropped — third-party Google Cloud apt repo has
+# Codename: gcsfuse-noble (per probe of dists/gcsfuse-noble/Release),
+# which mmdebstrap's narrow filter (?codename(^noble$)) rejects.
+# s3fs MAY also fail if not priority=required in universe; we'll
+# discover on next CI run. If both fail, drop them too and stub
+# the module — gcsfuse + s3fs can be vendored or installed via
+# customize-hook later.
 package_spec:
   - fscrypt
   - s3fs
-  - gcsfuse
   - rclone
   - keyutils
 file_spec: []
