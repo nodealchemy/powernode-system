@@ -292,12 +292,17 @@ jobs:
               # gnupg install above) + "curl: 404" (this URL change).
               cat > /tmp/hooks/essential00-vector-source.sh <<'EOF'
           #!/bin/sh
+          # At essential-hook stage apt isn't yet installed in the chroot
+          # (it comes in via mmdebstrap's --include pass that runs AFTER
+          # this hook). Just drop the key + sources.list into place; the
+          # subsequent apt-get pass will see them. Trying to chroot in
+          # and apt-get update here dies with "chroot: failed to run
+          # command 'apt-get': No such file or directory".
           set -eu
           ROOT="$1"
           mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
           curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public | gpg --dearmor > "$ROOT/etc/apt/keyrings/vector.gpg"
           echo "deb [signed-by=/etc/apt/keyrings/vector.gpg] https://apt.vector.dev/ stable vector-0" > "$ROOT/etc/apt/sources.list.d/vector.list"
-          chroot "$ROOT" apt-get update -q
           EOF
               chmod +x /tmp/hooks/essential00-vector-source.sh
               hook_args+=("--hook-directory=/tmp/hooks")
@@ -305,12 +310,14 @@ jobs:
             powernode-storage-tools)
               cat > /tmp/hooks/essential00-gcsfuse-source.sh <<'EOF'
           #!/bin/sh
+          # Same essential-hook-stage constraint as the vector hook above:
+          # apt isn't yet in the chroot, so we only drop the key +
+          # sources.list. mmdebstrap's --include pass will pick them up.
           set -eu
           ROOT="$1"
           mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
           curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/google-cloud.gpg"
           echo "deb [signed-by=/etc/apt/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt gcsfuse-noble main" > "$ROOT/etc/apt/sources.list.d/gcsfuse.list"
-          chroot "$ROOT" apt-get update -q
           EOF
               chmod +x /tmp/hooks/essential00-gcsfuse-source.sh
               hook_args+=("--hook-directory=/tmp/hooks")
