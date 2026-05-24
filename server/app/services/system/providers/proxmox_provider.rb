@@ -677,19 +677,24 @@ module System
                              connection&.config&.dig("snippets_local_path") ||
                              "/mnt/pve-data/snippets"
           cicustom_parts = []
+          # 0o600: user.yml carries the single-use acceptance_token in cleartext
+          # (federation-payload.json contents), and meta.yml + network.yml may
+          # carry equally sensitive runtime config. The NFS export is shared
+          # across PVE hosts + the ops backend, so world-readable 0644 would
+          # expose tokens to any tenant with read access on the export.
           if params[:user_data].present?
             user_path = File.join(snippets_local, "#{vmid}-user.yml")
-            File.write(user_path, params[:user_data], mode: "w", perm: 0o644)
+            File.write(user_path, params[:user_data], mode: "w", perm: 0o600)
             cicustom_parts << "user=#{snippets_storage}:snippets/#{vmid}-user.yml"
           end
           if params[:meta_data].present?
             meta_path = File.join(snippets_local, "#{vmid}-meta.yml")
-            File.write(meta_path, params[:meta_data], mode: "w", perm: 0o644)
+            File.write(meta_path, params[:meta_data], mode: "w", perm: 0o600)
             cicustom_parts << "meta=#{snippets_storage}:snippets/#{vmid}-meta.yml"
           end
           if params[:network_config].present?
             net_path = File.join(snippets_local, "#{vmid}-net.yml")
-            File.write(net_path, params[:network_config], mode: "w", perm: 0o644)
+            File.write(net_path, params[:network_config], mode: "w", perm: 0o600)
             cicustom_parts << "network=#{snippets_storage}:snippets/#{vmid}-net.yml"
           end
           body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?

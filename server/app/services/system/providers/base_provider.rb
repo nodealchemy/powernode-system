@@ -393,12 +393,36 @@ module System
         }
       end
 
-      # Log provider operation
-      #
-      # @param operation [String] Operation name
-      # @param details [Hash] Operation details
+      # Keys whose values are scrubbed from log output. Match is exact on
+      # the serialized key name (string or symbol). Applied recursively to
+      # nested hashes, arrays, and AR record attribute dumps — protects
+      # against AR records being passed in params and serializing all
+      # columns (including ssh_key + ssh_host_key) via to_json.
+      LOG_SENSITIVE_KEYS = %w[
+        ssh_key ssh_host_key private_key
+        access_key secret_key access_token refresh_token
+        acceptance_token bootstrap_token enrollment_token
+        api_key password vault_token client_secret authorization
+        user_data ssh_keys ssh_authorized_keys
+      ].to_set.freeze
+
       def log_operation(operation, **details)
-        logger.info("[#{self.class.name}] #{operation}: #{details.to_json}")
+        logger.info("[#{self.class.name}] #{operation}: #{sanitize_for_log(details).to_json}")
+      end
+
+      def sanitize_for_log(obj)
+        case obj
+        when ::Hash
+          obj.each_with_object({}) do |(k, v), out|
+            out[k] = LOG_SENSITIVE_KEYS.include?(k.to_s) ? "[REDACTED]" : sanitize_for_log(v)
+          end
+        when ::Array
+          obj.map { |item| sanitize_for_log(item) }
+        when ::ActiveRecord::Base
+          sanitize_for_log(obj.attributes)
+        else
+          obj
+        end
       end
 
       # Handle provider-specific errors and convert to common errors
