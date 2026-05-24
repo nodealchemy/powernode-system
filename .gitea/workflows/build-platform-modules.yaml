@@ -449,12 +449,18 @@ jobs:
               # additional deps — the whole point of decoupling the
               # agent from any specific base-OS.
               if ! command -v go >/dev/null 2>&1; then
-                # Debian trixie ships golang-1.23 in main (NOT golang-1.22 — that's
-                # Ubuntu's naming). Pin to a specific minor to make cross-distro
-                # builds deterministic; bump explicitly when Trixie security
-                # backports require it.
-                apt-get install -y --no-install-recommends golang-1.23 git
-                export PATH=/usr/lib/go-1.23/bin:$PATH
+                # Use the `golang-go` meta-package — Trixie's main archive
+                # doesn't carry every individual golang-1.X versioned
+                # package (verified by run 538 job 2689: golang-1.22 and
+                # golang-1.23 both fail "Unable to locate package"). The
+                # meta-package pulls in whatever Trixie's current default
+                # is (1.24 at trixie release time) and installs the binary
+                # at /usr/bin/go — no PATH manipulation needed. Trade-off:
+                # the exact Go minor version drifts with Trixie's archive,
+                # making reproducible builds depend on the apt snapshot
+                # rather than an explicit pin. For deterministic builds,
+                # switch to fetching the upstream go tarball from go.dev.
+                apt-get install -y --no-install-recommends golang-go git
               fi
               echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
               ( cd agent && \
