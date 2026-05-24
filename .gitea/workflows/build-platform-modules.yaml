@@ -99,38 +99,31 @@ jobs:
       fail-fast: true
       matrix:
         module:
-          - powernode-base-ruby
+          # Powernode-platform-specific (hub Rails app + agent runtime):
           - powernode-extension-system
           - powernode-hub-backend
           - powernode-hub-frontend
           - powernode-hub-worker
-          - powernode-log-forwarder
-          - powernode-node-exporter
-          - powernode-pg-replica
-          - powernode-postgres
-          - powernode-redis
-          - powernode-reverse-proxy
-          - powernode-storage-tools
-          # Powernode-as-OS foundation, layered:
-          #
-          #   powernode-system-base               — truly minimal: cross-
-          #     compiled Go agent at /usr/sbin/powernode-agent + an
-          #     /etc/powernode/ skeleton. Capability: powernode.agent.
-          #     Not bootable alone — designed as the shared substrate
-          #     that every OS-specific base depends on.
-          #
-          #   powernode-system-base-ubuntu-noble  — Ubuntu 24.04 LTS
-          #     userland on top: systemd, sshd, networkd, ca-certs, libssl,
-          #     coreutils. Capability: base.os, init.systemd, sshd. Pulls
-          #     the agent from the minimal module via overlay union.
-          #
-          # Future variants (powernode-system-base-debian-trixie,
-          # -alpine, etc.) follow the same pattern: depend on the
-          # minimal, layer OS-specific apt/apk packages + init scripts,
-          # provide the `base.os` capability. App modules requires:
-          # [base.os] and the resolver picks the right variant per node.
           - powernode-system-base
-          - powernode-system-base-ubuntu-noble
+          # General-purpose modules — any service can depend on these
+          # via capability tags (database.postgres, cache.redis, etc.).
+          # Renamed from powernode-* prefix during the 2026-05-24
+          # generalization pass to reflect their reusability across
+          # future templates beyond powernode-hub. See modules' manifest
+          # provides: blocks for the capability tags they export.
+          - postgres-primary
+          - postgres-replica
+          - redis
+          - reverse-proxy-traefik
+          - log-forwarder-vector
+          - node-exporter
+          - storage-tools
+          - runtime-ruby
+          # OS-base layered family: minimal substrate (powernode-system-base
+          # above, provides the agent binary) + os-specific userland that
+          # provides `base.os` capability. Future variants like
+          # base-os-debian-trixie + base-os-alpine follow the same pattern.
+          - base-os-ubuntu-noble
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
@@ -273,8 +266,8 @@ jobs:
           fi
 
           # Some modules declare packages that aren't in Ubuntu's main/universe:
-          #   - powernode-log-forwarder ships `vector` (Timber/Datadog apt repo)
-          #   - powernode-storage-tools ships `gcsfuse` (Google Cloud apt repo)
+          #   - log-forwarder-vector ships `vector` (Timber/Datadog apt repo)
+          #   - storage-tools ships `gcsfuse` (Google Cloud apt repo)
           # For those modules, register the upstream apt source + key via an
           # --essential-hook so the package is resolvable when mmdebstrap's
           # --include step runs. Hook executes after essential packages
@@ -282,7 +275,7 @@ jobs:
           hook_args=()
           mkdir -p /tmp/hooks
           case "${{ matrix.module }}" in
-            powernode-log-forwarder)
+            log-forwarder-vector)
               # Post-Datadog-acquisition, vector's apt key moved to
               # keys.datadoghq.com (DATADOG_APT_KEY_CURRENT.public) and
               # the legacy https://apt.vector.dev/vector.gpg returns 404.
@@ -307,7 +300,7 @@ jobs:
               chmod +x /tmp/hooks/essential00-vector-source.sh
               hook_args+=("--hook-directory=/tmp/hooks")
               ;;
-            powernode-storage-tools)
+            storage-tools)
               cat > /tmp/hooks/essential00-gcsfuse-source.sh <<'EOF'
           #!/bin/sh
           # Same essential-hook-stage constraint as the vector hook above:
@@ -350,7 +343,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy' || matrix.module == 'powernode-system-base' || matrix.module == 'powernode-system-base-ubuntu-noble'
+        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble'
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -423,7 +416,7 @@ jobs:
                 cp extension.json /tmp/fat/opt/powernode/extensions/system/extension.json
               fi
               ;;
-            powernode-reverse-proxy)
+            reverse-proxy-traefik)
               # Traefik binary now comes from Stage 1 via package_spec:
               # [traefik] → /usr/bin/traefik. The vendored-binary path
               # under agent/dist/ was a stopgap before that; removing
@@ -453,7 +446,7 @@ jobs:
               # Truly-minimal foundation: only the cross-compiled Go
               # agent + the /etc/powernode/ skeleton. No userland, no
               # init system, no apt packages — those land in
-              # powernode-system-base-ubuntu-noble (or future
+              # base-os-ubuntu-noble (or future
               # -debian-trixie, -alpine variants) which depend on
               # this module via the Powernode dependency resolver
               # and inherit /usr/sbin/powernode-agent through the
@@ -490,7 +483,7 @@ jobs:
               # codepath.
               ln -sf /usr/sbin/powernode-agent /tmp/fat/sbin/powernode-agent
               ;;
-            powernode-system-base-ubuntu-noble)
+            base-os-ubuntu-noble)
               # OS-specific layer: Ubuntu's apt-installed userland
               # comes from Stage 1's mmdebstrap (package_spec). The
               # rootfs/ overlay adds the Powernode-curated systemd

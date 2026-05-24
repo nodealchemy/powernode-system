@@ -36,10 +36,10 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
   "powernode-hub" => {
     description: "Single-node complete platform (all services on one host). Canonical deploy unit; default for fresh installs and `local_qemu` smoke tests.",
     modules: %w[
-      powernode-reverse-proxy
-      powernode-base-ruby
-      powernode-postgres
-      powernode-redis
+      reverse-proxy-traefik
+      runtime-ruby
+      postgres-primary
+      redis
       powernode-hub-backend
       powernode-hub-worker
       powernode-hub-frontend
@@ -49,8 +49,8 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
   "powernode-hub-api" => {
     description: "Horizontally-scaled API tier. PG + Redis external (set DATABASE_URL / REDIS_URL via template config). Suitable for multi-replica behind an external LB.",
     modules: %w[
-      powernode-reverse-proxy
-      powernode-base-ruby
+      reverse-proxy-traefik
+      runtime-ruby
       powernode-hub-backend
       powernode-extension-system
     ]
@@ -58,7 +58,7 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
   "powernode-hub-worker" => {
     description: "Worker pool — Sidekiq only. Calls hub-backend via HTTP API. No reverse-proxy (no public TLS endpoint on workers).",
     modules: %w[
-      powernode-base-ruby
+      runtime-ruby
       powernode-hub-backend
       powernode-hub-worker
     ]
@@ -66,18 +66,18 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
   "powernode-hub-frontend" => {
     description: "Edge serving tier — static frontend assets served by Traefik. Reverse-proxies API + WebSocket calls to a hub-api VIP.",
     modules: %w[
-      powernode-reverse-proxy
+      reverse-proxy-traefik
       powernode-hub-frontend
     ]
   },
   "powernode-hub-cluster-member" => {
     description: "HA cluster member. Runs hub-backend + hub-worker locally, but uses pg-replica streaming from the parent's primary. Selected via cluster_member spawn mode.",
     modules: %w[
-      powernode-reverse-proxy
-      powernode-base-ruby
+      reverse-proxy-traefik
+      runtime-ruby
       powernode-hub-backend
       powernode-hub-worker
-      powernode-pg-replica
+      postgres-replica
       powernode-extension-system
     ]
   },
@@ -101,7 +101,7 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
     description: "Powernode-as-OS substrate only. Two modules: the minimal powernode-system-base (cross-compiled Go agent) and the Ubuntu 24.04 LTS userland variant. Bootable via PXE/initramfs with pivot_root — no host OS required. Use as the smoke target for fresh physical nodes or VM pivot_root verification.",
     modules: %w[
       powernode-system-base
-      powernode-system-base-ubuntu-noble
+      base-os-ubuntu-noble
     ],
     # Per-template config baked into NodeTemplate.config jsonb.
     # SpawnProvisioner reads boot_mode from here when the spawn_target

@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-pg-replica
+name: postgres-replica
 display_name: PostgreSQL 16 Streaming Replica
 description: PostgreSQL streaming replica following a parent platform's primary (cluster_member spawn mode)
 license: PostgreSQL
@@ -23,11 +23,18 @@ services:
     exposed_ports:
       - { port: 5433, protocol: tcp, name: pg-replica }
     capabilities: []
-    # TCP health probe deferred — see powernode-postgres.
+    # TCP health probe deferred — see postgres-primary.
     metadata:
       role: streaming_replica
       pg_version: "16"
       notes: "Replication slot + primary connection string injected via virtio-fw-cfg at spawn time."
+
+dependencies:
+  requires: []
+  provides:
+    - database.postgres
+    - database.postgres.replica
+    - database.postgres.v16
 
 security:
   capabilities: []

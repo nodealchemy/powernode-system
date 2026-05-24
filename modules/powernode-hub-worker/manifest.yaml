@@ -21,8 +21,8 @@ reboot_required: false
 
 dependencies:
   requires:
-    - powernode/powernode-base-ruby@^1.0
-    - powernode/powernode-redis@^1.0
+    - powernode/runtime-ruby@^1.0
+    - powernode/redis@^1.0
     - powernode/powernode-hub-backend@^1.0
 
 services:

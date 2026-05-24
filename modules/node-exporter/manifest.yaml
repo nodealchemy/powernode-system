@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-node-exporter
+name: node-exporter
 display_name: Prometheus node_exporter
 description: >
   Hardware + OS metrics endpoint on :9100. Operator-opt-in observability

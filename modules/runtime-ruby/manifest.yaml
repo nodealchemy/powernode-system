@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-base-ruby
+name: runtime-ruby
 display_name: Powernode Base Ruby Runtime
 description: Ruby (noble default — currently 3.2) + bundler + system dependencies for Rails workloads
 license: MIT
@@ -30,6 +30,11 @@ mask: []
 dependency_spec: []
 protected_spec: []
 reboot_required: false
+
+dependencies:
+  requires: []
+  provides:
+    - runtime.ruby
 
 # Base-ruby is FS-only: it installs the runtime that other modules
 # (powernode-hub-backend, powernode-hub-worker) depend on, but it

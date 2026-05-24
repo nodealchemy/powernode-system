@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-redis
+name: redis
 display_name: Redis
 description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
 license: BSD-3-Clause
@@ -42,8 +42,14 @@ services:
     exposed_ports:
       - { port: 6379, protocol: tcp, name: redis }
     capabilities: []
-    # TCP health probe deferred — see powernode-postgres for the same
+    # TCP health probe deferred — see postgres-primary for the same
     # ModuleService.HEALTH_METHODS constraint.
+
+dependencies:
+  requires: []
+  provides:
+    - cache.redis
+    - cache.kv
 
 security:
   capabilities: []

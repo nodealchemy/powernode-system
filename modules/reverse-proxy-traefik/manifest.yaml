@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-reverse-proxy
+name: reverse-proxy-traefik
 display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
@@ -43,6 +43,12 @@ services:
       interval_seconds: 15
       timeout_seconds: 3
       initial_delay_seconds: 5
+
+dependencies:
+  requires: []
+  provides:
+    - http.reverse-proxy
+    - tls.acme
 
 security:
   capabilities:

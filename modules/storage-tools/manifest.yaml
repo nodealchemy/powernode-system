@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-storage-tools
+name: storage-tools
 display_name: Powernode Storage Tools (fscrypt, s3fs, gcsfuse, rclone, keyutils)
 description: >
   On-node tooling required by the agent's storage subsystem: fscrypt for

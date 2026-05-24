@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-postgres
+name: postgres-primary
 display_name: PostgreSQL 16
 description: PostgreSQL server providing the platform's primary database
 license: PostgreSQL
@@ -72,6 +72,13 @@ services:
     metadata:
       pg_data: /var/lib/postgresql/16/main
       pg_version: "16"
+
+dependencies:
+  requires: []
+  provides:
+    - database.postgres
+    - database.postgres.primary
+    - database.postgres.v16
 
 security:
   capabilities: []

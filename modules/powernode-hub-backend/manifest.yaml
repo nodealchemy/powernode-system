@@ -1,7 +1,7 @@
 schema_version: 1
 name: powernode-hub-backend
 display_name: Powernode Hub Backend (Rails 8 API)
-description: The Powernode platform's Rails 8 API server with ActionCable; backed by powernode-postgres and powernode-redis
+description: The Powernode platform's Rails 8 API server with ActionCable; backed by postgres-primary and redis
 license: MIT
 package_spec: []
 # Aligns with the production install layout (/opt/powernode/ with
@@ -29,9 +29,9 @@ reboot_required: false
 
 dependencies:
   requires:
-    - powernode/powernode-base-ruby@^1.0
-    - powernode/powernode-postgres@^1.0
-    - powernode/powernode-redis@^1.0
+    - powernode/runtime-ruby@^1.0
+    - powernode/postgres-primary@^1.0
+    - powernode/redis@^1.0
 
 services:
   - name: rails

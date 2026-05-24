@@ -1,5 +1,5 @@
 schema_version: 1
-name: powernode-log-forwarder
+name: log-forwarder-vector
 display_name: Powernode Log Forwarder (Vector)
 description: >
   Tails journald + the powernode-agent log file; forwards to a platform log
