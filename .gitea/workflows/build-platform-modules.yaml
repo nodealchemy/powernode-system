@@ -38,6 +38,21 @@ on:
         required: false
         type: string
         default: ""
+      base_sha:
+        description: "Diff base for dirty-closure detection (default: parent commit)"
+        required: false
+        type: string
+        default: ""
+      force_all:
+        description: "Skip dirty-closure detection and rebuild every module"
+        required: false
+        type: boolean
+        default: false
+      apt_drift_check:
+        description: "Enable apt-closure drift detection (probes upstream apt for version changes)"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [ develop, master ]
     paths:
@@ -217,7 +232,57 @@ jobs:
           cosign version | head -1
           oras version | head -1
 
+      - name: Compute dirty closure (per-module path filter + apt drift)
+        # Runs once per matrix entry — cheap (mostly manifest parsing +
+        # git diff). Writes DIRTY_MODULES to GITHUB_ENV so every
+        # subsequent step can gate on whether this matrix entry's module
+        # is in the closure. Skips the closure check entirely when
+        # workflow_dispatch.force_all=true (operator-initiated full
+        # rebuild) or when the workflow can't determine a sane diff base.
+        id: closure
+        env:
+          # Operator-supplied diff base via workflow_dispatch input takes
+          # precedence; otherwise let the script use its own resolution
+          # chain (GITEA_EVENT_BEFORE / GITHUB_BASE_SHA / HEAD~1).
+          OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
+          FORCE_ALL: ${{ inputs.force_all }}
+          APT_DRIFT_CHECK: ${{ inputs.apt_drift_check && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
+            echo "[closure] FORCE_ALL=true — every module marked dirty"
+            DIRTY=$(ls -1 modules/ | xargs)
+          else
+            # The script accepts BASE_SHA HEAD_SHA as positional args.
+            # When the operator didn't supply one, fall through to
+            # the script's own GITEA_EVENT_BEFORE / HEAD~1 resolver.
+            if [[ -n "${OPERATOR_BASE_SHA:-}" ]]; then
+              DIRTY=$(bash scripts/ci-compute-dirty-closure.sh \
+                "${OPERATOR_BASE_SHA}" "${GITHUB_SHA}" | xargs)
+            else
+              DIRTY=$(bash scripts/ci-compute-dirty-closure.sh | xargs)
+            fi
+          fi
+          # Pad with leading + trailing space so substring-match in
+          # downstream `if: contains()` doesn't get false positives
+          # ("redis" matching "redis-cluster" etc.).
+          PADDED=" $DIRTY "
+          echo "DIRTY_MODULES=$PADDED" >> "$GITHUB_ENV"
+          echo "[closure] dirty modules: $DIRTY"
+          # Echo per-matrix-entry decision so the run log shows skip
+          # rationale without having to cross-reference DIRTY_MODULES.
+          if [[ "$PADDED" == *" ${{ matrix.module }} "* ]]; then
+            echo "[closure] BUILD ${{ matrix.module }} — in closure"
+          else
+            echo "[closure] SKIP ${{ matrix.module }} — not in closure"
+          fi
+
       - name: Parse manifest for ${{ matrix.module }}
+        # Skip when this matrix entry's module isn't in the dirty closure.
+        # The pad+contains pattern (leading + trailing space around the
+        # needle) prevents false positives where "redis" matches inside
+        # "redis-cluster" etc.
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         id: manifest
         run: |
           set -euo pipefail
@@ -245,6 +310,7 @@ jobs:
           echo "slug=${{ matrix.module }}" >> "$GITHUB_OUTPUT"
 
       - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         run: |
           set -euo pipefail
           # mmdebstrap produces a minimal Ubuntu noble rootfs at
@@ -329,6 +395,12 @@ jobs:
             "$base_url"
 
       - name: Stage 1.5 — stage parent platform content (Class B modules)
+        # Combined gate: only runs for Class B modules (the original
+        # allow-list below) AND only when this matrix entry's module
+        # is in the dirty closure (added 2026-05-24 as part of the
+        # selective-rebuild work). A second `if:` line below would be
+        # invalid YAML — both conditions must live in one expression.
+        #
         # Class B modules ship source-code or vendored binaries that
         # don't come from apt. mmdebstrap left /tmp/fat with just
         # ca-certificates (since these manifests have package_spec: [])
@@ -343,7 +415,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble'
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble')
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -514,6 +586,7 @@ jobs:
           find /tmp/fat -type f | wc -l
 
       - name: Stage 2 — composer (rsync filter + mkfs.erofs + fs-verity)
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         run: |
           set -euo pipefail
           # 1. Layer the module's static rootfs/ contents onto the
@@ -581,6 +654,7 @@ jobs:
           } > /tmp/${{ matrix.module }}.erofs.meta
 
       - name: Cosign sign + oras push
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         id: push
         run: |
           set -euo pipefail
@@ -589,6 +663,7 @@ jobs:
           if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
           REGISTRY_NS="git.ipnode.org/powernode"
           EROFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}"
+          LATEST_REF="${REGISTRY_NS}/${{ matrix.module }}:latest"
 
           # `oras` reads credentials from ~/.docker/config.json or
           # via explicit `oras login` — it does NOT pick up
@@ -599,15 +674,39 @@ jobs:
             --username "$ORAS_REGISTRY_USERNAME" \
             --password-stdin <<< "$ORAS_REGISTRY_PASSWORD"
 
+          # Compute apt-closure-sha256 for this module so it lands on
+          # the OCI artifact's annotations. The dirty-closure script's
+          # drift-check mode reads this annotation on the next run to
+          # decide whether to rebuild this module when its source
+          # didn't change. APT_PROBE_MODE=local because the runner IS
+          # debian:trixie-slim — running apt-cache here gives exactly
+          # the versions Stage 1's mmdebstrap would see.
+          APT_HASH=$(APT_PROBE_MODE=local \
+            bash scripts/ci-compute-dirty-closure.sh \
+              apt-hash "${{ matrix.module }}" 2>/dev/null || true)
+          echo "[push] apt-closure-sha256 for ${{ matrix.module }}: ${APT_HASH:-<empty>}"
+
           # oras complains about absolute paths in source operands.
           # Run from /tmp so the file operands are bare names; the
           # registry sees them with the same shape it always has
           # (the colon-suffix is the mediaType annotation).
           cd /tmp
-          oras push "$EROFS_REF" \
-            --artifact-type application/vnd.powernode.module.v1 \
-            "${{ matrix.module }}.erofs:application/vnd.powernode.erofs" \
+          ORAS_PUSH_ARGS=(
+            "$EROFS_REF"
+            --artifact-type application/vnd.powernode.module.v1
+            "${{ matrix.module }}.erofs:application/vnd.powernode.erofs"
             "${{ matrix.module }}.erofs.meta:application/vnd.powernode.module.meta"
+          )
+          if [[ -n "$APT_HASH" ]]; then
+            ORAS_PUSH_ARGS+=(--annotation "org.powernode.apt-closure-sha256=$APT_HASH")
+          fi
+          oras push "${ORAS_PUSH_ARGS[@]}"
+
+          # Also tag this build as `:latest` so the drift-check's
+          # canonical fetch (powernode/<mod>:latest) always points
+          # at the newest annotation. Use `oras tag` to alias without
+          # re-uploading layers.
+          oras tag "$EROFS_REF" latest
           # Static-key cosign signing — keyless mode against
           # Sigstore's public-good Fulcio doesn't work for
           # Gitea-hosted CI (Gitea isn't on Fulcio's trusted-issuer
@@ -628,7 +727,7 @@ jobs:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       - name: Notify platform — module published
-        if: success()
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         run: |
           set -euo pipefail
           # POSTs the erofs artifact reference so the platform's ingest
