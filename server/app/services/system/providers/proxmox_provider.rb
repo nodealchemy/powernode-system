@@ -199,7 +199,30 @@ module System
         mode = preset[:mode]
 
         if mode == "vm"
-          create_vm_instance(params, preset: preset)
+          # boot_mode dispatch:
+          #   "cloud_init"   — default, boots from a pre-baked cloud image
+          #                    (Ubuntu/Debian/etc.) with cloud-init seed.
+          #                    Used by managed_child + cluster_member flows
+          #                    today; modules layer ON TOP of the host OS.
+          #
+          #   "direct_kernel" — Powernode-as-OS pivot_root path. No cloud
+          #                     image at all. PVE qemu loads kernel +
+          #                     initramfs directly via -kernel/-initrd args;
+          #                     systemd in the initramfs runs powernode-agent
+          #                     boot which discovers identity (fw-cfg) →
+          #                     enrolls → pulls modules → assembles /sysroot
+          #                     overlay → switch_root /sysroot /sbin/init.
+          #                     Modules ARE the OS.
+          boot_mode = (params[:boot_mode] || params.dig(:options, :boot_mode)).to_s
+          boot_mode = "cloud_init" if boot_mode.empty?
+          case boot_mode
+          when "cloud_init"
+            create_vm_instance(params, preset: preset)
+          when "direct_kernel"
+            create_direct_kernel_vm_instance(params, preset: preset)
+          else
+            raise ProviderError, "Unknown boot_mode: #{boot_mode.inspect} (want cloud_init|direct_kernel)"
+          end
         elsif mode == "lxc"
           create_lxc_instance(params, preset: preset)
         else
@@ -791,6 +814,170 @@ module System
         # Optionally start now (default: false — caller does start_instance
         # after any post-create config is applied)
         if params[:start]
+          start_instance(instance_id)
+        else
+          build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
+        end
+      end
+
+      # ============================================================
+      # Direct-kernel-boot VM creation (Powernode-as-OS)
+      # ============================================================
+
+      # Creates a PVE VM that direct-kernel-boots from a pre-staged
+      # kernel + initramfs pair — no cloud image, no cicustom, no
+      # cloud-init at all. The initramfs's systemd-in-dracut takes
+      # PID 1, runs `powernode-agent boot` via the 90powernode dracut
+      # module, which discovers identity (virtio-fw-cfg), enrolls
+      # with the parent platform, pulls the assigned modules from the
+      # OCI registry, assembles /sysroot as an overlay union, and
+      # finally `switch_root /sysroot /sbin/init` to hand off to the
+      # post-pivot systemd from powernode-system-base-ubuntu-noble.
+      #
+      # This is the canonical boot path for physical nodes (no cloud
+      # metadata service available) and for any VM that should run
+      # Powernode-as-OS without an underlying host distribution.
+      #
+      # Required params:
+      #   :name           VM display name
+      #   :kernel_path    PVE-side absolute path to vmlinuz
+      #                   (default: connection.config["kernel_path"] or
+      #                    /var/lib/vz/template/iso/powernode-vmlinuz)
+      #   :initrd_path    PVE-side absolute path to initramfs.img
+      #                   (default: connection.config["initrd_path"] or
+      #                    /var/lib/vz/template/iso/powernode-initramfs.img)
+      #
+      # Optional:
+      #   :kernel_cmdline   Append to kernel command line. Defaults to a
+      #                     sensible serial+DHCP+powernode.boot=1 set.
+      #   :persist_storage_gb  If > 0, create a scsi0 disk for /persist
+      #                     (cross-boot state — certs, identity, agent
+      #                     state). Default 0 = tmpfs-only (smoke).
+      #   :spawn_payload    Federation enrollment payload — flowed
+      #                     through fw-cfg as for cloud_init mode.
+      #   :fw_cfg_entries   Direct fw-cfg key/value injection (extends
+      #                     spawn_payload-derived entries).
+      def create_direct_kernel_vm_instance(params, preset:)
+        c = require_client!
+        node = pve_node_name(params) || first_online_node!(c)
+        vmid = params[:vmid] || allocate_next_vmid!(c)
+        bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
+
+        kernel_path = params[:kernel_path] ||
+                      connection&.config&.dig("kernel_path") ||
+                      "/var/lib/vz/template/iso/powernode-vmlinuz"
+        initrd_path = params[:initrd_path] ||
+                      connection&.config&.dig("initrd_path") ||
+                      "/var/lib/vz/template/iso/powernode-initramfs.img"
+
+        # Default cmdline — operator can override entirely via
+        # :kernel_cmdline. Includes:
+        #   console=ttyS0,115200  serial console for `qm terminal`
+        #                         + scripted log capture
+        #   ip=dhcp               systemd-networkd DHCP on first interface
+        #   powernode.boot=1      enable the agent's enrollment + mount
+        #                         orchestration (vs =0 which idles)
+        #   rd.shell rd.debug     dracut drops to emergency shell on
+        #                         failure rather than panicking — operators
+        #                         get a recoverable serial console
+        cmdline = params[:kernel_cmdline] ||
+                  'console=ttyS0,115200 powernode.boot=1 ip=dhcp rd.shell rd.debug'
+
+        body = {
+          "vmid"     => vmid,
+          "name"     => params.fetch(:name),
+          "cores"    => preset[:vcpus],
+          "sockets"  => 1,
+          "cpu"      => params[:cpu] || DEFAULT_CPU_TYPE,
+          "memory"   => preset[:memory_mb],
+          "balloon"  => 0,
+          "machine"  => params[:machine] || DEFAULT_MACHINE_TYPE,
+          # SeaBIOS works fine for direct-kernel-boot (no need to set up
+          # OVMF/UEFI variables — the kernel is loaded directly by qemu,
+          # not by a bootloader). Avoids the efidisk0 allocation entirely.
+          "bios"     => params[:bios] || "seabios",
+          "scsihw"   => DEFAULT_SCSIHW,
+          "net0"     => "virtio,bridge=#{bridge}",
+          "ostype"   => params[:ostype] || DEFAULT_OSTYPE,
+          # qemu-guest-agent isn't useful here (the agent isn't in the
+          # initramfs); leave disabled to avoid log spam waiting for it.
+          "agent"    => "enabled=0",
+          # No boot disk — kernel is loaded directly via args below.
+          # boot=order= is unset deliberately.
+          "onboot"   => params.fetch(:onboot, 1),
+          "serial0"  => "socket",
+          "vga"      => params[:vga] || "std"
+        }
+
+        # Optional persist disk — when the operator wants the agent's
+        # cert + identity state to survive reboot. /persist is mounted
+        # by persist.mount in the initramfs's 90powernode dracut module;
+        # this disk becomes /dev/sda which the agent treats as the
+        # persistent state slot (formatted on first boot if blank).
+        persist_gb = params[:persist_storage_gb].to_i
+        if persist_gb > 0
+          storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
+          body["scsi0"] = "#{storage}:#{persist_gb},iothread=1,discard=on,format=qcow2"
+        end
+
+        # Build the qemu `-kernel -initrd -append` args block. PVE
+        # passes `args` verbatim to the qemu CLI — no escaping helpers
+        # needed for our space-separated path values.
+        kernel_args = [
+          "-kernel", kernel_path,
+          "-initrd", initrd_path,
+          "-append", %("#{cmdline}")
+        ]
+
+        # fw-cfg identity injection — same mechanism as the cloud_init
+        # path (line 703+), but mandatory here: the initramfs has NO
+        # cloud-init seed to fall back to, so fw-cfg IS the only way
+        # the agent learns the federation acceptance_token + platform
+        # URL on first boot. PVE requires root@pam for `args`, hence
+        # the POWERNODE_PVE_USE_FWCFG opt-in env (operators using API
+        # tokens for cloud-init spawns may want fw-cfg off there).
+        # For direct_kernel we always include kernel args; we ONLY skip
+        # the fw-cfg entries if no spawn_payload is present.
+        fw_cfg = params[:fw_cfg_entries].is_a?(Hash) ? params[:fw_cfg_entries].dup : {}
+        spawn_payload = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0
+          fw_cfg["opt/com.powernode/parent_url"]       ||= spawn_payload["parent_url"].to_s
+          fw_cfg["opt/com.powernode/acceptance_token"] ||= spawn_payload["acceptance_token"].to_s
+          fw_cfg["opt/com.powernode/spawn_mode"]       ||= spawn_payload["spawn_mode"].to_s
+          fw_cfg["opt/com.powernode/parent_peer_id"]   ||= spawn_payload["parent_peer_id"].to_s
+          fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
+        end
+
+        fw_args = []
+        if fw_cfg.any?
+          snippets_storage = params[:snippets_storage] ||
+                             connection&.config&.dig("snippets_storage") ||
+                             "dsm-data"
+          snippets_local   = params[:snippets_local_path] ||
+                             connection&.config&.dig("snippets_local_path") ||
+                             "/mnt/pve-data/snippets"
+          pve_side_root    = "/mnt/pve/#{snippets_storage}/snippets"
+
+          fwcfg_subdir_ops = File.join(snippets_local, "#{vmid}-fwcfg")
+          fwcfg_subdir_pve = "#{pve_side_root}/#{vmid}-fwcfg"
+          FileUtils.mkdir_p(fwcfg_subdir_ops, mode: 0o755)
+
+          fw_cfg.each do |key, value|
+            safe = key.to_s.gsub(/[^A-Za-z0-9_.\-]/, "_")
+            entry_path_ops = File.join(fwcfg_subdir_ops, safe)
+            entry_path_pve = "#{fwcfg_subdir_pve}/#{safe}"
+            File.write(entry_path_ops, value.to_s, mode: "w", perm: 0o600)
+            fw_args << "-fw_cfg" << "name=#{key},file=#{entry_path_pve}"
+          end
+        end
+
+        body["args"] = (kernel_args + fw_args).join(" ")
+
+        create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        c.wait_task(node: node, upid: create_upid)
+
+        instance_id = "#{node}/qemu/#{vmid}"
+        if params.fetch(:start, true)
           start_instance(instance_id)
         else
           build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
