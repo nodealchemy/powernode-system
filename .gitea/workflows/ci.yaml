@@ -26,25 +26,32 @@ jobs:
       fail-fast: false
       matrix:
         suite: [controllers, services, models-lib]
+    # Gitea Actions puts every service container on a per-job docker
+    # network — the job container reaches sidecars by service name
+    # on their canonical port. DO NOT publish ports to the host: shared
+    # host ports cause two failure modes that bit us on 2026-05-24:
+    #   1. A cancelled job leaks the sidecar with the published port
+    #      still bound → the next job's sidecar fails with
+    #      "Bind for 0.0.0.0:6379 failed: port is already allocated"
+    #   2. Two jobs scheduled concurrently fight for the same host
+    #      port slot, only one wins, the other can never start.
+    # Service names (postgres, redis) resolve inside the job container
+    # via the docker bridge's DNS — no host networking involved.
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: powernode_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
     env:
       RAILS_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/powernode_test
-      REDIS_URL: redis://localhost:6379/0
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/powernode_test
+      REDIS_URL: redis://redis:6379/0
     steps:
       - name: Check out the system extension
         uses: actions/checkout@v4
@@ -296,13 +303,13 @@ jobs:
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
     runs-on: ubuntu-24.04
+    # Same per-job docker-network pattern as the rspec matrix above —
+    # no host port publishing, hostname-based addressing.
     services:
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
     env:
-      REDIS_URL: redis://localhost:6379/0
+      REDIS_URL: redis://redis:6379/0
     steps:
       - name: Check out the system extension
         uses: actions/checkout@v4
