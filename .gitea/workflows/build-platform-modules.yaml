@@ -492,7 +492,7 @@ jobs:
           esac
 
           echo "=== /tmp/fat top-level layout after stage 1.5 ==="
-          find /tmp/fat -maxdepth 3 -type d | sort | head -30
+          find /tmp/fat -maxdepth 3 -type d | sort | awk 'NR<=30'
           echo "=== file count ==="
           find /tmp/fat -type f | wc -l
 
@@ -522,12 +522,16 @@ jobs:
             --filter='+ */' \
             --filter='. /tmp/rsync_spec.txt' \
             /tmp/fat/ /tmp/slim/
-          echo "=== Stage 2 carve result: /tmp/slim layout ==="
-          find /tmp/slim -maxdepth 4 -type d | sort | head -40
+          echo "=== Stage 2 carve result: /tmp/slim layout (first 40 dirs) ==="
+          # awk-based truncation (NOT `| head`) — under `set -o pipefail`,
+          # head exiting after N lines sends SIGPIPE upstream → sort/find
+          # exit 141 → pipefail trips → whole step fails with no real
+          # error. awk reads the entire stream, just prints the first N.
+          find /tmp/slim -maxdepth 4 -type d | sort | awk 'NR<=40'
           echo "=== /tmp/slim file count ==="
           find /tmp/slim -type f | wc -l
           echo "=== /tmp/slim total size ==="
-          du -sh /tmp/slim 2>&1 | head -1
+          du -sh /tmp/slim 2>&1 | awk 'NR==1'
           # 3. Layer the module's static rootfs/ contents on top
           if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
             rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/slim/
