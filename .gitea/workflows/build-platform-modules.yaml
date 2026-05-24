@@ -166,6 +166,7 @@ jobs:
             python3-yaml \
             ca-certificates \
             curl \
+            gnupg \
             tar
 
       - name: Clone repo (full history for cosign provenance)
@@ -282,13 +283,20 @@ jobs:
           mkdir -p /tmp/hooks
           case "${{ matrix.module }}" in
             powernode-log-forwarder)
+              # Post-Datadog-acquisition, vector's apt key moved to
+              # keys.datadoghq.com (DATADOG_APT_KEY_CURRENT.public) and
+              # the legacy https://apt.vector.dev/vector.gpg returns 404.
+              # The repo line is also `vector-<major>` not `main` per
+              # vector's setup.vector.dev install script. Without these
+              # updates the hook dies with: "gpg: not found" (fixed via
+              # gnupg install above) + "curl: 404" (this URL change).
               cat > /tmp/hooks/essential00-vector-source.sh <<'EOF'
           #!/bin/sh
           set -eu
           ROOT="$1"
           mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
-          curl -fsSL https://apt.vector.dev/vector.gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/vector.gpg"
-          echo "deb [signed-by=/etc/apt/keyrings/vector.gpg] https://apt.vector.dev/ stable main" > "$ROOT/etc/apt/sources.list.d/vector.list"
+          curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public | gpg --dearmor > "$ROOT/etc/apt/keyrings/vector.gpg"
+          echo "deb [signed-by=/etc/apt/keyrings/vector.gpg] https://apt.vector.dev/ stable vector-0" > "$ROOT/etc/apt/sources.list.d/vector.list"
           chroot "$ROOT" apt-get update -q
           EOF
               chmod +x /tmp/hooks/essential00-vector-source.sh
