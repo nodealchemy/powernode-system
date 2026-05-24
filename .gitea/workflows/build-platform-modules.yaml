@@ -243,10 +243,50 @@ jobs:
           if [ -s /tmp/package_spec.txt ]; then
             pkgs="${pkgs},$(tr '\n' ',' < /tmp/package_spec.txt | sed 's/,$//')"
           fi
+
+          # Some modules declare packages that aren't in Ubuntu's main/universe:
+          #   - powernode-log-forwarder ships `vector` (Timber/Datadog apt repo)
+          #   - powernode-storage-tools ships `gcsfuse` (Google Cloud apt repo)
+          # For those modules, register the upstream apt source + key via an
+          # --essential-hook so the package is resolvable when mmdebstrap's
+          # --include step runs. Hook executes after essential packages
+          # install but BEFORE the manifest's package_spec packages.
+          hook_args=()
+          mkdir -p /tmp/hooks
+          case "${{ matrix.module }}" in
+            powernode-log-forwarder)
+              cat > /tmp/hooks/essential00-vector-source.sh <<'EOF'
+          #!/bin/sh
+          set -eu
+          ROOT="$1"
+          mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
+          curl -fsSL https://apt.vector.dev/vector.gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/vector.gpg"
+          echo "deb [signed-by=/etc/apt/keyrings/vector.gpg] https://apt.vector.dev/ stable main" > "$ROOT/etc/apt/sources.list.d/vector.list"
+          chroot "$ROOT" apt-get update -q
+          EOF
+              chmod +x /tmp/hooks/essential00-vector-source.sh
+              hook_args+=("--hook-directory=/tmp/hooks")
+              ;;
+            powernode-storage-tools)
+              cat > /tmp/hooks/essential00-gcsfuse-source.sh <<'EOF'
+          #!/bin/sh
+          set -eu
+          ROOT="$1"
+          mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
+          curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/google-cloud.gpg"
+          echo "deb [signed-by=/etc/apt/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt gcsfuse-noble main" > "$ROOT/etc/apt/sources.list.d/gcsfuse.list"
+          chroot "$ROOT" apt-get update -q
+          EOF
+              chmod +x /tmp/hooks/essential00-gcsfuse-source.sh
+              hook_args+=("--hook-directory=/tmp/hooks")
+              ;;
+          esac
+
           mmdebstrap \
             --mode=root \
             --variant=minbase \
             --components=main,universe \
+            "${hook_args[@]}" \
             --include="$pkgs" \
             --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
             --aptopt='Acquire::http::Pipeline-Depth "0"' \
