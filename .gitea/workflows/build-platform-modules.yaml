@@ -429,10 +429,24 @@ jobs:
           # from the fat tree. Same filter that the buildah-mounted
           # flow used.
           mkdir -p /tmp/slim
+          # Filter order matters: --filter args are evaluated in CLI order
+          # and FIRST MATCH WINS. The merge file ends with `- *` (exclude
+          # everything not matched by an earlier `+`); if loaded first,
+          # `- *` matches intermediate dirs like `opt/` by basename and
+          # rsync never recurses into them. `+ */` must come FIRST so all
+          # directories are kept, then the file rules carve the actual
+          # contents. Without this, every Class B erofs blob ships empty
+          # (4-8 KB filesystem with just the root dir).
           rsync -a \
-            --filter='. /tmp/rsync_spec.txt' \
             --filter='+ */' \
+            --filter='. /tmp/rsync_spec.txt' \
             /tmp/fat/ /tmp/slim/
+          echo "=== Stage 2 carve result: /tmp/slim layout ==="
+          find /tmp/slim -maxdepth 4 -type d | sort | head -40
+          echo "=== /tmp/slim file count ==="
+          find /tmp/slim -type f | wc -l
+          echo "=== /tmp/slim total size ==="
+          du -sh /tmp/slim 2>&1 | head -1
           # 3. Layer the module's static rootfs/ contents on top
           if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
             rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/slim/
