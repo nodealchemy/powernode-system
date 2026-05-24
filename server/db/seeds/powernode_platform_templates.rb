@@ -80,6 +80,29 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
       powernode-pg-replica
       powernode-extension-system
     ]
+  },
+  # Powernode-as-OS smoke target. Just the two system-base modules —
+  # NO application services. The whole point is to verify the boot
+  # chain end-to-end: initramfs → enroll → pull system-base modules
+  # → assemble /sysroot via overlay union → switch_root → systemd
+  # takes over → powernode-agent.service comes up. Once green, layer
+  # any of the application templates (powernode-hub etc.) on top to
+  # add real workloads to a physical node.
+  #
+  # Use cases:
+  #   - PXE-boot smoke test for a fresh VM with no base OS image
+  #   - First boot of a physical machine that's never run Powernode
+  #   - Recovery boot — strip a misbehaving node back to substrate
+  #
+  # The agent's boot.go orchestrator picks this up via the federation
+  # spawn payload's child_template_id; once enrolled + reconciled,
+  # operators can swap in any app template via system_assign_module_to_template.
+  "powernode-physical-smoke" => {
+    description: "Powernode-as-OS substrate only. Two modules: the minimal powernode-system-base (cross-compiled Go agent) and the Ubuntu 24.04 LTS userland variant. Bootable via PXE/initramfs with pivot_root — no host OS required. Use as the smoke target for fresh physical nodes or VM pivot_root verification.",
+    modules: %w[
+      powernode-system-base
+      powernode-system-base-ubuntu-noble
+    ]
   }
 }.freeze
 
