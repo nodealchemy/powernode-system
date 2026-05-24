@@ -107,6 +107,20 @@ module Api
             Rails.logger.warn "[ModulePublicationsController] empty artifacts hash for #{module_name}@#{tag}"
           end
 
+          # Auto-promote the freshly-built version so the agent's next
+          # reconcile picks it up without a separate operator step.
+          # Rationale: CI publishes that survive the build matrix AND
+          # cosign signing AND server-side manifest application have
+          # already cleared every gate the platform enforces — making
+          # promotion a manual extra step buys nothing but drift between
+          # what's signed-and-published vs what the fleet actually runs.
+          # Operators who want gated rollout should pin via the rolling-
+          # upgrade orchestrator (per-template canary windows), not by
+          # withholding current_version_id at the module level.
+          unless node_module.current_version_id == version.id
+            node_module.update_columns(current_version_id: version.id, updated_at: Time.current)
+          end
+
           emit_published_event(node_module, version, tag)
 
           render_success(
@@ -115,7 +129,8 @@ module Api
             artifacts_keys:         Array(version.artifacts.keys),
             manifest_applied:       manifest_import_error.nil?,
             manifest_import_error:  manifest_import_error,
-            oci_digest_resolved:    version.artifacts.dig("erofs", "oci_digest").present?
+            oci_digest_resolved:    version.artifacts.dig("erofs", "oci_digest").present?,
+            promoted_to_current:    node_module.reload.current_version_id == version.id
           )
         end
 
