@@ -53,6 +53,23 @@ install() {
     ln -sf ../powernode-agent.service \
         "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-agent.service"
 
+    # federation-accept oneshot — runs Before=powernode-agent.service.
+    # Reads spawn payload from fw-cfg (parent_url + acceptance_token +
+    # spawn_mode + parent_peer_id + contract_version), POSTs the accept
+    # handshake, captures node_enrollment.bootstrap_token from the response,
+    # and enrolls — node cert lands at /persist (survives the dracut→
+    # system-base switch_root via persist.mount). Idempotent via the marker
+    # at /var/lib/powernode-agent/federation-accepted. No-op (exit 0) when
+    # fw-cfg has no parent_url, which is the legitimate steady-state for
+    # operator-driven manual provisions. Required for bare-metal/PXE/
+    # pivot_root deployments where there's no cloud-init runcmd to invoke
+    # federation-accept; cloud-init paths are also safe (their runcmd
+    # invocation short-circuits on the marker).
+    inst_simple "${moddir}/powernode-federation-accept.service" \
+        /etc/systemd/system/powernode-federation-accept.service
+    ln -sf ../powernode-federation-accept.service \
+        "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-federation-accept.service"
+
     # Default DHCP for any en*/eth* interface — pre-enrollment fallback so
     # systemd-networkd brings the link up before the agent's first dial-home.
     # The agent overrides this with instance-specific policy after enrollment.
@@ -141,6 +158,21 @@ install() {
     # public Sigstore root if not set; production should always pin.
     if [[ -n "${POWERNODE_FULCIO_ROOT:-}" && -f "${POWERNODE_FULCIO_ROOT}" ]]; then
         inst "${POWERNODE_FULCIO_ROOT}" /etc/powernode/fulcio-root.pem
+    fi
+
+    # System CA bundle — required for Go's crypto/x509 to verify TLS
+    # certs the agent encounters during enrollment (federation_api/accept,
+    # node_api/enroll). Without this, the agent dies with
+    # "x509: certificate signed by unknown authority" on the first HTTPS
+    # call to the platform. Go's default cert pool path probes
+    # /etc/ssl/certs/ca-certificates.crt (Debian/Ubuntu),
+    # /etc/pki/tls/certs/ca-bundle.crt (RHEL), and a few others.
+    # Installing the Debian bundle at its canonical path covers our build
+    # environment; for production we may eventually swap in a fw-cfg
+    # ca_pem (ProxmoxProvider's CloudSeed already supports it) to allow
+    # private CAs without trusting the global Mozilla bundle.
+    if [[ -f /etc/ssl/certs/ca-certificates.crt ]]; then
+        inst /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
     fi
 
     # Mark the module as Powernode-installed so the agent can self-identify.

@@ -1,17 +1,18 @@
 [Unit]
-Description=Powernode Agent (initramfs / smoke-test context)
+Description=Powernode federation acceptance handshake (one-shot, pre-enrollment)
 Documentation=https://github.com/nodealchemy/powernode-platform
 ConditionKernelCommandLine=powernode.boot=1
 ConditionPathExists=/sbin/powernode-agent
 DefaultDependencies=no
 After=basic.target systemd-networkd-wait-online.service
+Before=powernode-agent.service
 Wants=basic.target systemd-networkd-wait-online.service
 
 [Service]
-Type=simple
-ExecStart=/sbin/powernode-agent service --pki-dir /var/lib/powernode/pki
-Restart=on-failure
-RestartSec=5s
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/sbin/powernode-agent federation-accept
+SuccessExitStatus=0 1
 StandardOutput=journal+console
 StandardError=journal+console
 
