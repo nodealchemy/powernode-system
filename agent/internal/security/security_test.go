@@ -118,6 +118,56 @@ func TestApplyEgressAllowlist_PerEntryRules(t *testing.T) {
 	}
 }
 
+// Protected hosts are the agent's escape hatch from its own egress
+// policy (typically the platform URL). They MUST land in the chain
+// as IP literals — passing `ip daddr <hostname>` to nft has been
+// observed to silently fail at install on cloud-VM dogfood runs,
+// leaving the agent firewalled off from its parent. Verify that an
+// IP-literal protected host appears as an `ip daddr <ip> accept`
+// rule.
+func TestApplyEgressAllowlist_ProtectedHostIPLiteral(t *testing.T) {
+	rec := &mount.RecorderRunner{}
+	if err := ApplyEgressAllowlistWithProtected(
+		context.Background(), rec, nil, []string{"10.125.0.246"},
+	); err != nil {
+		t.Fatalf("ApplyEgressAllowlistWithProtected: %v", err)
+	}
+	var found bool
+	for _, inv := range rec.Invocations {
+		if inv.Op != "Run" || inv.Name != "nft" {
+			continue
+		}
+		var sawIp, sawDaddr, sawAddr bool
+		for _, a := range inv.Args {
+			switch a {
+			case "ip":
+				sawIp = true
+			case "daddr":
+				sawDaddr = true
+			case "10.125.0.246":
+				sawAddr = true
+			}
+		}
+		if sawIp && sawDaddr && sawAddr {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected `ip daddr 10.125.0.246 accept` rule for protected host; got: %+v", rec.Invocations)
+	}
+}
+
+func TestResolveProtectedHost_IPLiteralPassesThrough(t *testing.T) {
+	ips, err := resolveProtectedHost("10.125.0.246")
+	if err != nil {
+		t.Fatalf("resolveProtectedHost: %v", err)
+	}
+	if len(ips) != 1 || ips[0].String() != "10.125.0.246" {
+		t.Errorf("expected single literal 10.125.0.246; got %v", ips)
+	}
+}
+
 func TestParseEgressEntry(t *testing.T) {
 	cases := []struct {
 		in       string

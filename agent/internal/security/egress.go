@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -106,15 +107,34 @@ func ApplyEgressAllowlistWithProtected(ctx context.Context, runner mount.Runner,
 	// don't explicitly allow the platform host, the agent firewalls
 	// itself off on the first apply-egress tick. Per-host (no port
 	// restriction) so HTTPS+WS+future protocols all pass.
+	//
+	// nft `ip daddr <hostname>` would in theory resolve at rule-load
+	// time, but in practice we've observed silent failures on cloud-VM
+	// dogfood runs (DNS not yet stable, nft not using the system
+	// resolver, etc.) — the rule install reports success but the
+	// hostname is never expanded, leaving the chain with only the static
+	// base rules and the agent locked out of its own parent. Always
+	// resolve in Go first and emit IP-literal rules; that's the
+	// representation nft consumes unambiguously.
 	for _, host := range protectedHosts {
 		host = strings.TrimSpace(host)
 		if host == "" {
 			continue
 		}
-		if err := runner.Run(ctx, "nft", "add", "rule", "inet", EgressTable, chain,
-			"ip", "daddr", host, "accept",
-		); err != nil {
+		ips, err := resolveProtectedHost(host)
+		if err != nil {
 			return fmt.Errorf("egress protected-host %s: %w", host, err)
+		}
+		for _, ip := range ips {
+			family := "ip"
+			if ip.To4() == nil {
+				family = "ip6"
+			}
+			if err := runner.Run(ctx, "nft", "add", "rule", "inet", EgressTable, chain,
+				family, "daddr", ip.String(), "accept",
+			); err != nil {
+				return fmt.Errorf("egress protected-host %s (%s): %w", host, ip, err)
+			}
 		}
 	}
 
@@ -145,6 +165,25 @@ func ApplyEgressAllowlistWithProtected(ctx context.Context, runner mount.Runner,
 func RemoveEgressAllowlist(ctx context.Context, runner mount.Runner) error {
 	chain := "powernode_egress_filter"
 	return runner.Run(ctx, "nft", "delete", "chain", "inet", EgressTable, chain)
+}
+
+// resolveProtectedHost normalises a protected-host entry to one or
+// more net.IP literals. If `entry` is already an IP literal it returns
+// just that IP; otherwise it asks the resolver for A/AAAA records and
+// returns every address. Empty result is a hard error — silently
+// failing here would leave the agent firewalled off.
+func resolveProtectedHost(entry string) ([]net.IP, error) {
+	if ip := net.ParseIP(entry); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	addrs, err := net.LookupIP(entry)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", entry, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve %s: no A/AAAA records", entry)
+	}
+	return addrs, nil
 }
 
 // parseEgressEntry splits "host:port" → ("host", port). "host" with no
