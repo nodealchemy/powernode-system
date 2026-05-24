@@ -61,12 +61,15 @@ module Federation
         options: {
           spawn_payload: payload,
           name: spawn_target[:name] || "federation-spawn",
-          # Forward ssh_authorized_keys when the operator passed them on
-          # spawn_target so providers can inject them into the cloud-init
-          # users block (allows operator ssh-in for diagnostics on
-          # opaque/headless cloud images).
+          # ssh_authorized_keys priority: explicit spawn_target override first,
+          # then Node.config["authorized_keys"] as the operator-managed default
+          # (set when the Node is created). Without this fallback, the operator
+          # user gets stripped from cloud-init's users: block (cloud_seed rejects
+          # users with empty ssh_authorized_keys), leaving the spawned VM
+          # SSH-inaccessible — only the agent can phone home.
           ssh_authorized_keys: Array(spawn_target[:ssh_authorized_keys] ||
-                                     spawn_target["ssh_authorized_keys"])
+                                     spawn_target["ssh_authorized_keys"]).presence ||
+                               Array(node.config&.[]("authorized_keys"))
         }
       )
 
