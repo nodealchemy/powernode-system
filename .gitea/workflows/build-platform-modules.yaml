@@ -44,6 +44,13 @@ on:
       - "modules/**"
       - "templates/module-repo/Containerfile"
       - ".gitea/workflows/build-platform-modules.yaml"
+      # Agent source changes must trigger a rebuild because
+      # powernode-system-base's Stage 1.5 cross-compiles the agent
+      # binary into its rootfs. Without this filter, an agent fix
+      # would land in the repo but the in-fleet binary (baked into
+      # system-base's erofs) would still be the old one until someone
+      # bumped a module manifest.
+      - "agent/**"
   release:
     types: [ published ]
 
@@ -104,6 +111,17 @@ jobs:
           - powernode-redis
           - powernode-reverse-proxy
           - powernode-storage-tools
+          # system-base is the Powernode-as-OS foundation: every pivot_root
+          # node mounts this as the lowest overlay layer (highest priority
+          # = mounted first = effectively `/`). Owns /etc, /usr, /sbin,
+          # /lib (the Linux userland) + the post-switch_root
+          # powernode-agent.service that takes over the long-lived
+          # reconcile loop once /sbin/init runs from inside /sysroot.
+          # Stage 1.5 cross-compiles the Go agent and bakes it into
+          # rootfs/usr/sbin/powernode-agent so the version that lands in
+          # the erofs blob is always lockstep with the source tree the
+          # build was triggered from.
+          - powernode-system-base
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
@@ -308,7 +326,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy'
+        if: matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'powernode-reverse-proxy' || matrix.module == 'powernode-system-base'
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -406,6 +424,48 @@ jobs:
                 'log:' \
                 '  level: INFO' \
                 > /tmp/fat/etc/traefik/traefik.yml
+              ;;
+            powernode-system-base)
+              # Cross-compile the Go agent and bake it into the rootfs
+              # so the version in this erofs blob is always lockstep
+              # with the source tree that triggered the build. After
+              # switch_root, this binary at /usr/sbin/powernode-agent
+              # IS the platform on a pivot_root node — it's what
+              # services Phase G smoke, federation control plane, drift
+              # remediation, every long-lived reconcile. The unit file
+              # in rootfs/etc/systemd/system/powernode-agent.service
+              # references this exact path.
+              if ! command -v go >/dev/null 2>&1; then
+                # Debian trixie ships golang-1.22 in main. mmdebstrap
+                # also has go in its source tree but installing locally
+                # is faster than mucking with the chroot.
+                apt-get install -y --no-install-recommends golang-1.22 git
+                export PATH=/usr/lib/go-1.22/bin:$PATH
+              fi
+              echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
+              ( cd agent && \
+                CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+                go build -trimpath -ldflags '-s -w' \
+                  -o /tmp/powernode-agent ./cmd/powernode-agent )
+              mkdir -p /tmp/fat/usr/sbin /tmp/fat/sbin
+              install -m 0755 /tmp/powernode-agent /tmp/fat/usr/sbin/powernode-agent
+              # /sbin/powernode-agent symlink — boot.go's initramfs
+              # phase looks for the binary at /sbin first, then
+              # /usr/sbin; the post-switch_root systemd unit references
+              # /usr/sbin/. Both paths kept so either codepath finds it.
+              ln -sf /usr/sbin/powernode-agent /tmp/fat/sbin/powernode-agent
+              # /etc/powernode/ is where the agent reads platform-url
+              # + ca pem + identity. Pre-create the dir; first-boot
+              # writes the config from initramfs identity discovery.
+              mkdir -p /tmp/fat/etc/powernode
+              # /sbin/init → systemd symlink. mmdebstrap installs
+              # systemd at /usr/lib/systemd/systemd, but the kernel +
+              # initramfs hand off to /sbin/init by convention. The
+              # systemd-sysv package normally creates this symlink but
+              # in minbase it may not — make it explicit.
+              if [ ! -e /tmp/fat/sbin/init ]; then
+                ln -sf /usr/lib/systemd/systemd /tmp/fat/sbin/init
+              fi
               ;;
           esac
 
