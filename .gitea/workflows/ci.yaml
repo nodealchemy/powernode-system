@@ -164,6 +164,16 @@ jobs:
         working-directory: powernode-platform/frontend
         run: npm ci
 
+      # Same node_modules-symlink dance as the frontend-jest job —
+      # tsc also resolves modules via the standard upward walk and
+      # would fail to find @types/* + react-dom typings without it.
+      - name: Symlink extension frontend node_modules → parent
+        working-directory: powernode-platform/extensions/system/frontend
+        run: |
+          rm -rf node_modules
+          ln -sf ../../../frontend/node_modules node_modules
+          ls -la node_modules | head -3
+
       - name: Type-check the system extension
         # extensions/system was MOVED into powernode-platform/extensions/system
         # by the Mount step above, so cwd must follow.
@@ -208,6 +218,23 @@ jobs:
       - name: Install frontend deps
         working-directory: powernode-platform/frontend
         run: npm ci
+
+      # The extension's frontend dir intentionally doesn't ship its own
+      # node_modules — locally validate.sh symlinks it to the parent's
+      # node_modules and the symlink is .gitignored (line 48 of
+      # extensions/system/.gitignore). CI has to recreate the same
+      # symlink after npm ci runs, so jest's babel-loader can resolve
+      # @babel/preset-env (and other presets) by walking up from
+      # extensions/system/frontend/. Without this, babel's preset
+      # resolver bails with "Cannot find module '@babel/preset-env'"
+      # because the walk-up from jest.config.js's dir never reaches
+      # powernode-platform/frontend/node_modules.
+      - name: Symlink extension frontend node_modules → parent
+        working-directory: powernode-platform/extensions/system/frontend
+        run: |
+          rm -rf node_modules  # in case checkout extracted a stale dir
+          ln -sf ../../../frontend/node_modules node_modules
+          ls -la node_modules | head -3
 
       - name: Run extension Jest suite
         working-directory: powernode-platform/extensions/system/frontend
