@@ -61,6 +61,18 @@ module Federation
         options: {
           spawn_payload: payload,
           name: spawn_target[:name] || "federation-spawn",
+          # boot_mode dispatches ProxmoxProvider#create_instance between
+          # cloud_init (default, pre-baked cloud image + cicustom seed)
+          # and direct_kernel (Powernode-as-OS: -kernel -initrd -append
+          # qemu args, no host OS). Templates targeting bare metal /
+          # pivot_root deployments pass "direct_kernel" here; cloud-VM
+          # spawns omit it and get the existing cloud_init path.
+          # Template-level default precedence: template.config["boot_mode"]
+          # if set, else spawn_target hint, else fall through to provider
+          # default (cloud_init).
+          boot_mode: spawn_target[:boot_mode] ||
+                     spawn_target["boot_mode"] ||
+                     (template&.config.is_a?(Hash) ? template.config["boot_mode"] : nil),
           # ssh_authorized_keys priority: explicit spawn_target override first,
           # then Node.config["authorized_keys"] as the operator-managed default
           # (set when the Node is created). Without this fallback, the operator

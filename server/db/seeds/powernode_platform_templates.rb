@@ -102,7 +102,15 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
     modules: %w[
       powernode-system-base
       powernode-system-base-ubuntu-noble
-    ]
+    ],
+    # Per-template config baked into NodeTemplate.config jsonb.
+    # SpawnProvisioner reads boot_mode from here when the spawn_target
+    # didn't override, so any federation spawn that selects this
+    # template gets direct_kernel boot automatically — no caller
+    # needs to know about boot modes.
+    config: {
+      "boot_mode" => "direct_kernel"
+    }
   }
 }.freeze
 
@@ -138,7 +146,15 @@ errors  = []
     template.node_platform = platform
     template.enabled = true
     template.public = false
-    template.config = (template.config || {}).merge("description" => spec[:description])
+    # Merge: existing config (operator-set overrides survive) +
+    # description (always reflects the spec) + any per-template config
+    # from the spec (boot_mode, etc.). Spec wins over existing on keys
+    # the spec declares, so seeds are the source of truth for the
+    # platform-managed knobs (e.g., bumping boot_mode in seed re-applies
+    # to all accounts on the next seed run).
+    template.config = (template.config || {})
+      .merge(spec[:config] || {})
+      .merge("description" => spec[:description])
     template.save!
 
     # Upsert TemplateModule rows in priority order; remove stale ones.
