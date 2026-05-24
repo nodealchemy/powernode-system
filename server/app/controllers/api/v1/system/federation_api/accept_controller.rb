@@ -206,7 +206,15 @@ module Api
 
             {
               bootstrap_token:   plaintext,
-              platform_url:      peer.remote_instance_url,
+              # platform_url is where the child agent POSTs /node_api/enroll
+              # to redeem the bootstrap_token for an mTLS cert. That endpoint
+              # lives on the PARENT (this platform), not on the child. Using
+              # request.base_url derives the parent's externally-visible URL
+              # from the URL the child reached us at — robust to multi-tier
+              # proxy setups and avoids hardcoding. peer.remote_instance_url
+              # is the child's URL (where the parent could reach the child),
+              # which is the opposite direction and was a bug previously.
+              platform_url:      request.base_url,
               intended_subject:  node.name,
               expires_at:        token.expires_at.iso8601
             }
