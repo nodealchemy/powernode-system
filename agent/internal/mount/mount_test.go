@@ -2,6 +2,7 @@ package mount
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,6 +143,95 @@ func TestMountUnion_BuildsCorrectOverlayArgs(t *testing.T) {
 	lowPath := l.ModuleMountPath("sha256:base")
 	if strings.Index(joined, highPath) > strings.Index(joined, lowPath) {
 		t.Errorf("expected high-priority before low; got: %s", joined)
+	}
+}
+
+// When /sysroot is already mounted (digest swap mid-tick), MountUnion
+// must umount + fresh-mount to pick up the new lowerdir. The kernel
+// silently ignores `mount -o remount,lowerdir=...` on overlayfs
+// (lowerdir is set at mount time), so a remount-then-success path
+// would leave the OLD lowerdir in place and downstream services would
+// fail to see the new module content.
+func TestMountUnion_AlreadyMounted_UmountThenFreshMount(t *testing.T) {
+	dir := t.TempDir()
+	l := DefaultLayout()
+	l.Root = dir
+	l = l.Resolve()
+
+	rec := &RecorderRunner{
+		StubOutput: map[string][]byte{
+			"findmnt --noheadings " + l.SysRoot: []byte("/sysroot overlay overlay rw\n"),
+		},
+	}
+	o := &Overlay{Layout: l, Runner: rec}
+	stack := ModuleStack{
+		{ID: "base", Digest: "sha256:base", Priority: 10},
+		{ID: "app", Digest: "sha256:app", Priority: 20},
+	}
+	if err := o.MountUnion(context.Background(), stack); err != nil {
+		t.Fatalf("MountUnion: %v", err)
+	}
+
+	var sawUmount, sawFreshMount, sawRemount bool
+	for _, inv := range rec.Invocations {
+		if inv.Op != "Run" {
+			continue
+		}
+		if inv.Name == "umount" && contains(inv.Args, l.SysRoot) {
+			sawUmount = true
+		}
+		if inv.Name == "mount" && contains(inv.Args, "overlay") {
+			sawFreshMount = true
+		}
+		for _, a := range inv.Args {
+			if strings.HasPrefix(a, "remount,") {
+				sawRemount = true
+			}
+		}
+	}
+	if !sawUmount {
+		t.Errorf("expected umount call, got: %+v", rec.Invocations)
+	}
+	if !sawFreshMount {
+		t.Errorf("expected fresh `mount -t overlay overlay` call, got: %+v", rec.Invocations)
+	}
+	if sawRemount {
+		t.Errorf("remount path must not run for overlayfs lowerdir swap (kernel silently ignores it); got: %+v", rec.Invocations)
+	}
+}
+
+// Lazy umount fallback: when /sysroot is held open by a downstream
+// service (e.g. a unit still in `activating auto-restart`), the first
+// `umount` returns EBUSY. The fallback `umount -l` (MNT_DETACH) is the
+// recovery path that lets the digest swap proceed without forcing the
+// operator to stop dependent units by hand.
+func TestMountUnion_AlreadyMounted_LazyUmountFallbackOnBusy(t *testing.T) {
+	dir := t.TempDir()
+	l := DefaultLayout()
+	l.Root = dir
+	l = l.Resolve()
+
+	rec := &RecorderRunner{
+		StubOutput: map[string][]byte{
+			"findmnt --noheadings " + l.SysRoot: []byte("/sysroot overlay overlay rw\n"),
+		},
+		StubErr: map[string]error{
+			"umount " + l.SysRoot: fmt.Errorf("target is busy"),
+		},
+	}
+	o := &Overlay{Layout: l, Runner: rec}
+	stack := ModuleStack{{ID: "base", Digest: "sha256:base", Priority: 10}}
+	if err := o.MountUnion(context.Background(), stack); err != nil {
+		t.Fatalf("MountUnion: %v", err)
+	}
+	var sawLazyUmount bool
+	for _, inv := range rec.Invocations {
+		if inv.Op == "Run" && inv.Name == "umount" && contains(inv.Args, "-l") {
+			sawLazyUmount = true
+		}
+	}
+	if !sawLazyUmount {
+		t.Errorf("expected `umount -l` fallback after busy error; got: %+v", rec.Invocations)
 	}
 }
 

@@ -302,6 +302,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
 		if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
 			r.cfg.OnError("reconciler:union_mount", err)
+			current.UnionMounted = false
+		} else {
+			current.UnionMounted = true
 		}
 	}
 

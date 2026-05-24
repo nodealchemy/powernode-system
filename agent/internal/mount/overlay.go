@@ -90,20 +90,23 @@ func (o *Overlay) MountUnion(ctx context.Context, stack ModuleStack) error {
 		return err
 	}
 	if already {
-		// Remount with new lowerdir (newer kernels support live remount;
-		// fall through to umount+mount on failure).
-		err := o.Runner.Run(ctx, "mount", "-o",
-			"remount,lowerdir="+lowerdir+
-				",upperdir="+o.Layout.UpperDir+
-				",workdir="+o.Layout.WorkDir,
-			o.Layout.SysRoot,
-		)
-		if err == nil {
-			return nil
-		}
-		// Fallback: full umount + remount.
+		// overlayfs `mount -o remount,lowerdir=...` is a kernel no-op:
+		// the syscall returns success but lowerdir is set at mount time
+		// and cannot be replaced (only the upperdir/workdir/ro-rw flags
+		// can be flipped at remount, plus `lowerdir+=` to APPEND on
+		// 5.18+). Replacing the lowerdir stack requires a fresh mount,
+		// so we always umount + remount when /sysroot is already up.
+		//
+		// Lazy umount (`-l`, MNT_DETACH) is the safe fallback for the
+		// busy case: a service that holds /sysroot open (e.g. a unit
+		// still in `activating auto-restart`) keeps its existing
+		// references to the old union, while new accesses see the new
+		// one. Existing references drop when the process exits.
 		if uerr := o.Runner.Run(ctx, "umount", o.Layout.SysRoot); uerr != nil {
-			return fmt.Errorf("remount failed (%v) and umount fallback failed: %w", err, uerr)
+			if lerr := o.Runner.Run(ctx, "umount", "-l", o.Layout.SysRoot); lerr != nil {
+				return fmt.Errorf("umount %s failed (%v) and lazy umount fallback failed: %w",
+					o.Layout.SysRoot, uerr, lerr)
+			}
 		}
 	}
 
