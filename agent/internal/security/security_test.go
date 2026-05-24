@@ -128,7 +128,7 @@ func TestApplyEgressAllowlist_PerEntryRules(t *testing.T) {
 func TestApplyEgressAllowlist_ProtectedHostIPLiteral(t *testing.T) {
 	rec := &mount.RecorderRunner{}
 	if err := ApplyEgressAllowlistWithProtected(
-		context.Background(), rec, nil, []string{"10.125.0.246"},
+		context.Background(), rec, nil, []string{"192.0.2.10"},
 	); err != nil {
 		t.Fatalf("ApplyEgressAllowlistWithProtected: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestApplyEgressAllowlist_ProtectedHostIPLiteral(t *testing.T) {
 				sawIp = true
 			case "daddr":
 				sawDaddr = true
-			case "10.125.0.246":
+			case "192.0.2.10":
 				sawAddr = true
 			}
 		}
@@ -154,17 +154,17 @@ func TestApplyEgressAllowlist_ProtectedHostIPLiteral(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected `ip daddr 10.125.0.246 accept` rule for protected host; got: %+v", rec.Invocations)
+		t.Errorf("expected `ip daddr 192.0.2.10 accept` rule for protected host; got: %+v", rec.Invocations)
 	}
 }
 
 func TestResolveProtectedHost_IPLiteralPassesThrough(t *testing.T) {
-	ips, err := resolveProtectedHost("10.125.0.246")
+	ips, err := resolveProtectedHost("192.0.2.10")
 	if err != nil {
 		t.Fatalf("resolveProtectedHost: %v", err)
 	}
-	if len(ips) != 1 || ips[0].String() != "10.125.0.246" {
-		t.Errorf("expected single literal 10.125.0.246; got %v", ips)
+	if len(ips) != 1 || ips[0].String() != "192.0.2.10" {
+		t.Errorf("expected single literal 192.0.2.10; got %v", ips)
 	}
 }
 
