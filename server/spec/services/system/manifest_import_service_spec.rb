@@ -428,4 +428,179 @@ RSpec.describe System::ManifestImportService, type: :service do
       end
     end
   end
+
+  describe "capability handling" do
+    # Helper: build a NodeModule with the given provides[] tags via a
+    # minimal manifest. Reuses the platform + category + account fixtures.
+    def import_with_provides(name, provides)
+      target = create(:system_node_module, account: account, node_platform: platform,
+                      category: category, variety: "subscription", name: name)
+      yaml = <<~YAML
+        schema_version: 1
+        name: #{name}
+        display_name: "Test"
+        description: "Capability fixture."
+        license: "MIT"
+        dependencies:
+          requires: []
+          provides:
+        #{provides.map { |p| "    - #{p}" }.join("\n")}
+      YAML
+      described_class.import!(node_module: target, yaml: yaml)
+      target.reload
+    end
+
+    def import_with_requires(name, requires)
+      target = create(:system_node_module, account: account, node_platform: platform,
+                      category: category, variety: "subscription", name: name)
+      yaml = <<~YAML
+        schema_version: 1
+        name: #{name}
+        display_name: "Test consumer"
+        description: "Requires fixture."
+        license: "MIT"
+        dependencies:
+          requires:
+        #{requires.map { |r| "    - #{r}" }.join("\n")}
+          provides: []
+      YAML
+      [target, described_class.import!(node_module: target, yaml: yaml)]
+    end
+
+    describe "denormalizes provides[] into the capabilities column" do
+      it "stores bare and versioned tags as the JSONB array" do
+        provider = import_with_provides("provider-1",
+                                        %w[database.postgres database.postgres.primary database.postgres@16])
+        expect(provider.capabilities).to eq(%w[database.postgres database.postgres.primary database.postgres@16])
+      end
+
+      it "stores [] when provides is absent or empty" do
+        provider = import_with_provides("provider-empty", [])
+        expect(provider.capabilities).to eq([])
+      end
+
+      it "drops empty-string entries defensively" do
+        # Synthesize a manifest with a stray empty provides entry (operators
+        # sometimes leave `- ""` from YAML editing accidents).
+        target = create(:system_node_module, account: account, node_platform: platform,
+                        category: category, variety: "subscription", name: "provider-stray")
+        yaml = <<~YAML
+          schema_version: 1
+          name: provider-stray
+          display_name: "T"
+          description: "stray empty entry"
+          license: "MIT"
+          dependencies:
+            requires: []
+            provides:
+              - cache.redis
+              - ""
+        YAML
+        described_class.import!(node_module: target, yaml: yaml)
+        target.reload
+        expect(target.capabilities).to eq(["cache.redis"])
+      end
+    end
+
+    describe "resolve_dependencies with capability: syntax" do
+      it "resolves capability:<tag> to the matching provider's module" do
+        provider = import_with_provides("postgres-host", %w[database.postgres])
+        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres"])
+
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("resolved")
+        expect(resolved[:capability]).to eq("database.postgres")
+        expect(resolved[:dependency_id]).to eq(provider.id)
+      end
+
+      it "respects version constraint against versioned provides" do
+        old_pg = import_with_provides("pg-15", %w[database.postgres@15])
+        new_pg = import_with_provides("pg-16", %w[database.postgres@16])
+
+        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@>=16"])
+
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("resolved")
+        expect(resolved[:dependency_id]).to eq(new_pg.id)
+        expect(resolved[:dependency_id]).not_to eq(old_pg.id)
+      end
+
+      it "bare tag does NOT satisfy a versioned constraint" do
+        bare_only = import_with_provides("pg-bare", %w[database.postgres])
+        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@>=16"])
+
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("unresolved")
+        expect(bare_only).not_to be_nil # silence unused-variable warning
+      end
+
+      it "picks highest-priority provider when multiple satisfy" do
+        low = import_with_provides("redis-low",  %w[cache.redis])
+        low.update!(priority: 10)
+        high = import_with_provides("redis-high", %w[cache.redis])
+        high.update!(priority: 100)
+
+        _consumer, result = import_with_requires("hub-app", ["capability:cache.redis"])
+
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("resolved")
+        expect(resolved[:dependency_id]).to eq(high.id)
+      end
+
+      it "returns status=unresolved when no provider matches" do
+        _consumer, result = import_with_requires("hub-app", ["capability:storage.nonexistent"])
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("unresolved")
+        expect(resolved[:capability]).to eq("storage.nonexistent")
+      end
+
+      it "logs + returns nil-target on invalid version constraint" do
+        import_with_provides("pg-16", %w[database.postgres@16])
+        allow(Rails.logger).to receive(:warn)
+
+        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@!!!bogus"])
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("unresolved")
+        expect(Rails.logger).to have_received(:warn).with(/invalid version constraint/)
+      end
+
+      it "ignores the consumer module itself even if it provides the capability" do
+        # Edge case: a module shouldn't resolve a capability requirement
+        # by pointing at itself.
+        target = create(:system_node_module, account: account, node_platform: platform,
+                        category: category, variety: "subscription", name: "self-ref")
+        yaml = <<~YAML
+          schema_version: 1
+          name: self-ref
+          display_name: "T"
+          description: "self-reference test"
+          license: "MIT"
+          dependencies:
+            requires:
+              - capability:db.foo
+            provides:
+              - db.foo
+        YAML
+        result = described_class.import!(node_module: target, yaml: yaml)
+        resolved = result.resolved_dependencies.first
+        expect(resolved[:status]).to eq("unresolved")
+      end
+    end
+
+    describe "name-based + capability-based mixed in same requires:" do
+      it "resolves each entry independently" do
+        named  = create(:system_node_module, account: account, node_platform: platform,
+                        category: category, variety: "subscription", name: "explicit-pin")
+        capped = import_with_provides("redis-cap", %w[cache.redis])
+
+        _consumer, result = import_with_requires("mixed-consumer",
+                                                  ["explicit-pin", "capability:cache.redis"])
+
+        statuses = result.resolved_dependencies.map { |r| r[:status] }
+        expect(statuses).to all(eq("resolved"))
+        ids = result.resolved_dependencies.map { |r| r[:dependency_id] }
+        expect(ids).to contain_exactly(named.id, capped.id)
+      end
+    end
+  end
 end

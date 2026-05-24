@@ -475,41 +475,140 @@ module System
       preserved["manifest_extras"] = extras.to_h unless extras.empty?
 
       mod.config = preserved
+
+      # Denormalize dependencies.provides[] into the queryable
+      # `capabilities` JSONB column so resolve_dependencies can do
+      # capability-based requires lookups without having to scan
+      # every module's manifest_yaml blob. Each entry is either bare
+      # `<tag>` or `<tag>@<version>`; the @<version> suffix is parsed
+      # at constraint-match time by resolve_capability.
+      mod.capabilities = Array(manifest.dig("dependencies", "provides")).map(&:to_s).reject(&:empty?)
     end
 
     # Resolve manifest.dependencies.requires to ModuleDependency rows.
-    # Format: "<gitea_full_name>@<version_constraint>" (constraint optional).
-    # Modules not yet present in the platform are skipped silently — the
-    # webhook ingestion path will re-resolve when their first version
-    # publishes. We log + return the unresolved set so callers can surface
-    # it to the operator.
+    # Supports two syntaxes per entry:
+    #
+    #   "<gitea_full_name>@<version_constraint>" — pin to a specific module
+    #     by its gitea repo (e.g., "powernode/postgres-primary@^1.0")
+    #     or bare name suffix (e.g., "postgres-primary"). Resolves
+    #     against NodeModule.gitea_repo_full_name OR NodeModule.name.
+    #
+    #   "capability:<tag>[@<constraint>]" — match the highest-priority
+    #     NodeModule on this account whose capabilities array contains
+    #     <tag> (with optional version satisfying <constraint>). Lets
+    #     modules declare "I need database.postgres@>=16" without
+    #     pinning to a specific module name; any future module that
+    #     provides database.postgres@16 satisfies the requirement.
+    #
+    # Modules / capabilities not yet present in the platform are skipped
+    # silently — the webhook ingestion path will re-resolve when the
+    # providing module publishes. We log + return the unresolved set so
+    # callers can surface it to the operator.
     def resolve_dependencies(mod, manifest)
       deps = manifest.dig("dependencies", "requires") || []
       return [] if deps.empty?
 
       resolved = []
       deps.each do |raw|
-        repo, constraint = raw.to_s.split("@", 2)
-        next if repo.blank?
-
-        target = ::System::NodeModule
-                 .where(account_id: mod.account_id)
-                 .where("gitea_repo_full_name = ? OR name = ?", repo, repo.split("/").last)
-                 .first
-
-        if target
-          dep = ::System::ModuleDependency.find_or_initialize_by(node_module: mod, dependency: target)
-          dep.dependency_type    = "requires"
-          dep.required           = true
-          dep.version_constraint = constraint if constraint.present?
-          dep.save!
-          resolved << { repo: repo, constraint: constraint, status: "resolved", dependency_id: target.id }
+        raw_str = raw.to_s
+        if raw_str.start_with?("capability:")
+          resolved << resolve_capability_requirement(mod, raw_str)
         else
-          resolved << { repo: repo, constraint: constraint, status: "unresolved" }
-          Rails.logger.info("[ManifestImportService] dependency #{repo.inspect} not yet known on platform; deferring")
+          resolved << resolve_name_requirement(mod, raw_str)
         end
       end
-      resolved
+      resolved.compact
+    end
+
+    # Name-based: "<gitea_full_name>@<version>" or bare "<name>".
+    def resolve_name_requirement(mod, raw_str)
+      repo, constraint = raw_str.split("@", 2)
+      return nil if repo.blank?
+
+      target = ::System::NodeModule
+               .where(account_id: mod.account_id)
+               .where("gitea_repo_full_name = ? OR name = ?", repo, repo.split("/").last)
+               .first
+
+      if target
+        upsert_dependency!(mod, target, constraint: constraint)
+        { repo: repo, constraint: constraint, status: "resolved", dependency_id: target.id }
+      else
+        ::Rails.logger.info("[ManifestImportService] dependency #{repo.inspect} not yet known on platform; deferring")
+        { repo: repo, constraint: constraint, status: "unresolved" }
+      end
+    end
+
+    # Capability-based: "capability:<tag>[@<constraint>]".
+    def resolve_capability_requirement(mod, raw_str)
+      spec = raw_str.sub(/\Acapability:/, "")
+      tag, constraint = spec.split("@", 2)
+      return nil if tag.blank?
+
+      target = resolve_capability(mod, tag, constraint)
+      if target
+        upsert_dependency!(mod, target, constraint: constraint, capability_tag: tag)
+        { capability: tag, constraint: constraint, status: "resolved", dependency_id: target.id }
+      else
+        ::Rails.logger.info("[ManifestImportService] capability #{tag.inspect} (constraint=#{constraint.inspect}) not satisfied; deferring")
+        { capability: tag, constraint: constraint, status: "unresolved" }
+      end
+    end
+
+    # Finds the highest-priority NodeModule on the account whose
+    # capabilities array contains tag (with optional version satisfying
+    # constraint). Falls back to highest priority by created_at if
+    # multiple candidates tie.
+    #
+    # Constraint matching:
+    #   - blank constraint: any candidate with the bare or versioned tag matches
+    #   - non-blank constraint: candidate's <tag>@<version> entry must
+    #     satisfy Gem::Requirement(constraint). Bare tags (no @ver) do NOT
+    #     satisfy a versioned constraint — that's a manifest-quality signal
+    #     (provider should declare its version explicitly).
+    def resolve_capability(mod, tag, constraint)
+      # PostgreSQL JSONB array containment: capabilities ?| array[tag]
+      # matches modules whose capabilities array contains the bare tag
+      # OR contains a `tag@anything` entry (we LIKE-match the prefix).
+      candidates = ::System::NodeModule
+                   .where(account_id: mod.account_id)
+                   .where.not(id: mod.id)
+                   .where("capabilities ?| array[:t] OR capabilities::text LIKE :p",
+                          t: tag, p: "%\"#{tag}@%")
+                   .order(priority: :desc, created_at: :desc)
+
+      return candidates.first if constraint.blank?
+
+      requirement = begin
+        ::Gem::Requirement.new(constraint)
+      rescue ::ArgumentError
+        ::Rails.logger.warn("[ManifestImportService] invalid version constraint #{constraint.inspect} for capability #{tag.inspect}")
+        return nil
+      end
+
+      candidates.detect do |cand|
+        Array(cand.capabilities).any? do |cap|
+          cap_tag, cap_ver = cap.to_s.split("@", 2)
+          next false unless cap_tag == tag
+          next false if cap_ver.blank? # bare tag can't satisfy a versioned constraint
+          begin
+            requirement.satisfied_by?(::Gem::Version.new(cap_ver))
+          rescue ::ArgumentError
+            false
+          end
+        end
+      end
+    end
+
+    def upsert_dependency!(mod, target, constraint: nil, capability_tag: nil)
+      dep = ::System::ModuleDependency.find_or_initialize_by(node_module: mod, dependency: target)
+      dep.dependency_type    = "requires"
+      dep.required           = true
+      dep.version_constraint = constraint if constraint.present?
+      if dep.respond_to?(:metadata=) && capability_tag
+        dep.metadata = (dep.metadata || {}).merge("capability_match" => capability_tag)
+      end
+      dep.save!
     end
 
     # Upserts ModuleService rows from manifest.services[]. Idempotent:
