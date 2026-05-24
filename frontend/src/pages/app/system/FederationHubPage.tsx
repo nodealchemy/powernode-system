@@ -68,7 +68,7 @@ export const FederationHubPage: React.FC = () => {
 
   if (visibleTabs.length === 0) {
     return (
-      <PageContainer title="Federation Services" subtitle="Federated service delivery">
+      <PageContainer title="Federation Services" description="Federated service delivery">
         <div className="p-12 text-center text-theme-secondary text-sm">
           You don't have permission to view federation services.
         </div>
@@ -79,7 +79,7 @@ export const FederationHubPage: React.FC = () => {
   return (
     <PageContainer
       title="Federation Services"
-      subtitle="Publish offerings + manage subscriptions across federated peers"
+      description="Publish offerings + manage subscriptions across federated peers"
     >
       <nav className="border-b border-theme flex items-center gap-1 mb-4">
         {visibleTabs.map((tab) => (

@@ -24,6 +24,7 @@ export interface SdwanNetwork {
   spoke_count?: number;
   last_compiled_at?: string | null;
   created_at: string;
+  updated_at?: string;
   // Slice 9a — routing layer
   routing_protocol?: SdwanRoutingProtocol;
   advertise_overlay_subnet?: boolean;

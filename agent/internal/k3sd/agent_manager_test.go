@@ -2,6 +2,7 @@ package k3sd
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -91,6 +92,9 @@ func newTestAgentManager(t *testing.T, modules []string, applier *stubAgentAppli
 	mods := &stubModulesAPI{Modules: modules}
 	errLog := func(stage string, err error) { t.Logf("[AgentManager] %s: %v", stage, err) }
 	m := NewAgentManager(fp.client(), mods, applier, "node-w1", errLog)
+	// Test isolation: see dockerd manager_test.go's identical fix.
+	m.StatePath = filepath.Join(t.TempDir(), "k3sd_agent_state.json")
+	m.state = agentState{}
 	return m, fp
 }
 

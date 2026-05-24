@@ -14,7 +14,7 @@ import type {
 
 const BASE = '/system/platform/storage_migrations';
 
-function paramsFromFilters<T extends Record<string, unknown>>(filters?: T): Record<string, string> {
+function paramsFromFilters(filters?: object): Record<string, string> {
   if (!filters) return {};
   const out: Record<string, string> = {};
   Object.entries(filters).forEach(([key, value]) => {

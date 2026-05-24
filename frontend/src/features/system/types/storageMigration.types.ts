@@ -54,6 +54,11 @@ export interface StorageMigrationDetail extends StorageMigrationSummary {
   metadata: Record<string, unknown>;
   snapshot_subpath: string | null;
   initiated_by_user_id: string | null;
+  // Per-progress-tick rsync counter surfaced in StorageMigrationDetailDrawer.
+  // Nullable (not just optional) because ByteCounters explicitly types
+  // verified as `number | null` and the backend returns null for
+  // pre-verify-phase migrations.
+  bytes_verified?: number | null;
 }
 
 export interface StorageMigrationListResponse {

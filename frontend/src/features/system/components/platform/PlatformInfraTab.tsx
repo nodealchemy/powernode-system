@@ -9,7 +9,7 @@ import {
   Activity,
   Rocket,
 } from 'lucide-react';
-import { usePermissions } from '@/shared/hooks/usePermissions';
+// usePermissions removed (was unused) — see PlatformInfraTab body comment.
 import { ChildrenPanel } from '@system/features/system/components/federation/ChildrenPanel';
 import { ServiceOfferingsPanel } from '@system/features/system/components/federation/ServiceOfferingsPanel';
 import { ServiceSubscriptionsPanel } from '@system/features/system/components/federation/ServiceSubscriptionsPanel';
@@ -62,7 +62,9 @@ const TABS: TabSpec[] = [
 const BASE_PATH = '/app/system/compute/platform';
 
 export const PlatformInfraTab: React.FC = () => {
-  const { hasPermission } = usePermissions();
+  // hasPermission destructure was removed (TS6133: unused). The
+  // `accessible` const below is unconditional — tab-level panels
+  // remain responsible for surfacing forbidden API responses.
   const location = useLocation();
 
   // Permission gate is best-effort — the plan lists permissions that

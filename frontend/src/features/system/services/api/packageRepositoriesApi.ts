@@ -47,6 +47,9 @@ export interface SystemPackage {
   description?: string;
   installed_size_bytes?: number;
   download_size_bytes?: number;
+  // Foreign-key back to the originating repository — populated by the
+  // package-search endpoint so PackageBrowser can deep-link.
+  repository_id?: string;
   homepage?: string;
   license?: string;
   // Flattened capability names from the JSONB `provides` array (server

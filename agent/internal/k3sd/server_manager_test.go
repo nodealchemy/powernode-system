@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -185,6 +186,13 @@ func newTestServerManager(t *testing.T, modules []string, applier *stubServerApp
 	mods := &stubModulesAPI{Modules: modules}
 	errLog := func(stage string, err error) { t.Logf("[ServerManager] %s: %v", stage, err) }
 	m := NewServerManager(fp.client(), mods, applier, "node-1", errLog)
+	// Test isolation: see dockerd manager_test.go's identical fix.
+	// Override the hardcoded /persist StatePath + wipe in-memory state
+	// that NewServerManager.loadState() may have populated during
+	// construction (when running as root in CI, /persist is writable
+	// and stale state from a prior test pollutes this one).
+	m.StatePath = filepath.Join(t.TempDir(), "k3sd_server_state.json")
+	m.state = serverState{}
 	return m, fp
 }
 

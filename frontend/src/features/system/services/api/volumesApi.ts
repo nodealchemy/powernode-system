@@ -13,6 +13,9 @@ export interface VolumeFilters extends PaginationParams {
   attached?: boolean;
   encrypted?: boolean;
   search?: string;
+  // Caller-overridable page size for the PlanStorageMigrationModal
+  // (volume picker needs a higher cap than the default list page).
+  page_size?: number;
 }
 
 export interface VolumeCreate {

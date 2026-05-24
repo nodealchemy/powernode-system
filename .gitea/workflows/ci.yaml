@@ -26,32 +26,49 @@ jobs:
       fail-fast: false
       matrix:
         suite: [controllers, services, models-lib]
-    # Gitea Actions puts every service container on a per-job docker
-    # network — the job container reaches sidecars by service name
-    # on their canonical port. DO NOT publish ports to the host: shared
-    # host ports cause two failure modes that bit us on 2026-05-24:
-    #   1. A cancelled job leaks the sidecar with the published port
-    #      still bound → the next job's sidecar fails with
-    #      "Bind for 0.0.0.0:6379 failed: port is already allocated"
-    #   2. Two jobs scheduled concurrently fight for the same host
-    #      port slot, only one wins, the other can never start.
-    # Service names (postgres, redis) resolve inside the job container
-    # via the docker bridge's DNS — no host networking involved.
+    # Service addressing: publish container ports to the host + use
+    # localhost in DATABASE_URL/REDIS_URL.
+    #
+    # Why not service-name DNS (postgres://postgres@postgres:5432/...)?
+    # Tried that approach on 2026-05-24 (commit 2cd80135 "drop host
+    # port publishing"). It assumed Gitea Actions puts every service
+    # container on a per-job docker network with internal DNS resolution
+    # for service names. The runtime evidence (job container's
+    # NetworkMode is "bridge" — the default docker bridge has NO
+    # service-name DNS) showed that assumption was wrong on this Gitea
+    # Actions installation. Every rspec/rubocop/worker-specs run since
+    # that commit failed at "Prepare test database" with:
+    #   PG::ConnectionBad: could not translate host name "postgres"
+    #     to address: Name or service not known
+    # Reverting to host ports + localhost.
+    #
+    # Port-collision risk (the bug 2cd80135 was trying to avoid):
+    # cancelled jobs occasionally leak sidecar containers that keep the
+    # host port bound, blocking the next job's sidecar from starting.
+    # Mitigation lives at the runner level, not the workflow level:
+    # the runner host should periodically purge orphan task containers,
+    # e.g. via systemd ExecStartPre:
+    #   docker ps -a --filter "name=GITEA-ACTIONS-TASK" -q --filter "status=exited" \
+    #     | xargs -r docker rm -f
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: powernode_test
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
+        ports:
+          - 6379:6379
     env:
       RAILS_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/powernode_test
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/powernode_test
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - name: Check out the system extension
         uses: actions/checkout@v4
@@ -330,13 +347,25 @@ jobs:
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
     runs-on: ubuntu-24.04
-    # Same per-job docker-network pattern as the rspec matrix above —
-    # no host port publishing, hostname-based addressing.
+    # Same host-port + localhost addressing as the rspec matrix above —
+    # see the long comment up there for why service-name DNS doesn't
+    # work on this Gitea Actions installation.
     services:
       redis:
         image: redis:7
+        ports:
+          - 6379:6379
     env:
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://localhost:6379/0
+      # Worker startup hard-requires these two env vars. Empty values
+      # abort the process before spec loading even begins:
+      #   ERROR [WORKER] Missing required environment variables: WORKER_ID, JWT_SECRET_KEY
+      #   ERROR [WORKER] Worker cannot start without these configurations
+      # Both are only used inside the test process, so deterministic
+      # non-secret strings are fine — production rotates these from
+      # Vault. Don't reuse a known-rotated value here.
+      WORKER_ID: ci-worker-ephemeral
+      JWT_SECRET_KEY: ci-jwt-secret-not-for-prod
     steps:
       - name: Check out the system extension
         uses: actions/checkout@v4

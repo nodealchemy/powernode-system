@@ -125,7 +125,7 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
               <ByteCounters
                 copied={migration.bytes_copied}
                 total={migration.bytes_total}
-                verified={migration.bytes_verified}
+                verified={migration.bytes_verified ?? null}
               />
             </section>
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -189,6 +190,17 @@ func (fp *fakePlatform) client() *Client {
 // newTestManager wires together stubs + a fake platform. NodeID and
 // OverlayAddress are set to deterministic values so tests can assert
 // against literal strings.
+//
+// CRITICAL: overrides StatePath to a per-test tmpdir. NewManager's
+// default StatePath is /persist/var/lib/powernode/dockerd_state.json
+// (a hardcoded production path). Without the override, two failure
+// modes appear: (1) on dev machines the path isn't writable → every
+// persist_state call records an error but tests still pass because
+// the assertion happens earlier; (2) in CI running as root, the path
+// IS writable → state from one test pollutes the next test's
+// NewManager.loadState(), causing transitionReportReady to see a
+// stale readyReportedFor and skip the call (fp.Ready stays 0). The
+// per-test tmpdir isolates every test from both modes.
 func newTestManager(t *testing.T, modules []string, applier *stubApplier) (*Manager, *fakePlatform, *stubModulesAPI) {
 	t.Helper()
 	fp := newFakePlatform(t)
@@ -198,6 +210,17 @@ func newTestManager(t *testing.T, modules []string, applier *stubApplier) (*Mana
 		t.Logf("[Manager] %s: %v", stage, err)
 	}
 	m := NewManager(fp.client(), mods, applier, "node-1", "fd00::1", errLog)
+	// Two-step isolation: (1) point StatePath at a fresh tmpdir so
+	// subsequent persist_state writes can't pollute /persist; (2) wipe
+	// in-memory state because NewManager already called loadState()
+	// during construction (using the still-default StatePath = /persist).
+	// In CI running as root, /persist IS writable and stale state from
+	// a prior test in the same package's `go test` invocation gets
+	// loaded — without the wipe, transitionReportReady's idempotency
+	// check sees the prior readyReportedFor and skips ReportReady,
+	// failing assertions that expect fp.Ready==1.
+	m.StatePath = filepath.Join(t.TempDir(), "dockerd_state.json")
+	m.state = managedState{}
 	return m, fp, mods
 }
 

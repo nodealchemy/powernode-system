@@ -55,7 +55,6 @@ export const AcmePage: React.FC = () => {
     return (
       <PageContainer
         title="ACME"
-        icon={KeyRound}
         description="DNS provider credentials + Let's Encrypt certificate lifecycle."
       >
         <div className="p-12 text-center text-theme-secondary text-sm">
@@ -70,7 +69,6 @@ export const AcmePage: React.FC = () => {
   return (
     <PageContainer
       title="ACME"
-      icon={KeyRound}
       description="DNS provider credentials + Let's Encrypt certificate lifecycle. The platform uses these to solve ACME DNS-01 challenges automatically."
     >
       <nav className="flex items-center gap-1 border-b border-theme mb-4">

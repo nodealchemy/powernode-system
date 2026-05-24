@@ -31,7 +31,7 @@ export interface RemoteSubscribeRequest {
 const OFFERINGS_BASE = '/system/federation/service_offerings';
 const SUBSCRIPTIONS_BASE = '/system/federation/service_subscriptions';
 
-function paramsFromFilters<T extends Record<string, unknown>>(filters?: T): Record<string, string> {
+function paramsFromFilters(filters?: object): Record<string, string> {
   if (!filters) return {};
   const out: Record<string, string> = {};
   Object.entries(filters).forEach(([key, value]) => {

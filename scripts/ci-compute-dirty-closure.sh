@@ -102,15 +102,42 @@ log() { printf '[dirty-closure] %s\n' "$*" >&2; }
 # 1. Build the dependency graph from all manifests
 # ---------------------------------------------------------------------------
 
-# We need yq for YAML parsing. If absent, install it on-the-fly when
-# running inside Debian Trixie (Gitea runner default). Local invocations
-# require yq to already be present.
-have_yq() { command -v yq >/dev/null 2>&1; }
-if ! have_yq; then
-  if [[ -f /etc/debian_version ]] && command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq yq >/dev/null
+# We need mikefarah's yq (Go) for YAML parsing — NOT Debian's python3-yq
+# (which is a jq wrapper that doesn't accept `-o=json` or `.[]` shapes).
+# Detect which variant is installed; if Debian's wrapper is present
+# (or yq is missing entirely), download mikefarah's release binary to
+# /usr/local/bin/yq. This also fixes the subsequent "Parse manifest"
+# step which assumes mikefarah's yq when `command -v yq` succeeds —
+# previously `apt install yq` here would install the wrong variant
+# and break that step.
+have_mikefarah_yq() {
+  command -v yq >/dev/null 2>&1 || return 1
+  # mikefarah's yq prints "yq (https://github.com/mikefarah/yq/)..."
+  # Python yq prints "jq-X.Y" or "yq X.Y" with no mikefarah URL.
+  yq --version 2>&1 | grep -q 'mikefarah/yq'
+}
+if ! have_mikefarah_yq; then
+  log "installing mikefarah/yq (current yq variant is missing or incompatible)..."
+  if command -v curl >/dev/null 2>&1; then
+    arch="$(uname -m)"
+    case "$arch" in
+      x86_64) yq_arch=amd64 ;;
+      aarch64|arm64) yq_arch=arm64 ;;
+      *) log "ERROR: unsupported arch for yq install: $arch"; exit 1 ;;
+    esac
+    yq_url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}"
+    if ! curl -fsSL "$yq_url" -o /usr/local/bin/yq 2>/dev/null; then
+      log "ERROR: failed to download mikefarah/yq from $yq_url"
+      exit 1
+    fi
+    chmod +x /usr/local/bin/yq
+    hash -r  # bash rebuilds command lookup table
+    if ! have_mikefarah_yq; then
+      log "ERROR: mikefarah/yq install succeeded but binary still not detected"
+      exit 1
+    fi
   else
-    log "ERROR: yq not installed and cannot self-install (not Debian)"
+    log "ERROR: yq not installed and curl unavailable for self-install"
     exit 1
   fi
 fi

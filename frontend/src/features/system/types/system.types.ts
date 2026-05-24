@@ -44,6 +44,14 @@ export interface SystemNodeInstance {
   claimed?: boolean;
   active?: boolean;
   description?: string;
+  // Agent-reported metadata surfaced in NodeDetailModal's "Agent Identity"
+  // panel. Populated server-side when the agent heartbeats / enrolls;
+  // every field is optional because pre-heartbeat instances have none.
+  agent_version?: string;
+  last_heartbeat_at?: string;
+  architecture?: string;
+  boot_id?: string;
+  mtls_subject?: string;
   created_at: string;
   updated_at: string;
 }
@@ -399,6 +407,9 @@ export interface SystemNodeModule {
   init_stop?: string;
   init_restart?: string;
   reboot_required?: boolean;
+  // Display alias for the on-disk path the module installs to. Surfaced
+  // in NodeDetailModal's module-detail view; absent on older modules.
+  copy_path_name?: string;
   config: Record<string, unknown>;
   node_platform_id?: string;
   node_platform_name?: string;
