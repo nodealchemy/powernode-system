@@ -56,10 +56,13 @@ package_spec:
   - bash
   - coreutils
   - util-linux
+  # On Ubuntu Noble, systemd-networkd and systemd-resolved are NOT separate
+  # binary packages — they ship inside the `systemd` package. Listing them
+  # explicitly causes `Unable to locate package` failures during mmdebstrap.
+  # Enable the services post-install (already handled by rootfs/etc/systemd
+  # presets); just install systemd + systemd-sysv to get all binaries.
   - systemd
   - systemd-sysv
-  - systemd-networkd
-  - systemd-resolved
   - dbus
   - iputils-ping
   - iproute2

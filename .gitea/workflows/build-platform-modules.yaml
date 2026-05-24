@@ -449,9 +449,12 @@ jobs:
               # additional deps — the whole point of decoupling the
               # agent from any specific base-OS.
               if ! command -v go >/dev/null 2>&1; then
-                # Debian trixie ships golang-1.22 in main.
-                apt-get install -y --no-install-recommends golang-1.22 git
-                export PATH=/usr/lib/go-1.22/bin:$PATH
+                # Debian trixie ships golang-1.23 in main (NOT golang-1.22 — that's
+                # Ubuntu's naming). Pin to a specific minor to make cross-distro
+                # builds deterministic; bump explicitly when Trixie security
+                # backports require it.
+                apt-get install -y --no-install-recommends golang-1.23 git
+                export PATH=/usr/lib/go-1.23/bin:$PATH
               fi
               echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
               ( cd agent && \
