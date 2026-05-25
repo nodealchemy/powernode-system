@@ -30,7 +30,7 @@ class AcmePreflightCheck
 
     section("Migrations") do
       safe("table system_acme_certificates")   { check_table_exists("system_acme_certificates") }
-      safe("table system_acme_dns_credentials"){ check_table_exists("system_acme_dns_credentials") }
+      safe("table system_acme_dns_credentials") { check_table_exists("system_acme_dns_credentials") }
       safe("column endpoints on federation_peers") do
         check_column_any("system_federation_peers", %w[endpoints_jsonb endpoints advertised_endpoints])
       end
@@ -92,10 +92,10 @@ class AcmePreflightCheck
     end
 
     section("Operator routes") do
-      [[:get, "/api/v1/system/acme_certificates"],
-       [:post, "/api/v1/system/acme_certificates"],
-       [:get, "/api/v1/system/acme_dns_credentials"],
-       [:post, "/api/v1/system/acme_dns_credentials"]].each do |verb, path|
+      [ [ :get, "/api/v1/system/acme_certificates" ],
+       [ :post, "/api/v1/system/acme_certificates" ],
+       [ :get, "/api/v1/system/acme_dns_credentials" ],
+       [ :post, "/api/v1/system/acme_dns_credentials" ] ].each do |verb, path|
         safe("route #{verb.upcase} #{path}") { check_route(verb, path) }
       end
     end
@@ -319,14 +319,14 @@ class AcmePreflightCheck
       "**/worker_api/acme*_spec.rb"
     ]
     expected = {
-      "cert CRUD"           => { globs: ["**/acme_certificates_spec.rb"], pattern: /POST|GET|create|index|show/i },
-      "DNS credential CRUD" => { globs: ["**/acme_dns_credentials_spec.rb"], pattern: /POST|GET|create|index/i },
+      "cert CRUD"           => { globs: [ "**/acme_certificates_spec.rb" ], pattern: /POST|GET|create|index|show/i },
+      "DNS credential CRUD" => { globs: [ "**/acme_dns_credentials_spec.rb" ], pattern: /POST|GET|create|index/i },
       "renewal trigger"     => { globs: acme_globs, pattern: /renew/i },
       "revocation"          => { globs: acme_globs, pattern: /\brevoke/i },
       "retry-on-failure"    => { globs: acme_globs, pattern: /retry|backoff|transient/i },
       "provider validation" => { globs: acme_globs, pattern: /test_connectivity|validate.*provider|provider.*valid/i },
-      "endpoint probing"    => { globs: ["**/endpoint_prober_spec.rb"], pattern: /probe|priority|scope/i },
-      "endpoint failover"   => { globs: ["**/endpoint*_spec.rb", "**/federation/**/*_spec.rb"], pattern: /failover|fast.?fail|fall.?through|next.priority|unreachable/i }
+      "endpoint probing"    => { globs: [ "**/endpoint_prober_spec.rb" ], pattern: /probe|priority|scope/i },
+      "endpoint failover"   => { globs: [ "**/endpoint*_spec.rb", "**/federation/**/*_spec.rb" ], pattern: /failover|fast.?fail|fall.?through|next.priority|unreachable/i }
     }
     spec_root = Rails.root.join("../extensions/system/server/spec")
     matches = 0

@@ -141,17 +141,17 @@ module System
 
         list_node.xpath("rpm:entry", NAMESPACES).map do |entry|
           op = case entry["flags"]
-               when "LT" then "<<"
-               when "LE" then "<="
-               when "EQ" then "="
-               when "GE" then ">="
-               when "GT" then ">>"
-               else nil
-               end
+          when "LT" then "<<"
+          when "LE" then "<="
+          when "EQ" then "="
+          when "GE" then ">="
+          when "GT" then ">>"
+          else nil
+          end
           # rpm dep groups don't have apt's `|` alternatives within a single
           # entry, so we wrap each in a single-element OR group to match the
           # normalized shape.
-          [{ "name" => entry["name"], "op" => op, "version" => entry["ver"] }]
+          [ { "name" => entry["name"], "op" => op, "version" => entry["ver"] } ]
         end
       end
 
@@ -193,9 +193,9 @@ module System
           rest = m[2]
         end
         if (m = rest.match(/\A(.*?)-([^-]+)\z/))
-          [epoch, m[1], m[2]]
+          [ epoch, m[1], m[2] ]
         else
-          [epoch, rest, ""]
+          [ epoch, rest, "" ]
         end
       end
 

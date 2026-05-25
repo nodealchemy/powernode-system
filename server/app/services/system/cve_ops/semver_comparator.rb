@@ -46,14 +46,14 @@ module System
         # Strip build metadata (everything after the first "+")
         v = v.split("+", 2).first
         main, pre = v.split("-", 2)
-        [main, pre]
+        [ main, pre ]
       end
 
       def self.compare_main(a, b)
         a_parts = a.split(".").map { |s| Integer(s, 10) rescue 0 }
         b_parts = b.split(".").map { |s| Integer(s, 10) rescue 0 }
         # Pad with zeros so 1.2 == 1.2.0
-        len = [a_parts.size, b_parts.size].max
+        len = [ a_parts.size, b_parts.size ].max
         a_parts.fill(0, a_parts.size...len)
         b_parts.fill(0, b_parts.size...len)
         a_parts <=> b_parts
@@ -62,7 +62,7 @@ module System
       def self.compare_pre_release(a, b)
         a_ids = a.split(".")
         b_ids = b.split(".")
-        len = [a_ids.size, b_ids.size].min
+        len = [ a_ids.size, b_ids.size ].min
 
         len.times do |i|
           cmp = compare_pre_identifier(a_ids[i], b_ids[i])

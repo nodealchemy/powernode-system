@@ -22,7 +22,7 @@ module Api
         # is covered. Worker-callable replenish/drain go through the
         # worker_api namespace (which has its own worker-token auth);
         # there's no dual-auth path on this operator-facing controller.
-        before_action :set_pool, only: [:show, :update, :destroy, :replenish, :drain, :recycle_stale]
+        before_action :set_pool, only: [ :show, :update, :destroy, :replenish, :drain, :recycle_stale ]
 
         # GET /api/v1/system/instance_pools
         def index

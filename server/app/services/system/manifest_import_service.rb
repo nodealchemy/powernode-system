@@ -709,7 +709,7 @@ module System
         primary = if entry["primary_group"].present?
                     index[:groups][entry["primary_group"]] ||
                       ::System::ServiceGroup.live.find_by!(groupname: entry["primary_group"])
-                  end
+        end
         user = ::System::Identity::UserAllocator.allocate!(
           username:             entry["name"],
           primary_group:        primary,

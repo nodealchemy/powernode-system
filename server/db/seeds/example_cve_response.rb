@@ -26,7 +26,7 @@ drill_cve_id = "CVE-2026-99001"
 cve = ::System::Cve.find_or_initialize_by(cve_id: drill_cve_id)
 cve.assign_attributes(
   severity: "critical",
-  affected_packages: [{ "name" => "openssl", "version" => "<3.1.4" }],
+  affected_packages: [ { "name" => "openssl", "version" => "<3.1.4" } ],
   summary: "DRILL: Synthetic OpenSSL TLS handshake RCE — for example 05 walkthrough only",
   published_at: Time.current,
   feed_source: "DRILL",
@@ -48,7 +48,7 @@ executor = ::System::Ai::Skills::CveResponseExecutor.new(
 result = executor.execute(
   cve_id: drill_cve_id,
   severity: "critical",
-  affected_packages: [{ name: "openssl", version: "<3.1.4" }],
+  affected_packages: [ { name: "openssl", version: "<3.1.4" } ],
   summary: cve.summary
 )
 

@@ -127,7 +127,7 @@ module System
     def find_by_provides(capability)
       # Provides entries are stored as [[{name=cap, op=nil, version=nil}]]
       live_scope
-        .where("provides @> ?::jsonb", [[{ name: capability }]].to_json)
+        .where("provides @> ?::jsonb", [ [ { name: capability } ] ].to_json)
         .first
     end
 
@@ -135,14 +135,14 @@ module System
       PreviewResult.new(
         required_packages: [], required_edges: [],
         recommends_candidates: [], suggests_candidates: [],
-        alternatives_chosen: {}, warnings: [], errors: [msg]
+        alternatives_chosen: {}, warnings: [], errors: [ msg ]
       )
     end
 
     def resolve_error(msg)
       ResolveResult.new(
         packages: [], edges: [], recommends_chosen: [],
-        alternatives_chosen: {}, warnings: [], errors: [msg]
+        alternatives_chosen: {}, warnings: [], errors: [ msg ]
       )
     end
 
@@ -175,7 +175,7 @@ module System
           )
         end
       end
-      candidates.uniq { |c| [c.from_package.name, c.to_package.name] }
+      candidates.uniq { |c| [ c.from_package.name, c.to_package.name ] }
     end
 
     def enumerate_suggests_candidates(required_packages_by_name)
@@ -193,7 +193,7 @@ module System
           candidates << SuggestsCandidate.new(from_package: pkg, to_package: to_pkg)
         end
       end
-      candidates.uniq { |c| [c.from_package.name, c.to_package.name] }
+      candidates.uniq { |c| [ c.from_package.name, c.to_package.name ] }
     end
 
     # First alternative whose primary item has a synced live Package.

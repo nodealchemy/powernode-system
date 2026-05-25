@@ -92,8 +92,8 @@ module Sdwan
         old_holder = Array(holder_peer_ids).first
         new_holder = Array(failover_holder_peer_ids).first
 
-        new_holders  = ([new_holder] + (Array(holder_peer_ids) - [new_holder]))
-        new_failover = (Array(failover_holder_peer_ids) - [new_holder]) + ([old_holder].compact)
+        new_holders  = ([ new_holder ] + (Array(holder_peer_ids) - [ new_holder ]))
+        new_failover = (Array(failover_holder_peer_ids) - [ new_holder ]) + ([ old_holder ].compact)
 
         update!(
           holder_peer_ids: new_holders.compact,

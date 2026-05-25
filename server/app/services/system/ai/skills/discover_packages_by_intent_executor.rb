@@ -115,7 +115,7 @@ module System
           Array(canonical_inputs).compact_blank.each do |canonical|
             arch = ::System::NodeArchitecture.find_normalized(canonical)
             if arch
-              names.concat([arch.name, arch.apt_name, arch.rpm_name])
+              names.concat([ arch.name, arch.apt_name, arch.rpm_name ])
             else
               names << canonical
             end

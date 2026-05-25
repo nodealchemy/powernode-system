@@ -76,7 +76,7 @@ module Sdwan
     # both. Each pair is a small hash so the compiler can name route
     # maps and prefix-lists deterministically.
     def directed_pairs
-      pairs = [{ source: source_network, dest: dest_network }]
+      pairs = [ { source: source_network, dest: dest_network } ]
       if direction == "bidirectional"
         pairs << { source: dest_network, dest: source_network }
       end

@@ -115,7 +115,7 @@ module Sdwan
     # Returns one nft `add rule ...` line, or nil if the rule reduces to a
     # match-nothing case (e.g., a peer_id selector pointing at a deleted peer).
     def emit_rule(rule)
-      parts = ["add rule inet #{TABLE} #{chain_name}", iif_clause]
+      parts = [ "add rule inet #{TABLE} #{chain_name}", iif_clause ]
 
       src = ::Sdwan::SelectorResolver.to_nft_match(rule.src_selector, side: :saddr)
       dst = ::Sdwan::SelectorResolver.to_nft_match(rule.dst_selector, side: :daddr)

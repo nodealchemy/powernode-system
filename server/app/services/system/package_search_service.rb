@@ -43,7 +43,7 @@ module System
       @account = account
       @raw_params = params.respond_to?(:to_unsafe_h) ? params.to_unsafe_h : params
       @raw_params = @raw_params.deep_symbolize_keys
-      @page       = [(@raw_params[:page] || 1).to_i, 1].max
+      @page       = [ (@raw_params[:page] || 1).to_i, 1 ].max
       @per_page   = clamp_per_page(@raw_params[:per_page])
       @q          = @raw_params[:q].to_s.strip
       @mode       = normalize_mode(@raw_params[:mode], q: @q)
@@ -56,10 +56,10 @@ module System
       base  = apply_structured_filters(base)
 
       packages, total = case @mode
-                        when "lexical"  then run_lexical(base)
-                        when "semantic" then run_semantic(base)
-                        when "hybrid"   then run_hybrid(base)
-                        end
+      when "lexical"  then run_lexical(base)
+      when "semantic" then run_semantic(base)
+      when "hybrid"   then run_hybrid(base)
+      end
 
       Result.new(
         packages:        packages,
@@ -77,7 +77,7 @@ module System
       n = raw.to_i
       return DEFAULT_PER_PAGE if n <= 0
 
-      [n, MAX_PER_PAGE].min
+      [ n, MAX_PER_PAGE ].min
     end
 
     def normalize_mode(value, q:)
@@ -137,7 +137,7 @@ module System
         scope = scope.where(
           "system_packages.name = ? OR system_packages.provides @> ?::jsonb",
           provides_input,
-          [[{ name: provides_input }]].to_json
+          [ [ { name: provides_input } ] ].to_json
         )
       end
       scope
@@ -150,7 +150,7 @@ module System
       architectures_input.each do |canonical|
         arch = ::System::NodeArchitecture.find_normalized(canonical)
         if arch
-          names.concat([arch.name, arch.apt_name, arch.rpm_name])
+          names.concat([ arch.name, arch.apt_name, arch.rpm_name ])
         else
           # Unknown alias — pass through literally so the user still gets a
           # filter (just no cross-kind expansion). Better than swallowing.
@@ -165,9 +165,9 @@ module System
     def run_lexical(scope)
       ordered = if @q.present?
                   apply_lexical_ranking(scope, @q)
-                else
+      else
                   scope.order(name: :asc, architecture: :asc)
-                end
+      end
       paginate_with_count(ordered)
     end
 
@@ -182,7 +182,7 @@ module System
                         .first(@per_page * SEMANTIC_OVERSCORE_FACTOR)
 
       paginated = candidates.drop((@page - 1) * @per_page).first(@per_page)
-      [paginated, nil] # total: nil — exact count prohibitive on vector-filtered sets
+      [ paginated, nil ] # total: nil — exact count prohibitive on vector-filtered sets
     end
 
     def run_hybrid(scope)
@@ -199,7 +199,7 @@ module System
 
       merged = merge_and_rerank(lex_candidates, sem_candidates, @q)
       paginated = merged.drop((@page - 1) * @per_page).first(@per_page)
-      [paginated, nil] # total: nil — see run_semantic
+      [ paginated, nil ] # total: nil — see run_semantic
     end
 
     # === Lexical ranking ===============================================
@@ -295,7 +295,7 @@ module System
     def paginate_with_count(scope)
       total   = scope.count
       results = scope.limit(@per_page).offset((@page - 1) * @per_page).to_a
-      [results, total]
+      [ results, total ]
     end
 
     def applied_filters_echo

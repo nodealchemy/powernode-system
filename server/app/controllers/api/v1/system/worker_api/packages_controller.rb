@@ -75,7 +75,7 @@ module Api
             n = raw.to_i
             return DEFAULT_BATCH_SIZE if n <= 0
 
-            [n, MAX_BATCH_SIZE].min
+            [ n, MAX_BATCH_SIZE ].min
           end
 
           # Returns the candidate scope for a repo. Excludes rows in-flight

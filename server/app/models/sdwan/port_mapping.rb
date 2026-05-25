@@ -79,7 +79,7 @@ module Sdwan
     private
 
     def exactly_one_target
-      target_count = [target_peer_id, target_virtual_ip_id].count(&:present?)
+      target_count = [ target_peer_id, target_virtual_ip_id ].count(&:present?)
       return if target_count == 1
 
       errors.add(:base, "exactly one of target_peer_id or target_virtual_ip_id must be set")

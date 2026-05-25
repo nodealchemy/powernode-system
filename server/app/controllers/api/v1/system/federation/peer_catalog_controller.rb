@@ -53,7 +53,6 @@ module Api
             end
             peer
           end
-
         end
       end
     end

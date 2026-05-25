@@ -65,7 +65,7 @@ manual_policies = {
   "system.task.ssh_command"                 => "require_approval",   # arbitrary code execution
   "system.task.backup"                      => "auto_approve",
   "system.task.restore"                     => "require_approval",   # overwrites state
-  "system.task.custom"                      => "require_approval",   # unknown semantics → conservative
+  "system.task.custom"                      => "require_approval"   # unknown semantics → conservative
 }
 
 count = upsert_manual_policies!(admin_account, manual_policies)
@@ -93,11 +93,11 @@ manual_chain.assign_attributes(
   is_sequential: true,
   timeout_action: "reject",
   timeout_hours: 4,
-  steps: [{
+  steps: [ {
     "name" => "Operator Approval",
-    "approvers" => [{ "type" => "permission", "value" => "system.infra_tasks.control" }],
+    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
     "required_approvals" => 1
-  }]
+  } ]
 )
 if manual_chain.new_record? || manual_chain.changed?
   manual_chain.save!

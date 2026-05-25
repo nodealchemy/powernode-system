@@ -144,7 +144,7 @@ module System
           {
             repository_id: repo.id,
             suggested:     [],
-            rationale:     [{ reason: "Repository has no architectures configured" }],
+            rationale:     [ { reason: "Repository has no architectures configured" } ],
             fallback:      fallback,
             confidence:    confidence
           }

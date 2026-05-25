@@ -355,11 +355,11 @@ module Api
           cloud_id = @instance.config["cloud_instance_id"]
           return if cloud_id.blank?
           result = case event.to_sym
-                   when :start  then adapter.start_instance(cloud_id)
-                   when :stop   then adapter.stop_instance(cloud_id)
-                   when :reboot then adapter.respond_to?(:reboot_instance) ? adapter.reboot_instance(cloud_id) : nil
-                   when :terminate then adapter.terminate_instance(cloud_id)
-                   end
+          when :start  then adapter.start_instance(cloud_id)
+          when :stop   then adapter.stop_instance(cloud_id)
+          when :reboot then adapter.respond_to?(:reboot_instance) ? adapter.reboot_instance(cloud_id) : nil
+          when :terminate then adapter.terminate_instance(cloud_id)
+          end
           return unless result&.dig(:success)
 
           # Map provider's response status to NodeInstance.status. The provider

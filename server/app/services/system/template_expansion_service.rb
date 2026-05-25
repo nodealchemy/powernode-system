@@ -40,7 +40,7 @@ module System
                       @template_modules.select(&:enabled)
       tm_by_module_id = enabled_tms.index_by(&:node_module_id)
       effective_recommends = enabled_tms.to_h do |tm|
-        [tm.node_module_id, tm.effective_recommends_set]
+        [ tm.node_module_id, tm.effective_recommends_set ]
       end
 
       # The predicate: returns true if this `recommends` edge should be
@@ -127,7 +127,7 @@ module System
     # explicit root — but defensive).
     def find_originating_template_module(from:, explicit_module_ids:, tm_by_module_id:)
       visited = Set.new
-      queue = [from]
+      queue = [ from ]
       while (current = queue.shift)
         next if visited.include?(current.id)
 

@@ -12,7 +12,7 @@ require_relative "concerns/agent_setup_helpers"
 puts "\n  Seeding Fleet Autonomy agent + policies..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
-  preferred_provider_types: ["anthropic", "openai"]
+  preferred_provider_types: [ "anthropic", "openai" ]
 )
 admin_account = ctx[:account]
 creator       = ctx[:creator]
@@ -124,11 +124,11 @@ fleet_chain.assign_attributes(
   is_sequential: true,
   timeout_action: "reject",
   timeout_hours: 4,
-  steps: [{
+  steps: [ {
     "name" => "Fleet Operator Approval",
-    "approvers" => ["*"],
+    "approvers" => [ "*" ],
     "required_approvals" => 1
-  }]
+  } ]
 )
 if fleet_chain.new_record? || fleet_chain.changed?
   fleet_chain.save!

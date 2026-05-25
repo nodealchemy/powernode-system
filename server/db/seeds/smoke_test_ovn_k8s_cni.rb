@@ -130,7 +130,7 @@ if ENV["SMOKE_KEEP"] != "1"
     .where("devops_kubernetes_clusters.name LIKE 'smoke-cni-%'")
     .destroy_all
   ::Devops::KubernetesCluster.where(account_id: account.id).where("name LIKE 'smoke-cni-%'").destroy_all
-  [heavy, light].each do |inst|
+  [ heavy, light ].each do |inst|
     inst.destroy
     inst.node.destroy
   end

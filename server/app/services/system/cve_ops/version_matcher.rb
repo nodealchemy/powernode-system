@@ -73,7 +73,7 @@ module System
           match = segment.match(RANGE_REGEX)
           op = OP_SYMBOLS.fetch(match[1] || "=")
           ver = match[2].strip
-          [op, ver] unless ver.empty?
+          [ op, ver ] unless ver.empty?
         end
       end
     end

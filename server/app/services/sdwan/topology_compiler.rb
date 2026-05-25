@@ -104,7 +104,7 @@ module Sdwan
 
       {
         collector_id: collector.id,
-        targets: [collector.target_endpoint],
+        targets: [ collector.target_endpoint ],
         sampling: collector.sampling_rate
       }
     end
@@ -231,7 +231,7 @@ module Sdwan
     def host_vrf_assignment_for(peer)
       return nil unless peer.node_instance_id
       @hva_cache ||= {}
-      cache_key = [peer.node_instance_id, peer.sdwan_network_id]
+      cache_key = [ peer.node_instance_id, peer.sdwan_network_id ]
       return @hva_cache[cache_key] if @hva_cache.key?(cache_key)
       @hva_cache[cache_key] = ::Sdwan::HostVrfAssignment.where(
         node_instance_id: peer.node_instance_id,

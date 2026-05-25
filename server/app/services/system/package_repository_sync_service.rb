@@ -64,7 +64,7 @@ module System
       if upserted_count.positive?
         ::System::WorkerJobEnqueuer.enqueue(
           job_class: "SystemPackageEmbeddingJob",
-          args:      [@repository.id, {}],
+          args:      [ @repository.id, {} ],
           queue:     "system"
         )
       end
@@ -176,7 +176,7 @@ module System
     # default. apt's `amd64` and rpm's `x86_64` are the safest baseline
     # choices and match what the form would default to.
     def default_architecture_for(kind)
-      kind.to_s == "apt" ? ["amd64"] : ["x86_64"]
+      kind.to_s == "apt" ? [ "amd64" ] : [ "x86_64" ]
     end
   end
 end

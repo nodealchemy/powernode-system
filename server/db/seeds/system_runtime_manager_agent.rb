@@ -19,7 +19,7 @@ require_relative "concerns/agent_setup_helpers"
 puts "\n  Seeding Runtime Manager agent + policies..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
-  preferred_provider_types: ["anthropic", "openai"]
+  preferred_provider_types: [ "anthropic", "openai" ]
 )
 admin_account = ctx[:account]
 creator       = ctx[:creator]

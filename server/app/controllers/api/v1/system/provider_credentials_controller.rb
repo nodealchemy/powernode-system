@@ -221,7 +221,7 @@ module Api
         # way; the real provider adapter's authenticate? short-circuits
         # bogus creds before any cloud resources get allocated.
         def validate_credentials(provider, credentials)
-          return [true, nil] unless defined?(::System::CredentialValidationService)
+          return [ true, nil ] unless defined?(::System::CredentialValidationService)
 
           result = ::System::CredentialValidationService.test(
             provider: provider,
@@ -231,16 +231,16 @@ module Api
           # Tolerate either [bool, msg] or { valid:, error: } shapes
           # so a Slice A return-shape pivot doesn't break the wizard.
           case result
-          when Array then [!!result[0], result[1]]
-          when Hash  then [!!(result[:valid] || result["valid"]),
-                           result[:error] || result["error"]]
-          else            [!!result, nil]
+          when Array then [ !!result[0], result[1] ]
+          when Hash  then [ !!(result[:valid] || result["valid"]),
+                           result[:error] || result["error"] ]
+          else            [ !!result, nil ]
           end
         rescue StandardError => e
           Rails.logger.error(
             "[ProviderCredentialsController] validation failed: #{e.class}: #{e.message}"
           )
-          [false, e.message]
+          [ false, e.message ]
         end
 
         def serialize(cred)

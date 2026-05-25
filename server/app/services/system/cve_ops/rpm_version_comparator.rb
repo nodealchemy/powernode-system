@@ -38,9 +38,9 @@ module System
       def self.split_epoch(version)
         if version.include?(":")
           epoch, rest = version.split(":", 2)
-          [(Integer(epoch, 10) rescue 0), rest]
+          [ (Integer(epoch, 10) rescue 0), rest ]
         else
-          [0, version]
+          [ 0, version ]
         end
       end
 

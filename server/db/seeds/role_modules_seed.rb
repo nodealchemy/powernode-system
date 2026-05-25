@@ -126,7 +126,7 @@ role_module_specs = [
       "runtime"     => "postgres",
       "init_script" => "apt-get install -y postgresql-16 && pg_ctlcluster 16 main start",
       "env"         => { "PGDATA" => "/var/lib/postgresql/16/main" },
-      "ports"       => [5432],
+      "ports"       => [ 5432 ],
       "healthcheck" => { "command" => "pg_isready -h 127.0.0.1 -p 5432", "interval_seconds" => 10 }
     }
   },
@@ -143,7 +143,7 @@ role_module_specs = [
       "runtime"     => "redis",
       "init_script" => "apt-get install -y redis-server && systemctl enable --now redis-server",
       "env"         => {},
-      "ports"       => [6379],
+      "ports"       => [ 6379 ],
       "healthcheck" => { "command" => "redis-cli ping", "interval_seconds" => 10 }
     }
   },

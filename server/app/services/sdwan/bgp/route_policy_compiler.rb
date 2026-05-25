@@ -186,11 +186,11 @@ module Sdwan
           set_lines << " set community #{comm} additive"
         end
 
-        [set_lines, terminator]
+        [ set_lines, terminator ]
       end
 
       def build_route_map_clause(name:, seq:, terminator:, match_lines:, set_lines:)
-        body = ["route-map #{name} #{terminator} #{seq}"]
+        body = [ "route-map #{name} #{terminator} #{seq}" ]
         body.concat(match_lines)
         body.concat(set_lines)
         body << "!"
@@ -207,17 +207,17 @@ module Sdwan
         @policies.each do |policy|
           rm_name = "#{policy.slug}-#{policy.direction}"
           target_neighbors = case policy.scope
-                             when "account", "network"
+          when "account", "network"
                                neighbors
-                             when "peer"
+          when "peer"
                                # Peer-scoped policy only applies if THIS
                                # peer is the scope_resource. (Scope=peer
                                # policies attached to a different peer
                                # were already filtered out by applicable_to.)
                                policy.scope_resource_id == @peer.id ? neighbors : []
-                             else
+          else
                                []
-                             end
+          end
 
           target_neighbors.each do |addr|
             @neighbor_assignments[addr][policy.direction.to_sym] = rm_name

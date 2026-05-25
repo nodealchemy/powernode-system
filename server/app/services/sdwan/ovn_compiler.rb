@@ -79,7 +79,7 @@ module Sdwan
       # switch, `lsp-add` would fail because `ovn-nbctl` rejects
       # ports against a non-existent switch.
       @switches.each do |switch|
-        entries << { cmd: "ls-add", args: [switch.name] }
+        entries << { cmd: "ls-add", args: [ switch.name ] }
       end
 
       # Phase 2 — emit all ports for each switch in turn. We iterate
@@ -142,7 +142,7 @@ module Sdwan
     #   [lsp-set-addresses <port> "<mac> <ip> ...">  (when present)
     def port_entries(switch, port)
       out = []
-      out << { cmd: "lsp-add", args: [switch.name, port.name] }
+      out << { cmd: "lsp-add", args: [ switch.name, port.name ] }
 
       # External ports get a type marker so OVN treats them as
       # localnet/router uplinks rather than VM ports. The type value
@@ -151,14 +151,14 @@ module Sdwan
       # they need a different OVN type (e.g. "router").
       if port.kind == "external"
         type_value = port.settings.fetch("ovn_type", "localnet")
-        out << { cmd: "lsp-set-type", args: [port.name, type_value.to_s] }
+        out << { cmd: "lsp-set-type", args: [ port.name, type_value.to_s ] }
       end
 
       # OVN's `addresses=` is a single string with the MAC first and
       # any IPv4/IPv6 values space-separated after it. We always
       # emit the MAC; IPs are appended only when the row carries any.
       addresses_string = build_addresses_string(port)
-      out << { cmd: "lsp-set-addresses", args: [port.name, addresses_string] }
+      out << { cmd: "lsp-set-addresses", args: [ port.name, addresses_string ] }
 
       out
     end
@@ -167,7 +167,7 @@ module Sdwan
     # single-string form. Returns just the MAC when no IPs are set.
     def build_addresses_string(port)
       ips = Array(port.addresses).reject(&:blank?)
-      ([port.mac] + ips).join(" ")
+      ([ port.mac ] + ips).join(" ")
     end
   end
 end

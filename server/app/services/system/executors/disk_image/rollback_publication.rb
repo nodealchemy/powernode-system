@@ -10,9 +10,9 @@ module System
           target = ::System::DiskImagePublication.find(params[:target_publication_id])
           platform = if params[:platform_id]
                        ::System::NodePlatform.find(params[:platform_id])
-                     else
+          else
                        target.node_platform
-                     end
+          end
           previous_file_object_id = platform.disk_image_file_object_id
 
           ::ApplicationRecord.transaction do

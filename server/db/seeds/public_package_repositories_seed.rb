@@ -50,7 +50,7 @@ PUBLIC_REPOS = [
     name:        "Debian stable (US mirror)",
     description: "Official Debian stable archive served from ftp.us.debian.org. Tracks the current stable release (bookworm → trixie → …) automatically via the `stable` meta-suite.",
     base_url:    "http://ftp.us.debian.org/debian/",
-    apt_config:  { "suite" => "stable", "components" => ["main"] },
+    apt_config:  { "suite" => "stable", "components" => [ "main" ] },
     # Debian stable supports: amd64, arm64, armhf, i386, mips64el,
     # mipsel, ppc64el, s390x. We list canonicals that have a row in the
     # catalog. i386 deliberately excluded — it remains in stable but
@@ -65,7 +65,7 @@ PUBLIC_REPOS = [
     name:        "Ubuntu noble (US mirror)",
     description: "Ubuntu 24.04 LTS (noble) main archive served from us.archive.ubuntu.com. Primary architecture only (amd64) — secondary architectures (arm64/armhf/ppc64el/riscv64/s390x) live in the companion 'Ubuntu noble (ports)' repository.",
     base_url:    "http://us.archive.ubuntu.com/ubuntu/",
-    apt_config:  { "suite" => "noble", "components" => ["main", "restricted", "universe", "multiverse"] },
+    apt_config:  { "suite" => "noble", "components" => [ "main", "restricted", "universe", "multiverse" ] },
     architectures: %w[amd64]
   },
   {
@@ -75,7 +75,7 @@ PUBLIC_REPOS = [
     name:        "Ubuntu noble (ports)",
     description: "Ubuntu 24.04 LTS (noble) secondary-architecture archive served from ports.ubuntu.com. Hosts arm64, armhf, ppc64el, riscv64, and s390x — split from the primary mirror by Ubuntu convention.",
     base_url:    "http://ports.ubuntu.com/ubuntu-ports/",
-    apt_config:  { "suite" => "noble", "components" => ["main", "restricted", "universe", "multiverse"] },
+    apt_config:  { "suite" => "noble", "components" => [ "main", "restricted", "universe", "multiverse" ] },
     architectures: %w[arm64 armhf ppc64el riscv64 s390x]
   }
 ].freeze

@@ -11,8 +11,8 @@ module Api
       class AutonomyController < BaseController
         include ::System::AutonomyActions
 
-        before_action :require_view_permission, only: [:show]
-        before_action :require_manage_permission, only: [:update]
+        before_action :require_view_permission, only: [ :show ]
+        before_action :require_manage_permission, only: [ :update ]
 
         private
 

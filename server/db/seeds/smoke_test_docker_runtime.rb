@@ -68,8 +68,8 @@ peer = ::Sdwan::Peer.where(node_instance_id: instance.id)
                     .where.not(assigned_address: nil)
                     .order(:created_at)
                     .first
-ok.call("instance=#{instance.name} (id=#{instance.id[0,8]})")
-ok.call("account=#{account.name} (id=#{account.id[0,8]})")
+ok.call("instance=#{instance.name} (id=#{instance.id[0, 8]})")
+ok.call("account=#{account.name} (id=#{account.id[0, 8]})")
 ok.call("peer overlay=#{peer.assigned_address}")
 
 # ── Module assignment ──────────────────────────────────────────────
@@ -114,7 +114,7 @@ tool = ::Ai::Tools::DockerProvisioningTool.new(
   account: account, agent: nil, user: admin
 )
 result = tool.send(:call, action: "system_provision_docker_runtime", node_instance_id: instance.id)
-assert.call(result[:success], "tool returned success=true (got: #{result.inspect[0,200]})")
+assert.call(result[:success], "tool returned success=true (got: #{result.inspect[0, 200]})")
 assert.call(result[:host].present?, "host summary in response")
 ok.call("host_id=#{result[:host][:id][0, 8]} status=#{result[:host][:status]}")
 

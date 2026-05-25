@@ -164,7 +164,7 @@ module Api
             # Key may be stringified OR symbolized depending on how it was stored.
             @api_token = plaintext["api_token"] || plaintext[:api_token]
             unless @api_token.present?
-              return render_error(
+              render_error(
                 "Stored credential has no api_token key. Re-create the credential to fix.",
                 status: :unprocessable_entity
               )

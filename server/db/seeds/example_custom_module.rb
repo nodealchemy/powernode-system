@@ -34,10 +34,10 @@ manifest = {
   },
   package_spec: %w[redis-server redis-tools],
   file_spec: {
-    include: ["/etc/redis/**", "/var/lib/redis/.gitkeep"],
-    exclude: ["/etc/redis/sentinel.conf"]
+    include: [ "/etc/redis/**", "/var/lib/redis/.gitkeep" ],
+    exclude: [ "/etc/redis/sentinel.conf" ]
   },
-  protected_spec: ["/etc/redis/redis.conf"],
+  protected_spec: [ "/etc/redis/redis.conf" ],
   dependency_spec: [
     { name: "system-base" },
     { name: "security-hardening" }
@@ -93,7 +93,7 @@ end
 
 available_modules = account.system_node_modules.to_a
 resolver = ::System::DependencyResolutionService.new(available_modules)
-result = resolver.resolve([mod]) rescue nil
+result = resolver.resolve([ mod ]) rescue nil
 
 if result&.success?
   names = result.modules.map(&:name).join(' → ')

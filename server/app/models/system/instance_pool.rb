@@ -98,7 +98,7 @@ module System
     # Computed against (warming + ready) since claimed instances don't
     # count toward "available capacity".
     def deficit
-      [target_size - (ready_count + warming_count), 0].max
+      [ target_size - (ready_count + warming_count), 0 ].max
     end
 
     # Surplus = how many ready instances the reaper should terminate

@@ -528,11 +528,11 @@ module System
       # node so the catalog table is populated consistently with other
       # providers.
       def list_availability_zones(region_code)
-        [{
+        [ {
           cloud_id: "#{region_code}-zone-a",
           name: "#{region_code}/a",
           status: "available"
-        }]
+        } ]
       end
 
       # Return the synthesized preset table. Each preset maps to cores +
@@ -782,7 +782,7 @@ module System
           end
 
           existing = body["args"].to_s
-          body["args"] = [existing, fw_args.join(" ")].reject(&:empty?).join(" ")
+          body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
         end
 
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
@@ -881,7 +881,7 @@ module System
         #                         failure rather than panicking — operators
         #                         get a recoverable serial console
         cmdline = params[:kernel_cmdline] ||
-                  'console=ttyS0,115200 powernode.boot=1 ip=dhcp rd.shell rd.debug'
+                  "console=ttyS0,115200 powernode.boot=1 ip=dhcp rd.shell rd.debug"
 
         body = {
           "vmid"     => vmid,
@@ -1118,13 +1118,13 @@ module System
         node, kind, vmid = instance_id.to_s.split("/", 3)
         raise ResourceNotFoundError, "Malformed instance_id #{instance_id.inspect}; expected <node>/<kind>/<vmid>" if node.nil? || kind.nil? || vmid.nil?
         raise ResourceNotFoundError, "Unknown kind #{kind.inspect} in #{instance_id.inspect}" unless %w[qemu lxc].include?(kind)
-        [node, kind, vmid]
+        [ node, kind, vmid ]
       end
 
       def parse_image_id!(image_id)
         m = image_id.to_s.match(%r{\A([^/]+)/(qemu|lxc)/(\d+)@(.+)\z})
         raise ResourceNotFoundError, "Malformed image_id #{image_id.inspect}; expected <node>/<kind>/<vmid>@<snapname>" unless m
-        [m[1], m[2], m[3], m[4]]
+        [ m[1], m[2], m[3], m[4] ]
       end
 
       # ============================================================
@@ -1249,7 +1249,7 @@ module System
         token_id = pve_credential("access_key", "token_id")
         token_secret = pve_credential("secret_key", "token_secret")
         verify_ssl_raw = pve_credential("verify_ssl", "verify_ssl", default: "true")
-        verify_ssl = !["false", "0", "no", false].include?(verify_ssl_raw.to_s.downcase)
+        verify_ssl = ![ "false", "0", "no", false ].include?(verify_ssl_raw.to_s.downcase)
 
         return nil if endpoint.to_s.strip.empty? || token_id.to_s.strip.empty? || token_secret.to_s.strip.empty?
 

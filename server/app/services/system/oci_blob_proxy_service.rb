@@ -169,10 +169,10 @@ module System
     # rely on sha256 verification of the streamed bytes".
     def resolve_digest_and_size!
       if @digest
-        [@digest, @size || -1]
+        [ @digest, @size || -1 ]
       else
         layer = target_layer!(fetch_image_manifest!)
-        [layer.fetch("digest").to_s, layer.fetch("size").to_i]
+        [ layer.fetch("digest").to_s, layer.fetch("size").to_i ]
       end
     end
 

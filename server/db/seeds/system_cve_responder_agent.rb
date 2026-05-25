@@ -11,7 +11,7 @@ require_relative "concerns/agent_setup_helpers"
 puts "\n  Seeding CVE Responder agent + policies..."
 
 ctx = System::Seeds::AgentSetupHelpers.bootstrap_admin_context!(
-  preferred_provider_types: ["anthropic", "openai"]
+  preferred_provider_types: [ "anthropic", "openai" ]
 )
 admin_account = ctx[:account]
 creator       = ctx[:creator]
@@ -75,11 +75,11 @@ cve_chain.assign_attributes(
   is_sequential: true,
   timeout_action: "reject",
   timeout_hours: 8,  # CVE response often spans business days
-  steps: [{
+  steps: [ {
     "name" => "Security Operator Approval",
-    "approvers" => [{ "type" => "permission", "value" => "system.infra_tasks.control" }],
+    "approvers" => [ { "type" => "permission", "value" => "system.infra_tasks.control" } ],
     "required_approvals" => 1
-  }]
+  } ]
 )
 if cve_chain.new_record? || cve_chain.changed?
   cve_chain.save!

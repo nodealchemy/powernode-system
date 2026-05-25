@@ -64,7 +64,7 @@ module System
                           will_save_change_to_service_user_id? ||
                           will_save_change_to_shared_group_id? }
 
-    after_commit :trigger_reconcile, on: [:create, :update], if: :should_trigger_reconcile?
+    after_commit :trigger_reconcile, on: [ :create, :update ], if: :should_trigger_reconcile?
     after_commit :dispatch_chown_if_pending, on: :update
 
     # ----- Identity dispatch (replaces the legacy derived_uid) -----

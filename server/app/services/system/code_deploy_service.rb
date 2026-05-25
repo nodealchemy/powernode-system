@@ -184,11 +184,11 @@ module System
       return [ runtime, @start_command ] if @start_command
 
       start = case runtime
-              when "nodejs" then "/usr/bin/npm start"
-              when "python" then detect_python_start!
-              else
+      when "nodejs" then "/usr/bin/npm start"
+      when "python" then detect_python_start!
+      else
                 raise "Cannot auto-detect start command for runtime=#{runtime}"
-              end
+      end
 
       [ runtime, start ]
     end

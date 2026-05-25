@@ -312,7 +312,7 @@ assert.call(::Devops::KubernetesNode.where(kubernetes_cluster_id: cluster.id).no
 
 # Slice 3 — verify the before_destroy callback cleaned up the VIP.
 assert.call(::Sdwan::VirtualIp.where(id: vip_id_before_decom).none?,
-            "VIP row #{vip_id_before_decom[0,8]} cleaned up by before_destroy callback")
+            "VIP row #{vip_id_before_decom[0, 8]} cleaned up by before_destroy callback")
 
 # ────────────────────────────────────────────────────────────────────
 # Smoke 9: Negative — bootstrap without SDWAN peer

@@ -92,7 +92,7 @@ puts "  ✓ Test 2: re-allocation is idempotent (same row id + table_id returned
 
 # ── Test 3: VrfAllocator never assigns reserved kernel tables ─────────
 
-reserved = [0, 253, 254, 255]
+reserved = [ 0, 253, 254, 255 ]
 abort("  ❌ Test 3 FAILED — allocator handed out reserved table_id #{hva_a.table_id}") if reserved.include?(hva_a.table_id)
 abort("  ❌ Test 3 FAILED — allocator handed out reserved table_id #{hva_b.table_id}") if reserved.include?(hva_b.table_id)
 puts "  ✓ Test 3: no reserved kernel table_ids handed out"
@@ -134,7 +134,7 @@ puts "  ✓ Test 6: frr.conf emits both VRF definitions"
 leak = ::Sdwan::RouteLeak.create!(
   account: account,
   source_network: network_a, dest_network: network_b,
-  prefix_filter: [{ "cidr" => network_a.cidr_64, "action" => "permit" }],
+  prefix_filter: [ { "cidr" => network_a.cidr_64, "action" => "permit" } ],
   direction: "one_way",
   reason: "smoke-test:n1a-route-leak"
 )
@@ -167,10 +167,10 @@ puts "  ✓ Test 9: revoking the leak removes `import vrf` from next compile"
 # ── Cleanup ───────────────────────────────────────────────────────────
 
 if ENV["SMOKE_KEEP"] != "1"
-  ::Sdwan::RouteLeak.where(source_network_id: [network_a.id, network_b.id]).destroy_all
+  ::Sdwan::RouteLeak.where(source_network_id: [ network_a.id, network_b.id ]).destroy_all
   ::Sdwan::HostVrfAssignment.where(node_instance_id: instance.id).destroy_all
-  ::Sdwan::MembershipCredential.where(sdwan_network_id: [network_a.id, network_b.id]).destroy_all
-  ::Sdwan::Peer.where(network: [network_a, network_b]).destroy_all
+  ::Sdwan::MembershipCredential.where(sdwan_network_id: [ network_a.id, network_b.id ]).destroy_all
+  ::Sdwan::Peer.where(network: [ network_a, network_b ]).destroy_all
   network_a.destroy
   network_b.destroy
   instance.destroy

@@ -29,7 +29,7 @@ module System
         dpkg_op = DPKG_OPS.fetch(op) do
           raise ArgumentError, "unknown comparison op: #{op.inspect}"
         end
-        cache_key = [version, dpkg_op, range_version]
+        cache_key = [ version, dpkg_op, range_version ]
 
         cached = @cache_mutex.synchronize { @cache[cache_key] }
         return cached unless cached.nil?

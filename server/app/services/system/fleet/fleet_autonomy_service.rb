@@ -284,7 +284,7 @@ module System
         when "system.package_module.create"
           repo = metadata&.dig("package_repository_id") || metadata&.dig(:package_repository_id)
           pkg  = metadata&.dig("package_name") || metadata&.dig(:package_name)
-          repo.present? && pkg.present? ? ["package_create_key", "#{repo}:#{pkg}"] : nil
+          repo.present? && pkg.present? ? [ "package_create_key", "#{repo}:#{pkg}" ] : nil
         when "system.package_module.refresh"
           key_value(metadata, "package_module_link_id")
         end

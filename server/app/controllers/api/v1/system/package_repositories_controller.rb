@@ -230,7 +230,7 @@ module Api
             node_platform_ids: []
           )
           platform_ids = permitted.key?(:node_platform_ids) ? Array(permitted.delete(:node_platform_ids)) : nil
-          [permitted, platform_ids]
+          [ permitted, platform_ids ]
         end
 
         # Reconciles the repo's linked platforms to match the given id

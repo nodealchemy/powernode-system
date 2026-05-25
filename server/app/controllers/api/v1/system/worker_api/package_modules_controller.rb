@@ -59,14 +59,14 @@ module Api
               architecture:          link.architecture
             )
             unless upstream
-              return render_success(success: false, errors: ["upstream package not in synced index"])
+              return render_success(success: false, errors: [ "upstream package not in synced index" ])
             end
 
             cmp = adapter.compare_versions(upstream.version, link.package_version)
             if cmp <= 0 && !params[:force]
               return render_success(
                 success: false,
-                errors:  ["upstream version #{upstream.version} not newer than current #{link.package_version}; use force=true to override"]
+                errors:  [ "upstream version #{upstream.version} not newer than current #{link.package_version}; use force=true to override" ]
               )
             end
 
@@ -77,7 +77,7 @@ module Api
             result = ::System::PackageModuleMaterializer.call(
               repository:          repo,
               package_name:        link.package_name,
-              architectures:       [link.architecture],
+              architectures:       [ link.architecture ],
               account:             mod.account,
               requested_by_user:   ::User.find_by(id: link.created_by_id) || mod.account.users.first,
               recommends_selected: Array(link.recommends_chosen),

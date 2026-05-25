@@ -549,7 +549,7 @@ module System
       return if already_primary || already_failover
 
       vip.update!(
-        failover_holder_peer_ids: Array(vip.failover_holder_peer_ids) + [joiner_peer.id]
+        failover_holder_peer_ids: Array(vip.failover_holder_peer_ids) + [ joiner_peer.id ]
       )
     end
 
@@ -571,10 +571,10 @@ module System
       return if current_primary == new_peer.id
 
       old_failover = Array(vip.failover_holder_peer_ids)
-      new_failover = (old_failover + [current_primary].compact).uniq - [new_peer.id]
+      new_failover = (old_failover + [ current_primary ].compact).uniq - [ new_peer.id ]
 
       vip.update!(
-        holder_peer_ids: [new_peer.id],
+        holder_peer_ids: [ new_peer.id ],
         failover_holder_peer_ids: new_failover
       )
     end

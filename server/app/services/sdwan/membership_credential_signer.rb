@@ -284,7 +284,7 @@ module Sdwan
     def deep_sort(obj)
       case obj
       when Hash
-        obj.sort.to_h { |k, v| [k, deep_sort(v)] }
+        obj.sort.to_h { |k, v| [ k, deep_sort(v) ] }
       when Array
         obj.map { |e| deep_sort(e) }
       else

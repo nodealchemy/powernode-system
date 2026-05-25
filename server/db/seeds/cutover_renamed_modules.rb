@@ -82,9 +82,9 @@ destroyed = 0
   nmv_count    = ::System::NodeModuleVersion.where(node_module_id: mod.id).count
   assign_count = if defined?(::System::NodeModuleAssignment)
                    ::System::NodeModuleAssignment.where(node_module_id: mod.id).count
-                 else
+  else
                    0
-                 end
+  end
   puts "  → destroy #{mod.id} (#{mod.name}) — #{nmv_count} NMVs, #{assign_count} assignments"
   mod.destroy!
   destroyed += 1

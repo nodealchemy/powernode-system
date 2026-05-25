@@ -111,11 +111,11 @@ module System
           when "idle"
             cause = if reason.include?("hold")
                       "BGP hold timer expired — KEEPALIVE traffic isn't reaching the neighbor"
-                    elsif reason.include?("authentication")
+            elsif reason.include?("authentication")
                       "BGP authentication failure"
-                    else
+            else
                       "Session idle — check last_error or restart manually"
-                    end
+            end
             {
               cause: cause,
               action: "soft-clear the session; if that fails, restart FRR on the local peer",

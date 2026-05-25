@@ -340,7 +340,7 @@ module System
             provider: connection.provider
           ) rescue nil
           if byoc&.credentials.is_a?(Hash)
-            [column, config_key].compact.each do |key|
+            [ column, config_key ].compact.each do |key|
               next unless value.nil?
               v = byoc.credentials[key.to_s] || byoc.credentials[key.to_sym]
               value = v if v.respond_to?(:present?) ? v.present? : !v.nil?

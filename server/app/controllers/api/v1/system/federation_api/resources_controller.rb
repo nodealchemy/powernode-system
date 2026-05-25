@@ -71,7 +71,7 @@ module Api
                        else
                          model.where(id: resource_id).exists?
                        end
-                     end
+            end
             scoped == true
           end
 

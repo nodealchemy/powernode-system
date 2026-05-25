@@ -32,7 +32,7 @@ module Sdwan
     # Reserved kernel routing tables — VrfAllocator must never hand
     # these out and the model rejects them defensively in case of a
     # direct insert that bypasses the allocator.
-    RESERVED_TABLE_IDS = [0, 253, 254, 255].freeze
+    RESERVED_TABLE_IDS = [ 0, 253, 254, 255 ].freeze
     TABLE_ID_MIN = 100
     TABLE_ID_MAX = 65_535
     # IFNAMSIZ on Linux is 16 bytes including the trailing NUL, so the

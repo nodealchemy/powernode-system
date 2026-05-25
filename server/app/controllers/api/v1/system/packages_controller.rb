@@ -74,7 +74,7 @@ module Api
           require_permission("system.packages.view")
           repo = scoped_repositories.find(params[:repository_id])
           resolver = ::System::PackageDependencyResolver.new(
-            repositories: [repo],
+            repositories: [ repo ],
             architecture: params[:architecture]
           )
           preview = resolver.preview(root_package_name: params[:package_name])

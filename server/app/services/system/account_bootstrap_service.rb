@@ -111,7 +111,7 @@ module System
       log.call("    ✓ NodePlatform: ubuntu-24.04-arm64-uefi (id=#{platform_arm64_uefi.id})")
 
       # ── Cosign trust policy backfill (only sets when blank) ─────────
-      [platform, platform_rpi4, platform_arm64_uefi].each do |p|
+      [ platform, platform_rpi4, platform_arm64_uefi ].each do |p|
         attrs = {}
         attrs[:cosign_identity_regexp] = "https://registry.example.com/powernode/.+" if p.cosign_identity_regexp.blank?
         attrs[:cosign_issuer_regexp]   = "https://registry.example.com"              if p.cosign_issuer_regexp.blank?

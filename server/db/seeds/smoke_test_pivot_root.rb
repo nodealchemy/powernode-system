@@ -66,7 +66,7 @@ abort_if.call(sb.nil?,  "NodeModule #{SYSTEM_BASE} missing — seed first")
 abort_if.call(osb.nil?, "NodeModule #{OS_BASE_UBUNTU} missing — seed first")
 puts "  ✓ Modules: #{SYSTEM_BASE} (v#{sb.current_version_number}), #{OS_BASE_UBUNTU} (v#{osb.current_version_number})"
 
-[sb, osb].each do |m|
+[ sb, osb ].each do |m|
   cv_id = m.try(:current_version_id) || m.try(:current_node_module_version_id)
   abort_if.call(cv_id.blank?, "#{m.name} has no current_version — CI publish must run before smoke")
 end
@@ -84,7 +84,7 @@ puts "  ✓ Node: #{NODE_NAME} (#{node.id}) bound to template #{node.node_templa
 
 # Direct module assignment — independent of whatever the template lists,
 # guarantees both system-base modules are in the reconciler's input set.
-[sb, osb].each_with_index do |mod, idx|
+[ sb, osb ].each_with_index do |mod, idx|
   next unless defined?(::System::NodeModuleAssignment)
   ::System::NodeModuleAssignment.find_or_create_by!(node: node, node_module: mod) do |a|
     a.priority = (idx + 1) * 10

@@ -96,7 +96,7 @@ end
 
 # Optional: add a default-deny firewall rule on each network to make the boundary
 # explicit (defense-in-depth, vs implicit routing-level isolation).
-[network_a, network_b].each do |net|
+[ network_a, network_b ].each do |net|
   next unless ::Sdwan::FirewallRule.where(account: account, network: net, action: "drop").none?
 
   ::Sdwan::FirewallRule.create!(

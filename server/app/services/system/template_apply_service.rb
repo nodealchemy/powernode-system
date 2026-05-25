@@ -94,7 +94,7 @@ module System
     rescue ActiveRecord::RecordInvalid => e
       Result.new(
         ok: false, created: [], skipped: [], purged: [],
-        warnings: expansion&.warnings || [], errors: ["#{e.class}: #{e.message}"]
+        warnings: expansion&.warnings || [], errors: [ "#{e.class}: #{e.message}" ]
       )
     end
 

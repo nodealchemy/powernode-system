@@ -1018,36 +1018,36 @@ module Ai
       # on the NodeInstance model. Order doesn't matter inside the set — they're
       # all peers of the same parent.
       DESTROY_INSTANCE_FKS = [
-        ["system_node_modules", "node_instance_id"],
-        ["system_bootstrap_tokens", "node_instance_id"],
-        ["system_node_certificates", "node_instance_id"],
-        ["sdwan_ovn_logical_switch_ports", "host_node_instance_id"],
-        ["system_unclaimed_devices", "claimed_node_instance_id"],
-        ["system_node_instance_peers", "node_instance_id"],
-        ["system_storage_assignments", "node_instance_id"],
-        ["devops_kubernetes_nodes", "node_instance_id"],
-        ["devops_docker_hosts", "node_instance_id"],
-        ["system_storage_credentials", "node_instance_id"],
-        ["system_mount_encryption_keys", "node_instance_id"],
-        ["billing_provisioning_usage_records", "node_instance_id"],
-        ["ai_provisioning_code_deployments", "node_instance_id"],
-        ["sdwan_host_vrf_assignments", "node_instance_id"],
-        ["sdwan_host_bridges", "node_instance_id"],
-        ["system_instance_mount_points", "node_instance_id"],
-        ["system_provider_volumes", "node_instance_id"]
+        [ "system_node_modules", "node_instance_id" ],
+        [ "system_bootstrap_tokens", "node_instance_id" ],
+        [ "system_node_certificates", "node_instance_id" ],
+        [ "sdwan_ovn_logical_switch_ports", "host_node_instance_id" ],
+        [ "system_unclaimed_devices", "claimed_node_instance_id" ],
+        [ "system_node_instance_peers", "node_instance_id" ],
+        [ "system_storage_assignments", "node_instance_id" ],
+        [ "devops_kubernetes_nodes", "node_instance_id" ],
+        [ "devops_docker_hosts", "node_instance_id" ],
+        [ "system_storage_credentials", "node_instance_id" ],
+        [ "system_mount_encryption_keys", "node_instance_id" ],
+        [ "billing_provisioning_usage_records", "node_instance_id" ],
+        [ "ai_provisioning_code_deployments", "node_instance_id" ],
+        [ "sdwan_host_vrf_assignments", "node_instance_id" ],
+        [ "sdwan_host_bridges", "node_instance_id" ],
+        [ "system_instance_mount_points", "node_instance_id" ],
+        [ "system_provider_volumes", "node_instance_id" ]
       ].freeze
 
       # FK dependents of sdwan_peers — those peers are attached to the instance
       # being destroyed and themselves have child rows that must clear first.
       DESTROY_SDWAN_PEER_FKS = [
-        ["sdwan_peer_keys", "sdwan_peer_id"],
-        ["sdwan_subnet_advertisements", "sdwan_peer_id"],
-        ["sdwan_virtual_ip_assignments", "sdwan_peer_id"],
-        ["sdwan_bgp_sessions", "sdwan_peer_id"],
-        ["sdwan_bgp_sessions", "neighbor_peer_id"],
-        ["sdwan_port_mappings", "sdwan_peer_id"],
-        ["sdwan_port_mappings", "target_peer_id"],
-        ["sdwan_membership_credentials", "sdwan_peer_id"]
+        [ "sdwan_peer_keys", "sdwan_peer_id" ],
+        [ "sdwan_subnet_advertisements", "sdwan_peer_id" ],
+        [ "sdwan_virtual_ip_assignments", "sdwan_peer_id" ],
+        [ "sdwan_bgp_sessions", "sdwan_peer_id" ],
+        [ "sdwan_bgp_sessions", "neighbor_peer_id" ],
+        [ "sdwan_port_mappings", "sdwan_peer_id" ],
+        [ "sdwan_port_mappings", "target_peer_id" ],
+        [ "sdwan_membership_credentials", "sdwan_peer_id" ]
       ].freeze
 
       def destroy_instance(params)
@@ -1062,26 +1062,26 @@ module Ai
           # NULL the instance's pointer before deleting its bootstrap_tokens.
           n = ActiveRecord::Base.connection.exec_update(
             "UPDATE system_node_instances SET enrollment_token_id = NULL WHERE id = $1 AND enrollment_token_id IS NOT NULL",
-            "null-enrollment-token", [inst_id]
+            "null-enrollment-token", [ inst_id ]
           )
           deleted["system_node_instances.enrollment_token_id_nulled"] = n if n > 0
 
           # SDWAN peers attached to this instance + their child rows
           peer_rows = ActiveRecord::Base.connection.exec_query(
             "SELECT id FROM sdwan_peers WHERE node_instance_id = $1",
-            "peers_for_inst", [inst_id]
+            "peers_for_inst", [ inst_id ]
           )
           peer_rows.rows.flatten.each do |peer_id|
             DESTROY_SDWAN_PEER_FKS.each do |table, col|
               k = ActiveRecord::Base.connection.exec_delete(
                 "DELETE FROM #{table} WHERE #{col} = $1",
-                "del-#{table}-#{col}", [peer_id]
+                "del-#{table}-#{col}", [ peer_id ]
               )
               deleted["#{table}.#{col}"] += k if k > 0
             end
             k = ActiveRecord::Base.connection.exec_delete(
               "DELETE FROM sdwan_peers WHERE id = $1",
-              "del-peer", [peer_id]
+              "del-peer", [ peer_id ]
             )
             peers_destroyed += k
           end
@@ -1090,7 +1090,7 @@ module Ai
           DESTROY_INSTANCE_FKS.each do |table, col|
             k = ActiveRecord::Base.connection.exec_delete(
               "DELETE FROM #{table} WHERE #{col} = $1",
-              "del-#{table}-#{col}", [inst_id]
+              "del-#{table}-#{col}", [ inst_id ]
             )
             deleted["#{table}.#{col}"] = k if k > 0
           end
@@ -2467,7 +2467,7 @@ module Ai
         worker = ::Worker.create_worker!(
           name: params[:name],
           account: @account,
-          roles: ["ci_worker"]
+          roles: [ "ci_worker" ]
         )
 
         success_result(

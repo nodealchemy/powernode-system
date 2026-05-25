@@ -147,7 +147,7 @@ module System
 
       def record_failure!(error)
         attempt = (@assignment.error_message.to_s.match(/attempt:(\d+)/)&.[](1).to_i) + 1
-        delay = [BACKOFF_BASE * (2**(attempt - 1)), BACKOFF_MAX.to_i].min
+        delay = [ BACKOFF_BASE * (2**(attempt - 1)), BACKOFF_MAX.to_i ].min
         backoff_until = (Time.current + delay).iso8601
 
         @assignment.mark_status!(

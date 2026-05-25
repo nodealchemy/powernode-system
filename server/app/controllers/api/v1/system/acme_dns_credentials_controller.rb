@@ -228,10 +228,10 @@ module Api
         def sanitize_credential_payload(payload, provider_slug)
           allowed = required_fields(provider_slug)
           hash = case payload
-                 when ActionController::Parameters then payload.to_unsafe_h
-                 when Hash then payload
-                 else {}
-                 end
+          when ActionController::Parameters then payload.to_unsafe_h
+          when Hash then payload
+          else {}
+          end
           hash.each_with_object({}) do |(k, v), out|
             key = k.to_s
             out[key] = v.to_s if allowed.include?(key) && v.to_s.strip != ""

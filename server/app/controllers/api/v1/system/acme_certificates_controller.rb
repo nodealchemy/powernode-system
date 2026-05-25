@@ -237,10 +237,10 @@ module Api
 
         def build_create_metadata(supplied)
           base = case supplied
-                 when ActionController::Parameters then supplied.to_unsafe_h
-                 when Hash then supplied
-                 else {}
-                 end
+          when ActionController::Parameters then supplied.to_unsafe_h
+          when Hash then supplied
+          else {}
+          end
           if (email = params[:acme_email].to_s.strip).present?
             base["acme_email"] = email
           end

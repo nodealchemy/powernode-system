@@ -294,7 +294,7 @@ module Ai
       end
 
       def bool(v)
-        return v if [true, false].include?(v)
+        return v if [ true, false ].include?(v)
         v.to_s.casecmp("true").zero? || v.to_s == "1"
       end
 

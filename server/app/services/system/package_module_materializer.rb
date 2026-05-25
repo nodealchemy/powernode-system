@@ -25,7 +25,7 @@ module System
       keyword_init: true
     ) do
       def all_modules
-        [top_level_module, *dependency_modules, *recommends_modules].compact
+        [ top_level_module, *dependency_modules, *recommends_modules ].compact
       end
 
       def success?
@@ -47,7 +47,7 @@ module System
       # kind-specific (apt's "amd64" / rpm's "x86_64" — whatever the
       # upstream metadata used). Translate at the boundary so the resolver
       # WHERE clauses hit the right rows.
-      canonical_input      = Array(architectures).presence || ["amd64"]
+      canonical_input      = Array(architectures).presence || [ "amd64" ]
       @architectures       = canonical_input.filter_map do |canonical|
         arch_row = ::System::NodeArchitecture.find_normalized(canonical)
         arch_row ? arch_row.value_for_kind(repository.kind) : canonical
@@ -66,7 +66,7 @@ module System
 
       @architectures.each do |arch|
         resolver = ::System::PackageDependencyResolver.new(
-          repositories: [@repository],
+          repositories: [ @repository ],
           architecture: arch
         )
         result = resolver.resolve(
@@ -129,7 +129,7 @@ module System
             next unless from_mod && to_mod
             next if from_mod.id == to_mod.id
 
-            key = [from_mod.id, to_mod.id, edge.dep_type]
+            key = [ from_mod.id, to_mod.id, edge.dep_type ]
             next if unique_edges.include?(key)
 
             unique_edges.add(key)

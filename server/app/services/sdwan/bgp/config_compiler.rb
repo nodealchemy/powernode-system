@@ -115,9 +115,9 @@ module Sdwan
         all_peers = peer.network.peers.where.not(id: peer.id).to_a
         target_peers = if route_reflector?(peer)
                          all_peers
-                       else
+        else
                          all_peers.select { |p| route_reflector?(p) }
-                       end
+        end
 
         target_peers.map do |np|
           {
@@ -131,7 +131,7 @@ module Sdwan
       end
 
       def networks_to_announce(peer)
-        out = [peer.assigned_address.to_s]
+        out = [ peer.assigned_address.to_s ]
         out << peer.network.cidr_64 if advertise_overlay_subnet?(peer.network)
         out.concat(Array(peer.lan_subnets))
         out.concat(vip_cidrs_held_by(peer))
@@ -181,7 +181,7 @@ module Sdwan
       # single-network slice — used by tests that build peers without
       # a host.
       def vrf_pairs_for_host
-        return [[synthetic_assignment_for(@peer), @peer]] if @host.nil?
+        return [ [ synthetic_assignment_for(@peer), @peer ] ] if @host.nil?
 
         ::Sdwan::HostVrfAssignment
           .compilable
@@ -193,7 +193,7 @@ module Sdwan
             host_peer = hva.network.peers.find { |p| p.node_instance_id == @host.id }
             next unless host_peer
 
-            [hva, host_peer]
+            [ hva, host_peer ]
           end
       end
 

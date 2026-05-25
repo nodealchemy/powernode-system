@@ -51,7 +51,7 @@ module Sdwan
           key = other.keys.find { |k| k.revoked_at.nil? }
           next unless key
 
-          allowed = [other.assigned_address]
+          allowed = [ other.assigned_address ]
           allowed += Array(other.lan_subnets) if static_subnet_routing?
           # Slice 9b — VIPs held by `other` route through `other`.
           allowed += Array(@vips_by_holder[other.id]) if static_subnet_routing?
@@ -66,7 +66,7 @@ module Sdwan
             endpoint: nil,                          # clients connect outbound; hub doesn't dial them
             endpoint_family: nil,
             fallback_endpoint: nil,
-            allowed_ips: [dev.assigned_address],
+            allowed_ips: [ dev.assigned_address ],
             persistent_keepalive: nil,              # client-side handles its own keepalive
             kind: "user_device"                     # hint for the agent + UI
           }
@@ -98,7 +98,7 @@ module Sdwan
           next unless key
           next unless hub.primary_endpoint
 
-          allowed = [@network.cidr_64] + external_subnets + vip_cidrs +
+          allowed = [ @network.cidr_64 ] + external_subnets + vip_cidrs +
                     (static_subnet_routing? ? Array(hub.lan_subnets) : []) +
                     pod_cidrs
           build_peer_entry(hub, key, allowed_ips: allowed.uniq,
@@ -117,7 +117,7 @@ module Sdwan
         return [] if @network.pod_subnet_prefix.blank?
         return [] unless peer&.respond_to?(:k3s_host?) && peer.k3s_host?
 
-        [@network.pod_subnet_prefix]
+        [ @network.pod_subnet_prefix ]
       end
 
       def static_subnet_routing?
@@ -138,7 +138,7 @@ module Sdwan
           holders = Array(vip.holder_peer_ids)
           next if holders.empty?
 
-          target = vip.anycast? ? holders : [holders.first]
+          target = vip.anycast? ? holders : [ holders.first ]
           target.each do |peer_id|
             acc[peer_id] ||= []
             acc[peer_id] << vip.cidr

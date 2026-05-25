@@ -25,7 +25,7 @@ account = ::Account.first or abort("  ❌ No account in DB — seed an Account f
 # prior smoke's row (UnclaimedDevice upserts on (account_id, discovered_mac)
 # scoped to non-expired rows; reusing a MAC would refresh instead of create).
 ts       = Time.current.to_i
-mac      = "dc:a6:32:%02x:%02x:%02x" % [(ts >> 16) & 0xff, (ts >> 8) & 0xff, ts & 0xff]
+mac      = "dc:a6:32:%02x:%02x:%02x" % [ (ts >> 16) & 0xff, (ts >> 8) & 0xff, ts & 0xff ]
 dmi_uuid = SecureRandom.uuid
 hostname = "smoke-claim-#{ts}"
 

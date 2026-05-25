@@ -40,7 +40,7 @@ def find_or_create_node(account:, template:, region:, itype:, name:)
     status: "running"
   )
   instance.save!
-  [node, instance]
+  [ node, instance ]
 end
 
 # Only the gateway + client are SDWAN peers; upstream is external (not
@@ -57,7 +57,7 @@ puts "  ✅ Provisioned gateway + client (upstream is external, not modeled)"
 network = Sdwan::Network.find_or_create_by!(account: account, name: "smoke-storage-gateway-overlay") do |n|
   n.routing_protocol = "static" if n.respond_to?(:routing_protocol=)
 end
-[gateway_instance, client_instance].each do |instance|
+[ gateway_instance, client_instance ].each do |instance|
   next if Sdwan::Peer.exists?(node_instance_id: instance.id, sdwan_network_id: network.id)
 
   Sdwan::PeerEnroller.call(network: network, node_instance: instance)

@@ -76,7 +76,7 @@ puts "  ✓ Test 3: explicit kind override wins on heavyweight (kind=linux)"
 
 # ── Test 4: TopologyCompiler stamps the Kind that the agent will read ─
 
-[hb_heavy, hb_override, hb_light].each(&:mark_active!)
+[ hb_heavy, hb_override, hb_light ].each(&:mark_active!)
 
 heavy_payload = ::Sdwan::TopologyCompiler.host_bridges_for(heavy)
 light_payload = ::Sdwan::TopologyCompiler.host_bridges_for(light)
@@ -101,7 +101,7 @@ puts "  ✓ Test 5: NodeInstance#suggest_network_profile returns a value (heavy=
 # ── Cleanup ───────────────────────────────────────────────────────────
 
 if ENV["SMOKE_KEEP"] != "1"
-  [heavy, light].each do |inst|
+  [ heavy, light ].each do |inst|
     ::Sdwan::HostBridge.where(node_instance_id: inst.id).destroy_all
     inst.destroy
     inst.node.destroy

@@ -152,9 +152,9 @@ module System
       all_policies.each do |p|
         bucket = if p.scope == "agent" && p.agent
                    p.agent.name
-                 else
+        else
                    "Manual Operations"
-                 end
+        end
         next unless result.key?(bucket)
         result[bucket] << serialize_policy(p)
       end

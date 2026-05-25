@@ -42,7 +42,7 @@ def find_or_create_node(account:, template:, region:, itype:, name:)
     status: "running"
   )
   instance.save!
-  [node, instance]
+  [ node, instance ]
 end
 
 _server_node, server_instance = find_or_create_node(
@@ -57,7 +57,7 @@ puts "  ✅ Provisioned 2 node instances (server + client)"
 network = Sdwan::Network.find_or_create_by!(account: account, name: "smoke-storage-overlay") do |n|
   n.routing_protocol = "static" if n.respond_to?(:routing_protocol=)
 end
-[server_instance, client_instance].each do |instance|
+[ server_instance, client_instance ].each do |instance|
   next if Sdwan::Peer.exists?(node_instance_id: instance.id, sdwan_network_id: network.id)
 
   Sdwan::PeerEnroller.call(network: network, node_instance: instance)

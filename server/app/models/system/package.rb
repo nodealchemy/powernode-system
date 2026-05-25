@@ -34,8 +34,8 @@ module System
     belongs_to :package_repository, class_name: "System::PackageRepository"
     has_many :package_module_links,
              class_name: "System::PackageModuleLink",
-             primary_key: [:package_repository_id, :name, :architecture],
-             foreign_key: [:package_repository_id, :package_name, :architecture]
+             primary_key: [ :package_repository_id, :name, :architecture ],
+             foreign_key: [ :package_repository_id, :package_name, :architecture ]
 
     # === Validations ===
     validates :name, presence: true
@@ -48,7 +48,7 @@ module System
     scope :for_arch,         ->(arch) { where(architecture: arch) }
     scope :for_name,         ->(name) { where(name: name) }
     scope :with_embedding,   -> { where.not(embedding: nil) }
-    scope :without_embedding,-> { where(embedding: nil) }
+    scope :without_embedding, -> { where(embedding: nil) }
 
     # Lease-ordering SQL for the embedding pipeline. Ordering, top-to-bottom:
     #
@@ -110,7 +110,7 @@ module System
       base.where(
         "name = ? OR provides @> ?::jsonb",
         capability,
-        [[{ name: capability }]].to_json
+        [ [ { name: capability } ] ].to_json
       )
     }
 

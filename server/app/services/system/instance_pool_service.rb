@@ -111,8 +111,8 @@ module System
       # window) can't push the pool past its ceiling.
       raw_deficit = pool.deficit
       total_now = pool.ready_count + pool.warming_count + pool.claimed_count
-      headroom = pool.max_size.to_i.positive? ? [pool.max_size.to_i - total_now, 0].max : raw_deficit
-      deficit = [raw_deficit, headroom].min
+      headroom = pool.max_size.to_i.positive? ? [ pool.max_size.to_i - total_now, 0 ].max : raw_deficit
+      deficit = [ raw_deficit, headroom ].min
       return { provisioned: 0, deficit: raw_deficit, capped_by_max_size: deficit < raw_deficit } if deficit.zero?
 
       ::ActiveRecord::Base.transaction do

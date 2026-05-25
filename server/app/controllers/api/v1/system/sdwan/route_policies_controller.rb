@@ -101,8 +101,8 @@ module Api
               :name, :description, :scope, :scope_resource_id, :direction, :enabled,
               statements: [
                 {
-                  match:  [:as_path_regex, prefix_in: [], community_in: [], tag_in: [], peer_in: []],
-                  action: [:type, :set_local_pref, :set_med, :prepend_as_path, :add_community]
+                  match:  [ :as_path_regex, prefix_in: [], community_in: [], tag_in: [], peer_in: [] ],
+                  action: [ :type, :set_local_pref, :set_med, :prepend_as_path, :add_community ]
                 }
               ],
               metadata: {}

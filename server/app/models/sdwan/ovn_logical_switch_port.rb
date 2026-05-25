@@ -82,7 +82,7 @@ module Sdwan
     # never to collide with a vendor OUI.
     def self.generate_mac
       bytes = Array.new(5) { rand(0..255) }
-      ([0x02] + bytes).map { |b| b.to_s(16).rjust(2, "0") }.join(":")
+      ([ 0x02 ] + bytes).map { |b| b.to_s(16).rjust(2, "0") }.join(":")
     end
 
     aasm column: :state, whiny_transitions: false do

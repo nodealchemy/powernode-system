@@ -93,7 +93,7 @@ module Sdwan
       key = "#{network_id}:#{neighbor_address}"
       return @resolver_cache[key] if @resolver_cache.key?(key)
 
-      candidates = [neighbor_address, "#{neighbor_address}/128", "#{neighbor_address}/32"]
+      candidates = [ neighbor_address, "#{neighbor_address}/128", "#{neighbor_address}/32" ]
       hit = ::Sdwan::Peer.where(sdwan_network_id: network_id, assigned_address: candidates).pick(:id)
 
       # Also try mask-stripped lookup if assigned_address comes back with /128

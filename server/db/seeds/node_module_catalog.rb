@@ -133,7 +133,7 @@ end
 puts "    ✓ ProviderInstanceType: qemu.small (#{itype_small.vcpus}/#{itype_small.memory_mb}MB), qemu.medium"
 
 # Wire instance types to the region so provisioning can resolve them
-[itype_small, itype_medium].each do |it|
+[ itype_small, itype_medium ].each do |it|
   rit = System::RegionInstanceType.find_or_initialize_by(provider_region: region, provider_instance_type: it)
   rit.available = true
   rit.save!

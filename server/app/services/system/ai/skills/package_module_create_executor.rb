@@ -43,7 +43,7 @@ module System
           effective_user = @user || @account.users.where(account_id: @account.id).first
           return failure("no user available to attribute creation to") unless effective_user
 
-          archs = Array(architectures).presence || Array(repo.architectures).presence || ["amd64"]
+          archs = Array(architectures).presence || Array(repo.architectures).presence || [ "amd64" ]
           category = category_id.present? ?
                        @account.system_node_module_categories.find_by(id: category_id) : nil
 

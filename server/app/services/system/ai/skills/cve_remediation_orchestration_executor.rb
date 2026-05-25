@@ -190,12 +190,12 @@ module System
           scope = ::System::CveExposure.unresolved.where(cve: cve)
           scope = if explicit_ids.present?
                     scope.where(id: explicit_ids)
-                  elsif module_ids.present?
+          elsif module_ids.present?
                     scope.joins(node_module_version: :node_module)
                          .where(system_node_modules: { id: module_ids })
-                  else
+          else
                     scope
-                  end
+          end
 
           scope.find_each.count do |exposure|
             exposure.update!(state: "remediating") if exposure.state == "open"

@@ -59,15 +59,15 @@ module System
           pre_label = m[1]
           pre_num   = m[2].to_i
           v = v[0...m.begin(0)].sub(/[._-]\z/, "")
-          pre = [PRE_RANKS[pre_label], pre_num]
+          pre = [ PRE_RANKS[pre_label], pre_num ]
         end
 
         main = v.split(".").map { |s| Integer(s, 10) rescue 0 }
-        [main, pre, post, dev]
+        [ main, pre, post, dev ]
       end
 
       def self.compare_main(a, b)
-        len = [a.size, b.size].max
+        len = [ a.size, b.size ].max
         a_padded = a + Array.new(len - a.size, 0)
         b_padded = b + Array.new(len - b.size, 0)
         a_padded <=> b_padded

@@ -62,7 +62,7 @@ module System
     validate :account_matches_node_module
 
     scope :with_health_check, -> { where.not(health_endpoint: nil) }
-    scope :exposes_port,      ->(port) { where("exposed_ports @> ?", [{ port: port }].to_json) }
+    scope :exposes_port,      ->(port) { where("exposed_ports @> ?", [ { port: port } ].to_json) }
 
     def http_health_url
       return nil if health_endpoint.blank?

@@ -101,7 +101,7 @@ module Sdwan
 
     # Convenience: total seconds remaining before hard expiry.
     def seconds_until_expiry(now: Time.current)
-      [(not_after - now).to_i, 0].max
+      [ (not_after - now).to_i, 0 ].max
     end
 
     # The signed envelope as parsed JSON. Useful for tests and operator

@@ -35,9 +35,9 @@ module System
 
         # Severity scaling — breach % over target threshold.
         SEVERITY_THRESHOLDS = [
-          [50.0, :critical], # ≥50% above target → critical
-          [25.0, :high],     # ≥25% → high
-          [10.0, :medium]    # ≥10% → medium
+          [ 50.0, :critical ], # ≥50% above target → critical
+          [ 25.0, :high ],     # ≥25% → high
+          [ 10.0, :medium ]    # ≥10% → medium
           # else :low
         ].freeze
 

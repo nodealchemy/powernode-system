@@ -18,7 +18,7 @@ module System
       # file (rare in 2026 but still served by some mirrors / third-party
       # repos). Cannot use `%w[.xz .gz ""]` here because %w turns "" into
       # the literal two-character string `""`, not an empty string.
-      COMPRESSION_EXTENSIONS = [".xz", ".gz", ""].freeze
+      COMPRESSION_EXTENSIONS = [ ".xz", ".gz", "" ].freeze
 
       def sync_metadata(repository:, architectures:)
         return enum_for(:sync_metadata, repository: repository, architectures: architectures) unless block_given?
@@ -113,7 +113,7 @@ module System
         in_release_url = "#{base}/dists/#{suite}/InRelease"
         begin
           in_release = http_get(in_release_url)
-          return [in_release, nil] # Clearsigned: signature embedded; gpg --verify on the whole blob.
+          return [ in_release, nil ] # Clearsigned: signature embedded; gpg --verify on the whole blob.
         rescue FetchError
           # Fall through to detached signature path
         end
@@ -124,7 +124,7 @@ module System
         rescue FetchError
           nil
         end
-        [release, sig]
+        [ release, sig ]
       end
 
       def fetch_packages_file(repository, component:, architecture:)

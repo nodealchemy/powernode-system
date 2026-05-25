@@ -52,7 +52,7 @@ module System
                   network_id: mc.sdwan_network_id,
                   revision: mc.revision,
                   not_after: mc.not_after.utc.iso8601,
-                  seconds_to_expiry: [age_to_exp, 0].max,
+                  seconds_to_expiry: [ age_to_exp, 0 ].max,
                   remediation_action: "system.sdwan_credential_refresh"
                 },
                 fingerprint: "sdwan_credential_expiring:#{mc.id}"
@@ -68,7 +68,7 @@ module System
                          .where(account_id: account.id, status: "expiring")
                          .where("not_after > ?", now)
                          .select(:sdwan_peer_id, :sdwan_network_id, :id)
-                         .group_by { |row| [row.sdwan_peer_id, row.sdwan_network_id] }
+                         .group_by { |row| [ row.sdwan_peer_id, row.sdwan_network_id ] }
 
           stuck_keys.each do |(peer_id, network_id), rows|
             latest_rev = ::Sdwan::MembershipCredential
@@ -93,7 +93,7 @@ module System
                 revision: stuck_record.revision,
                 refresh_after: stuck_record.refresh_after.utc.iso8601,
                 not_after: stuck_record.not_after.utc.iso8601,
-                seconds_overdue: [(now - stuck_record.refresh_after).to_i, 0].max,
+                seconds_overdue: [ (now - stuck_record.refresh_after).to_i, 0 ].max,
                 remediation_action: "system.sdwan_credential_refresh"
               },
               fingerprint: "sdwan_credential_refresh_stalled:#{peer_id}:#{network_id}"

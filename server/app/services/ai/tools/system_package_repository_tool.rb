@@ -279,7 +279,7 @@ module Ai
           kind:                  params[:kind],
           visibility:            visibility,
           base_url:              params[:base_url],
-          architectures:         Array(params[:architectures]).presence || ["amd64"],
+          architectures:         Array(params[:architectures]).presence || [ "amd64" ],
           apt_config:            params[:apt_config] || {},
           rpm_config:            params[:rpm_config] || {},
           signing_key_armor:     params[:signing_key_armor],
@@ -431,7 +431,7 @@ module Ai
       def resolve_dependencies(params)
         repo = scoped_repos.find(params[:repository_id])
         resolver = ::System::PackageDependencyResolver.new(
-          repositories: [repo],
+          repositories: [ repo ],
           architecture: params[:architecture]
         )
         preview = resolver.preview(root_package_name: params[:package_name])

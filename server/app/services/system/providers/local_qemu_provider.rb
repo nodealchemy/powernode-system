@@ -67,7 +67,7 @@ module System
         )
       end
 
-      # Reconcile NodeInstance state from libvirt. Used by NodeInstancesController#index
+       # Reconcile NodeInstance state from libvirt. Used by NodeInstancesController#index
        # to refresh in-flight instances lazily on read, and by background reconcilers.
        # Returns a Hash matching the BaseProvider build_instance_response shape so callers
        # can apply it via NodeInstance.update! without translation.

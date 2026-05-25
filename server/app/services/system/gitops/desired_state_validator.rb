@@ -107,7 +107,7 @@ module System
 
           ASSIGNMENT_BOOLEAN_KEYS.each do |k|
             next unless attrs.key?(k)
-            unless [true, false].include?(attrs[k])
+            unless [ true, false ].include?(attrs[k])
               @errors["#{path}.#{k}"] << "must be true or false"
             end
           end

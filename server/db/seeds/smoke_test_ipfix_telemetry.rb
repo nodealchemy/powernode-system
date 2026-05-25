@@ -94,7 +94,7 @@ light_with_ipfix = ::Sdwan::TopologyCompiler.host_bridges_for(light)
 
 heavy_entry = heavy_with_ipfix.first
 abort("  ❌ Test 2 FAILED — ovs bridge missing :ipfix") unless heavy_entry.key?(:ipfix)
-abort("  ❌ Test 2 FAILED — :ipfix targets wrong (#{heavy_entry[:ipfix][:targets].inspect})") unless heavy_entry[:ipfix][:targets] == ["10.0.0.1:4739"]
+abort("  ❌ Test 2 FAILED — :ipfix targets wrong (#{heavy_entry[:ipfix][:targets].inspect})") unless heavy_entry[:ipfix][:targets] == [ "10.0.0.1:4739" ]
 abort("  ❌ Test 2 FAILED — :ipfix sampling wrong (#{heavy_entry[:ipfix][:sampling]})") unless heavy_entry[:ipfix][:sampling] == 64
 puts "  ✓ Test 2: ovs bridge gets :ipfix (targets=#{heavy_entry[:ipfix][:targets].inspect}, sampling=#{heavy_entry[:ipfix][:sampling]})"
 
@@ -106,7 +106,7 @@ puts "  ✓ Test 2: linux bridge correctly skipped (no :ipfix key)"
 
 collector.update!(host: "fd00::1")
 heavy_v6 = ::Sdwan::TopologyCompiler.host_bridges_for(heavy)
-abort("  ❌ Test 3 FAILED — IPv6 not bracketed (#{heavy_v6.first[:ipfix][:targets].inspect})") unless heavy_v6.first[:ipfix][:targets] == ["[fd00::1]:4739"]
+abort("  ❌ Test 3 FAILED — IPv6 not bracketed (#{heavy_v6.first[:ipfix][:targets].inspect})") unless heavy_v6.first[:ipfix][:targets] == [ "[fd00::1]:4739" ]
 puts "  ✓ Test 3: IPv6 collector renders as bracketed target [fd00::1]:4739"
 
 # ── Test 4: Disabled collector → no ipfix block ───────────────────────
@@ -127,8 +127,8 @@ puts "  ✓ Test 5: re-enabling collector → :ipfix re-emitted"
 
 if ENV["SMOKE_KEEP"] != "1"
   ::Sdwan::IpfixCollector.where(account_id: account.id).where("name LIKE 'smoke-ipfix-%'").destroy_all
-  ::Sdwan::HostBridge.where(node_instance_id: [heavy.id, light.id]).destroy_all
-  [heavy, light].each do |inst|
+  ::Sdwan::HostBridge.where(node_instance_id: [ heavy.id, light.id ]).destroy_all
+  [ heavy, light ].each do |inst|
     inst.destroy
     inst.node.destroy
   end

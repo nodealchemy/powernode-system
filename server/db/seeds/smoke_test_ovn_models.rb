@@ -91,7 +91,7 @@ lsp1 = ::Sdwan::OvnLogicalSwitchPort.create!(
   logical_switch: ls,
   host_node_instance: heavy,
   name: "lsp-vm-001",
-  addresses: ["10.10.0.5"],
+  addresses: [ "10.10.0.5" ],
   kind: "vm"
 )
 lsp1.mark_active!
@@ -165,7 +165,7 @@ if ENV["SMOKE_KEEP"] != "1"
   ::Sdwan::OvnDeployment.where(account_id: account.id).destroy_all
   ::Sdwan::Peer.where(network: network).destroy_all
   network.destroy
-  [heavy, light].each do |inst|
+  [ heavy, light ].each do |inst|
     inst.destroy
     inst.node.destroy
   end

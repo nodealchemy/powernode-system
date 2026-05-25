@@ -83,6 +83,5 @@ module System
         metadata: metadata.merge("invalid_reason" => reason.to_s.presence)
       )
     end
-
   end
 end

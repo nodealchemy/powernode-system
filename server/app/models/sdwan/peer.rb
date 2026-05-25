@@ -90,7 +90,7 @@ module Sdwan
     end
 
     def endpoint_candidates
-      [primary_endpoint, fallback_endpoint].compact
+      [ primary_endpoint, fallback_endpoint ].compact
     end
 
     # Recompute status from last_handshake_at. Called by the heartbeat

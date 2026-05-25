@@ -58,7 +58,7 @@ module System
         snapshot_result = ::System::Compliance::ComplianceSnapshotService.snapshot!(account: account, scope: :all)
         unless snapshot_result.ok?
           return Result.new(ok?: false, snapshots_emitted: 0, accounts_failed: 1,
-                             errors: [{ account_id: account.id, error: snapshot_result.error }])
+                             errors: [ { account_id: account.id, error: snapshot_result.error } ])
         end
 
         # Severity bumped to medium so the retention sweep's "critical bonus
@@ -82,7 +82,7 @@ module System
         Result.new(ok?: true, snapshots_emitted: 1, accounts_failed: 0, errors: [])
       rescue StandardError => e
         Result.new(ok?: false, snapshots_emitted: 0, accounts_failed: 1,
-                   errors: [{ account_id: account&.id, error: "#{e.class}: #{e.message}" }])
+                   errors: [ { account_id: account&.id, error: "#{e.class}: #{e.message}" } ])
       end
     end
   end

@@ -185,7 +185,7 @@ module Sdwan
 
       self.class.where(account_id: account_id)
                 .where.not(id: id)
-                .where.not(pod_subnet_prefix: [nil, ""])
+                .where.not(pod_subnet_prefix: [ nil, "" ])
                 .find_each do |other|
         begin
           other_addr = IPAddr.new(other.pod_subnet_prefix)

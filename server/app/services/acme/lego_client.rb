@@ -139,9 +139,9 @@ module Acme
       raise IntegrationError, "account_key_pem required (only the issuing account can revoke)" if account_key_pem.blank?
 
       reason_code = case reason
-                    when Integer then reason
-                    when String then REVOKE_REASONS[reason] || 0
-                    else 0
+      when Integer then reason
+      when String then REVOKE_REASONS[reason] || 0
+      else 0
       end
 
       ::Dir.mktmpdir("powernode-acme-revoke") do |dir|
@@ -203,11 +203,11 @@ module Acme
       return explicit if explicit.present? && ::File.executable?(explicit)
 
       arch = case `uname -m`.strip
-             when "x86_64" then "amd64"
-             when "aarch64", "arm64" then "arm64"
-             else
+      when "x86_64" then "amd64"
+      when "aarch64", "arm64" then "arm64"
+      else
                raise IntegrationError, "unsupported architecture for powernode-acme: #{`uname -m`}"
-             end
+      end
 
       candidate = ::Rails.root.join(
         "..", "extensions", "system", "agent", "dist", "powernode-acme-linux-#{arch}"

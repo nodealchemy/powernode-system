@@ -90,7 +90,7 @@ module FileManagement
         name: virtual_ip_name
       ) do |vip|
         vip.anycast = false if vip.respond_to?(:anycast=)
-        vip.holder_peer_ids = [backend_peer.id] if vip.respond_to?(:holder_peer_ids=)
+        vip.holder_peer_ids = [ backend_peer.id ] if vip.respond_to?(:holder_peer_ids=)
         vip.metadata = { storage_id: @storage.id, provider_type: @storage.provider_type } if vip.respond_to?(:metadata=)
         # Derive a unique /128 inside the network's prefix using the same
         # deterministic allocator peers use; storage VIPs and peer addresses

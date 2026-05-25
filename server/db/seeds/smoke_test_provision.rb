@@ -50,16 +50,16 @@ end
 # and write it to /root/.ssh/authorized_keys for SSH access.
 operator_pubkey = ENV["POWERNODE_OPERATOR_SSH_PUBKEY"].presence
 if operator_pubkey.nil?
-  candidate = ["#{Dir.home}/.ssh/id_ed25519.pub",
+  candidate = [ "#{Dir.home}/.ssh/id_ed25519.pub",
                "#{Dir.home}/.ssh/id_rsa.pub",
-               "#{Dir.home}/.ssh/id_ecdsa.pub"].find { |p| File.exist?(p) }
+               "#{Dir.home}/.ssh/id_ecdsa.pub" ].find { |p| File.exist?(p) }
   operator_pubkey = File.read(candidate).strip if candidate
   puts "  SSH key:  read from #{candidate}" if candidate
 end
 if operator_pubkey
   current_keys = Array(node.config.is_a?(Hash) && node.config["authorized_keys"])
   unless current_keys.include?(operator_pubkey)
-    new_config = (node.config || {}).merge("authorized_keys" => (current_keys + [operator_pubkey]).uniq)
+    new_config = (node.config || {}).merge("authorized_keys" => (current_keys + [ operator_pubkey ]).uniq)
     node.update!(config: new_config)
     puts "  SSH key:  injected into node.config['authorized_keys'] (now #{node.authorized_keys.length} key(s))"
   else

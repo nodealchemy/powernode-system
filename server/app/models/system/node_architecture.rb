@@ -46,8 +46,8 @@ module System
     scope :canonical,       -> { where(is_canonical: true) }
     scope :custom,          -> { where(is_canonical: false) }
     scope :ordered,         -> { order(:family, :name) }
-    scope :recently_created,-> { order(created_at: :desc) }
-    scope :recently_updated,-> { order(updated_at: :desc) }
+    scope :recently_created, -> { order(created_at: :desc) }
+    scope :recently_updated, -> { order(updated_at: :desc) }
     scope :by_family,       ->(family) { where(family: family) }
 
     # === State helpers ===
@@ -91,7 +91,7 @@ module System
       v = value.to_s.downcase
       where(
         "LOWER(name) = ? OR LOWER(apt_name) = ? OR LOWER(rpm_name) = ? OR aliases @> ?::jsonb",
-        v, v, v, [v].to_json
+        v, v, v, [ v ].to_json
       ).first
     end
 
@@ -196,12 +196,12 @@ module System
     def self.count_packages_for(arch)
       ::System::Package
         .where(obsoleted_at: nil)
-        .where("architecture IN (?)", [arch.name, arch.apt_name, arch.rpm_name].compact.uniq)
+        .where("architecture IN (?)", [ arch.name, arch.apt_name, arch.rpm_name ].compact.uniq)
         .count
     end
 
     def self.count_package_repositories_for(arch)
-      names = [arch.name, arch.apt_name, arch.rpm_name].compact.uniq
+      names = [ arch.name, arch.apt_name, arch.rpm_name ].compact.uniq
       # JSONB ?| operator: true when any element of the array matches any
       # of the listed names. Hits the GIN index on architectures.
       ::System::PackageRepository
@@ -224,9 +224,9 @@ module System
       raw = aliases
       tokens = if raw.is_a?(String)
                  raw.split(/[,\n]/)
-               else
+      else
                  Array(raw).flat_map { |s| s.to_s.split(/[,\n]/) }
-               end
+      end
       self.aliases = tokens.map { |s| s.strip.downcase }.reject(&:empty?).uniq
     end
 
