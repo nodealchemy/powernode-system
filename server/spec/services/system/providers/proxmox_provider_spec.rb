@@ -79,6 +79,10 @@ RSpec.describe System::Providers::ProxmoxProvider do
       let(:connection) do
         instance_double("System::ProviderConnection",
           access_key: nil, secret_key: nil, endpoint_url: nil, config: {},
+          # account is reached by BaseProvider#pve_credential's BYOC fallback
+          # (System::ProviderCredential.for(account:, provider:)) before
+          # raising missing-credentials; nil is the correct unconfigured state.
+          account: nil,
           provider: proxmox_provider)
       end
 
@@ -124,7 +128,11 @@ RSpec.describe System::Providers::ProxmoxProvider do
         image_id: "dna-data:import/noble.qcow2",
         node: "dna",
         storage: "dna-data",
-        ssh_keys: [ "ssh-ed25519 AAAA test@example" ]
+        ssh_keys: [ "ssh-ed25519 AAAA test@example" ],
+        # start: false keeps the spec scoped to the create+config flow.
+        # The auto-start default is covered separately by #start_instance
+        # specs below; here we only assert the create-time POST shape.
+        start: false
       }
     end
 
@@ -177,6 +185,23 @@ RSpec.describe System::Providers::ProxmoxProvider do
         hash_including("sshkeys" => match(/ssh-ed25519[%+]/))
       )
     end
+
+    it "auto-starts the VM by default (Federation::SpawnProvisioner relies on this)" do
+      # Mock the start POST that the auto-start path will fire (no body).
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/qemu/100/status/start")
+        .and_return("UPID:dna:001:001:001:qmstart:100:user!tok:")
+      # And the status GET that start_instance does to build the response.
+      allow(client).to receive(:get)
+        .with("/api2/json/nodes/dna/qemu/100/status/current")
+        .and_return({ "status" => "running", "name" => "test-vm" })
+
+      result = provider.create_instance(params.except(:start))
+      expect(result[:success]).to be true
+      expect(client).to have_received(:post).with(
+        "/api2/json/nodes/dna/qemu/100/status/start"
+      )
+    end
   end
 
   describe "#create_instance (LXC mode)" do
@@ -187,7 +212,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         image_id: "dna-data:vztmpl/ubuntu-24.04-standard.tar.zst",
         node: "dna",
         storage: "dna-data",
-        ssh_keys: [ "ssh-ed25519 AAAA test@example" ]
+        ssh_keys: [ "ssh-ed25519 AAAA test@example" ],
+        # See VM-mode let(:params) — scope the spec to the create flow.
+        start: false
       }
     end
 

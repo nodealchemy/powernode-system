@@ -810,14 +810,14 @@ module System
         end
 
         instance_id = "#{node}/qemu/#{vmid}"
-
-        # Optionally start now (default: false — caller does start_instance
-        # after any post-create config is applied)
-        if params[:start]
-          start_instance(instance_id)
-        else
-          build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
-        end
+        # Start the VM by default. Post-create config (SSH keys, protection)
+        # is applied inline above, so there is nothing the caller needs the
+        # VM stopped for. Federation::SpawnProvisioner + ProvisioningService
+        # both expect "running" on return so the agent's first-boot
+        # enrollment can fire — without auto-start, every spawn lands a dark
+        # VM and operators have to manually `qm start`. Opt out with
+        # start: false for staging flows attaching extra disks first.
+        finalize_create(instance_id, start: params.fetch(:start, true))
       end
 
       # ============================================================
@@ -977,11 +977,7 @@ module System
         c.wait_task(node: node, upid: create_upid)
 
         instance_id = "#{node}/qemu/#{vmid}"
-        if params.fetch(:start, true)
-          start_instance(instance_id)
-        else
-          build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
-        end
+        finalize_create(instance_id, start: params.fetch(:start, true))
       end
 
       # ============================================================
@@ -1040,7 +1036,18 @@ module System
         end
 
         instance_id = "#{node}/lxc/#{vmid}"
-        if params[:start]
+        finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # Shared post-create hook for the three create_*_instance paths.
+      # Either starts the freshly-created instance + returns the live
+      # status response, or returns a stopped placeholder so the caller
+      # can attach disks / write extra config before kicking it off.
+      # See the long comment in create_vm_instance for why true is the
+      # default — every spawn caller in this codebase expects "running"
+      # on return.
+      def finalize_create(instance_id, start: true)
+        if start
           start_instance(instance_id)
         else
           build_instance_response(cloud_id: instance_id, status: STATUSES[:stopped])
