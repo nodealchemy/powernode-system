@@ -44,6 +44,7 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
       powernode-hub-worker
       powernode-hub-frontend
       powernode-extension-system
+      qemu-guest-agent
     ]
   },
   "powernode-hub-api" => {

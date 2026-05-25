@@ -1,0 +1,64 @@
+schema_version: 1
+name: qemu-guest-agent
+display_name: QEMU Guest Agent
+description: QEMU guest agent (qga) — reports guest IP + clean shutdown + freeze/thaw for snapshots when the hypervisor speaks the qga protocol. No-op on bare metal and on hypervisors that don't expose /dev/virtio-ports/org.qemu.guest_agent.0.
+license: GPL-2.0
+package_spec:
+  - qemu-guest-agent
+# qga is a single static binary + the apt-installed systemd unit (which
+# we'll re-render via the manifest's services: block below — the agent's
+# lifecycle generator handles RootDirectory=/sysroot + MountAPIVFS=yes
+# uniformly for every service, and ad-hoc /lib/systemd/system units
+# don't get that treatment). /usr covers /usr/sbin/qemu-ga + /usr/share;
+# /lib + /lib64 cover libc + libnl3 + libgmodule that qga dynamically
+# links. /etc carries the (rarely-present) /etc/qemu/qemu-ga.conf.
+# /var is intentionally omitted — qga writes nothing persistent at
+# runtime, its socket lives at /var/run via tmpfs.
+file_spec:
+  - /usr/**
+  - /lib/**
+  - /lib64/**
+  - /etc/**
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+# qga runs as root by design — the PVE convention is that the
+# hypervisor can `qm guest exec` against the agent, which requires
+# root privileges inside the guest. No platform user allocation.
+
+services:
+  - name: qga
+    # ExecStart matches the upstream qemu-guest-agent.service shipped by
+    # apt — invoking the binary directly (no wrapper script) since qga
+    # has no first-boot setup; it just reads its socket and replies.
+    # The qga binary itself checks /dev/virtio-ports/org.qemu.guest_agent.0
+    # at startup and exits cleanly with a friendly message on substrates
+    # that don't expose it, so the service is safe to declare for ALL
+    # hub deployments — only PVE hosts will see it actively running.
+    start_command: "/usr/sbin/qemu-ga"
+    restart_policy: always
+    user: root
+    capabilities: []
+    # No exposed_ports — qga speaks over a virtio-serial char device,
+    # not a TCP socket. Hypervisor reaches it via the hypervisor-side
+    # /var/run/qemu-server/<vmid>.qga.sock proxied through PVE.
+    metadata:
+      protocol: virtio-serial
+      socket_path: /dev/virtio-ports/org.qemu.guest_agent.0
+
+dependencies:
+  requires: []
+  provides:
+    - hypervisor.guest-agent
+    - hypervisor.guest-agent.qemu
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+build:
+  apt_snapshot: "20260415T000000Z"
