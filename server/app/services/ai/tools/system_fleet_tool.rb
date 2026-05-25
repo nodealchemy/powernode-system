@@ -1237,7 +1237,7 @@ module Ai
                 .where(system_node_modules: { account_id: @account.id })
                 .find(params[:version_b_id])
         result = ::System::ModuleDiffService.compare(version_a: ver_a, version_b: ver_b)
-        return error_result(result.error) unless result.success?
+        return error_result(result.error) unless result.ok?
         success_result(
           unchanged: result.unchanged,
           fingerprint_a: result.fingerprint_a,
@@ -1789,7 +1789,7 @@ module Ai
 
       def compliance_snapshot(_params)
         result = ::System::Compliance::ComplianceSnapshotService.snapshot!(account: @account)
-        return error_result(result.error) unless result.success?
+        return error_result(result.error) unless result.ok?
         success_result(snapshot: result.snapshot, generated_at: result.generated_at.iso8601)
       end
 
@@ -2196,7 +2196,7 @@ module Ai
           node_module: node_module
         )
 
-        if result.success?
+        if result.ok?
           success_result(valid: true, validation_errors: [])
         else
           success_result(
@@ -2571,7 +2571,7 @@ module Ai
 
         success_result(
           repository_id: repo.id,
-          ok: result.success?,
+          ok: result.ok?,
           diff_count: result.diff_count,
           proposal_ids: result.proposal_ids,
           synced_revision: result.synced_revision,
@@ -2606,18 +2606,18 @@ module Ai
         # Run the reconcile pipeline up through diff, but DO NOT open proposals.
         # This gives operators a preview of what sync_repository would do.
         repo_result = ::System::Gitops::RepoSyncService.sync!(repo)
-        return error_result("repo_sync failed: #{repo_result.error}") unless repo_result.success?
+        return error_result("repo_sync failed: #{repo_result.error}") unless repo_result.ok?
 
         parse_result = ::System::Gitops::DesiredStateParser.parse!(
           work_tree_path: repo_result.work_tree_path,
           path_prefix: repo.path_prefix
         )
-        return error_result("parse failed: #{parse_result.error}") unless parse_result.success?
+        return error_result("parse failed: #{parse_result.error}") unless parse_result.ok?
 
         diff_result = ::System::Gitops::DiffEngine.diff!(
           account: @account, desired_state: parse_result.desired_state
         )
-        return error_result("diff failed: #{diff_result.error}") unless diff_result.success?
+        return error_result("diff failed: #{diff_result.error}") unless diff_result.ok?
 
         success_result(
           repository_id: repo.id,
@@ -2653,7 +2653,7 @@ module Ai
           reencrypt_existing: params.fetch(:reencrypt_existing, true) != false
         )
 
-        if result.success?
+        if result.ok?
           success_result(
             rotated: true,
             latest_version: result.latest_version,
@@ -2673,7 +2673,7 @@ module Ai
         proposal = ::Ai::AgentProposal.where(account_id: @account.id).find(params[:proposal_id])
         result = ::System::Gitops::ApplyService.apply!(proposal: proposal)
 
-        if result.success?
+        if result.ok?
           success_result(
             applied: true,
             applied_action: result.applied_action,

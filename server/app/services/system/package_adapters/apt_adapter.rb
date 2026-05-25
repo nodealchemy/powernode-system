@@ -160,7 +160,11 @@ module System
       # warns "UTF-8 string passed as BINARY" and will raise once the
       # json gem hits 3.0.
       def parse_packages_stream(text)
-        text = text.force_encoding("UTF-8") if text.is_a?(String)
+        # dup before force_encoding so we never mutate a frozen caller-
+        # owned string (heredocs from tests, ENV-derived fixtures, etc.).
+        # The expected hot path passes a String from http_get which is
+        # already mutable, so the dup is a one-time cost per scrape.
+        text = text.dup.force_encoding("UTF-8") if text.is_a?(String)
         current = {}
         current_field = nil
 

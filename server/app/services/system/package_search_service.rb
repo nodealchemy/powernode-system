@@ -173,9 +173,14 @@ module System
 
     def run_semantic(scope)
       embedding = generate_embedding(@q)
-      # Embedding generation failed — degrade gracefully to lexical so the
-      # caller still sees results instead of an empty set.
-      return run_lexical(scope) if embedding.blank?
+      # Embedding generation failed — degrade gracefully to lexical so
+      # the caller still sees results instead of an empty set. Flip @mode
+      # so the returned Result reflects what actually ran (the UI renders
+      # different chips for "semantic" vs "lexical" and depends on this).
+      if embedding.blank?
+        @mode = "lexical"
+        return run_lexical(scope)
+      end
 
       candidates = scope.with_embedding
                         .nearest_neighbors(:embedding, embedding, distance: "cosine")

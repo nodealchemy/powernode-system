@@ -67,8 +67,13 @@ module Sdwan
         rule_count: 0, ruleset: nil, skipped: [], compiled_at: Time.current.iso8601 }
     end
 
+    # nft chain names have no IFNAMSIZ-style length budget (unlike WG
+    # interface names), so we slice 8 hex chars directly from the network
+    # UUID instead of reusing Network#network_handle (capped at 6 chars
+    # so `wg-sdwan-<handle>` fits within Linux's 15-char IFNAMSIZ ceiling).
+    # 8 chars = 32 bits of entropy, more than enough per account.
     def network_short_id
-      @network.network_handle
+      @network.id.to_s.delete("-").first(8)
     end
 
     # nft DNAT rule. We bracket IPv6 addresses to disambiguate the port

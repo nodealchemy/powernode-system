@@ -35,7 +35,11 @@ module System
     # (data-plane peering is just intent; no enrollment ritual). Platform
     # peers progress through enrolled → active and may oscillate
     # active ⇄ degraded on heartbeat liveness.
-    TRANSITIONS = {
+    # V1_TRANSITIONS reflects the v1 federation peer state machine.
+    # SdwanTool + FederationPeersController + this model all reference
+    # this name directly when surfacing per-peer "allowed next transitions"
+    # or gating status writes.
+    V1_TRANSITIONS = {
       "proposed"  => %w[accepted revoked],
       "accepted"  => %w[enrolled suspended revoked],
       "enrolled"  => %w[active suspended revoked],
@@ -104,7 +108,7 @@ module System
     # controller / MCP tool consults this before mutating to avoid
     # partial-state rows.
     def can_transition_to?(new_status)
-      TRANSITIONS.fetch(status, []).include?(new_status.to_s)
+      V1_TRANSITIONS.fetch(status, []).include?(new_status.to_s)
     end
 
     def platform_peer?

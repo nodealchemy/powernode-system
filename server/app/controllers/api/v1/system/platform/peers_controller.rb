@@ -184,7 +184,7 @@ module Api
               signed_at: peer.signed_at&.iso8601,
               contract_version_agreed: peer.contract_version_agreed,
               parent_peer_id: peer.parent_peer_id,
-              allowed_transitions: ::System::FederationPeer::TRANSITIONS.fetch(peer.status, []),
+              allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(peer.status, []),
               grants_count: grants_count_for(peer),
               capabilities_count: capabilities_count_for(peer),
               bridges_count: bridges_count_for(peer)

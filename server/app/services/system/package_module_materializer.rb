@@ -200,7 +200,13 @@ module System
 
       ::System::NodeModule.create!(
         account:        @account,
-        node_platform:  @repository.node_platform,
+        # M:N migration (5fcbb7e) replaced PackageRepository#node_platform
+        # (belongs_to) with #node_platforms (has_many :through). Take the
+        # first linked platform as the module's default scope; single-platform
+        # repos (the common case) keep their original 1:1 behavior, and
+        # multi-platform repos can override node_platform_id explicitly on
+        # the resulting module.
+        node_platform:  @repository.node_platforms.first,
         category:       @category,
         name:           canonical,
         description:    pkg.summary || pkg.description&.truncate(500),
