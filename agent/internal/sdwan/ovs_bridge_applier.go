@@ -358,8 +358,8 @@ func (a *ShellOvsBridgeApplier) addAddr(ctx context.Context, ifname, cidr string
 	cmd := exec.CommandContext(ctx, a.ip(), "addr", "add", cidr, "dev", ifname)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Already there — fine.
-		if strings.Contains(string(out), "File exists") {
+		// Already there — fine. See ipops.go for the iproute2 message catalog.
+		if isIPAddrAddAlreadyExistsErr(string(out)) {
 			return nil
 		}
 		return fmt.Errorf("ip addr add %s dev %s: %w; %s", cidr, ifname, err, strings.TrimSpace(string(out)))

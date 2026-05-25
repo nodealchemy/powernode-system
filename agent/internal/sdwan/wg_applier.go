@@ -116,11 +116,18 @@ func (a *ShellApplier) ApplyInterface(ctx context.Context, cfg InterfaceConf, pe
 		return fmt.Errorf("ip link set %s: %w", cfg.Name, err)
 	}
 
-	// 3. IPv6 host address. `ip addr add` errors with "RTNETLINK: File
-	//    exists" on duplicate — treat as success.
+	// 3. IPv6 host address. `ip addr add` is treated as idempotent: the
+	//    "already there" outcome shows up under TWO different messages
+	//    depending on iproute2 version:
+	//      - older: "RTNETLINK answers: File exists"
+	//      - newer (iproute2 6.x+): "Error: ipv6: address already assigned."
+	//    Without matching both, the agent's reconcile loop surfaced the
+	//    new-iproute2 message every 30 seconds on hosts that already had
+	//    the address (every steady-state tick after first apply). Spam-
+	//    free reconcile + faithful failure surfacing for ANY OTHER error.
 	if cfg.Address != "" {
 		if err := run(ctx, a.ip(), "-6", "addr", "add", cfg.Address, "dev", cfg.Name); err != nil &&
-			!strings.Contains(err.Error(), "File exists") {
+			!isIPAddrAddAlreadyExistsErr(err.Error()) {
 			return fmt.Errorf("ip addr add %s on %s: %w", cfg.Address, cfg.Name, err)
 		}
 	}

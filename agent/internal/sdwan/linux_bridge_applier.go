@@ -308,8 +308,9 @@ func (a *LinuxBridgeApplier) addAddr(ctx context.Context, ifname, cidr string) e
 	cmd := exec.CommandContext(ctx, a.ip(), "addr", "add", cidr, "dev", ifname)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Already there — fine.
-		if strings.Contains(string(out), "File exists") {
+		// Already there — fine. Helper covers both old + new iproute2 messages
+		// (see ipops.go for the substring catalog).
+		if isIPAddrAddAlreadyExistsErr(string(out)) {
 			return nil
 		}
 		return fmt.Errorf("ip addr add %s dev %s: %w; %s", cidr, ifname, err, strings.TrimSpace(string(out)))
