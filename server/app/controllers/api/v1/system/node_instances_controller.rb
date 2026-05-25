@@ -52,11 +52,52 @@ module Api
           end
         end
 
+        # DELETE /api/v1/system/nodes/:node_id/node_instances/:id
+        # DELETE /api/v1/system/nodes/:node_id/node_instances/:id?force=true
+        #
+        # Default (force omitted/false): plain destroy. Will fail with
+        # FOREIGN_KEY_VIOLATION if any child rows reference this instance
+        # — but the error payload now includes a `blocking_refs` summary
+        # so the operator knows exactly which dependents to clean up.
+        #
+        # With force=true: runs the dependent-cascade cleanup
+        # (NodeInstance#cascade_destroy_dependents!) which nulls all
+        # `optional: true` FK references (audit-style tables) and
+        # destroys all hard-FK dependents (SDWAN peers, storage
+        # assignments, etc.) in dependency-safe order before destroying
+        # the instance itself. Intended for operator-driven cleanup of
+        # stale or aborted spawns.
         def destroy
           require_permission("system.instances.delete")
+          force = ActiveModel::Type::Boolean.new.cast(params[:force])
 
-          if @instance.destroy
+          if force
+            cleanup_summary = @instance.cascade_destroy_dependents!
+            if @instance.destroy
+              render_success(
+                message: "Instance deleted (cascade)",
+                cascade_cleanup: cleanup_summary
+              )
+              return
+            end
+          elsif @instance.destroy
             render_success(message: "Instance deleted successfully")
+            return
+          end
+
+          # Below: either the plain destroy failed OR the post-cascade
+          # destroy still failed. In both cases surface blocking refs so
+          # the operator can act.
+          blocking = @instance.blocking_dependents
+          if blocking.any?
+            render_error(
+              "Cannot delete this record because it is referenced by other records",
+              status: :unprocessable_content,
+              data: {
+                blocking_refs: blocking,
+                hint: "Retry with ?force=true to cascade-destroy these dependents."
+              }
+            )
           else
             render_error("Failed to delete instance", status: :unprocessable_content)
           end

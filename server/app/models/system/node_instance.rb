@@ -465,5 +465,75 @@ module System
       merged = caps.stringify_keys.merge("detected_at" => Time.current.iso8601)
       update_columns(capabilities: merged)
     end
+
+    # === Cascade-destroy helpers ===
+    # Tables with FK references to NodeInstance, classified by how the
+    # destroy controller should handle them when force=true. See
+    # NodeInstancesController#destroy for the operator workflow.
+    #
+    # The optional? metadata mirrors the belongs_to :node_instance,
+    # optional: true vs (default required) declarations on the child
+    # side. Optional FKs get NULLed; required FKs get destroyed.
+    # Polymorphic + already-dependent-destroy declarations on the
+    # NodeInstance side (instance_mount_points, tasks, node_certificates)
+    # are omitted — Rails handles those automatically on .destroy.
+    CASCADE_DEPENDENTS = [
+      # Required FK — must be destroyed before the parent
+      { klass: "System::NodeInstancePeer",     fk: :node_instance_id, optional: false },
+      { klass: "System::StorageMigration",     fk: :node_instance_id, optional: false },
+      { klass: "System::StorageAssignment",    fk: :node_instance_id, optional: false },
+      { klass: "System::StorageCredential",    fk: :node_instance_id, optional: false },
+      { klass: "Sdwan::HostBridge",            fk: :node_instance_id, optional: false },
+      { klass: "Sdwan::HostVrfAssignment",     fk: :node_instance_id, optional: false },
+      { klass: "Sdwan::Peer",                  fk: :node_instance_id, optional: false },
+      # Optional FK — nullify (audit / lifecycle history retained)
+      { klass: "System::BootstrapToken",       fk: :node_instance_id, optional: true  },
+      { klass: "System::MountEncryptionKey",   fk: :node_instance_id, optional: true  },
+      { klass: "System::NodeModule",           fk: :node_instance_id, optional: true  },
+      { klass: "System::ProviderVolume",       fk: :node_instance_id, optional: true  }
+    ].freeze
+
+    # Returns the list of dependent rows currently referencing this
+    # instance, grouped by table name. Used by the destroy controller
+    # to give operators an actionable error before they have to dig
+    # through a PG FK violation. Returns an empty hash if nothing
+    # references the instance.
+    def blocking_dependents
+      result = {}
+      CASCADE_DEPENDENTS.each do |entry|
+        klass = entry[:klass].safe_constantize
+        next unless klass
+        count = klass.where(entry[:fk] => id).count
+        result[entry[:klass]] = count if count.positive?
+      end
+      result
+    end
+
+    # Operator-driven dependent cascade: nullifies optional FKs +
+    # destroys required-FK dependents in dependency-safe order. Called
+    # by NodeInstancesController#destroy when ?force=true is set. Wrap
+    # the actual instance .destroy in the SAME transaction so a
+    # downstream failure rolls everything back. Returns a summary hash
+    # the controller surfaces in the response.
+    def cascade_destroy_dependents!
+      summary = { nullified: {}, destroyed: {} }
+      ActiveRecord::Base.transaction do
+        CASCADE_DEPENDENTS.each do |entry|
+          klass = entry[:klass].safe_constantize
+          next unless klass
+          scope = klass.where(entry[:fk] => id)
+          count = scope.count
+          next if count.zero?
+          if entry[:optional]
+            scope.update_all(entry[:fk] => nil)
+            summary[:nullified][entry[:klass]] = count
+          else
+            scope.destroy_all
+            summary[:destroyed][entry[:klass]] = count
+          end
+        end
+      end
+      summary
+    end
   end
 end

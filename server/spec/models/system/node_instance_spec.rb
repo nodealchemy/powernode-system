@@ -530,4 +530,64 @@ RSpec.describe System::NodeInstance, type: :model do
       expect(instance.suggest_network_profile).to eq('lightweight')
     end
   end
+
+  describe '#blocking_dependents + #cascade_destroy_dependents!' do
+    let(:instance) { create(:system_node_instance, node: node) }
+
+    context 'when nothing references the instance' do
+      it 'returns empty hash from blocking_dependents' do
+        expect(instance.blocking_dependents).to eq({})
+      end
+
+      it 'cascade_destroy_dependents! returns an empty summary' do
+        expect(instance.cascade_destroy_dependents!).to eq(nullified: {}, destroyed: {})
+      end
+    end
+
+    context 'with a required-FK dependent (Sdwan::HostBridge)' do
+      let!(:bridge) do
+        create(:sdwan_host_bridge, account: node.account, node_instance: instance)
+      end
+
+      it 'blocking_dependents reports the count under the class name' do
+        expect(instance.blocking_dependents).to eq('Sdwan::HostBridge' => 1)
+      end
+
+      it 'plain .destroy fails on the FK violation' do
+        expect { instance.destroy }.to raise_error(ActiveRecord::InvalidForeignKey)
+      end
+
+      it 'cascade_destroy_dependents! destroys the bridge as part of the cascade' do
+        summary = instance.cascade_destroy_dependents!
+        expect(summary[:destroyed]).to include('Sdwan::HostBridge' => 1)
+        expect(::Sdwan::HostBridge.where(id: bridge.id)).to be_empty
+      end
+
+      it 'cascade-then-.destroy succeeds end-to-end' do
+        instance.cascade_destroy_dependents!
+        expect(instance.destroy).to be_truthy
+      end
+    end
+
+    context 'with an optional-FK dependent (System::BootstrapToken)' do
+      let!(:token) do
+        # No factory exists for BootstrapToken; create directly with the
+        # minimum required attrs (token_hash + intended_subject + expires_at
+        # per the model's validations).
+        ::System::BootstrapToken.create!(
+          node: node,
+          node_instance: instance,
+          token_hash: SecureRandom.hex(32),
+          intended_subject: 'agent:test',
+          expires_at: 1.hour.from_now
+        )
+      end
+
+      it 'cascade_destroy_dependents! nullifies (keeps audit) instead of destroying' do
+        summary = instance.cascade_destroy_dependents!
+        expect(summary[:nullified]).to include('System::BootstrapToken' => 1)
+        expect(token.reload.node_instance_id).to be_nil
+      end
+    end
+  end
 end
