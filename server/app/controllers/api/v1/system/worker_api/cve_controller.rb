@@ -20,7 +20,8 @@ module Api
               fixture_path: params[:fixture_path].presence
             )
 
-            unless ingest_result.success?
+            # FeedIngestService::Result = Struct.new(:ok?, ...) — accessor is `ok?`, not `success?`.
+            unless ingest_result.ok?
               return render_error("CVE ingest failed: #{ingest_result.error}", 422)
             end
 
@@ -53,7 +54,8 @@ module Api
             Account.find_each do |account|
               recent.find_each do |cve|
                 result = ::System::CveOps::ExposureCalculator.calculate!(cve: cve, account: account)
-                total_updated += result.exposures_created + result.exposures_updated if result.success?
+                # ExposureCalculator::Result = Struct.new(:ok?, ...) — accessor is `ok?`.
+                total_updated += result.exposures_created + result.exposures_updated if result.ok?
               end
             end
 

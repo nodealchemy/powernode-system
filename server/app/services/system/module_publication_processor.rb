@@ -124,7 +124,11 @@ module System
       return [] unless yaml.present?
 
       result = ::System::ManifestImportService.import!(node_module: node_module, yaml: yaml)
-      unless result.success?
+      # ManifestImportService::Result = Struct.new(:ok?, ...) — accessor is `ok?`.
+      # The `.success?` typo bubbled a NoMethodError up to process! and aborted
+      # the whole publication path (no NodeModuleVersion created), defeating
+      # the explicit "non-fatal when manifest yaml fails validation" guard.
+      unless result.ok?
         Rails.logger.warn "[ModulePublicationProcessor] manifest re-import failed at tag #{tag}: #{result.error}"
         return []
       end
@@ -137,7 +141,11 @@ module System
     def register_skills_for(node_module)
       return unless defined?(::System::ModuleSkillRegistrar)
       result = ::System::ModuleSkillRegistrar.register_for_module!(node_module: node_module)
-      unless result.success?
+      # ModuleSkillRegistrar::Result = Struct.new(:ok?, ...) — the accessor
+      # is `ok?`, not `success?`. The mismatch was getting swallowed by the
+      # rescue below, masking failures (and tripping the gitea_module_spec
+      # registrar mock which exposes the matching `ok?` shape).
+      unless result.ok?
         Rails.logger.warn "[ModulePublicationProcessor] skill registration failed: #{result.error}"
       end
     rescue StandardError => e

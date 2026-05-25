@@ -36,7 +36,9 @@ module Api
               tag: tag
             )
 
-            if result.success?
+            # ModulePublicationProcessor::Result = Struct.new(:ok?, ...) —
+            # accessor is `ok?`, not `success?`.
+            if result.ok?
               render_success(
                 node_module_version_id: result.node_module_version.id,
                 version_number: result.node_module_version.version_number,

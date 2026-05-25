@@ -26,7 +26,10 @@ RSpec.describe System::NodeModuleCategory, "variety + siblings", type: :model do
 
   describe ".create_triplet!" do
     it "creates 3 wired-up categories with ascending positions" do
-      sub = described_class.create_triplet!(account: account, base_name: "Web", base_position: 100)
+      # Account.after_create_commit auto-bootstraps a "web" category, so
+      # base_name: "Web" collides (uniqueness is case-insensitive). Pick a
+      # unique base_name unrelated to the bootstrap set.
+      sub = described_class.create_triplet!(account: account, base_name: "Custom App", base_position: 100)
 
       expect(sub.variety).to eq("subscription")
       expect(sub.position).to eq(100)

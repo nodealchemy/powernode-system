@@ -29,7 +29,10 @@ module Api
             purpose: "netboot"
           )
 
-          if result.success?
+          # BootstrapService::Result = Struct.new(:ok?, ...) — accessor is
+          # `ok?`, not `success?`. The mismatch surfaced as a 500 for every
+          # iPXE script render.
+          if result.ok?
             response.set_header("Cache-Control", "no-store")
             response.set_header("X-Powernode-Token-Id", result.token_id.to_s)
             render plain: result.script, content_type: "text/plain"

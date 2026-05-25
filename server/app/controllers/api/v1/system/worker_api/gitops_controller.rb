@@ -34,7 +34,8 @@ module Api
             result = ::System::Gitops::Reconciler.reconcile!(repository: repo)
             {
               repository_id: repo.id,
-              ok: result.success?,
+              # Gitops::Reconciler::Result = Struct.new(:ok?, ...) — accessor is `ok?`.
+              ok: result.ok?,
               diff_count: result.diff_count,
               proposal_ids: result.proposal_ids,
               synced_revision: result.synced_revision,
