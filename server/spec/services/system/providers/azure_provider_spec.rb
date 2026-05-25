@@ -264,7 +264,12 @@ RSpec.describe System::Providers::AzureProvider do
         instance_double(
           "System::ProviderConnection",
           access_key: "id", secret_key: "secret", tenant: nil,
-          config: { "subscription_id" => "sub-12345" }
+          config: { "subscription_id" => "sub-12345" },
+          # account + provider reached by BaseProvider#pve_credential's BYOC
+          # fallback (System::ProviderCredential.for(account:, provider:))
+          # before raising missing-credentials. Same shape as the proxmox
+          # spec fix in commit b697abd.
+          account: nil, provider: nil
         )
       end
 

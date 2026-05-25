@@ -6,6 +6,24 @@ RSpec.describe System::Gitops::DiffEngine do
   let(:account) { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
 
+  before do
+    # Account.after_create_commit :run_account_bootstrap seeds 7 templates
+    # + 6 modules per the M1 self-serve onboarding flow. These specs
+    # exercise GitOps diff semantics on a controlled fixture set — clear
+    # the bootstrap state so live counts + uniqueness checks reflect the
+    # test setup, not production onboarding defaults. NodeModule.current_
+    # version_id <-> NodeModuleVersion.node_module_id is a self-referential
+    # FK pair, so we NULL the current_version_id first to let destroy_all
+    # cascade cleanly.
+    ::System::NodeModuleAssignment
+      .joins(:node)
+      .where(system_nodes: { account_id: account.id })
+      .destroy_all
+    ::System::NodeTemplate.where(account: account).destroy_all
+    ::System::NodeModule.where(account: account).update_all(current_version_id: nil)
+    ::System::NodeModule.where(account: account).destroy_all
+  end
+
   describe ".diff!" do
     context "templates" do
       let!(:existing_template) do

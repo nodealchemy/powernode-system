@@ -36,6 +36,22 @@ RSpec.describe System::Gitops::Reconciler do
     # Make Reconciler find our agent so proposals can be created
     allow(Ai::Agent).to receive(:where).and_call_original
     gitops_agent # eager
+
+    # Account.after_create_commit :run_account_bootstrap seeds 7 templates
+    # + 6 modules per the M1 self-serve onboarding flow. These specs
+    # exercise GitOps diff semantics against a truly empty fleet — clear
+    # the bootstrap state so live counts reflect the test setup, not
+    # production onboarding defaults. NodeModule.current_version_id <->
+    # NodeModuleVersion.node_module_id is a self-referential FK pair, so
+    # we NULL the current_version_id first to let destroy_all cascade
+    # cleanly through versions + assignments + template_modules.
+    ::System::NodeModuleAssignment
+      .joins(:node)
+      .where(system_nodes: { account_id: account.id })
+      .destroy_all
+    ::System::NodeTemplate.where(account: account).destroy_all
+    ::System::NodeModule.where(account: account).update_all(current_version_id: nil)
+    ::System::NodeModule.where(account: account).destroy_all
   end
 
   after { FileUtils.rm_rf(work_tree) }

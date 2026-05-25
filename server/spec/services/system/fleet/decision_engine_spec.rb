@@ -41,10 +41,14 @@ RSpec.describe System::Fleet::DecisionEngine do
       let(:node)     { create(:system_node, account: account, node_template: template) }
       let!(:instance) { create(:system_node_instance, :running, node: node) }
 
-      let!(:chain) do
-        create(:ai_approval_chain, account: account,
-               trigger_type: "autonomy_action", name: "Fleet Autonomy Actions")
-      end
+      # NOTE: an `ai_approval_chain` row was previously created here for
+      # parity with the business-extension Ai::ApprovalChain model, but
+      # the system-extension DecisionEngine has no path that consults
+      # ApprovalChain — gating is driven entirely by Ai::InterventionPolicy
+      # below. The chain row was cross-extension dead weight (the
+      # ApprovalChain class lives in extensions/business and is absent in
+      # core mode), so it was removed. Add it back only if a real code
+      # path in the system extension starts consulting ApprovalChain.
 
       before do
         Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",

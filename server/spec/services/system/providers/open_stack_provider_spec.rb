@@ -10,7 +10,13 @@ RSpec.describe System::Providers::OpenStackProvider do
       secret_key: "password",
       tenant: "project-id",
       endpoint_url: "https://openstack.example.com:5000/v3",
-      config: {}
+      config: {},
+      # account + provider are reached by BaseProvider#pve_credential's
+      # BYOC fallback (System::ProviderCredential.for(account:, provider:))
+      # before raising missing-credentials. nil is the correct
+      # unconfigured state — same fix shipped for proxmox in commit b697abd.
+      account: nil,
+      provider: nil
     )
   end
   let(:region) { instance_double("System::ProviderRegion", region_code: "RegionOne") }

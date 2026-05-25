@@ -125,11 +125,28 @@ RSpec.describe System::InstancePoolService, type: :service do
         expect(pool.deficit).to eq(1)
       end
 
-      it "no-ops cleanly when worker dispatch is unavailable (missing WorkerDispatch class)" do
-        # WorkerDispatch is not loaded in test env; provision step is best-effort.
+      # The replenish path calls ProvisioningService.provision_instance
+      # synchronously per deficit slot (see instance_pool_service.rb:251
+      # comment — the old WorkerDispatch async path was broken on three
+      # layers). In specs we don't want to exercise the real cloud
+      # adapter chain, so stub ProvisioningService to return a successful
+      # Runtime::Result with a stubbed NodeInstance per call.
+      before do
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **|
+          stub_instance = create(:system_node_instance,
+                                  node: node,
+                                  name: "warming-#{SecureRandom.hex(3)}",
+                                  variety: "cloud",
+                                  status: "pending",
+                                  provider_region: provider_region,
+                                  provider_instance_type: provider_instance_type)
+          ::System::Runtime::Result.ok(data: { instance: stub_instance })
+        end
+      end
+
+      it "provisions deficit slots via ProvisioningService" do
         result = described_class.replenish!(pool: pool)
         expect(result[:deficit]).to eq(3)
-        # Even without worker dispatch, the placeholder NodeInstance + Node rows are created.
         expect(result[:provisioned]).to eq(3)
         expect(pool.reload.warming_count).to eq(3)
       end

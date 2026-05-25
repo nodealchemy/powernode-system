@@ -48,6 +48,14 @@ RSpec.describe System::TemplateExporter do
       let(:module_b) { create(:system_node_module, account: account, name: "monitoring", variety: "instance") }
 
       before do
+        # Account.after_create_commit :run_account_bootstrap pre-seeds an
+        # "nginx" NodeModule (M1 self-serve onboarding). Clear it so the
+        # spec's module_a/module_b creates don't collide on the unique
+        # (account_id, name) index. NULL out current_version_id first to
+        # let destroy_all cascade through dependent NodeModuleVersion rows.
+        ::System::NodeModule.where(account: account).update_all(current_version_id: nil)
+        ::System::NodeModule.where(account: account).destroy_all
+
         create(:system_template_module, node_template: template, node_module: module_a, priority: 100, enabled: true)
         create(:system_template_module, node_template: template, node_module: module_b, priority: 50, enabled: false, config: { "metric" => "cpu" })
       end

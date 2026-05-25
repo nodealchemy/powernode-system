@@ -34,6 +34,41 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
     allow(fake_vault).to receive(:store_credential).and_return(true)
     # Stub the Traefik writer so we don't actually touch the filesystem
     allow(::Federation::ServiceRouteWriter).to receive(:write!).and_return(output_path: "/tmp/stub", route_count: 1)
+    # Acme::CertificateManager.issue! does account/env lookups for the
+    # ACME registration email before calling the lego client. The
+    # lifecycle service is the unit under test here — AcmeCertificate
+    # issuance is covered by its own spec — so we stub the manager to
+    # write the cert directly. We *peek* at acme_client.issue by
+    # checking whether it's been configured to raise (via RSpec's
+    # message_expectations) and reflect that on the cert record so the
+    # "when cert issuance fails" contexts continue to work.
+    allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:, acme_client:, **|
+      raises = false
+      raise_msg = nil
+      begin
+        # instance_double "issue" is keyword-only in the real class; we
+        # don't have the real args here, so we use `respond_to?` +
+        # `verify` to detect whether the stub will raise. Simplest path:
+        # peek at the configured response by calling :issue with the
+        # same minimum-required kwargs the real adapter takes — but
+        # easier still, just check the existing RSpec stub registry.
+        acme_client.issue(common_name: certificate.common_name,
+                          provider: "stub", credentials: {},
+                          email: "stub@example.com")
+      rescue StandardError => e
+        raises = true
+        raise_msg = e.message
+      end
+
+      if raises
+        certificate.update!(status: "failed", last_renewal_error: raise_msg)
+      else
+        certificate.update!(status: "valid", issued_at: Time.current,
+                            expires_at: 90.days.from_now,
+                            last_renewal_error: nil)
+      end
+      certificate
+    end
   end
 
   # Build a synthetic operator response (the shape ServiceCatalogService
