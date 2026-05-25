@@ -608,9 +608,24 @@ jobs:
           # directories are kept, then the file rules carve the actual
           # contents. Without this, every Class B erofs blob ships empty
           # (4-8 KB filesystem with just the root dir).
+          #
+          # --prune-empty-dirs is the counter-balance: `+ */` is greedy
+          # and would otherwise leave the entire fat tree's directory
+          # skeleton in the slim carve (e.g. /var/lib/postgresql/16/main
+          # appears as an empty 19-subdir tree because postgres's apt
+          # post-install ran `pg_createcluster main 16` in /tmp/fat).
+          # mkfs.erofs --all-root then bakes those root-owned empty
+          # dirs into the read-only lower layer, and runtime chowns
+          # against them trigger overlayfs metacopy copy-up which
+          # requires CAP_SYS_ADMIN that systemd strips from per-service
+          # namespaces → EPERM. Pruning empty dirs after the file rules
+          # execute drops /var, /tmp, /home, etc. entirely — matching
+          # the manifest's intent ("/var omitted, data dir initializes
+          # on first boot into the overlay's writable upper layer").
           rsync -a \
             --filter='+ */' \
             --filter='. /tmp/rsync_spec.txt' \
+            --prune-empty-dirs \
             /tmp/fat/ /tmp/slim/
           echo "=== Stage 2 carve result: /tmp/slim layout (first 40 dirs) ==="
           # awk-based truncation (NOT `| head`) — under `set -o pipefail`,
