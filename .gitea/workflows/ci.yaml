@@ -16,7 +16,45 @@ permissions:
   contents: read
 
 jobs:
+  # Reap any sidecar containers left behind by a previously cancelled
+  # run. The Gitea services: block (used by rspec + worker-specs below
+  # to start postgres + redis) does NOT reliably clean up on external
+  # cancellation in act-runner — the killed container survives, keeps
+  # port 6379 / 5432 bound on the runner, and the NEXT job's services
+  # block fails to start ("port already in use") + the job fails at
+  # first connect with no obvious symptom. Running a tiny job first
+  # that nukes anything holding those ports gives the downstream
+  # services: blocks a clean slate. Best-effort: failure to find/kill
+  # any stale container should not block the rest of CI.
+  #
+  # Assumes the same runner picks up the dependent jobs (true for
+  # single-runner act-runner deployments — this is a per-runner state
+  # problem, so a per-runner reap step is the correct shape).
+  ci-hygiene:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reap stale CI sidecar containers
+        run: |
+          set +e
+          # Match by published port (covers both `redis:7` + `pgvector:pg16`
+          # sidecars + any other test containers that happened to bind
+          # these ports). awk on the Ports column avoids relying on a
+          # specific image tag.
+          for port in 6379 5432; do
+            stale_ids=$(docker ps --format '{{.ID}} {{.Ports}}' | awk -v p=":$port->" 'index($0, p) {print $1}')
+            if [ -n "$stale_ids" ]; then
+              echo "Reaping containers holding port $port: $stale_ids"
+              echo "$stale_ids" | xargs -r docker rm -f
+            fi
+          done
+          # Catch-all by image — covers the case where the container is
+          # in a state with no exposed-port info on ps (rare but seen).
+          docker rm -f $(docker ps -aq --filter "ancestor=redis:7") 2>/dev/null
+          docker rm -f $(docker ps -aq --filter "ancestor=pgvector/pgvector:pg16") 2>/dev/null
+          exit 0
+
   rspec:
+    needs: ci-hygiene
     # Split into 3 parallel suites (controllers/requests, services, models+lib+
     # integration) so wall-clock is max-of-three rather than sum-of-all. Each
     # matrix entry pays the bundle-install + db-setup cost independently but
@@ -183,6 +221,23 @@ jobs:
             exit 0
           fi
           bundle exec rspec $existing --format progress
+
+      # Post-job sidecar cleanup. Runs on normal completion AND on most
+      # cancellations (act-runner sends SIGTERM with a grace period
+      # before SIGKILL — if: always() fires during the grace window).
+      # Pairs with the ci-hygiene job which catches the SIGKILL case
+      # before the NEXT run. Best-effort — empty `docker ps` or already-
+      # gone containers should not fail the post-job step.
+      - name: Reap own sidecars
+        if: always()
+        run: |
+          set +e
+          for port in 6379 5432; do
+            docker ps --format '{{.ID}} {{.Ports}}' \
+              | awk -v p=":$port->" 'index($0, p) {print $1}' \
+              | xargs -r docker rm -f
+          done
+          exit 0
 
   frontend-typecheck:
     runs-on: ubuntu-24.04
@@ -378,6 +433,7 @@ jobs:
   # the extension's worker jobs are autoloaded by the parent worker app;
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
+    needs: ci-hygiene
     runs-on: ubuntu-24.04
     # Same docker-bridge-gateway addressing as the rspec matrix above —
     # see the long comment up there for why localhost and service-name
@@ -433,3 +489,15 @@ jobs:
           # Run only the system_*_spec.rb files. Other parent-worker jobs
           # (ai_*, mission_*, etc.) are out of this extension's scope.
           bundle exec rspec spec/jobs/system_*_spec.rb --format progress
+
+      # Post-job sidecar cleanup. Mirrors the rspec job's cleanup —
+      # catches normal completion + most cancellations; ci-hygiene
+      # handles the SIGKILL case before the next run.
+      - name: Reap own sidecars
+        if: always()
+        run: |
+          set +e
+          docker ps --format '{{.ID}} {{.Ports}}' \
+            | awk 'index($0, ":6379->") {print $1}' \
+            | xargs -r docker rm -f
+          exit 0
