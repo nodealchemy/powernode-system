@@ -163,12 +163,45 @@ module Federation
         return region if region
       end
 
-      # Default to the first region of the node's provider.
-      provider = node.respond_to?(:provider) ? node.provider : nil
-      provider ||= ::System::Provider.where(account_id: @account.id).order(:created_at).first
+      # Prefer a region whose provider HAS an active connection in this
+      # account's scope. Earlier behavior picked the first provider by
+      # created_at — for accounts with multiple providers seeded (e.g.
+      # "Pro Cloud" + "proxmox"), the older provider often has zero
+      # configured connections, and the spawn died downstream in
+      # registry.for_node with "No provider connection available for
+      # region X". Pre-filter on connectable providers so the orchestrator
+      # never picks a dead-on-arrival region. Falls back to the legacy
+      # "first provider, first region" so existing tests + explicit-target
+      # paths stay unchanged.
+      preferred_provider = node.respond_to?(:provider) ? node.provider : nil
+      region = first_region_for_connectable_provider(preferred_provider)
+      return region if region
+
+      provider = ::System::Provider.where(account_id: @account.id).order(:created_at).first
       return nil unless provider
 
       ::System::ProviderRegion.where(provider_id: provider.id).order(:created_at).first
+    end
+
+    # Returns the first region belonging to a provider that has at least
+    # one enabled + connected ProviderConnection visible to this account.
+    # When preferred_provider is set, restricts to that provider (so we
+    # respect the node's pinned provider when possible). Returns nil if
+    # no such provider/region pair exists — the caller falls through to
+    # the legacy default.
+    def first_region_for_connectable_provider(preferred_provider)
+      scope = ::System::ProviderConnection
+                .enabled
+                .connected
+                .where("account_id = ? OR account_id IS NULL", @account&.id)
+      scope = scope.where(provider_id: preferred_provider.id) if preferred_provider
+      provider_ids = scope.order(:created_at).pluck(:provider_id).uniq
+      return nil if provider_ids.empty?
+
+      ::System::ProviderRegion
+        .where(provider_id: provider_ids)
+        .order(:created_at)
+        .first
     end
 
     def resolve_provider_type(node, region)

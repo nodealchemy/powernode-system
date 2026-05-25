@@ -95,6 +95,43 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
       end
     end
 
+    context "when multiple providers exist but only one has an active connection" do
+      # Reproduces the ops2 spawn failure: account has two providers
+      # ("Pro Cloud" seeded first, no connections; "proxmox" seeded second,
+      # has a connection). Old resolver picked first-by-created_at (Pro
+      # Cloud's region), which downstream blew up with "No provider
+      # connection available for region X". New resolver skips the dead
+      # provider and lands on proxmox.
+      let!(:dead_provider) do
+        create(:system_provider, account: account, provider_type: "pro_cloud", name: "DeadProvider").tap do |p|
+          # NO ProviderConnection — that's the bug repro
+          create(:system_provider_region, provider: p, account: account, region_code: "dead-a")
+        end
+      end
+      let!(:dead_first_provider_region) { dead_provider.provider_regions.first }
+      let!(:live_connection) do
+        create(:system_provider_connection,
+               account: account, provider: provider,
+               status: "connected", enabled: true)
+      end
+
+      it "picks the connectable provider's region instead of the dead one's" do
+        instance = create(:system_node_instance, node: node, provider_region: region,
+                                                  provider_instance_type: instance_type)
+        captured_region_id = nil
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |args|
+          captured_region_id = args[:provider_region_id]
+          ::System::Runtime::Result.ok(data: { instance_id: instance.id })
+        end
+
+        described_class.new(account: account, current_user: user)
+                       .provision!(payload: payload, spawn_target: { template_id: template.name })
+
+        expect(captured_region_id).to eq(region.id)
+        expect(captured_region_id).not_to eq(dead_first_provider_region.id)
+      end
+    end
+
     context "failure paths" do
       it "returns ok?=false when template_id is missing" do
         result = described_class.new(account: account, current_user: user)
