@@ -101,5 +101,4 @@ RSpec.describe System::Federation::InventoryRegistry, type: :service do
       expect(described_class.all_kinds).to be_empty
     end
   end
-
 end

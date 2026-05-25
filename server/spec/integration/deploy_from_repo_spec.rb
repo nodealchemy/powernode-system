@@ -76,7 +76,7 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
       "intent" => "Deploy a Discord bot from a Git repo",
       "use_case" => "discord_bot",
       "scale" => { "initial" => 1, "target" => 1, "growth_profile" => "flat" },
-      "regions" => ["us-east-1"],
+      "regions" => [ "us-east-1" ],
       "compliance" => [],
       "budget_cap_usd_monthly" => 25.0,
       "latency_targets_ms" => { "p99" => 500 },
@@ -239,7 +239,7 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
 
     expect(provision_step.execution_config["skill"]).to eq("provision_full_stack")
     expect(deploy_step.execution_config["skill"]).to eq("deploy_app_code")
-    expect(deploy_step.dependencies).to eq([provision_step.step_number]),
+    expect(deploy_step.dependencies).to eq([ provision_step.step_number ]),
            "deploy step must depend on provision step (got #{deploy_step.dependencies.inspect})"
 
     deploy_inputs = deploy_step.execution_config["inputs"]
@@ -297,8 +297,8 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
     mission.update!(
       configuration: mission.configuration.deep_merge(
         "provisioned_resources" => {
-          "node_instance_ids" => [instance.id],
-          "deployment_ids" => [deployment.id]
+          "node_instance_ids" => [ instance.id ],
+          "deployment_ids" => [ deployment.id ]
         }
       )
     )
@@ -316,6 +316,6 @@ RSpec.describe "AI-driven provisioning M3 deploy-from-repo smoke", type: :integr
     orchestrator.handle_approval!(gate: "handoff", user: admin, decision: "approved")
     expect(mission.reload.current_phase).to eq("adapting")
     expect(mission.status).to eq("active")
-    expect(mission.configuration.dig("provisioned_resources", "deployment_ids")).to eq([deployment.id])
+    expect(mission.configuration.dig("provisioned_resources", "deployment_ids")).to eq([ deployment.id ])
   end
 end

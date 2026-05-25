@@ -7,7 +7,7 @@ RSpec.describe Sdwan::RoutePolicy, type: :model do
 
   let(:valid_statements) do
     [
-      { "match" => { "prefix_in" => ["10.0.0.0/8"] },
+      { "match" => { "prefix_in" => [ "10.0.0.0/8" ] },
         "action" => { "type" => "accept", "set_local_pref" => 200 } }
     ]
   end
@@ -22,8 +22,8 @@ RSpec.describe Sdwan::RoutePolicy, type: :model do
     it "rejects unknown match keys" do
       p = described_class.new(account_id: account.id, name: "bad-match-#{SecureRandom.hex(3)}",
                               scope: "account", direction: "import",
-                              statements: [{ "match" => { "weird_match" => "x" },
-                                             "action" => { "type" => "accept" } }])
+                              statements: [ { "match" => { "weird_match" => "x" },
+                                             "action" => { "type" => "accept" } } ])
       expect(p).not_to be_valid
       expect(p.errors[:statements].join).to match(/unknown match key/)
     end
@@ -31,8 +31,8 @@ RSpec.describe Sdwan::RoutePolicy, type: :model do
     it "rejects unknown action keys" do
       p = described_class.new(account_id: account.id, name: "bad-action-#{SecureRandom.hex(3)}",
                               scope: "account", direction: "import",
-                              statements: [{ "match" => {},
-                                             "action" => { "type" => "accept", "set_super_pref" => 999 } }])
+                              statements: [ { "match" => {},
+                                             "action" => { "type" => "accept", "set_super_pref" => 999 } } ])
       expect(p).not_to be_valid
       expect(p.errors[:statements].join).to match(/unknown action key/)
     end
@@ -40,7 +40,7 @@ RSpec.describe Sdwan::RoutePolicy, type: :model do
     it "requires action.type on every statement" do
       p = described_class.new(account_id: account.id, name: "no-type-#{SecureRandom.hex(3)}",
                               scope: "account", direction: "import",
-                              statements: [{ "match" => {}, "action" => { "set_local_pref" => 100 } }])
+                              statements: [ { "match" => {}, "action" => { "set_local_pref" => 100 } } ])
       expect(p).not_to be_valid
       expect(p.errors[:statements].join).to match(/action.type is required/)
     end

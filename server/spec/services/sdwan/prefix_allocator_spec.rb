@@ -44,7 +44,7 @@ RSpec.describe Sdwan::PrefixAllocator, type: :service do
 
   describe ".compose_address_128" do
     it "appends 64 host bits as 4 colon-separated 16-bit groups" do
-      host64 = [0x1234, 0x5678, 0x9abc, 0xdef0].pack("nnnn")
+      host64 = [ 0x1234, 0x5678, 0x9abc, 0xdef0 ].pack("nnnn")
       expect(described_class.compose_address_128("fd12:34ab:cd42:9876::/64", host64))
         .to eq("fd12:34ab:cd42:9876:1234:5678:9abc:def0/128")
     end

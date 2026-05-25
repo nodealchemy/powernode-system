@@ -54,7 +54,7 @@ RSpec.describe Sdwan::HostVrfAssignment, type: :model do
     end
 
     it "rejects kernel-reserved table ids 0/253/254/255" do
-      [0, 253, 254, 255].each do |reserved|
+      [ 0, 253, 254, 255 ].each do |reserved|
         a = build_assignment(table_id: reserved)
         expect(a).not_to be_valid, "expected table_id=#{reserved} rejected"
         expect(a.errors[:table_id].join).to match(/reserved/)
@@ -153,7 +153,7 @@ RSpec.describe Sdwan::HostVrfAssignment, type: :model do
     end
 
     it "for_host filters to a single host" do
-      expect(described_class.for_host(host_a).pluck(:id)).to eq([a_pending.id])
+      expect(described_class.for_host(host_a).pluck(:id)).to eq([ a_pending.id ])
     end
   end
 

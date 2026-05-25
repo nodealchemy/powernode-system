@@ -28,7 +28,7 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
     it "rejects anycast VIPs with fewer than two holders" do
       vip = described_class.new(account_id: account.id, sdwan_network_id: network.id,
                                 name: "bad-anycast", cidr: "192.0.2.10/32",
-                                anycast: true, holder_peer_ids: [hub.id], state: "pending")
+                                anycast: true, holder_peer_ids: [ hub.id ], state: "pending")
       expect(vip).not_to be_valid
       expect(vip.errors[:holder_peer_ids].join).to match(/at least 2 holders/)
     end
@@ -36,7 +36,7 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
     it "accepts anycast VIPs with two or more holders" do
       vip = described_class.new(account_id: account.id, sdwan_network_id: network.id,
                                 name: "good-anycast", cidr: "192.0.2.20/32",
-                                anycast: true, holder_peer_ids: [hub.id, spoke.id], state: "active")
+                                anycast: true, holder_peer_ids: [ hub.id, spoke.id ], state: "active")
       expect(vip).to be_valid
     end
 
@@ -46,7 +46,7 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
                                     node_instance: inst1, publicly_reachable: false)
       vip = described_class.new(account_id: account.id, sdwan_network_id: network.id,
                                 name: "cross-net", cidr: "192.0.2.30/32",
-                                holder_peer_ids: [foreign.id], state: "pending")
+                                holder_peer_ids: [ foreign.id ], state: "pending")
       expect(vip).not_to be_valid
       expect(vip.errors[:holder_peer_ids].join).to match(/another network/)
     end
@@ -63,8 +63,8 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
     let!(:vip) do
       described_class.create!(account_id: account.id, sdwan_network_id: network.id,
                               name: "fo-vip", cidr: "192.0.2.50/32",
-                              holder_peer_ids: [hub.id],
-                              failover_holder_peer_ids: [spoke.id], state: "active")
+                              holder_peer_ids: [ hub.id ],
+                              failover_holder_peer_ids: [ spoke.id ], state: "active")
     end
 
     it "promotes the head of failover_holder_peer_ids and writes an assignment row" do
@@ -76,7 +76,7 @@ RSpec.describe Sdwan::VirtualIp, type: :model do
     end
 
     it "raises StateError on anycast VIPs (BGP handles their failover)" do
-      vip.update!(anycast: true, holder_peer_ids: [hub.id, spoke.id])
+      vip.update!(anycast: true, holder_peer_ids: [ hub.id, spoke.id ])
       expect { vip.failover! }.to raise_error(Sdwan::VirtualIp::StateError, /anycast/)
     end
 

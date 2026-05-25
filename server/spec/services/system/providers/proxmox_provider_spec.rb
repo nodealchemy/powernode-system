@@ -96,7 +96,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         "version" => "9.1.5", "release" => "9.1"
       )
       allow(client).to receive(:get).with("/api2/json/nodes").and_return(
-        [{ "node" => "dna", "status" => "online" }, { "node" => "rna", "status" => "online" }]
+        [ { "node" => "dna", "status" => "online" }, { "node" => "rna", "status" => "online" } ]
       )
 
       result = provider.test_connection
@@ -124,7 +124,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         image_id: "dna-data:import/noble.qcow2",
         node: "dna",
         storage: "dna-data",
-        ssh_keys: ["ssh-ed25519 AAAA test@example"]
+        ssh_keys: [ "ssh-ed25519 AAAA test@example" ]
       }
     end
 
@@ -187,7 +187,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
         image_id: "dna-data:vztmpl/ubuntu-24.04-standard.tar.zst",
         node: "dna",
         storage: "dna-data",
-        ssh_keys: ["ssh-ed25519 AAAA test@example"]
+        ssh_keys: [ "ssh-ed25519 AAAA test@example" ]
       }
     end
 

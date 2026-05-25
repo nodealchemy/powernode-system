@@ -25,14 +25,14 @@ RSpec.describe Sdwan::IpfixCollector, type: :model do
     end
 
     it "requires host + name" do
-      [{ host: "" }, { name: "" }].each do |over|
+      [ { host: "" }, { name: "" } ].each do |over|
         c = build_collector(over)
         expect(c).not_to be_valid, "expected invalid for #{over.inspect}"
       end
     end
 
     it "rejects port outside 1..65535" do
-      [0, 65_536, -1].each do |bad|
+      [ 0, 65_536, -1 ].each do |bad|
         c = build_collector(port: bad)
         expect(c).not_to be_valid
         expect(c.errors[:port]).to be_present

@@ -73,7 +73,7 @@ RSpec.describe ::System::Migrations::ChainExecutor, type: :service do
         ::Struct.new(:ok?, :applied_count, :skipped_count, keyword_init: true).new(
           ok?: true, applied_count: 1, skipped_count: 0
         ),
-        ::Struct.new(:ok?, :error, keyword_init: true).new(ok?: false, error: "remote NACK"),
+        ::Struct.new(:ok?, :error, keyword_init: true).new(ok?: false, error: "remote NACK")
       ]
       # First hop ok → advances to index 1
       described_class.advance!(chain: chain)
@@ -108,7 +108,7 @@ RSpec.describe ::System::Migrations::ChainExecutor, type: :service do
 
     it "stops at the first failing hop" do
       @apply_outcomes = [
-        ::Struct.new(:ok?, :error, keyword_init: true).new(ok?: false, error: "boom"),
+        ::Struct.new(:ok?, :error, keyword_init: true).new(ok?: false, error: "boom")
       ]
       result = described_class.run_to_completion!(chain: chain)
       expect(result.ok?).to be(false)

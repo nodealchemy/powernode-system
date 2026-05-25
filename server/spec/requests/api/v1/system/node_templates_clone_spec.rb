@@ -36,7 +36,7 @@ RSpec.describe "Operator API — Node Templates clone", type: :request do
     ::System::TemplateModule.create!(
       node_template: source_template, node_module: nginx_mod,
       priority: 30, enabled: true,
-      recommends_override: { "excluded" => ["nginx-extras"] }
+      recommends_override: { "excluded" => [ "nginx-extras" ] }
     )
   end
 

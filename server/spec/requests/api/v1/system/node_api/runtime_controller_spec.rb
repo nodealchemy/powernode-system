@@ -103,7 +103,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
         config: {
           "daemon_overrides" => {
             "log-driver" => "journald",
-            "registry-mirrors" => ["https://mirror.gcr.io"]
+            "registry-mirrors" => [ "https://mirror.gcr.io" ]
           }
         }
       )
@@ -113,7 +113,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       body = JSON.parse(response.body)
       overrides = body.dig("data", "daemon_overrides")
       expect(overrides["log-driver"]).to eq("journald")
-      expect(overrides["registry-mirrors"]).to eq(["https://mirror.gcr.io"])
+      expect(overrides["registry-mirrors"]).to eq([ "https://mirror.gcr.io" ])
       expect(body.dig("data", "content_hash")).to start_with(/[a-f0-9]/)
     end
 
@@ -201,7 +201,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       )
       ::Devops::KubernetesNode.create!(
         kubernetes_cluster: cluster, node_instance: node_instance,
-        name: "k-#{node_instance.id[0,6]}", role: "server", status: "active"
+        name: "k-#{node_instance.id[0, 6]}", role: "server", status: "active"
       )
 
       get "/api/v1/system/node_api/runtime/k3s_server/config"

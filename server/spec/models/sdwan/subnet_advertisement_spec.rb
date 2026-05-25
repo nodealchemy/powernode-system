@@ -68,12 +68,12 @@ RSpec.describe Sdwan::SubnetAdvertisement, type: :model do
 
     it "pod_subnet scope returns only pod_subnet-sourced rows" do
       pod_ads = described_class.where(account: account).pod_subnet.pluck(:prefix, :source)
-      expect(pod_ads).to contain_exactly(["10.42.0.0/16", "pod_subnet"])
+      expect(pod_ads).to contain_exactly([ "10.42.0.0/16", "pod_subnet" ])
     end
 
     it "declared scope still filters declared_lan_subnet only (unchanged)" do
       declared = described_class.where(account: account).declared.pluck(:source).uniq
-      expect(declared).to eq(["declared_lan_subnet"])
+      expect(declared).to eq([ "declared_lan_subnet" ])
     end
   end
 end

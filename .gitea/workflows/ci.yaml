@@ -26,30 +26,41 @@ jobs:
       fail-fast: false
       matrix:
         suite: [controllers, services, models-lib]
-    # Service addressing: publish container ports to the host + use
-    # localhost in DATABASE_URL/REDIS_URL.
+    # Service addressing: sidecars publish container ports to the host;
+    # the job container reaches them at the docker bridge gateway IP
+    # (172.17.0.1 on a default Linux docker setup), NOT localhost.
     #
-    # Why not service-name DNS (postgres://postgres@postgres:5432/...)?
-    # Tried that approach on 2026-05-24 (commit 2cd80135 "drop host
-    # port publishing"). It assumed Gitea Actions puts every service
-    # container on a per-job docker network with internal DNS resolution
-    # for service names. The runtime evidence (job container's
-    # NetworkMode is "bridge" — the default docker bridge has NO
-    # service-name DNS) showed that assumption was wrong on this Gitea
-    # Actions installation. Every rspec/rubocop/worker-specs run since
-    # that commit failed at "Prepare test database" with:
+    # Why not "localhost"? Tried on commit ${PRIOR-FIX-SHA-OMITTED} with
+    # `postgres://postgres:postgres@localhost:5432/...`. The job
+    # container's NetworkMode is "bridge" — its localhost is the JOB's
+    # OWN loopback, not the docker host's. Sidecars publishing to host
+    # 0.0.0.0:5432 ARE reachable from the job, but only via the bridge
+    # gateway (172.17.0.1). Result: postgres connection at 127.0.0.1
+    # / ::1 refused, every rspec/worker-specs job died:
+    #   PG::ConnectionBad: connection to server at "127.0.0.1",
+    #     port 5432 failed: Connection refused
+    #
+    # Why not service-name DNS ("postgres://postgres@postgres:5432/...")?
+    # Tried 2026-05-24 (commit 2cd80135). Default docker bridge has NO
+    # service-name DNS — every job died with
     #   PG::ConnectionBad: could not translate host name "postgres"
     #     to address: Name or service not known
-    # Reverting to host ports + localhost.
+    # (Per-job custom network + DNS aliases is the canonical Gitea/GHA
+    # pattern, but THIS act runner doesn't create per-job networks.)
     #
-    # Port-collision risk (the bug 2cd80135 was trying to avoid):
-    # cancelled jobs occasionally leak sidecar containers that keep the
-    # host port bound, blocking the next job's sidecar from starting.
-    # Mitigation lives at the runner level, not the workflow level:
-    # the runner host should periodically purge orphan task containers,
-    # e.g. via systemd ExecStartPre:
-    #   docker ps -a --filter "name=GITEA-ACTIONS-TASK" -q --filter "status=exited" \
-    #     | xargs -r docker rm -f
+    # The current "host-ports + 172.17.0.1" approach works because:
+    #   - Sidecars publish to host 0.0.0.0:{5432,6379} (host-routable)
+    #   - Job container on default bridge reaches host via gateway
+    #     (the bridge gateway IS the docker host's bridge interface)
+    #   - 172.17.0.1 is the well-known default bridge gateway; if it
+    #     changes per-runner, the "Discover host gateway" step below
+    #     overrides DATABASE_URL/REDIS_URL with the runtime-detected IP.
+    #
+    # Port-collision risk: cancelled jobs leak sidecar containers that
+    # keep the host port bound. Manually mitigated 2026-05-24 by
+    # `docker rm -f` of orphan GITEA-ACTIONS-TASK containers on fna.
+    # Runner-level systemd ExecStartPre hook is the proper fix (task
+    # #76); workflow-level changes can't reach that.
     services:
       postgres:
         image: postgres:16
@@ -67,8 +78,11 @@ jobs:
           - 6379:6379
     env:
       RAILS_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/powernode_test
-      REDIS_URL: redis://localhost:6379/0
+      # Default to the standard docker bridge gateway. Overridden at
+      # runtime by the "Discover host gateway" step below if the bridge
+      # uses a non-default IP.
+      DATABASE_URL: postgres://postgres:postgres@172.17.0.1:5432/powernode_test
+      REDIS_URL: redis://172.17.0.1:6379/0
     steps:
       - name: Check out the system extension
         uses: actions/checkout@v4
@@ -95,6 +109,24 @@ jobs:
           rm -rf powernode-platform/extensions/system
           # Use mv (not ln -s) — git>=2.43 rejects symlinks at submodule paths
           mv extensions/system powernode-platform/extensions/system
+
+      - name: Discover host gateway for sidecar reachability
+        # See the long service-addressing comment in the job header. This
+        # step detects the docker bridge gateway at runtime and overrides
+        # DATABASE_URL/REDIS_URL — robust against non-default bridge IPs.
+        run: |
+          set -euo pipefail
+          HOST_IP="$(ip route | awk '/default/{print $3; exit}')"
+          if [ -z "${HOST_IP:-}" ]; then
+            echo "ERROR: could not discover docker bridge gateway from 'ip route'"
+            ip route
+            exit 1
+          fi
+          echo "Discovered HOST_IP=${HOST_IP} — pointing DATABASE_URL/REDIS_URL there"
+          {
+            echo "DATABASE_URL=postgres://postgres:postgres@${HOST_IP}:5432/powernode_test"
+            echo "REDIS_URL=redis://${HOST_IP}:6379/0"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -347,16 +379,17 @@ jobs:
   # there's no separate spec harness for extension-only worker jobs.
   worker-specs:
     runs-on: ubuntu-24.04
-    # Same host-port + localhost addressing as the rspec matrix above —
-    # see the long comment up there for why service-name DNS doesn't
-    # work on this Gitea Actions installation.
+    # Same docker-bridge-gateway addressing as the rspec matrix above —
+    # see the long comment up there for why localhost and service-name
+    # DNS both don't work on this Gitea Actions installation.
     services:
       redis:
         image: redis:7
         ports:
           - 6379:6379
     env:
-      REDIS_URL: redis://localhost:6379/0
+      # Overridden at runtime by the "Discover host gateway" step below.
+      REDIS_URL: redis://172.17.0.1:6379/0
       # Worker startup hard-requires these two env vars. Empty values
       # abort the process before spec loading even begins:
       #   ERROR [WORKER] Missing required environment variables: WORKER_ID, JWT_SECRET_KEY
@@ -384,6 +417,19 @@ jobs:
         run: |
           rm -rf powernode-platform/extensions/system
           mv extensions/system powernode-platform/extensions/system
+
+      - name: Discover host gateway for sidecar reachability
+        # See the long service-addressing comment in the rspec job header.
+        run: |
+          set -euo pipefail
+          HOST_IP="$(ip route | awk '/default/{print $3; exit}')"
+          if [ -z "${HOST_IP:-}" ]; then
+            echo "ERROR: could not discover docker bridge gateway from 'ip route'"
+            ip route
+            exit 1
+          fi
+          echo "Discovered HOST_IP=${HOST_IP} — pointing REDIS_URL there"
+          echo "REDIS_URL=redis://${HOST_IP}:6379/0" >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1

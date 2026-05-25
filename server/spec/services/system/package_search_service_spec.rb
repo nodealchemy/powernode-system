@@ -4,9 +4,9 @@ require "rails_helper"
 
 RSpec.describe System::PackageSearchService do
   let(:account)        { create(:account) }
-  let(:apt_repo)       { create(:system_package_repository, :synced, account: account, name: "apt-noble", architectures: ["amd64"]) }
-  let(:rpm_repo)       { create(:system_package_repository, :rpm, :synced, account: account, name: "rpm-f40", architectures: ["amd64"]) }
-  let(:shared_apt_repo) { create(:system_package_repository, :shared, :synced, name: "apt-shared", architectures: ["amd64", "arm64"]) }
+  let(:apt_repo)       { create(:system_package_repository, :synced, account: account, name: "apt-noble", architectures: [ "amd64" ]) }
+  let(:rpm_repo)       { create(:system_package_repository, :rpm, :synced, account: account, name: "rpm-f40", architectures: [ "amd64" ]) }
+  let(:shared_apt_repo) { create(:system_package_repository, :shared, :synced, name: "apt-shared", architectures: [ "amd64", "arm64" ]) }
 
   def pkg(repo, name, **opts)
     create(:system_package, package_repository: repo, name: name, **opts)
@@ -29,11 +29,11 @@ RSpec.describe System::PackageSearchService do
 
       it "filters by license" do
         result = described_class.call(account: account, params: { license: "BSD-2-Clause" })
-        expect(result.packages.map(&:name)).to eq(["nginx"])
+        expect(result.packages.map(&:name)).to eq([ "nginx" ])
       end
 
       it "filters by sections (multi)" do
-        result = described_class.call(account: account, params: { sections: ["httpd"] })
+        result = described_class.call(account: account, params: { sections: [ "httpd" ] })
         expect(result.packages.map(&:name)).to match_array(%w[apache2 nginx])
       end
 
@@ -45,8 +45,8 @@ RSpec.describe System::PackageSearchService do
 
     context "filtering by `provides` capability" do
       before do
-        pkg(apt_repo, "postfix", provides_caps: ["mail-transport-agent"])
-        pkg(apt_repo, "exim4",   provides_caps: ["mail-transport-agent", "smtp-server"])
+        pkg(apt_repo, "postfix", provides_caps: [ "mail-transport-agent" ])
+        pkg(apt_repo, "exim4",   provides_caps: [ "mail-transport-agent", "smtp-server" ])
         pkg(apt_repo, "nginx") # no provides
       end
 
@@ -73,12 +73,12 @@ RSpec.describe System::PackageSearchService do
       end
 
       it "expands canonical `amd64` to include both apt and rpm name variants" do
-        result = described_class.call(account: account, params: { architectures: ["amd64"] })
-        names_archs = result.packages.map { |p| [p.name, p.architecture] }
+        result = described_class.call(account: account, params: { architectures: [ "amd64" ] })
+        names_archs = result.packages.map { |p| [ p.name, p.architecture ] }
         expect(names_archs).to match_array([
-          ["nginx", "amd64"],
-          ["nginx", "x86_64"],
-          ["httpd", "x86_64"]
+          [ "nginx", "amd64" ],
+          [ "nginx", "x86_64" ],
+          [ "httpd", "x86_64" ]
         ])
       end
 
@@ -96,7 +96,7 @@ RSpec.describe System::PackageSearchService do
 
       it "scopes to repos of the given kind" do
         result = described_class.call(account: account, params: { kind: "rpm" })
-        expect(result.packages.map(&:name)).to eq(["nginx-rpm"])
+        expect(result.packages.map(&:name)).to eq([ "nginx-rpm" ])
       end
     end
 
@@ -107,13 +107,13 @@ RSpec.describe System::PackageSearchService do
       end
 
       it "scopes to the provided repositories (array form)" do
-        result = described_class.call(account: account, params: { repository_ids: [apt_repo.id] })
-        expect(result.packages.map(&:name)).to eq(["a"])
+        result = described_class.call(account: account, params: { repository_ids: [ apt_repo.id ] })
+        expect(result.packages.map(&:name)).to eq([ "a" ])
       end
 
       it "back-compat: accepts singular `repository_id`" do
         result = described_class.call(account: account, params: { repository_id: rpm_repo.id })
-        expect(result.packages.map(&:name)).to eq(["b"])
+        expect(result.packages.map(&:name)).to eq([ "b" ])
       end
     end
 
@@ -203,7 +203,7 @@ RSpec.describe System::PackageSearchService do
         pkg(apt_repo,   "public-tool")
 
         result = described_class.call(account: account, params: {})
-        expect(result.packages.map(&:name)).to eq(["public-tool"])
+        expect(result.packages.map(&:name)).to eq([ "public-tool" ])
       end
 
       it "includes packages from shared repos" do
@@ -246,7 +246,7 @@ RSpec.describe System::PackageSearchService do
 
       it "excludes obsoleted rows" do
         result = described_class.call(account: account, params: {})
-        expect(result.packages.map(&:name)).to eq(["current"])
+        expect(result.packages.map(&:name)).to eq([ "current" ])
       end
     end
   end

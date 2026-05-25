@@ -33,7 +33,7 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
     require "openssl"
     key = OpenSSL::PKey.generate_key("ED25519")
     csr = OpenSSL::X509::Request.new
-    csr.subject = OpenSSL::X509::Name.new([["CN", "instance-cn-1234"]])
+    csr.subject = OpenSSL::X509::Name.new([ [ "CN", "instance-cn-1234" ] ])
     csr.public_key = key
     csr.sign(key, nil) # Ed25519 doesn't take a digest
     csr.to_pem
@@ -79,7 +79,7 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
       # Second refresh — old row preserved (different cert_id), audit trail intact.
       second_csr = OpenSSL::PKey.generate_key("ED25519").then do |k|
         c = OpenSSL::X509::Request.new
-        c.subject = OpenSSL::X509::Name.new([["CN", "instance-cn-1234"]])
+        c.subject = OpenSSL::X509::Name.new([ [ "CN", "instance-cn-1234" ] ])
         c.public_key = k
         c.sign(k, nil)
         c.to_pem
@@ -105,7 +105,7 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
       post "/api/v1/system/node_api/enroll/refresh",
            params: { csr_pem: "" },
            headers: headers, as: :json
-      expect(response.status).to be_in([400, 422])
+      expect(response.status).to be_in([ 400, 422 ])
     end
 
     it "returns 422 with malformed CSR" do

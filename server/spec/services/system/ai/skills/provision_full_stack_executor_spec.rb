@@ -157,7 +157,7 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
           relation = double("network_relation")
           allow(::Sdwan::Network).to receive(:where).with(account_id: account.id).and_return(relation)
           allow(relation).to receive(:find_by).with(id: network_id).and_return(network)
-          allow(::Sdwan::TopologyCompiler).to receive(:compile_for_network).and_return([peer_view, peer_view])
+          allow(::Sdwan::TopologyCompiler).to receive(:compile_for_network).and_return([ peer_view, peer_view ])
         end
 
         it "compiles the SDWAN topology and returns peer ids" do
@@ -219,8 +219,8 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       allow(::System::VolumeManagementService).to receive(:delete).and_return(ok)
 
       result = exec.rollback_provision_full_stack(
-        node_instance_ids: [instance_id_a, instance_id_b],
-        storage_volume_ids: [volume_id]
+        node_instance_ids: [ instance_id_a, instance_id_b ],
+        storage_volume_ids: [ volume_id ]
       )
 
       expect(result[:success]).to be true
@@ -239,8 +239,8 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       allow(::System::ProvisioningService).to receive(:terminate_instance).and_return(bad)
 
       result = exec.rollback_provision_full_stack(
-        node_instance_ids: [instance_id_a, instance_id_b],
-        storage_volume_ids: [volume_id]
+        node_instance_ids: [ instance_id_a, instance_id_b ],
+        storage_volume_ids: [ volume_id ]
       )
 
       expect(result[:success]).to be false
@@ -252,8 +252,8 @@ RSpec.describe System::Ai::Skills::ProvisionFullStackExecutor do
       result = exec.rollback_provision_full_stack(
         node_instance_ids: [],
         storage_volume_ids: [],
-        sdwan_peer_ids: [SecureRandom.uuid],
-        node_ids: [SecureRandom.uuid]
+        sdwan_peer_ids: [ SecureRandom.uuid ],
+        node_ids: [ SecureRandom.uuid ]
       )
 
       expect(result[:success]).to be true

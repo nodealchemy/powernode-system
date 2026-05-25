@@ -60,7 +60,7 @@ RSpec.describe Sdwan::HostBridgeAllocator, type: :service do
       expect(linux.kind).to eq("linux")
       expect(ovs.kind).to eq("ovs")
       # Both rows occupy separate short_ids on the same host.
-      expect([linux.short_id, ovs.short_id].uniq.length).to eq(2)
+      expect([ linux.short_id, ovs.short_id ].uniq.length).to eq(2)
     end
 
     it "readopts a removed row instead of allocating a new one" do

@@ -36,7 +36,7 @@ RSpec.describe ::System::Identity::GroupAllocator, type: :service do
       # Allocate one non-reserved name; should land at 71000 (above reserved range).
       g1 = described_class.allocate!(groupname: "alpha-svc")
       g2 = described_class.allocate!(groupname: "beta-svc")
-      expect([g1.gid, g2.gid]).to eq([71_000, 71_001])
+      expect([ g1.gid, g2.gid ]).to eq([ 71_000, 71_001 ])
       expect(g1.gid).to be >= ::System::Identity::ReservedIdentities::SEQUENTIAL_FLOOR
     end
 

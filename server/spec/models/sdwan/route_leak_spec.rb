@@ -7,9 +7,9 @@ RSpec.describe Sdwan::RouteLeak, type: :model do
   let(:other_account) { create(:account) }
 
   before do
-    Sdwan::RouteLeak.where(account_id: [account.id, other_account.id]).delete_all
-    Sdwan::Configuration.where(account_id: [account.id, other_account.id]).delete_all
-    Sdwan::Network.where(account_id: [account.id, other_account.id]).delete_all
+    Sdwan::RouteLeak.where(account_id: [ account.id, other_account.id ]).delete_all
+    Sdwan::Configuration.where(account_id: [ account.id, other_account.id ]).delete_all
+    Sdwan::Network.where(account_id: [ account.id, other_account.id ]).delete_all
   end
 
   let(:net_a) { Sdwan::Network.create!(account_id: account.id, name: "leak-a-#{SecureRandom.hex(3)}") }
@@ -21,7 +21,7 @@ RSpec.describe Sdwan::RouteLeak, type: :model do
       source_network: net_a,
       dest_network: net_b,
       direction: "one_way",
-      prefix_filter: [{ "cidr" => "fd00:abcd::/48", "action" => "permit" }]
+      prefix_filter: [ { "cidr" => "fd00:abcd::/48", "action" => "permit" } ]
     }.merge(overrides))
   end
 
@@ -57,13 +57,13 @@ RSpec.describe Sdwan::RouteLeak, type: :model do
     end
 
     it "rejects malformed cidr in prefix_filter" do
-      leak = build_leak(prefix_filter: [{ "cidr" => "not-a-cidr", "action" => "permit" }])
+      leak = build_leak(prefix_filter: [ { "cidr" => "not-a-cidr", "action" => "permit" } ])
       expect(leak).not_to be_valid
       expect(leak.errors[:prefix_filter].join).to match(/CIDR/)
     end
 
     it "rejects unknown filter action" do
-      leak = build_leak(prefix_filter: [{ "cidr" => "fd00::/64", "action" => "redirect" }])
+      leak = build_leak(prefix_filter: [ { "cidr" => "fd00::/64", "action" => "redirect" } ])
       expect(leak).not_to be_valid
       expect(leak.errors[:prefix_filter].join).to match(/action/)
     end
@@ -130,8 +130,8 @@ RSpec.describe Sdwan::RouteLeak, type: :model do
       leak = build_leak(direction: "bidirectional").tap(&:save!)
       pairs = leak.directed_pairs
       expect(pairs.size).to eq(2)
-      expect(pairs.map { |p| [p[:source].id, p[:dest].id] })
-        .to contain_exactly([net_a.id, net_b.id], [net_b.id, net_a.id])
+      expect(pairs.map { |p| [ p[:source].id, p[:dest].id ] })
+        .to contain_exactly([ net_a.id, net_b.id ], [ net_b.id, net_a.id ])
     end
   end
 

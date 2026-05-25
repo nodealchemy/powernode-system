@@ -31,7 +31,7 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
       account: account,
       created_by: user,
       mission_type: "infrastructure",
-      custom_phases: [{ "key" => "adapting", "label" => "Adapting", "order" => 0 }],
+      custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
       configuration: cfg
     )
     mission.update_columns(status: "active")
@@ -150,7 +150,7 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
         account: other_account,
         created_by: other_user,
         mission_type: "infrastructure",
-        custom_phases: [{ "key" => "adapting", "label" => "Adapting", "order" => 0 }],
+        custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
         configuration: {
           "brief" => { "scale" => { "initial" => 3 }, "regions" => %w[us-east-1] },
           "slo_targets" => { "p99_latency_ms" => 250 },
@@ -186,7 +186,7 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
         account: account,
         created_by: user,
         mission_type: "infrastructure",
-        custom_phases: [{ "key" => "adapting", "label" => "Adapting", "order" => 0 }],
+        custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
         configuration: {}
       )
       mission.update_columns(status: "active")

@@ -565,8 +565,8 @@ FactoryBot.define do
     kind { "apt" }
     visibility { "account" }
     base_url { "https://archive.example.com/ubuntu" }
-    architectures { ["amd64"] }
-    apt_config { { "suite" => "noble", "components" => ["main"] } }
+    architectures { [ "amd64" ] }
+    apt_config { { "suite" => "noble", "components" => [ "main" ] } }
     rpm_config { {} }
     enabled { true }
     sync_status { "idle" }
@@ -619,9 +619,9 @@ FactoryBot.define do
     end
 
     after(:build) do |pkg, ev|
-      pkg.depends = Array(ev.depends_on).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.depends_on.any?
-      pkg.recommends = Array(ev.recommends_packages).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.recommends_packages.any?
-      pkg.provides = Array(ev.provides_caps).map { |n| [{ "name" => n, "op" => nil, "version" => nil }] } if ev.provides_caps.any?
+      pkg.depends = Array(ev.depends_on).map { |n| [ { "name" => n, "op" => nil, "version" => nil } ] } if ev.depends_on.any?
+      pkg.recommends = Array(ev.recommends_packages).map { |n| [ { "name" => n, "op" => nil, "version" => nil } ] } if ev.recommends_packages.any?
+      pkg.provides = Array(ev.provides_caps).map { |n| [ { "name" => n, "op" => nil, "version" => nil } ] } if ev.provides_caps.any?
     end
   end
 
@@ -675,7 +675,7 @@ FactoryBot.define do
       name { "rails" }
       start_command { "bundle exec puma -C config/puma.rb" }
       health_endpoint { "/up" }
-      exposed_ports { [{ "port" => 3000, "protocol" => "tcp", "name" => "http" }] }
+      exposed_ports { [ { "port" => 3000, "protocol" => "tcp", "name" => "http" } ] }
       env { { "RAILS_ENV" => "production" } }
     end
 
@@ -690,7 +690,7 @@ FactoryBot.define do
       name { "postgres" }
       start_command { "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main" }
       health_endpoint { nil }
-      exposed_ports { [{ "port" => 5432, "protocol" => "tcp", "name" => "postgres" }] }
+      exposed_ports { [ { "port" => 5432, "protocol" => "tcp", "name" => "postgres" } ] }
       service_user { ::System::Identity::UserAllocator.allocate!(username: "postgres") }
     end
   end

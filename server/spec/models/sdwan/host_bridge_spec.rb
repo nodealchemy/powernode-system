@@ -153,7 +153,7 @@ RSpec.describe Sdwan::HostBridge, type: :model do
     end
 
     it "for_host filters to a single host" do
-      expect(described_class.for_host(host_a).pluck(:id)).to eq([b_pending.id])
+      expect(described_class.for_host(host_a).pluck(:id)).to eq([ b_pending.id ])
     end
   end
 

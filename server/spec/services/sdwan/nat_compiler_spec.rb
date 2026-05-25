@@ -80,7 +80,7 @@ RSpec.describe Sdwan::NatCompiler, type: :service do
     let!(:vip) do
       Sdwan::VirtualIp.create!(account_id: account.id, sdwan_network_id: network.id,
                                name: "db-vip", cidr: "192.0.2.50/32",
-                               holder_peer_ids: [target.id], state: "active")
+                               holder_peer_ids: [ target.id ], state: "active")
     end
 
     before do

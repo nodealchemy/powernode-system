@@ -114,7 +114,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
       account: account,
       created_by: admin,
       mission_type: "infrastructure",
-      custom_phases: [{ "key" => "adapting", "label" => "Adapting", "order" => 0 }],
+      custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
       configuration: {
         "brief" => brief,
         "slo_targets" => slo,
@@ -155,7 +155,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
 
     # ---------- 2. AdaptationProposer turns signal into a diff plan -------
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
-    plan = proposer.propose_from_signals(signals: [slo])
+    plan = proposer.propose_from_signals(signals: [ slo ])
 
     expect(plan).to be_a(Ai::GoalPlan)
     expect(plan.steps.count).to eq(1)
@@ -206,7 +206,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
 
     # ---------- 2. AdaptationProposer routes region_count drift to relocate
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
-    plan = proposer.propose_from_signals(signals: [drift])
+    plan = proposer.propose_from_signals(signals: [ drift ])
 
     expect(plan).to be_a(Ai::GoalPlan)
     step = plan.steps.in_order.first
@@ -227,7 +227,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
       is_sequential: true,
       timeout_action: "reject",
       timeout_hours: 4,
-      steps: [{ "name" => "Operator Approval", "approvers" => ["*"], "required_approvals" => 1 }]
+      steps: [ { "name" => "Operator Approval", "approvers" => [ "*" ], "required_approvals" => 1 } ]
     )
 
     fleet_service = System::Fleet::FleetAutonomyService.new(
@@ -262,7 +262,7 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
     expect(cost.payload["target_usd"]).to eq(200.0)
 
     proposer = Ai::Provisioning::AdaptationProposerService.new(account: account, mission: mission)
-    plan = proposer.propose_from_signals(signals: [cost])
+    plan = proposer.propose_from_signals(signals: [ cost ])
     expect(plan.steps.in_order.first.execution_config.dig("inputs", "change_type"))
       .to eq("cost_control")
   end

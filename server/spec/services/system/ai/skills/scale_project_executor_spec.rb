@@ -216,7 +216,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       allow(::System::ProvisioningService).to receive(:terminate_instance).and_return(ok)
       allow(::System::VolumeManagementService).to receive(:delete).and_return(ok)
 
-      r = exec.rollback_scale_project(node_instance_ids: [instance_id_a], storage_volume_ids: [volume_id])
+      r = exec.rollback_scale_project(node_instance_ids: [ instance_id_a ], storage_volume_ids: [ volume_id ])
 
       expect(r[:success]).to be true
       expect(r[:errors]).to be_empty
@@ -229,7 +229,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
       bad = ::System::Runtime::Result.err(error: "provider rejected terminate")
       allow(::System::ProvisioningService).to receive(:terminate_instance).and_return(bad)
 
-      r = exec.rollback_scale_project(node_instance_ids: [instance_id_a], storage_volume_ids: [])
+      r = exec.rollback_scale_project(node_instance_ids: [ instance_id_a ], storage_volume_ids: [])
 
       expect(r[:success]).to be false
       expect(r[:errors].first).to include(resource: "node_instance", id: instance_id_a)
@@ -238,7 +238,7 @@ RSpec.describe System::Ai::Skills::ScaleProjectExecutor do
     it "ignores extra kwargs the runner forwards (sdwan_peer_ids, rolling_upgrade_plan)" do
       r = exec.rollback_scale_project(
         node_instance_ids: [], storage_volume_ids: [],
-        sdwan_peer_ids: [SecureRandom.uuid], rolling_upgrade_plan: { foo: "bar" }
+        sdwan_peer_ids: [ SecureRandom.uuid ], rolling_upgrade_plan: { foo: "bar" }
       )
 
       expect(r[:success]).to be true

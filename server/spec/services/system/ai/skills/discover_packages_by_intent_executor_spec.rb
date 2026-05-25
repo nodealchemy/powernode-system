@@ -95,7 +95,7 @@ RSpec.describe System::Ai::Skills::DiscoverPackagesByIntentExecutor do
       end
 
       it "scopes by repository_ids" do
-        result = executor.execute(intent: "x", repository_ids: [repo.id])
+        result = executor.execute(intent: "x", repository_ids: [ repo.id ])
         names = result[:data][:results].map { |r| r[:name] }
         expect(names).to include("nginx-here")
         expect(names).not_to include("nginx-other")

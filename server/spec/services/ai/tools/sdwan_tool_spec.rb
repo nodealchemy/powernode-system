@@ -227,7 +227,7 @@ RSpec.describe Ai::Tools::SdwanTool do
         name: "vm-port-1",
         kind: "vm",
         host_node_instance_id: host.id,
-        addresses: ["10.42.0.5"]
+        addresses: [ "10.42.0.5" ]
       )
       expect(r[:success]).to be true
       port = r[:data][:ovn_logical_switch_port]
@@ -235,7 +235,7 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(port[:name]).to eq("vm-port-1")
       expect(port[:kind]).to eq("vm")
       expect(port[:host_node_instance_id]).to eq(host.id)
-      expect(port[:addresses]).to eq(["10.42.0.5"])
+      expect(port[:addresses]).to eq([ "10.42.0.5" ])
       # Auto-gen MAC starts with the locally-administered `02:` prefix.
       expect(port[:mac]).to match(/\A02:[0-9a-f]{2}(:[0-9a-f]{2}){4}\z/)
     end
@@ -294,7 +294,7 @@ RSpec.describe Ai::Tools::SdwanTool do
         account: account,
         name: "compiled-port",
         kind: "vm",
-        addresses: ["10.42.0.7"]
+        addresses: [ "10.42.0.7" ]
       )
       p.mark_active!
       p
@@ -312,10 +312,10 @@ RSpec.describe Ai::Tools::SdwanTool do
       expect(cmds).to include("ls-add", "lsp-add", "lsp-set-addresses")
 
       ls_add = plan[:plan].find { |e| e[:cmd] == "ls-add" }
-      expect(ls_add[:args]).to eq(["compiled-sw"])
+      expect(ls_add[:args]).to eq([ "compiled-sw" ])
 
       lsp_add = plan[:plan].find { |e| e[:cmd] == "lsp-add" }
-      expect(lsp_add[:args]).to eq(["compiled-sw", "compiled-port"])
+      expect(lsp_add[:args]).to eq([ "compiled-sw", "compiled-port" ])
     end
 
     it "rejects a deployment from another account" do

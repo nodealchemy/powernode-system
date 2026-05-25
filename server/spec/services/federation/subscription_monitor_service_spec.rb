@@ -39,10 +39,10 @@ RSpec.describe Federation::SubscriptionMonitorService, type: :service do
                    issued_at: 30.days.ago,
                    expires_at: grant_expires_at)
     cert_traits = case cert_status
-                  when "valid"  then [ :valid ]
-                  when "failed" then []
-                  else []
-                  end
+    when "valid"  then [ :valid ]
+    when "failed" then []
+    else []
+    end
     cert = create(:system_acme_certificate, *cert_traits,
                   account: account, dns_credential: dns_cred,
                   status: cert_status)

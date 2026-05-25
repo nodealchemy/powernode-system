@@ -11,7 +11,7 @@ FactoryBot.define do
     sequence(:cve_id) { |n| "CVE-#{Time.current.year}-#{format('%04d', 9_000 + n)}" }
     severity { "high" }
     summary { "Synthetic CVE for testing" }
-    affected_packages { [{ "name" => "openssl", "version" => "<3.1.4", "ecosystem" => "deb" }] }
+    affected_packages { [ { "name" => "openssl", "version" => "<3.1.4", "ecosystem" => "deb" } ] }
     reference_url { "https://nvd.nist.gov/vuln/detail/#{cve_id}" }
     published_at { 1.day.ago }
     ingested_at { 1.hour.ago }

@@ -15,8 +15,8 @@ RSpec.describe System::PackageModuleMaterializer do
 
   before do
     create(:system_package, package_repository: repo, name: bot_pkg)
-    create(:system_package, package_repository: repo, name: mid_pkg, depends_on: [bot_pkg])
-    create(:system_package, package_repository: repo, name: top_pkg, depends_on: [mid_pkg])
+    create(:system_package, package_repository: repo, name: mid_pkg, depends_on: [ bot_pkg ])
+    create(:system_package, package_repository: repo, name: top_pkg, depends_on: [ mid_pkg ])
   end
 
   describe ".call" do
@@ -24,7 +24,7 @@ RSpec.describe System::PackageModuleMaterializer do
       result = described_class.call(
         repository:        repo,
         package_name:      top_pkg,
-        architectures:     ["amd64"],
+        architectures:     [ "amd64" ],
         account:           account,
         requested_by_user: user,
         dispatch_build:    false
@@ -46,7 +46,7 @@ RSpec.describe System::PackageModuleMaterializer do
 
     it "creates ModuleDependency edges of type 'requires' for the closure" do
       result = described_class.call(
-        repository: repo, package_name: top_pkg, architectures: ["amd64"],
+        repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
         account: account, requested_by_user: user, dispatch_build: false
       )
       requires_edges = result.dependencies_created.select { |d| d.dependency_type == "requires" }
@@ -55,7 +55,7 @@ RSpec.describe System::PackageModuleMaterializer do
 
     it "is idempotent: re-running produces no net side effects" do
       described_class.call(
-        repository: repo, package_name: top_pkg, architectures: ["amd64"],
+        repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
         account: account, requested_by_user: user, dispatch_build: false
       )
       module_count_before = System::NodeModule.count
@@ -63,7 +63,7 @@ RSpec.describe System::PackageModuleMaterializer do
       link_count_before = System::PackageModuleLink.count
 
       described_class.call(
-        repository: repo, package_name: top_pkg, architectures: ["amd64"],
+        repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
         account: account, requested_by_user: user, dispatch_build: false
       )
 
@@ -81,7 +81,7 @@ RSpec.describe System::PackageModuleMaterializer do
 
       expect {
         described_class.call(
-          repository: repo, package_name: top_pkg, architectures: ["amd64"],
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
           account: account, requested_by_user: user, dispatch_build: false
         )
       }.to raise_error(System::PackageModuleMaterializer::NamingConflictError)
@@ -93,17 +93,17 @@ RSpec.describe System::PackageModuleMaterializer do
       before do
         create(:system_package, package_repository: repo, name: rec_pkg)
         pkg = System::Package.find_by(package_repository: repo, name: top_pkg)
-        pkg.update!(recommends: [[{ "name" => rec_pkg, "op" => nil, "version" => nil }]])
+        pkg.update!(recommends: [ [ { "name" => rec_pkg, "op" => nil, "version" => nil } ] ])
       end
 
       it "persists recommends_chosen on the top-level link only" do
         result = described_class.call(
-          repository: repo, package_name: top_pkg, architectures: ["amd64"],
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
           account: account, requested_by_user: user,
-          recommends_selected: [rec_pkg], dispatch_build: false
+          recommends_selected: [ rec_pkg ], dispatch_build: false
         )
         link = result.top_level_module.package_module_link.reload
-        expect(link.recommends_chosen).to eq([rec_pkg])
+        expect(link.recommends_chosen).to eq([ rec_pkg ])
 
         # Transitive deps' links have empty recommends_chosen
         result.dependency_modules.each do |m|
@@ -114,9 +114,9 @@ RSpec.describe System::PackageModuleMaterializer do
 
       it "creates the recommends module + a recommends-type ModuleDependency edge" do
         result = described_class.call(
-          repository: repo, package_name: top_pkg, architectures: ["amd64"],
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
           account: account, requested_by_user: user,
-          recommends_selected: [rec_pkg], dispatch_build: false
+          recommends_selected: [ rec_pkg ], dispatch_build: false
         )
         all_module_names = result.all_modules.map(&:name)
         expect(all_module_names.any? { |n| n.end_with?("--#{rec_pkg}") }).to be(true)
@@ -138,11 +138,11 @@ RSpec.describe System::PackageModuleMaterializer do
 
       it "lets two accounts each materialize the same shared-repo package independently" do
         result_a = described_class.call(
-          repository: shared_repo, package_name: shared_pkg, architectures: ["amd64"],
+          repository: shared_repo, package_name: shared_pkg, architectures: [ "amd64" ],
           account: account, requested_by_user: user, dispatch_build: false
         )
         result_b = described_class.call(
-          repository: shared_repo, package_name: shared_pkg, architectures: ["amd64"],
+          repository: shared_repo, package_name: shared_pkg, architectures: [ "amd64" ],
           account: other_account_user.account, requested_by_user: other_account_user, dispatch_build: false
         )
 

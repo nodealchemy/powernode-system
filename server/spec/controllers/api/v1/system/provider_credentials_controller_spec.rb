@@ -104,7 +104,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "creates an active account-owned credential after passing validation" do
-      with_credential_validator([true, nil])
+      with_credential_validator([ true, nil ])
 
       expect {
         post "/api/v1/system/provider_credentials",
@@ -125,7 +125,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "rejects when validation service returns invalid" do
-      with_credential_validator([false, "Authentication failed"])
+      with_credential_validator([ false, "Authentication failed" ])
 
       expect {
         post "/api/v1/system/provider_credentials",
@@ -167,7 +167,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
 
     context "polymorphic provider_id (FirstRunWizard BYOC path)" do
       it "resolves a type slug + auto-creates the Provider when none exists for that type" do
-        with_credential_validator([true, nil])
+        with_credential_validator([ true, nil ])
         # Sanity: account has no vultr provider yet (only pro_cloud from bootstrap).
         expect(::System::Provider.where(account: account, provider_type: "vultr")).to be_empty
 
@@ -184,7 +184,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
       end
 
       it "reuses an existing Provider of the same type instead of creating a duplicate" do
-        with_credential_validator([true, nil])
+        with_credential_validator([ true, nil ])
         existing = create(:system_provider, account: account, provider_type: "aws", name: "AWS Prod")
 
         expect {
@@ -206,7 +206,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
       end
 
       it "falls back to provider_type when provider_id is missing" do
-        with_credential_validator([true, nil])
+        with_credential_validator([ true, nil ])
 
         post "/api/v1/system/provider_credentials",
              params: { provider_type: "linode", credentials: valid_creds }.to_json,
@@ -233,7 +233,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "returns valid: true when CredentialValidationService accepts" do
-      with_credential_validator([true, nil])
+      with_credential_validator([ true, nil ])
 
       post "/api/v1/system/provider_credentials/test",
            params: { provider_id: provider.id, credentials: valid_creds }.to_json,
@@ -245,7 +245,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "returns valid: false + error message when CredentialValidationService rejects" do
-      with_credential_validator([false, "API key not authorized"])
+      with_credential_validator([ false, "API key not authorized" ])
 
       post "/api/v1/system/provider_credentials/test",
            params: { provider_id: provider.id, credentials: valid_creds }.to_json,
@@ -258,7 +258,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "returns valid: false when credentials are empty (does not call validator)" do
-      service = with_credential_validator([true, nil])
+      service = with_credential_validator([ true, nil ])
       post "/api/v1/system/provider_credentials/test",
            params: { provider_id: provider.id, credentials: {} }.to_json,
            headers: auth_headers_for(test_user)
@@ -281,7 +281,7 @@ RSpec.describe "Api::V1::System::ProviderCredentials", type: :request do
     end
 
     it "accepts a provider_type slug as provider_id (BYOC pre-create path) without persisting a Provider row" do
-      with_credential_validator([true, nil])
+      with_credential_validator([ true, nil ])
       expect(::System::Provider.where(account: account, provider_type: "digitalocean")).to be_empty
 
       # The test endpoint is a dry-run — auto-creating the Provider here

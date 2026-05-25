@@ -36,7 +36,7 @@ RSpec.describe Sdwan::PortMapping, type: :model do
     it "rejects mapping with both targets set" do
       vip = Sdwan::VirtualIp.create!(account_id: account.id, sdwan_network_id: network.id,
                                      name: "vip-#{SecureRandom.hex(2)}", cidr: "192.0.2.50/32",
-                                     holder_peer_ids: [target.id], state: "active")
+                                     holder_peer_ids: [ target.id ], state: "active")
       m = described_class.new(account_id: account.id, sdwan_network_id: network.id,
                               sdwan_peer_id: hub.id, target_peer_id: target.id,
                               target_virtual_ip_id: vip.id, name: "double",

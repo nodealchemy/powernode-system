@@ -14,7 +14,7 @@ RSpec.describe System::PackageAdapters::AptAdapter do
 
     it "parses a single dep with version constraint" do
       result = adapter.parse_dependency_string("libc6 (>= 2.34)")
-      expect(result).to eq([[{ "name" => "libc6", "op" => ">=", "version" => "2.34" }]])
+      expect(result).to eq([ [ { "name" => "libc6", "op" => ">=", "version" => "2.34" } ] ])
     end
 
     it "parses an AND list of bare deps" do

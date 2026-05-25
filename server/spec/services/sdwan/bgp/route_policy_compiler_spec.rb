@@ -39,7 +39,7 @@ RSpec.describe Sdwan::Bgp::RoutePolicyCompiler, type: :service do
         account_id: account.id, name: "p-#{SecureRandom.hex(3)}",
         scope: "account", direction: "import",
         statements: [
-          { "match" => { "prefix_in" => ["10.0.0.0/8", "fd00::/16"] },
+          { "match" => { "prefix_in" => [ "10.0.0.0/8", "fd00::/16" ] },
             "action" => { "type" => "accept", "set_local_pref" => 200 } }
         ]
       )
@@ -93,7 +93,7 @@ RSpec.describe Sdwan::Bgp::RoutePolicyCompiler, type: :service do
       Sdwan::RoutePolicy.create!(
         account_id: account.id, name: "p-tail-#{SecureRandom.hex(3)}",
         scope: "account", direction: "import",
-        statements: [{ "match" => {}, "action" => { "type" => "accept" } }]
+        statements: [ { "match" => {}, "action" => { "type" => "accept" } } ]
       )
     end
 
@@ -111,7 +111,7 @@ RSpec.describe Sdwan::Bgp::RoutePolicyCompiler, type: :service do
         scope: "peer", scope_resource_id: peer1.id,
         direction: "export",
         statements: [
-          { "match" => { "prefix_in" => ["192.0.2.0/24"] },
+          { "match" => { "prefix_in" => [ "192.0.2.0/24" ] },
             "action" => { "type" => "accept" } }
         ]
       )

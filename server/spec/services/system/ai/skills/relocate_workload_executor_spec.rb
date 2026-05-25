@@ -45,7 +45,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "bogus",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 1,
-                         source_instance_ids: [source_instance.id])
+                         source_instance_ids: [ source_instance.id ])
         expect(r[:success]).to be false
         expect(r[:error]).to match(/cutover_strategy must be/)
       end
@@ -69,7 +69,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "blue_green",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 1,
-                         source_instance_ids: [SecureRandom.uuid])
+                         source_instance_ids: [ SecureRandom.uuid ])
         expect(r[:success]).to be false
         expect(r[:error]).to match(/project not found/)
       end
@@ -84,7 +84,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "blue_green",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 2,
-                         source_instance_ids: [source_instance.id], dry_run: true)
+                         source_instance_ids: [ source_instance.id ], dry_run: true)
 
         expect(r[:success]).to be true
         d = r[:data]
@@ -111,7 +111,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "blue_green",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 1,
-                         source_instance_ids: [source_instance.id])
+                         source_instance_ids: [ source_instance.id ])
 
         expect(r[:success]).to be true
         d = r[:data]
@@ -141,7 +141,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "drain",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 1,
-                         source_instance_ids: [source_instance.id])
+                         source_instance_ids: [ source_instance.id ])
 
         expect(r[:success]).to be true
         expect(r[:data][:cutover_strategy]).to eq("drain")
@@ -164,7 +164,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
                          to_region_id: to_region.id, cutover_strategy: "blue_green",
                          template_id: template.id,
                          provider_instance_type_id: instance_type.id, count: 1,
-                         source_instance_ids: [source_instance.id])
+                         source_instance_ids: [ source_instance.id ])
 
         expect(r[:success]).to be true
         expect(r[:data][:partial]).to be true
@@ -188,9 +188,9 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       allow(::System::VolumeManagementService).to receive(:delete).and_return(ok)
 
       r = exec.rollback_relocate_workload(
-        node_instance_ids: [new_instance_id],
-        storage_volume_ids: [volume_id],
-        sdwan_peer_ids: [SecureRandom.uuid]
+        node_instance_ids: [ new_instance_id ],
+        storage_volume_ids: [ volume_id ],
+        sdwan_peer_ids: [ SecureRandom.uuid ]
       )
 
       expect(r[:success]).to be true
@@ -205,7 +205,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
       allow(::System::ProvisioningService).to receive(:terminate_instance).and_return(bad)
 
       r = exec.rollback_relocate_workload(
-        node_instance_ids: [new_instance_id],
+        node_instance_ids: [ new_instance_id ],
         storage_volume_ids: [],
         sdwan_peer_ids: []
       )
@@ -219,7 +219,7 @@ RSpec.describe System::Ai::Skills::RelocateWorkloadExecutor do
         node_instance_ids: [],
         storage_volume_ids: [],
         sdwan_peer_ids: [],
-        terminated_instance_ids: [SecureRandom.uuid]
+        terminated_instance_ids: [ SecureRandom.uuid ]
       )
 
       expect(r[:success]).to be true

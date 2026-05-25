@@ -14,14 +14,14 @@ RSpec.describe System::PackageDependencyResolver do
   end
 
   subject(:resolver) do
-    described_class.new(repositories: [repo], architecture: "amd64")
+    described_class.new(repositories: [ repo ], architecture: "amd64")
   end
 
   describe "#preview" do
     context "with a linear chain (nginx → libc6 → )" do
       before do
         pkg("libc6")
-        pkg("nginx", depends_on: ["libc6"])
+        pkg("nginx", depends_on: [ "libc6" ])
       end
 
       it "returns the required closure without writes" do
@@ -44,8 +44,8 @@ RSpec.describe System::PackageDependencyResolver do
     context "with a diamond graph (A → B → D, A → C → D)" do
       before do
         pkg("d")
-        pkg("b", depends_on: ["d"])
-        pkg("c", depends_on: ["d"])
+        pkg("b", depends_on: [ "d" ])
+        pkg("c", depends_on: [ "d" ])
         pkg("a", depends_on: %w[b c])
       end
 
@@ -60,8 +60,8 @@ RSpec.describe System::PackageDependencyResolver do
     context "with a cycle (A → B → A)" do
       before do
         a = pkg("a")
-        b = pkg("b", depends_on: ["a"])
-        a.update!(depends: [[{ "name" => "b", "op" => nil, "version" => nil }]])
+        b = pkg("b", depends_on: [ "a" ])
+        a.update!(depends: [ [ { "name" => "b", "op" => nil, "version" => nil } ] ])
         _ = b
       end
 
@@ -77,10 +77,10 @@ RSpec.describe System::PackageDependencyResolver do
         pkg("foo")
         # bar deliberately not synced — first alt should be picked
         pkg("alt-target",
-            depends: [[
+            depends: [ [
               { "name" => "foo", "op" => nil, "version" => nil },
               { "name" => "bar", "op" => nil, "version" => nil }
-            ]])
+            ] ])
       end
 
       it "picks the first available alternative" do
@@ -92,8 +92,8 @@ RSpec.describe System::PackageDependencyResolver do
 
     context "with virtual packages via Provides" do
       before do
-        pkg("mta-impl", provides_caps: ["mail-transport-agent"])
-        pkg("needs-mta", depends_on: ["mail-transport-agent"])
+        pkg("mta-impl", provides_caps: [ "mail-transport-agent" ])
+        pkg("needs-mta", depends_on: [ "mail-transport-agent" ])
       end
 
       it "resolves the virtual capability to the providing package" do
@@ -115,7 +115,7 @@ RSpec.describe System::PackageDependencyResolver do
 
       it "surfaces recommends as candidates without including them in required_packages" do
         preview = resolver.preview(root_package_name: "nginx")
-        expect(preview.required_packages.map(&:name)).to eq(["nginx"])
+        expect(preview.required_packages.map(&:name)).to eq([ "nginx" ])
         candidate_names = preview.recommends_candidates.map { |c| c.to_package.name }.sort
         expect(candidate_names).to eq(%w[iproute2 ssl-cert])
       end
@@ -130,7 +130,7 @@ RSpec.describe System::PackageDependencyResolver do
     end
 
     it "includes only the selected recommends in the closure" do
-      result = resolver.resolve(root_package_name: "nginx", recommends_selected: ["ssl-cert"])
+      result = resolver.resolve(root_package_name: "nginx", recommends_selected: [ "ssl-cert" ])
       names = result.packages.map(&:name).sort
       expect(names).to eq(%w[nginx ssl-cert])
       recommends_edges = result.edges.select { |e| e.dep_type == "recommends" }
@@ -145,7 +145,7 @@ RSpec.describe System::PackageDependencyResolver do
 
     it "produces an empty recommends set when none selected" do
       result = resolver.resolve(root_package_name: "nginx", recommends_selected: [])
-      expect(result.packages.map(&:name)).to eq(["nginx"])
+      expect(result.packages.map(&:name)).to eq([ "nginx" ])
       expect(result.edges.select { |e| e.dep_type == "recommends" }).to eq([])
     end
   end

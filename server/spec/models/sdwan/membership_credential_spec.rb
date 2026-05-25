@@ -129,7 +129,7 @@ RSpec.describe Sdwan::MembershipCredential, type: :model do
     end
 
     it "active_status returns only :active rows" do
-      expect(described_class.active_status.pluck(:status)).to eq(["active"])
+      expect(described_class.active_status.pluck(:status)).to eq([ "active" ])
     end
 
     it "live returns active + expiring" do
@@ -137,7 +137,7 @@ RSpec.describe Sdwan::MembershipCredential, type: :model do
     end
 
     it "revoked returns only revoked rows" do
-      expect(described_class.revoked.pluck(:status)).to eq(["revoked"])
+      expect(described_class.revoked.pluck(:status)).to eq([ "revoked" ])
     end
 
     it "due_for_refresh picks up rows past refresh_after" do

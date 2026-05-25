@@ -110,7 +110,7 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
     def self.diff(a, b)
       a_lines = a.split("\n")
       b_lines = b.split("\n")
-      max = [a_lines.length, b_lines.length].max
+      max = [ a_lines.length, b_lines.length ].max
       out = []
       max.times do |i|
         next if a_lines[i] == b_lines[i]
@@ -204,7 +204,7 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
         account_id: account.id,
         source_network: net_a, dest_network: net_b,
         direction: "one_way",
-        prefix_filter: [{ "cidr" => "fd00:a::/64", "action" => "permit" }]
+        prefix_filter: [ { "cidr" => "fd00:a::/64", "action" => "permit" } ]
       ).activate!
 
       cfg = described_class.compile_for_peer(hub_a)
@@ -242,7 +242,7 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
         account_id: account.id,
         source_network: net_a, dest_network: net_b,
         direction: "bidirectional",
-        prefix_filter: [{ "cidr" => "fd00:a::/64", "action" => "permit" }]
+        prefix_filter: [ { "cidr" => "fd00:a::/64", "action" => "permit" } ]
       ).activate!
 
       text = described_class.compile_for_peer(hub_a)[:frr_text]

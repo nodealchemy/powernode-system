@@ -43,7 +43,7 @@ RSpec.describe Sdwan::TopologyCompiler, type: :service do
       expect(view[:peers].size).to eq(1)
       spoke_view = view[:peers].first
       expect(spoke_view[:public_key]).to eq(spoke_peer.active_key.public_key)
-      expect(spoke_view[:allowed_ips]).to eq([spoke_peer.assigned_address])
+      expect(spoke_view[:allowed_ips]).to eq([ spoke_peer.assigned_address ])
     end
 
     it "emits a spoke view that lists only the hub with the full /64 in AllowedIPs" do
@@ -51,7 +51,7 @@ RSpec.describe Sdwan::TopologyCompiler, type: :service do
       expect(view[:peers].size).to eq(1)
       hub_view = view[:peers].first
       expect(hub_view[:public_key]).to eq(hub_peer.active_key.public_key)
-      expect(hub_view[:allowed_ips]).to eq([network.cidr_64])
+      expect(hub_view[:allowed_ips]).to eq([ network.cidr_64 ])
       expect(hub_view[:endpoint]).to eq("203.0.113.10:51820")
       expect(hub_view[:persistent_keepalive]).to eq(25)
     end

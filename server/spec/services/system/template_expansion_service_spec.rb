@@ -51,7 +51,7 @@ RSpec.describe System::TemplateExpansionService do
   def template_modules_for(override:)
     tm = create(:system_template_module, node_template: template, node_module: nginx_mod,
                                           recommends_override: override)
-    [tm]
+    [ tm ]
   end
 
   describe "#expand" do
@@ -66,7 +66,7 @@ RSpec.describe System::TemplateExpansionService do
     end
 
     it "case 2: `excluded` strips entries from the defaults" do
-      tms = template_modules_for(override: { "excluded" => ["net-helper"] })
+      tms = template_modules_for(override: { "excluded" => [ "net-helper" ] })
       expansion = described_class.new(template_modules: tms).expand
       names = expansion.modules.map(&:name)
       expect(names).to include(ssl_mod.name)
@@ -74,7 +74,7 @@ RSpec.describe System::TemplateExpansionService do
     end
 
     it "case 3: `included` adds entries beyond the defaults" do
-      tms = template_modules_for(override: { "included" => ["observer"] })
+      tms = template_modules_for(override: { "included" => [ "observer" ] })
       expansion = described_class.new(template_modules: tms).expand
       names = expansion.modules.map(&:name)
       expect(names).to include(monitor_mod.name)
@@ -83,7 +83,7 @@ RSpec.describe System::TemplateExpansionService do
     end
 
     it "case 4: `replace` ignores defaults entirely" do
-      tms = template_modules_for(override: { "replace" => ["ssl-helper"] })
+      tms = template_modules_for(override: { "replace" => [ "ssl-helper" ] })
       expansion = described_class.new(template_modules: tms).expand
       names = expansion.modules.map(&:name)
       expect(names).to include(ssl_mod.name)

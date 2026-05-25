@@ -77,7 +77,7 @@ RSpec.describe System::ModuleService, type: :model do
     end
 
     it ".exposes_port matches services exposing a given port" do
-      svc = create(:system_module_service, exposed_ports: [{ "port" => 3000, "protocol" => "tcp", "name" => "http" }])
+      svc = create(:system_module_service, exposed_ports: [ { "port" => 3000, "protocol" => "tcp", "name" => "http" } ])
       expect(described_class.exposes_port(3000)).to include(svc)
       expect(described_class.exposes_port(9999)).not_to include(svc)
     end

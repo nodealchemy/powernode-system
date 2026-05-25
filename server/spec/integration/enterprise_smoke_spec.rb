@@ -82,7 +82,7 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
       team_name: "Production",
       slug: "production",
       quota_overrides: { "max_active_instances" => 10 },
-      ip_allowlist: [delegation_cidr_a, delegation_cidr_b]
+      ip_allowlist: [ delegation_cidr_a, delegation_cidr_b ]
     )
   end
 
@@ -140,7 +140,7 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
 
     expect(mission.delegation).to eq(delegation)
     expect(mission.delegation.team_name).to eq("Production")
-    expect(mission.delegation.ip_allowlist).to match_array([delegation_cidr_a, delegation_cidr_b])
+    expect(mission.delegation.ip_allowlist).to match_array([ delegation_cidr_a, delegation_cidr_b ])
     expect(mission.delegation.effective_quota("max_active_instances")).to eq(10) # team override
     expect(mission.delegation.effective_quota("max_concurrent_provisions")).to eq(5) # plan fallback
 
@@ -208,7 +208,7 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
     handoff_approvals = mission.approvals.where(gate: "handoff").approved
     expect(handoff_approvals.count).to eq(3)
     distinct_user_ids = handoff_approvals.distinct.pluck(:user_id).compact
-    expect(distinct_user_ids).to match_array([user_a.id, user_b.id])
+    expect(distinct_user_ids).to match_array([ user_a.id, user_b.id ])
     handoff_approvals.each do |ap|
       expect(ap.created_at).to be_present
     end
@@ -231,8 +231,8 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
 
     # Both CIDRs × 3 ports (22/80/443) = 6 rules.
     expect(rules.size).to eq(6)
-    expect(rules.map { |r| r[:source] }.uniq).to match_array([delegation_cidr_a, delegation_cidr_b])
-    expect(rules.map { |r| r[:port] }.uniq.sort).to eq([22, 80, 443])
+    expect(rules.map { |r| r[:source] }.uniq).to match_array([ delegation_cidr_a, delegation_cidr_b ])
+    expect(rules.map { |r| r[:port] }.uniq.sort).to eq([ 22, 80, 443 ])
     rules.each do |rule|
       expect(rule[:protocol]).to eq("tcp")
       expect(rule[:description]).to be_present

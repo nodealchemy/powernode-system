@@ -96,7 +96,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
 
         expect(r[:success]).to be true
         d = r[:data]
-        expect(d[:outputs][:storage_volume_ids]).to eq([volume_stub.id])
+        expect(d[:outputs][:storage_volume_ids]).to eq([ volume_stub.id ])
         expect(d[:outputs][:mount]).to include(instance_id: instance.id, mount_point: "/srv/data", device: "/dev/sdf")
         expect(::System::VolumeManagementService).to have_received(:provision).once
         expect(::System::VolumeManagementService).to have_received(:attach).with(volume: volume_stub, instance: instance)
@@ -139,7 +139,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
 
         expect(r[:success]).to be true
         expect(r[:data][:partial]).to be true
-        expect(r[:data][:outputs][:storage_volume_ids]).to eq([volume_stub.id])
+        expect(r[:data][:outputs][:storage_volume_ids]).to eq([ volume_stub.id ])
         expect(r[:data][:failures].first[:step]).to eq("mount_filesystem")
       end
     end
@@ -156,7 +156,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
       allow(::System::VolumeManagementService).to receive(:detach).and_return(ok)
       allow(::System::VolumeManagementService).to receive(:delete).and_return(ok)
 
-      r = exec.rollback_attach_storage(storage_volume_ids: [volume_id])
+      r = exec.rollback_attach_storage(storage_volume_ids: [ volume_id ])
 
       expect(r[:success]).to be true
       expect(r[:errors]).to be_empty
@@ -173,7 +173,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
       allow(::System::VolumeManagementService).to receive(:detach).and_return(bad_detach)
       allow(::System::VolumeManagementService).to receive(:delete).and_return(bad_delete)
 
-      r = exec.rollback_attach_storage(storage_volume_ids: [volume_id])
+      r = exec.rollback_attach_storage(storage_volume_ids: [ volume_id ])
 
       expect(r[:success]).to be false
       expect(r[:errors].first).to include(resource: "provider_volume", id: volume_id)
@@ -183,7 +183,7 @@ RSpec.describe System::Ai::Skills::AttachStorageExecutor do
     it "ignores extra kwargs forwarded by the runner (node_instance_ids, mount)" do
       r = exec.rollback_attach_storage(
         storage_volume_ids: [],
-        node_instance_ids: [SecureRandom.uuid],
+        node_instance_ids: [ SecureRandom.uuid ],
         mount: { mount_point: "/data" }
       )
 

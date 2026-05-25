@@ -39,7 +39,7 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       h1 = described_class.allocate!(host: host_a, network: net_a)
       h2 = described_class.allocate!(host: host_a, network: net_b)
       h3 = described_class.allocate!(host: host_a, network: net_c)
-      expect([h1.table_id, h2.table_id, h3.table_id]).to eq([100, 101, 102])
+      expect([ h1.table_id, h2.table_id, h3.table_id ]).to eq([ 100, 101, 102 ])
     end
 
     it "fills gaps left by hard-deleted rows (lowest-unused wins)" do
@@ -78,7 +78,7 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       net_d = Sdwan::Network.create!(account_id: account.id, name: "vrf-net-d-#{SecureRandom.hex(3)}")
       new_hva = described_class.allocate!(host: host_a, network: net_d)
       expect(new_hva.table_id).not_to eq(h2.table_id)
-      expect([h1.table_id, h2.table_id, new_hva.table_id].uniq.length).to eq(3)
+      expect([ h1.table_id, h2.table_id, new_hva.table_id ].uniq.length).to eq(3)
     end
 
     it "permits the same table_id on a different host" do
@@ -164,7 +164,7 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       expect(hva.vrf_iface_name).to eq("sdwan-1")
       expect(hva.wg_iface_name).to eq("wg-sdwan-1")
       expect(hva.dummy_iface_name).to eq("d-sdwan-1")
-      [hva.vrf_iface_name, hva.wg_iface_name, hva.dummy_iface_name].each do |name|
+      [ hva.vrf_iface_name, hva.wg_iface_name, hva.dummy_iface_name ].each do |name|
         expect(name.length).to be <= Sdwan::HostVrfAssignment::VRF_NAME_MAX
       end
     end
@@ -173,7 +173,7 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       h1 = described_class.allocate!(host: host_a, network: net_a)
       h2 = described_class.allocate!(host: host_a, network: net_b)
       h3 = described_class.allocate!(host: host_a, network: net_c)
-      expect([h1.short_id, h2.short_id, h3.short_id]).to eq([1, 2, 3])
+      expect([ h1.short_id, h2.short_id, h3.short_id ]).to eq([ 1, 2, 3 ])
     end
 
     it "permits the same short_id on a different host" do

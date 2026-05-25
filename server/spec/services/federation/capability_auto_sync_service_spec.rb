@@ -26,7 +26,7 @@ RSpec.describe ::Federation::CapabilityAutoSyncService, type: :service do
                kind: "skill", filter: {})
     target_peer = if status == "active"
                     peer
-                  else
+    else
                     ::System::FederationPeer.create!(
                       account:             account,
                       remote_instance_url: "https://#{status}.example.com",
@@ -35,7 +35,7 @@ RSpec.describe ::Federation::CapabilityAutoSyncService, type: :service do
                       spawn_mode:          "out_of_band",
                       status:              status
                     )
-                  end
+    end
     ::System::FederationCapability.create!(
       account:             account,
       federation_peer:     target_peer,

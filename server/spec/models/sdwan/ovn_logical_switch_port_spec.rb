@@ -36,7 +36,7 @@ RSpec.describe Sdwan::OvnLogicalSwitchPort, type: :model do
       host_node_instance: host,
       name: "p-#{@name_counter}",
       kind: "vm",
-      addresses: ["10.0.0.#{@name_counter}"]
+      addresses: [ "10.0.0.#{@name_counter}" ]
     }.merge(overrides))
   end
 
@@ -114,7 +114,7 @@ RSpec.describe Sdwan::OvnLogicalSwitchPort, type: :model do
     end
 
     it "rejects addresses with non-string members" do
-      p = build_port(addresses: ["10.0.0.1", 42])
+      p = build_port(addresses: [ "10.0.0.1", 42 ])
       expect(p).not_to be_valid
       expect(p.errors[:addresses]).to be_present
     end

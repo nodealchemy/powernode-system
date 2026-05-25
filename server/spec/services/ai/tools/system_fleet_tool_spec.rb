@@ -324,7 +324,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         cve_id: cve_id,
         severity: "critical",
         summary: "Test CVE",
-        affected_packages: [{ "name" => "openssl", "version" => "<3.1.4" }],
+        affected_packages: [ { "name" => "openssl", "version" => "<3.1.4" } ],
         feed_source: "manual",
         published_at: 1.day.ago
       )
@@ -396,7 +396,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
                  cve_id: "CVE-2026-99200",
                  severity: "high",
                  summary: "Synthetic high-severity",
-                 affected_packages: [{ "name" => "redis" }])
+                 affected_packages: [ { "name" => "redis" } ])
         expect(r[:success]).to be true
         expect(r[:data][:created]).to be true
         expect(r[:data][:cve][:cve_id]).to eq("CVE-2026-99200")
@@ -691,7 +691,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       it "system_list_ci_workers returns only ci_worker-role Workers for the account" do
         call("system_provision_ci_worker", name: "list-test-1")
         # Create a non-ci worker in the same account using a valid account-worker role
-        ::Worker.create_worker!(name: "member-worker", account: account, roles: ["member"])
+        ::Worker.create_worker!(name: "member-worker", account: account, roles: [ "member" ])
         r = call("system_list_ci_workers")
         expect(r[:success]).to be true
         names = r[:data][:ci_workers].map { |w| w[:name] }
@@ -709,7 +709,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       end
 
       it "system_terminate_ci_worker refuses to revoke non-ci workers" do
-        member_worker = ::Worker.create_worker!(name: "member-worker-2", account: account, roles: ["member"])
+        member_worker = ::Worker.create_worker!(name: "member-worker-2", account: account, roles: [ "member" ])
         r = call("system_terminate_ci_worker", worker_id: member_worker.id)
         expect(r[:success]).to be false
         expect(r[:error]).to include("not a ci_worker")

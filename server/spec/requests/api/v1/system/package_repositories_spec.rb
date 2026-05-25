@@ -57,8 +57,8 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
           name: "test-apt",
           kind: "apt",
           base_url: "https://archive.example.com/ubuntu",
-          architectures: ["amd64"],
-          apt_config: { suite: "noble", components: ["main"] }
+          architectures: [ "amd64" ],
+          apt_config: { suite: "noble", components: [ "main" ] }
         }
       }
     end

@@ -62,7 +62,7 @@ RSpec.describe System::PackageRepositoryPlatform do
     it "returns all linked platforms via has_many :through" do
       described_class.create!(package_repository: repo, node_platform: platform_a)
       described_class.create!(package_repository: repo, node_platform: other_platform)
-      expect(repo.node_platforms.map(&:id)).to match_array([platform_a.id, other_platform.id])
+      expect(repo.node_platforms.map(&:id)).to match_array([ platform_a.id, other_platform.id ])
     end
 
     it "destroys join rows when the parent repository is destroyed" do
@@ -78,7 +78,7 @@ RSpec.describe System::PackageRepositoryPlatform do
     it "returns all linked repositories via has_many :through" do
       described_class.create!(package_repository: repo_a, node_platform: platform_a)
       described_class.create!(package_repository: repo_b, node_platform: platform_a)
-      expect(platform_a.package_repositories.map(&:id)).to match_array([repo_a.id, repo_b.id])
+      expect(platform_a.package_repositories.map(&:id)).to match_array([ repo_a.id, repo_b.id ])
     end
 
     it "destroys join rows when the parent platform is destroyed" do

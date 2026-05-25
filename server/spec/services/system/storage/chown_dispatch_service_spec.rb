@@ -37,7 +37,7 @@ RSpec.describe ::System::Storage::ChownDispatchService, type: :service do
 
   describe ".dispatch!" do
     context "for object storage providers" do
-      [%i[s3 s3], %i[gcs gcs], %i[azure azure]].each do |(trait, ptype)|
+      [ %i[s3 s3], %i[gcs gcs], %i[azure azure] ].each do |(trait, ptype)|
         it "marks chown_state=complete immediately for provider_type=#{ptype}" do
           storage = create(:file_storage, :node_mountable, trait, account: account)
           a = make_assignment(storage: storage, mount_path: "/data/#{ptype}")

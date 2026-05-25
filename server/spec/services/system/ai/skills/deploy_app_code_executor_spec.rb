@@ -305,7 +305,7 @@ RSpec.describe System::Ai::Skills::DeployAppCodeExecutor do
 
       result = exec.rollback_deploy_app_code(
         deployment_id: deployment.id,
-        node_instance_ids: [node_instance.id]
+        node_instance_ids: [ node_instance.id ]
       )
 
       expect(result[:success]).to be true

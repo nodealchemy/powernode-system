@@ -63,7 +63,7 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
           config: {
             "daemon_overrides" => {
               "log-driver" => "journald",
-              "registry-mirrors" => ["https://mirror.gcr.io"]
+              "registry-mirrors" => [ "https://mirror.gcr.io" ]
             }
           }
         )
@@ -72,7 +72,7 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
       it "returns the merged overrides" do
         result = described_class.resolve(node_instance: node_instance)
         expect(result["log-driver"]).to eq("journald")
-        expect(result["registry-mirrors"]).to eq(["https://mirror.gcr.io"])
+        expect(result["registry-mirrors"]).to eq([ "https://mirror.gcr.io" ])
       end
     end
 
@@ -144,7 +144,7 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
               "tls" => false,
               "tlsverify" => false,
               "tlscacert" => "/tmp/attacker-ca.pem",
-              "hosts" => ["tcp://0.0.0.0:2375"],
+              "hosts" => [ "tcp://0.0.0.0:2375" ],
               # legitimate key — must still apply
               "log-driver" => "syslog"
             }
@@ -230,17 +230,17 @@ RSpec.describe System::DockerDaemonOverridesResolver, type: :service do
         System::NodeModule.create!(
           account: account, name: "node-mirrors", variety: "config", enabled: true,
           parent_module: docker_module, node: node, priority: 100,
-          config: { "daemon_overrides" => { "registry-mirrors" => ["https://node-mirror.io"] } }
+          config: { "daemon_overrides" => { "registry-mirrors" => [ "https://node-mirror.io" ] } }
         )
         System::NodeModule.create!(
           account: account, name: "instance-mirrors", variety: "config", enabled: true,
           parent_module: docker_module, node_instance: node_instance, priority: 200,
-          config: { "daemon_overrides" => { "registry-mirrors" => ["https://instance-mirror.io"] } }
+          config: { "daemon_overrides" => { "registry-mirrors" => [ "https://instance-mirror.io" ] } }
         )
 
         result = described_class.resolve(node_instance: node_instance)
         # Higher-priority instance wins — array replaced, not merged
-        expect(result["registry-mirrors"]).to eq(["https://instance-mirror.io"])
+        expect(result["registry-mirrors"]).to eq([ "https://instance-mirror.io" ])
       end
     end
   end

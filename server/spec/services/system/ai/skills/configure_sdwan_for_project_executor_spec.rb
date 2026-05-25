@@ -36,7 +36,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
   describe "#execute" do
     context "with an unknown topology" do
       it "rejects" do
-        r = exec.execute(project_id: mission.id, instance_ids: [instance_a.id],
+        r = exec.execute(project_id: mission.id, instance_ids: [ instance_a.id ],
                          network_name: "proj", topology: "ring")
         expect(r[:success]).to be false
         expect(r[:error]).to match(/topology must be/)
@@ -54,7 +54,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
 
     context "with a missing project" do
       it "returns failure" do
-        r = exec.execute(project_id: SecureRandom.uuid, instance_ids: [instance_a.id],
+        r = exec.execute(project_id: SecureRandom.uuid, instance_ids: [ instance_a.id ],
                          network_name: "proj", topology: "mesh")
         expect(r[:success]).to be false
         expect(r[:error]).to match(/project not found/)
@@ -64,7 +64,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
     context "with an instance that does not belong to the account" do
       it "returns failure listing the missing id" do
         stranger_id = SecureRandom.uuid
-        r = exec.execute(project_id: mission.id, instance_ids: [stranger_id],
+        r = exec.execute(project_id: mission.id, instance_ids: [ stranger_id ],
                          network_name: "proj", topology: "mesh")
         expect(r[:success]).to be false
         expect(r[:error]).to include(stranger_id)
@@ -73,7 +73,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
 
     context "with_vip but no vip_cidr" do
       it "rejects" do
-        r = exec.execute(project_id: mission.id, instance_ids: [instance_a.id],
+        r = exec.execute(project_id: mission.id, instance_ids: [ instance_a.id ],
                          network_name: "proj", topology: "mesh", with_vip: true)
         expect(r[:success]).to be false
         expect(r[:error]).to match(/vip_cidr is required/)
@@ -84,7 +84,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
       it "returns a plan without persisting Sdwan rows" do
         expect(::Sdwan::PeerEnroller).not_to receive(:call)
         expect {
-          r = exec.execute(project_id: mission.id, instance_ids: [instance_a.id, instance_b.id],
+          r = exec.execute(project_id: mission.id, instance_ids: [ instance_a.id, instance_b.id ],
                            network_name: "proj", topology: "hub_and_spoke", dry_run: true)
           expect(r[:success]).to be true
           d = r[:data]
@@ -111,7 +111,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
       end
 
       it "creates a network, attaches peers, and compiles the topology preview" do
-        r = exec.execute(project_id: mission.id, instance_ids: [instance_a.id, instance_b.id],
+        r = exec.execute(project_id: mission.id, instance_ids: [ instance_a.id, instance_b.id ],
                          network_name: "proj-overlay", topology: "mesh")
 
         expect(r[:success]).to be true
@@ -129,12 +129,12 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
           call_count == 1 ? peer_a : raise("peer_b cross_account")
         end
 
-        r = exec.execute(project_id: mission.id, instance_ids: [instance_a.id, instance_b.id],
+        r = exec.execute(project_id: mission.id, instance_ids: [ instance_a.id, instance_b.id ],
                          network_name: "proj-overlay", topology: "mesh")
 
         expect(r[:success]).to be true
         expect(r[:data][:partial]).to be true
-        expect(r[:data][:outputs][:sdwan_peer_ids]).to eq([peer_a.id])
+        expect(r[:data][:outputs][:sdwan_peer_ids]).to eq([ peer_a.id ])
         expect(r[:data][:failures].any? { |f| f[:step] == "attach_peer" }).to be true
       end
     end
@@ -159,7 +159,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
 
       r = exec.rollback_configure_sdwan_for_project(
         sdwan_network_id: net.id,
-        sdwan_peer_ids: [peer.id],
+        sdwan_peer_ids: [ peer.id ],
         virtual_ip_id: vip.id
       )
 
@@ -182,7 +182,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
 
       r = exec.rollback_configure_sdwan_for_project(
         sdwan_network_id: net.id,
-        sdwan_peer_ids: [bad_peer.id],
+        sdwan_peer_ids: [ bad_peer.id ],
         virtual_ip_id: nil
       )
 
@@ -196,7 +196,7 @@ RSpec.describe System::Ai::Skills::ConfigureSdwanForProjectExecutor do
         sdwan_network_id: nil,
         sdwan_peer_ids: [],
         virtual_ip_id: nil,
-        topology_preview: [{ peer_id: SecureRandom.uuid }]
+        topology_preview: [ { peer_id: SecureRandom.uuid } ]
       )
 
       expect(r[:success]).to be true

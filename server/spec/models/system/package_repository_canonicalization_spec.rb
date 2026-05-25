@@ -20,7 +20,7 @@ RSpec.describe System::PackageRepository, "T2.A canonicalization" do
       architectures: architectures
     }
     if kind == "apt"
-      defaults[:apt_config] = { "suite" => "noble", "components" => ["main"] }
+      defaults[:apt_config] = { "suite" => "noble", "components" => [ "main" ] }
     else
       defaults[:rpm_config] = { "releasever" => "40", "gpgcheck" => false }
     end
@@ -47,7 +47,7 @@ RSpec.describe System::PackageRepository, "T2.A canonicalization" do
 
     it "translates aliases to canonical" do
       arm = System::NodeArchitecture.find_by!(name: "arm64")
-      arm.update!(aliases: ["amd64-graviton"])
+      arm.update!(aliases: [ "amd64-graviton" ])
       repo = build_repo(kind: "apt", architectures: %w[amd64 amd64-graviton])
       # amd64-graviton resolves to arm64 canonical → set becomes [amd64, arm64]
       expect(repo.reload.architectures).to match_array(%w[amd64 arm64])
@@ -83,9 +83,9 @@ RSpec.describe System::PackageRepository, "T2.A canonicalization" do
 
     it "drops unmappable entries (defensive — shouldn't happen post-hook)" do
       # Bypass validation to inject a junk value, then verify for_kind drops it
-      repo = build_repo(kind: "apt", architectures: ["amd64"])
+      repo = build_repo(kind: "apt", architectures: [ "amd64" ])
       repo.update_column(:architectures, %w[amd64 not-a-real-arch])
-      expect(repo.architectures_for_kind).to eq(["amd64"])
+      expect(repo.architectures_for_kind).to eq([ "amd64" ])
     end
   end
 

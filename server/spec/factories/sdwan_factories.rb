@@ -51,7 +51,7 @@ FactoryBot.define do
     direction { "import" }
     # Each statement is { "match" => {...}, "action" => { "type" => "accept"|"reject" } }
     # — action MUST be a hash with a "type" key; match keys must be in MATCH_KEYS.
-    statements { [{ "action" => { "type" => "accept" } }] }
+    statements { [ { "action" => { "type" => "accept" } } ] }
     enabled { true }
     metadata { {} }
   end

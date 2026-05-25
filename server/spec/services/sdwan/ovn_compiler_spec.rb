@@ -95,13 +95,13 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
     it "emits lsp-add + lsp-set-addresses for each active port" do
       ls = make_switch(name: "ls1")
       make_port(switch: ls, name: "vm-001",
-                mac: "02:11:22:33:44:55", addresses: ["10.0.0.5"])
+                mac: "02:11:22:33:44:55", addresses: [ "10.0.0.5" ])
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
       expect(plan).to include({ cmd: "lsp-add",
-                                args: ["ls1", "vm-001"] })
+                                args: [ "ls1", "vm-001" ] })
       expect(plan).to include({ cmd: "lsp-set-addresses",
-                                args: ["vm-001", "02:11:22:33:44:55 10.0.0.5"] })
+                                args: [ "vm-001", "02:11:22:33:44:55 10.0.0.5" ] })
     end
 
     it "emits MAC-only addresses string when port has no IPs" do
@@ -111,18 +111,18 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
       expect(plan).to include({ cmd: "lsp-set-addresses",
-                                args: ["p-no-ip", "02:aa:bb:cc:dd:ee"] })
+                                args: [ "p-no-ip", "02:aa:bb:cc:dd:ee" ] })
     end
 
     it "joins multiple v4+v6 addresses with spaces" do
       ls = make_switch(name: "ls1")
       make_port(switch: ls, name: "dual",
                 mac: "02:11:22:33:44:55",
-                addresses: ["10.0.0.5", "fd00::5"])
+                addresses: [ "10.0.0.5", "fd00::5" ])
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
       addrs = plan.find { |e| e[:cmd] == "lsp-set-addresses" }
-      expect(addrs[:args]).to eq(["dual", "02:11:22:33:44:55 10.0.0.5 fd00::5"])
+      expect(addrs[:args]).to eq([ "dual", "02:11:22:33:44:55 10.0.0.5 fd00::5" ])
     end
 
     it "skips pending ports" do
@@ -159,7 +159,7 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
       expect(plan).to include({ cmd: "lsp-set-type",
-                                args: ["uplink", "localnet"] })
+                                args: [ "uplink", "localnet" ] })
     end
 
     it "honors per-port settings.ovn_type override" do
@@ -169,7 +169,7 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
                 settings: { "ovn_type" => "router" })
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
-      expect(plan).to include({ cmd: "lsp-set-type", args: ["rport", "router"] })
+      expect(plan).to include({ cmd: "lsp-set-type", args: [ "rport", "router" ] })
     end
 
     it "does NOT emit lsp-set-type for vm or container ports" do
@@ -208,12 +208,12 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
       # Phase 1 emits ls-add for both switches (alphabetical), then phase
       # 2 emits the per-switch port blocks in the same order.
       expected_sequence = [
-        { cmd: "ls-add", args: ["ls-a"] },
-        { cmd: "ls-add", args: ["ls-b"] },
-        { cmd: "lsp-add", args: ["ls-a", "p-a-1"] },
-        { cmd: "lsp-set-addresses", args: ["p-a-1", "02:11:22:33:44:55"] },
-        { cmd: "lsp-add", args: ["ls-b", "p-b-1"] },
-        { cmd: "lsp-set-addresses", args: ["p-b-1", "02:11:22:33:44:55"] }
+        { cmd: "ls-add", args: [ "ls-a" ] },
+        { cmd: "ls-add", args: [ "ls-b" ] },
+        { cmd: "lsp-add", args: [ "ls-a", "p-a-1" ] },
+        { cmd: "lsp-set-addresses", args: [ "p-a-1", "02:11:22:33:44:55" ] },
+        { cmd: "lsp-add", args: [ "ls-b", "p-b-1" ] },
+        { cmd: "lsp-set-addresses", args: [ "p-b-1", "02:11:22:33:44:55" ] }
       ]
       expect(plan).to eq(expected_sequence)
     end
@@ -223,8 +223,8 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
     it "produces a byte-identical plan on repeated compiles of the same DB state" do
       ls1 = make_switch(name: "ls-x")
       ls2 = make_switch(name: "ls-y")
-      make_port(switch: ls1, name: "vm-002", mac: "02:aa:aa:aa:aa:01", addresses: ["10.0.0.2"])
-      make_port(switch: ls1, name: "vm-001", mac: "02:aa:aa:aa:aa:02", addresses: ["10.0.0.1"])
+      make_port(switch: ls1, name: "vm-002", mac: "02:aa:aa:aa:aa:01", addresses: [ "10.0.0.2" ])
+      make_port(switch: ls1, name: "vm-001", mac: "02:aa:aa:aa:aa:02", addresses: [ "10.0.0.1" ])
       make_port(switch: ls2, name: "uplink", kind: "external", mac: "02:bb:bb:bb:bb:01")
 
       first  = described_class.compile_for_deployment(deployment)[:plan]
@@ -243,7 +243,7 @@ RSpec.describe Sdwan::OvnCompiler, type: :service do
   describe "plan entry shape" do
     it "every entry is a hash with :cmd (String) and :args (Array of Strings)" do
       ls = make_switch(name: "ls1")
-      make_port(switch: ls, name: "p1", addresses: ["10.0.0.1"])
+      make_port(switch: ls, name: "p1", addresses: [ "10.0.0.1" ])
 
       plan = described_class.compile_for_deployment(deployment)[:plan]
       plan.each do |entry|

@@ -25,7 +25,7 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
   describe "POST /api/v1/system/node_api/fleet/events" do
     it "rejects unauthenticated requests" do
       post "/api/v1/system/node_api/fleet/events",
-           params: { events: [{ kind: "test.event" }] },
+           params: { events: [ { kind: "test.event" } ] },
            as: :json
       expect(response).to have_http_status(:unauthorized)
     end
@@ -33,8 +33,8 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
     it "persists a single event with the agent source" do
       expect {
         post "/api/v1/system/node_api/fleet/events",
-             params: { events: [{ kind: "module.attached", severity: "low",
-                                  payload: { module_id: "abc-123" } }] },
+             params: { events: [ { kind: "module.attached", severity: "low",
+                                  payload: { module_id: "abc-123" } } ] },
              headers: headers,
              as: :json
       }.to change { ::System::FleetEvent.count }.by(1)
@@ -50,14 +50,14 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
 
     it "ignores client-provided source/account fields and forces agent + current_instance" do
       post "/api/v1/system/node_api/fleet/events",
-           params: { events: [{
+           params: { events: [ {
              kind: "test.event",
              severity: "high",
              source: "operator",
              account_id: "rogue-account",
              node_instance_id: "rogue-instance",
              payload: { foo: "bar" }
-           }] },
+           } ] },
            headers: headers,
            as: :json
 
@@ -110,7 +110,7 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
 
     it "defaults severity to low when omitted" do
       post "/api/v1/system/node_api/fleet/events",
-           params: { events: [{ kind: "test.event" }] },
+           params: { events: [ { kind: "test.event" } ] },
            headers: headers,
            as: :json
       expect(response).to have_http_status(:ok)

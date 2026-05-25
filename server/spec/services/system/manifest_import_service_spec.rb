@@ -367,7 +367,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(grant).to be_present
         expect(grant.service_user.username).to eq("postgres")
         expect(grant.runas_user).to eq("root")
-        expect(grant.commands).to eq(["/usr/bin/systemctl reload postgresql.service"])
+        expect(grant.commands).to eq([ "/usr/bin/systemctl reload postgresql.service" ])
       end
 
       it "is idempotent — re-importing reuses identity rows by name" do
@@ -464,7 +464,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         #{requires.map { |r| "    - #{r}" }.join("\n")}
           provides: []
       YAML
-      [target, described_class.import!(node_module: target, yaml: yaml)]
+      [ target, described_class.import!(node_module: target, yaml: yaml) ]
     end
 
     describe "denormalizes provides[] into the capabilities column" do
@@ -498,14 +498,14 @@ RSpec.describe System::ManifestImportService, type: :service do
         YAML
         described_class.import!(node_module: target, yaml: yaml)
         target.reload
-        expect(target.capabilities).to eq(["cache.redis"])
+        expect(target.capabilities).to eq([ "cache.redis" ])
       end
     end
 
     describe "resolve_dependencies with capability: syntax" do
       it "resolves capability:<tag> to the matching provider's module" do
         provider = import_with_provides("postgres-host", %w[database.postgres])
-        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres" ])
 
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("resolved")
@@ -517,7 +517,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         old_pg = import_with_provides("pg-15", %w[database.postgres@15])
         new_pg = import_with_provides("pg-16", %w[database.postgres@16])
 
-        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@>=16"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@>=16" ])
 
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("resolved")
@@ -527,7 +527,7 @@ RSpec.describe System::ManifestImportService, type: :service do
 
       it "bare tag does NOT satisfy a versioned constraint" do
         bare_only = import_with_provides("pg-bare", %w[database.postgres])
-        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@>=16"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@>=16" ])
 
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("unresolved")
@@ -540,7 +540,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         high = import_with_provides("redis-high", %w[cache.redis])
         high.update!(priority: 100)
 
-        _consumer, result = import_with_requires("hub-app", ["capability:cache.redis"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:cache.redis" ])
 
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("resolved")
@@ -548,7 +548,7 @@ RSpec.describe System::ManifestImportService, type: :service do
       end
 
       it "returns status=unresolved when no provider matches" do
-        _consumer, result = import_with_requires("hub-app", ["capability:storage.nonexistent"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:storage.nonexistent" ])
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("unresolved")
         expect(resolved[:capability]).to eq("storage.nonexistent")
@@ -558,7 +558,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         import_with_provides("pg-16", %w[database.postgres@16])
         allow(Rails.logger).to receive(:warn)
 
-        _consumer, result = import_with_requires("hub-app", ["capability:database.postgres@!!!bogus"])
+        _consumer, result = import_with_requires("hub-app", [ "capability:database.postgres@!!!bogus" ])
         resolved = result.resolved_dependencies.first
         expect(resolved[:status]).to eq("unresolved")
         expect(Rails.logger).to have_received(:warn).with(/invalid version constraint/)
@@ -594,7 +594,7 @@ RSpec.describe System::ManifestImportService, type: :service do
         capped = import_with_provides("redis-cap", %w[cache.redis])
 
         _consumer, result = import_with_requires("mixed-consumer",
-                                                  ["explicit-pin", "capability:cache.redis"])
+                                                  [ "explicit-pin", "capability:cache.redis" ])
 
         statuses = result.resolved_dependencies.map { |r| r[:status] }
         expect(statuses).to all(eq("resolved"))

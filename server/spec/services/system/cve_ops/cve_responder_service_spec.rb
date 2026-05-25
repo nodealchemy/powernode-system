@@ -18,7 +18,7 @@ RSpec.describe System::CveOps::CveResponderService do
       account: account, name: "CVE Responder Actions",
       trigger_type: "autonomy_action", status: "active", is_sequential: true,
       timeout_action: "reject", timeout_hours: 8,
-      steps: [{ "name" => "Sec Op", "approvers" => ["*"], "required_approvals" => 1 }]
+      steps: [ { "name" => "Sec Op", "approvers" => [ "*" ], "required_approvals" => 1 } ]
     )
   end
 
@@ -109,9 +109,9 @@ RSpec.describe System::CveOps::CveResponderService do
         result = service.gate_action!(
           "system.module_critical_upgrade_ready",
           metadata: {
-            "cve_ids" => ["CVE-2026-99004", "CVE-2026-99005"],
+            "cve_ids" => [ "CVE-2026-99004", "CVE-2026-99005" ],
             "node_module_id" => "test-module-id",
-            "affected_module_ids" => ["test-module-id"]
+            "affected_module_ids" => [ "test-module-id" ]
           },
           reasoning: { summary: "Critical upgrade ready" }
         )

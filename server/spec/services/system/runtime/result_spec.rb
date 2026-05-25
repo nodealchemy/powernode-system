@@ -53,5 +53,4 @@ RSpec.describe System::Runtime::Result do
       expect(err.failure?).to be true
     end
   end
-
 end

@@ -105,7 +105,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
         .merge("Authorization" => "Bearer #{grant.bearer_token}",
                "X-Sdwan-Network" => network.id,
                "REMOTE_ADDR" => "10.0.0.42")
-        # no X-Calling-Instance
+      # no X-Calling-Instance
 
       expect(response).to have_http_status(:forbidden)
     end
@@ -167,10 +167,10 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
   describe "back-compat: empty allowlists stay permissive" do
     it "allows when grant has no scope restrictions even with no headers" do
       grant = make_grant
-        # all allowlists empty — defaults from factory
+      # all allowlists empty — defaults from factory
 
       get path, headers: mtls_headers.merge("Authorization" => "Bearer #{grant.bearer_token}")
-        # no X-Calling-Instance, no X-Sdwan-Network
+      # no X-Calling-Instance, no X-Sdwan-Network
 
       expect(response).to have_http_status(:ok)
     end

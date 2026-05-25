@@ -12,7 +12,7 @@ RSpec.describe System::ProjectMetricsCollector do
       account: account,
       created_by: user,
       mission_type: "infrastructure",
-      custom_phases: [{ "key" => "adapting", "label" => "Adapting", "order" => 0 }]
+      custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ]
     )
     m.update_columns(status: "active")
     m

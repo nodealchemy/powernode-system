@@ -67,7 +67,7 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
       "intent" => "Provision a 3-region web app with Postgres + Redis",
       "use_case" => "side-business 10k MAU web app, primary in us-east, anycast IP, nightly backups",
       "scale" => { "initial" => 3, "target" => 5, "growth_profile" => "linear" },
-      "regions" => ["us-east-1", "eu-west-1", "ap-southeast-1"],
+      "regions" => [ "us-east-1", "eu-west-1", "ap-southeast-1" ],
       "compliance" => [],
       "budget_cap_usd_monthly" => 200.0,
       "latency_targets_ms" => { "p99" => 250 },
