@@ -409,6 +409,25 @@ jobs:
           POWERNODE_API_BASE: ${{ secrets.POWERNODE_API_BASE }}
           POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
         run: |
+          # Pre-flight: confirm POWERNODE_API_BASE points at a live
+          # platform before we start the three-phase upload dance. The
+          # secret has historically drifted across deployments — without
+          # this check, a stale API_BASE only surfaces as a connect-
+          # refused part-way through Phase 1, after the workflow has
+          # already burned several minutes on the disk-image build.
+          # See the same pattern + commentary in
+          # build-platform-modules.yaml (Stage 3 notify step).
+          : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
+          echo "Verifying API_BASE=$POWERNODE_API_BASE is reachable..."
+          if ! curl -fsSL -m 10 -o /dev/null -w 'health-check http=%{http_code}\n' \
+                  "${POWERNODE_API_BASE}/api/v1/health"; then
+            echo "::error::POWERNODE_API_BASE=$POWERNODE_API_BASE is not responding on /api/v1/health."
+            echo "::error::  Update the secret in Gitea Actions repo/org settings to the current"
+            echo "::error::  platform URL (https://ops.powernode.org for the canonical deployment)"
+            echo "::error::  and re-run. Skipping cloud-direct upload phase."
+            exit 1
+          fi
+
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"

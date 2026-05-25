@@ -790,6 +790,26 @@ jobs:
             echo "::error::POWERNODE_CI_WORKER_TOKEN secret unset — cannot authenticate with platform ingest endpoint"
             exit 1
           fi
+
+          # Pre-flight: confirm POWERNODE_API_BASE points at a live
+          # platform before we publish the OCI artifact + notify. The
+          # secret has historically drifted across deployments (dev
+          # gets a stale ops URL, ops gets a stale staging URL, etc.)
+          # and the only signal was a delayed connect-refused buried
+          # in the notify-step log. HEAD /api/v1/health surfaces it
+          # right at the start of Stage 3 with a clear message that
+          # tells the operator EXACTLY which secret to fix.
+          echo "Verifying API_BASE=$API_BASE is reachable..."
+          if ! curl -fsSL -m 10 -o /dev/null -w 'health-check http=%{http_code}\n' \
+                  "${API_BASE}/api/v1/health"; then
+            echo "::error::POWERNODE_API_BASE=$API_BASE is not responding on /api/v1/health."
+            echo "::error::  This usually means the secret POWERNODE_API_BASE has drifted out of sync"
+            echo "::error::  with the actual platform deployment (e.g. pointing at a decommissioned ops"
+            echo "::error::  URL, an old staging URL, or missing https:// scheme). Update the secret in"
+            echo "::error::  Gitea Actions repo/org settings to the current platform URL and re-run."
+            exit 1
+          fi
+
           URL="${API_BASE}/api/v1/system/module_publications"
           echo "POSTing to $URL (token redacted)..."
           # --fail-with-body returns response body even on HTTP error so the
