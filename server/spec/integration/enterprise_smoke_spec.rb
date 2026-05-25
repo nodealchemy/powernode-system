@@ -51,6 +51,14 @@ require "csv"
 RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration do
   include PermissionTestHelpers
 
+  # The entire fixture set (Billing::Plan, Account::TeamDelegation,
+  # ::Subscription) is business-extension-only. In core mode every let!
+  # raises NameError before the spec body runs. Skip the whole group up
+  # front so the missing-constant noise is reported as a clean pending.
+  before do
+    skip "M4 enterprise smoke requires the business extension (Billing::Plan, Account::TeamDelegation)" unless defined?(::Billing::Plan) && defined?(::Account::TeamDelegation)
+  end
+
   let(:account) { create(:account) }
   let(:user_a)  { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }
   let(:user_b)  { user_with_permissions("ai.workflows.create", "ai.workflows.execute", account: account) }

@@ -68,18 +68,24 @@ RSpec.describe System::StorageAssignment, type: :model do
     end
   end
 
-  describe "#derived_uid" do
+  describe "#anonuid (replaces legacy #derived_uid)" do
+    # 2026-05-22 fleet-wide identity refactor (4a62bc6f) replaced the
+    # hashed-per-node_instance_id derived_uid with owner_kind-dispatched
+    # anonuid: service_user → ServiceUser#uid (70k-100k), operator →
+    # 1000, nobody → 65534, root → 0. The factory defaults owner_kind to
+    # "nobody" (see system_factories), so the live UID is the well-known
+    # NFS root-squash sentinel.
     it "is deterministic for the same node_instance_id" do
       assignment.save!
-      first = assignment.derived_uid
+      first = assignment.anonuid
       assignment.reload
-      expect(assignment.derived_uid).to eq(first)
+      expect(assignment.anonuid).to eq(first)
     end
 
-    it "falls within the 100k-slot range" do
+    it "lands in the BASELINE_UIDS sentinel set for non-service_user owners" do
       assignment.save!
-      expect(assignment.derived_uid).to be >= 100_000
-      expect(assignment.derived_uid).to be < 200_000
+      # owner_kind = "nobody" → BASELINE_UIDS["nobody"] = 65534 (NFS root-squash).
+      expect(assignment.anonuid).to eq(65_534)
     end
   end
 
