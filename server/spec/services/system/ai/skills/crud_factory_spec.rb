@@ -86,8 +86,15 @@ RSpec.describe System::Ai::Skills::CrudFactory do
     end
 
     it "binds to Fleet Autonomy" do
+      # Force the executor class to load BEFORE we snapshot @registrations
+      # via .all — otherwise autoload (which triggers `binds_to`, which
+      # registers the executor) fires *after* the snapshot is taken, and
+      # .find returns nil. Locally this is masked because an earlier
+      # spec usually loads the class first; CI's cold-cache ordering
+      # exposes the race.
+      expected = System::Ai::Skills::ArchitectureCreateExecutor
       reg = System::Ai::Skills::SkillBindings.all
-        .find { |r| r[:executor] == System::Ai::Skills::ArchitectureCreateExecutor }
+        .find { |r| r[:executor] == expected }
       expect(reg).not_to be_nil
       expect(reg[:agents]).to include("Fleet Autonomy")
     end
