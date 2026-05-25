@@ -130,7 +130,24 @@ module System
 
       ActiveRecord::Base.transaction do
         apply_to_module(node_module, manifest, raw_yaml: yaml)
-        node_module.save!
+        # Suppress NodeModule#auto_create_version for the manifest-import
+        # save. This service is the parser/applier for CI-published
+        # manifests AND the seed re-import path — it writes file_spec /
+        # package_spec / mask AHEAD of the artifact upload (which lands
+        # separately via PackageBuildWebhookService). Without this
+        # suppression, the after_update callback would create an
+        # empty-artifact NodeModuleVersion every import, and then the
+        # actual artifact upload creates a SECOND version with the same
+        # spec content — paired spec-only / full-artifact rows for every
+        # CI publish. Callers that want a version row from this service
+        # pass create_version: true (snapshot_version below explicitly
+        # builds the snapshot, paired with the manifest content).
+        node_module.instance_variable_set(:@skip_auto_version, true)
+        begin
+          node_module.save!
+        ensure
+          node_module.instance_variable_set(:@skip_auto_version, false)
+        end
 
         resolved = resolve_dependencies(node_module, manifest)
         identity_index = apply_identities(node_module, manifest)

@@ -115,6 +115,29 @@ RSpec.describe System::ManifestImportService, type: :service do
       expect(mod.reload.versions.count).to eq(0)
     end
 
+    it "does NOT trigger NodeModule#auto_create_version on the spec write (suppresses the after_update callback)" do
+      # Pre-existing version so versioned? returns true; without the
+      # suppression in ManifestImportService, the file_spec write would
+      # trip auto_create_version and create a second (empty-artifact)
+      # row.
+      mod.create_version!(changelog: "v1")
+      expect(mod.versions.count).to eq(1)
+
+      result = described_class.import!(node_module: mod, yaml: manifest_yaml)
+      expect(result.ok?).to be true
+      expect(mod.reload.versions.count).to eq(1)
+    end
+
+    it "still creates a version row when create_version: true is passed (caller's explicit snapshot path)" do
+      result = described_class.import!(
+        node_module: mod, yaml: manifest_yaml,
+        create_version: true, version_changelog: "explicit snapshot"
+      )
+      expect(result.ok?).to be true
+      expect(result.node_module_version).to be_present
+      expect(mod.reload.versions.count).to eq(1)
+    end
+
     context "validation" do
       it "rejects unsupported schema_version" do
         bad = manifest_yaml.sub("schema_version: 1", "schema_version: 99")
