@@ -66,12 +66,31 @@ module System
 
         attr_reader :spawn_payload, :hostname, :agent_url, :ssh_authorized_keys
 
+        # Packages cloud-init installs at first boot. Kept minimal — the
+        # principle is that runtime tooling ships in modules (composed via
+        # the agent reconciler), not via apt. The exceptions are tools
+        # the AGENT itself needs in order to run before any module reconcile
+        # has happened: wireguard-tools is required by Sdwan::Manager's
+        # WG applier (shells out to `wg setconf`), and the agent starts
+        # the SDWAN reconcile loop on first boot, BEFORE any module is
+        # mounted that could ship the binary. Without this, SDWAN never
+        # comes up on a fresh managed_child VM. Cloud-init's packages:
+        # step runs BEFORE runcmd (which `systemctl enable --now`s the
+        # agent), so wg will be on PATH by the time the agent first
+        # invokes the WG applier.
+        BASELINE_PACKAGES = %w[wireguard-tools].freeze
+
         def payload
           {
             "hostname"          => hostname,
             "manage_etc_hosts"  => true,
-            "package_update"    => false,
+            # package_update + the packages: list together drive a one-time
+            # apt update + apt install at first boot. Cloud-init does this
+            # at the `cc_apt_configure` + `cc_package_update_upgrade_install`
+            # stage, which runs before `cc_runcmd`.
+            "package_update"    => true,
             "package_upgrade"   => false,
+            "packages"          => BASELINE_PACKAGES,
             # operator is Powernode's standardized login user (UID 1000,
             # baked into agent etcidentity baseline). Cloud-init creates
             # it with NOPASSWD sudo at first boot so the operator has
@@ -148,7 +167,44 @@ module System
             "owner"       => "root:root",
             "content"     => "operator ALL=(ALL) NOPASSWD: ALL\n"
           }
+          # Netplan override that ensures systemd-networkd sends the
+          # configured hostname in DHCPREQUEST option 12. The stock
+          # Ubuntu cloud image's auto-generated /etc/netplan/50-cloud-init.yaml
+          # gets it right MOST of the time, but timing varies: networkd can
+          # bring up eth0 + acquire a lease BEFORE cloud-init's
+          # cc_set_hostname module fires, in which case the DHCPREQUEST
+          # carries the BIOS-default "ubuntu" and the upstream dnsmasq's
+          # DNS table gets a wrong entry. Higher numeric prefix overrides
+          # the cloud-init-generated file (netplan reads in lexical order
+          # and the later file wins per key). The runcmd below triggers a
+          # lease renewal so the right hostname reaches the DHCP server
+          # AFTER cloud-init has set /etc/hostname.
+          files << {
+            "path"        => "/etc/netplan/99-powernode-dhcp.yaml",
+            "permissions" => "0644",
+            "owner"       => "root:root",
+            "content"     => netplan_override_content
+          }
           files
+        end
+
+        def netplan_override_content
+          # `send-hostname: true` is the default in networkd but stating it
+          # explicitly survives any future cloud-init template changes that
+          # might disable it. `use-hostname: false` keeps the boot-time
+          # /etc/hostname authoritative — the upstream DHCP shouldn't
+          # ever decide what our hostname is.
+          <<~YAML
+            network:
+              version: 2
+              ethernets:
+                eth0:
+                  dhcp4: true
+                  dhcp4-overrides:
+                    send-hostname: true
+                    use-hostname: false
+                    hostname: #{hostname}
+          YAML
         end
 
         def systemd_unit_content
@@ -188,6 +244,15 @@ module System
 
         def runcmd
           [
+            # Apply the netplan override (write_files dropped it into
+            # /etc/netplan/99-powernode-dhcp.yaml) and renew the DHCP
+            # lease so the upstream DHCP server sees the cloud-init-set
+            # hostname in option 12. Without this, the upstream dnsmasq's
+            # DNS table holds whatever hostname was set when networkd
+            # first leased — usually the BIOS-default "ubuntu" — and the
+            # VM's friendly name never resolves.
+            "netplan apply || true",
+            "networkctl reconfigure eth0 || true",
             # Download the powernode-agent binary from the parent platform
             # (ops). The URL is unauthenticated by design — operators can
             # mirror it onto their own static-asset host if desired.
