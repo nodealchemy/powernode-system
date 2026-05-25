@@ -246,6 +246,28 @@ func RenderUnit(svc manifest.Service, moduleID string) string {
 	// stay normal, ExecStart + library loading + open(2) all see
 	// the module's content.
 	b.WriteString("RootDirectory=/sysroot\n")
+	// MountAPIVFS=yes is required whenever RootDirectory= is set —
+	// without it systemd doesn't bind-mount /proc, /sys, /dev into the
+	// chroot, and the service start fails with status=226/NAMESPACE
+	// ("Failed to set up mount namespacing: No such file or directory")
+	// the moment ExecStart's binary tries to read /proc/self, open
+	// /dev/urandom, etc. Ruby/Rails + Sidekiq + redis-server + traefik
+	// + nginx all hit this immediately.
+	b.WriteString("MountAPIVFS=yes\n")
+	// BindReadOnlyPaths bridges the identity files from the LIVE root
+	// (where etcidentity authoritatively renders postgres/redis/traefik/
+	// etc. with platform-allocated UIDs from reserved.go) into the
+	// chroot. Without this, services inside RootDirectory=/sysroot read
+	// the erofs overlay's /etc/passwd — which has only the apt-baked
+	// users from each module, with conflicting UIDs (e.g. apt-installed
+	// redis user gets uid 100, but the platform allocates 70140). Start
+	// scripts that chown to "postgres:postgres" fail with "invalid
+	// user" because /sysroot/etc/passwd has no postgres at all.
+	//
+	// Source paths read from the live root, destination paths inside
+	// chroot match. Read-only because services should never mutate
+	// the authoritative identity files.
+	b.WriteString("BindReadOnlyPaths=/etc/passwd /etc/group /etc/shadow /etc/gshadow\n")
 	if svc.User != "" {
 		fmt.Fprintf(&b, "User=%s\n", svc.User)
 	}
