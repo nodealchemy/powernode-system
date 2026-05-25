@@ -73,15 +73,22 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: powernode_test
+        # Explicit 0.0.0.0 binding — act runner parses bare `5432:5432`
+        # as HostIP="invalid IP" (literal string), leaving the port not
+        # actually bound to the host's all-interfaces. Without this the
+        # job container can't reach 172.17.0.1:5432 even though the
+        # sidecar starts successfully. Verified via earlier run 572's
+        # docker create cmd: `PortBindings:[5432/tcp:[{HostIP:invalid
+        # IP HostPort:5432}]]`.
         ports:
-          - 5432:5432
+          - 0.0.0.0:5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 0.0.0.0:6379:6379
     env:
       RAILS_ENV: test
       # Default to the standard docker bridge gateway. Overridden at
@@ -373,10 +380,12 @@ jobs:
     services:
       redis:
         image: redis:7
+        # Explicit 0.0.0.0 binding — see the long comment in the rspec
+        # services block. `6379:6379` alone leaves HostIP="invalid IP"
+        # in the act runner.
         ports:
-          - 6379:6379
+          - 0.0.0.0:6379:6379
     env:
-      # Overridden at runtime by the "Discover host gateway" step below.
       REDIS_URL: redis://172.17.0.1:6379/0
       # Worker startup hard-requires these two env vars. Empty values
       # abort the process before spec loading even begins:
