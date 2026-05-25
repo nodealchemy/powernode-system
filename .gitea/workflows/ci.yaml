@@ -69,7 +69,12 @@ jobs:
     # #76); workflow-level changes can't reach that.
     services:
       postgres:
-        image: postgres:16
+        # pgvector/pgvector:pg16 = postgres 16 + pgvector extension
+        # baked in. The parent platform's schema uses `CREATE EXTENSION
+        # vector` for embedding storage; the standard postgres:16
+        # image rejects with `PG::FeatureNotSupported: extension "vector"
+        # is not available` during db:schema:load.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: powernode_test
