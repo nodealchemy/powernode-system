@@ -47,6 +47,13 @@ RSpec.describe "Api::V1::System::FederationApi::Migrations", type: :request do
             "name" => "migrated-svc",
             "start_command" => "/usr/bin/true",
             "restart_policy" => "always",
+            # ModuleService's `exactly_one_user_source` validation requires
+            # either a service_user_id FK or a system_user string — without
+            # one the ApplyExecutor's create step fails and the migration
+            # comes back as 422 instead of the expected 201. "nobody" is in
+            # WELL_KNOWN_SYSTEM_USERS and matches how other specs pick a
+            # null-effect identity.
+            "system_user" => "nobody",
             "health_method" => "GET",
             "health_interval_seconds" => 30,
             "health_timeout_seconds" => 5,

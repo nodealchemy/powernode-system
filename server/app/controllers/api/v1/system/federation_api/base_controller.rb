@@ -209,8 +209,22 @@ module Api
             auth_header.split(" ", 2).last
           end
 
+          # Both helpers must `; nil` so callers can write
+          # `return render_unauthorized(...)` / `return render_forbidden(...)`
+          # and have the returned value be nil — the create action then
+          # short-circuits on `return unless grant`. Without the explicit nil,
+          # `render` returns the response body String, which is truthy, and
+          # the caller falls through into build_migration! with grant set to
+          # the error JSON. That tripped DoubleRenderError + NoMethodError
+          # on every migrations create attempt in CI run #580.
+          def render_unauthorized(message)
+            render json: { success: false, error: message, code: "UNAUTHORIZED" }, status: :unauthorized
+            nil
+          end
+
           def render_forbidden(message)
             render json: { error: message }, status: :forbidden
+            nil
           end
         end
       end

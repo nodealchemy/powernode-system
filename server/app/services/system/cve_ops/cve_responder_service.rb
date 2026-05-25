@@ -305,6 +305,9 @@ module System
       end
 
       def cve_approval_chain
+        # See fleet_autonomy_service#fleet_approval_chain — Ai::ApprovalChain
+        # is a business-only model; soft-fail in core mode.
+        return nil unless defined?(::Ai::ApprovalChain)
         @cve_approval_chain ||= ::Ai::ApprovalChain
           .where(account: @account, trigger_type: "autonomy_action", status: "active")
           .where("name ILIKE ?", "%cve%")

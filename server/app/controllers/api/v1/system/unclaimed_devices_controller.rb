@@ -58,7 +58,8 @@ module Api
             by_user:       current_user
           )
 
-          if result.success?
+          # PhysicalEnrollmentService::ConfirmResult = Struct.new(:ok?, ...) — accessor is `ok?`, not `success?`.
+          if result.ok?
             render_success(
               unclaimed_device: serialize(@unclaimed_device.reload),
               node_instance_id: instance.id,

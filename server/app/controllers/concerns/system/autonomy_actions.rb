@@ -113,6 +113,10 @@ module System
     end
 
     def serialize_chains
+      # Ai::ApprovalChain lives in the business extension. In core mode the
+      # admin UI surfaces the autonomy/policy machinery without the chain
+      # configuration table — empty array is the right empty-state.
+      return [] unless defined?(::Ai::ApprovalChain)
       ::Ai::ApprovalChain.where(account: current_account, status: "active").map do |c|
         { id: c.id, name: c.name, step_count: c.step_count, is_sequential: c.is_sequential }
       end

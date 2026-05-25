@@ -368,6 +368,10 @@ module System
       end
 
       def fleet_approval_chain
+        # Ai::ApprovalChain is a business-extension model; in core mode there's
+        # no chain to resolve, so callers fall through to auto-proceed
+        # semantics (matches AutonomyGate#require_approval_or_proceed).
+        return nil unless defined?(::Ai::ApprovalChain)
         @fleet_approval_chain ||= ::Ai::ApprovalChain
           .where(account: @account, trigger_type: "autonomy_action", status: "active")
           .find_by("name ILIKE ?", "%fleet%") ||
