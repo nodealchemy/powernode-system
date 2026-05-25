@@ -476,6 +476,31 @@ func TestOvsBridgeApplier_ReturnsErrorWhenOvsVsctlMissing(t *testing.T) {
 	}
 }
 
+func TestOvsBridgeApplier_SilentNoopWhenNoOvsWork(t *testing.T) {
+	// Lightweight-profile host: agent registers the OVS applier
+	// alongside the Linux one, but desired contains zero Kind="ovs"
+	// entries. The applier must return nil WITHOUT probing for
+	// ovs-vsctl — otherwise lightweight hosts spam the reconcile log
+	// every 30s with "ovs-vsctl not found in PATH ... heavyweight
+	// network profile requires Open vSwitch" even though they have
+	// no OVS work to do.
+	a := &ShellOvsBridgeApplier{
+		OvsVsctlBin: "/nonexistent/path/to/ovs-vsctl",
+		IpBin:       "/usr/bin/true",
+	}
+
+	// Mix of linux-kind, empty-kind, and named-no-kind bridges — all
+	// should be filtered out before the ovs-vsctl probe fires.
+	desired := []DesiredBridge{
+		{Name: "br-platform", Kind: "linux"},
+		{Name: "br-other", Kind: ""},
+		{Name: "", Kind: "ovs"}, // empty name is also dropped by the filter
+	}
+	if err := a.Apply(context.Background(), desired); err != nil {
+		t.Fatalf("expected nil (no OVS work to do), got: %v", err)
+	}
+}
+
 func TestOvsBridgeApplier_ToleratesMaxLengthName(t *testing.T) {
 	// IFNAMSIZ is 15 chars usable. `pwnbr-` is 6 chars; the longest
 	// short_id we can append is 9 chars → "pwnbr-abcdefghi" (15 chars).

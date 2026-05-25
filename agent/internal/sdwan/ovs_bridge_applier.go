@@ -104,14 +104,45 @@ func (a *ShellOvsBridgeApplier) ip() string {
 // matches LinuxBridgeApplier's contract so the manager's Reconcile()
 // stays alive across transient failures.
 func (a *ShellOvsBridgeApplier) Apply(ctx context.Context, desired []DesiredBridge) error {
-	// Defensive: if ovs-vsctl isn't installed, the platform should
-	// never have stamped any Kind="ovs" entries for this host — but
-	// surface a clear error rather than a cryptic "exec: not found".
+	// Filter to Kind="ovs" entries first. Both bridge appliers always
+	// run (Manager doesn't pre-select by host profile), so the OVS
+	// applier sees every desired entry — including the Linux ones it
+	// must ignore. Inverse of LinuxBridgeApplier's filter: accept "ovs",
+	// skip everything else. Empty Kind defaults to Linux per the
+	// platform compiler, so we skip it too.
+	desiredByName := make(map[string]DesiredBridge, len(desired))
+	for _, b := range desired {
+		if b.Name == "" {
+			// Defensive — the platform's allocator should never emit
+			// an empty name; skip rather than hand "" to ovs-vsctl.
+			continue
+		}
+		if b.Kind != "ovs" {
+			continue
+		}
+		desiredByName[b.Name] = b
+	}
+
+	// If there's no OVS work for this host (lightweight profile, or
+	// heavyweight host that hasn't been assigned any OVS bridges yet),
+	// silently no-op without probing for ovs-vsctl. Orphan reap also
+	// requires a working OVS — if ovs-vsctl is missing there cannot
+	// be any orphan OVS bridges to reap, so the early return is safe.
+	// This stops the 30-second log-spam loop on every lightweight node
+	// ("ovs-vsctl not found in PATH ... heavyweight network profile
+	// requires Open vSwitch") whose desired state actually contained
+	// zero OVS bridges.
+	if len(desiredByName) == 0 {
+		return nil
+	}
+
+	// Now that we know there IS OVS work, require the binary. Surface a
+	// clear error rather than a cryptic "exec: not found" downstream.
 	// We resolve via $PATH unless OvsVsctlBin is an explicit absolute
 	// path (tests pass an absolute path to the recorder shim).
 	if a.OvsVsctlBin == "" {
 		if _, err := exec.LookPath("ovs-vsctl"); err != nil {
-			return fmt.Errorf("ovs-vsctl not found in PATH: %w (heavyweight network profile requires Open vSwitch)", err)
+			return fmt.Errorf("ovs-vsctl not found in PATH: %w (host has %d ovs-kind bridge(s) in desired state but Open vSwitch is not installed)", err, len(desiredByName))
 		}
 	} else {
 		// Explicit override — verify the file actually exists. This
@@ -120,22 +151,6 @@ func (a *ShellOvsBridgeApplier) Apply(ctx context.Context, desired []DesiredBrid
 		if _, err := exec.LookPath(a.OvsVsctlBin); err != nil {
 			return fmt.Errorf("ovs-vsctl override %q not executable: %w", a.OvsVsctlBin, err)
 		}
-	}
-
-	desiredByName := make(map[string]DesiredBridge, len(desired))
-	for _, b := range desired {
-		if b.Name == "" {
-			// Defensive — the platform's allocator should never emit
-			// an empty name; skip rather than hand "" to ovs-vsctl.
-			continue
-		}
-		// Inverse of LinuxBridgeApplier's filter: accept "ovs", skip
-		// everything else. Empty Kind defaults to Linux per the
-		// platform compiler, so we skip it too.
-		if b.Kind != "ovs" {
-			continue
-		}
-		desiredByName[b.Name] = b
 	}
 
 	current, err := a.listBridges(ctx)
