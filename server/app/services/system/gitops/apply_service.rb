@@ -54,7 +54,8 @@ module System
 
         ::ActiveRecord::Base.transaction do
           result = apply_diff(kind: kind, change: change, diff: diff)
-          mark_implemented! if result.success?
+          # Result = Struct.new(:ok?, ...) — accessor is `ok?`, not `success?`.
+          mark_implemented! if result.ok?
           result
         end
       rescue StaleConflictError => e
