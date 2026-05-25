@@ -339,18 +339,49 @@ module Api
           Rails.logger.warn "[ModulePublicationsController] fleet event emit failed: #{e.class}: #{e.message}"
         end
 
-        # Bearer-token check. The CI worker token lives in Vault on the
-        # platform side; ENV is the canonical home for plain-secret
-        # config (worker tokens are short-lived rotational secrets
-        # injected by the boot scripts).
+        # Bearer-token check. Two acceptable token sources:
+        #   1. Worker table — token hashed in worker.token_digest. Per-CI-worker
+        #      provisioning lets operators revoke an individual worker without
+        #      a global secret rotation + adds last_seen_at auditing. This is
+        #      the modern path; same Worker model the worker_api/* controllers
+        #      already use for the rest of the worker surface.
+        #   2. ENV POWERNODE_CI_WORKER_TOKEN — legacy single shared secret
+        #      kept for backward compat during migration. Logged separately
+        #      via @ci_auth_source so we can identify pre-Worker-table CI
+        #      workers and plan their cutover before removing this branch.
+        #
+        # SecureRandom-grade tokens go through ActiveSupport secure_compare
+        # / SHA256 to avoid timing oracles on either path.
         def valid_ci_bearer?
-          expected = ENV["POWERNODE_CI_WORKER_TOKEN"].to_s
-          return false if expected.empty?
-
           provided = request.headers["Authorization"].to_s.sub(/\ABearer\s+/i, "")
           return false if provided.empty?
 
-          ActiveSupport::SecurityUtils.secure_compare(expected, provided)
+          # Path 1 (preferred): Worker table lookup.
+          if (worker = ::Worker.authenticate(provided))
+            @current_ci_worker = worker
+            @ci_auth_source = "worker_table"
+            Rails.logger.info(
+              "[ModulePublicationsController] CI publish authenticated via Worker table " \
+              "(worker_id=#{worker.id} name=#{worker.name})"
+            )
+            return true
+          end
+
+          # Path 2 (legacy): ENV-shared-secret comparison.
+          expected = ENV["POWERNODE_CI_WORKER_TOKEN"].to_s
+          return false if expected.empty?
+
+          if ActiveSupport::SecurityUtils.secure_compare(expected, provided)
+            @ci_auth_source = "env_shared_secret"
+            Rails.logger.warn(
+              "[ModulePublicationsController] CI publish authenticated via legacy " \
+              "POWERNODE_CI_WORKER_TOKEN env var. Migrate to a per-worker Worker " \
+              "row via the CI worker provisioning endpoint to enable revocation + audit."
+            )
+            return true
+          end
+
+          false
         end
       end
     end

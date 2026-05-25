@@ -81,6 +81,28 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
     expect(response).to have_http_status(:unauthorized)
   end
 
+  it "accepts a Worker-table-issued token (preferred path) without consulting ENV" do
+    # Drop the legacy ENV path so this spec proves the Worker-table
+    # branch authenticates on its own.
+    ENV.delete("POWERNODE_CI_WORKER_TOKEN")
+
+    plaintext = "ci-worker-#{SecureRandom.hex(16)}"
+    worker = ::Worker.create_worker!(
+      name: "test-ci-worker-#{SecureRandom.hex(4)}",
+      account: account,
+      token: plaintext
+    )
+
+    post "/api/v1/system/module_publications",
+         params: base_body.to_json,
+         headers: { "Authorization" => "Bearer #{plaintext}", "Content-Type" => "application/json" }
+
+    expect(response).to have_http_status(:ok)
+    # Worker.authenticate touches last_seen_at as a side effect — the
+    # row is now non-nil whereas it was nil at create time.
+    expect(worker.reload.last_seen_at).to be_present
+  end
+
   it "creates a NodeModuleVersion and applies the manifest to the parent NodeModule" do
     expect {
       post "/api/v1/system/module_publications", params: base_body.to_json, headers: bearer
