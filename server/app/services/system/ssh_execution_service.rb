@@ -45,7 +45,10 @@ module System
 
       full_command = sudo ? "sudo #{command}" : command
 
-      Rails.logger.info("[SshExecutionService] Executing command on #{instance.name}: #{command[0..100]}...")
+      Rails.logger.info(
+        "[SshExecutionService] Executing command on #{instance.name}: " \
+        "#{ShellOutputSanitizer.redact(command[0..100])}..."
+      )
 
       raw = execute_ssh_command(host: ssh_ip, user: admin_user, key: ssh_key, command: full_command)
 
@@ -53,7 +56,7 @@ module System
     rescue ArgumentError
       raise
     rescue StandardError => e
-      Rails.logger.error("[SshExecutionService] SSH execution failed: #{e.message}")
+      Rails.logger.error("[SshExecutionService] SSH execution failed: #{ShellOutputSanitizer.redact(e.message)}")
       Runtime::Result.err(error: e.message, data: { exit_code: -1 })
     end
 
@@ -104,7 +107,7 @@ module System
     rescue ArgumentError
       raise
     rescue StandardError => e
-      Rails.logger.error("[SshExecutionService] SCP failed: #{e.message}")
+      Rails.logger.error("[SshExecutionService] SCP failed: #{ShellOutputSanitizer.redact(e.message)}")
       Runtime::Result.err(error: e.message, data: { exit_code: -1 })
     end
 
@@ -182,7 +185,7 @@ module System
         raise SshError, "SSH is disabled (SYSTEM_SSH_ENABLED=false) outside the test environment"
       end
 
-      Rails.logger.info("[SshExecutionService] Mock SSH execution: #{command}")
+      Rails.logger.info("[SshExecutionService] Mock SSH execution: #{ShellOutputSanitizer.redact(command)}")
       { stdout: "Mock execution of: #{command}", stderr: "", exit_code: 0 }
     end
 
