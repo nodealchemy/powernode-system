@@ -193,7 +193,10 @@ module System
       def fetch_manifest(oci_ref)
         ensure_binary!("oras")
         out, err, status = Open3.capture3("oras", "manifest", "fetch", oci_ref)
-        return { error: err.presence || "oras exit #{status.exitstatus}" } unless status.success?
+        # oras may echo the auth header or `Authorization: Bearer …`
+        # snippet in its error output (esp. on 401/403). Sanitize before
+        # the err string lands in the operator-facing error: payload.
+        return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "oras exit #{status.exitstatus}" } unless status.success?
 
         parsed = JSON.parse(out)
         # Expect an OCI index manifest with `manifests` array (one per arch).
@@ -247,7 +250,11 @@ module System
           end
         end
         out, err, status = Open3.capture3(*cmd)
-        return { error: err.presence || "cosign exit #{status.exitstatus}" } unless status.success?
+        # cosign's verify failures often quote the certificate body,
+        # which is fine; but they ALSO echo the inline cosign public
+        # key env var name + value on key-load errors. Same sanitizer
+        # as above; nil-safe for the empty-err exit path.
+        return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "cosign exit #{status.exitstatus}" } unless status.success?
 
         { ok: true, bundle: out, signers: expected_signers || [], issuer: issuer_regexp }
       end

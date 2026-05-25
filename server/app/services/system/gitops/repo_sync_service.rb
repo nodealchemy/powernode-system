@@ -76,9 +76,17 @@ module System
         env = build_git_env
         out, err, status = Open3.capture3(env, "git", *args, chdir: cwd)
         unless status.success?
-          # Strip credentials from error output before logging
+          # Two-pass sanitization. The git-specific regex catches the
+          # exact `https://user:pat@host/` URL shape git's own error
+          # output emits. ShellOutputSanitizer then catches the
+          # everything-else cases: bare PATs (ghp_*, github_pat_*),
+          # Bearer headers from credential-helper output, JWT-shaped
+          # subject names, etc. Layered defense — the URL regex is
+          # cheap + specific; the sanitizer is broader + slightly
+          # heavier; running both adds <1ms on short stderrs.
           sanitized = err.to_s.gsub(/(https?:\/\/)[^:@]+:[^@]+@/, '\1[REDACTED]@')
-          raise "git #{args.first} failed: #{sanitized.strip}"
+          sanitized = ::System::ShellOutputSanitizer.redact(sanitized)
+          raise "git #{args.first} failed: #{sanitized.to_s.strip}"
         end
         [ out, err ]
       end

@@ -144,7 +144,7 @@ module System
             _out, err, status = Open3.capture3(augmented_env, "oras", "pull", oci_ref, "--output", work)
             unless status.success?
               FileUtils.remove_entry(work)
-              return Result.new(ok?: false, error: "oras pull failed (smoke-mode): #{err.strip}")
+              return Result.new(ok?: false, error: "oras pull failed (smoke-mode): #{::System::ShellOutputSanitizer.redact(err.strip)}")
             end
             img_path = Dir["#{work}/**/*.img"].first
             unless img_path
@@ -205,7 +205,8 @@ module System
         out, err, status = Open3.capture3("oras", "pull", oci_ref, "--output", work)
         unless status.success?
           FileUtils.remove_entry(work)
-          return Result.new(ok?: false, error: "oras pull failed: #{err.strip.presence || out.strip}")
+          raw = err.strip.presence || out.strip
+          return Result.new(ok?: false, error: "oras pull failed: #{::System::ShellOutputSanitizer.redact(raw)}")
         end
 
         img_path = Dir["#{work}/**/*.img"].first
@@ -269,7 +270,7 @@ module System
         if status.success?
           { ok: true }
         else
-          { ok: false, error: (err.presence || out).strip }
+          { ok: false, error: ::System::ShellOutputSanitizer.redact((err.presence || out).strip) }
         end
       end
 
@@ -293,7 +294,7 @@ module System
         ]
         out, err, status = Open3.capture3(*args)
         unless status.success?
-          return { ok: false, error: (err.presence || out).strip }
+          return { ok: false, error: ::System::ShellOutputSanitizer.redact((err.presence || out).strip) }
         end
 
         # Optional: parse the attestation predicate from `cosign verify-blob-attestation`

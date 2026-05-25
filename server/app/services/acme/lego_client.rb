@@ -222,18 +222,28 @@ module Acme
     # Invokes the binary with stdin closed, captures stdout (the JSON
     # result envelope), and parses. Stderr from lego (DNS polling logs,
     # etc.) is captured separately and surfaced in error messages.
+    #
+    # DNS-01 ACME challenges hand the DNS provider's API token to lego
+    # via env. lego's verbose-mode DNS polling output can echo subsets
+    # of that token (`x-api-key: hvs.xxx`, `Authorization: Bearer …`,
+    # `cloudflare_api_token=…`). Run stderr + stdout through
+    # ShellOutputSanitizer before they land in raised IntegrationError
+    # messages — those propagate up to Rails.logger and the operator-
+    # facing failure response. Same redactor as SshExecutionService.
     def run_binary!(argv, env:)
       stdout, stderr, status = ::Open3.capture3(env, *argv,
                                                  stdin_data: "")
       unless status.success?
         raise IntegrationError,
-              "powernode-acme exited #{status.exitstatus}: stderr=#{stderr[0, 800]}"
+              "powernode-acme exited #{status.exitstatus}: " \
+              "stderr=#{::System::ShellOutputSanitizer.redact(stderr[0, 800])}"
       end
 
       ::JSON.parse(stdout)
     rescue ::JSON::ParserError => e
       raise IntegrationError, "powernode-acme stdout not valid JSON: #{e.message}; " \
-                              "stdout=#{stdout.to_s[0, 400]}; stderr=#{stderr.to_s[0, 400]}"
+                              "stdout=#{::System::ShellOutputSanitizer.redact(stdout.to_s[0, 400])}; " \
+                              "stderr=#{::System::ShellOutputSanitizer.redact(stderr.to_s[0, 400])}"
     end
   end
 end
