@@ -3,6 +3,16 @@
 require "rails_helper"
 
 RSpec.describe System::CveOps::CveResponderService do
+  # The spec setup eagerly creates an Ai::ApprovalChain (line 16+) — that
+  # model lives in the business extension. In core mode (CI without
+  # business loaded) every example fails NameError at let! resolution.
+  # AutonomyGate#require_approval_or_proceed handles the core-mode
+  # auto-proceed at runtime; this spec is explicitly asserting the
+  # business-loaded chain-creation pathway end-to-end, so skip cleanly.
+  before do
+    skip "CveResponderService spec requires Ai::ApprovalChain (business extension)" unless defined?(::Ai::ApprovalChain)
+  end
+
   let(:account)  { create(:account) }
   let(:user)     { create(:user, account: account) }
   let(:provider) { create(:ai_provider) }

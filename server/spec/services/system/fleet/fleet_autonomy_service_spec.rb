@@ -4,6 +4,15 @@ require "rails_helper"
 
 # Golden Eclipse M7.A — FleetAutonomyService.
 RSpec.describe System::Fleet::FleetAutonomyService do
+  # gate_action! examples in this file create an Ai::ApprovalChain in
+  # their setup blocks — chain model lives in business extension. In core
+  # mode the require_approval gate path skips chain creation entirely via
+  # AutonomyGate#require_approval_or_proceed, but the spec specifically
+  # asserts chain-creation. Skip cleanly when business isn't loaded.
+  before do
+    skip "FleetAutonomyService spec requires Ai::ApprovalChain (business extension)" unless defined?(::Ai::ApprovalChain)
+  end
+
   let(:account)  { create(:account) }
   let(:agent)    { create(:ai_agent, account: account, agent_type: "monitor", name: "Fleet Autonomy") }
   let(:service)  { described_class.new(account: account, agent: agent) }

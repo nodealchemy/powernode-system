@@ -40,6 +40,10 @@ RSpec.describe System::Migrations::ApplyExecutor, type: :service do
             "name" => "test-service",
             "start_command" => "/usr/bin/true",
             "restart_policy" => "always",
+            # ModuleService's `exactly_one_user_source` validation requires
+            # either service_user_id or system_user. "nobody" is in
+            # WELL_KNOWN_SYSTEM_USERS — null-effect identity for the test.
+            "system_user" => "nobody",
             "health_method" => "GET",
             "health_interval_seconds" => 30,
             "health_timeout_seconds" => 5,
@@ -143,6 +147,8 @@ RSpec.describe System::Migrations::ApplyExecutor, type: :service do
             "id" => SecureRandom.uuid, "node_module_id" => node_module.id,
             "account_id" => account.id, "name" => "fresh-service",
             "start_command" => "/usr/bin/true", "restart_policy" => "always",
+            # See note above re: exactly_one_user_source validation.
+            "system_user" => "nobody",
             "health_method" => "GET", "health_interval_seconds" => 30,
             "health_timeout_seconds" => 5, "health_initial_delay_seconds" => 10,
             "env" => {}, "metadata" => {}
