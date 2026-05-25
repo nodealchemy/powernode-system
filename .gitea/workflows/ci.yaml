@@ -52,9 +52,15 @@ jobs:
     #   - Sidecars publish to host 0.0.0.0:{5432,6379} (host-routable)
     #   - Job container on default bridge reaches host via gateway
     #     (the bridge gateway IS the docker host's bridge interface)
-    #   - 172.17.0.1 is the well-known default bridge gateway; if it
-    #     changes per-runner, the "Discover host gateway" step below
-    #     overrides DATABASE_URL/REDIS_URL with the runtime-detected IP.
+    #   - 172.17.0.1 is the well-known default bridge gateway for
+    #     unconfigured Linux docker daemons; hardcoded.
+    #
+    # Tried a runtime "Discover host gateway" step using `ip route` but
+    # the act-24.04 runner image doesn't have iproute2 (exit code 127).
+    # Could install it via apt-get but added latency outweighs the
+    # robustness of a near-universal default. If a runner with a
+    # non-default bridge gateway shows up, override per-job via a
+    # job-level `env: DATABASE_URL: ...` block.
     #
     # Port-collision risk: cancelled jobs leak sidecar containers that
     # keep the host port bound. Manually mitigated 2026-05-24 by
@@ -109,24 +115,6 @@ jobs:
           rm -rf powernode-platform/extensions/system
           # Use mv (not ln -s) — git>=2.43 rejects symlinks at submodule paths
           mv extensions/system powernode-platform/extensions/system
-
-      - name: Discover host gateway for sidecar reachability
-        # See the long service-addressing comment in the job header. This
-        # step detects the docker bridge gateway at runtime and overrides
-        # DATABASE_URL/REDIS_URL — robust against non-default bridge IPs.
-        run: |
-          set -euo pipefail
-          HOST_IP="$(ip route | awk '/default/{print $3; exit}')"
-          if [ -z "${HOST_IP:-}" ]; then
-            echo "ERROR: could not discover docker bridge gateway from 'ip route'"
-            ip route
-            exit 1
-          fi
-          echo "Discovered HOST_IP=${HOST_IP} — pointing DATABASE_URL/REDIS_URL there"
-          {
-            echo "DATABASE_URL=postgres://postgres:postgres@${HOST_IP}:5432/powernode_test"
-            echo "REDIS_URL=redis://${HOST_IP}:6379/0"
-          } >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -417,19 +405,6 @@ jobs:
         run: |
           rm -rf powernode-platform/extensions/system
           mv extensions/system powernode-platform/extensions/system
-
-      - name: Discover host gateway for sidecar reachability
-        # See the long service-addressing comment in the rspec job header.
-        run: |
-          set -euo pipefail
-          HOST_IP="$(ip route | awk '/default/{print $3; exit}')"
-          if [ -z "${HOST_IP:-}" ]; then
-            echo "ERROR: could not discover docker bridge gateway from 'ip route'"
-            ip route
-            exit 1
-          fi
-          echo "Discovered HOST_IP=${HOST_IP} — pointing REDIS_URL there"
-          echo "REDIS_URL=redis://${HOST_IP}:6379/0" >> "$GITHUB_ENV"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
