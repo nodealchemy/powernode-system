@@ -186,6 +186,14 @@ RSpec.describe "AI-driven provisioning M2 adaptive evolution smoke", type: :inte
   end
 
   it "routes a high-blast cross-region drift through require_approval" do
+    # Ai::ApprovalChain lives in the business extension. In core mode (CI)
+    # this test can't exercise the require_approval pathway end-to-end —
+    # there's no approval infrastructure to land an ApprovalRequest against.
+    # AutonomyGate#require_approval_or_proceed handles the core-mode case
+    # at runtime by auto-proceeding; this test still wants to verify the
+    # business-loaded chain-creation pathway, so skip cleanly.
+    skip "requires Ai::ApprovalChain (business extension)" unless defined?(::Ai::ApprovalChain)
+
     # ---------- 1. Region drift observed ----------------------------------
     # actual_region_count (1) ≠ expected (3) → triggers project_drift signal.
     mission = build_active_mission(

@@ -206,7 +206,11 @@ RSpec.describe "AI-driven provisioning M0 end-to-end smoke", type: :integration 
     # Run plan composition.
     plan = Ai::Provisioning::PlanComposerService.new(account: account, mission: mission).compose!
     expect(plan).to be_a(Ai::GoalPlan)
-    expect(plan.steps.count).to eq(3)
+    # PlanComposerService 5de109b added a step-collapse pass: adjacent
+    # provision_full_stack steps for the same skill merge into a single
+    # step with summed count. So "Provision 3 web servers" now lands as
+    # one step with count=3 (was three 1-count steps pre-collapse).
+    expect(plan.steps.count).to eq(1)
     plan.steps.in_order.each_with_index do |step, i|
       expect(step.step_type).to eq("provisioning_skill"), "step #{i + 1} step_type was #{step.step_type}"
       expect(step.execution_config["skill"]).to eq("provision_full_stack")
