@@ -84,7 +84,13 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
       let!(:unversioned_module) { create(:system_node_module, account: account) }
 
       it 'returns only modules with current_version set' do
-        expect(System::NodeModule.versioned).to contain_exactly(versioned_module)
+        # Account.after_create_commit auto-bootstraps module catalog rows on
+        # `account`, so `versioned` returns many modules beyond the two this
+        # block creates. Verify the SCOPE behavior (versioned in / unversioned
+        # out) rather than asserting exhaustive set equality.
+        scoped = System::NodeModule.where(account: account).versioned
+        expect(scoped).to include(versioned_module)
+        expect(scoped).not_to include(unversioned_module)
       end
     end
   end

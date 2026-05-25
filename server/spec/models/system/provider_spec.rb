@@ -7,7 +7,7 @@ RSpec.describe System::Provider, type: :model do
 
   describe 'constants' do
     it 'defines valid provider types' do
-      expect(described_class::PROVIDER_TYPES).to eq(%w[aws openstack gcp azure digitalocean linode vultr custom mock local_qemu pro_cloud])
+      expect(described_class::PROVIDER_TYPES).to eq(%w[aws openstack gcp azure digitalocean linode vultr proxmox custom mock local_qemu pro_cloud])
     end
   end
 

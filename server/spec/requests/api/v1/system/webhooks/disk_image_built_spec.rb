@@ -4,7 +4,14 @@ require "rails_helper"
 
 RSpec.describe "Disk image built webhook", type: :request do
   let(:account) { create(:account) }
-  let(:platform) { create(:system_node_platform, account: account, name: "ubuntu-24.04-rpi4") }
+  # Account.after_create_commit :run_account_bootstrap calls
+  # System::AccountBootstrapService, which find_or_create_by!s a
+  # NodePlatform named "ubuntu-24.04-rpi4" on every new account. Hardcoding
+  # the same name in `create(...)` collides with that bootstrapped row.
+  # The spec doesn't care about the platform's display name — only that it
+  # exists and belongs to `account` — so we re-use the bootstrapped one
+  # via the System extension's AccountDecorator-provided association.
+  let(:platform) { account.system_node_platforms.find_by!(name: "ubuntu-24.04-rpi4") }
   let!(:webhook_pair) { ::System::DiskImageWebhook.create_with_secret!(account: account, label: "test-pipeline") }
   let(:webhook) { webhook_pair[0] }
   let(:secret) { webhook_pair[1] }

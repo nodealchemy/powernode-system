@@ -4,7 +4,10 @@ require "rails_helper"
 
 RSpec.describe "Worker API: disk_image_publications", type: :request do
   let(:account) { create(:account) }
-  let(:platform) { create(:system_node_platform, account: account, name: "ubuntu-24.04-rpi4") }
+  # See disk_image_built_spec for the rationale: Account bootstrap pre-creates
+  # this NodePlatform, so we reference the bootstrapped row via the
+  # System extension's AccountDecorator-provided association.
+  let(:platform) { account.system_node_platforms.find_by!(name: "ubuntu-24.04-rpi4") }
   let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
   let!(:worker) do
     w = create(:worker, account: account, status: "active")

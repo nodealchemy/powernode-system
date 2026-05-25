@@ -8,7 +8,9 @@ require "rails_helper"
 RSpec.describe System::NodeModule, "dependant modules", type: :model do
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
-  let(:category) { create(:system_node_module_category, account: account, name: "Base") }
+  # Account bootstrap pre-creates a canonical "base" category;
+  # uniqueness is case-insensitive so `name: "Base"` would collide.
+  let(:category) { create(:system_node_module_category, account: account) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform) }
   let(:node)     { create(:system_node, account: account, node_template: template) }
   let(:instance) { create(:system_node_instance, :running, node: node) }

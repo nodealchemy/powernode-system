@@ -445,6 +445,15 @@ FactoryBot.define do
     enabled { true }
     auto_mount { true }
     read_only { false }
+    # owner_kind defaults to "service_user" at the DB level (per
+    # 20260522140000_refactor_storage_assignment_owner), which the
+    # model's `validates :service_user, presence: true, if:
+    # :service_user_owner?` then requires a service_user for. Tests
+    # generally don't care about owner semantics — pick "nobody" so
+    # the factory builds without forcing every caller to create a
+    # ServiceUser record they don't need. Override via trait when
+    # owner-aware tests come along.
+    owner_kind { "nobody" }
   end
 
   # System::StorageCredential — VaultCredential-backed per-instance access cred.
