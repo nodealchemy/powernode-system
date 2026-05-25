@@ -28,7 +28,7 @@ module Api
           def update_status
             new_status = params[:status].to_s
             unless ::System::StorageAssignment::STATUSES.include?(new_status)
-              return render_error("Invalid status: #{new_status}", status: :unprocessable_entity)
+              return render_error("Invalid status: #{new_status}", status: :unprocessable_content)
             end
 
             @assignment.mark_status!(new_status, error_message: params[:error_message])

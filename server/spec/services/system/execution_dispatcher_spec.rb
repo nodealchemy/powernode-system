@@ -22,7 +22,7 @@ RSpec.describe System::ExecutionDispatcher do
         outcome = described_class.run(operation)
 
         expect(outcome.claimed).to be true
-        expect(outcome.status_code).to eq(:unprocessable_entity)
+        expect(outcome.status_code).to eq(:unprocessable_content)
         expect(outcome.result.success?).to be false
         expect(operation.reload.status).to eq('failed')
         expect(operation.error_message).to include('Unsupported command')

@@ -114,7 +114,7 @@ RSpec.describe "Api::V1::System::Federation::PeerSubscriptions", type: :request 
                                        subscription: nil)
       allow(::Federation::SubscriptionLifecycleService).to receive(:activate!).and_return(failed_result)
       post path, params: body.to_json, headers: headers
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(JSON.parse(response.body)["error"]).to match(/Cert issuance/)
     end
 

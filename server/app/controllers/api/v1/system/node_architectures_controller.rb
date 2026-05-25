@@ -53,7 +53,7 @@ module Api
           if @architecture.destroy
             render_success(message: "Architecture deleted successfully")
           else
-            render_error("Failed to delete architecture", status: :unprocessable_entity)
+            render_error("Failed to delete architecture", status: :unprocessable_content)
           end
         end
 

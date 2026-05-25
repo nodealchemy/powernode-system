@@ -64,7 +64,7 @@ module Api
           if @template.destroy
             render_success(message: "Template deleted successfully")
           else
-            render_error("Failed to delete template", status: :unprocessable_entity)
+            render_error("Failed to delete template", status: :unprocessable_content)
           end
         end
 
@@ -77,7 +77,7 @@ module Api
           require_permission("system.templates.update")
 
           ids = Array(params[:module_ids])
-          return render_error("module_ids: required", status: :unprocessable_entity) if ids.empty?
+          return render_error("module_ids: required", status: :unprocessable_content) if ids.empty?
 
           requested = @account.system_node_modules
                               .where(id: ids)
@@ -147,11 +147,11 @@ module Api
           elsif result.missing_modules.any?
             render_error(
               result.errors.first || "missing modules",
-              status: :unprocessable_entity,
+              status: :unprocessable_content,
               details: { missing_modules: result.missing_modules }
             )
           else
-            render_error(result.errors.first || "import failed", status: :unprocessable_entity)
+            render_error(result.errors.first || "import failed", status: :unprocessable_content)
           end
         end
 
@@ -167,7 +167,7 @@ module Api
           )
           render_success(node_template: serialize_template(new_template), status: :created)
         rescue ::System::TemplateCloneService::CloneError => e
-          render_error(e.message, status: :unprocessable_entity)
+          render_error(e.message, status: :unprocessable_content)
         end
 
         # GET /api/v1/system/node_templates/:id/export
@@ -186,7 +186,7 @@ module Api
               disposition: "attachment"
             )
           else
-            render_error(result.error, status: :unprocessable_entity)
+            render_error(result.error, status: :unprocessable_content)
           end
         end
 

@@ -61,7 +61,7 @@ module Api
 
           # POST /api/v1/internal/system/node_instances/:id/ssh_exec
           def ssh_exec
-            return render_error("Command is required", status: :unprocessable_entity) if params[:command].blank?
+            return render_error("Command is required", status: :unprocessable_content) if params[:command].blank?
 
             result = ::System::SshExecutionService.execute(
               instance: @instance,
@@ -103,7 +103,7 @@ module Api
           # POST /api/v1/internal/system/node_instances/:id/create_image
           def create_image
             image_format = params[:image_format] || "img"
-            return render_error("Invalid image format", status: :unprocessable_entity) unless %w[img iso].include?(image_format)
+            return render_error("Invalid image format", status: :unprocessable_content) unless %w[img iso].include?(image_format)
 
             result = ::System::ImageCreationService.create_instance_image(
               instance: @instance,
@@ -136,7 +136,7 @@ module Api
           # update independently of the state machine.
           def sync_cloud_state
             result = ::System::CloudSyncService.sync_instance_state(instance: @instance)
-            return render_error(result.error, status: :unprocessable_entity) unless result.success?
+            return render_error(result.error, status: :unprocessable_content) unless result.success?
 
             data = result.data
             finalize_state_from_cloud(@instance, data[:status])
@@ -160,7 +160,7 @@ module Api
           # POST /api/v1/internal/system/node_instances/:id/sync_netboot
           def sync_netboot
             unless @instance.variety == "physical"
-              return render_error("Netboot sync only available for physical instances", status: :unprocessable_entity)
+              return render_error("Netboot sync only available for physical instances", status: :unprocessable_content)
             end
 
             result = ::System::NetbootService.sync(instance: @instance)
@@ -171,7 +171,7 @@ module Api
           # Cleanup of terminated instance rows. Validation prevents accidental
           # deletion of a still-attached cloud resource.
           def destroy
-            return render_error("Can only delete terminated instances", status: :unprocessable_entity) unless @instance.terminated?
+            return render_error("Can only delete terminated instances", status: :unprocessable_content) unless @instance.terminated?
 
             @instance.destroy!
             render_success(data: { success: true, message: "Instance deleted" })
@@ -194,7 +194,7 @@ module Api
           end
 
           def render_control_result(result, action)
-            return render_error(result[:error], status: :unprocessable_entity) unless result[:success]
+            return render_error(result[:error], status: :unprocessable_content) unless result[:success]
 
             render_success(
               data: {
@@ -211,7 +211,7 @@ module Api
             if result[:success]
               render_success(data: data)
             else
-              render_error(result[:error], status: :unprocessable_entity)
+              render_error(result[:error], status: :unprocessable_content)
             end
           end
 

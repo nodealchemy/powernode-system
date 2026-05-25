@@ -173,7 +173,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources", type: :request do
     it "422 when kind is not in the inventory registry" do
       get "/api/v1/system/federation_api/resources/rogue_kind/#{resource_uuid}",
           headers: mtls_headers.merge("Authorization" => "Bearer #{grant.bearer_token}")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("federation_inventory.yaml")
     end
   end

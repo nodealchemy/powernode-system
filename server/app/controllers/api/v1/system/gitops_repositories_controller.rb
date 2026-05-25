@@ -54,7 +54,7 @@ module Api
           if @repository.destroy
             render_success(message: "Repository deleted")
           else
-            render_error("Failed to delete repository", status: :unprocessable_entity)
+            render_error("Failed to delete repository", status: :unprocessable_content)
           end
         end
 

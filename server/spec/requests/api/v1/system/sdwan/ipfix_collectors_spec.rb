@@ -142,7 +142,7 @@ RSpec.describe "Api::V1::System::Sdwan::IpfixCollectors", type: :request do
       patch "/api/v1/system/sdwan/ipfix_collectors/#{collector.id}",
             params: { ipfix_collector: { state: "haunted" } }.to_json,
             headers: manager_headers.merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "rejects without sdwan.ipfix.manage permission" do

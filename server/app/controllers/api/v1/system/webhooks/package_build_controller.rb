@@ -54,7 +54,7 @@ module Api
           rescue JSON::ParserError => e
             render_error("Invalid JSON: #{e.message}", status: :bad_request)
           rescue ::System::PackageBuildWebhookService::WebhookError => e
-            render_error("Webhook validation error: #{e.message}", status: :unprocessable_entity)
+            render_error("Webhook validation error: #{e.message}", status: :unprocessable_content)
           end
 
           private

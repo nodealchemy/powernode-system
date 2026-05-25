@@ -72,7 +72,7 @@ module Api
           def runtime_config
             runtime = params[:runtime].to_s
             unless RUNTIME_MODULES.key?(runtime)
-              return render_error("unsupported runtime: #{runtime}", :unprocessable_entity)
+              return render_error("unsupported runtime: #{runtime}", :unprocessable_content)
             end
             unless module_assigned?(runtime)
               return render_error(
@@ -128,13 +128,13 @@ module Api
             phase = params[:phase].to_s
 
             unless RUNTIME_MODULES.key?(runtime)
-              return render_error("unsupported runtime: #{runtime}", :unprocessable_entity)
+              return render_error("unsupported runtime: #{runtime}", :unprocessable_content)
             end
             unless ALLOWED_PHASES[runtime].include?(phase)
               return render_error(
                 "phase '#{phase}' not valid for runtime '#{runtime}' " \
                 "(allowed: #{ALLOWED_PHASES[runtime].join(', ')})",
-                :unprocessable_entity
+                :unprocessable_content
               )
             end
             unless module_assigned?(runtime)
@@ -212,7 +212,7 @@ module Api
           def handle_wants_cert(runtime)
             csr_pem = params[:csr_pem].to_s
             if csr_pem.blank?
-              return render_error("csr_pem required for phase=wants_cert", :unprocessable_entity)
+              return render_error("csr_pem required for phase=wants_cert", :unprocessable_content)
             end
 
             case runtime
@@ -241,7 +241,7 @@ module Api
               }
             )
           rescue ::System::DockerDaemonProvisionerService::MissingSdwanPeerError => e
-            render_error(e.message, :unprocessable_entity)
+            render_error(e.message, :unprocessable_content)
           rescue ::System::InternalCaService::CsrError => e
             render_error("invalid CSR: #{e.message}", :bad_request)
           rescue ::System::InternalCaService::CaError => e
@@ -277,7 +277,7 @@ module Api
               return render_error(
                 "no managed DockerHost found for this NodeInstance — " \
                 "wants_cert must precede ready",
-                :unprocessable_entity
+                :unprocessable_content
               )
             end
 
@@ -315,7 +315,7 @@ module Api
             if kubeconfig.blank? || server_token.blank?
               return render_error(
                 "kubeconfig and server_token required for phase=bootstrap",
-                :unprocessable_entity
+                :unprocessable_content
               )
             end
 
@@ -333,7 +333,7 @@ module Api
               api_endpoint: cluster.api_endpoint
             })
           rescue ::System::KubernetesClusterProvisionerService::MissingSdwanPeerError => e
-            render_error(e.message, :unprocessable_entity)
+            render_error(e.message, :unprocessable_content)
           end
 
           # phase=join_request (k3s_agent only) — agent asks for the
@@ -352,7 +352,7 @@ module Api
             )
             render_success(data: payload)
           rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
-            render_error(e.message, :unprocessable_entity)
+            render_error(e.message, :unprocessable_content)
           end
 
           # Generic K3s ready handler — applies to both server (HA
@@ -381,7 +381,7 @@ module Api
               role: node.role
             })
           rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
-            render_error(e.message, :unprocessable_entity)
+            render_error(e.message, :unprocessable_content)
           end
 
           def handle_k3s_stopped

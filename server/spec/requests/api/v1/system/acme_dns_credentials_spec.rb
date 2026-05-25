@@ -109,7 +109,7 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       body = valid_body.merge(provider: "godaddy")
       post base_path, params: body.to_json,
                        headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("Unsupported provider")
     end
 
@@ -117,7 +117,7 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       body = valid_body.merge(credentials: {})
       post base_path, params: body.to_json,
                        headers: auth_headers_for(manager).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("Missing required credential field")
     end
 

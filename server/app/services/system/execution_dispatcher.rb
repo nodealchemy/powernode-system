@@ -65,7 +65,7 @@ module System
         end
         @operation.fail!(message) if @operation.may_fail?
         result = System::Runtime::Result.err(error: message)
-        return Outcome.new(claimed: true, result: result, status_code: :unprocessable_entity)
+        return Outcome.new(claimed: true, result: result, status_code: :unprocessable_content)
       end
 
       # Atomic claim via AASM transition. `may_start?` is the platform-standard

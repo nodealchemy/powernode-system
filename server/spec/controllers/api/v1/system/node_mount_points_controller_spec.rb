@@ -79,7 +79,7 @@ RSpec.describe "Api::V1::System::NodeMountPoints", type: :request do
       post "/api/v1/system/node_mount_points",
            params: { mount_point: { mount_path: "/mnt/spec", mount_type: "tmpfs", source: "tmpfs" } }.to_json,
            headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 
@@ -106,7 +106,7 @@ RSpec.describe "Api::V1::System::NodeMountPoints", type: :request do
       instance = create(:system_node_instance, node: node, account: account)
       create(:system_instance_mount_point, node_instance: instance, mount_point: mount_point)
       delete "/api/v1/system/node_mount_points/#{mount_point.id}", headers: auth_headers_for(delete_user)
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 end

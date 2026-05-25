@@ -66,7 +66,7 @@ module Api
 
             render_success(data: task_data(@operation.reload))
           rescue AASM::InvalidTransition => e
-            render_error("Invalid operation state transition: #{e.message}", status: :unprocessable_entity)
+            render_error("Invalid operation state transition: #{e.message}", status: :unprocessable_content)
           end
 
           # POST /api/v1/internal/system/operations/:id/events

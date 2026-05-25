@@ -76,7 +76,7 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
       post "/api/v1/system/worker_api/disk_image_publications/process",
            params: { publication_id: publication.id }.to_json, headers: headers
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(JSON.parse(response.body)["error"]).to include("cosign verify failed")
     end
   end

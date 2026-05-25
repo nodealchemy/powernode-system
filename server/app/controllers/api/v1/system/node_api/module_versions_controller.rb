@@ -33,7 +33,7 @@ module Api
 
             unless result.success?
               Rails.logger.warn("[ModuleVersionsController] commit failed: #{result.error}")
-              return render_error(result.error, :unprocessable_entity)
+              return render_error(result.error, :unprocessable_content)
             end
 
             render_success(

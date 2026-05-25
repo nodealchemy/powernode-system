@@ -60,7 +60,7 @@ module Api
             }
           )
         rescue ActiveRecord::RecordInvalid => e
-          render_error("validation failed: #{e.message}", :unprocessable_entity)
+          render_error("validation failed: #{e.message}", :unprocessable_content)
         end
 
         # PATCH /api/v1/system/instance_pools/:id
@@ -69,7 +69,7 @@ module Api
           @pool.update!(update_params)
           render_success(pool: @pool.to_summary)
         rescue ActiveRecord::RecordInvalid => e
-          render_error("validation failed: #{e.message}", :unprocessable_entity)
+          render_error("validation failed: #{e.message}", :unprocessable_content)
         end
 
         # DELETE /api/v1/system/instance_pools/:id
@@ -99,7 +99,7 @@ module Api
           result = ::System::InstancePoolService.replenish!(pool: @pool)
           render_success(pool: @pool.reload.to_summary, replenish_result: result)
         rescue ::System::InstancePoolService::PoolError => e
-          render_error(e.message, :unprocessable_entity)
+          render_error(e.message, :unprocessable_content)
         end
 
         # POST /api/v1/system/instance_pools/:id/drain

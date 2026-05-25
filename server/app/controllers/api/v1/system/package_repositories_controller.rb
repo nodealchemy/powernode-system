@@ -133,7 +133,7 @@ module Api
             render_success(message: "Package repository deleted")
           else
             render_error("Failed to delete: #{@repository.errors.full_messages.join('; ')}",
-                         status: :unprocessable_entity)
+                         status: :unprocessable_content)
           end
         end
 

@@ -238,7 +238,7 @@ RSpec.describe "Api::V1::System::FederationApi::Migrations", type: :request do
       post path, params: colliding_payload.to_json,
                  headers: auth_headers.merge("Content-Type" => "application/json")
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       body = JSON.parse(response.body)
       expect(body["status"]).to eq("failed")
       expect(body["error"]).to match(/policy=fail/)
@@ -265,7 +265,7 @@ RSpec.describe "Api::V1::System::FederationApi::Migrations", type: :request do
 
       post path, params: base_payload.to_json,
                  headers: auth_headers.merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(JSON.parse(response.body)["error"]).to match(/not declared in federation_inventory/)
     end
   end

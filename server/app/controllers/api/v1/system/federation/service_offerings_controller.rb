@@ -53,7 +53,7 @@ module Api
             if offering.save
               render_success({ offering: serialize(offering, full: true) }, status: :created)
             else
-              render_error(offering.errors.full_messages.join("; "), status: :unprocessable_entity)
+              render_error(offering.errors.full_messages.join("; "), status: :unprocessable_content)
             end
           end
 
@@ -62,7 +62,7 @@ module Api
             if @offering.update(update_params)
               render_success(offering: serialize(@offering, full: true))
             else
-              render_error(@offering.errors.full_messages.join("; "), status: :unprocessable_entity)
+              render_error(@offering.errors.full_messages.join("; "), status: :unprocessable_content)
             end
           end
 
@@ -76,7 +76,7 @@ module Api
               render_success(offering: serialize(@offering.reload, full: true))
             else
               render_error("Could not retire offering (status=#{@offering.status})",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           end
 
@@ -86,7 +86,7 @@ module Api
               render_success(offering: serialize(@offering.reload, full: true))
             else
               render_error("Cannot activate from status=#{@offering.status}",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           end
 
@@ -96,7 +96,7 @@ module Api
               render_success(offering: serialize(@offering.reload, full: true))
             else
               render_error("Cannot deprecate from status=#{@offering.status}",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           end
 
@@ -106,7 +106,7 @@ module Api
               render_success(offering: serialize(@offering.reload, full: true))
             else
               render_error("Cannot retire from status=#{@offering.status}",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           end
 

@@ -115,7 +115,7 @@ RSpec.describe "Api::V1::System::NodeApi::StorageMigrations", type: :request do
            params: { status: "completed" },
            headers: headers, as: :json
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(m.reload.status).to eq("approved")
     end
 

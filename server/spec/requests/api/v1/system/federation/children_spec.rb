@@ -101,7 +101,7 @@ RSpec.describe "Api::V1::System::Federation::Children", type: :request do
       post "#{base_path}/spawn",
            params: base_payload.merge(spawn_target: { region: "us-west" }).to_json, # no template_id
            headers: auth_headers_for(spawner_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "403 without spawn permission" do

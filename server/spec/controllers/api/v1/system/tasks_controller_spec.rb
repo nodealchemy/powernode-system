@@ -106,7 +106,7 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
       running = create(:system_task, account: account, operable: node, command: "sync", status: "complete")
       post "/api/v1/system/tasks/#{running.id}/cancel",
            headers: auth_headers_for(control_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 end

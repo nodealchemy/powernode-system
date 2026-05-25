@@ -59,13 +59,13 @@ module Api
           dns_cred = ::System::AcmeDnsCredential.where(account: current_account)
                                                   .find_by(id: params[:dns_credential_id])
           return render_error("dns_credential_id required + must reference your account",
-                              status: :unprocessable_entity) unless dns_cred
+                              status: :unprocessable_content) unless dns_cred
 
           issuer = params[:issuer].presence || "letsencrypt-prod"
           unless ::Acme::LegoClient::LE_DIRECTORY.key?(issuer)
             return render_error("Unsupported issuer #{issuer.inspect}; supported: " \
                                 "#{::Acme::LegoClient::LE_DIRECTORY.keys.inspect}",
-                                status: :unprocessable_entity)
+                                status: :unprocessable_content)
           end
 
           sans = sanitize_sans(params[:sans])
@@ -86,7 +86,7 @@ module Api
           if cert.save
             render_success({ certificate: serialize(cert, full: true) }, status: :created)
           else
-            render_error(cert.errors.full_messages.join("; "), status: :unprocessable_entity)
+            render_error(cert.errors.full_messages.join("; "), status: :unprocessable_content)
           end
         end
 
@@ -104,7 +104,7 @@ module Api
             render_success(certificate: serialize(@certificate.reload, full: true))
           else
             render_error(@certificate.errors.full_messages.join("; "),
-                         status: :unprocessable_entity)
+                         status: :unprocessable_content)
           end
         end
 
@@ -147,7 +147,7 @@ module Api
           else
             render_error(
               "Issuance failed: #{result.error}",
-              status: :unprocessable_entity,
+              status: :unprocessable_content,
               details: { certificate: serialize(@certificate, full: true) }
             )
           end
@@ -177,7 +177,7 @@ module Api
           else
             render_error(
               "Renewal failed: #{result.error}",
-              status: :unprocessable_entity,
+              status: :unprocessable_content,
               details: { certificate: serialize(@certificate, full: true) }
             )
           end
@@ -202,7 +202,7 @@ module Api
           if result.ok?
             render_success(ok: true, certificate: serialize(@certificate, full: true))
           else
-            render_error("Revoke failed: #{result.error}", status: :unprocessable_entity)
+            render_error("Revoke failed: #{result.error}", status: :unprocessable_content)
           end
         rescue StandardError => e
           ::Rails.logger.error("[AcmeCertificatesController#revoke] #{e.class}: #{e.message}")

@@ -47,7 +47,7 @@ module Api
           if @script.destroy
             render_success(message: "Script deleted successfully")
           else
-            render_error("Failed to delete script", status: :unprocessable_entity)
+            render_error("Failed to delete script", status: :unprocessable_content)
           end
         end
 

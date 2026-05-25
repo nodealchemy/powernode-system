@@ -82,7 +82,7 @@ RSpec.describe "Api::V1::System::AcmeCertificates", type: :request do
     it "rejects unsupported issuers" do
       post base, params: valid_body.merge(issuer: "selfsigned").to_json,
                   headers: auth_headers_for(issuer).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("Unsupported issuer")
     end
 
@@ -91,7 +91,7 @@ RSpec.describe "Api::V1::System::AcmeCertificates", type: :request do
                                                        name: "x", provider: "cloudflare")
       post base, params: valid_body.merge(dns_credential_id: other_dns.id).to_json,
                   headers: auth_headers_for(issuer).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "forbids without issue permission" do
@@ -141,7 +141,7 @@ RSpec.describe "Api::V1::System::AcmeCertificates", type: :request do
       it "surfaces the error + leaves cert in failed state" do
         post "#{base}/#{cert.id}/request_issue",
              headers: auth_headers_for(issuer).merge("Content-Type" => "application/json")
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.body).to include("Cloudflare 403")
         cert.reload
         expect(cert.status).to eq("failed")
@@ -202,7 +202,7 @@ RSpec.describe "Api::V1::System::AcmeCertificates", type: :request do
       it "surfaces 422 with the error" do
         post "#{base}/#{cert.id}/renew",
              headers: auth_headers_for(renewer).merge("Content-Type" => "application/json")
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.body).to include("ACME 429")
       end
     end

@@ -78,7 +78,7 @@ RSpec.describe "Api::V1::System::Federation::ServiceOfferings", type: :request d
 
     it "422 on validation failure (invalid slug)" do
       post base_path, params: create_payload.merge(slug: "Bad Slug").to_json, headers: headers
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "rejects without manage permission" do
@@ -140,7 +140,7 @@ RSpec.describe "Api::V1::System::Federation::ServiceOfferings", type: :request d
     it "422 when trying to activate a retired offering" do
       offering.update!(status: "retired", retired_at: 1.day.ago)
       post "#{base_path}/#{offering.id}/activate", headers: headers
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
   end
 

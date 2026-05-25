@@ -52,7 +52,7 @@ module Api
           if result[:success]
             render_success(**result[:data])
           else
-            render_error(result[:error], status: :unprocessable_entity)
+            render_error(result[:error], status: :unprocessable_content)
           end
         end
 
@@ -109,7 +109,7 @@ module Api
           if result[:success]
             render_success(**result[:data])
           else
-            render_error(result[:error], status: :unprocessable_entity)
+            render_error(result[:error], status: :unprocessable_content)
           end
         end
 
@@ -145,7 +145,7 @@ module Api
           else
             render_error(
               "Materialization failed: #{result.errors.join('; ')}",
-              status: :unprocessable_entity,
+              status: :unprocessable_content,
               data:   { warnings: result.warnings, errors: result.errors }
             )
           end

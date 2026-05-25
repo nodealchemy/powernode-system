@@ -47,7 +47,7 @@ module Api
           if @node.destroy
             render_success(message: "Node deleted successfully")
           else
-            render_error("Failed to delete node", status: :unprocessable_entity)
+            render_error("Failed to delete node", status: :unprocessable_content)
           end
         end
 
@@ -81,7 +81,7 @@ module Api
               purged_module_ids: result.purged.map(&:node_module_id)
             )
           else
-            render_error(result.errors.first || "apply_template failed", status: :unprocessable_entity)
+            render_error(result.errors.first || "apply_template failed", status: :unprocessable_content)
           end
         end
 

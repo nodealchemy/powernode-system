@@ -37,7 +37,7 @@ module Api
 
             unless ::System::Federation::InventoryRegistry.kind_known?(kind)
               return render json: { error: "Resource kind #{kind.inspect} is not declared in federation_inventory.yaml" },
-                            status: :unprocessable_entity
+                            status: :unprocessable_content
             end
 
             # v1: existence check + envelope. Future rounds resolve the

@@ -229,7 +229,7 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       body = base_body.merge(module_name: "ghost-module")
       post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       error_msg = JSON.parse(response.body).fetch("error")
       expect(error_msg).to match(/could not resolve or create NodeModule/i)
     end

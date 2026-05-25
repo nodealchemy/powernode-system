@@ -34,7 +34,7 @@ module Api
           # and is logged server-side.
           def events
             entries = Array(params[:events])
-            return render_error("events: required (non-empty array)", :unprocessable_entity) if entries.empty?
+            return render_error("events: required (non-empty array)", :unprocessable_content) if entries.empty?
 
             written = entries.count do |entry|
               attrs = entry.respond_to?(:to_unsafe_h) ? entry.to_unsafe_h : entry

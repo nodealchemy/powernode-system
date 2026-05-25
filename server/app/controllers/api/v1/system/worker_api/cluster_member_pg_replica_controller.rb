@@ -25,7 +25,7 @@ module Api
         class ClusterMemberPgReplicaController < BaseController
           def create
             peer_id = params[:peer_id]
-            return render_error("peer_id required", status: :unprocessable_entity) if peer_id.blank?
+            return render_error("peer_id required", status: :unprocessable_content) if peer_id.blank?
 
             peer = ::System::FederationPeer.find_by(id: peer_id)
             return render_error("peer not found", status: :not_found) unless peer
@@ -33,7 +33,7 @@ module Api
             unless peer.spawn_mode == "cluster_member"
               return render_error(
                 "peer #{peer_id} is not a cluster_member spawn (mode=#{peer.spawn_mode.inspect})",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 
@@ -50,7 +50,7 @@ module Api
             else
               render_error(
                 "PG replica setup failed: #{result.error}",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
           rescue StandardError => e

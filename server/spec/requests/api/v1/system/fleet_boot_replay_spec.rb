@@ -80,7 +80,7 @@ RSpec.describe "GET /api/v1/system/fleet/boot_replay", type: :request do
   describe "validation + scoping" do
     it "requires instance_id param" do
       get "/api/v1/system/fleet/boot_replay", headers: headers
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "404s for an instance in another account" do

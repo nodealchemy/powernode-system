@@ -83,7 +83,7 @@ module Api
           unless node_module
             return render_error(
               "could not resolve or create NodeModule for gitea_repo=#{gitea_repo} (or name=#{module_name.inspect})",
-              :unprocessable_entity
+              :unprocessable_content
             )
           end
 

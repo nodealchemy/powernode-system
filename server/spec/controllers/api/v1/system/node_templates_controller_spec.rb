@@ -87,7 +87,7 @@ RSpec.describe "Api::V1::System::NodeTemplates", type: :request do
       post "/api/v1/system/node_templates",
            params: { node_template: { node_platform_id: platform.id } }.to_json,
            headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 
@@ -154,7 +154,7 @@ RSpec.describe "Api::V1::System::NodeTemplates", type: :request do
       post "/api/v1/system/node_templates/compose_preview",
            params: { module_ids: [] }.to_json,
            headers: auth_headers_for(update_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 end

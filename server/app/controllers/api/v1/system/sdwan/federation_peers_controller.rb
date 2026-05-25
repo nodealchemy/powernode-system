@@ -61,7 +61,7 @@ module Api
             if new_status.present? && !@peer.can_transition_to?(new_status)
               return render_error(
                 "Transition #{@peer.status} → #{new_status} is not permitted in v1 (federation activation is deferred)",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 

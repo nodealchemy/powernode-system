@@ -54,7 +54,7 @@ module Api
           if @subnet.destroy
             render_success(message: "Subnet deleted successfully")
           else
-            render_error("Failed to delete subnet", status: :unprocessable_entity)
+            render_error("Failed to delete subnet", status: :unprocessable_content)
           end
         end
 

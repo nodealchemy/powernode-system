@@ -28,7 +28,7 @@ module Api
 
             unless result.success?
               Rails.logger.warn("[EnrollmentRefreshController] refresh failed: #{result.error}")
-              return render_error(result.error, :unprocessable_entity)
+              return render_error(result.error, :unprocessable_content)
             end
 
             # Re-issue the legacy-path JWT alongside the rotated cert. The

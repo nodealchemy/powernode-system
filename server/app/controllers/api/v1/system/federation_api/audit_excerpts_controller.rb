@@ -55,7 +55,7 @@ module Api
             limit    = [ (params[:limit].to_i.positive? ? params[:limit].to_i : DEFAULT_LIMIT), MAX_LIMIT ].min
 
             if until_ts <= since_ts
-              return render_error("until must be after since", :unprocessable_entity)
+              return render_error("until must be after since", :unprocessable_content)
             end
 
             events = events_for_peer(peer, since: since_ts, until_at: until_ts, limit: limit)

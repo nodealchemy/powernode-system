@@ -93,7 +93,7 @@ module Api
               render_success({ capability: serialize(cap) }, status: :created)
             else
               render_error("Capability creation failed: #{cap.errors.full_messages.join(', ')}",
-                          status: :unprocessable_entity)
+                          status: :unprocessable_content)
             end
           rescue StandardError => e
             render_error("Capability creation failed: #{e.message}",

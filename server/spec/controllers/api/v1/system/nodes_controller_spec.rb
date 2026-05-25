@@ -103,7 +103,7 @@ RSpec.describe "Api::V1::System::Nodes", type: :request do
     it "returns 422 on missing required fields" do
       post "/api/v1/system/nodes", params: { node: { node_template_id: template.id } }.to_json,
                                     headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 

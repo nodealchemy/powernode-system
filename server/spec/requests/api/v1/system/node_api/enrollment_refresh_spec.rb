@@ -112,7 +112,7 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
       post "/api/v1/system/node_api/enroll/refresh",
            params: { csr_pem: "-----BEGIN CERTIFICATE REQUEST-----\nGARBAGE\n-----END CERTIFICATE REQUEST-----\n" },
            headers: headers, as: :json
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
   end
 end

@@ -98,7 +98,7 @@ module Api
 
             unless peer.save
               return render_error("Peer creation failed: #{peer.errors.full_messages.join(', ')}",
-                                  status: :unprocessable_entity)
+                                  status: :unprocessable_content)
             end
 
             ttl_seconds = params[:token_ttl_seconds]&.to_i

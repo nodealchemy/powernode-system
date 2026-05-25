@@ -144,7 +144,7 @@ module Api
               return render_error(
                 "DNS record management for provider #{@credential.provider.inspect} is not yet supported. " \
                 "Supported providers: #{::Acme::DnsClient.supported_providers.inspect}.",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 
@@ -157,7 +157,7 @@ module Api
             unless plaintext.is_a?(Hash) && plaintext.any?
               return render_error(
                 "Vault has no credential stored for #{@credential.id}.",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 
@@ -166,7 +166,7 @@ module Api
             unless @api_token.present?
               render_error(
                 "Stored credential has no api_token key. Re-create the credential to fix.",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
           rescue StandardError => e
@@ -220,7 +220,7 @@ module Api
             when 408, 504 then :gateway_timeout
             when 429 then :too_many_requests
             when 502, 503 then :bad_gateway
-            else :unprocessable_entity
+            else :unprocessable_content
             end
           end
 

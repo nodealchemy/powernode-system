@@ -49,7 +49,7 @@ module Api
             when "active"   then @collector.enable!
             when "disabled" then @collector.disable!
             else
-              return render_error("state must be 'active' or 'disabled'", status: :unprocessable_entity)
+              return render_error("state must be 'active' or 'disabled'", status: :unprocessable_content)
             end
 
             render_success(ipfix_collector: serialize_collector_full(@collector.reload))

@@ -55,7 +55,7 @@ module Api
           rescue ActiveRecord::RecordInvalid => e
             render_validation_error(e.record)
           rescue ::Sdwan::PeerEnroller::CrossAccountError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           def update

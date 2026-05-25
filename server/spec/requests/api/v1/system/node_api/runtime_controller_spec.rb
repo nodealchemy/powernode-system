@@ -133,7 +133,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
     it "rejects unsupported runtimes" do
       get "/api/v1/system/node_api/runtime/openshift/config"
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(JSON.parse(response.body)["error"]).to include("unsupported runtime")
     end
 
@@ -248,7 +248,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "rejects a missing CSR" do
         post url, params: { runtime: "docker", phase: "wants_cert" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity).or have_http_status(:bad_request)
+        expect(response).to have_http_status(:unprocessable_content).or have_http_status(:bad_request)
         expect(JSON.parse(response.body)["error"]).to include("csr_pem required")
       end
 
@@ -276,7 +276,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "fails with 422 when no DockerHost has been provisioned yet" do
         post url, params: { runtime: "docker", phase: "ready" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("wants_cert must precede ready")
       end
     end
@@ -333,7 +333,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "rejects bootstrap missing kubeconfig" do
         post url, params: bootstrap_params.merge(kubeconfig: ""), as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("kubeconfig and server_token required")
       end
     end
@@ -359,7 +359,7 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "fails with 422 when no cluster exists yet" do
         post url, params: { runtime: "k3s_agent", phase: "join_request" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("no Kubernetes cluster")
       end
 
@@ -393,13 +393,13 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "rejects wants_cert against k3s_server (Docker-only phase)" do
         post url, params: { runtime: "k3s_server", phase: "wants_cert", csr_pem: "x" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("phase 'wants_cert' not valid for runtime 'k3s_server'")
       end
 
       it "rejects bootstrap against docker (k3s-only phase)" do
         post url, params: { runtime: "docker", phase: "bootstrap" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("phase 'bootstrap' not valid for runtime 'docker'")
       end
     end
@@ -414,13 +414,13 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
 
       it "returns 422 when the runtime is unknown (no spoofing future runtimes)" do
         post url, params: { runtime: "k8s_helm", phase: "wants_cert", csr_pem: csr_pem }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("unsupported runtime")
       end
 
       it "returns 422 when phase is invalid for the runtime" do
         post url, params: { runtime: "docker", phase: "magic" }, as: :json
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(JSON.parse(response.body)["error"]).to include("phase 'magic' not valid for runtime 'docker'")
       end
     end

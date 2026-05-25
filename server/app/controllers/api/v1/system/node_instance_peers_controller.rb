@@ -109,13 +109,13 @@ module Api
 
           task = params.permit(:skill, :input, capabilities: {}).to_h
           unless task["skill"].present?
-            return render_error("skill is required", status: :unprocessable_entity)
+            return render_error("skill is required", status: :unprocessable_content)
           end
 
           if @peer.declared_skills.is_a?(Array) &&
              @peer.declared_skills.none? { |s| s["name"] == task["skill"] }
             return render_error("Peer does not declare skill: #{task['skill']}",
-                                status: :unprocessable_entity)
+                                status: :unprocessable_content)
           end
 
           # Synchronous dispatch placeholder — production path would dispatch

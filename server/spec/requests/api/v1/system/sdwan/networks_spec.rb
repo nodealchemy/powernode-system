@@ -48,7 +48,7 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
       post "/api/v1/system/sdwan/networks",
            params: { network: { name: "duplicate" } }.to_json,
            headers: headers.merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       # render_validation_error places full_messages under details.errors;
       # message line surfaces at top-level "message".
       details = json_response.dig("details", "errors") || []

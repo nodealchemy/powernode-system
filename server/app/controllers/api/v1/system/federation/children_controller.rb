@@ -99,7 +99,7 @@ module Api
                 status: :created
               )
             else
-              render_error("Spawn failed: #{result.error}", status: :unprocessable_entity)
+              render_error("Spawn failed: #{result.error}", status: :unprocessable_content)
             end
           end
 

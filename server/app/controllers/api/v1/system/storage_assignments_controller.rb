@@ -79,7 +79,7 @@ module Api
             new_cred = ::System::Storage::CredentialIssuer.new(assignment: @assignment).rotate!(credential)
             render_success(credential_id: new_cred.id, message: "Credential rotated")
           else
-            render_error("No active credential to rotate", status: :unprocessable_entity)
+            render_error("No active credential to rotate", status: :unprocessable_content)
           end
         end
 

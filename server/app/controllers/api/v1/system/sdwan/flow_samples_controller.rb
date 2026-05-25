@@ -61,7 +61,7 @@ module Api
 
             records = params.dig(:flow_samples) || params[:records] || []
             unless records.is_a?(Array)
-              return render_error("flow_samples must be an array", status: :unprocessable_entity)
+              return render_error("flow_samples must be an array", status: :unprocessable_content)
             end
 
             result = ::Sdwan::IpfixIngestService.call(
@@ -77,7 +77,7 @@ module Api
               batch_id: result.batch_id
             )
           rescue ArgumentError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           private

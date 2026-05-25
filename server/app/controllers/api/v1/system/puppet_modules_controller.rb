@@ -55,7 +55,7 @@ module Api
           require_permission("system.puppet.delete")
 
           if @puppet_module.module_puppet_assignments.exists?
-            render_error("Cannot delete puppet module that is assigned to node modules", status: :unprocessable_entity)
+            render_error("Cannot delete puppet module that is assigned to node modules", status: :unprocessable_content)
           else
             @puppet_module.destroy
             render_success(message: "Puppet module deleted successfully")

@@ -58,13 +58,13 @@ module Api
               target_volume_id: params[:target_volume_id],
               role:             params[:role]
             )
-            return render_error(result[:error] || "Migration plan failed", status: :unprocessable_entity) unless result[:success]
+            return render_error(result[:error] || "Migration plan failed", status: :unprocessable_content) unless result[:success]
             render_success(storage_migration: result[:storage_migration])
           end
 
           def approve
             return forbidden unless current_user&.has_permission?("system.platform.scale")
-            return render_error("Cannot approve in status=#{@migration.status}", status: :unprocessable_entity) unless @migration.can_transition_to?("approved")
+            return render_error("Cannot approve in status=#{@migration.status}", status: :unprocessable_content) unless @migration.can_transition_to?("approved")
 
             @migration.transition_to!(
               "approved",
@@ -73,18 +73,18 @@ module Api
             )
             render_success(storage_migration: serialize_full(@migration.reload))
           rescue ArgumentError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           def cancel
             return forbidden unless current_user&.has_permission?("system.platform.scale")
-            return render_error("Already terminal (#{@migration.status})", status: :unprocessable_entity) if @migration.terminal?
-            return render_error("Cannot cancel — sync already in progress", status: :unprocessable_entity) unless %w[planned approved preparing].include?(@migration.status)
+            return render_error("Already terminal (#{@migration.status})", status: :unprocessable_content) if @migration.terminal?
+            return render_error("Cannot cancel — sync already in progress", status: :unprocessable_content) unless %w[planned approved preparing].include?(@migration.status)
 
             @migration.cancel!(reason: params[:reason], user: current_user)
             render_success(storage_migration: serialize_full(@migration.reload))
           rescue ArgumentError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           private

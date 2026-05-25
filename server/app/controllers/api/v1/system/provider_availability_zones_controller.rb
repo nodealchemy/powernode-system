@@ -55,7 +55,7 @@ module Api
           if @zone.destroy
             render_success(message: "Availability zone deleted successfully")
           else
-            render_error("Failed to delete availability zone", status: :unprocessable_entity)
+            render_error("Failed to delete availability zone", status: :unprocessable_content)
           end
         end
 

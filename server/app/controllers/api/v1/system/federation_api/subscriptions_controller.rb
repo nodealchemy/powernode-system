@@ -86,7 +86,7 @@ module Api
             case error_message.to_s
             when /Unknown offering/  then :not_found
             when /not accepting/, /at capacity/ then :conflict
-            else :unprocessable_entity
+            else :unprocessable_content
             end
           end
         end

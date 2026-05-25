@@ -86,7 +86,7 @@ module Api
                 status: status_code
               )
             else
-              render_error("Deploy failed: #{result.error}", status: :unprocessable_entity)
+              render_error("Deploy failed: #{result.error}", status: :unprocessable_content)
             end
           end
 
@@ -135,7 +135,7 @@ module Api
               render_success(deployment: serialize(@deployment.reload))
             else
               render_error("Update failed: #{@deployment.errors.full_messages.join(', ')}",
-                          status: :unprocessable_entity)
+                          status: :unprocessable_content)
             end
           end
 

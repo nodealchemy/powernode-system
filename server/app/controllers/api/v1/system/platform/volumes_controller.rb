@@ -53,7 +53,7 @@ module Api
             if result[:success]
               render_success(result[:data], status: success_status)
             else
-              render_error(result[:error].to_s, status: :unprocessable_entity)
+              render_error(result[:error].to_s, status: :unprocessable_content)
             end
           end
         end

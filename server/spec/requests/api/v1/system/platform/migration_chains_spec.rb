@@ -122,7 +122,7 @@ RSpec.describe "Api::V1::System::Platform::MigrationChains", type: :request do
         root_resource_kind: "skill",
         root_resource_id: SecureRandom.uuid
       }
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "forbids without apply permission" do
@@ -179,7 +179,7 @@ RSpec.describe "Api::V1::System::Platform::MigrationChains", type: :request do
     it "422s a completed chain" do
       chain.update!(status: "completed", completed_at: ::Time.current)
       post "#{base}/#{chain.id}/cancel", headers: auth_headers_for(canceller)
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "forbids without cancel permission" do

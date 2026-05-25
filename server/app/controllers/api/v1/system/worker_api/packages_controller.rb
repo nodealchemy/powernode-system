@@ -56,7 +56,7 @@ module Api
             unless embed_account
               clear_lease!(packages)
               return render_error("no account available for embedding (repository has no account and no fallback)",
-                                  status: :unprocessable_entity)
+                                  status: :unprocessable_content)
             end
 
             errors = embed_and_persist!(packages, account: embed_account)

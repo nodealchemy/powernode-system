@@ -50,7 +50,7 @@ module Api
               }
             }, status: :created)
           rescue ::Sdwan::UserDeviceIssuer::GrantError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           rescue ActiveRecord::RecordInvalid => e
             render_validation_error(e.record)
           end

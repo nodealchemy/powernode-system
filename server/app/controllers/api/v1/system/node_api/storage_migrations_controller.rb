@@ -51,7 +51,7 @@ module Api
               unless @migration.can_transition_to?(new_status)
                 return render_error(
                   "Illegal transition #{@migration.status} → #{new_status}",
-                  status: :unprocessable_entity
+                  status: :unprocessable_content
                 )
               end
               @migration.transition_to!(
@@ -70,7 +70,7 @@ module Api
 
             render_success(storage_migration: serialize_for_agent(@migration.reload))
           rescue ArgumentError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           # POST /api/v1/system/node_api/storage_migrations/:id/fail

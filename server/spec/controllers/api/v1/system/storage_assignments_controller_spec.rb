@@ -118,7 +118,7 @@ RSpec.describe "Api::V1::System::StorageAssignments", type: :request do
     it "returns 422 when no active credential exists (defensive guard)" do
       post "/api/v1/system/storage_assignments/#{assignment.id}/rotate_credential",
            headers: auth_headers_for(rotate_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 end

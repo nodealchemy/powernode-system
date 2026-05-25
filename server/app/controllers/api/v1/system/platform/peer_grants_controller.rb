@@ -102,7 +102,7 @@ module Api
               render_success({ grant: serialize(grant) }, status: :created)
             else
               render_error("Grant creation failed: #{grant.errors.full_messages.join(', ')}",
-                          status: :unprocessable_entity)
+                          status: :unprocessable_content)
             end
           rescue StandardError => e
             render_error("Grant creation failed: #{e.message}", status: :internal_server_error)

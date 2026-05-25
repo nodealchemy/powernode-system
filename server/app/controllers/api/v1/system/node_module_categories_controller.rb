@@ -55,7 +55,7 @@ module Api
           require_permission("system.modules.delete")
 
           if @category.node_modules.exists?
-            render_error("Cannot delete category with existing modules", status: :unprocessable_entity)
+            render_error("Cannot delete category with existing modules", status: :unprocessable_content)
           else
             @category.destroy
             render_success(message: "Category deleted successfully")

@@ -48,7 +48,7 @@ RSpec.describe "Api::V1::System::NodeModuleVersions", type: :request do
       post "/api/v1/system/node_module_versions/#{version.id}/promote",
            params: { target_state: "bogus" }.to_json,
            headers: auth_headers_for(update_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
 
     it "returns 404 for another account's version" do

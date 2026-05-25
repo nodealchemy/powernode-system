@@ -33,7 +33,7 @@ module Api
           require_permission("system.fleet.autonomy")
 
           unless params[:instance_id].present?
-            return render_error("instance_id required", status: :unprocessable_entity)
+            return render_error("instance_id required", status: :unprocessable_content)
           end
 
           # Per-tenant guard: only return events for instances owned by the
@@ -104,7 +104,7 @@ module Api
           if result[:success]
             render_success(result[:data])
           else
-            render_error(result[:error], status: :unprocessable_entity)
+            render_error(result[:error], status: :unprocessable_content)
           end
         end
 
@@ -127,7 +127,7 @@ module Api
           if result[:ok]
             render_success(learning_id: result[:learning_id])
           else
-            render_error(result[:error], status: :unprocessable_entity)
+            render_error(result[:error], status: :unprocessable_content)
           end
         end
 

@@ -50,7 +50,7 @@ RSpec.describe "Api::V1::System::WorkerApi::ClusterMemberPgReplica", type: :requ
     context "validation" do
       it "returns 422 when peer_id is missing" do
         post path, params: {}.to_json, headers: headers
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.body).to include("peer_id required")
       end
 
@@ -63,7 +63,7 @@ RSpec.describe "Api::V1::System::WorkerApi::ClusterMemberPgReplica", type: :requ
       it "returns 422 when peer is not cluster_member" do
         peer.update!(spawn_mode: "managed_child")
         post path, params: { peer_id: peer.id }.to_json, headers: headers
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.body).to include("not a cluster_member")
       end
     end
@@ -92,7 +92,7 @@ RSpec.describe "Api::V1::System::WorkerApi::ClusterMemberPgReplica", type: :requ
 
       it "surfaces the service error as 422" do
         post path, params: { peer_id: peer.id }.to_json, headers: headers
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(response.body).to include("PG replica setup failed")
         expect(response.body).to include("permission denied")
       end

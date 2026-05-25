@@ -66,13 +66,13 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
 
     it "returns 422 when acceptance_token is blank" do
       post path, params: valid_payload.merge(acceptance_token: ""), as: :json
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(JSON.parse(response.body)["error"] || JSON.parse(response.body)["errors"]).to be_present
     end
 
     it "returns 422 when contract_version is unsupported" do
       post path, params: valid_payload.merge(contract_version: 99), as: :json
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("contract_version")
     end
 

@@ -73,7 +73,7 @@ RSpec.describe "Api::V1::System::NodeModuleCategories", type: :request do
       post "/api/v1/system/node_module_categories",
            params: { category: { description: "no name" } }.to_json,
            headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 
@@ -101,7 +101,7 @@ RSpec.describe "Api::V1::System::NodeModuleCategories", type: :request do
       expect {
         delete "/api/v1/system/node_module_categories/#{category.id}", headers: auth_headers_for(delete_user)
       }.not_to change { ::System::NodeModuleCategory.count }
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 end

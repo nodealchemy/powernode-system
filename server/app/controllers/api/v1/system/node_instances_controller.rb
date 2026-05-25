@@ -58,7 +58,7 @@ module Api
           if @instance.destroy
             render_success(message: "Instance deleted successfully")
           else
-            render_error("Failed to delete instance", status: :unprocessable_entity)
+            render_error("Failed to delete instance", status: :unprocessable_content)
           end
         end
 
@@ -109,12 +109,12 @@ module Api
           unless @instance.cloud?
             return render_error(
               "Public IP association is only valid for cloud instances (variety: #{@instance.variety})",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 
           if (msg = local_hypervisor_rejection_message)
-            return render_error(msg, status: :unprocessable_entity)
+            return render_error(msg, status: :unprocessable_content)
           end
 
           gate_ip_action(:associate_public_ip)
@@ -128,18 +128,18 @@ module Api
           unless @instance.cloud?
             return render_error(
               "Public IP disassociation is only valid for cloud instances",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 
           if (msg = local_hypervisor_rejection_message)
-            return render_error(msg, status: :unprocessable_entity)
+            return render_error(msg, status: :unprocessable_content)
           end
 
           if @instance.public_ip_address.blank?
             return render_error(
               "No public IP currently associated with this instance",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 
@@ -258,7 +258,7 @@ module Api
             unless @instance.public_send("may_#{event}?")
               return render_error(
                 "Cannot #{event} instance in #{@instance.status} state",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
             @instance.public_send("#{event}!")
@@ -322,7 +322,7 @@ module Api
           unless @instance.public_send("may_#{event}?")
             return render_error(
               "Cannot #{event} instance in #{@instance.status} state",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
           @instance.public_send("#{event}!")

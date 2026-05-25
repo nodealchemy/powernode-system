@@ -49,7 +49,7 @@ module Api
           if @region.destroy
             render_success(message: "Region deleted successfully")
           else
-            render_error("Failed to delete region", status: :unprocessable_entity)
+            render_error("Failed to delete region", status: :unprocessable_content)
           end
         end
 

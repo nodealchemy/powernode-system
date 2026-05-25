@@ -53,7 +53,7 @@ module Api
               )
             else
               render_error("Local subscription activation failed: #{result.error}",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           rescue ::Federation::PeerClient::HttpError => e
             render_error("Remote peer rejected subscription: #{e.message}",

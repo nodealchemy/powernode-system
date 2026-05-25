@@ -60,7 +60,7 @@ module Api
             else
               return render_error(
                 "status must be one of complete|failed (got #{params[:status].inspect})",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 

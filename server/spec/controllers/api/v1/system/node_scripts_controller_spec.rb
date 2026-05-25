@@ -73,7 +73,7 @@ RSpec.describe "Api::V1::System::NodeScripts", type: :request do
       post "/api/v1/system/node_scripts",
            params: { node_script: { variety: "custom", data: "x" } }.to_json,
            headers: auth_headers_for(create_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 

@@ -75,7 +75,7 @@ RSpec.describe "Api::V1::System::NodeArchitectures", type: :request do
       post "/api/v1/system/node_architectures",
            params: { node_architecture: { family: "other" } }.to_json,
            headers: auth_headers_for(manage_user).merge("Content-Type" => "application/json")
-      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
 

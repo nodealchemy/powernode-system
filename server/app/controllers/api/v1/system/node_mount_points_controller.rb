@@ -55,7 +55,7 @@ module Api
           require_permission("system.storage.mount_points.delete")
 
           if @mount_point.instance_mount_points.exists?
-            render_error("Cannot delete mount point that is in use", status: :unprocessable_entity)
+            render_error("Cannot delete mount point that is in use", status: :unprocessable_content)
           else
             @mount_point.destroy
             render_success(message: "Mount point deleted successfully")

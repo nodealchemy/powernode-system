@@ -90,7 +90,7 @@ module Api
             if result.ok?
               render_success(migration_chain: serialize_full(result.chain), status: :created)
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           end
 
@@ -104,7 +104,7 @@ module Api
                 advanced_to:     result.advanced_to
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           end
 
@@ -118,7 +118,7 @@ module Api
                 advanced_to:     result.advanced_to
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           end
 
@@ -128,7 +128,7 @@ module Api
             unless @chain.can_transition_to?("cancelled")
               return render_error(
                 "Chain is #{@chain.status} and cannot be cancelled",
-                status: :unprocessable_entity
+                status: :unprocessable_content
               )
             end
 

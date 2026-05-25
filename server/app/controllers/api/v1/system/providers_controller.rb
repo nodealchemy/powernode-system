@@ -47,7 +47,7 @@ module Api
           if @provider.destroy
             render_success(message: "Provider deleted successfully")
           else
-            render_error("Failed to delete provider", status: :unprocessable_entity)
+            render_error("Failed to delete provider", status: :unprocessable_content)
           end
         end
 

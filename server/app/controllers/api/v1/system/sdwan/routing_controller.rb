@@ -50,7 +50,7 @@ module Api
             render_success({ account_bgp: serialize_account_bgp(new_row), allocated: true },
                            status: :created)
           rescue ::Sdwan::Bgp::AsNumberAllocator::CapacityExhausted => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           def sessions

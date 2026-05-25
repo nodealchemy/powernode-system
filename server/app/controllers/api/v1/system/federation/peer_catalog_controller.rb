@@ -37,7 +37,7 @@ module Api
             render_error("Could not reach peer: #{e.message}",
                          status: :service_unavailable)
           rescue ::Federation::PeerClient::ClientError => e
-            render_error(e.message, status: :unprocessable_entity)
+            render_error(e.message, status: :unprocessable_content)
           end
 
           private

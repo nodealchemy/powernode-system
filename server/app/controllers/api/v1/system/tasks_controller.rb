@@ -99,7 +99,7 @@ module Api
           unless @task.public_send("may_#{event}?")
             return render_error(
               "Cannot #{event} task in #{@task.status} state",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
           @task.public_send("#{event}!", *args)

@@ -20,7 +20,7 @@ module Api
             operation_id = params[:operation_id]
 
             unless %w[img iso].include?(image_format)
-              return render_error("Invalid image format", status: :unprocessable_entity)
+              return render_error("Invalid image format", status: :unprocessable_content)
             end
 
             result = ::System::ImageCreationService.create_architecture_image(
@@ -39,7 +39,7 @@ module Api
                 }
               )
             else
-              render_error(result[:error], status: :unprocessable_entity)
+              render_error(result[:error], status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::NodeArchitectures] Create image failed: #{e.message}")

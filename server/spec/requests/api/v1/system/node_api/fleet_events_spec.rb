@@ -105,7 +105,7 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
            params: { events: [] },
            headers: headers,
            as: :json
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "defaults severity to low when omitted" do

@@ -61,7 +61,7 @@ module Api
           if @instance_type.destroy
             render_success(message: "Instance type deleted successfully")
           else
-            render_error("Failed to delete instance type", status: :unprocessable_entity)
+            render_error("Failed to delete instance type", status: :unprocessable_content)
           end
         end
 

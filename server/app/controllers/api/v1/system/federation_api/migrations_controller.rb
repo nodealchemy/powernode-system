@@ -71,7 +71,7 @@ module Api
             unless ::System::Federation::InventoryRegistry.kind_known?(params[:root_resource_kind])
               return render json: {
                 error: "Resource kind #{params[:root_resource_kind].inspect} not declared in federation_inventory.yaml"
-              }, status: :unprocessable_entity
+              }, status: :unprocessable_content
             end
 
             migration = build_migration!(grant)
@@ -93,7 +93,7 @@ module Api
                 error: result.error,
                 migration_id: migration.id,
                 status: migration.reload.status
-              }, status: :unprocessable_entity
+              }, status: :unprocessable_content
             end
           rescue ActiveRecord::RecordInvalid => e
             render json: { error: "Invalid payload: #{e.message}" }, status: :bad_request

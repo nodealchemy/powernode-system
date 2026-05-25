@@ -61,13 +61,13 @@ module Api
 
             # Validate node can provision
             unless @node.enabled
-              return render_error("Node is disabled", status: :unprocessable_entity)
+              return render_error("Node is disabled", status: :unprocessable_content)
             end
 
             # Check instance limits
             account = @node.account
             if account.instance_limit_reached?
-              return render_error("Account instance limit reached", status: :unprocessable_entity)
+              return render_error("Account instance limit reached", status: :unprocessable_content)
             end
 
             # Get provisioning parameters
@@ -92,7 +92,7 @@ module Api
                 }
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::NodesController] Provision failed: #{e.message}")

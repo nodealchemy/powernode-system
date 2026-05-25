@@ -59,7 +59,7 @@ module Api
               render_success(subscription: serialize(@subscription.reload, full: true))
             else
               render_error("Cannot cancel from status=#{@subscription.status}",
-                           status: :unprocessable_entity)
+                           status: :unprocessable_content)
             end
           end
 

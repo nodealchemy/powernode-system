@@ -38,11 +38,11 @@ module Api
           # POST /api/v1/internal/system/provider_volumes/:id/attach
           def attach
             unless @volume.available?
-              return render_error("Volume must be in available status to attach", status: :unprocessable_entity)
+              return render_error("Volume must be in available status to attach", status: :unprocessable_content)
             end
 
             unless @volume.node_instance_id.present?
-              return render_error("No node instance assigned to volume", status: :unprocessable_entity)
+              return render_error("No node instance assigned to volume", status: :unprocessable_content)
             end
 
             result = ::System::VolumeManagementService.attach(volume: @volume)
@@ -56,7 +56,7 @@ module Api
                 }
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::ProviderVolumes] Attach failed: #{e.message}")
@@ -66,7 +66,7 @@ module Api
           # POST /api/v1/internal/system/provider_volumes/:id/detach
           def detach
             unless @volume.attached?
-              return render_error("Volume must be in attached status to detach", status: :unprocessable_entity)
+              return render_error("Volume must be in attached status to detach", status: :unprocessable_content)
             end
 
             result = ::System::VolumeManagementService.detach(volume: @volume)
@@ -80,7 +80,7 @@ module Api
                 }
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::ProviderVolumes] Detach failed: #{e.message}")
@@ -101,7 +101,7 @@ module Api
                 }
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::ProviderVolumes] Provision failed: #{e.message}")
@@ -139,7 +139,7 @@ module Api
                 }
               )
             else
-              render_error(result.error, status: :unprocessable_entity)
+              render_error(result.error, status: :unprocessable_content)
             end
           rescue StandardError => e
             Rails.logger.error("[System::ProviderVolumes] Recover failed: #{e.message}")

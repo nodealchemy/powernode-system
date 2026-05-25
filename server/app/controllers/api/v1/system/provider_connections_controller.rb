@@ -47,7 +47,7 @@ module Api
           if @connection.destroy
             render_success(message: "Connection deleted successfully")
           else
-            render_error("Failed to delete connection", status: :unprocessable_entity)
+            render_error("Failed to delete connection", status: :unprocessable_content)
           end
         end
 
@@ -67,7 +67,7 @@ module Api
           if result[:success]
             render_success(payload)
           else
-            render_error(result[:error] || "Connection test failed", status: :unprocessable_entity, data: payload)
+            render_error(result[:error] || "Connection test failed", status: :unprocessable_content, data: payload)
           end
         end
 
@@ -84,7 +84,7 @@ module Api
               catalog: result.data
             )
           else
-            render_error(result.error, status: :unprocessable_entity, data: { catalog: result.data })
+            render_error(result.error, status: :unprocessable_content, data: { catalog: result.data })
           end
         end
 

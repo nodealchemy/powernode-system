@@ -55,7 +55,7 @@ module Api
           require_permission("system.networks.delete")
 
           unless @network.can_delete?
-            return render_error("Cannot delete network (may be default or has subnets)", status: :unprocessable_entity)
+            return render_error("Cannot delete network (may be default or has subnets)", status: :unprocessable_content)
           end
 
           @network.update!(status: "deleting")

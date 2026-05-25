@@ -31,7 +31,7 @@ module Api
           def show
             label = params.require(:partition_label)
             unless valid_partition_label?(label)
-              return render_error("invalid partition label", :unprocessable_entity)
+              return render_error("invalid partition label", :unprocessable_content)
             end
 
             result = derive_passphrase(label)

@@ -47,7 +47,7 @@ module Api
           if @platform.destroy
             render_success(message: "Platform deleted successfully")
           else
-            render_error("Failed to delete platform", status: :unprocessable_entity)
+            render_error("Failed to delete platform", status: :unprocessable_content)
           end
         end
 

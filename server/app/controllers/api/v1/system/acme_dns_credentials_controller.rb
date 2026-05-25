@@ -59,7 +59,7 @@ module Api
             return render_error(
               "Unsupported provider: #{provider_slug.inspect}. " \
               "Supported: #{::Acme::DnsProviderRegistry::PROVIDERS.keys.inspect}",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 
@@ -68,7 +68,7 @@ module Api
           unless missing.empty?
             return render_error(
               "Missing required credential field(s) for #{provider_slug}: #{missing.join(', ')}",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 
@@ -101,7 +101,7 @@ module Api
           else
             render_error(
               cred ? cred.errors.full_messages.join("; ") : "Create failed",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
         end
@@ -112,7 +112,7 @@ module Api
             render_success(credential: serialize(@credential.reload, full: true))
           else
             render_error(@credential.errors.full_messages.join("; "),
-                         status: :unprocessable_entity)
+                         status: :unprocessable_content)
           end
         end
 
@@ -138,7 +138,7 @@ module Api
           render_success(deleted: true, id: @credential.id)
         rescue StandardError => e
           ::Rails.logger.error("[AcmeDnsCredentialsController#destroy] #{e.class}: #{e.message}")
-          render_error("Delete failed: #{e.message}", status: :unprocessable_entity)
+          render_error("Delete failed: #{e.message}", status: :unprocessable_content)
         end
 
         def test_connectivity
@@ -152,7 +152,7 @@ module Api
 
           unless plaintext.is_a?(Hash) && plaintext.any?
             return render_error("Vault has no credential for this row.",
-                                status: :unprocessable_entity)
+                                status: :unprocessable_content)
           end
 
           result = ::Acme::DnsCredentialValidator.new.verify(
@@ -184,7 +184,7 @@ module Api
           unless missing.empty?
             return render_error(
               "Missing required credential field(s): #{missing.join(', ')}",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 

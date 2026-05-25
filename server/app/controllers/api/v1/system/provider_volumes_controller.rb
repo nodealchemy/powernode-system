@@ -55,7 +55,7 @@ module Api
           require_permission("system.volumes.delete")
 
           unless @volume.can_delete?
-            return render_error("Cannot delete volume in current state", status: :unprocessable_entity)
+            return render_error("Cannot delete volume in current state", status: :unprocessable_content)
           end
 
           @volume.update!(status: "deleting")
@@ -77,7 +77,7 @@ module Api
           if @volume.attach_to!(instance, params[:device_name])
             render_success(volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json)
           else
-            render_error("Cannot attach volume in current state", status: :unprocessable_entity)
+            render_error("Cannot attach volume in current state", status: :unprocessable_content)
           end
         end
 
@@ -88,7 +88,7 @@ module Api
           if @volume.detach!
             render_success(volume: ::System::ProviderVolumeSerializer.new(@volume.reload).as_json)
           else
-            render_error("Cannot detach volume in current state", status: :unprocessable_entity)
+            render_error("Cannot detach volume in current state", status: :unprocessable_content)
           end
         end
 
@@ -97,7 +97,7 @@ module Api
           require_permission("system.volumes.snapshot")
 
           unless @volume.can_snapshot?
-            return render_error("Cannot create snapshot in current state", status: :unprocessable_entity)
+            return render_error("Cannot create snapshot in current state", status: :unprocessable_content)
           end
 
           snap = current_account.system_provider_volume_snapshots.create!(
