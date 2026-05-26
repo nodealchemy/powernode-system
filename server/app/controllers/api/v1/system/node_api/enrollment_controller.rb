@@ -8,8 +8,9 @@ module Api
         # presenting a valid bootstrap token; outputs an mTLS cert + CA chain
         # the on-node powernode-agent uses for all subsequent API calls.
         #
-        # Skips the regular instance-token authentication (a freshly-booted
+        # Skips BaseController's mTLS authentication (a freshly-booted
         # node has no cert yet — that's exactly what /enroll provides).
+        # The bootstrap token is the only auth for this single-use endpoint.
         class EnrollmentController < ApplicationController
           skip_before_action :authenticate_request, raise: false
           before_action :require_bootstrap_token
@@ -33,26 +34,13 @@ module Api
               return render_error(result.error, 422)
             end
 
-            # Issue an instance JWT for the legacy auth path (until mTLS
-            # termination lands at the reverse proxy). Agent persists this
-            # alongside the cert and sends it as the Authorization Bearer
-            # on every node_api request; base_controller's authenticate_via_jwt!
-            # accepts it.
-            instance_token = ::Security::JwtService.encode(
-              {
-                type: "instance",
-                sub:  result.node_instance.id
-              }
-            )
-
             render_success(
               cert_pem:       result.cert_pem,
               ca_chain_pem:   result.ca_chain_pem,
               instance_id:    result.node_instance.id,
               mtls_subject:   result.node_instance.mtls_subject,
               not_after:      result.node_certificate.not_after.iso8601,
-              certificate_id: result.node_certificate.id,
-              instance_token: instance_token
+              certificate_id: result.node_certificate.id
             )
           end
 

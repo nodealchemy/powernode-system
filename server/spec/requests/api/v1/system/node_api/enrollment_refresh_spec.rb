@@ -2,12 +2,10 @@
 
 require "rails_helper"
 
-# Exercises the cert rotation endpoint added in Phase 1 of the agent
-# stub implementation plan. Confirms:
-#   - mTLS / JWT auth gate (no bootstrap token accepted)
+# Exercises the cert rotation endpoint. Confirms:
+#   - mTLS auth gate (no bootstrap token accepted; no JWT fallback)
 #   - Re-issues with same CN as existing instance
 #   - Persists new NodeCertificate (old row preserved)
-#   - Returns fresh instance_token for legacy auth path
 RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :request do
   let(:account)       { create(:account) }
   let(:node_template) { create(:system_node_template, account: account) }
@@ -18,14 +16,22 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
            status: "running",
            mtls_subject: "instance-cn-1234")
   end
-  let(:auth_token) do
-    ::Security::JwtService.encode({
-      sub:     instance.id,
-      type:    "instance",
-      version: ::Security::JwtService::CURRENT_TOKEN_VERSION
-    })
+
+  # mTLS auth gate requires an active NodeCertificate on file.
+  let!(:active_cert) do
+    System::NodeCertificate.create!(
+      node_instance: instance,
+      serial:         SecureRandom.hex(16),
+      subject:        "CN=#{instance.id}",
+      not_before:     1.hour.ago,
+      not_after:      90.days.from_now,
+      issuer_subject: "CN=Powernode Internal CA"
+    )
   end
-  let(:headers) { { "X-Instance-Token" => auth_token } }
+
+  let(:headers) do
+    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance.id}")) }
+  end
 
   # Generate a real Ed25519 CSR for the test — InternalCaService validates
   # the CSR format strictly, so a stub string would be rejected.
@@ -66,8 +72,10 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
       expect(json.dig("data", "ca_chain_pem")).to be_present
       expect(json.dig("data", "mtls_subject")).to eq("instance-cn-1234")
       expect(json.dig("data", "instance_id")).to eq(instance.id)
-      expect(json.dig("data", "instance_token")).to be_present
       expect(json.dig("data", "not_after")).to be_present
+      # JWT was removed in the agent-auth mTLS conversion — response no
+      # longer carries an instance_token field.
+      expect(json["data"]).not_to have_key("instance_token")
     end
 
     it "preserves rotation history across multiple refreshes" do

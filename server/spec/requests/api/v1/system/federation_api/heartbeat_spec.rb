@@ -28,7 +28,7 @@ RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
 
   let(:mtls_headers) do
     # Simulate the reverse proxy forwarding the verified subject CN.
-    { "SSL_CLIENT_S_DN_CN" => cert.id }
+    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) }
   end
 
   describe "POST /heartbeat (happy path)" do
@@ -89,7 +89,7 @@ RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
         issuer_subject: "Powernode Internal CA"
       )
       post path, params: {},
-           headers: { "SSL_CLIENT_S_DN_CN" => instance_cert.id },
+           headers: { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance_cert.id}")) },
            as: :json
       expect(response).to have_http_status(:unauthorized)
     end
@@ -106,7 +106,7 @@ RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
         issuer_subject: "Powernode Internal CA"
       )
       post path, params: {},
-           headers: { "SSL_CLIENT_S_DN_CN" => orphan_cert.id },
+           headers: { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{orphan_cert.id}")) },
            as: :json
       expect(response).to have_http_status(:unauthorized)
     end

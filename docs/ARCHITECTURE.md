@@ -427,8 +427,12 @@ Authenticated via `X-Worker-Token` (SHA-256 digest comparison).
 
 ### 3. Node mTLS (`/api/v1/system/node_api/*`)
 
-Authenticated via mTLS subject CN matching the NodeInstance.id, with
-fallback to instance JWT during transition.
+Authenticated via mTLS subject CN matching the NodeInstance.id. The
+reverse proxy (Traefik v3, configured by `Acme::TraefikConfigWriter`)
+terminates the handshake with `tls.options=mtls-required@file` against
+the internal CA bundle and forwards the verified CN to Rails via
+`X-Forwarded-Tls-Client-Cert-Info`. No JWT fallback — the JWT instance
+token was removed alongside the agent-auth mTLS conversion.
 
 - `POST /node_api/enroll` — bootstrap token → cert exchange (the only
   bootstrap-token-authenticated endpoint; everything else is mTLS)

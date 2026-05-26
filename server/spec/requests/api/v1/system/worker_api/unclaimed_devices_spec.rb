@@ -6,13 +6,9 @@ require "rails_helper"
 # See plan wondrous-yawning-anchor.md §10.
 RSpec.describe "POST /api/v1/system/worker_api/unclaimed_devices/expire", type: :request do
   let(:account) { create(:account) }
-  let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
-  let!(:worker) do
-    w = create(:worker, account: account, status: "active")
-    w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-    w
-  end
-  let(:headers) { { "X-Worker-Token" => plain_token, "Content-Type" => "application/json" } }
+  let!(:worker)  { create(:worker, account: account, status: "active") }
+  let(:token)    { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
+  let(:headers)  { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
 
   before do
     allow_any_instance_of(Worker).to receive(:has_permission?)

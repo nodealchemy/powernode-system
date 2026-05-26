@@ -21,14 +21,20 @@ RSpec.describe "Api::V1::System::NodeApi::StorageMigrations", type: :request do
   let(:node)          { create(:system_node, account: account, node_template: node_template) }
   let(:instance)      { create(:system_node_instance, node: node, status: "running") }
 
-  let(:auth_token) do
-    ::Security::JwtService.encode({
-      sub:     instance.id,
-      type:    "instance",
-      version: ::Security::JwtService::CURRENT_TOKEN_VERSION
-    })
+  let!(:active_cert) do
+    System::NodeCertificate.create!(
+      node_instance: instance,
+      serial:         SecureRandom.hex(16),
+      subject:        "CN=#{instance.id}",
+      not_before:     1.hour.ago,
+      not_after:      90.days.from_now,
+      issuer_subject: "CN=Powernode Internal CA"
+    )
   end
-  let(:headers) { { "X-Instance-Token" => auth_token } }
+
+  let(:headers) do
+    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance.id}")) }
+  end
 
   let(:nfs_volume_type) do
     create(:system_provider_volume_type, account: account, volume_type: "nfs", name: "nfs-pool")

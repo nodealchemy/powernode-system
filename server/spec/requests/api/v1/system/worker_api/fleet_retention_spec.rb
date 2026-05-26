@@ -5,15 +5,9 @@ require "rails_helper"
 # Golden Eclipse Block W (BB1) — FleetEvent retention sweep request spec.
 RSpec.describe "POST /api/v1/system/worker_api/fleet/retention_sweep", type: :request do
   let(:account) { create(:account) }
-  let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
-  let!(:worker) do
-    # let! (eager) so the worker is created before the request fires —
-    # request specs don't auto-resolve `let` references on Worker.authenticate.
-    w = create(:worker, account: account, status: "active")
-    w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-    w
-  end
-  let(:headers) { { "X-Worker-Token" => plain_token } }
+  let!(:worker) { create(:worker, account: account, status: "active") }
+  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
+  let(:headers) { { "X-Worker-Token" => token } }
 
   before do
     # Stub permission check rather than wrestling with role_permission seeding.

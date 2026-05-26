@@ -19,7 +19,7 @@ RSpec.describe "Api::V1::System::FederationApi::Subscriptions", type: :request d
     create(:system_federation_peer, :platform, :active,
            account: operator_account, node_certificate: cert)
   end
-  let(:mtls_headers) { { "SSL_CLIENT_S_DN_CN" => cert.id, "Content-Type" => "application/json" } }
+  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")), "Content-Type" => "application/json" } }
 
   let(:path) { "/api/v1/system/federation_api/subscriptions" }
 

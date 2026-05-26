@@ -34,6 +34,19 @@ module Acme
 
     SYSTEM_PREFIX = "/etc/traefik"
 
+    # File name for the shared dynamic config holding the mTLS TLS option
+    # set + the passTLSClientCert middleware. Per-account YAMLs reference
+    # these by `<name>@file`, so this file must exist before any per-account
+    # YAML referencing mtls-required is loaded. powernode-reverse-proxy.sh
+    # calls `write_mtls_shared_dynamic!` before per-account `write!` runs.
+    SHARED_MTLS_FILENAME = "_mtls.yaml"
+
+    # Bundle filename for the internal CA chain used by Traefik to verify
+    # client certificates on mTLS-required routes. Written by
+    # `write_internal_ca!`; referenced from the shared mTLS YAML via
+    # `tls.options.mtls-required.clientAuth.caFiles`.
+    INTERNAL_CA_FILENAME = "internal-ca.pem"
+
     class << self
       def write!(account:, dynamic_dir: nil, cert_dir: nil)
         new(account: account,
@@ -89,6 +102,65 @@ module Acme
         File.join(File.dirname(default_dynamic_dir), "traefik.yaml")
       end
 
+      # Writes the platform's internal CA chain to disk so Traefik can use
+      # it as the trust anchor when verifying agent client certs on
+      # mTLS-required routes. Idempotent — overwrites on every call so the
+      # bundle stays fresh if the root rotates. Path is referenced from
+      # the shared mTLS dynamic YAML via `clientAuth.caFiles`.
+      def write_internal_ca!(ca_dir: nil)
+        dir = ca_dir || default_ca_dir
+        FileUtils.mkdir_p(dir)
+        out = File.join(dir, INTERNAL_CA_FILENAME)
+        File.write(out, ::System::InternalCaService.ca_chain_pem)
+        out
+      end
+
+      # Writes the shared dynamic config holding the mTLS-required TLS
+      # option set + the passTLSClientCert middleware. These primitives
+      # are referenced by per-account routers via `mtls-required@file`
+      # and `pass-tls-client-cert@file`. Idempotent.
+      #
+      # Header forwarding: passTLSClientCert.info.subject.commonName=true
+      # makes Traefik emit
+      #   X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"
+      # which BaseController#mtls_subject_cn parses. The agent's cert CN
+      # is its NodeInstance.id, so the platform can resolve the caller
+      # without consulting a JWT.
+      def write_mtls_shared_dynamic!(dynamic_dir: nil, ca_dir: nil)
+        dir = dynamic_dir || default_dynamic_dir
+        ca_path = File.join(ca_dir || default_ca_dir, INTERNAL_CA_FILENAME)
+        FileUtils.mkdir_p(dir)
+        out = File.join(dir, SHARED_MTLS_FILENAME)
+        File.write(out, YAML.dump(shared_mtls_config(ca_path)))
+        out
+      end
+
+      def shared_mtls_config(ca_path)
+        {
+          "tls" => {
+            "options" => {
+              "mtls-required" => {
+                "clientAuth" => {
+                  "caFiles"        => [ ca_path ],
+                  "clientAuthType" => "RequireAndVerifyClientCert"
+                }
+              }
+            }
+          },
+          "http" => {
+            "middlewares" => {
+              "pass-tls-client-cert" => {
+                "passTLSClientCert" => {
+                  "info" => {
+                    "subject" => { "commonName" => true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      end
+
       # Path Acme::CertificateManager writes the cert PEM to.
       def cert_file_path(certificate, cert_dir: nil)
         File.join(cert_dir || default_cert_dir, certificate.account_id, "#{certificate.id}.crt")
@@ -117,6 +189,12 @@ module Acme
         return ENV["POWERNODE_TRAEFIK_CERT_DIR"] if ENV["POWERNODE_TRAEFIK_CERT_DIR"].present?
         return "#{SYSTEM_PREFIX}/certs" if can_use_system_prefix?
         rails_fallback_dir("certs")
+      end
+
+      def default_ca_dir
+        return ENV["POWERNODE_TRAEFIK_CA_DIR"] if ENV["POWERNODE_TRAEFIK_CA_DIR"].present?
+        return "#{SYSTEM_PREFIX}/ca" if can_use_system_prefix?
+        rails_fallback_dir("ca")
       end
 
       private
@@ -221,19 +299,55 @@ module Acme
       }
     end
 
-    # Three routers per cert, all on the `websecure` (:443) entry point:
+    # Six routers per cert, all on the `websecure` (:443) entry point:
     #
-    #   - <slug>-api      — Host(`cn`) && PathPrefix(`/api`)
-    #   - <slug>-cable    — Host(`cn`) && PathPrefix(`/cable`)   (ActionCable WS)
-    #   - <slug>-frontend — Host(`cn`)                            (catchall)
+    #   - <slug>-node-api       — Host(`cn`) && PathPrefix(`/api/v1/system/node_api`)
+    #                              — mTLS-required, agent client cert
+    #   - <slug>-federation-api — Host(`cn`) && PathPrefix(`/api/v1/system/federation_api`)
+    #                              — mTLS-required, federation peer client cert
+    #   - <slug>-internal-api   — Host(`cn`) && PathPrefix(`/api/v1/internal`)
+    #                              — mTLS-required, Sidekiq worker client cert
+    #                              (exception: /api/v1/system/worker_enroll
+    #                              is on the broader -api router so bootstrap
+    #                              can mint the worker's first cert)
+    #   - <slug>-api            — Host(`cn`) && PathPrefix(`/api`)
+    #   - <slug>-cable          — Host(`cn`) && PathPrefix(`/cable`)   (ActionCable WS)
+    #   - <slug>-frontend       — Host(`cn`)                            (catchall)
     #
-    # Traefik scores routers by rule length; longer rules win. So API and
-    # Cable take precedence over the frontend catchall automatically —
-    # no explicit priority needed.
+    # Traefik scores routers by rule length; longer rules win. So the three
+    # mTLS-required routers take precedence over the broader /api router.
+    # All three share the same `mtls-required@file` TLS option set + the
+    # `pass-tls-client-cert@file` middleware — the controllers themselves
+    # decide what kind of identity the verified cert belongs to:
+    #
+    #   NodeApi::BaseController        → looks up NodeInstance by CN
+    #   FederationApi::BaseController  → looks up NodeCertificate with subject_kind="federation_peer"
+    #   Internal::InternalBaseController (in core) → looks up Worker by CN
     def render_routers(cert)
       slug = router_slug(cert)
       hosts_matcher = build_hosts_matcher(cert.common_name)
       [
+        [ "#{slug}-node-api", {
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/node_api`)",
+          "service"     => "powernode-backend",
+          "entryPoints" => [ "websecure" ],
+          "tls"         => { "options" => "mtls-required@file" },
+          "middlewares" => [ "pass-tls-client-cert@file" ]
+        } ],
+        [ "#{slug}-federation-api", {
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/federation_api`)",
+          "service"     => "powernode-backend",
+          "entryPoints" => [ "websecure" ],
+          "tls"         => { "options" => "mtls-required@file" },
+          "middlewares" => [ "pass-tls-client-cert@file" ]
+        } ],
+        [ "#{slug}-internal-api", {
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/internal`)",
+          "service"     => "powernode-backend",
+          "entryPoints" => [ "websecure" ],
+          "tls"         => { "options" => "mtls-required@file" },
+          "middlewares" => [ "pass-tls-client-cert@file" ]
+        } ],
         [ "#{slug}-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api`)",
           "service"     => "powernode-backend",

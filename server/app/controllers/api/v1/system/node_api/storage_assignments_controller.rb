@@ -5,8 +5,8 @@ module Api
     module System
       module NodeApi
         # Agent-facing endpoint for storage assignments. Authenticated via
-        # the instance JWT (X-Instance-Token or Bearer; type: "instance");
-        # current_instance is provided by BaseController.
+        # mTLS through BaseController; current_instance is resolved from
+        # the forwarded client-cert CN.
         class StorageAssignmentsController < BaseController
           before_action :set_assignment, only: %i[update_status credential encryption_key]
 

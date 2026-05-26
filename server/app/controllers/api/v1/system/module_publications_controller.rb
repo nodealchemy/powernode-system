@@ -17,8 +17,11 @@ module Api
       # avoids round-tripping through Gitea's push webhook (which
       # listens to git pushes, not OCI artifact pushes).
       #
-      # Authenticated via Bearer POWERNODE_CI_WORKER_TOKEN — same
-      # token the worker uses; matches Gitea Actions secret name.
+      # Authenticated via Bearer <per-worker token>. The token is
+      # provisioned via `system_provision_ci_worker` (creates a Worker row
+      # with role=ci_worker; returns the plaintext token once for the
+      # operator to store as a Gitea Actions secret). Revocation = flip
+      # the Worker row's status to "revoked". No global shared secret.
       #
       # Body shape (from .gitea/workflows/build-platform-modules.yaml
       # "Notify platform" step):
@@ -360,49 +363,25 @@ module Api
           Rails.logger.warn "[ModulePublicationsController] fleet event emit failed: #{e.class}: #{e.message}"
         end
 
-        # Bearer-token check. Two acceptable token sources:
-        #   1. Worker table — token hashed in worker.token_digest. Per-CI-worker
-        #      provisioning lets operators revoke an individual worker without
-        #      a global secret rotation + adds last_seen_at auditing. This is
-        #      the modern path; same Worker model the worker_api/* controllers
-        #      already use for the rest of the worker surface.
-        #   2. ENV POWERNODE_CI_WORKER_TOKEN — legacy single shared secret
-        #      kept for backward compat during migration. Logged separately
-        #      via @ci_auth_source so we can identify pre-Worker-table CI
-        #      workers and plan their cutover before removing this branch.
-        #
-        # SecureRandom-grade tokens go through ActiveSupport secure_compare
-        # / SHA256 to avoid timing oracles on either path.
+        # Bearer-token check via the Worker table. The token is hashed in
+        # worker.token_digest at provision time (system_provision_ci_worker
+        # / Worker.create_worker!) and SHA256-compared via Worker.authenticate.
+        # Per-worker storage gives operators individual revocation, last_seen_at
+        # auditing, and role-based scoping — all of which a shared ENV secret
+        # could not provide.
         def valid_ci_bearer?
           provided = request.headers["Authorization"].to_s.sub(/\ABearer\s+/i, "")
           return false if provided.empty?
 
-          # Path 1 (preferred): Worker table lookup.
-          if (worker = ::Worker.authenticate(provided))
-            @current_ci_worker = worker
-            @ci_auth_source = "worker_table"
-            Rails.logger.info(
-              "[ModulePublicationsController] CI publish authenticated via Worker table " \
-              "(worker_id=#{worker.id} name=#{worker.name})"
-            )
-            return true
-          end
+          worker = ::Worker.authenticate(provided)
+          return false unless worker
 
-          # Path 2 (legacy): ENV-shared-secret comparison.
-          expected = ENV["POWERNODE_CI_WORKER_TOKEN"].to_s
-          return false if expected.empty?
-
-          if ActiveSupport::SecurityUtils.secure_compare(expected, provided)
-            @ci_auth_source = "env_shared_secret"
-            Rails.logger.warn(
-              "[ModulePublicationsController] CI publish authenticated via legacy " \
-              "POWERNODE_CI_WORKER_TOKEN env var. Migrate to a per-worker Worker " \
-              "row via the CI worker provisioning endpoint to enable revocation + audit."
-            )
-            return true
-          end
-
-          false
+          @current_ci_worker = worker
+          Rails.logger.info(
+            "[ModulePublicationsController] CI publish authenticated via Worker table " \
+            "(worker_id=#{worker.id} name=#{worker.name})"
+          )
+          true
         end
       end
     end

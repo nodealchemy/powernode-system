@@ -54,21 +54,19 @@ module Api
             @current_federation_cert = cert
           end
 
-          # Reads the verified mTLS client subject CN from the request.
-          # Identical to NodeApi::BaseController's helper — the reverse
-          # proxy must terminate mTLS and forward one of:
-          #   - SSL_CLIENT_S_DN_CN env
-          #   - X-Client-S-DN-CN header
-          #   - X-Forwarded-TLS-Client-Cert-Subject (Traefik default; extract CN=)
+          # Reads the verified mTLS client subject CN from the request. The
+          # reverse proxy (Traefik v3) terminates the mTLS handshake on the
+          # `<slug>-federation-api` router (tls.options=mtls-required@file)
+          # and forwards the cert subject via the passTLSClientCert middleware
+          # as `X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"`
+          # (URL-encoded). Mirrors NodeApi::BaseController's helper exactly —
+          # both routes share the same shared mTLS YAML.
           def mtls_subject_cn
-            cn = request.env["SSL_CLIENT_S_DN_CN"].presence ||
-                 request.headers["X-Client-S-DN-CN"].presence
-            return cn if cn
+            info = request.headers["X-Forwarded-Tls-Client-Cert-Info"].presence
+            return nil unless info
 
-            traefik_dn = request.headers["X-Forwarded-TLS-Client-Cert-Subject"].presence
-            return nil unless traefik_dn
-
-            match = traefik_dn.match(/(?:\A|,)\s*CN\s*=\s*([^,]+)/i)
+            decoded = CGI.unescape(info)
+            match = decoded.match(/\bCN\s*=\s*"?([^,"]+)"?/i)
             match && match[1].strip
           end
 

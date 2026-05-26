@@ -8,14 +8,9 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
   # this NodePlatform, so we reference the bootstrapped row via the
   # System extension's AccountDecorator-provided association.
   let(:platform) { account.system_node_platforms.find_by!(name: "ubuntu-24.04-rpi4") }
-  let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
-  let!(:worker) do
-    w = create(:worker, account: account, status: "active")
-    w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-    w
-  end
-
-  let(:headers) { { "X-Worker-Token" => plain_token, "Content-Type" => "application/json" } }
+  let!(:worker) { create(:worker, account: account, status: "active") }
+  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
+  let(:headers) { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
 
   before do
     # Mirror the existing worker_api spec pattern: stub has_permission?

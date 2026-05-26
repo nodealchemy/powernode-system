@@ -20,7 +20,7 @@ RSpec.describe "Api::V1::System::FederationApi::Migrations", type: :request do
     create(:system_federation_peer, :active,
            account: account, node_certificate: cert)
   end
-  let(:mtls_headers) { { "SSL_CLIENT_S_DN_CN" => cert.id } }
+  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
   let(:auth_headers) { mtls_headers.merge("Authorization" => "Bearer #{grant.bearer_token}") }
 
   let(:path) { "/api/v1/system/federation_api/migrations" }

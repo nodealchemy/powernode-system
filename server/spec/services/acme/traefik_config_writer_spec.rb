@@ -134,12 +134,125 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         "(Host(`internal.example.test`) || Host(`public.example.org`) || Host(`alias.example.net`))"
       )
 
+      # The /api router (broader path) — matches /api but NOT /api/v1/system/node_api
+      # because the node-api router has a longer-rule auto-priority win.
       api_rule = parsed["http"]["routers"].values
-                   .find { |r| r["service"] == "powernode-backend" && r["rule"].include?("/api") }["rule"]
+                   .find { |r| r["service"] == "powernode-backend" && r["rule"].end_with?("&& PathPrefix(`/api`)") }["rule"]
       # Parentheses are load-bearing — without them, && PathPrefix would
       # bind only to the last Host() call instead of the OR'd group.
       expect(api_rule).to start_with("(Host(")
       expect(api_rule).to end_with("&& PathPrefix(`/api`)")
+    end
+  end
+
+  # mTLS infrastructure — Stage 1 of the agent-auth mTLS conversion.
+  # The shared dynamic config + CA bundle + per-cert node-api router
+  # together make BaseController#authenticate_via_mtls! load-bearing.
+  describe "mTLS infrastructure" do
+    let(:tmp_ca_dir) { Dir.mktmpdir("traefik-ca") }
+    after { FileUtils.rm_rf(tmp_ca_dir) if Dir.exist?(tmp_ca_dir) }
+
+    describe ".write_internal_ca!" do
+      it "writes the InternalCaService chain to internal-ca.pem" do
+        allow(::System::InternalCaService).to receive(:ca_chain_pem)
+          .and_return("-----BEGIN CERTIFICATE-----\nMIIfake==\n-----END CERTIFICATE-----\n")
+        out = described_class.write_internal_ca!(ca_dir: tmp_ca_dir)
+        expect(out).to eq(File.join(tmp_ca_dir, "internal-ca.pem"))
+        expect(File.read(out)).to include("-----BEGIN CERTIFICATE-----")
+      end
+
+      it "creates the ca_dir if missing (production deploy may run before mkdir)" do
+        missing = File.join(tmp_ca_dir, "nested", "deep")
+        allow(::System::InternalCaService).to receive(:ca_chain_pem).and_return("X")
+        described_class.write_internal_ca!(ca_dir: missing)
+        expect(Dir.exist?(missing)).to be true
+      end
+    end
+
+    describe ".write_mtls_shared_dynamic!" do
+      it "emits a YAML with the mtls-required TLS option + pass-tls-client-cert middleware" do
+        out = described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
+        expect(File.basename(out)).to eq("_mtls.yaml")
+        parsed = YAML.load_file(out)
+        expect(parsed.dig("tls", "options", "mtls-required", "clientAuth", "clientAuthType"))
+          .to eq("RequireAndVerifyClientCert")
+        expect(parsed.dig("tls", "options", "mtls-required", "clientAuth", "caFiles"))
+          .to eq([ File.join(tmp_ca_dir, "internal-ca.pem") ])
+        expect(parsed.dig("http", "middlewares", "pass-tls-client-cert", "passTLSClientCert", "info", "subject", "commonName"))
+          .to be true
+      end
+    end
+
+    describe "per-cert node-api router" do
+      let(:cert) do
+        create(:system_acme_certificate, :valid,
+               account: account, dns_credential: dns_cred,
+               common_name: "ops.example.test")
+      end
+
+      it "emits a node-api router with mtls-required tls.options + pass-tls-client-cert middleware" do
+        cert # touch
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        node_api = parsed["http"]["routers"].values
+                     .find { |r| r["rule"].include?("/api/v1/system/node_api") }
+        expect(node_api).not_to be_nil
+        expect(node_api["service"]).to eq("powernode-backend")
+        expect(node_api.dig("tls", "options")).to eq("mtls-required@file")
+        expect(node_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
+        # Node-api rule must be STRICTLY longer than the /api rule so
+        # Traefik's longest-rule-wins ordering routes node_api paths to
+        # the mTLS-required router rather than the legacy /api one.
+        api_rule_len = parsed["http"]["routers"].values
+                         .find { |r| r["rule"].end_with?("&& PathPrefix(`/api`)") }["rule"].length
+        expect(node_api["rule"].length).to be > api_rule_len
+      end
+
+      it "emits six routers per cert (node-api + federation-api + internal-api + api + cable + frontend)" do
+        cert
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        keys = parsed["http"]["routers"].keys
+        expect(keys.size).to eq(6)
+        expect(keys).to include(satisfy { |k| k.end_with?("-node-api") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-federation-api") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-internal-api") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-api") && !k.end_with?("-node-api") && !k.end_with?("-federation-api") && !k.end_with?("-internal-api") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-cable") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-frontend") })
+      end
+
+      it "emits an internal-api router with mTLS-required + pass-tls-client-cert middleware" do
+        cert
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        internal_api = parsed["http"]["routers"].values
+                         .find { |r| r["rule"].include?("/api/v1/internal") }
+        expect(internal_api).not_to be_nil
+        expect(internal_api["service"]).to eq("powernode-backend")
+        expect(internal_api.dig("tls", "options")).to eq("mtls-required@file")
+        expect(internal_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
+      end
+
+      it "emits a federation-api router with mTLS-required + pass-tls-client-cert middleware" do
+        cert
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        fed_api = parsed["http"]["routers"].values
+                    .find { |r| r["rule"].include?("/api/v1/system/federation_api") }
+        expect(fed_api).not_to be_nil
+        expect(fed_api["service"]).to eq("powernode-backend")
+        expect(fed_api.dig("tls", "options")).to eq("mtls-required@file")
+        expect(fed_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
+      end
     end
   end
 end

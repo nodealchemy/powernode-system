@@ -2,9 +2,8 @@
 
 require "rails_helper"
 
-# Exercises the agent-side fleet event ingestion endpoint added in
-# Phase 0 of the agent stub implementation plan. Confirms:
-#   - JWT auth gates the endpoint
+# Exercises the agent-side fleet event ingestion endpoint. Confirms:
+#   - mTLS auth gates the endpoint
 #   - Events are persisted via Fleet::EventBroadcaster with source: "agent"
 #   - Events are scoped to current_instance.account + node_instance_id
 #   - Batch with mixed valid/invalid entries returns the count written
@@ -13,14 +12,21 @@ RSpec.describe "Api::V1::System::NodeApi::Fleet#events", type: :request do
   let(:node_template) { create(:system_node_template, account: account) }
   let(:node)          { create(:system_node, account: account, node_template: node_template) }
   let(:instance)      { create(:system_node_instance, node: node, status: "running") }
-  let(:auth_token) do
-    ::Security::JwtService.encode({
-      sub:     instance.id,
-      type:    "instance",
-      version: ::Security::JwtService::CURRENT_TOKEN_VERSION
-    })
+
+  let!(:active_cert) do
+    System::NodeCertificate.create!(
+      node_instance: instance,
+      serial:         SecureRandom.hex(16),
+      subject:        "CN=#{instance.id}",
+      not_before:     1.hour.ago,
+      not_after:      90.days.from_now,
+      issuer_subject: "CN=Powernode Internal CA"
+    )
   end
-  let(:headers) { { "X-Instance-Token" => auth_token } }
+
+  let(:headers) do
+    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance.id}")) }
+  end
 
   describe "POST /api/v1/system/node_api/fleet/events" do
     it "rejects unauthenticated requests" do

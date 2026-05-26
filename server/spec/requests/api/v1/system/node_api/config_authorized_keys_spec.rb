@@ -9,14 +9,21 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
   let(:node_template) { create(:system_node_template, account: account) }
   let(:node) { create(:system_node, account: account, node_template: node_template) }
   let(:instance) { create(:system_node_instance, :running, node: node) }
-  let(:auth_token) do
-    ::Security::JwtService.encode({
-      sub: instance.id,
-      type: "instance",
-      version: ::Security::JwtService::CURRENT_TOKEN_VERSION
-    })
+
+  let!(:active_cert) do
+    System::NodeCertificate.create!(
+      node_instance: instance,
+      serial:         SecureRandom.hex(16),
+      subject:        "CN=#{instance.id}",
+      not_before:     1.hour.ago,
+      not_after:      90.days.from_now,
+      issuer_subject: "CN=Powernode Internal CA"
+    )
   end
-  let(:headers) { { "X-Instance-Token" => auth_token } }
+
+  let(:headers) do
+    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance.id}")) }
+  end
 
   describe "GET /api/v1/system/node_api/config/authorized_keys" do
     it "returns the aggregated authorized_keys text and count" do
@@ -67,9 +74,9 @@ RSpec.describe "Api::V1::System::NodeApi::Config#authorized_keys", type: :reques
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it "returns 401 with an invalid token" do
+    it "returns 401 with an unknown mTLS subject" do
       get "/api/v1/system/node_api/config/authorized_keys",
-          headers: { "X-Instance-Token" => "not.a.real.jwt" }
+          headers: { "X-Client-S-DN-CN" => SecureRandom.uuid }
       expect(response).to have_http_status(:unauthorized)
     end
   end

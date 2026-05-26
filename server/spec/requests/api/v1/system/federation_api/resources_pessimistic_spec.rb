@@ -52,7 +52,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
   let(:resource_uuid) { SecureRandom.uuid }
   let(:path)          { "/api/v1/system/federation_api/resources/skill/#{resource_uuid}" }
 
-  let(:mtls_headers) { { "SSL_CLIENT_S_DN_CN" => cert.id } }
+  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
 
   let(:calling_instance_uuid) { SecureRandom.uuid }
   let(:full_headers) do

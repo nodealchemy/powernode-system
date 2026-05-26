@@ -11,8 +11,19 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
   let(:account)      { create(:account) }
   let(:platform)     { create(:system_node_platform, account: account) }
   let(:category)     { create(:system_node_module_category, account: account) }
-  let(:ci_token)     { "ci-tok-#{SecureRandom.hex(8)}" }
-  let(:bearer)       { { "Authorization" => "Bearer #{ci_token}", "Content-Type" => "application/json" } }
+  # The publish endpoint authenticates exclusively against the Worker
+  # table (Worker.authenticate hashes provided → token_digest comparison).
+  # A let! Worker fixture is the canonical setup; the ENV legacy path
+  # was removed alongside Stage 3 of the auth-surface mTLS conversion.
+  let(:ci_token) { "ci-tok-#{SecureRandom.hex(8)}" }
+  let!(:ci_worker) do
+    ::Worker.create_worker!(
+      name:    "test-ci-worker-#{SecureRandom.hex(4)}",
+      account: account,
+      token:   ci_token
+    )
+  end
+  let(:bearer) { { "Authorization" => "Bearer #{ci_token}", "Content-Type" => "application/json" } }
 
   let!(:node_module) do
     create(:system_node_module, account: account, node_platform: platform,
@@ -64,7 +75,6 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
   end
 
   before do
-    ENV["POWERNODE_CI_WORKER_TOKEN"] = ci_token
     # Layer-digest fetch hits the registry; skip the network hop in unit
     # tests. The behavior under success is covered by the agent's pull
     # path; here we only care that the controller calls it and merges
@@ -73,34 +83,29 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       .to receive(:fetch_oci_layer_digest).and_return(nil)
   end
 
-  after { ENV.delete("POWERNODE_CI_WORKER_TOKEN") }
-
   it "rejects requests without the CI bearer" do
     post "/api/v1/system/module_publications", params: base_body.to_json,
          headers: { "Content-Type" => "application/json" }
     expect(response).to have_http_status(:unauthorized)
   end
 
-  it "accepts a Worker-table-issued token (preferred path) without consulting ENV" do
-    # Drop the legacy ENV path so this spec proves the Worker-table
-    # branch authenticates on its own.
-    ENV.delete("POWERNODE_CI_WORKER_TOKEN")
+  it "rejects a bearer that isn't a known Worker token" do
+    post "/api/v1/system/module_publications",
+         params: base_body.to_json,
+         headers: { "Authorization" => "Bearer not-a-real-worker-token",
+                    "Content-Type"  => "application/json" }
+    expect(response).to have_http_status(:unauthorized)
+  end
 
-    plaintext = "ci-worker-#{SecureRandom.hex(16)}"
-    worker = ::Worker.create_worker!(
-      name: "test-ci-worker-#{SecureRandom.hex(4)}",
-      account: account,
-      token: plaintext
-    )
+  it "accepts a Worker-table-issued token and touches last_seen_at" do
+    expect(ci_worker.last_seen_at).to be_nil
 
     post "/api/v1/system/module_publications",
          params: base_body.to_json,
-         headers: { "Authorization" => "Bearer #{plaintext}", "Content-Type" => "application/json" }
+         headers: bearer
 
     expect(response).to have_http_status(:ok)
-    # Worker.authenticate touches last_seen_at as a side effect — the
-    # row is now non-nil whereas it was nil at create time.
-    expect(worker.reload.last_seen_at).to be_present
+    expect(ci_worker.reload.last_seen_at).to be_present
   end
 
   it "creates a NodeModuleVersion and applies the manifest to the parent NodeModule" do

@@ -7,7 +7,7 @@ require "rails_helper"
 RSpec.describe "POST /api/v1/system/worker_api/cloud_sync/reconcile", type: :request do
   let(:account) { create(:account) }
   let(:other_account) { create(:account) }
-  let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
+  let(:token) { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
 
   before do
     # Stub permission check rather than wrestling with role_permission seeding.
@@ -38,12 +38,8 @@ RSpec.describe "POST /api/v1/system/worker_api/cloud_sync/reconcile", type: :req
   end
 
   context "with a system-scoped worker" do
-    let!(:worker) do
-      w = create(:worker, :system_worker, status: "active")
-      w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-      w
-    end
-    let(:headers) { { "X-Worker-Token" => plain_token } }
+    let!(:worker) { create(:worker, :system_worker, status: "active") }
+    let(:headers) { { "X-Worker-Token" => token } }
 
     it "returns 200 and a per-account result list" do
       post "/api/v1/system/worker_api/cloud_sync/reconcile", headers: headers
@@ -103,12 +99,8 @@ RSpec.describe "POST /api/v1/system/worker_api/cloud_sync/reconcile", type: :req
   end
 
   context "with an account-scoped worker" do
-    let!(:worker) do
-      w = create(:worker, account: account, status: "active")
-      w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-      w
-    end
-    let(:headers) { { "X-Worker-Token" => plain_token } }
+    let!(:worker) { create(:worker, account: account, status: "active") }
+    let(:headers) { { "X-Worker-Token" => token } }
 
     it "only reconciles the worker's own account" do
       post "/api/v1/system/worker_api/cloud_sync/reconcile", headers: headers
@@ -120,12 +112,8 @@ RSpec.describe "POST /api/v1/system/worker_api/cloud_sync/reconcile", type: :req
   end
 
   context "without the system.cloud_sync.reconcile permission" do
-    let!(:worker) do
-      w = create(:worker, account: account, status: "active")
-      w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-      w
-    end
-    let(:headers) { { "X-Worker-Token" => plain_token } }
+    let!(:worker) { create(:worker, account: account, status: "active") }
+    let(:headers) { { "X-Worker-Token" => token } }
 
     before do
       allow_any_instance_of(Worker).to receive(:has_permission?)

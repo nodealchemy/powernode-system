@@ -20,10 +20,15 @@ protected_spec: []
 reboot_required: false
 
 dependencies:
+  # Same-host requires: runtime-ruby + redis. The previous co-resident
+  # hub-backend dependency is dropped (Stage 8b) — workers can now run
+  # as their own NodeInstance, communicating with a remote hub-backend
+  # over mTLS via Traefik. For co-resident layouts, hub-backend will
+  # still be present on the same node (assigned by the operator) but
+  # we no longer enforce it at the module-graph level.
   requires:
     - powernode/runtime-ruby@^1.0
     - powernode/redis@^1.0
-    - powernode/powernode-hub-backend@^1.0
 
 services:
   - name: sidekiq
@@ -38,15 +43,27 @@ services:
     working_directory: /opt/powernode/worker
     env:
       RAILS_ENV: production
-      BACKEND_API_URL: "http://localhost:3000"
+      # Worker calls /api/v1/internal/* over mTLS (Stage 8b). On a
+      # SAME-HOST worker NodeInstance (the historical layout) this
+      # resolves to the local Traefik listener which routes back to
+      # the co-resident Rails. On a MULTI-HOST worker NodeInstance the
+      # config-variety child module overrides this to the platform's
+      # public hostname over SDWAN. Either way, HTTPS-via-Traefik is
+      # required because the mTLS-required router lives there.
+      BACKEND_API_URL: "https://localhost/"
       REDIS_URL: "redis://localhost:6379/0"
+      # mTLS material comes from the on-host powernode-agent's PKI dir.
+      # Agent owns enrollment + rotation via /node_api/enroll{,/refresh};
+      # worker just reads node.crt + node.key + ca-bundle.crt at request
+      # time (Faraday re-reads on each ssl_options call).
+      WORKER_PKI_DIR: "/persist/var/lib/powernode/pki"
     capabilities: []
     # Cross-module ordering (rails + redis must be up first) lives in
     # the top-level dependencies.requires above. Service-level
     # dependencies is intra-module only.
     metadata:
       sidekiq_version: "7.x"
-      notes: "BACKEND_API_URL is the default; per-node deployments override via config-variety child module (SDWAN VIP or DNS)."
+      notes: "Multi-host worker deployments override BACKEND_API_URL via config-variety child module. Cert material is managed by the agent — worker is read-only on PKI dir."
 
 security:
   capabilities: []

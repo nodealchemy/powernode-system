@@ -10,13 +10,9 @@ RSpec.describe "POST /api/v1/system/worker_api/module_publications/process", typ
   let(:account)  { create(:account) }
   let(:platform) { create(:system_node_platform, account: account) }
   let(:category) { create(:system_node_module_category, account: account) }
-  let(:plain_token) { "wrk-tok-#{SecureRandom.hex(8)}" }
-  let!(:worker) do
-    w = create(:worker, account: account, status: "active")
-    w.update_columns(token_digest: Digest::SHA256.hexdigest(plain_token))
-    w
-  end
-  let(:headers) { { "X-Worker-Token" => plain_token, "Content-Type" => "application/json" } }
+  let!(:worker) { create(:worker, account: account, status: "active") }
+  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
+  let(:headers) { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
   let!(:node_module) do
     create(:system_node_module, account: account, node_platform: platform,
            category: category, variety: "subscription", name: "demo-mod",

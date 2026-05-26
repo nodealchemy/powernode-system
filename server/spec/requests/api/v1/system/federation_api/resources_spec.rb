@@ -19,7 +19,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources", type: :request do
            account: account, node_certificate: cert)
   end
 
-  let(:mtls_headers) { { "SSL_CLIENT_S_DN_CN" => cert.id } }
+  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
 
   before do
     # Install a fake inventory so "skill" is a known kind without
