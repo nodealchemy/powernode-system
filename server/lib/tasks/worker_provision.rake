@@ -61,8 +61,8 @@ namespace :powernode do
       template_slug = ENV["TEMPLATE_SLUG"] || "powernode-hub"
 
       account = ::Account.find(account_id)
-      template = ::System::NodeTemplate.where(account_id: account.id, slug: template_slug).first ||
-                 abort("Template not found: account=#{account_id} slug=#{template_slug}")
+      template = ::System::NodeTemplate.where(account_id: account.id, name: template_slug).first ||
+                 abort("Template not found: account=#{account_id} name=#{template_slug}")
 
       ActiveRecord::Base.transaction do
         # 1. Standard NodeInstance provisioning. The operator picks a
@@ -112,8 +112,9 @@ optional: OUT_DIR (default /persist/var/lib/powernode/pki), TTL_DAYS (default 90
       ttl_days = (ENV["TTL_DAYS"] || "90").to_i
 
       account = ::Account.find(account_id)
-      template = ::System::NodeTemplate.where(account_id: account.id, slug: "powernode-hub").first ||
-                 abort("powernode-hub template not found on this account")
+      template = ::System::NodeTemplate.where(account_id: account.id, name: "powernode-hub").first ||
+                 ::System::NodeTemplate.where(account_id: account.id).first ||
+                 abort("No NodeTemplate found on account #{account.id}")
 
       result = ActiveRecord::Base.transaction do
         # Skip the standard provisioning flow — this host already exists,
@@ -123,9 +124,12 @@ optional: OUT_DIR (default /persist/var/lib/powernode/pki), TTL_DAYS (default 90
         end
         instance = ::System::NodeInstance.where(node: node).first ||
                    ::System::NodeInstance.create!(
-                     node: node,
-                     status: "running",  # already running — this is the local host
-                     config: { "name" => name, "role" => "worker", "self_host" => true }
+                     node:            node,
+                     name:            name,
+                     status:          "running",  # already running — this is the local host
+                     variety:         "physical",
+                     network_profile: "lightweight",
+                     config:          { "role" => "worker", "self_host" => true }
                    )
         worker = ::Worker.where(node_instance_id: instance.id).first ||
                  ::Worker.create!(
