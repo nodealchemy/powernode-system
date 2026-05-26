@@ -113,12 +113,16 @@ module System
             MSG
           end
 
-          # Test / dev helper: clear the registry. Production seed code must
-          # never call this — the registry is populated at class-load time
-          # and clearing it would orphan all existing bindings until the
-          # executor files reload.
-          def reset!
-            @registrations.clear
+          # Test / dev helper: remove a single executor's registration by
+          # class name. Use this instead of nuking the whole registry —
+          # under CI's eager_load, @registrations is populated at boot
+          # from every binds_to declaration, and a wholesale clear would
+          # orphan every production binding for the rest of the suite
+          # (which is exactly what bit crud_factory_spec when a prior
+          # spec did `reset!` in its after block).
+          def unregister(executor_class_name)
+            name = executor_class_name.is_a?(Class) ? executor_class_name.name : executor_class_name.to_s
+            @registrations.reject! { |r| r[:executor].name == name }
           end
 
           private

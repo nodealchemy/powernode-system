@@ -32,7 +32,13 @@ RSpec.describe System::Ai::Skills::BaseSkillExecutor do
   end
 
   describe ".binds_to" do
-    after { System::Ai::Skills::SkillBindings.reset! }
+    # Targeted unregister — DON'T use a wholesale `reset!`. Under CI's
+    # eager_load, @registrations is populated at boot with every binds_to
+    # declaration in production code, and a `reset!` here would orphan
+    # those for the rest of the suite (which is what bit crud_factory_spec).
+    after do
+      System::Ai::Skills::SkillBindings.unregister("System::Ai::Skills::ExampleBindsToExecutor")
+    end
 
     it "registers the executor with SkillBindings under the named agents" do
       klass = Class.new(described_class) do
