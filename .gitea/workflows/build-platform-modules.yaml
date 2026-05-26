@@ -134,6 +134,12 @@ jobs:
           - node-exporter
           - storage-tools
           - runtime-ruby
+          # PVE / qemu integration. qga is a single apt-installed binary
+          # that talks to PVE over virtio-serial; safe to deploy on every
+          # host (the binary exits cleanly when /dev/virtio-ports/... is
+          # absent, so non-PVE hosts no-op). Listed in powernode-hub
+          # template (db/seeds/powernode_platform_templates.rb:47).
+          - qemu-guest-agent
           # OS-base layered family: minimal substrate (powernode-system-base
           # above, provides the agent binary) + os-specific userland that
           # provides `base.os` capability. Future variants like
