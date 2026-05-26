@@ -95,6 +95,27 @@ module Api
           # snapshot stale specs and trip up the agent's reconcile.
           manifest_import_error = apply_manifest_yaml(node_module, params[:manifest_yaml_b64])
 
+          # Fail loudly when the manifest can't be applied — most often
+          # this is platform-side schema drift (e.g. ManifestImportService
+          # expects a NodeModule#capabilities column that hasn't been
+          # migrated on this platform yet). Without this gate the publish
+          # used to return 200 with `manifest_applied: false` buried in
+          # the body, CI didn't check that field, and the result was a
+          # half-published module: the OCI artifact lands in the registry
+          # but the platform-side services/file_spec/etc rows stay empty,
+          # and the agent silently no-ops on assignments (no systemd unit
+          # ever generated). 422 makes the CI notify step fail visibly so
+          # operators see the schema drift at publish time rather than
+          # discovering it weeks later when assigned modules don't start.
+          # Discovered 2026-05-25 via the qemu-guest-agent dogfood
+          # (capabilities migration unrun on ops).
+          if manifest_import_error
+            return render_error(
+              "manifest apply failed: #{manifest_import_error}",
+              status: :unprocessable_content
+            )
+          end
+
           version = find_or_create_version(node_module, tag)
           if artifacts.is_a?(Hash) && artifacts.any?
             normalized = artifacts.transform_values { |h| h.is_a?(Hash) ? h.stringify_keys : h }

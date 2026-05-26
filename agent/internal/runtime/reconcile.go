@@ -218,6 +218,22 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
+	// TODO(agent-reattach-gap): Reconcile only returns NEW mounts in
+	// toAttach. When an already-mounted module gets a manifest-only
+	// change (new services: entry, updated start_command, etc.) without
+	// a digest change, attachModule never re-runs, so lifecycle.Attach
+	// Services never writes the new unit file. The 2026-05-25 qga
+	// dogfood hit this — the module was mounted but its services row
+	// was empty server-side until the platform ran a missing migration,
+	// then re-applying the manifest populated module_services but the
+	// agent didn't notice. Workaround today: `powernode-agent init <id>
+	// start` forces an attach via the CLI. Proper fix: track per-
+	// module last-attached manifest-content hash in mount.State, walk
+	// already-attached modules after the toAttach loop, re-run Attach
+	// Services for any whose cached manifest content differs (it's
+	// already idempotent on unchanged content). See memory key
+	// claude_code.agent_reattach_gap.
+
 	if r.cfg.DryRun {
 		r.lastReconcileAt = time.Now()
 		r.lastError = nil

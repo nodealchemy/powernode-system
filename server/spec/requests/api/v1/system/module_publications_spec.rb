@@ -136,14 +136,20 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
     expect(decoded).to eq([ "/opt/powernode-rails" ])
   end
 
-  it "surfaces manifest_import_error when manifest_yaml_b64 is malformed" do
+  it "fails the publish with 422 when manifest_yaml_b64 is malformed" do
+    # Before the 2026-05-25 qga dogfood incident, this endpoint silently
+    # returned 200 with `manifest_applied: false` buried in the body. CI
+    # didn't check that field, so platform-side schema drift produced
+    # half-published modules (OCI artifact OK, services/file_spec empty)
+    # that the agent silently no-op'd on. Now the publish fails loudly so
+    # CI's notify step fails visibly and the operator gets the message at
+    # publish time, not weeks later when assignments don't start.
     body = base_body.merge(manifest_yaml_b64: "@@@not-base64@@@")
     post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
 
-    expect(response).to have_http_status(:ok)
-    data = JSON.parse(response.body).fetch("data")
-    expect(data["manifest_applied"]).to be(false)
-    expect(data["manifest_import_error"]).to include("not valid base64")
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(JSON.parse(response.body).fetch("error")).to include("manifest apply failed")
+      .and include("not valid base64")
   end
 
   describe "auto-create when NodeModule absent (publisher-side first publication)" do
