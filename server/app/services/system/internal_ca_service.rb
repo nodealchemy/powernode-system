@@ -155,9 +155,42 @@ module System
     class LocalCaAdapter
       attr_reader :ca_cert, :ca_key
 
+      # On-disk persistence path. Without persistence, each rails-runner /
+      # rails-server / rake-task process generates its own CA — so a cert
+      # minted in one process can't be verified by a Traefik that loaded
+      # the CA from a different process. Persistence makes the local CA
+      # behave like a real CA: stable across process restarts. Operator-
+      # overridable via POWERNODE_CA_LOCAL_DIR. Default lives under the
+      # platform's storage tree so it's not lost on /tmp cleanup.
+      DEFAULT_PERSIST_DIR = "/var/lib/powernode/internal-ca"
+
       def initialize
-        @ca_key = OpenSSL::PKey.generate_key("ED25519")
+        @persist_dir = ENV.fetch("POWERNODE_CA_LOCAL_DIR", DEFAULT_PERSIST_DIR)
+        load_or_create_root
+      end
+
+      def load_or_create_root
+        key_path  = File.join(@persist_dir, "root.key")
+        cert_path = File.join(@persist_dir, "root.crt")
+        if File.exist?(key_path) && File.exist?(cert_path)
+          @ca_key  = OpenSSL::PKey.read(File.read(key_path))
+          @ca_cert = OpenSSL::X509::Certificate.new(File.read(cert_path))
+          return
+        end
+
+        @ca_key  = OpenSSL::PKey.generate_key("ED25519")
         @ca_cert = build_self_signed_root(@ca_key)
+        begin
+          FileUtils.mkdir_p(@persist_dir, mode: 0o700)
+          File.write(key_path,  @ca_key.private_to_pem, mode: "w", perm: 0o600)
+          File.write(cert_path, @ca_cert.to_pem,         mode: "w", perm: 0o644)
+        rescue StandardError => e
+          # Persistence is best-effort — if /var/lib/powernode isn't
+          # writable (e.g. unprivileged test env), keep the in-memory CA
+          # so the process still works. Cross-process verification will
+          # break until persistence is fixed.
+          Rails.logger.warn("[LocalCaAdapter] CA persistence failed: #{e.class}: #{e.message}") if defined?(Rails)
+        end
       end
 
       def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil)

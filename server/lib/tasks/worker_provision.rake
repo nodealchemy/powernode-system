@@ -159,10 +159,21 @@ optional: OUT_DIR (default /persist/var/lib/powernode/pki), TTL_DAYS (default 90
         { worker: worker, instance: instance, key: key, issued: issued }
       end
 
+      ca_chain = result[:issued][:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem
+
       FileUtils.mkdir_p(out_dir)
-      File.write(File.join(out_dir, "node.key"),       result[:key].private_to_pem, mode: "w", perm: 0o600)
-      File.write(File.join(out_dir, "node.crt"),       result[:issued][:cert_pem],  mode: "w", perm: 0o644)
-      File.write(File.join(out_dir, "ca-bundle.crt"),  result[:issued][:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem, mode: "w", perm: 0o644)
+      File.write(File.join(out_dir, "node.key"),      result[:key].private_to_pem, mode: "w", perm: 0o600)
+      File.write(File.join(out_dir, "node.crt"),      result[:issued][:cert_pem],  mode: "w", perm: 0o644)
+      File.write(File.join(out_dir, "ca-bundle.crt"), ca_chain,                    mode: "w", perm: 0o644)
+
+      # In dev (LocalCaAdapter), each rails-runner process gets its own
+      # CA — so the CA Traefik trusts and the CA that signed our cert
+      # might mismatch. Force the Traefik internal-ca.pem to be the SAME
+      # CA chain we just used. In production (VaultCaAdapter), this is
+      # idempotent — Vault returns the same chain every time.
+      traefik_ca_path = ::Acme::TraefikConfigWriter.write_internal_ca!
+      File.write(traefik_ca_path, ca_chain, mode: "w", perm: 0o644)
+      puts "  Traefik CA: #{traefik_ca_path} (synced with the chain that signed worker.crt)"
 
       puts "Self-host worker bootstrapped:"
       puts "  Worker:       #{result[:worker].id}"

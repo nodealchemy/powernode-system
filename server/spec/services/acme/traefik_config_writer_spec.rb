@@ -190,7 +190,7 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                common_name: "ops.example.test")
       end
 
-      it "emits a node-api router with mtls-required tls.options + pass-tls-client-cert middleware" do
+      it "emits a node-api router on the websecure-mtls entrypoint" do
         cert # touch
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
@@ -200,14 +200,11 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                      .find { |r| r["rule"].include?("/api/v1/system/node_api") }
         expect(node_api).not_to be_nil
         expect(node_api["service"]).to eq("powernode-backend")
-        expect(node_api.dig("tls", "options")).to eq("mtls-required@file")
-        expect(node_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
-        # Node-api rule must be STRICTLY longer than the /api rule so
-        # Traefik's longest-rule-wins ordering routes node_api paths to
-        # the mTLS-required router rather than the legacy /api one.
-        api_rule_len = parsed["http"]["routers"].values
-                         .find { |r| r["rule"].end_with?("&& PathPrefix(`/api`)") }["rule"].length
-        expect(node_api["rule"].length).to be > api_rule_len
+        # mTLS is enforced at the entrypoint level (write_static_config!
+        # sets http.tls.options + http.middlewares on websecure-mtls); per-
+        # router tls.options is unset to avoid SNI conflicts on shared hosts.
+        expect(node_api["entryPoints"]).to eq([ "websecure-mtls" ])
+        expect(node_api.dig("tls", "options")).to be_nil
       end
 
       it "emits six routers per cert (node-api + federation-api + internal-api + api + cable + frontend)" do
@@ -226,21 +223,34 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(keys).to include(satisfy { |k| k.end_with?("-frontend") })
       end
 
-      it "emits an internal-api router with mTLS-required + pass-tls-client-cert middleware" do
+      it "places mTLS routers on the websecure-mtls entrypoint" do
         cert
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
                                          cert_dir: tmp_cert_dir)
         parsed = YAML.load_file(result[:output_path])
-        internal_api = parsed["http"]["routers"].values
-                         .find { |r| r["rule"].include?("/api/v1/internal") }
-        expect(internal_api).not_to be_nil
-        expect(internal_api["service"]).to eq("powernode-backend")
-        expect(internal_api.dig("tls", "options")).to eq("mtls-required@file")
-        expect(internal_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
+        mtls_paths = %w[/api/v1/system/node_api /api/v1/system/federation_api /api/v1/internal]
+        mtls_paths.each do |path|
+          router = parsed["http"]["routers"].values.find { |r| r["rule"].include?(path) }
+          expect(router).not_to be_nil, "missing router for #{path}"
+          expect(router["entryPoints"]).to eq([ "websecure-mtls" ]),
+            "router for #{path} should be on websecure-mtls (got: #{router["entryPoints"].inspect})"
+        end
       end
 
-      it "emits a federation-api router with mTLS-required + pass-tls-client-cert middleware" do
+      it "keeps frontend + cable + non-mtls api routers on websecure" do
+        cert
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        websecure_routers = parsed["http"]["routers"].values
+                              .select { |r| r["entryPoints"] == [ "websecure" ] }
+        # Three: -api, -cable, -frontend
+        expect(websecure_routers.size).to eq(3)
+      end
+
+      it "emits a federation-api router on the websecure-mtls entrypoint" do
         cert
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
@@ -250,8 +260,7 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                     .find { |r| r["rule"].include?("/api/v1/system/federation_api") }
         expect(fed_api).not_to be_nil
         expect(fed_api["service"]).to eq("powernode-backend")
-        expect(fed_api.dig("tls", "options")).to eq("mtls-required@file")
-        expect(fed_api["middlewares"]).to eq([ "pass-tls-client-cert@file" ])
+        expect(fed_api["entryPoints"]).to eq([ "websecure-mtls" ])
       end
     end
   end
