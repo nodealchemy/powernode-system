@@ -670,7 +670,13 @@ func printModulesSnapshot() {
 
 	attached := overlayLowerdirs()
 	attachedSet := make(map[string]struct{}, len(attached))
-	for _, p := range attached {
+	// mountOrder records the lowerdir position of each attached module
+	// dir — index 0 is the TOP of the overlay stack (highest effective
+	// priority, kernel resolves its content first). The agent's overlay
+	// composer renders lowerdirs in priority-descending order so this
+	// is also the platform-priority-descending order.
+	mountOrder := make(map[string]int, len(attached))
+	for i, p := range attached {
 		// Each lowerdir entry is "<moduleRoot>/<name>/rootfs"; pull <name>.
 		rel, err := filepath.Rel(moduleRoot, p)
 		if err != nil {
@@ -679,6 +685,9 @@ func printModulesSnapshot() {
 		parts := strings.SplitN(rel, string(filepath.Separator), 2)
 		if len(parts) >= 1 && parts[0] != "" {
 			attachedSet[parts[0]] = struct{}{}
+			if _, seen := mountOrder[parts[0]]; !seen {
+				mountOrder[parts[0]] = i
+			}
 		}
 	}
 
@@ -716,7 +725,26 @@ func printModulesSnapshot() {
 			dir: e.Name(), display: display, attached: ok, rootfs: rootfsExists,
 		})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].display < rows[j].display })
+	// Sort: attached modules in overlay mount order (top of stack first,
+	// then descending priority); unattached modules after, alphabetical.
+	// Mount-order is what the operator sees in `mount | grep overlay`
+	// and matches the priority semantics declared in the template seed —
+	// lower template-seed priority value = lower index in lowerdir =
+	// higher position in this listing.
+	sort.Slice(rows, func(i, j int) bool {
+		oi, iAtt := mountOrder[rows[i].dir]
+		oj, jAtt := mountOrder[rows[j].dir]
+		switch {
+		case iAtt && jAtt:
+			return oi < oj
+		case iAtt && !jAtt:
+			return true
+		case !iAtt && jAtt:
+			return false
+		default:
+			return rows[i].display < rows[j].display
+		}
+	})
 
 	if len(rows) == 0 {
 		fmt.Printf("  (no modules in %s)\n", moduleRoot)
