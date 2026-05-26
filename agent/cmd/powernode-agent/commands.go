@@ -25,6 +25,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/boot"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
@@ -681,8 +682,16 @@ func printModulesSnapshot() {
 		}
 	}
 
+	// Build a digest → friendly-name map from the on-disk manifest
+	// cache so the output reads "qemu-guest-agent" instead of the bare
+	// "sha256_<64-hex>" mount dirname. Cache lookup is best-effort —
+	// modules whose manifest hasn't landed locally yet (or whose dir
+	// name doesn't match the digest scheme) fall back to the dirname.
+	digestToName := loadDigestNameMap(manifest.DefaultRoot)
+
 	type modRow struct {
-		name     string
+		dir      string // directory name under /run/powernode/modules
+		display  string // friendly name when known, else dir
 		attached bool
 		rootfs   bool
 	}
@@ -696,9 +705,18 @@ func printModulesSnapshot() {
 			rootfsExists = true
 		}
 		_, ok := attachedSet[e.Name()]
-		rows = append(rows, modRow{name: e.Name(), attached: ok, rootfs: rootfsExists})
+		display := e.Name()
+		// Mount dir is "sha256_<hex>"; manifest's digest field is
+		// "sha256:<hex>". Normalize to look up the friendly name.
+		digest := strings.Replace(e.Name(), "sha256_", "sha256:", 1)
+		if name, found := digestToName[digest]; found && name != "" {
+			display = name
+		}
+		rows = append(rows, modRow{
+			dir: e.Name(), display: display, attached: ok, rootfs: rootfsExists,
+		})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	sort.Slice(rows, func(i, j int) bool { return rows[i].display < rows[j].display })
 
 	if len(rows) == 0 {
 		fmt.Printf("  (no modules in %s)\n", moduleRoot)
@@ -716,8 +734,33 @@ func printModulesSnapshot() {
 		if !r.rootfs {
 			rootfsMark = "no"
 		}
-		fmt.Printf("  %-30s %-10s %s\n", r.name, state, rootfsMark)
+		fmt.Printf("  %-30s %-10s %s\n", r.display, state, rootfsMark)
 	}
+}
+
+// loadDigestNameMap scans the on-disk manifest cache and returns
+// digest → module-name. Manifests are at <root>/<module-id>/manifest.json
+// per manifest.DefaultRoot. Best-effort: missing/unreadable manifests
+// are silently skipped — the caller falls back to the dirname.
+func loadDigestNameMap(root string) map[string]string {
+	out := map[string]string{}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m, err := manifest.LoadFromDisk(root, e.Name())
+		if err != nil || m == nil {
+			continue
+		}
+		if m.Digest != "" && m.Name != "" {
+			out[m.Digest] = m.Name
+		}
+	}
+	return out
 }
 
 // overlayLowerdirs scans /proc/mounts for an overlay mounted at /sysroot
