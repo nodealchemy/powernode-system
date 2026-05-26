@@ -163,6 +163,21 @@ module Federation
         return region if region
       end
 
+      # If a preset hint is supplied (e.g. "pve.vm.medium"), it names a
+      # ProviderInstanceType which uniquely identifies a provider. Honor
+      # that as the orchestrator's intent signal — without it, the next
+      # fallback would pick whichever connected provider happens to be
+      # first by created_at (commonly local-qemu, leaving a PVE spawn
+      # silently provisioned on the wrong substrate).
+      preset_hint = spawn_target[:preset] || spawn_target["preset"]
+      if preset_hint.present?
+        it = ::System::ProviderInstanceType.find_by(name: preset_hint)
+        if it
+          region = first_region_for_connectable_provider(it.provider)
+          return region if region
+        end
+      end
+
       # Prefer a region whose provider HAS an active connection in this
       # account's scope. Earlier behavior picked the first provider by
       # created_at — for accounts with multiple providers seeded (e.g.
@@ -218,6 +233,15 @@ module Federation
                     spawn_target["provider_instance_type_id"]
       if explicit_id.present?
         type = ::System::ProviderInstanceType.find_by(id: explicit_id)
+        return type if type
+      end
+
+      preset_hint = spawn_target[:preset] || spawn_target["preset"]
+      if preset_hint.present?
+        type = ::System::ProviderInstanceType.find_by(
+          name: preset_hint,
+          provider_id: region.provider_id
+        )
         return type if type
       end
 
