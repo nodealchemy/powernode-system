@@ -218,21 +218,46 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
-	// TODO(agent-reattach-gap): Reconcile only returns NEW mounts in
-	// toAttach. When an already-mounted module gets a manifest-only
-	// change (new services: entry, updated start_command, etc.) without
-	// a digest change, attachModule never re-runs, so lifecycle.Attach
-	// Services never writes the new unit file. The 2026-05-25 qga
-	// dogfood hit this — the module was mounted but its services row
-	// was empty server-side until the platform ran a missing migration,
-	// then re-applying the manifest populated module_services but the
-	// agent didn't notice. Workaround today: `powernode-agent init <id>
-	// start` forces an attach via the CLI. Proper fix: track per-
-	// module last-attached manifest-content hash in mount.State, walk
-	// already-attached modules after the toAttach loop, re-run Attach
-	// Services for any whose cached manifest content differs (it's
-	// already idempotent on unchanged content). See memory key
-	// claude_code.agent_reattach_gap.
+	// Detect already-attached modules whose manifest content changed
+	// since the last attach. Reconcile() above only returns new mounts
+	// in toAttach (digest-based diff against current.AttachedModules);
+	// it doesn't notice manifest-only edits — a new services: entry,
+	// updated start_command, sudoers grant added, etc. Without the
+	// re-attach pass below, those edits silently never propagate to
+	// the on-host systemd units, and the agent looks healthy from the
+	// platform's view (mount + heartbeat both green) while quietly
+	// running stale config. Discovered 2026-05-25 via the qemu-guest-
+	// agent dogfood — see claude_code.agent_reattach_gap memory.
+	//
+	// Implementation: per-module SHA256 of the manifest's services
+	// block, persisted across agent restarts in State.LastAttached
+	// ManifestHashes. Diff each desired-and-currently-mounted module's
+	// fresh hash against the stored value; mismatches go into
+	// toReattach. AttachServices itself is already idempotent on
+	// unchanged unit content, so the cost of a false-positive re-
+	// attach is bounded (file content compare + N idempotent systemctl
+	// start calls); avoiding that cost is what the hash check buys.
+	if current.LastAttachedManifestHashes == nil {
+		current.LastAttachedManifestHashes = map[string]string{}
+	}
+	attachedNow := map[string]bool{}
+	for _, m := range current.AttachedModules {
+		attachedNow[m.ID] = true
+	}
+	toReattach := make(mount.ModuleStack, 0)
+	for _, mod := range desired {
+		if !attachedNow[mod.ID] {
+			continue // either freshly attaching (handled below) or not yet pulled
+		}
+		mf, ok := manifests[mod.ID]
+		if !ok {
+			continue
+		}
+		fresh := mf.ServicesHash()
+		if current.LastAttachedManifestHashes[mod.ID] != fresh {
+			toReattach = append(toReattach, mod)
+		}
+	}
 
 	if r.cfg.DryRun {
 		r.lastReconcileAt = time.Now()
@@ -275,7 +300,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.cfg.OnError("reconciler:sudoers_write", err)
 	}
 
-	// Attaches in priority order (low → high).
+	// Attaches in priority order (low → high). Walks toAttach (new
+	// mounts: fresh erofs pull + verify + mount + AttachServices) and
+	// toReattach (already-mounted but manifest-changed: skips the pull/
+	// mount via attachModule's idempotency, re-runs AttachServices to
+	// pick up the new units). Each successful attach refreshes the
+	// per-module manifest hash so the next cycle's diff sees no drift.
 	attachStack := mount.ModuleStack(toAttach).SortByPriority()
 	for _, mod := range attachStack {
 		mf, ok := manifests[mod.ID]
@@ -288,13 +318,35 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
+		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
 	}
 
-	// Filter out detached modules from current.
+	// Re-attach loop for manifest-only changes. attachModule is
+	// idempotent on its mount + cosign + fs-verity + policy steps
+	// (cached results return immediately) — the meaningful work here is
+	// the AttachServices call inside, which writeIfChanged-s each unit
+	// file and runs daemon-reload only when at least one wrote.
+	for _, mod := range mount.ModuleStack(toReattach).SortByPriority() {
+		mf, ok := manifests[mod.ID]
+		if !ok {
+			continue
+		}
+		if err := r.attachModule(ctx, mod, mf); err != nil {
+			r.cfg.OnError("reconciler:reattach", fmt.Errorf("module %s: %w", mod.ID, err))
+			continue
+		}
+		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
+	}
+
+	// Filter out detached modules from current — both from the attached
+	// list and from the manifest-hash map (so a later re-add doesn't
+	// see a stale hash and skip the initial attach).
 	if len(toDetach) > 0 {
 		detached := make(map[string]bool, len(toDetach))
+		detachedIDs := make(map[string]bool, len(toDetach))
 		for _, m := range toDetach {
 			detached[m.Digest] = true
+			detachedIDs[m.ID] = true
 		}
 		filtered := current.AttachedModules[:0]
 		for _, m := range current.AttachedModules {
@@ -303,6 +355,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			}
 		}
 		current.AttachedModules = filtered
+		for id := range detachedIDs {
+			delete(current.LastAttachedManifestHashes, id)
+		}
 	}
 
 	// Compose the overlay union at SysRoot from all attached modules

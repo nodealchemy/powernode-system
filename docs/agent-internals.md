@@ -211,6 +211,46 @@ sequenceDiagram
     Agent->>Plat: next heartbeat reports new digests
 ```
 
+## Reconcile loop — three attach paths
+
+Every reconcile cycle, the reconciler decides what to do per module
+from the intersection of *desired* (platform-supplied assignments) and
+*current* (`mount.State.AttachedModules` on disk):
+
+| Set | Trigger | What runs |
+|---|---|---|
+| `toAttach` | desired but not currently mounted (digest absent from current) | `attachModule`: pull OCI → cosign verify → fs-verity → mount erofs → policy.Apply → `lifecycle.AttachServices` |
+| `toDetach` | currently mounted but not in desired (digest absent from desired) | `detachModule`: `lifecycle.DetachServices` + `mount.UnmountModule` |
+| `toReattach` | currently mounted AND in desired AND manifest hash changed | `attachModule` again (pull/mount/policy short-circuit on cached state); `lifecycle.AttachServices` re-renders unit files via `writeIfChanged` |
+
+The `toReattach` set is what catches manifest-only edits — adding a
+new `services:` entry, changing a `start_command`, adding a sudoers
+grant — that don't move the OCI digest. Without it the agent silently
+runs stale config: the module's mount stays at the old content (because
+the digest matched), but the `/etc/systemd/system/` unit files were
+never re-rendered, so the new service never appears to systemd.
+
+The change-detection is a per-module SHA256 of the manifest's services
+slice, persisted in `mount.State.LastAttachedManifestHashes`. Each
+attach (initial or re-attach) refreshes the stored hash on success;
+the next cycle diffs the fresh hash against the stored value and
+re-attaches only when they differ. `lifecycle.AttachServices` is
+idempotent on unchanged unit content (`writeIfChanged` + skip
+daemon-reload when nothing wrote), so the cost of a false-positive
+re-attach is bounded — but the hash check avoids that cost entirely
+when the manifest is stable.
+
+**Upgrade behavior:** an agent upgrading from a pre-hash version sees
+an empty `LastAttachedManifestHashes` map. On the first reconcile
+after the upgrade, every desired-and-attached module triggers ONE
+re-attach to populate the hash; subsequent cycles converge to no-op.
+Modules detached between cycles have their hash entry deleted in
+`current.LastAttachedManifestHashes` so a later re-add starts fresh.
+
+History: gap discovered 2026-05-25 via the qemu-guest-agent dogfood
+(see [`docs/runbooks/module-authoring.md`](runbooks/module-authoring.md)
+for the operator-facing flow). Memory pointer: `claude_code.agent_reattach_gap`.
+
 ## Cert rotation timeline
 
 ```mermaid

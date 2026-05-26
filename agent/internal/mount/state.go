@@ -23,6 +23,18 @@ type State struct {
 	UnionMounted      bool      `json:"union_mounted"`
 	PersistentVarBind bool      `json:"persistent_var_bind"`
 	AttachedModules   []Module  `json:"attached_modules"`
+
+	// LastAttachedManifestHashes records, per module-id, the SHA256 of
+	// the manifest's services block at the time of the last successful
+	// AttachServices call. The reconciler reads this on every cycle to
+	// detect manifest-only changes (no digest change) and re-runs
+	// AttachServices when the hash drifts. Without this, a manifest
+	// edit that adds a new service or changes a start_command is never
+	// picked up by the agent — the module is already in Reconcile()'s
+	// toKeep set, so attachModule never re-fires. Discovered 2026-05-25
+	// via qemu-guest-agent dogfood: services row populated post-publish
+	// (after a delayed migration) but no unit file ever generated.
+	LastAttachedManifestHashes map[string]string `json:"last_attached_manifest_hashes,omitempty"`
 }
 
 // LoadState reads State from `path`. Returns a zero-value State and

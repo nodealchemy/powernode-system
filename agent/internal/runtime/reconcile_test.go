@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
@@ -164,10 +165,24 @@ func TestReconcilerRunOnceNoOpsWhenStateMatches(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
 
-	// Pre-seed state with m1 already attached.
+	// Pre-seed state with m1 already attached AND its manifest hash
+	// already recorded — so the re-attach pass sees no drift and
+	// skips the attachModule call. State persisted by older agents
+	// (no LastAttachedManifestHashes field) will trigger ONE re-attach
+	// per reconcile cycle until the hash is populated; that's the
+	// intended upgrade behavior and covered by the manifest-change
+	// re-attach test below.
+	seedManifest := &manifest.Manifest{
+		Services: []manifest.Service{
+			{Name: "nginx", StartCommand: "/usr/sbin/nginx", RestartPolicy: "always"},
+		},
+	}
 	mount.SaveState(statePath, &mount.State{
 		AttachedModules: []mount.Module{
 			{ID: "m1", Digest: "abc123", Priority: 100},
+		},
+		LastAttachedManifestHashes: map[string]string{
+			"m1": seedManifest.ServicesHash(),
 		},
 	})
 
@@ -212,6 +227,96 @@ func TestReconcilerRunOnceNoOpsWhenStateMatches(t *testing.T) {
 		if inv.Name == "systemctl" && len(inv.Args) > 0 && inv.Args[0] == "start" {
 			t.Errorf("unexpected systemctl start: %v", inv)
 		}
+	}
+}
+
+// TestReconcilerRunOnceReattachesOnManifestChange exercises the gap
+// that bit the 2026-05-25 qemu-guest-agent dogfood: an already-mounted
+// module whose manifest gains new services must be re-attached so the
+// new systemd unit lands at /etc/systemd/system. The fix is per-module
+// SHA256 hashing of the services block in State.LastAttachedManifestHashes;
+// when the fresh hash differs from the stored value, attachModule is
+// re-invoked. See claude_code.agent_reattach_gap memory.
+func TestReconcilerRunOnceReattachesOnManifestChange(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+
+	// Pre-seed: m1 attached with an EMPTY services hash (simulating a
+	// previously-published version whose manifest had no services, then
+	// later the manifest grew a services entry without a digest bump).
+	staleHash := (&manifest.Manifest{Services: []manifest.Service{}}).ServicesHash()
+	mount.SaveState(statePath, &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "m1", Digest: "abc123", Priority: 100},
+		},
+		LastAttachedManifestHashes: map[string]string{
+			"m1": staleHash,
+		},
+	})
+
+	// Platform now returns a manifest with one service. Hash should
+	// differ from the stored staleHash → re-attach.
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"qga", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"qga", "digest":"abc123",
+				         "priority":100, "effective_priority":100,
+				         "services": [{"name":"qga", "start_command":"/usr/sbin/qemu-ga", "restart_policy":"always"}]}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	r, _ := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// systemctl start of the newly-rendered qga unit confirms
+	// AttachServices ran via the re-attach pass.
+	foundStart := false
+	for _, inv := range runner.Invocations {
+		if inv.Name == "systemctl" && inv.Op == "Run" &&
+			len(inv.Args) >= 2 && inv.Args[0] == "start" && inv.Args[1] == "powernode-m1-qga.service" {
+			foundStart = true
+		}
+	}
+	if !foundStart {
+		t.Errorf("expected `systemctl start powernode-m1-qga.service` from re-attach, got: %v", runner.Invocations)
+	}
+
+	// State persists the fresh hash so subsequent ticks don't re-trigger.
+	state, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	freshHash := (&manifest.Manifest{Services: []manifest.Service{
+		{Name: "qga", StartCommand: "/usr/sbin/qemu-ga", RestartPolicy: "always"},
+	}}).ServicesHash()
+	if state.LastAttachedManifestHashes["m1"] != freshHash {
+		t.Errorf("expected stored hash to update to freshHash=%s, got %s",
+			freshHash, state.LastAttachedManifestHashes["m1"])
 	}
 }
 

@@ -11,6 +11,12 @@
 // canonical schema; this package keeps Go types in sync with that.
 package manifest
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
 // Manifest is the typed view the agent operates on. Field names
 // follow the platform's JSON shape (snake_case) so the unmarshal
 // from /node_api/modules/:id is direct.
@@ -126,6 +132,41 @@ type Service struct {
 	HealthInitialDelaySeconds  int               `json:"health_initial_delay_seconds,omitempty"`
 	Dependencies               []string          `json:"dependencies,omitempty"` // names of services that must start before this one
 	Metadata                   map[string]any    `json:"metadata,omitempty"`
+}
+
+// ServicesHash returns a stable SHA256 hash of the manifest's services
+// block, suitable for change-detection. The reconciler compares this to
+// State.LastAttachedManifestHashes[moduleID] each cycle to decide
+// whether an already-attached module needs its systemd units re-rendered.
+// AttachServices is already idempotent on unchanged content, so a
+// mismatch here only triggers cheap no-op work when fields are identical
+// — the value of the hash is making the per-cycle "should I even bother?"
+// check O(1) instead of forcing a full re-render to discover that.
+//
+// JSON serialization order is stable because Go's encoding/json emits
+// struct fields in declaration order. We deliberately hash the JSON
+// (not a struct-field walk) so an upstream schema addition to Service
+// without an agent-side type bump just shows up as a different hash
+// once — re-attach happens once on first sight, then quiets down.
+//
+// Empty (no-services) manifests get a deterministic empty-array hash
+// rather than empty-string so re-attach fires once when services land.
+func (m *Manifest) ServicesHash() string {
+	if m == nil {
+		return ""
+	}
+	svcs := m.Services
+	if svcs == nil {
+		svcs = []Service{}
+	}
+	body, err := json.Marshal(svcs)
+	if err != nil {
+		// Unreachable under encoding/json's panic-free Marshal of basic
+		// types, but return empty rather than crash if it ever happens.
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // CopyPath describes a file or directory to copy from the module
