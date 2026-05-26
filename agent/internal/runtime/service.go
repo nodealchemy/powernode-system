@@ -240,7 +240,6 @@ func (s *Service) Run(ctx context.Context) error {
 			HTTPClient:  client.Client,
 			PlatformURL: client.PlatformURL,
 			Cache:       "/persist/cache/modules",
-			AuthHeader:  bearerHeader(client.InstanceToken),
 		},
 		Verifier:    verify.AlwaysOK{},
 		MountRunner: mount.ExecRunner{},
@@ -359,15 +358,6 @@ func readCertCN(path string) string {
 		return ""
 	}
 	return cert.Subject.CommonName
-}
-
-// bearerHeader wraps a token for HTTP Authorization. Returns empty
-// when token is empty so the OCI puller doesn't send a stray header.
-func bearerHeader(token string) string {
-	if token == "" {
-		return ""
-	}
-	return "Bearer " + token
 }
 
 // buildHeartbeat snapshots current runtime state into a HeartbeatPayload.

@@ -17,9 +17,8 @@ import (
 func newTestTransport(t *testing.T, srv *httptest.Server) *transport.Client {
 	t.Helper()
 	return &transport.Client{
-		Client:        srv.Client(),
-		PlatformURL:   srv.URL,
-		InstanceToken: "test-token",
+		Client:      srv.Client(),
+		PlatformURL: srv.URL,
 	}
 }
 
@@ -28,8 +27,9 @@ func TestHTTPBootstrapConfigClient_HappyPath_OvnKubernetes(t *testing.T) {
 		if r.URL.Path != BootstrapConfigPath {
 			t.Errorf("unexpected path %q, want %q", r.URL.Path, BootstrapConfigPath)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
-			t.Errorf("missing/incorrect Authorization header: %q", got)
+		// Auth is mTLS at the transport layer; no Bearer header expected.
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("unexpected Authorization header %q (auth is mTLS only)", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,

@@ -203,7 +203,6 @@ func TestCheckAndRotateRotatesWhenPastRefreshAt(t *testing.T) {
 				"mtls_subject":   "subj",
 				"not_after":      newNotAfter.Format(time.RFC3339),
 				"certificate_id": "cert-2",
-				"instance_token": "fresh-token",
 			},
 		}
 		json.NewEncoder(w).Encode(resp)

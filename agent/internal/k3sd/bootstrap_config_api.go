@@ -77,9 +77,6 @@ func (c *HTTPBootstrapConfigClient) FetchBootstrapConfig(ctx context.Context) (B
 	if err != nil {
 		return BootstrapConfig{}, "", fmt.Errorf("build request: %w", err)
 	}
-	if c.transport.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.transport.InstanceToken)
-	}
 
 	resp, err := c.transport.Do(req)
 	if err != nil {

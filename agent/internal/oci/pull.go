@@ -59,9 +59,6 @@ type Puller struct {
 	PlatformURL string
 	// Cache is the root cache directory (typically /persist/cache/modules).
 	Cache string
-	// AuthHeader, when set, is added to every blob GET. Forwards the
-	// instance JWT as Bearer when mTLS isn't terminated proxy-side.
-	AuthHeader string
 }
 
 // FetchManifest hits the platform endpoint and decodes the artifact
@@ -171,9 +168,6 @@ func (p *Puller) streamToFile(url, path string, ref *ModuleArtifactRef) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
-	}
-	if p.AuthHeader != "" {
-		req.Header.Set("Authorization", p.AuthHeader)
 	}
 	resp, err := p.HTTPClient.Do(req)
 	if err != nil {

@@ -209,7 +209,6 @@ func (r *CertRotator) rotate(ctx context.Context) error {
 		MTLSSubject:   er.Data.MTLSSubject,
 		NotAfter:      notAfter,
 		CertificateID: er.Data.CertificateID,
-		InstanceToken: er.Data.InstanceToken,
 	}
 	if err := enroll.Save(id, r.PKIPaths); err != nil {
 		return fmt.Errorf("save rotated identity: %w", err)

@@ -2,44 +2,46 @@ package transport
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-// setAuth attaches a Bearer JWT header iff the client has an InstanceToken.
-// This is the agent's belt-and-suspenders auth path — mTLS material is
-// already on the underlying http.Transport; the JWT is the legacy fallback
-// the platform consumes when no reverse-proxy mTLS termination is configured.
-func TestSetAuth_AttachesBearerWhenTokenPresent(t *testing.T) {
-	c := &Client{InstanceToken: "abc.def.ghi"}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
-	c.setAuth(req)
-	got := req.Header.Get("Authorization")
-	if got != "Bearer abc.def.ghi" {
-		t.Fatalf("expected 'Bearer abc.def.ghi', got %q", got)
-	}
-}
+// Auth model: mTLS only. Requests carry no Bearer header — the client cert
+// presented at TLS handshake time is the credential, and the reverse proxy
+// (Traefik v3 with tls.options=mtls-required@file) is responsible for
+// verifying it against the platform's internal CA. PostJSON / GetJSON
+// must not inject an Authorization header.
 
-func TestSetAuth_NoHeaderWhenTokenEmpty(t *testing.T) {
-	c := &Client{InstanceToken: ""}
-	req, _ := http.NewRequest(http.MethodGet, "http://x", nil)
-	c.setAuth(req)
-	if got := req.Header.Get("Authorization"); got != "" {
-		t.Fatalf("expected no Authorization header, got %q", got)
-	}
-}
-
-func TestTrimSpace(t *testing.T) {
-	cases := map[string]string{
-		"":             "",
-		"abc":          "abc",
-		"  abc  ":      "abc",
-		"\nabc\n":      "abc",
-		"\t abc \r\n":  "abc",
-		"abc\nxyz":     "abc\nxyz", // interior whitespace preserved
-	}
-	for in, want := range cases {
-		if got := trimSpace(in); got != want {
-			t.Errorf("trimSpace(%q): got %q, want %q", in, got, want)
+func TestPostJSON_NoAuthorizationHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("expected no Authorization header on PostJSON, got %q", got)
 		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := &Client{Client: srv.Client(), PlatformURL: srv.URL}
+	resp, err := c.PostJSON("/anything", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("PostJSON: %v", err)
 	}
+	resp.Body.Close()
+}
+
+func TestGetJSON_NoAuthorizationHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("expected no Authorization header on GetJSON, got %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := &Client{Client: srv.Client(), PlatformURL: srv.URL}
+	resp, err := c.GetJSON("/anything")
+	if err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+	resp.Body.Close()
 }

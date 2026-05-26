@@ -63,9 +63,6 @@ func (c *HTTPOverridesClient) FetchOverrides(ctx context.Context) (map[string]an
 	if err != nil {
 		return nil, "", fmt.Errorf("build request: %w", err)
 	}
-	if c.transport.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.transport.InstanceToken)
-	}
 
 	resp, err := c.transport.Do(req)
 	if err != nil {

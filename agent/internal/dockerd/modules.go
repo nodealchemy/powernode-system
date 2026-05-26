@@ -70,9 +70,6 @@ func (c *HTTPModulesClient) AssignedModules(ctx context.Context) ([]string, erro
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	if c.transport.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.transport.InstanceToken)
-	}
 
 	resp, err := c.transport.Do(req)
 	if err != nil {

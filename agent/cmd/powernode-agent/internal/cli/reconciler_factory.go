@@ -34,7 +34,6 @@ func BuildReconciler(cctx *Context, dryRun bool) (*runtime.Reconciler, error) {
 			HTTPClient:  cctx.Transport.Client,
 			PlatformURL: cctx.Transport.PlatformURL,
 			Cache:       "/persist/cache/modules",
-			AuthHeader:  bearerHeaderFromContext(cctx),
 		},
 		Verifier:    verify.AlwaysOK{},
 		MountRunner: mount.ExecRunner{},
@@ -47,11 +46,4 @@ func BuildReconciler(cctx *Context, dryRun bool) (*runtime.Reconciler, error) {
 		return nil, fmt.Errorf("build reconciler: %w", err)
 	}
 	return r, nil
-}
-
-func bearerHeaderFromContext(c *Context) string {
-	if c == nil || c.Transport == nil || c.Transport.InstanceToken == "" {
-		return ""
-	}
-	return "Bearer " + c.Transport.InstanceToken
 }

@@ -447,9 +447,6 @@ func (m *Manager) postBgpStatusReport(ctx context.Context, observations []*Obser
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if m.Client.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+m.Client.InstanceToken)
-	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
 		return err
@@ -473,9 +470,6 @@ func (m *Manager) postStatusReport(ctx context.Context, reports []PeerStatusRepo
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if m.Client.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+m.Client.InstanceToken)
-	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
 		return err

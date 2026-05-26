@@ -139,10 +139,5 @@ func postJSON(ctx context.Context, c *transport.Client, path string, body []byte
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	// Attach the legacy-path Bearer JWT if the client has one. The platform's
-	// authenticate_instance! tries mTLS first, falls through to this token.
-	if c.InstanceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.InstanceToken)
-	}
 	return c.Do(req)
 }

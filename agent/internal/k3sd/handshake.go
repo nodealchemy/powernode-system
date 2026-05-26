@@ -272,9 +272,6 @@ func (c *Client) do(ctx context.Context, body HandshakeRequest, out any) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.transport.InstanceToken != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.transport.InstanceToken)
-	}
 
 	resp, err := c.transport.Do(httpReq)
 	if err != nil {
