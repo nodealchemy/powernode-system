@@ -6,8 +6,7 @@ require "rails_helper"
 RSpec.describe "POST /api/v1/system/worker_api/fleet/retention_sweep", type: :request do
   let(:account) { create(:account) }
   let!(:worker) { create(:worker, account: account, status: "active") }
-  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
-  let(:headers) { { "X-Worker-Token" => token } }
+  let(:headers) { worker_mtls_headers(worker) }
 
   before do
     # Stub permission check rather than wrestling with role_permission seeding.

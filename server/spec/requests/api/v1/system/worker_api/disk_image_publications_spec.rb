@@ -9,8 +9,7 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
   # System extension's AccountDecorator-provided association.
   let(:platform) { account.system_node_platforms.find_by!(name: "ubuntu-24.04-rpi4") }
   let!(:worker) { create(:worker, account: account, status: "active") }
-  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
-  let(:headers) { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
+  let(:headers) { worker_mtls_headers(worker).merge("Content-Type" => "application/json") }
 
   before do
     # Mirror the existing worker_api spec pattern: stub has_permission?
@@ -30,7 +29,7 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
       create(:system_disk_image_publication, account: account, node_platform: platform, status: "queued")
     end
 
-    it "401 when X-Worker-Token is missing" do
+    it "401 when the mTLS client-cert header is missing" do
       post "/api/v1/system/worker_api/disk_image_publications/process",
            params: { publication_id: publication.id }.to_json,
            headers: { "Content-Type" => "application/json" }

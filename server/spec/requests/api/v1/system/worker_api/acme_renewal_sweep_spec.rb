@@ -4,8 +4,7 @@ require "rails_helper"
 
 RSpec.describe "Api::V1::System::WorkerApi::AcmeRenewalSweep", type: :request do
   let(:worker) { create(:worker) }
-  let(:token)  { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
-  let(:headers) { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
+  let(:headers) { worker_mtls_headers(worker).merge("Content-Type" => "application/json") }
 
   let(:path) { "/api/v1/system/worker_api/acme/renewal_sweep" }
 

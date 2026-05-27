@@ -11,8 +11,7 @@ RSpec.describe "POST /api/v1/system/worker_api/module_publications/process", typ
   let(:platform) { create(:system_node_platform, account: account) }
   let(:category) { create(:system_node_module_category, account: account) }
   let!(:worker) { create(:worker, account: account, status: "active") }
-  let(:token)   { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
-  let(:headers) { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
+  let(:headers) { worker_mtls_headers(worker).merge("Content-Type" => "application/json") }
   let!(:node_module) do
     create(:system_node_module, account: account, node_platform: platform,
            category: category, variety: "subscription", name: "demo-mod",

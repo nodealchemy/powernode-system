@@ -7,8 +7,7 @@ require "rails_helper"
 RSpec.describe "POST /api/v1/system/worker_api/unclaimed_devices/expire", type: :request do
   let(:account) { create(:account) }
   let!(:worker)  { create(:worker, account: account, status: "active") }
-  let(:token)    { ::Security::JwtService.encode({ sub: worker.id, type: "worker" }) }
-  let(:headers)  { { "X-Worker-Token" => token, "Content-Type" => "application/json" } }
+  let(:headers)  { worker_mtls_headers(worker).merge("Content-Type" => "application/json") }
 
   before do
     allow_any_instance_of(Worker).to receive(:has_permission?)

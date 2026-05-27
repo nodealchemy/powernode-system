@@ -207,20 +207,30 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(node_api.dig("tls", "options")).to be_nil
       end
 
-      it "emits six routers per cert (node-api + federation-api + internal-api + api + cable + frontend)" do
+      it "emits ten routers per cert (node-api + federation-api + internal-api + worker-api + worker-auth + cable-mtls + api + agent + cable + frontend)" do
         cert
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
                                          cert_dir: tmp_cert_dir)
         parsed = YAML.load_file(result[:output_path])
         keys = parsed["http"]["routers"].keys
-        expect(keys.size).to eq(6)
+        expect(keys.size).to eq(10)
+        # mTLS entrypoint routers
         expect(keys).to include(satisfy { |k| k.end_with?("-node-api") })
         expect(keys).to include(satisfy { |k| k.end_with?("-federation-api") })
         expect(keys).to include(satisfy { |k| k.end_with?("-internal-api") })
-        expect(keys).to include(satisfy { |k| k.end_with?("-api") && !k.end_with?("-node-api") && !k.end_with?("-federation-api") && !k.end_with?("-internal-api") })
-        expect(keys).to include(satisfy { |k| k.end_with?("-cable") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-worker-api") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-worker-auth") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-cable-mtls") })
+        # public (websecure) routers
+        expect(keys).to include(satisfy { |k| k.end_with?("-agent") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-cable") && !k.end_with?("-cable-mtls") })
         expect(keys).to include(satisfy { |k| k.end_with?("-frontend") })
+        # the bare -api router (not one of the longer -*-api suffixes)
+        expect(keys).to include(satisfy { |k|
+          k.end_with?("-api") &&
+            %w[-node-api -federation-api -internal-api -worker-api].none? { |suf| k.end_with?(suf) }
+        })
       end
 
       it "places mTLS routers on the websecure-mtls entrypoint" do
@@ -238,7 +248,7 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         end
       end
 
-      it "keeps frontend + cable + non-mtls api routers on websecure" do
+      it "keeps frontend + cable + agent + non-mtls api routers on websecure" do
         cert
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
@@ -246,8 +256,8 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         parsed = YAML.load_file(result[:output_path])
         websecure_routers = parsed["http"]["routers"].values
                               .select { |r| r["entryPoints"] == [ "websecure" ] }
-        # Three: -api, -cable, -frontend
-        expect(websecure_routers.size).to eq(3)
+        # Four: -api, -agent, -cable, -frontend
+        expect(websecure_routers.size).to eq(4)
       end
 
       it "emits a federation-api router on the websecure-mtls entrypoint" do

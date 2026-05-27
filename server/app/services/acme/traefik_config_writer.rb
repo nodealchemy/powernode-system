@@ -365,43 +365,51 @@ module Acme
     def render_routers(cert)
       slug = router_slug(cert)
       hosts_matcher = build_hosts_matcher(cert.common_name)
-      mtls_tls = { "options" => "mtls-required@file" }
+      # mTLS routers carry `tls: {}` — TLS enabled, options UNSET. The
+      # mtls-required@file option is applied at the websecure-mtls
+      # ENTRYPOINT level (write_static_config! sets http.tls.options +
+      # the passTLSClientCert middleware there), so every router bound to
+      # that entrypoint inherits it. Setting per-router tls.options is
+      # redundant AND risks per-SNI TLS-option conflicts on shared hosts;
+      # it also forced YAML.dump to emit a shared-ref anchor/alias that
+      # tripped strict Psych safe_load. Empty hash keeps the generated
+      # config alias-free + portable.
       [
         [ "#{slug}-node-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/node_api`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-federation-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/federation_api`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-internal-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/internal`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-worker-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/worker_api`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-worker-auth", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/worker_auth`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-cable-mtls", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => mtls_tls
+          "tls"         => {}
         } ],
         [ "#{slug}-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api`)",
