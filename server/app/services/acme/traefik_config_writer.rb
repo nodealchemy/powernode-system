@@ -409,6 +409,16 @@ module Acme
           "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
+        [ "#{slug}-agent", {
+          # Federation-spawned children fetch the powernode-agent binary
+          # from their parent via this prefix on the public entrypoint.
+          # The Rails app symlinks the binary under public/agent/ so the
+          # static file server serves it — no controller required.
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/agent`)",
+          "service"     => "powernode-backend",
+          "entryPoints" => [ "websecure" ],
+          "tls"         => {}
+        } ],
         [ "#{slug}-cable", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
           "service"     => "powernode-backend",

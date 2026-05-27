@@ -18,15 +18,22 @@ module System
       # but renders YAML for cloud-init NoCloud datasource (PVE's
       # mechanism) rather than fw-cfg-only file staging (LocalQemu's).
       class CloudSeed
-        DEFAULT_AGENT_URL =
-          "https://ops.powernode.org/agent/powernode-agent-linux-amd64"
+        # Path on the parent platform that serves the agent binary. The
+        # `/agent/*` Traefik router maps this prefix to powernode-backend
+        # on the non-mTLS entrypoint (:443); Rails serves the file from
+        # public/agent/ (symlinked to extensions/system/agent/dist/).
+        DEFAULT_AGENT_PATH = "/agent/powernode-agent-linux-amd64"
 
         # @param spawn_payload [Hash] parent_url, acceptance_token, spawn_mode,
         #   parent_peer_id, contract_version — same shape SpawnPlatformService builds
         # @param hostname [String, nil] VM hostname (default: derived from
         #   spawn_payload's parent_peer_id)
-        # @param agent_url [String, nil] override the agent download URL (default
-        #   DEFAULT_AGENT_URL, suitable for ops.powernode.org topology)
+        # @param agent_url [String, nil] override the agent download URL.
+        #   When nil, derived from spawn_payload's parent_url so the spawn
+        #   pulls the agent FROM THE PARENT (always reachable, since the
+        #   spawn was just told to enroll there). Hard-coding a separate
+        #   download host invariably drifts out of sync with the parent
+        #   topology and breaks federation-spawned children silently.
         # @param ssh_authorized_keys [Array<String>] keys to install for ubuntu user
         # @return [String] YAML user-data ready to write to a snippets file
         def self.render(spawn_payload:, hostname: nil, agent_url: nil,
@@ -43,8 +50,17 @@ module System
                        ssh_authorized_keys: [])
           @spawn_payload       = spawn_payload || {}
           @hostname            = hostname.presence || derived_hostname
-          @agent_url           = agent_url.presence || DEFAULT_AGENT_URL
+          @agent_url           = agent_url.presence || derived_agent_url
           @ssh_authorized_keys = Array(ssh_authorized_keys).compact.reject(&:empty?)
+        end
+
+        # Build the agent download URL from the spawn payload's parent_url.
+        # parent_url is the platform the child is enrolling with, which is
+        # by definition both reachable from the child AND the source of
+        # truth for compatible agent builds.
+        def derived_agent_url
+          parent = @spawn_payload["parent_url"].to_s.sub(%r{/+\z}, "")
+          parent.empty? ? DEFAULT_AGENT_PATH : "#{parent}#{DEFAULT_AGENT_PATH}"
         end
 
         def render
