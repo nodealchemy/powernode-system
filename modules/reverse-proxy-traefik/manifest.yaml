@@ -3,18 +3,12 @@ name: reverse-proxy-traefik
 display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
-# Traefik is technically in Ubuntu noble's universe repo, but
-# mmdebstrap's --include constructs an apt-get install command with
-# ?narrow(?or(?archive(^noble$),?codename(^noble$)),?priority(required))
-# baked in — non-required-priority universe packages like traefik get
-# filtered out and apt reports "Unable to locate package traefik".
-# Same structural blocker as vector + gcsfuse (see log-forwarder +
-# storage-tools manifests). Module publishes as a stub for now;
-# traefik binary needs to be either (a) vendored into rootfs/usr/bin
-# at build time via Stage 1.5 (cross-platform fetch + verify), or
-# (b) installed via a customize-hook that bypasses the narrow filter
-# (chroot $ROOT apt-get install traefik after main mmdebstrap pass).
-# Tracked as a follow-up to CI selective-rebuild task #82.
+# Traefik is in noble's universe repo, but mmdebstrap's --include applies a
+# ?priority(required) narrow filter that drops it ("Unable to locate package
+# traefik") — the same structural blocker as vector + gcsfuse. So package_spec
+# stays empty and the binary is fetched-and-sha256-verified from the upstream
+# GitHub release in the build-platform-modules Stage 1.5 step (staged into
+# /usr/bin/traefik) — hermetic, no checked-in binary, CVE fixes on bump.
 package_spec: []
 file_spec:
   - /usr/bin/traefik
@@ -50,6 +44,20 @@ dependencies:
     - http.reverse-proxy
     - tls.acme
 
+# The traefik service runs as User=traefik. With RootDirectory=/sysroot the
+# agent renders /etc/passwd + /etc/group from module-declared identities
+# (etcidentity), so the user must be declared here — apt isn't creating it
+# (package_spec is empty; the binary is fetched in CI). uid/gid are
+# platform-allocated (reserved.go) and intentionally omitted.
+groups:
+  - name: traefik
+users:
+  - name: traefik
+    primary_group: traefik
+    shell: /usr/sbin/nologin
+    home: /etc/traefik
+    gecos: "Traefik reverse proxy"
+
 security:
   capabilities:
     - CAP_NET_BIND_SERVICE
@@ -58,7 +66,7 @@ security:
   user_namespace: true
 
 build:
-  # Vendored Traefik binary from extensions/system/agent/dist/.
-  # The CI step copies it into /usr/local/bin during the
-  # composer stage, so package_spec is empty.
+  # The traefik binary is fetched + sha256-verified from the upstream GitHub
+  # release in build-platform-modules Stage 1.5 and staged into /usr/bin/traefik
+  # (see that step for the pinned version + checksum). package_spec is empty.
   apt_snapshot: "20260415T000000Z"

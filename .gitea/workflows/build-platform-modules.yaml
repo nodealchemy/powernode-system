@@ -495,11 +495,22 @@ jobs:
               fi
               ;;
             reverse-proxy-traefik)
-              # Traefik binary now comes from Stage 1 via package_spec:
-              # [traefik] → /usr/bin/traefik. The vendored-binary path
-              # under agent/dist/ was a stopgap before that; removing
-              # it keeps the build hermetic (no hand-checked-in binaries
-              # in git) and inherits Debian's CVE patching.
+              # Traefik isn't in noble's required-priority apt set
+              # (mmdebstrap's narrow filter drops it), so fetch the
+              # upstream release binary and verify its sha256 — the same
+              # hermetic pattern as the cosign/oras fetch earlier in this
+              # job. No checked-in binary; a version bump here picks up
+              # upstream CVE fixes. amd64-only, matching the dogfood VMs
+              # (multi-arch fetch is a follow-up when arm64 nodes land).
+              TRAEFIK_VERSION="3.7.1"
+              TRAEFIK_SHA256="e92bcfb03fa1e6a70c4e7ad4eb4f1604967e6fa3c21d8e7605aca5407a40162c"
+              curl -fsSL \
+                "https://github.com/traefik/traefik/releases/download/v${TRAEFIK_VERSION}/traefik_v${TRAEFIK_VERSION}_linux_amd64.tar.gz" \
+                -o /tmp/traefik.tar.gz
+              echo "${TRAEFIK_SHA256}  /tmp/traefik.tar.gz" | sha256sum -c -
+              mkdir -p /tmp/fat/usr/bin
+              tar -xzf /tmp/traefik.tar.gz -C /tmp/fat/usr/bin traefik
+              chmod 0755 /tmp/fat/usr/bin/traefik
               mkdir -p /tmp/fat/etc/traefik/dynamic
               # Default static config — dynamic configs land in /etc/traefik/dynamic/
               # Use printf to avoid YAML/heredoc indent conflicts.
