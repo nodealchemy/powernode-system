@@ -30,8 +30,19 @@ module Api
               return
             end
 
+            # Resolve by exact id first (unique). The mtls_subject path is NOT
+            # unique — the agent's cert CN is the Node hostname, which every
+            # spawn from that Node shares, so many NodeInstances carry the same
+            # mtls_subject. A plain find_by returns the OLDEST match, which can
+            # be a TERMINATED instance that shadows the live one → spurious 401.
+            # Exclude terminated/error (mirrors NodeInstance#active?) and prefer
+            # the most-recent so a dead sibling never wins.
             instance = ::System::NodeInstance.find_by(id: subject_cn) ||
-                       ::System::NodeInstance.find_by(mtls_subject: subject_cn)
+                       ::System::NodeInstance
+                         .where(mtls_subject: subject_cn)
+                         .where.not(status: %w[terminated error])
+                         .order(created_at: :desc)
+                         .first
             unless instance
               render_unauthorized("Instance not found for mTLS subject")
               return

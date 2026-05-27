@@ -43,6 +43,21 @@ RSpec.describe "Api::V1::System::NodeApi mTLS authentication", type: :request do
       get probe_path, headers: traefik_header("node-instance-#{instance.id}")
       expect(response).to have_http_status(:ok)
     end
+
+    it "authenticates the live instance, not a terminated sibling sharing the mtls_subject" do
+      # The agent's cert CN is the Node hostname, which every spawn from that
+      # Node shares — so many NodeInstances carry the same mtls_subject. A plain
+      # find_by(mtls_subject:) returned the oldest match (often a TERMINATED row)
+      # and 401'd the live agent. The resolver must skip terminated/error rows.
+      shared = "child.example.test"
+      instance.update!(mtls_subject: shared) # running, has active cert (let!)
+      terminated = create(:system_node_instance, node: node, status: "terminated",
+                                                  mtls_subject: shared)
+      terminated.update_column(:created_at, 5.days.ago) # older → would shadow
+
+      get probe_path, headers: traefik_header(shared)
+      expect(response).to have_http_status(:ok)
+    end
   end
 
   describe "auth failures" do
