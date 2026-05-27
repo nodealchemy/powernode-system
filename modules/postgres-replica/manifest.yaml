@@ -37,7 +37,17 @@ dependencies:
     - database.postgres.v16
 
 security:
-  capabilities: []
+  # See postgres-primary/manifest.yaml — the start script runs as root to
+  # prep the data dir then drops to postgres via runuser. An empty
+  # CapabilityBoundingSet (the default under RootDirectory=/sysroot)
+  # strips root's chown/chmod, so declare the minimal init-sequence set.
+  capabilities:
+    - CAP_CHOWN
+    - CAP_DAC_OVERRIDE
+    - CAP_FOWNER
+    - CAP_SETUID
+    - CAP_SETGID
+    - CAP_SETPCAP
   egress_allow: []
   privileged: false
   user_namespace: true

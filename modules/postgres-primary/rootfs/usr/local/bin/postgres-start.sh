@@ -22,6 +22,17 @@ chown -R postgres:postgres /var/lib/postgresql "$RUN" "$LOG"
 chmod 700 "$DATA"
 
 if [ ! -f "$DATA/PG_VERSION" ]; then
+  # The apt postgresql-16 install leaves a PARTIAL default cluster baked
+  # into the module's erofs layer (base/, global/, pg_*/ dirs but no
+  # PG_VERSION — apt's postinst initdb is skipped in the build chroot).
+  # initdb refuses a non-empty target dir, so clear any baked/stale
+  # content first. Safe because the absence of PG_VERSION means there's
+  # no real cluster here — only build-artifact debris or a half-finished
+  # prior init. Real clusters (with PG_VERSION) skip this whole block.
+  if [ -n "$(ls -A "$DATA" 2>/dev/null)" ]; then
+    echo "[postgres-start] $DATA non-empty but no PG_VERSION — clearing build-artifact debris before initdb"
+    find "$DATA" -mindepth 1 -delete
+  fi
   echo "[postgres-start] Initializing cluster at $DATA (trust auth, UTF8)"
   runuser -u postgres -- /usr/lib/postgresql/16/bin/initdb \
     -D "$DATA" \

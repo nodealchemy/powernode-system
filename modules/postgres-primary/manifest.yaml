@@ -81,7 +81,24 @@ dependencies:
     - database.postgres.v16
 
 security:
-  capabilities: []
+  # postgres-start.sh runs as root to prep the data dir, then drops to
+  # the postgres user via runuser. With RootDirectory=/sysroot the agent
+  # emits an empty CapabilityBoundingSet= unless caps are declared here,
+  # which strips even root's ability to chown/chmod — start.sh then dies
+  # with "chown: Operation not permitted". Declare the minimal set the
+  # init sequence needs:
+  #   CAP_CHOWN       — chown -R postgres:postgres on the data/run/log dirs
+  #   CAP_DAC_OVERRIDE— write into postgres-owned dirs while still root
+  #   CAP_FOWNER      — chmod 700 the data dir after it's postgres-owned
+  #   CAP_SETUID/GID  — runuser drops to the postgres user for initdb/postgres
+  #   CAP_SETPCAP     — runuser adjusts the capability set on the dropped child
+  capabilities:
+    - CAP_CHOWN
+    - CAP_DAC_OVERRIDE
+    - CAP_FOWNER
+    - CAP_SETUID
+    - CAP_SETGID
+    - CAP_SETPCAP
   egress_allow: []
   privileged: false
   user_namespace: true
