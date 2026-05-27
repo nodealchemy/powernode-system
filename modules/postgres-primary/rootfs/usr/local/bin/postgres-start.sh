@@ -62,8 +62,16 @@ if [ -w "$CONF" ] && ! grep -qE '^\s*unix_socket_directories' "$CONF"; then
   echo "unix_socket_directories = '$RUN'" >> "$CONF"
 fi
 
+# Debian's postgresql.conf ships `ssl = on` pointing at the snakeoil cert
+# (/etc/ssl/private/ssl-cert-snakeoil.key, root:ssl-cert 0640). The backend
+# drops to the `postgres` user, which isn't in the ssl-cert group inside the
+# erofs, so it dies with "could not access private key file ... Permission
+# denied". This is a localhost-only DB (listen_addresses=localhost, trust on
+# 127.0.0.1) reached by the hub over the loopback — TLS adds nothing here, so
+# force it off rather than ship a readable key into the image.
 echo "[postgres-start] Starting postgres -D $DATA"
 exec runuser -u postgres -- /usr/lib/postgresql/16/bin/postgres \
   -D "$DATA" \
   -c config_file="$CONF" \
-  -c hba_file="$HBA"
+  -c hba_file="$HBA" \
+  -c ssl=off
