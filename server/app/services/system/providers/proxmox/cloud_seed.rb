@@ -63,6 +63,22 @@ module System
           parent.empty? ? DEFAULT_AGENT_PATH : "#{parent}#{DEFAULT_AGENT_PATH}"
         end
 
+        # Returns parent_url with :4443 swapped/appended as the port.
+        # The agent's long-running service hits mTLS-required routes on
+        # the websecure-mtls entrypoint; the bootstrap calls in
+        # cloud-init's runcmd continue to use the unparsed parent_url
+        # (default :443) because they authenticate via bootstrap/acceptance
+        # tokens, not mTLS.
+        def mtls_platform_url
+          parsed = URI.parse(@spawn_payload["parent_url"].to_s)
+          parsed.port = 4443
+          parsed.to_s
+        rescue URI::InvalidURIError
+          # Fallback: assume hostname-only parent_url, attach https://+:4443
+          host = @spawn_payload["parent_url"].to_s.sub(%r{^\w+://}, "").split("/").first
+          host.empty? ? "https://localhost:4443" : "https://#{host}:4443"
+        end
+
         def render
           # Cloud-init expects the literal string `#cloud-config` on the
           # FIRST line (not the YAML header). YAML.dump emits `---` first,
@@ -262,7 +278,17 @@ module System
             # production deployments should rely on module SudoersGrant
             # rows and unset this flag.
             Environment=POWERNODE_OPERATOR_BREAK_GLASS=1
-            ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{spawn_payload['parent_url']} --pki-dir=/var/lib/powernode/pki
+            # The long-running service performs mTLS-authenticated calls
+            # against /api/v1/system/node_api/* — those routes live on
+            # the websecure-mtls Traefik entrypoint (:4443) per the
+            # split-entrypoint architecture (per-SNI TLS-option conflict
+            # rules out a single :443 with both no-cert and mtls routes
+            # for the same hostname). Bootstrap calls (enroll +
+            # federation-accept) used the unauthenticated :443 catch-all
+            # in cloud-init's runcmd, where the bootstrap_token /
+            # acceptance_token carry their own auth; after that, the
+            # service swaps over to :4443 for mTLS.
+            ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{mtls_platform_url} --pki-dir=/var/lib/powernode/pki
             Restart=on-failure
             RestartSec=10s
             # NOTE: previously had `ReadOnlyPaths=/sys/firmware/qemu_fw_cfg`
@@ -282,6 +308,21 @@ module System
 
         def runcmd
           [
+            # Defense-in-depth operator SSH key install. The cloud-init
+            # users: block SHOULD install ssh_authorized_keys, but when
+            # PVE injects its own ciuser=operator metadata the merge
+            # silently drops keys — operator gets created but with no
+            # authorized_keys. Re-install directly so SSH works
+            # regardless of cloud-init's user-module behavior.
+            "id operator >/dev/null 2>&1 || useradd -m -s /bin/bash operator",
+            "install -d -m 0700 -o operator -g operator /home/operator/.ssh",
+            *@ssh_authorized_keys.map { |k|
+              # Append (not overwrite) so multiple keys accumulate; the
+              # `grep -q` guard makes it idempotent across reboots/re-runs.
+              %Q(grep -qxF '#{k}' /home/operator/.ssh/authorized_keys 2>/dev/null || echo '#{k}' >> /home/operator/.ssh/authorized_keys)
+            },
+            "chmod 600 /home/operator/.ssh/authorized_keys",
+            "chown operator:operator /home/operator/.ssh/authorized_keys",
             # Apply the netplan override (write_files dropped it into
             # /etc/netplan/99-powernode-dhcp.yaml) and renew the DHCP
             # lease so the upstream DHCP server sees the cloud-init-set
