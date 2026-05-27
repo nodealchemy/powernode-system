@@ -56,6 +56,15 @@ type ReconcilerConfig struct {
 	// Interval is the gap between full reconcile cycles in Run(ctx).
 	// Default 60s, jittered ±10%.
 	Interval time.Duration
+	// ManifestTTL bounds how long a cached manifest is trusted before the
+	// reconcile loop refetches it from the platform. Zero would mean "cache
+	// forever", which silently pins the agent to a stale module digest — a
+	// rebuilt+republished module's new digest is never seen, so it is never
+	// re-pulled (every update otherwise needs a manual cache-clear). Defaults
+	// to 90s: slightly longer than the 60s reconcile interval so a steady
+	// fleet refetches roughly every other tick rather than every tick, while
+	// still surfacing a republished module within ~2 cycles.
+	ManifestTTL time.Duration
 	// DryRun, when true, computes the diff + plan but skips all
 	// mutations (no pull, no mount, no systemd action).
 	DryRun bool
@@ -110,6 +119,9 @@ func NewReconciler(cfg ReconcilerConfig) (*Reconciler, error) {
 	}
 	if cfg.Interval == 0 {
 		cfg.Interval = 60 * time.Second
+	}
+	if cfg.ManifestTTL == 0 {
+		cfg.ManifestTTL = 90 * time.Second
 	}
 	if cfg.OnError == nil {
 		cfg.OnError = func(string, error) {}
@@ -185,7 +197,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		if !mod.HasDataFile {
 			continue // config-variety + skill modules have no blob to mount
 		}
-		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, 0)
+		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, r.cfg.ManifestTTL)
 		if err != nil {
 			r.cfg.OnError("reconciler:fetch_manifest", fmt.Errorf("module %s: %w", mod.ID, err))
 			continue
@@ -613,7 +625,7 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	mf, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, moduleID, 0)
+	mf, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, moduleID, r.cfg.ManifestTTL)
 	if err != nil {
 		return "", fmt.Errorf("fetch manifest: %w", err)
 	}
@@ -701,17 +713,17 @@ func (r *Reconciler) DetachOne(ctx context.Context, moduleID string) (string, er
 // `sync`, `attach`, `detach` CLIs which each construct a one-shot
 // reconciler scoped to a single command invocation.
 type FactoryConfig struct {
-	ModulesClient ModulesClient
+	ModulesClient  ModulesClient
 	ManifestClient manifest.Client
-	ManifestRoot  string
-	Puller        PullerAPI
-	Verifier      verify.Verifier
-	Fsverity      *verify.FsVerifier
-	MountRunner   mount.Runner
-	Layout        mount.Layout
-	StatePath     string
-	DryRun        bool
-	OnError       func(stage string, err error)
+	ManifestRoot   string
+	Puller         PullerAPI
+	Verifier       verify.Verifier
+	Fsverity       *verify.FsVerifier
+	MountRunner    mount.Runner
+	Layout         mount.Layout
+	StatePath      string
+	DryRun         bool
+	OnError        func(stage string, err error)
 }
 
 // NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI

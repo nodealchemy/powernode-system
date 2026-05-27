@@ -399,6 +399,27 @@ func TestReconcilerRequiredFields(t *testing.T) {
 	}
 }
 
+func TestReconcilerDefaultsManifestTTL(t *testing.T) {
+	// A zero ManifestTTL means "trust the on-disk manifest forever", which
+	// pins the agent to a stale module digest — a rebuilt+republished module
+	// is never re-pulled. NewReconciler must default it to a non-zero TTL so
+	// the reconcile loop surfaces republished modules without a manual cache
+	// clear.
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  &stubModulesClient{},
+		ManifestClient: &stubModulesClient{},
+		Puller:         &stubPuller{},
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    &mount.RecorderRunner{},
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if r.cfg.ManifestTTL <= 0 {
+		t.Fatalf("ManifestTTL defaulted to %v; want non-zero (cache-forever regression)", r.cfg.ManifestTTL)
+	}
+}
+
 func TestReconcilerDryRunSkipsMutations(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
