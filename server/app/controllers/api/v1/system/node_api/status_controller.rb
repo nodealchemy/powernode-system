@@ -111,13 +111,20 @@ module Api
           end
 
           # POST /api/v1/system/node_api/status/operations/:id/ack
-          # Acknowledge operation receipt
+          # Acknowledge operation receipt. NOTE: 'acknowledged' is NOT a
+          # valid status (System::Task::STATUSES has pending/scheduled/
+          # running/complete/failed/aborted/cancelled). The earlier impl
+          # transitioned to status="acknowledged" which raised a
+          # validation error and bubbled out as 422 — the agent's
+          # post-poll ack step would fail, blocking task execution. We
+          # now just append an event record without touching status;
+          # the agent will transition pending → running through its own
+          # update when it actually starts executing.
           def acknowledge_task
             operation = current_instance.tasks.find(params[:id])
 
             if operation.pending?
               operation.update!(
-                status: "acknowledged",
                 events: (operation.events || []) << {
                   type: "acknowledged",
                   message: "Acknowledged by instance",
