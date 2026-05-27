@@ -173,6 +173,10 @@ module System
     def build_provider_params(region:, instance_type:, instance:, node:, options:)
       params = {
         name: instance.name,
+        # hostname becomes /etc/hostname inside the guest (cloud-init
+        # `hostname:` + DHCP option 12). Falls back to the unique
+        # instance name if no explicit override was requested.
+        hostname: options[:hostname].presence || instance.name,
         instance: instance,        # LocalQemuProvider requires the AR record
         node: node,                # adapters that need template/platform access
         instance_type: instance_type.name,

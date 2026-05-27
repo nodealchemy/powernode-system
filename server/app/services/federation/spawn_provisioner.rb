@@ -61,6 +61,12 @@ module Federation
         options: {
           spawn_payload: payload,
           name: spawn_target[:name] || "federation-spawn",
+          # hostname becomes /etc/hostname inside the VM (cloud-init
+          # `hostname:` + the netplan dhcp4-overrides.hostname that
+          # feeds DHCP option 12). Without an explicit hint we fall
+          # back to the unique instance name (e.g. ops2-20260527001135),
+          # which is verbose but at least uniquely identifies the box.
+          hostname: spawn_target[:hostname] || spawn_target["hostname"],
           # boot_mode dispatches ProxmoxProvider#create_instance between
           # cloud_init (default, pre-baked cloud image + cicustom seed)
           # and direct_kernel (Powernode-as-OS: -kernel -initrd -append
