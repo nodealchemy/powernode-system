@@ -352,12 +352,16 @@ module Acme
     #                              (Sidekiq worker client cert)
     #   - <slug>-worker-auth    — Host(`cn`) && PathPrefix(`/api/v1/worker_auth`)
     #                              (worker-web client cert; user creds in body)
+    #   - <slug>-cable-mtls     — Host(`cn`) && PathPrefix(`/cable`)
+    #                              (Sidekiq worker WS; user browsers use the
+    #                               <slug>-cable router on :443 with user JWT)
     #
     # Controllers decide what kind of identity the verified cert belongs to:
     #   NodeApi::BaseController        → looks up NodeInstance by CN
     #   FederationApi::BaseController  → looks up NodeCertificate with subject_kind="federation_peer"
     #   Internal::InternalBaseController (in core) → looks up Worker by CN
     #   WorkerAuthController (in core) → looks up Worker by CN, validates user body
+    #   ApplicationCable::Connection   → mTLS arm resolves Worker by CN, user-JWT arm resolves User
     def render_routers(cert)
       slug = router_slug(cert)
       hosts_matcher = build_hosts_matcher(cert.common_name)
@@ -389,6 +393,12 @@ module Acme
         } ],
         [ "#{slug}-worker-auth", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/worker_auth`)",
+          "service"     => "powernode-backend",
+          "entryPoints" => [ "websecure-mtls" ],
+          "tls"         => mtls_tls
+        } ],
+        [ "#{slug}-cable-mtls", {
+          "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
           "service"     => "powernode-backend",
           "entryPoints" => [ "websecure-mtls" ],
           "tls"         => mtls_tls
