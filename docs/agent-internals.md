@@ -48,7 +48,7 @@ domain unit with focused responsibilities; no cross-package state.
 
 | Package | Responsibility |
 |---------|----------------|
-| `transport` | mTLS HTTP client for `/node_api/*`. The TLS handshake presents the agent's client cert (signed by the platform's internal CA at enrollment); the reverse proxy verifies it via `tls.options=mtls-required@file` and forwards the CN to Rails. No Bearer header — auth is purely cryptographic, bound to the connection. Certificate pinning, automatic CA chain refresh, exponential backoff on platform unreachable. |
+| `transport` | mTLS HTTP client for `/node_api/*`. The TLS handshake presents the agent's client cert (signed by the platform's internal CA at enrollment); the reverse proxy verifies it via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven, on the single websecure entrypoint) and forwards the CN to Rails. No Bearer header — auth is purely cryptographic, bound to the connection. Certificate pinning, automatic CA chain refresh, exponential backoff on platform unreachable. |
 | `security` | Capability dropping, seccomp filter application to the agent process itself, per-module SELinux/AppArmor profile loading on attach, IMA/EVM integration. |
 | `verify` | Cosign signature verification (per-module trust policy: `cosign_identity_regexp` + `cosign_issuer_regexp`), fs-verity root hash verification against `NodeModuleVersion.fsverity_root_hash`. |
 

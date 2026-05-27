@@ -55,9 +55,10 @@ module Api
           end
 
           # Reads the verified mTLS client subject CN from the request. The
-          # reverse proxy (Traefik v3) terminates the mTLS handshake on the
-          # `<slug>-federation-api` router (tls.options=mtls-required@file)
-          # and forwards the cert subject via the passTLSClientCert middleware
+          # reverse proxy (Traefik v3) terminates the handshake on the single
+          # websecure entrypoint (tls.options=mtls-optional@file, which the
+          # `<slug>-federation-api` router inherits) and forwards the cert
+          # subject via the passTLSClientCert middleware
           # as `X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"`
           # (URL-encoded). Mirrors NodeApi::BaseController's helper exactly —
           # both routes share the same shared mTLS YAML.

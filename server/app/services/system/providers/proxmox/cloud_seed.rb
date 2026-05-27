@@ -63,20 +63,14 @@ module System
           parent.empty? ? DEFAULT_AGENT_PATH : "#{parent}#{DEFAULT_AGENT_PATH}"
         end
 
-        # Returns parent_url with :4443 swapped/appended as the port.
-        # The agent's long-running service hits mTLS-required routes on
-        # the websecure-mtls entrypoint; the bootstrap calls in
-        # cloud-init's runcmd continue to use the unparsed parent_url
-        # (default :443) because they authenticate via bootstrap/acceptance
-        # tokens, not mTLS.
-        def mtls_platform_url
-          parsed = URI.parse(@spawn_payload["parent_url"].to_s)
-          parsed.port = 4443
-          parsed.to_s
-        rescue URI::InvalidURIError
-          # Fallback: assume hostname-only parent_url, attach https://+:4443
-          host = @spawn_payload["parent_url"].to_s.sub(%r{^\w+://}, "").split("/").first
-          host.empty? ? "https://localhost:4443" : "https://#{host}:4443"
+        # The platform base URL the agent uses for everything — enroll and
+        # mTLS-authenticated node-api calls alike. With the single-entrypoint
+        # optional-mTLS model, all traffic goes to the same :443 listener
+        # (the agent presents its client cert once enrolled; the listener
+        # verifies-if-given and forwards the CN). Trailing slashes trimmed so
+        # the agent doesn't build a double-slash path.
+        def base_platform_url
+          @spawn_payload["parent_url"].to_s.sub(%r{/+\z}, "")
         end
 
         def render
@@ -279,16 +273,14 @@ module System
             # rows and unset this flag.
             Environment=POWERNODE_OPERATOR_BREAK_GLASS=1
             # The long-running service performs mTLS-authenticated calls
-            # against /api/v1/system/node_api/* — those routes live on
-            # the websecure-mtls Traefik entrypoint (:4443) per the
-            # split-entrypoint architecture (per-SNI TLS-option conflict
-            # rules out a single :443 with both no-cert and mtls routes
-            # for the same hostname). Bootstrap calls (enroll +
-            # federation-accept) used the unauthenticated :443 catch-all
-            # in cloud-init's runcmd, where the bootstrap_token /
-            # acceptance_token carry their own auth; after that, the
-            # service swaps over to :4443 for mTLS.
-            ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{mtls_platform_url} --pki-dir=/var/lib/powernode/pki
+            # against /api/v1/system/node_api/* — under the single-entrypoint
+            # optional-mTLS model these share the same :443 listener as
+            # enroll/bootstrap. The listener runs VerifyClientCertIfGiven, so
+            # the pre-cert enroll handshake (bootstrap_token / acceptance_token
+            # auth) succeeds without a cert, and once the agent holds a cert it
+            # presents it on the same URL; Traefik verifies + forwards the CN.
+            # One --platform-url for both phases — no separate mTLS port.
+            ExecStart=/usr/local/bin/powernode-agent service --platform-url=#{base_platform_url} --pki-dir=/var/lib/powernode/pki
             Restart=on-failure
             RestartSec=10s
             # NOTE: previously had `ReadOnlyPaths=/sys/firmware/qemu_fw_cfg`

@@ -6,10 +6,13 @@ module Api
       module NodeApi
         # Base controller for Node API endpoints.
         #
-        # Auth model: mTLS only. Every request must arrive over a TLS
-        # connection terminated by Traefik with `tls.options=mtls-required@file`,
-        # which verifies the agent's client cert against the platform's
-        # internal CA (written to disk by Acme::TraefikConfigWriter.write_internal_ca!).
+        # Auth model: mTLS only (enforced here). Requests arrive over a TLS
+        # connection terminated by Traefik on the single websecure (:443)
+        # entrypoint, whose `tls.options=mtls-optional@file`
+        # (VerifyClientCertIfGiven) verifies the agent's client cert against the
+        # platform's internal CA *when presented* — this controller then
+        # requires the verified CN (401 otherwise). The CA is written to disk
+        # by Acme::TraefikConfigWriter.write_internal_ca!.
         # Traefik's `passTLSClientCert` middleware forwards the cert's CN
         # in X-Forwarded-Tls-Client-Cert-Info; this controller looks up
         # the calling NodeInstance by that CN and confirms its certificate
@@ -49,7 +52,7 @@ module Api
 
           # Reads the verified mTLS client subject CN from the request. The
           # reverse proxy (Traefik v3) terminates the mTLS handshake against
-          # the internal CA chain (mtls-required@file TLS option) and, when
+          # the internal CA chain (mtls-optional@file TLS option) and, when
           # the cert is valid, the passTLSClientCert middleware emits
           # `X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"`
           # (URL-encoded). This is the only header path supported — there

@@ -37,14 +37,14 @@ module Acme
     # File name for the shared dynamic config holding the mTLS TLS option
     # set + the passTLSClientCert middleware. Per-account YAMLs reference
     # these by `<name>@file`, so this file must exist before any per-account
-    # YAML referencing mtls-required is loaded. powernode-reverse-proxy.sh
+    # YAML referencing mtls-optional is loaded. powernode-reverse-proxy.sh
     # calls `write_mtls_shared_dynamic!` before per-account `write!` runs.
     SHARED_MTLS_FILENAME = "_mtls.yaml"
 
     # Bundle filename for the internal CA chain used by Traefik to verify
-    # client certificates on mTLS-required routes. Written by
-    # `write_internal_ca!`; referenced from the shared mTLS YAML via
-    # `tls.options.mtls-required.clientAuth.caFiles`.
+    # client certificates (when presented) on the optional-mTLS entrypoint.
+    # Written by `write_internal_ca!`; referenced from the shared mTLS YAML
+    # via `tls.options.mtls-optional.clientAuth.caFiles`.
     INTERNAL_CA_FILENAME = "internal-ca.pem"
 
     class << self
@@ -54,33 +54,26 @@ module Acme
             cert_dir: cert_dir || default_cert_dir).write!
       end
 
-      # Default port for the dedicated mTLS-required entrypoint.
-      # Operator-overridable via POWERNODE_TRAEFIK_MTLS_PORT. Chosen above
-      # the conventional :443 to avoid colliding with the public-facing
-      # listener; below :8443 to keep it inside the standard "secondary
-      # https" range. Workers + agents + federation peers connect to this
-      # port for any /api/v1/{system/node_api, system/federation_api,
-      # internal} traffic.
-      MTLS_ENTRYPOINT_PORT = 4443
-
       # Writes the platform's static Traefik config (entry points +
       # providers + logging). This is what systemd passes via
       # --configFile=<this path>. Idempotent — safe to call repeatedly.
       #
-      # Two TLS entrypoints:
-      #   - websecure (:443)        — browser + operator + MCP. No client
-      #                               cert required.
-      #   - websecure-mtls (:4443)  — agents + federation peers + workers.
-      #                               Client cert REQUIRED at the listener
-      #                               level (TLS option set as the
-      #                               entrypoint default).
-      # This split avoids Traefik's per-SNI TLS-option conflict — a single
-      # hostname can't simultaneously require + not-require client certs
-      # without different entrypoints.
+      # Single TLS entrypoint with OPTIONAL mTLS:
+      #   - websecure (:443) — serves everyone. The entrypoint applies one
+      #     TLS option (mtls-optional@file = VerifyClientCertIfGiven) so a
+      #     client cert is verified against the internal CA WHEN PRESENTED
+      #     but never required at the handshake. Certless clients (browsers,
+      #     operators, MCP, agent enroll/federation-accept) connect fine;
+      #     cert-bearing clients (agents, federation peers, workers) get
+      #     their CN forwarded by the pass-tls-client-cert middleware.
+      #     Per-route enforcement lives in the backend (NodeApi/FederationApi/
+      #     Internal/WorkerAuth base controllers 401 when the CN is absent).
+      # Using ONE TLS option for the whole host sidesteps Traefik's per-SNI
+      # TLS-option conflict — that conflict only arises from DIFFERENT options
+      # on the same hostname, which is why we don't set per-router tls.options.
       def write_static_config!(dynamic_dir: nil, output_path: nil)
         dynamic_dir ||= default_dynamic_dir
         out = output_path || default_static_config_path
-        mtls_port = (ENV["POWERNODE_TRAEFIK_MTLS_PORT"] || MTLS_ENTRYPOINT_PORT).to_i
         FileUtils.mkdir_p(File.dirname(out))
         config = {
           "entryPoints" => {
@@ -102,15 +95,15 @@ module Acme
                 }
               }
             },
-            "websecure" => { "address" => ":443" },
-            # Dedicated mTLS-required listener. Routers bound to this
-            # entrypoint get mtls-required@file applied via the shared
-            # dynamic config (no per-router tls.options needed). The
-            # passTLSClientCert middleware forwards the verified CN.
-            "websecure-mtls" => {
-              "address" => ":#{mtls_port}",
+            # Single HTTPS entrypoint. mtls-optional@file applies
+            # VerifyClientCertIfGiven (verify-if-presented, never required)
+            # as the entrypoint default, and pass-tls-client-cert forwards
+            # the verified CN. Every router inherits both — certless browser
+            # traffic and cert-bearing agent/worker traffic share one port.
+            "websecure" => {
+              "address" => ":443",
               "http"    => {
-                "tls"         => { "options" => "mtls-required@file" },
+                "tls"         => { "options" => "mtls-optional@file" },
                 "middlewares" => [ "pass-tls-client-cert@file" ]
               }
             }
@@ -147,10 +140,15 @@ module Acme
         out
       end
 
-      # Writes the shared dynamic config holding the mTLS-required TLS
-      # option set + the passTLSClientCert middleware. These primitives
-      # are referenced by per-account routers via `mtls-required@file`
-      # and `pass-tls-client-cert@file`. Idempotent.
+      # Writes the shared dynamic config holding the OPTIONAL-mTLS TLS
+      # option set + the passTLSClientCert middleware. These primitives are
+      # applied at the websecure entrypoint via `mtls-optional@file` and
+      # `pass-tls-client-cert@file`. Idempotent.
+      #
+      # clientAuthType=VerifyClientCertIfGiven: a presented cert is verified
+      # against the internal CA, but no cert is required at the handshake —
+      # so the same :443 listener serves certless browsers AND cert-bearing
+      # agents/workers/peers. Per-route enforcement is the backend's job.
       #
       # Header forwarding: passTLSClientCert.info.subject.commonName=true
       # makes Traefik emit
@@ -171,10 +169,13 @@ module Acme
         {
           "tls" => {
             "options" => {
-              "mtls-required" => {
+              "mtls-optional" => {
                 "clientAuth" => {
                   "caFiles"        => [ ca_path ],
-                  "clientAuthType" => "RequireAndVerifyClientCert"
+                  # Verify a presented cert against the internal CA, but do
+                  # not require one — lets certless browser/operator/enroll
+                  # traffic share :443 with cert-bearing agent/worker traffic.
+                  "clientAuthType" => "VerifyClientCertIfGiven"
                 }
               }
             }
@@ -331,33 +332,32 @@ module Acme
       }
     end
 
-    # Six routers per cert, split across TWO entrypoints to avoid Traefik's
-    # per-SNI TLS-option conflict (one host can't simultaneously require +
-    # not-require client certs on the same listener):
+    # Nine routers per cert, all on the single `websecure` (:443) entrypoint.
+    # That entrypoint applies mtls-optional@file (VerifyClientCertIfGiven) +
+    # the pass-tls-client-cert middleware as its defaults, so every router
+    # inherits optional client-cert verification + CN forwarding without any
+    # per-router tls.options (one option per host → no per-SNI conflict).
+    # Path specificity sets priority: Traefik orders by rule length, so the
+    # long mTLS-bearing API prefixes match before the bare `/api` and the
+    # Host-only frontend catchall.
     #
-    # `websecure` (:443) — NO client cert required:
-    #   - <slug>-api            — Host(`cn`) && PathPrefix(`/api`)
-    #   - <slug>-cable          — Host(`cn`) && PathPrefix(`/cable`)   (ActionCable WS)
-    #   - <slug>-frontend       — Host(`cn`)                            (catchall)
-    #
-    # `websecure-mtls` (:4443) — mTLS-REQUIRED at the listener level (the
-    # entrypoint's http.tls.options sets mtls-required@file as the default,
-    # and the entrypoint's http.middlewares forwards the verified CN — no
-    # per-router config needed):
     #   - <slug>-node-api       — Host(`cn`) && PathPrefix(`/api/v1/system/node_api`)
     #                              (agent client cert)
     #   - <slug>-federation-api — Host(`cn`) && PathPrefix(`/api/v1/system/federation_api`)
     #                              (federation peer client cert)
     #   - <slug>-internal-api   — Host(`cn`) && PathPrefix(`/api/v1/internal`)
     #                              (Sidekiq worker client cert)
+    #   - <slug>-worker-api     — Host(`cn`) && PathPrefix(`/api/v1/system/worker_api`)
     #   - <slug>-worker-auth    — Host(`cn`) && PathPrefix(`/api/v1/worker_auth`)
     #                              (worker-web client cert; user creds in body)
-    #   - <slug>-cable-mtls     — Host(`cn`) && PathPrefix(`/cable`)
-    #                              (Sidekiq worker WS; user browsers use the
-    #                               <slug>-cable router on :443 with user JWT)
+    #   - <slug>-api            — Host(`cn`) && PathPrefix(`/api`)        (operator JWT)
+    #   - <slug>-agent          — Host(`cn`) && PathPrefix(`/agent`)      (static binary)
+    #   - <slug>-cable          — Host(`cn`) && PathPrefix(`/cable`)      (ActionCable WS;
+    #                              dual auth — worker CN if a cert is present, else user JWT)
+    #   - <slug>-frontend       — Host(`cn`)                             (catchall)
     #
-    # Controllers decide what kind of identity the verified cert belongs to:
-    #   NodeApi::BaseController        → looks up NodeInstance by CN
+    # Controllers decide what kind of identity the (optional) cert belongs to:
+    #   NodeApi::BaseController        → looks up NodeInstance by CN (401 if absent)
     #   FederationApi::BaseController  → looks up NodeCertificate with subject_kind="federation_peer"
     #   Internal::InternalBaseController (in core) → looks up Worker by CN
     #   WorkerAuthController (in core) → looks up Worker by CN, validates user body
@@ -365,50 +365,42 @@ module Acme
     def render_routers(cert)
       slug = router_slug(cert)
       hosts_matcher = build_hosts_matcher(cert.common_name)
-      # mTLS routers carry `tls: {}` — TLS enabled, options UNSET. The
-      # mtls-required@file option is applied at the websecure-mtls
-      # ENTRYPOINT level (write_static_config! sets http.tls.options +
-      # the passTLSClientCert middleware there), so every router bound to
-      # that entrypoint inherits it. Setting per-router tls.options is
-      # redundant AND risks per-SNI TLS-option conflicts on shared hosts;
-      # it also forced YAML.dump to emit a shared-ref anchor/alias that
-      # tripped strict Psych safe_load. Empty hash keeps the generated
-      # config alias-free + portable.
+      # All routers carry `tls: {}` — TLS enabled, options UNSET. The
+      # mtls-optional@file option + passTLSClientCert middleware are applied
+      # at the websecure ENTRYPOINT level (write_static_config!), so every
+      # router inherits them. Setting per-router tls.options is redundant AND
+      # risks per-SNI TLS-option conflicts on shared hosts; it also forced
+      # YAML.dump to emit a shared-ref anchor/alias that tripped strict Psych
+      # safe_load. Empty hash keeps the generated config alias-free + portable.
       [
         [ "#{slug}-node-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/node_api`)",
           "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
+          "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-federation-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/federation_api`)",
           "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
+          "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-internal-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/internal`)",
           "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
+          "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-worker-api", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/worker_api`)",
           "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
+          "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-worker-auth", {
           "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/worker_auth`)",
           "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
-          "tls"         => {}
-        } ],
-        [ "#{slug}-cable-mtls", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure-mtls" ],
+          "entryPoints" => [ "websecure" ],
           "tls"         => {}
         } ],
         [ "#{slug}-api", {

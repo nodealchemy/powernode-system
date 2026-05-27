@@ -8,7 +8,7 @@ import (
 
 // Auth model: mTLS only. Requests carry no Bearer header — the client cert
 // presented at TLS handshake time is the credential, and the reverse proxy
-// (Traefik v3 with tls.options=mtls-required@file) is responsible for
+// (Traefik v3 with tls.options=mtls-optional@file) is responsible for
 // verifying it against the platform's internal CA. PostJSON / GetJSON
 // must not inject an Authorization header.
 

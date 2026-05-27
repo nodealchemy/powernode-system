@@ -8,8 +8,9 @@ module Api
         # Authenticated via mTLS — same pattern as Internal::InternalBaseController.
         # The Sidekiq worker is deployed as a NodeInstance (Stage 8b); the
         # reverse proxy verifies the worker's client cert against the
-        # platform's internal CA on the websecure-mtls entrypoint and
-        # forwards the CN (= NodeInstance.id) via X-Forwarded-Tls-Client-Cert-Info.
+        # platform's internal CA on the websecure entrypoint (optional mTLS,
+        # VerifyClientCertIfGiven) and forwards the CN (= NodeInstance.id) via
+        # X-Forwarded-Tls-Client-Cert-Info.
         # We resolve the Worker via `node_instance_id` and confirm it's active.
         class BaseController < ApplicationController
           include Paginatable

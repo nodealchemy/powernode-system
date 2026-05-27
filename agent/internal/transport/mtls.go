@@ -24,7 +24,8 @@ import (
 //
 // Auth model: mTLS only. The TLS handshake presents the agent's cert
 // (signed by the platform's internal CA); the reverse proxy verifies it
-// via `tls.options=mtls-required@file` and forwards the CN to Rails via
+// via `tls.options=mtls-optional@file` (VerifyClientCertIfGiven on the
+// single websecure entrypoint) and forwards the CN to Rails via
 // X-Forwarded-Tls-Client-Cert-Info. No bearer token, no second auth
 // surface — see extensions/system/docs/agent-internals.md.
 type Client struct {

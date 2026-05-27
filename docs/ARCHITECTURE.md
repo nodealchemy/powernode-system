@@ -429,10 +429,15 @@ Authenticated via `X-Worker-Token` (SHA-256 digest comparison).
 
 Authenticated via mTLS subject CN matching the NodeInstance.id. The
 reverse proxy (Traefik v3, configured by `Acme::TraefikConfigWriter`)
-terminates the handshake with `tls.options=mtls-required@file` against
-the internal CA bundle and forwards the verified CN to Rails via
-`X-Forwarded-Tls-Client-Cert-Info`. No JWT fallback — the JWT instance
-token was removed alongside the agent-auth mTLS conversion.
+terminates the handshake on the single `websecure` (:443) entrypoint with
+`tls.options=mtls-optional@file` (VerifyClientCertIfGiven — verify a
+presented cert against the internal CA, never require one at the
+handshake) and forwards the verified CN to Rails via
+`X-Forwarded-Tls-Client-Cert-Info`; this controller then requires that CN.
+Optional-at-the-handshake lets enroll (no cert yet) and browser/operator
+traffic share the same port, with per-route enforcement in the backend.
+No JWT fallback — the JWT instance token was removed alongside the
+agent-auth mTLS conversion.
 
 - `POST /node_api/enroll` — bootstrap token → cert exchange (the only
   bootstrap-token-authenticated endpoint; everything else is mTLS)

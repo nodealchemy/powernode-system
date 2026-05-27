@@ -49,8 +49,10 @@ services:
       # the co-resident Rails. On a MULTI-HOST worker NodeInstance the
       # config-variety child module overrides this to the platform's
       # public hostname over SDWAN. Either way, HTTPS-via-Traefik is
-      # required because the mTLS-required router lives there.
-      BACKEND_API_URL: "https://localhost:4443/"
+      # required: the worker presents its client cert and Traefik's
+      # single websecure (:443) entrypoint verifies-if-given + forwards
+      # the CN (optional-mTLS model).
+      BACKEND_API_URL: "https://localhost:443/"
       REDIS_URL: "redis://localhost:6379/0"
       # mTLS material comes from the on-host powernode-agent's PKI dir.
       # Agent owns enrollment + rotation via /node_api/enroll{,/refresh};
