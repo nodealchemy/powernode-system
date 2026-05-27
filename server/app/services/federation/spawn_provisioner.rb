@@ -169,19 +169,38 @@ module Federation
         return region if region
       end
 
-      # If a preset hint is supplied (e.g. "pve.vm.medium"), it names a
-      # ProviderInstanceType which uniquely identifies a provider. Honor
-      # that as the orchestrator's intent signal — without it, the next
-      # fallback would pick whichever connected provider happens to be
-      # first by created_at (commonly local-qemu, leaving a PVE spawn
-      # silently provisioned on the wrong substrate).
-      preset_hint = spawn_target[:preset] || spawn_target["preset"]
+      region_hint = (spawn_target[:region] || spawn_target["region"]).to_s.presence
+
+      # An instance-type name (e.g. "pve.vm.medium") is provider-unique, so
+      # it is the AUTHORITATIVE provider selector. The orchestrator passes it
+      # as :instance_size; older callers pass :preset — honor both. Without
+      # this the hint was dropped on the floor and resolution fell through to
+      # "first connectable provider by created_at" (commonly local-qemu),
+      # silently provisioning a PVE spawn on the wrong substrate.
+      preset_hint = instance_type_hint(spawn_target)
       if preset_hint.present?
         it = ::System::ProviderInstanceType.find_by(name: preset_hint)
         if it
+          # Within the pinned provider, honor a region-name hint when given
+          # (disambiguates same-named regions across providers), else take
+          # that provider's first connectable region.
+          if region_hint
+            named = ::System::ProviderRegion.find_by(provider_id: it.provider_id, name: region_hint)
+            return named if named
+          end
           region = first_region_for_connectable_provider(it.provider)
           return region if region
+          owned = ::System::ProviderRegion.where(provider_id: it.provider_id).order(:created_at).first
+          return owned if owned
         end
+      end
+
+      # A bare region-name hint with no usable instance-type hint: pick the
+      # connectable provider that owns a region with that name, so a name
+      # present under both a dead and a live provider lands on the live one.
+      if region_hint
+        named = region_by_name_preferring_connectable(region_hint)
+        return named if named
       end
 
       # Prefer a region whose provider HAS an active connection in this
@@ -225,6 +244,34 @@ module Federation
         .first
     end
 
+    # Instance-type name hint. The orchestrator forwards the operator's
+    # `instance_size` here; older spawn callers used `preset`. Both name a
+    # ProviderInstanceType (provider-unique), which is what disambiguates the
+    # target substrate.
+    def instance_type_hint(spawn_target)
+      (spawn_target[:preset] || spawn_target["preset"] ||
+       spawn_target[:instance_size] || spawn_target["instance_size"]).to_s.presence
+    end
+
+    # Resolve a region by name, restricted to providers that have an enabled +
+    # connected ProviderConnection in this account's scope. Falls back to any
+    # region with that name if none of the matches are connectable.
+    def region_by_name_preferring_connectable(region_hint)
+      scope = ::System::ProviderConnection
+                .enabled
+                .connected
+                .where("account_id = ? OR account_id IS NULL", @account&.id)
+      connectable_ids = scope.pluck(:provider_id).uniq
+      if connectable_ids.any?
+        named = ::System::ProviderRegion
+                  .where(name: region_hint, provider_id: connectable_ids)
+                  .order(:created_at)
+                  .first
+        return named if named
+      end
+      ::System::ProviderRegion.where(name: region_hint).order(:created_at).first
+    end
+
     def resolve_provider_type(node, region)
       return node.provider_type if node.respond_to?(:provider_type) && node.provider_type.present?
       provider = region&.provider
@@ -242,7 +289,7 @@ module Federation
         return type if type
       end
 
-      preset_hint = spawn_target[:preset] || spawn_target["preset"]
+      preset_hint = instance_type_hint(spawn_target)
       if preset_hint.present?
         type = ::System::ProviderInstanceType.find_by(
           name: preset_hint,

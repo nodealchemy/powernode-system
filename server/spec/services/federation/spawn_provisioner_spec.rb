@@ -132,6 +132,55 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
       end
     end
 
+    context "when instance_size names a provider-unique type (substrate disambiguation)" do
+      # Reproduces the ops2 mis-spawn: the account has TWO connectable
+      # providers — local-qemu (connection created first) and proxmox. The
+      # orchestrator passes region:"dna" + instance_size:"pve.vm.medium". The
+      # old resolver ignored both hints (it only read :preset) and picked
+      # local-qemu's region — first connectable by created_at — building a
+      # nested qemu instead of a PVE sibling. The instance-type name
+      # "pve.vm.medium" is proxmox-unique and must pin proxmox.
+      let!(:local_conn) do
+        create(:system_provider_connection, account: account, provider: provider,
+                                             status: "connected", enabled: true)
+      end
+      let!(:pve_provider) do
+        create(:system_provider, account: account, provider_type: "proxmox", name: "proxmox")
+      end
+      let!(:pve_conn) do
+        create(:system_provider_connection, account: account, provider: pve_provider,
+                                             status: "connected", enabled: true)
+      end
+      let!(:pve_region) do
+        create(:system_provider_region, provider: pve_provider, account: account, name: "dna")
+      end
+      let!(:pve_type) do
+        create(:system_provider_instance_type, provider: pve_provider, account: account,
+                                                name: "pve.vm.medium")
+      end
+
+      it "pins the proxmox region + type, not local-qemu's first region" do
+        instance = create(:system_node_instance, node: node, provider_region: pve_region,
+                                                  provider_instance_type: pve_type)
+        captured = {}
+        allow(::System::ProvisioningService).to receive(:provision_instance) do |args|
+          captured[:region_id] = args[:provider_region_id]
+          captured[:type_id]   = args[:provider_instance_type_id]
+          ::System::Runtime::Result.ok(data: { instance_id: instance.id })
+        end
+
+        result = described_class.new(account: account, current_user: user).provision!(
+          payload: payload,
+          spawn_target: { template_id: template.name, region: "dna", instance_size: "pve.vm.medium" }
+        )
+
+        expect(result[:ok?]).to be true
+        expect(captured[:region_id]).to eq(pve_region.id)
+        expect(captured[:type_id]).to eq(pve_type.id)
+        expect(captured[:region_id]).not_to eq(region.id)
+      end
+    end
+
     context "failure paths" do
       it "returns ok?=false when template_id is missing" do
         result = described_class.new(account: account, current_user: user)
