@@ -18,5 +18,15 @@ mkdir -p "$DATA" "$LOG" "$RUN"
 chown -R redis:redis "$DATA" "$LOG" "$RUN"
 chmod 750 "$DATA"
 
-echo "[redis-start] data=$DATA log=$LOG run=$RUN"
-exec runuser -u redis -- /usr/bin/redis-server /etc/redis/redis.conf
+# redis.conf ships root:root 0640 in the erofs (mkfs.erofs --all-root bakes
+# every file root-owned), so the dropped redis user can't read it from the
+# read-only lower ("can't open config file '/etc/redis/redis.conf':
+# Permission denied"). Stage a redis-readable copy on the writable data dir
+# (we hold CAP_DAC_OVERRIDE + CAP_FOWNER to read the source + fix the copy).
+CONF="$DATA/redis.conf"
+cp /etc/redis/redis.conf "$CONF"
+chown redis:redis "$CONF"
+chmod 0644 "$CONF"
+
+echo "[redis-start] data=$DATA log=$LOG run=$RUN conf=$CONF"
+exec runuser -u redis -- /usr/bin/redis-server "$CONF"
