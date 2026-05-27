@@ -156,6 +156,33 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
       end
     end
 
+    context "node_enrollment intended_subject (managed_child with a bound instance)" do
+      let(:enroll_node) { create(:system_node, account: account) }
+      let(:enroll_instance) { create(:system_node_instance, :running, node: enroll_node) }
+      let(:peer) do
+        create(:system_federation_peer, :spawned_parent_managed,
+               account: account,
+               status: "proposed",
+               remote_instance_url: "https://child.example.com",
+               metadata: { "node_id" => enroll_node.id, "node_instance_id" => enroll_instance.id })
+      end
+
+      before { plaintext_token }
+
+      it "binds the token to the instance UUID, not the (shared) Node hostname" do
+        post path, params: valid_payload, as: :json
+        expect(response).to have_http_status(:ok)
+
+        ne = JSON.parse(response.body).dig("data", "node_enrollment")
+        expect(ne).to be_present
+        expect(ne["intended_subject"]).to eq(enroll_instance.id)
+        expect(ne["intended_subject"]).not_to eq(enroll_node.name)
+
+        token = ::System::BootstrapToken.where(node_id: enroll_node.id).order(:created_at).last
+        expect(token.intended_subject).to eq(enroll_instance.id)
+      end
+    end
+
     context "when the peer is a symmetric out_of_band peering" do
       let(:peer) do
         create(:system_federation_peer, :platform,

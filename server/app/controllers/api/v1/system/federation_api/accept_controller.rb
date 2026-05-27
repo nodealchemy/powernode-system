@@ -177,10 +177,14 @@ module Api
           # for inclusion in the accept response, or nil when the lookup
           # data is absent (out-of-band-invited peers etc.).
           #
-          # The token is single-use, scoped to the child's Node, and
-          # carries the node's name as intended_subject — the agent
-          # presents it on /node_api/enroll and receives an mTLS cert
-          # bound to that Node's identity.
+          # The token is single-use, scoped to the child's Node, and carries
+          # the child's NodeInstance UUID as intended_subject — the agent
+          # presents it on /node_api/enroll and receives an mTLS cert whose CN
+          # is that UUID. The UUID (not node.name) is essential: the agent
+          # authenticates as a NodeInstance, and node.name (the Node hostname)
+          # is shared by every spawn from the same Node, so using it produced
+          # duplicate mtls_subjects that collided in authenticate_instance!.
+          # Falls back to node.name only when no instance is bound (degraded).
           def issue_node_enrollment_for!(peer)
             return nil unless peer.spawn_role == "parent"
             return nil unless peer.spawn_mode == "managed_child"
@@ -194,11 +198,12 @@ module Api
 
             instance = node_instance_id.present? ?
                        ::System::NodeInstance.find_by(id: node_instance_id) : nil
+            subject = instance&.id || node.name
 
             token, plaintext = ::System::BootstrapToken.issue!(
               node: node,
               node_instance: instance,
-              intended_subject: node.name,
+              intended_subject: subject,
               ttl: 1.hour,
               single_use: true,
               purpose: "federation_managed_child_accept"
@@ -215,7 +220,7 @@ module Api
               # is the child's URL (where the parent could reach the child),
               # which is the opposite direction and was a bug previously.
               platform_url:      request.base_url,
-              intended_subject:  node.name,
+              intended_subject:  subject,
               expires_at:        token.expires_at.iso8601
             }
           rescue StandardError => e
