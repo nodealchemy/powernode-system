@@ -200,11 +200,11 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                      .find { |r| r["rule"].include?("/api/v1/system/node_api") }
         expect(node_api).not_to be_nil
         expect(node_api["service"]).to eq("powernode-backend")
-        # Optional mTLS is applied at the single websecure entrypoint
-        # (write_static_config! sets mtls-optional@file + pass-tls-client-cert
-        # there); per-router tls.options stays unset to avoid SNI conflicts.
         expect(node_api["entryPoints"]).to eq([ "websecure" ])
-        expect(node_api.dig("tls", "options")).to be_nil
+        # Optional mTLS is applied PER-ROUTER (Traefik binds clientAuth options
+        # by HostSNI; an entrypoint-level option is ignored). Every router uses
+        # the same mtls-optional@file option, so there is no per-SNI conflict.
+        expect(node_api.dig("tls", "options")).to eq("mtls-optional@file")
       end
 
       it "emits nine routers per cert (node-api + federation-api + internal-api + worker-api + worker-auth + api + agent + cable + frontend)" do
