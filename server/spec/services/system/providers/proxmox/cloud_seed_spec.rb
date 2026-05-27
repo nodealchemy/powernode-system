@@ -35,20 +35,28 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
     expect(payload["package_update"]).to be true
   end
 
-  it "writes a netplan dropin that explicitly sends the configured hostname in DHCPREQUEST" do
+  it "writes a netplan dropin that matches en*/eth* interfaces and sends the configured hostname in DHCPREQUEST" do
     netplan = payload["write_files"].find { |f| f["path"] == "/etc/netplan/99-powernode-dhcp.yaml" }
     expect(netplan).to be_present
     expect(netplan["content"]).to include("send-hostname: true")
     expect(netplan["content"]).to include("hostname: ops2.ipnode.net")
+    # NIC name is image-dependent (eth0 on biosdevname-disabled images,
+    # enp0s18/ens18 on Ubuntu cloud images) — match by glob so netplan
+    # apply doesn't silently no-op when eth0 is absent.
+    expect(netplan["content"]).to include("en*")
+    expect(netplan["content"]).to include("eth*")
   end
 
-  it "applies netplan + reconfigures eth0 BEFORE downloading the agent (so DHCP renewal carries the right hostname)" do
+  it "applies netplan + reloads networkd BEFORE downloading the agent (so DHCP renewal carries the right hostname)" do
     runcmd = payload["runcmd"]
     netplan_idx = runcmd.index { |c| c.to_s.include?("netplan apply") }
+    reload_idx  = runcmd.index { |c| c.to_s.include?("networkctl reload") }
     agent_idx   = runcmd.index { |c| c.to_s.include?("powernode-agent") }
     expect(netplan_idx).not_to be_nil
+    expect(reload_idx).not_to be_nil
     expect(agent_idx).not_to be_nil
     expect(netplan_idx).to be < agent_idx
+    expect(reload_idx).to  be < agent_idx
   end
 
   it "writes the federation-payload.json fallback for fw-cfg-less PVE token-auth spawns" do

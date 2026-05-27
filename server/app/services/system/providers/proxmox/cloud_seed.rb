@@ -194,12 +194,34 @@ module System
           # might disable it. `use-hostname: false` keeps the boot-time
           # /etc/hostname authoritative — the upstream DHCP shouldn't
           # ever decide what our hostname is.
+          #
+          # Match by interface-name glob (`en*` + `eth*`) instead of
+          # hard-coding `eth0`. Ubuntu cloud images use predictable names
+          # like `enp0s18` / `ens18` for virtio-net NICs under q35; the
+          # `eth0` name only appears on older biosdevname-disabled images.
+          # Without the wildcard, netplan apply silently no-ops on PVE
+          # spawns, the VM never DHCPs, and federation enrollment never
+          # fires. Setting `dhcp-identifier: mac` makes the lease stable
+          # across reboots (the default uses systemd-machine-id which
+          # changes when the image is re-baked).
           <<~YAML
             network:
               version: 2
               ethernets:
-                eth0:
+                primary:
+                  match:
+                    name: "en*"
                   dhcp4: true
+                  dhcp-identifier: mac
+                  dhcp4-overrides:
+                    send-hostname: true
+                    use-hostname: false
+                    hostname: #{hostname}
+                primary-legacy:
+                  match:
+                    name: "eth*"
+                  dhcp4: true
+                  dhcp-identifier: mac
                   dhcp4-overrides:
                     send-hostname: true
                     use-hostname: false
@@ -252,7 +274,13 @@ module System
             # first leased — usually the BIOS-default "ubuntu" — and the
             # VM's friendly name never resolves.
             "netplan apply || true",
-            "networkctl reconfigure eth0 || true",
+            # Reconfigure all networkd-managed interfaces — the actual
+            # NIC name varies (eth0 on biosdevname-disabled images,
+            # enp0s18/ens18 on Ubuntu cloud images). networkctl with no
+            # iface arg reloads every interface, avoiding the silent
+            # no-op `networkctl reconfigure eth0` produces when eth0
+            # doesn't exist.
+            "networkctl reload || true",
             # Download the powernode-agent binary from the parent platform
             # (ops). The URL is unauthenticated by design — operators can
             # mirror it onto their own static-asset host if desired.
