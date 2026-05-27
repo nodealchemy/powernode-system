@@ -25,8 +25,19 @@ chmod 750 "$DATA"
 # (we hold CAP_DAC_OVERRIDE + CAP_FOWNER to read the source + fix the copy).
 CONF="$DATA/redis.conf"
 cp /etc/redis/redis.conf "$CONF"
+# Log to stderr (journal) rather than a file so startup failures are visible;
+# the file logfile in the apt conf otherwise swallows the reason redis exits.
+sed -i 's#^[[:space:]]*logfile[[:space:]].*#logfile ""#' "$CONF"
 chown redis:redis "$CONF"
 chmod 0644 "$CONF"
 
-echo "[redis-start] data=$DATA log=$LOG run=$RUN conf=$CONF"
-exec runuser -u redis -- /usr/bin/redis-server "$CONF"
+# The erofs ships /usr/bin/redis-server as a symlink to the redis-check-rdb
+# multi-call binary. redis selects server-vs-checker mode from its invoked
+# name (/proc/self/exe), so executing through the symlink runs the RDB checker
+# — which exits immediately with no log. Stage a real copy named "redis-server"
+# on the writable data dir so the mode dispatch resolves to the server.
+SRV="$DATA/redis-server"
+install -m 0755 "$(readlink -f /usr/bin/redis-server)" "$SRV"
+
+echo "[redis-start] data=$DATA log=$LOG run=$RUN conf=$CONF bin=$SRV"
+exec runuser -u redis -- "$SRV" "$CONF"
