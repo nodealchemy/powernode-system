@@ -134,6 +134,60 @@
       }
     },
 
+    "users": {
+      "type": "array",
+      "description": "Fleet-managed Unix users this module needs. The agent's etcidentity unions these across installed modules to render /etc/passwd + /etc/shadow. uid/primary_gid are allocated by the platform (reserved.go) and may be absent in the authored manifest.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "name" ],
+        "properties": {
+          "name":                 { "type": "string" },
+          "uid":                  { "type": "integer" },
+          "primary_gid":          { "type": "integer" },
+          "primary_group":        { "type": "string" },
+          "shell":                { "type": "string" },
+          "home":                 { "type": "string" },
+          "gecos":                { "type": "string" },
+          "supplementary_groups": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "groups": {
+      "type": "array",
+      "description": "Fleet-managed Unix groups this module needs (rendered into /etc/group). gid is platform-allocated and may be absent in the authored manifest.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "name" ],
+        "properties": {
+          "name":    { "type": "string" },
+          "gid":     { "type": "integer" },
+          "members": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "sudoers": {
+      "type": "array",
+      "description": "Sudo grants this module declares. The agent's etcsudoers validates each via visudo -cf and writes one /etc/sudoers.d/powernode-<module>-<id> file per grant. `runas` is the authored alias the platform maps to runas_user.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "id", "user", "commands" ],
+        "properties": {
+          "id":          { "type": "string" },
+          "user":        { "type": "string" },
+          "runas":       { "type": "string" },
+          "runas_user":  { "type": "string" },
+          "runas_group": { "type": "string" },
+          "commands":    { "type": "array", "items": { "type": "string" } },
+          "flags":       { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
     "skills": {
       "type": "array",
       "description": "AI Skills this module ships. Each entry is an object whose schema is owned by the skill subsystem; this manifest only validates that it's an array."
