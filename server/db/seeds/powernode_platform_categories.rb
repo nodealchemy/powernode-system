@@ -9,7 +9,7 @@
 #   - powernode-base-ruby
 #   - powernode-postgres
 #   - powernode-redis
-#   - powernode-reverse-proxy            (Traefik + ACME — P2.5 lives here)
+#   - reverse-proxy-traefik            (Traefik + ACME — P2.5 lives here)
 #   - powernode-hub-backend
 #   - powernode-hub-worker
 #   - powernode-hub-frontend

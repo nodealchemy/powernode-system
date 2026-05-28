@@ -9,7 +9,7 @@
 #   1. powernode-base-ruby     — FS-only, verified by hub-backend's existence
 #   2. powernode-postgres      — TCP probe on :5432
 #   3. powernode-redis         — TCP probe on :6379
-#   4. powernode-reverse-proxy — Traefik /ping endpoint on :8082
+#   4. reverse-proxy-traefik — Traefik /ping endpoint on :8082
 #   5. powernode-hub-backend   — Rails /up endpoint via proxy on :443
 #   6. powernode-hub-worker    — sidekiq process via agent_introspect
 #   7. powernode-hub-frontend  — static asset served via proxy
@@ -202,14 +202,14 @@ if libvirt_mode == "local"
   # `powernode-<module-id>-<service-name>.service`. We resolve module
   # ids from the seeded NodeModule rows on this account.
   modules_by_name = ::System::NodeModule.where(account: account, name: %w[
-    powernode-postgres powernode-redis powernode-reverse-proxy
+    powernode-postgres powernode-redis reverse-proxy-traefik
     powernode-hub-backend powernode-hub-worker
   ]).index_by(&:name)
 
   expected_units = {
     "powernode-postgres"      => "postgres",
     "powernode-redis"         => "redis",
-    "powernode-reverse-proxy" => "traefik",
+    "reverse-proxy-traefik" => "traefik",
     "powernode-hub-backend"   => "rails",
     "powernode-hub-worker"    => "sidekiq"
   }
@@ -243,7 +243,7 @@ if libvirt_mode == "local"
   # and not in the all-in-one template).
   results.check("powernode-hub template includes 8 platform modules") do
     expected = %w[
-      powernode-reverse-proxy powernode-base-ruby powernode-postgres
+      reverse-proxy-traefik powernode-base-ruby powernode-postgres
       powernode-redis powernode-hub-backend powernode-hub-worker
       powernode-hub-frontend powernode-extension-system
     ]

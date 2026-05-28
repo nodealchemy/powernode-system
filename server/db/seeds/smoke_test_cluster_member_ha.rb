@@ -98,7 +98,7 @@ results.check("cluster-member template ships the canonical 6-module set (no loca
   # loaded into hub-backend so it ships too. Redis + frontend are
   # served from the parent via SDWAN VIP — NOT local to the member.
   expected = %w[
-    powernode-reverse-proxy powernode-base-ruby
+    reverse-proxy-traefik powernode-base-ruby
     powernode-pg-replica powernode-hub-backend powernode-hub-worker
     powernode-extension-system
   ]

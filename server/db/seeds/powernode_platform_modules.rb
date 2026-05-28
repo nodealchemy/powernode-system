@@ -9,7 +9,7 @@
 #   - powernode-base-ruby          Ruby 3.3 + bundler + build deps
 #   - powernode-postgres           PostgreSQL 16 primary
 #   - powernode-redis              Redis for Sidekiq + ActionCable + cache
-#   - powernode-reverse-proxy      Traefik + ACME DNS-01 (P2.5 lives here)
+#   - reverse-proxy-traefik      Traefik + ACME DNS-01 (P2.5 lives here)
 #   - powernode-hub-backend        Rails API + ActionCable
 #   - powernode-hub-worker         Sidekiq worker (API-only HTTP to backend)
 #   - powernode-hub-frontend       Vite static assets (served by reverse-proxy)

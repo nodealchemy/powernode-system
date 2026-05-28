@@ -72,15 +72,15 @@ class AcmePreflightCheck
     end
 
     section("Module + template seeds") do
-      safe("module powernode-reverse-proxy in DB") { check_module_seeded("powernode-reverse-proxy") }
-      safe("template powernode-hub includes powernode-reverse-proxy") do
-        check_template_includes("powernode-hub", "powernode-reverse-proxy")
+      safe("module reverse-proxy-traefik in DB") { check_module_seeded("reverse-proxy-traefik") }
+      safe("template powernode-hub includes reverse-proxy-traefik") do
+        check_template_includes("powernode-hub", "reverse-proxy-traefik")
       end
-      safe("template powernode-hub-api includes powernode-reverse-proxy") do
-        check_template_includes("powernode-hub-api", "powernode-reverse-proxy")
+      safe("template powernode-hub-api includes reverse-proxy-traefik") do
+        check_template_includes("powernode-hub-api", "reverse-proxy-traefik")
       end
-      safe("template powernode-hub-frontend includes powernode-reverse-proxy") do
-        check_template_includes("powernode-hub-frontend", "powernode-reverse-proxy")
+      safe("template powernode-hub-frontend includes reverse-proxy-traefik") do
+        check_template_includes("powernode-hub-frontend", "reverse-proxy-traefik")
       end
     end
 
