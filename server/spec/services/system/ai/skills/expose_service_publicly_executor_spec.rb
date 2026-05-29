@@ -16,14 +16,21 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
   let(:vip_id)         { SecureRandom.uuid }
   let(:port_mapping_id) { SecureRandom.uuid }
   let(:certificate_id) { SecureRandom.uuid }
+  let(:vip_cidr)       { "fd00:beef::a/128" }
 
   # Default happy-path stubs for the SDWAN tool actions. The tool wraps its
   # payload under data.virtual_ip / data.port_mapping (BaseTool shape).
+  #
+  # The create_virtual_ip branch ASSERTS that cidr is threaded through —
+  # Sdwan::VirtualIp validates cidr presence, so a missing cidr would raise
+  # RecordInvalid in production. Asserting here means that regression (fix #1)
+  # can never hide behind a fully-stubbed SdwanTool again.
   def stub_sdwan_happy_path
     allow_any_instance_of(::Ai::Tools::SdwanTool).to receive(:execute) do |_tool, params:|
       case params[:action]
       when "system_sdwan_create_virtual_ip"
-        { success: true, data: { virtual_ip: { id: vip_id, cidr: "fd00:beef::a/128" } } }
+        expect(params[:cidr]).to be_present
+        { success: true, data: { virtual_ip: { id: vip_id, cidr: params[:cidr] } } }
       when "system_sdwan_create_port_mapping"
         { success: true, data: { port_mapping: { id: port_mapping_id } } }
       else
@@ -53,6 +60,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
       expect(d.dig(:inputs, :service_protocol, :required)).to be true
       expect(d.dig(:inputs, :sdwan_network_id, :required)).to be true
       expect(d.dig(:inputs, :sdwan_hub_peer_id, :required)).to be true
+      expect(d.dig(:inputs, :vip_cidr, :required)).to be true
       expect(d.dig(:inputs, :backend_port, :required)).to be true
       expect(d.dig(:inputs, :target_peer_id, :required)).to be false
       expect(d[:outputs].keys).to include(:vip_id, :port_mapping_id, :certificate_id,
@@ -64,6 +72,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
     it "rejects an unknown protocol" do
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "ftp",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
                        target_peer_id: backend.id, backend_port: 8080)
       expect(r[:success]).to be false
       expect(r[:error]).to match(/service_protocol must be/)
@@ -72,6 +81,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
     it "rejects when neither target is provided" do
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
                        backend_port: 8080)
       expect(r[:success]).to be false
       expect(r[:error]).to match(/exactly one of target_peer_id or target_instance_id/)
@@ -80,6 +90,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
     it "rejects when both targets are provided" do
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
                        target_peer_id: backend.id, target_instance_id: SecureRandom.uuid,
                        backend_port: 8080)
       expect(r[:success]).to be false
@@ -96,6 +107,8 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
     it "threads ids across all four steps and records steps_completed" do
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be true
@@ -119,6 +132,8 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                    sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                   vip_cidr: vip_cidr,
+                       dns_credential_id: SecureRandom.uuid,
                    target_peer_id: backend.id, backend_port: 8080)
     end
 
@@ -136,6 +151,8 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                    sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                   vip_cidr: vip_cidr,
+                       dns_credential_id: SecureRandom.uuid,
                    target_peer_id: backend.id, backend_port: 8080)
 
       pm = captured.find { |p| p[:action] == "system_sdwan_create_port_mapping" }
@@ -160,6 +177,8 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be true
@@ -176,6 +195,8 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be true
@@ -184,25 +205,35 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
     end
   end
 
-  describe "#execute — soft failures (degrade, don't abort)" do
+  describe "#execute — https TLS failures are hard failures (fix #2)" do
     before { stub_sdwan_happy_path }
 
-    it "collects a warning and still succeeds when cert provisioning fails" do
+    it "fails fast (before VIP creation) when dns-01 https is missing dns_credential_id" do
+      expect_any_instance_of(::Ai::Tools::SdwanTool).not_to receive(:execute)
+
+      r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
+                       sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       target_peer_id: backend.id, backend_port: 8080)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/dns_credential_id is required/)
+    end
+
+    it "fails (not success-with-warning) when cert provisioning fails" do
       allow_any_instance_of(System::Ai::Skills::AcmeCertificateProvisionExecutor)
         .to receive(:execute).and_return({ success: false, error: "dns challenge timed out" })
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr, dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
-      expect(r[:success]).to be true
-      expect(r[:data][:certificate_id]).to be_nil
-      expect(r[:data][:port_mapping_id]).to eq(port_mapping_id)
-      expect(r[:data][:warnings].join).to match(/certificate provisioning failed/)
-      expect(r[:data][:warnings].join).to match(/reverse proxy regen skipped/)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/certificate provisioning failed/)
     end
 
-    it "collects a warning and still succeeds when reverse-proxy regen fails" do
+    it "fails when reverse-proxy regen fails for an https expose" do
       allow_any_instance_of(System::Ai::Skills::AcmeCertificateProvisionExecutor)
         .to receive(:execute)
         .and_return({ success: true, data: { certificate_id: certificate_id, certificate_status: "valid" } })
@@ -211,12 +242,11 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr, dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
-      expect(r[:success]).to be true
-      expect(r[:data][:certificate_id]).to eq(certificate_id)
-      expect(r[:data][:warnings].join).to match(/reverse proxy regen failed/)
-      expect(r[:data][:steps_completed]).not_to include("reverse_proxy_regen")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/reverse proxy regen failed/)
     end
   end
 
@@ -227,6 +257,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr, dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be false
@@ -244,6 +275,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
 
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "https",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr, dns_credential_id: SecureRandom.uuid,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be false
@@ -254,7 +286,7 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
   describe "#execute — http (no TLS)" do
     before { stub_sdwan_happy_path }
 
-    it "skips cert + proxy, uses listen_port 80, and warns about no TLS" do
+    it "skips the cert step entirely, uses listen_port 80, and succeeds" do
       captured = []
       allow_any_instance_of(::Ai::Tools::SdwanTool).to receive(:execute) do |_t, params:|
         captured << params
@@ -266,16 +298,66 @@ RSpec.describe System::Ai::Skills::ExposeServicePubliclyExecutor do
         end
       end
 
+      # http exposures must not touch the ACME executor at all (no TLS).
+      expect_any_instance_of(System::Ai::Skills::AcmeCertificateProvisionExecutor)
+        .not_to receive(:execute)
+
       r = exec.execute(service_hostname: "app.example.com", service_protocol: "http",
                        sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
                        target_peer_id: backend.id, backend_port: 8080)
 
       expect(r[:success]).to be true
       expect(r[:data][:certificate_id]).to be_nil
       expect(r[:data][:public_endpoints]).to eq([ "http://app.example.com" ])
+      expect(r[:data][:steps_completed]).to eq(%w[create_virtual_ip create_port_mapping])
       pm = captured.find { |p| p[:action] == "system_sdwan_create_port_mapping" }
       expect(pm[:listen_port]).to eq(80)
-      expect(r[:data][:warnings].join).to match(/skipping ACME certificate/)
+    end
+  end
+
+  describe "#execute — target_instance_id resolution (fix #4)" do
+    before do
+      stub_sdwan_happy_path
+      stub_subexecutors_happy_path
+    end
+
+    it "rejects target_instance_id with no SDWAN peer in the network (never a holderless VIP)" do
+      expect_any_instance_of(::Ai::Tools::SdwanTool).not_to receive(:execute)
+
+      r = exec.execute(service_hostname: "app.example.com", service_protocol: "http",
+                       sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       target_instance_id: SecureRandom.uuid, backend_port: 8080)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/has no SDWAN peer/)
+    end
+
+    it "resolves target_instance_id to its peer and seats it as the VIP holder" do
+      # Peer must be scoped to the executor's account + the target network for
+      # the NodeInstance → Peer resolution to find it.
+      account_peer = create(:sdwan_peer, account: account, network: network)
+
+      captured = []
+      allow_any_instance_of(::Ai::Tools::SdwanTool).to receive(:execute) do |_t, params:|
+        captured << params
+        case params[:action]
+        when "system_sdwan_create_virtual_ip"
+          { success: true, data: { virtual_ip: { id: vip_id, cidr: params[:cidr] } } }
+        else
+          { success: true, data: { port_mapping: { id: port_mapping_id } } }
+        end
+      end
+
+      r = exec.execute(service_hostname: "app.example.com", service_protocol: "http",
+                       sdwan_network_id: network.id, sdwan_hub_peer_id: hub_peer.id,
+                       vip_cidr: vip_cidr,
+                       target_instance_id: account_peer.node_instance_id, backend_port: 8080)
+
+      expect(r[:success]).to be true
+      vip_params = captured.find { |p| p[:action] == "system_sdwan_create_virtual_ip" }
+      expect(vip_params[:holder_peer_ids]).to eq([ account_peer.id ])
     end
   end
 end

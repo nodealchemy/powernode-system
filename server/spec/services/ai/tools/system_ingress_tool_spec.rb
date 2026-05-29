@@ -26,8 +26,12 @@ RSpec.describe Ai::Tools::SystemIngressTool do
   let(:tool) { described_class.new(account: account, user: permissive_user) }
 
   def stub_executor(const_name, double_obj, result)
+    # Capture the real descriptor BEFORE stubbing the const — the tool calls
+    # klass.descriptor to filter inputs to declared keys (fix #3).
+    real_descriptor = const_name.constantize.descriptor
     klass = class_double(const_name).as_stubbed_const
     allow(klass).to receive(:new).and_return(double_obj)
+    allow(klass).to receive(:descriptor).and_return(real_descriptor)
     allow(double_obj).to receive(:execute).and_return(result)
     klass
   end
@@ -53,7 +57,8 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       defs = described_class.action_definitions
       expect(defs["system_reverse_proxy_compose"][:parameters].keys).to include(:certificate_id)
       expect(defs["system_expose_service_publicly"][:parameters].keys)
-        .to include(:service_hostname, :service_protocol, :sdwan_network_id, :sdwan_hub_peer_id, :backend_port)
+        .to include(:service_hostname, :service_protocol, :sdwan_network_id, :sdwan_hub_peer_id, :vip_cidr, :backend_port)
+      expect(defs["system_expose_service_publicly"][:parameters][:vip_cidr][:required]).to be true
       expect(defs["system_acme_provision_certificate"][:parameters].keys)
         .to include(:common_name, :issuer, :challenge_type)
     end
@@ -84,14 +89,32 @@ RSpec.describe Ai::Tools::SystemIngressTool do
         service_protocol: "https",
         sdwan_network_id: "net-1",
         sdwan_hub_peer_id: "peer-1",
+        vip_cidr: "fd00:beef::a/128",
         backend_port: 8080
       })
 
       expect(expose_executor).to have_received(:execute).with(
         service_hostname: "app.example.com", service_protocol: "https",
-        sdwan_network_id: "net-1", sdwan_hub_peer_id: "peer-1", backend_port: 8080
+        sdwan_network_id: "net-1", sdwan_hub_peer_id: "peer-1",
+        vip_cidr: "fd00:beef::a/128", backend_port: 8080
       )
       expect(result[:success]).to be true
+    end
+
+    it "ignores undeclared extra params instead of raising ArgumentError (fix #3)" do
+      stub_executor("System::Ai::Skills::ReverseProxyComposeExecutor",
+                    reverse_proxy_executor, { success: true, data: { composed: true } })
+
+      result = tool.execute(params: {
+        action: "system_reverse_proxy_compose",
+        certificate_id: "cert-1",
+        bogus_extra_param: "should-be-dropped"
+      })
+
+      # The executor only declares :certificate_id — the extra param must be
+      # filtered out before splatting so perform's strict kwargs don't raise.
+      expect(reverse_proxy_executor).to have_received(:execute).with(certificate_id: "cert-1")
+      expect(result).to eq(success: true, data: { composed: true })
     end
 
     it "routes system_acme_provision_certificate to AcmeCertificateProvisionExecutor" do

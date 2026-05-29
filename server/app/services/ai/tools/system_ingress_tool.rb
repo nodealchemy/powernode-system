@@ -43,6 +43,7 @@ module Ai
             service_protocol:   { type: "string",  required: false },
             sdwan_network_id:   { type: "string",  required: false },
             sdwan_hub_peer_id:  { type: "string",  required: false },
+            vip_cidr:           { type: "string",  required: false },
             target_peer_id:     { type: "string",  required: false },
             target_instance_id: { type: "string",  required: false },
             backend_port:       { type: "integer", required: false },
@@ -72,6 +73,7 @@ module Ai
               service_protocol:   { type: "string",  required: true,  description: "http | https" },
               sdwan_network_id:   { type: "string",  required: true,  description: "Sdwan::Network to host the VIP" },
               sdwan_hub_peer_id:  { type: "string",  required: true,  description: "Sdwan::Peer acting as the DNAT hub" },
+              vip_cidr:           { type: "string",  required: true,  description: "Operator-supplied host CIDR for the VIP (typically /128 v6 or /32 v4) within the network's /64" },
               backend_port:       { type: "integer", required: true,  description: "Backend service port to route public traffic to" },
               target_peer_id:     { type: "string",  required: false, description: "Sdwan::Peer hosting the backend (mutually exclusive with target_instance_id)" },
               target_instance_id: { type: "string",  required: false, description: "System::NodeInstance hosting the backend (mutually exclusive with target_peer_id)" },
@@ -112,14 +114,21 @@ module Ai
 
       def run_executor(action, params)
         klass = ACTION_EXECUTORS.fetch(action).constantize
-        inputs = executor_inputs(params)
+        inputs = executor_inputs(klass, params)
         klass.new(account: @account, agent: @agent, user: @user).execute(**inputs)
       end
 
-      # Strip the routing-only :action key; forward every other supplied param
-      # as a keyword arg. Executors validate their own required inputs.
-      def executor_inputs(params)
-        params.to_h.except(:action, "action").transform_keys(&:to_sym)
+      # Strip the routing-only :action key and forward only the params the
+      # target executor actually declares as skill_descriptor inputs. Executor
+      # `perform` signatures are strict (no **splat catch-all on every key), so
+      # any undeclared extra param would otherwise raise ArgumentError that the
+      # executor's error pipeline swallows into a silent failure (fix #3).
+      def executor_inputs(klass, params)
+        declared = klass.descriptor[:inputs]&.keys || []
+        params.to_h
+              .except(:action, "action")
+              .transform_keys(&:to_sym)
+              .slice(*declared)
       end
 
       def required_perm_for(action)
