@@ -38,8 +38,7 @@ module Acme
     #     relative name (apex = empty string).
     #
     # Plan reference: E6 (OVH DNS adapter).
-    class DnsClient
-      DEFAULT_TIMEOUT = 10
+    class DnsClient < ::Acme::BaseDnsClient
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA PTR].freeze
 
       # Named OVH API endpoints → base URL. A full URL is accepted as-is.
@@ -49,9 +48,7 @@ module Acme
         "ovh-ca" => "https://ca.api.ovh.com/1.0"
       }.freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       # Accepts either:
       #   new(application_key:, application_secret:, consumer_key:, endpoint:)
@@ -186,26 +183,6 @@ module Acme
         post("/domain/zone/#{escape(zone_id)}/refresh", body: nil)
       end
 
-      def extract_credentials(credentials, api_token)
-        source = credentials
-        # The factory only knows api_token:; accept a JSON-encoded blob there.
-        source ||= decode_blob(api_token)
-        return {} unless source.respond_to?(:transform_keys)
-        source.transform_keys(&:to_s)
-      end
-
-      def decode_blob(api_token)
-        return nil if api_token.nil?
-        return api_token if api_token.respond_to?(:transform_keys)
-
-        str = api_token.to_s.strip
-        return nil if str.empty?
-        parsed = JSON.parse(str)
-        parsed.is_a?(Hash) ? parsed : nil
-      rescue JSON::ParserError
-        nil
-      end
-
       def get(path, params: {})
         uri = URI("#{@base_url}#{path}")
         uri.query = URI.encode_www_form(params) if params.any?
@@ -260,7 +237,7 @@ module Acme
       rescue Net::OpenTimeout, Net::ReadTimeout => e
         Result.new(ok: false, error: "OVH API timeout: #{e.message}")
       rescue StandardError => e
-        @logger.error("[Acme::Ovh::DnsClient] #{e.class}: #{e.message}")
+        @logger.error("[#{log_tag}] #{e.class}: #{e.message}")
         Result.new(ok: false, error: "OVH API error: #{e.message}")
       end
 
@@ -278,9 +255,15 @@ module Acme
       # OVH validates the timestamp against its own clock (±~30s). We
       # fetch the server time once and cache the drift relative to the
       # local clock so subsequent requests stay aligned without an extra
-      # round-trip each time. Falls back to local time if the probe fails.
+      # round-trip each time.
+      #
+      # A *successful* probe caches the drift (even a legitimate 0-second
+      # drift — `0` is a real, cacheable value). A *failed* probe leaves
+      # @time_drift nil and falls back to local time for THIS request only,
+      # so the next call re-attempts the sync rather than permanently
+      # pinning to a possibly-skewed local clock.
       def ovh_timestamp(current_uri)
-        return Time.now.to_i + @time_drift if @time_drift
+        return Time.now.to_i + @time_drift unless @time_drift.nil?
 
         # Avoid infinite recursion: the /auth/time probe is unsigned and
         # must not re-enter the signed request path.
@@ -298,12 +281,12 @@ module Acme
           @time_drift = server_time - Time.now.to_i
           server_time
         else
-          @time_drift = 0
+          # Probe failed: do NOT pin @time_drift — retry on the next call.
           Time.now.to_i
         end
       rescue StandardError => e
-        @logger&.warn("[Acme::Ovh::DnsClient] time sync failed: #{e.message}")
-        @time_drift = 0
+        @logger&.warn("[#{log_tag}] time sync failed: #{e.message}")
+        # Transport failure: leave @time_drift nil so we re-sync later.
         Time.now.to_i
       end
 
@@ -311,28 +294,22 @@ module Acme
         a.host == b.host && a.path == b.path
       end
 
-      def parse_response(response)
-        if response.is_a?(Net::HTTPNoContent)
-          return Result.new(ok: true, data: {}, http_status: 204)
-        end
+      # OVH errors: { "message": "...", "class": "..." }
+      def extract_error(parsed, response)
+        msg = (parsed.is_a?(Hash) && (parsed["message"] || parsed["error"])) ||
+              "OVH API returned HTTP #{response.code}"
+        err_class = parsed.is_a?(Hash) ? parsed["class"] : nil
+        [ msg, [ { code: err_class || response.code, message: msg } ] ]
+      end
 
-        body = response.body.to_s
-        parsed = body.empty? ? {} : JSON.parse(body)
+      # Error/log strings spell the provider "OVH", not the "Ovh" the
+      # class-name default would produce.
+      def provider_label
+        "OVH"
+      end
 
-        if response.is_a?(Net::HTTPSuccess)
-          Result.new(ok: true, data: parsed, http_status: response.code.to_i)
-        else
-          # OVH errors: { "message": "...", "class": "..." }
-          msg = (parsed.is_a?(Hash) && (parsed["message"] || parsed["error"])) ||
-                "OVH API returned HTTP #{response.code}"
-          err_class = parsed.is_a?(Hash) ? parsed["class"] : nil
-          Result.new(ok: false, error: msg, http_status: response.code.to_i,
-                      cf_errors: [ { code: err_class || response.code, message: msg } ])
-        end
-      rescue JSON::ParserError
-        Result.new(ok: false,
-                    error: "Invalid JSON from OVH (HTTP #{response.code}): #{response.body.to_s[0, 200]}",
-                    http_status: response.code.to_i)
+      def base_url
+        @base_url
       end
 
       def resolve_base(endpoint)
@@ -343,31 +320,12 @@ module Acme
               "Unknown OVH endpoint #{endpoint.inspect}; expected one of #{ENDPOINTS.keys.inspect} or a full URL"
       end
 
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on OVH; allowed: #{ALLOWED_RECORD_TYPES.inspect}"
-      end
-
       # OVH TTL minimum is 60; the Cloudflare "auto"=1 sentinel maps to a
       # sane default of 3600.
       def normalize_ttl(ttl)
         t = ttl.to_i
         return 3600 if t <= 1
         [ t, 60 ].max
-      end
-
-      # OVH records use the relative subDomain (apex = ""). If the caller
-      # passes a FQDN, strip the zone suffix; "@" or the bare zone maps to
-      # the apex empty string.
-      def relativize_name(name, zone_id)
-        zone = zone_id.to_s
-        return "" if name.empty? || name == "@" || name == zone
-        return name.sub(/\.#{Regexp.escape(zone)}\z/, "") if name.end_with?(".#{zone}")
-        name
       end
 
       # OVH list_zones returns bare domain strings; id == name (like DO).

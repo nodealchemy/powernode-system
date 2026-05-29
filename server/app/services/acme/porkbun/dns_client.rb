@@ -25,14 +25,11 @@ module Acme
     #     {"status":"SUCCESS", ...}.
     #
     # Plan reference: E (multi-provider DNS adapters).
-    class DnsClient
+    class DnsClient < ::Acme::BaseDnsClient
       BASE_URL = "https://porkbun.com/api/json/v3"
-      DEFAULT_TIMEOUT = 10
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA ALIAS TLSA].freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       # Accepts either:
       #   new(api_key: "pk...", secret_api_key: "sk...")
@@ -150,7 +147,13 @@ module Acme
         body[:ttl]     = normalize_ttl(attrs[:ttl]) if attrs[:ttl].present?
         body[:prio]    = attrs[:priority].to_i if attrs[:priority].present?
 
-        if body[:type].blank? || body[:content].blank?
+        # Porkbun's edit endpoint treats an absent name as the apex, so an
+        # edit that supplies type+content but omits name would silently
+        # re-point the record to the zone apex. Re-fetch whenever ANY
+        # required field (name/type/content) is missing — name in
+        # particular must always be backfilled, not only when type/content
+        # are also blank.
+        if body[:name].nil? || body[:type].blank? || body[:content].blank?
           existing = get_record(zone_id, record_id)
           return existing unless existing.ok?
           body[:name]    = relativize_name(existing.data[:name].to_s, zone_id) if body[:name].nil?
@@ -174,8 +177,10 @@ module Acme
       private
 
       # Porkbun has no GET endpoints — everything is an authenticated POST.
+      # Overrides the base verb to inline the credentials in the JSON body
+      # (Porkbun's only auth mechanism — no header auth).
       def post(path, body:)
-        uri = URI("#{BASE_URL}#{path}")
+        uri = build_uri(path)
         req = Net::HTTP::Post.new(uri)
         req["Content-Type"] = "application/json"
         req["Accept"] = "application/json"
@@ -188,70 +193,16 @@ module Acme
         { apikey: @api_key, secretapikey: @secret_api_key }.merge(body || {})
       end
 
-      def request(req)
-        http = Net::HTTP.new(req.uri.host, req.uri.port)
-        http.use_ssl = true
-        http.read_timeout = @timeout
-        http.open_timeout = @timeout
-
-        response = http.request(req)
-        parse_response(response)
-      rescue Net::OpenTimeout, Net::ReadTimeout => e
-        Result.new(ok: false, error: "Porkbun API timeout: #{e.message}")
-      rescue StandardError => e
-        @logger.error("[Acme::Porkbun::DnsClient] #{e.class}: #{e.message}")
-        Result.new(ok: false, error: "Porkbun API error: #{e.message}")
-      end
-
       # Porkbun envelope:
       #   success → {"status":"SUCCESS", ...}
       #   failure → {"status":"ERROR","message": "..."}  (often with HTTP 400)
-      def parse_response(response)
-        body = response.body.to_s
-        parsed = body.empty? ? {} : JSON.parse(body)
-
-        if response.is_a?(Net::HTTPSuccess) && parsed["status"] == "SUCCESS"
-          Result.new(ok: true, data: parsed, http_status: response.code.to_i)
-        else
-          msg = parsed["message"] || "Porkbun API returned HTTP #{response.code}"
-          Result.new(ok: false, error: msg, http_status: response.code.to_i,
-                      cf_errors: [ { code: response.code, message: msg } ])
-        end
-      rescue JSON::ParserError
-        Result.new(ok: false,
-                    error: "Invalid JSON from Porkbun (HTTP #{response.code}): #{response.body.to_s[0, 200]}",
-                    http_status: response.code.to_i)
+      def parse_success?(response, parsed)
+        response.is_a?(Net::HTTPSuccess) && parsed["status"] == "SUCCESS"
       end
 
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
-      # Resolve the credentials hash from an explicit hash or the factory's
-      # api_token: JSON blob, stringifying keys for indifferent lookup.
-      def extract_credentials(credentials, api_token)
-        source = credentials
-        source ||= decode_blob(api_token)
-        return {} unless source.respond_to?(:transform_keys)
-        source.transform_keys(&:to_s)
-      end
-
-      # The factory only knows api_token:; accept a JSON-encoded blob there.
-      def decode_blob(api_token)
-        return nil if api_token.nil?
-        return api_token if api_token.respond_to?(:transform_keys)
-
-        str = api_token.to_s.strip
-        return nil if str.empty?
-        parsed = JSON.parse(str)
-        parsed.is_a?(Hash) ? parsed : nil
-      rescue JSON::ParserError
-        nil
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on Porkbun; allowed: #{ALLOWED_RECORD_TYPES.inspect}"
+      def extract_error(parsed, response)
+        msg = parsed["message"] || "Porkbun API returned HTTP #{response.code}"
+        [ msg, [ { code: response.code, message: msg } ] ]
       end
 
       # Porkbun's default/min TTL is 600. The Cloudflare convention of
@@ -260,16 +211,6 @@ module Acme
         t = ttl.to_i
         return 600 if t <= 1
         [ t, 600 ].max
-      end
-
-      # Porkbun records take the *subdomain* (relative) name. If the caller
-      # passes a FQDN, strip the zone suffix; an empty name or the bare
-      # zone represents the apex (empty subdomain for Porkbun).
-      def relativize_name(name, zone_id)
-        zone = zone_id.to_s
-        return "" if name.empty? || name == zone || name == "@"
-        return name.sub(/\.#{Regexp.escape(zone)}\z/, "") if name.end_with?(".#{zone}")
-        name
       end
 
       # Translate Porkbun's domain shape to the same envelope as the others.

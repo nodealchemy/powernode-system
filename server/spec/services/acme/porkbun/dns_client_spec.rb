@@ -239,6 +239,51 @@ RSpec.describe Acme::Porkbun::DnsClient, type: :service do
     end
   end
 
+  describe "#update_record" do
+    # FIX #6: an edit that supplies type+content but OMITS name must
+    # backfill the name from the existing record. Porkbun treats an absent
+    # name as the apex, so without this it would silently re-point the
+    # record to the zone root.
+    it "backfills the name from the existing record when name is omitted (type+content edit)" do
+      # Re-fetch of the existing record (backfill path) AND the final
+      # re-read both hit /dns/retrieve/<zone>/555.
+      retrieve_stub = stub_request(:post, "#{base}/dns/retrieve/#{zone}/555")
+                      .with(body: auth_body)
+                      .to_return(
+                        status: 200,
+                        body: {
+                          status: "SUCCESS",
+                          records: [ { id: "555", name: "www.example.com", type: "A", content: "1.1.1.1", ttl: "600" } ]
+                        }.to_json
+                      )
+
+      edit_stub = stub_request(:post, "#{base}/dns/edit/#{zone}/555")
+                  .with(body: auth_body("type" => "A", "content" => "5.6.7.8", "name" => "www", "ttl" => 600))
+                  .to_return(status: 200, body: { status: "SUCCESS" }.to_json)
+
+      result = client.update_record(zone, "555", { type: "A", content: "5.6.7.8" })
+
+      expect(retrieve_stub).to have_been_requested.at_least_once
+      expect(edit_stub).to have_been_requested
+      expect(result.ok?).to be true
+      expect(result.data[:name]).to eq("www.example.com")
+    end
+
+    it "uses the supplied name verbatim (relativized) when one is given" do
+      edit_stub = stub_request(:post, "#{base}/dns/edit/#{zone}/666")
+                  .with(body: auth_body("type" => "A", "content" => "9.9.9.9", "name" => "api"))
+                  .to_return(status: 200, body: { status: "SUCCESS" }.to_json)
+      stub_request(:post, "#{base}/dns/retrieve/#{zone}/666")
+        .to_return(status: 200,
+                   body: { status: "SUCCESS", records: [ { id: "666", name: "api.example.com", type: "A", content: "9.9.9.9", ttl: "600" } ] }.to_json)
+
+      result = client.update_record(zone, "666", { type: "A", content: "9.9.9.9", name: "api.example.com" })
+
+      expect(edit_stub).to have_been_requested
+      expect(result.ok?).to be true
+    end
+  end
+
   describe "#delete_record" do
     it "posts to the delete endpoint and returns deleted: true (happy path)" do
       stub = stub_request(:post, "#{base}/dns/delete/#{zone}/444")

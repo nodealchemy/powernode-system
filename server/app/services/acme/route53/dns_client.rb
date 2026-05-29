@@ -35,16 +35,13 @@ module Acme
     #   - There is no "proxied" concept — that flag is ignored.
     #
     # Plan reference: E4 (Route53 record management).
-    class DnsClient
+    class DnsClient < ::Acme::BaseDnsClient
       BASE_URL = "https://route53.amazonaws.com/2013-04-01"
       SIGNING_REGION = "us-east-1" # Route53 is global; always sign here.
       SERVICE = "route53"
-      DEFAULT_TIMEOUT = 10
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA PTR].freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       # Built by Acme::DnsClient.for as `new(api_token:, **opts)`. The
       # token-shaped keyword is meaningless for Route53, so we accept it
@@ -453,27 +450,55 @@ module Acme
       # Route53 stores names with a trailing dot ("example.com."). The
       # operator typically passes a bare/relative name; turn it into a
       # FQDN within the zone.
+      #
+      # The zone_id is the opaque hosted-zone id ("Z123…"), NOT the apex
+      # domain. A name that already contains a dot is treated as already
+      # qualified and trusted as-is (no extra round-trip). A genuinely
+      # RELATIVE name ("www", "api") is qualified by resolving the zone
+      # apex via GET /hostedzone/:id (cached per client instance) and
+      # appending it — fixing the prior bug where a relative name became
+      # just "www." because the apex was always "".
       def fqdn(name, zone_id)
         n = name.to_s.strip
         return zone_apex(zone_id) if n.empty? || n == "@"
-        return trailing_dot(n) if n.include?(".") && fqdn_within_zone?(n, zone_id)
-        trailing_dot("#{n}.#{zone_apex_bare(zone_id)}")
+        return trailing_dot(n) if fqdn_within_zone?(n, zone_id)
+        apex = zone_apex_bare(zone_id)
+        return trailing_dot(n) if apex.empty? # apex unresolved → trust the name as-is
+        trailing_dot("#{n}.#{apex}")
       end
 
-      # We don't have the zone name from the id alone (id is opaque Z…),
-      # so when the caller passes a name that already looks fully
-      # qualified we trust it; otherwise we can't synthesize the apex and
-      # fall back to the bare name with a trailing dot.
-      def fqdn_within_zone?(_name, _zone_id)
-        true
+      # A name that already contains a dot is assumed fully qualified (the
+      # operator gave a FQDN). Only dotless names ("www") need the apex
+      # appended, so only those trigger the zone-apex lookup — this keeps
+      # the common FQDN path zero-round-trip and behavior-identical to the
+      # pre-fix client.
+      def fqdn_within_zone?(name, _zone_id)
+        name.include?(".")
       end
 
-      def zone_apex(_zone_id)
-        nil
+      # The apex FQDN (trailing dot) for a hosted zone, resolved + cached.
+      # nil when the zone can't be resolved (caller passed an empty name we
+      # then can't qualify — preserves the prior nil-return for that path).
+      def zone_apex(zone_id)
+        apex = zone_apex_bare(zone_id)
+        apex.empty? ? nil : trailing_dot(apex)
       end
 
-      def zone_apex_bare(_zone_id)
-        ""
+      # Bare apex domain ("example.com") for a hosted zone, resolved via
+      # get_zone and cached per (client, zone_id). Returns "" when the zone
+      # lookup fails so callers degrade to name-as-given rather than raise.
+      def zone_apex_bare(zone_id)
+        key = strip_zone_prefix(zone_id)
+        @zone_apex_cache ||= {}
+        return @zone_apex_cache[key] if @zone_apex_cache.key?(key)
+
+        @zone_apex_cache[key] = resolve_zone_apex(key)
+      end
+
+      def resolve_zone_apex(zone_id)
+        result = get_zone(zone_id)
+        return "" unless result.ok? && result.data.is_a?(Hash)
+        result.data[:name].to_s.chomp(".")
       end
 
       def trailing_dot(name)
@@ -496,21 +521,12 @@ module Acme
         t
       end
 
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
       def xml_escape(s)
         s.to_s
          .gsub("&", "&amp;")
          .gsub("<", "&lt;")
          .gsub(">", "&gt;")
          .gsub('"', "&quot;")
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on Route53; allowed: #{ALLOWED_RECORD_TYPES.inspect}"
       end
     end
   end

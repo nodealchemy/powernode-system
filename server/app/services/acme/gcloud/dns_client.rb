@@ -34,19 +34,17 @@ module Acme
     #     is mapped to a sane default (300s).
     #
     # Plan reference: E (multi-provider DNS adapters).
-    class DnsClient
+    class DnsClient < ::Acme::BaseDnsClient
       OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
       DNS_BASE_URL = "https://dns.googleapis.com/dns/v1"
       OAUTH_SCOPE = "https://www.googleapis.com/auth/ndev.clouddns.readwrite"
       JWT_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
       TOKEN_TTL = 3600
+      TOKEN_EXPIRY_SKEW = 60 # refresh this many seconds before real expiry
       DEFAULT_TTL = 300
-      DEFAULT_TIMEOUT = 10
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA PTR].freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       # Accepts either explicit keyword credentials or a `credentials:`
       # hash. The DnsClient factory currently forwards `api_token:`; gcloud
@@ -282,7 +280,14 @@ module Acme
         token = response["access_token"]
         raise ApiError, "OAuth token exchange returned no access_token" if token.to_s.empty?
 
-        @token_expires_at = exp - 60 # refresh a minute early
+        # Cache against the token endpoint's OWN reported lifetime
+        # (`expires_in`, seconds) rather than the JWT assertion's `exp`.
+        # Google may return a token shorter-lived than the assertion, and
+        # reusing it past its real lifetime would yield surprise 401s. Fall
+        # back to the assertion TTL only when `expires_in` is absent.
+        lifetime = response["expires_in"].to_i
+        lifetime = TOKEN_TTL if lifetime <= 0
+        @token_expires_at = Time.now.to_i + lifetime - TOKEN_EXPIRY_SKEW
         token
       rescue JSON::ParserError => e
         raise ApiError, "service_account_json is not valid JSON: #{e.message}"
@@ -341,56 +346,29 @@ module Acme
       rescue Net::OpenTimeout, Net::ReadTimeout => e
         Result.new(ok: false, error: "Google Cloud DNS API timeout: #{e.message}")
       rescue StandardError => e
-        @logger.error("[Acme::Gcloud::DnsClient] #{e.class}: #{e.message}")
+        @logger.error("[#{log_tag}] #{e.class}: #{e.message}")
         Result.new(ok: false, error: "Google Cloud DNS API error: #{e.message}")
-      end
-
-      def http_for(uri)
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = true
-        http.read_timeout = @timeout
-        http.open_timeout = @timeout
-        http
       end
 
       # Google error envelope:
       #   { error: { code: 404, message: "...", errors: [...] } }
-      def parse_response(response)
-        if response.is_a?(Net::HTTPNoContent)
-          return Result.new(ok: true, data: {}, http_status: 204)
-        end
+      def extract_error(parsed, response)
+        err = parsed["error"] || {}
+        msg = err["message"] || "Google Cloud DNS returned HTTP #{response.code}"
+        codes = Array(err["errors"]).map { |e| { code: e["reason"], message: e["message"] } }
+        [ msg, codes ]
+      end
 
-        body = response.body.to_s
-        parsed = body.empty? ? {} : JSON.parse(body)
-
-        if response.is_a?(Net::HTTPSuccess)
-          Result.new(ok: true, data: parsed, http_status: response.code.to_i)
-        else
-          err = parsed["error"] || {}
-          msg = err["message"] || "Google Cloud DNS returned HTTP #{response.code}"
-          Result.new(ok: false, error: msg, http_status: response.code.to_i,
-                     cf_errors: Array(err["errors"]).map { |e| { code: e["reason"], message: e["message"] } })
-        end
-      rescue JSON::ParserError
-        Result.new(ok: false,
-                   error: "Invalid JSON from Google Cloud DNS (HTTP #{response.code}): #{response.body.to_s[0, 200]}",
-                   http_status: response.code.to_i)
+      # Error/log strings spell the provider "Google Cloud DNS", not the
+      # "Gcloud" the class-name default would produce.
+      def provider_label
+        "Google Cloud DNS"
       end
 
       # ── helpers ──────────────────────────────────────────────────────
 
       def base64url(data)
         Base64.urlsafe_encode64(data, padding: false)
-      end
-
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on Google Cloud DNS; " \
-                        "allowed: #{ALLOWED_RECORD_TYPES.inspect}"
       end
 
       # Google DNS names are FQDNs with a trailing dot. Accept either form

@@ -97,6 +97,20 @@ RSpec.describe Acme::Route53::DnsClient do
     XML
   end
 
+  def get_zone_xml(name: "example.com.")
+    <<~XML
+      <?xml version="1.0"?>
+      <GetHostedZoneResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+        <HostedZone>
+          <Id>/hostedzone/#{zone_id}</Id>
+          <Name>#{name}</Name>
+          <Config><PrivateZone>false</PrivateZone></Config>
+          <ResourceRecordSetCount>4</ResourceRecordSetCount>
+        </HostedZone>
+      </GetHostedZoneResponse>
+    XML
+  end
+
   def error_xml(code: "InvalidInput", message: "The request was rejected.")
     <<~XML
       <?xml version="1.0"?>
@@ -364,6 +378,57 @@ RSpec.describe Acme::Route53::DnsClient do
 
       expect(result).not_to be_ok
       expect(result.error).to match(/not found/i)
+    end
+  end
+
+  # ── relative-name FQDN resolution (FIX #5) ────────────────────────────────
+  #
+  # The hosted-zone id is opaque ("Z123…"), NOT the apex domain. A relative
+  # name like "www" must be qualified by resolving the zone apex via
+  # GET /hostedzone/:id (cached per client) so it becomes
+  # "www.example.com." — not the previously-broken "www." (the apex was
+  # always "" before the fix).
+  describe "relative-name FQDN resolution" do
+    it "qualifies a relative name against the resolved zone apex on create" do
+      zone_stub = stub_request(:get, "#{base}/hostedzone/#{zone_id}")
+                  .to_return(status: 200, body: get_zone_xml(name: "example.com."))
+
+      post_stub = stub_request(:post, "#{base}/hostedzone/#{zone_id}/rrset")
+                  .with { |req| req.body.include?("<Name>www.example.com.</Name>") }
+                  .to_return(status: 200, body: change_response_xml(status: "PENDING"))
+
+      result = client.create_record(zone_id, type: "A", name: "www", content: "203.0.113.5", ttl: 300)
+
+      expect(zone_stub).to have_been_requested
+      expect(post_stub).to have_been_requested
+      expect(result).to be_ok
+      expect(result.data[:name]).to eq("www.example.com.")
+      expect(result.data[:id]).to eq("A:www.example.com.")
+    end
+
+    it "caches the zone apex so repeated relative-name writes resolve it once" do
+      stub_request(:get, "#{base}/hostedzone/#{zone_id}")
+        .to_return(status: 200, body: get_zone_xml(name: "example.com."))
+      stub_request(:post, "#{base}/hostedzone/#{zone_id}/rrset")
+        .to_return(status: 200, body: change_response_xml(status: "PENDING"))
+
+      client.create_record(zone_id, type: "A", name: "www", content: "203.0.113.5")
+      client.create_record(zone_id, type: "A", name: "api", content: "203.0.113.6")
+
+      expect(a_request(:get, "#{base}/hostedzone/#{zone_id}")).to have_been_made.once
+    end
+
+    it "leaves an already-qualified name untouched (no extra apex suffix)" do
+      stub_request(:get, "#{base}/hostedzone/#{zone_id}")
+        .to_return(status: 200, body: get_zone_xml(name: "example.com."))
+      post_stub = stub_request(:post, "#{base}/hostedzone/#{zone_id}/rrset")
+                  .with { |req| req.body.include?("<Name>api.example.com.</Name>") }
+                  .to_return(status: 200, body: change_response_xml(status: "PENDING"))
+
+      result = client.create_record(zone_id, type: "A", name: "api.example.com", content: "203.0.113.7")
+
+      expect(post_stub).to have_been_requested
+      expect(result.data[:name]).to eq("api.example.com.")
     end
   end
 end

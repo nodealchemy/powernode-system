@@ -19,14 +19,11 @@ module Acme
     #     "auto" sentinel) we substitute 1800 to give a sane default.
     #
     # Plan reference: E2.
-    class DnsClient
+    class DnsClient < ::Acme::BaseDnsClient
       BASE_URL = "https://api.digitalocean.com/v2"
-      DEFAULT_TIMEOUT = 10
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA].freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       def initialize(api_token:, timeout: DEFAULT_TIMEOUT, logger: nil)
         raise ArgumentError, "api_token is required" if api_token.to_s.strip.empty?
@@ -115,32 +112,12 @@ module Acme
 
       private
 
-      def get(path, params: {})
-        uri = URI("#{BASE_URL}#{path}")
-        uri.query = URI.encode_www_form(params) if params.any?
-        request(Net::HTTP::Get.new(uri))
-      end
-
-      def post(path, body:)
-        uri = URI("#{BASE_URL}#{path}")
-        req = Net::HTTP::Post.new(uri)
-        req["Content-Type"] = "application/json"
-        req.body = body.to_json
-        request(req)
-      end
-
-      def put(path, body:)
-        uri = URI("#{BASE_URL}#{path}")
-        req = Net::HTTP::Put.new(uri)
-        req["Content-Type"] = "application/json"
-        req.body = body.to_json
-        request(req)
-      end
-
+      # DO returns 204 with no body on successful delete; surface a
+      # uniform deleted: true payload. (The base delete passes the raw
+      # result through, which doesn't match DO's no-body success.)
       def delete(path)
-        uri = URI("#{BASE_URL}#{path}")
+        uri = build_uri(path)
         result = request(Net::HTTP::Delete.new(uri))
-        # DO returns 204 with no body on successful delete
         if result.http_status == 204
           Result.new(ok: true, data: { deleted: true }, http_status: 204)
         else
@@ -148,53 +125,13 @@ module Acme
         end
       end
 
-      def request(req)
+      def auth_headers(req)
         req["Authorization"] = "Bearer #{@api_token}"
-        req["Accept"] = "application/json"
-
-        http = Net::HTTP.new(req.uri.host, req.uri.port)
-        http.use_ssl = true
-        http.read_timeout = @timeout
-        http.open_timeout = @timeout
-
-        response = http.request(req)
-        parse_response(response)
-      rescue Net::OpenTimeout, Net::ReadTimeout => e
-        Result.new(ok: false, error: "DigitalOcean API timeout: #{e.message}")
-      rescue StandardError => e
-        @logger.error("[Acme::DigitalOcean::DnsClient] #{e.class}: #{e.message}")
-        Result.new(ok: false, error: "DigitalOcean API error: #{e.message}")
       end
 
-      def parse_response(response)
-        # 204 No Content (used on DELETE success)
-        if response.is_a?(Net::HTTPNoContent)
-          return Result.new(ok: true, data: {}, http_status: 204)
-        end
-
-        body = response.body.to_s
-        parsed = body.empty? ? {} : JSON.parse(body)
-
-        if response.is_a?(Net::HTTPSuccess)
-          Result.new(ok: true, data: parsed, http_status: response.code.to_i)
-        else
-          msg = parsed["message"] || "DigitalOcean API returned HTTP #{response.code}"
-          Result.new(ok: false, error: msg, http_status: response.code.to_i,
-                      cf_errors: [ { code: parsed["id"], message: msg } ])
-        end
-      rescue JSON::ParserError
-        Result.new(ok: false,
-                    error: "Invalid JSON from DigitalOcean (HTTP #{response.code}): #{response.body.to_s[0, 200]}",
-                    http_status: response.code.to_i)
-      end
-
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on DigitalOcean; allowed: #{ALLOWED_RECORD_TYPES.inspect}"
+      def extract_error(parsed, response)
+        msg = parsed["message"] || "DigitalOcean API returned HTTP #{response.code}"
+        [ msg, [ { code: parsed["id"], message: msg } ] ]
       end
 
       # DO's "TTL" must be a multiple of 30 seconds, minimum 30. The
@@ -206,14 +143,9 @@ module Acme
         [ t, 30 ].max
       end
 
-      # DO records use the relative name. If the caller passes a FQDN,
-      # strip the zone suffix; if they pass "@" or the bare zone, that
-      # represents the apex.
-      def relativize_name(name, zone_id)
-        zone = zone_id.to_s
-        return "@" if name.empty? || name == zone
-        return name.sub(/\.#{Regexp.escape(zone)}\z/, "") if name.end_with?(".#{zone}")
-        name
+      # DO records use the relative name with "@" representing the apex.
+      def apex_sentinel
+        "@"
       end
 
       # Translate DO's domain shape to the same envelope Cloudflare returns.

@@ -17,14 +17,11 @@ module Acme
     #   - Records and zones both have UUID ids
     #
     # Plan reference: E3.
-    class DnsClient
+    class DnsClient < ::Acme::BaseDnsClient
       BASE_URL = "https://dns.hetzner.com/api/v1"
-      DEFAULT_TIMEOUT = 10
       ALLOWED_RECORD_TYPES = %w[A AAAA CNAME TXT MX SRV NS CAA PTR].freeze
 
-      Result = ::Acme::Cloudflare::DnsClient::Result
-
-      class ApiError < ::Acme::Cloudflare::DnsClient::ApiError; end
+      class ApiError < ::Acme::BaseDnsClient::ApiError; end
 
       def initialize(api_token:, timeout: DEFAULT_TIMEOUT, logger: nil)
         raise ArgumentError, "api_token is required" if api_token.to_s.strip.empty?
@@ -116,30 +113,10 @@ module Acme
 
       private
 
-      def get(path, params: {})
-        uri = URI("#{BASE_URL}#{path}")
-        uri.query = URI.encode_www_form(params) if params.any?
-        request(Net::HTTP::Get.new(uri))
-      end
-
-      def post(path, body:)
-        uri = URI("#{BASE_URL}#{path}")
-        req = Net::HTTP::Post.new(uri)
-        req["Content-Type"] = "application/json"
-        req.body = body.to_json
-        request(req)
-      end
-
-      def put(path, body:)
-        uri = URI("#{BASE_URL}#{path}")
-        req = Net::HTTP::Put.new(uri)
-        req["Content-Type"] = "application/json"
-        req.body = body.to_json
-        request(req)
-      end
-
+      # Hetzner accepts 200 OR 204 on a successful delete; surface a
+      # uniform deleted: true payload across both.
       def delete(path)
-        uri = URI("#{BASE_URL}#{path}")
+        uri = build_uri(path)
         result = request(Net::HTTP::Delete.new(uri))
         if result.http_status&.between?(200, 204)
           Result.new(ok: true, data: { deleted: true }, http_status: result.http_status)
@@ -148,52 +125,15 @@ module Acme
         end
       end
 
-      def request(req)
+      # Hetzner DNS authenticates via Auth-API-Token (intentionally NOT
+      # Bearer — distinct from Hetzner Cloud's API).
+      def auth_headers(req)
         req["Auth-API-Token"] = @api_token
-        req["Accept"] = "application/json"
-
-        http = Net::HTTP.new(req.uri.host, req.uri.port)
-        http.use_ssl = true
-        http.read_timeout = @timeout
-        http.open_timeout = @timeout
-
-        response = http.request(req)
-        parse_response(response)
-      rescue Net::OpenTimeout, Net::ReadTimeout => e
-        Result.new(ok: false, error: "Hetzner API timeout: #{e.message}")
-      rescue StandardError => e
-        @logger.error("[Acme::Hetzner::DnsClient] #{e.class}: #{e.message}")
-        Result.new(ok: false, error: "Hetzner API error: #{e.message}")
       end
 
-      def parse_response(response)
-        if response.is_a?(Net::HTTPNoContent)
-          return Result.new(ok: true, data: {}, http_status: 204)
-        end
-
-        body = response.body.to_s
-        parsed = body.empty? ? {} : JSON.parse(body)
-
-        if response.is_a?(Net::HTTPSuccess)
-          Result.new(ok: true, data: parsed, http_status: response.code.to_i)
-        else
-          msg = parsed["message"] || parsed["error"] || "Hetzner returned HTTP #{response.code}"
-          Result.new(ok: false, error: msg, http_status: response.code.to_i,
-                      cf_errors: [ { code: response.code, message: msg } ])
-        end
-      rescue JSON::ParserError
-        Result.new(ok: false,
-                    error: "Invalid JSON from Hetzner (HTTP #{response.code}): #{response.body.to_s[0, 200]}",
-                    http_status: response.code.to_i)
-      end
-
-      def escape(s)
-        ERB::Util.url_encode(s.to_s)
-      end
-
-      def validate_record_type!(type)
-        return if ALLOWED_RECORD_TYPES.include?(type.to_s.upcase)
-        raise ApiError, "Unsupported record type #{type.inspect} on Hetzner; allowed: #{ALLOWED_RECORD_TYPES.inspect}"
+      def extract_error(parsed, response)
+        msg = parsed["message"] || parsed["error"] || "Hetzner returned HTTP #{response.code}"
+        [ msg, [ { code: response.code, message: msg } ] ]
       end
 
       def normalize_ttl(ttl)
