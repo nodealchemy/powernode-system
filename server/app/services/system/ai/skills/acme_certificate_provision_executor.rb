@@ -73,6 +73,27 @@ module System
             return failure("DNS credential not found: #{dns_credential_id}") unless dns_credential
           end
 
+          # Re-provision idempotency. `common_name` uniqueness is scoped to
+          # NON-terminal rows (only `revoked` is terminal), so a leftover
+          # `failed` / `pending` / `issuing` row from a previous aborted or
+          # failed issuance would block a fresh `create!` for the same CN
+          # ("Common name has already been taken"). Find any non-terminal
+          # row first and reuse it instead of creating a duplicate.
+          existing = ::System::AcmeCertificate
+                     .active_certs
+                     .find_by(account: @account, common_name: common_name)
+
+          if existing
+            # A valid + unexpired cert is already serving — reuse it as-is,
+            # no ACME work needed.
+            return success(certificate_attrs(existing)) if reusable_valid?(existing)
+
+            # Otherwise re-use the dead/in-flight row: refresh the mutable
+            # request fields and re-drive issuance through the same path.
+            return reissue_existing(existing, issuer:, challenge_type:, sans:,
+                                              dns_credential:, acme_email:)
+          end
+
           metadata = {}
           metadata["acme_email"] = acme_email if acme_email.present?
 
@@ -87,14 +108,7 @@ module System
             metadata: metadata
           )
 
-          result = ::Acme::CertificateManager.issue!(certificate: cert)
-          cert.reload
-
-          unless result.ok?
-            return failure("Certificate issuance failed: #{result.error}")
-          end
-
-          success(certificate_attrs(cert))
+          drive_issuance(cert)
         rescue ActiveRecord::RecordInvalid => e
           failure("Could not create certificate: #{e.message}")
         rescue StandardError => e
@@ -102,6 +116,67 @@ module System
         end
 
         private
+
+        # True when the row is already a live, unexpired certificate that can
+        # be handed back as-is. Anything else (pending/issuing/failed/expired)
+        # needs (re-)issuance.
+        def reusable_valid?(cert)
+          cert.status == "valid" && !cert.expired?
+        end
+
+        # The set of statuses from which a fresh issuance can be (re-)driven.
+        # `pending`/`failed` transition straight to `issuing`; a stuck
+        # `issuing` row (crashed mid-issuance) is recovered via `failed` first
+        # (the only state-machine edge that leads back into issuance).
+        REISSUABLE_STATUSES = %w[pending failed issuing].freeze
+
+        # Refresh the mutable request fields onto an existing non-terminal,
+        # non-valid row, ensure it is in a state the CertificateManager will
+        # accept, then re-drive issuance. A `valid`/`renewing`/`expired` row
+        # has no `→ issuing` edge in the state machine — renewing it is the
+        # renewal job's job, not this provision skill's — so we refuse rather
+        # than fight the state machine or create a duplicate.
+        def reissue_existing(cert, issuer:, challenge_type:, sans:, dns_credential:, acme_email:)
+          unless REISSUABLE_STATUSES.include?(cert.status)
+            return failure(
+              "An existing certificate for #{cert.common_name} is in status " \
+              "'#{cert.status}'; use the renewal flow rather than re-provisioning."
+            )
+          end
+
+          attrs = {
+            issuer: issuer,
+            challenge_type: challenge_type,
+            sans: Array(sans),
+            dns_credential: dns_credential
+          }
+          metadata = cert.metadata.is_a?(Hash) ? cert.metadata.dup : {}
+          metadata["acme_email"] = acme_email if acme_email.present?
+          attrs[:metadata] = metadata
+
+          cert.update!(attrs)
+
+          # CertificateManager#issue! requires `can_transition_to?("issuing")`.
+          # `pending` and `failed` already satisfy that. A stuck `issuing` row
+          # cannot transition to issuing again, so move it to `failed` first.
+          unless cert.can_transition_to?("issuing")
+            cert.transition_to!("failed", error_message: "re-provision: recovering stalled issuance")
+          end
+
+          drive_issuance(cert)
+        end
+
+        # Drive a (new or reused) row through issuance via the shared
+        # CertificateManager path and translate the Result into the executor's
+        # success/failure shape.
+        def drive_issuance(cert)
+          result = ::Acme::CertificateManager.issue!(certificate: cert)
+          cert.reload
+
+          return failure("Certificate issuance failed: #{result.error}") unless result.ok?
+
+          success(certificate_attrs(cert))
+        end
 
         def certificate_attrs(cert)
           {

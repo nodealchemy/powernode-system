@@ -190,5 +190,171 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
         end.to change(System::AcmeCertificate, :count).by(1)
       end
     end
+
+    # Re-provision idempotency. The model scopes common_name uniqueness to
+    # NON-terminal rows (only `revoked` is terminal), so a leftover `failed`
+    # / `pending` / `issuing` row blocks a fresh `create!` for the same CN.
+    # The executor must REUSE an existing non-terminal row instead of trying
+    # to create a duplicate — otherwise an operator can't retry after a
+    # transient ACME failure.
+    context "re-provisioning a common name that already has a row" do
+      # REPRODUCES THE BUG: with a leftover `failed` row for the CN, a
+      # naive create! hits "Common name has already been taken". Against
+      # the unfixed executor this example fails (RecordInvalid surfaced as
+      # `Could not create certificate: ... Common name has already been
+      # taken`, success=false, AND a brand-new row is never created).
+      it "reuses an existing failed row and re-issues without a uniqueness error" do
+        existing = create(
+          :system_acme_certificate, :http01,
+          account: account, common_name: "retry.example.com",
+          issuer: "letsencrypt-staging", status: "failed"
+        )
+
+        stub_successful_issue!
+
+        result = nil
+        expect do
+          result = exec.execute(
+            common_name: "retry.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+        end.not_to change(System::AcmeCertificate, :count)
+
+        expect(result[:success]).to be true
+        expect(result[:error]).to be_nil
+        # Same row, re-issued through the same CertificateManager path.
+        expect(result[:data][:certificate_id]).to eq(existing.id)
+        expect(result[:data][:status]).to eq("valid")
+        # Mutable request fields are refreshed onto the reused row.
+        expect(existing.reload.issuer).to eq("letsencrypt-prod")
+      end
+
+      it "reuses a leftover pending row (aborted issuance) for the same CN" do
+        existing = create(
+          :system_acme_certificate, :http01,
+          account: account, common_name: "aborted.example.com", status: "pending"
+        )
+
+        stub_successful_issue!
+
+        expect do
+          r = exec.execute(
+            common_name: "aborted.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+          expect(r[:success]).to be true
+          expect(r[:data][:certificate_id]).to eq(existing.id)
+        end.not_to change(System::AcmeCertificate, :count)
+      end
+
+      it "reuses a leftover issuing row (crashed mid-issuance) for the same CN" do
+        existing = create(
+          :system_acme_certificate, :http01,
+          account: account, common_name: "stuck.example.com", status: "issuing"
+        )
+
+        stub_successful_issue!
+
+        expect do
+          r = exec.execute(
+            common_name: "stuck.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+          expect(r[:success]).to be true
+          expect(r[:data][:certificate_id]).to eq(existing.id)
+        end.not_to change(System::AcmeCertificate, :count)
+      end
+
+      it "reuses a valid + unexpired row without re-issuing" do
+        existing = create(
+          :system_acme_certificate, :http01, :valid,
+          account: account, common_name: "live.example.com"
+        )
+
+        # A valid+unexpired cert is reused as-is; no ACME work happens.
+        expect(::Acme::CertificateManager).not_to receive(:issue!)
+
+        result = nil
+        expect do
+          result = exec.execute(
+            common_name: "live.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+        end.not_to change(System::AcmeCertificate, :count)
+
+        expect(result[:success]).to be true
+        expect(result[:data][:certificate_id]).to eq(existing.id)
+        expect(result[:data][:status]).to eq("valid")
+      end
+
+      it "does not silently treat a valid-but-expired row as live (routes to renewal)" do
+        existing = create(
+          :system_acme_certificate, :http01,
+          account: account, common_name: "stale.example.com",
+          status: "valid", issued_at: 100.days.ago, expires_at: 1.day.ago
+        )
+
+        # An expired `valid` row is NOT reusable as-is, and the state machine
+        # has no `valid → issuing` edge — re-issuance for it belongs to the
+        # renewal path (AcmeCertificateRenewalJob), not this provision skill.
+        # We must NOT create a duplicate and must NOT claim success.
+        expect(::Acme::CertificateManager).not_to receive(:issue!)
+
+        result = nil
+        expect do
+          result = exec.execute(
+            common_name: "stale.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+        end.not_to change(System::AcmeCertificate, :count)
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/renew/i)
+        expect(existing.reload.status).to eq("valid")
+      end
+
+      it "creates a fresh row for a brand-new common name" do
+        stub_successful_issue!
+
+        result = nil
+        expect do
+          result = exec.execute(
+            common_name: "brand-new.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+        end.to change(System::AcmeCertificate, :count).by(1)
+
+        expect(result[:success]).to be true
+        created = System::AcmeCertificate.find_by(common_name: "brand-new.example.com", account: account)
+        expect(result[:data][:certificate_id]).to eq(created.id)
+      end
+
+      it "does not reuse a row belonging to a different account" do
+        other_account = create(:account)
+        create(
+          :system_acme_certificate, :http01,
+          account: other_account, common_name: "scoped.example.com", status: "failed"
+        )
+
+        stub_successful_issue!
+
+        result = nil
+        expect do
+          result = exec.execute(
+            common_name: "scoped.example.com",
+            issuer: "letsencrypt-prod",
+            challenge_type: "http-01"
+          )
+        end.to change { System::AcmeCertificate.where(account: account).count }.by(1)
+
+        expect(result[:success]).to be true
+      end
+    end
   end
 end
