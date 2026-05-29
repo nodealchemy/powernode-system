@@ -18,6 +18,7 @@ flowchart TD
     Q2 -->|Manage fleet as code| T10[Tutorial 10<br/>GitOps-managed fleet]:::leaf
     Q2 -->|Handle traffic bursts| T08[Tutorial 08<br/>Instance pools]:::leaf
     Q2 -->|Ship custom OS images| T12[Tutorial 12<br/>Disk image CI]:::leaf
+    Q2 -->|Expose a service<br/>publicly with TLS| T13[Tutorial 13<br/>Expose service with TLS]:::leaf
 
     Q3 -->|Single host| T03[Tutorial 03<br/>Docker runtime]:::leaf
     Q3 -->|K8s cluster| T04[Tutorial 04<br/>K3s cluster]:::leaf
@@ -57,6 +58,9 @@ flowchart TD
 
 **"I want to operate the platform autonomously"** (~3 h):
 01 → 02 → 06 → 09 → 10
+
+**"I want to publish a service on the public internet with TLS"** (~1.5 h):
+01 → 02 → 03 → 04 → 13
 
 ## See also
 

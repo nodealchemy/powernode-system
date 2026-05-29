@@ -108,6 +108,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
 - `docs/SKILL_EXECUTORS.md` — 40 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
+- `docs/INGRESS_TLS_GUIDE.md` — operator guide for ingress/TLS (Ingress page Routes + Expose-Service wizard, the VIP→port-map→ACME→Traefik expose lifecycle, DNS-01 credentials, staging-vs-prod issuers, split-brain DNS troubleshooting)
 - `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
 - `docs/FLEET_SENSORS.md` — 18 sensor reference + intervention policy table (split per-agent post 2026-05-10)
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
@@ -129,6 +130,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `gitops-reconciliation.md` — operator GitOps reconciler workflow (Phase A4)
 - `acme-issuance.md` — ACME DNS-01 cert lifecycle (Phase A4)
 - `acme-smoke.md` — P2.5.7 acceptance smoke test
+- `expose-service.md` — publish a service publicly with TLS (VIP → port map → ACME → Traefik expose lifecycle)
 - `instance-pool-tuning.md` — pool sizing + reaping (slice 7)
 - `multi-cluster-k3s.md` — multi-cluster K3s with `metadata.target_cluster_id` + HA control plane
 - `disk-image-ci.md` — disk image CI operator workflow
@@ -139,7 +141,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 
 ### Tutorials (`docs/tutorials/`) — preferred entry point for learning
 
-12 numbered, dependency-aware tutorials covering the full operator surface:
+13 numbered, dependency-aware tutorials covering the full operator surface:
 
 - `01-first-boot.md` — single-node QEMU boot end-to-end
 - `02-first-module.md` — author + sign + publish a custom module
@@ -153,6 +155,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `10-gitops-fleet.md` — fleet.yaml declarative state + reconciler
 - `11-federation.md` — multi-region federation, spawn modes, P9.x guarantees
 - `12-disk-image-ci.md` — custom NodePlatform via CI-published OCI artifacts
+- `13-expose-service-tls.md` — expose a service publicly with TLS (VIP + port map + ACME + Traefik)
 
 Start with `docs/tutorials/INDEX.md` for a Mermaid decision tree mapping operator goal → starting tutorial.
 

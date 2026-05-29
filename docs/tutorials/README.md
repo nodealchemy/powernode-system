@@ -24,6 +24,7 @@ decision tree that maps your goal to a starting tutorial.
 | [10](./10-gitops-fleet.md) | GitOps-managed fleet | 02 + 06 | `fleet.yaml`, repo register, sync cycle, proposal review, auto-apply trade-off |
 | [11](./11-federation.md) | Multi-region federation | 04 + 10 | Propose → accept → activate, sovereign auth, P9.x data residency + WORM audit + schema negotiation |
 | [12](./12-disk-image-ci.md) | Disk image CI publication | 01 + 02 | DiskImageWebhook, CI worker dispatch, signed OCI artifact, retention |
+| [13](./13-expose-service-tls.md) | Expose a service publicly with TLS | 04 | VIP allocation, port map, ACME DNS-01 issuance, Traefik route, expose lifecycle |
 
 ## Template
 
