@@ -183,12 +183,43 @@ module Acme
     # (from Vault); we pass it via env so it stays out of process
     # listings.
     def build_provider_env(provider, credentials)
+      creds = credentials || {}
+      get = ->(key) { creds[key.to_s].presence || creds[key.to_sym].presence }
+      missing = ->(p, *keys) { raise IntegrationError, "credentials hash missing #{keys.join('/')} for #{p}" }
+
+      # env-var names are go-acme/lego's documented DNS provider vars. The first
+      # element is the primary var (used for masking/logging); the hash carries
+      # every var the lego child process needs. NOTE: the bundled powernode-acme
+      # (lego) binary must be built with these providers compiled in — lego
+      # includes them by default; flag at e2e if a provider errors at runtime.
       case provider.to_s
       when "cloudflare"
-        env_name = "CLOUDFLARE_DNS_API_TOKEN"
-        token = credentials["api_token"] || credentials[:api_token]
-        raise IntegrationError, "credentials hash missing api_token for cloudflare" if token.blank?
-        [ env_name, { env_name => token } ]
+        token = get.(:api_token) || missing.("cloudflare", "api_token")
+        [ "CLOUDFLARE_DNS_API_TOKEN", { "CLOUDFLARE_DNS_API_TOKEN" => token } ]
+      when "digitalocean"
+        token = get.(:auth_token) || missing.("digitalocean", "auth_token")
+        [ "DO_AUTH_TOKEN", { "DO_AUTH_TOKEN" => token } ]
+      when "hetzner"
+        token = get.(:api_token) || missing.("hetzner", "api_token")
+        [ "HETZNER_API_KEY", { "HETZNER_API_KEY" => token } ]
+      when "route53"
+        akid = get.(:access_key_id); secret = get.(:secret_access_key); region = get.(:region)
+        missing.("route53", "access_key_id", "secret_access_key", "region") if akid.blank? || secret.blank? || region.blank?
+        [ "AWS_ACCESS_KEY_ID", { "AWS_ACCESS_KEY_ID" => akid, "AWS_SECRET_ACCESS_KEY" => secret, "AWS_REGION" => region } ]
+      when "gcloud"
+        sa = get.(:service_account_json); project = get.(:project_id)
+        missing.("gcloud", "service_account_json", "project_id") if sa.blank? || project.blank?
+        [ "GCE_SERVICE_ACCOUNT", { "GCE_SERVICE_ACCOUNT" => sa, "GCE_PROJECT" => project } ]
+      when "porkbun"
+        key = get.(:api_key); secret = get.(:secret_api_key)
+        missing.("porkbun", "api_key", "secret_api_key") if key.blank? || secret.blank?
+        [ "PORKBUN_API_KEY", { "PORKBUN_API_KEY" => key, "PORKBUN_SECRET_API_KEY" => secret } ]
+      when "ovh"
+        ak = get.(:application_key); as = get.(:application_secret); ck = get.(:consumer_key); ep = get.(:endpoint)
+        missing.("ovh", "application_key", "application_secret", "consumer_key", "endpoint") if [ ak, as, ck, ep ].any?(&:blank?)
+        [ "OVH_APPLICATION_KEY",
+          { "OVH_APPLICATION_KEY" => ak, "OVH_APPLICATION_SECRET" => as,
+            "OVH_CONSUMER_KEY" => ck, "OVH_ENDPOINT" => ep } ]
       else
         raise IntegrationError, "DNS provider #{provider.inspect} not yet wired in powernode-acme v1"
       end
