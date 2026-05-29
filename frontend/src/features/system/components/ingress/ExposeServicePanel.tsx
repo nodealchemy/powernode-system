@@ -47,7 +47,7 @@ const EMPTY_FORM: ExposeServiceForm = {
   sdwan_hub_peer_id: '',
   vip_cidr: '',
   backend_port: '',
-  tls_issuer: 'letsencrypt',
+  tls_issuer: 'letsencrypt-staging',
   dns_credential_id: '',
 };
 
@@ -301,14 +301,16 @@ export const ExposeServicePanel: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="TLS issuer" htmlFor="expose-issuer">
-              <input
+              <select
                 id="expose-issuer"
-                type="text"
                 value={form.tls_issuer}
                 onChange={(e) => setField('tls_issuer', e.target.value)}
-                placeholder="letsencrypt"
                 className="w-full px-3 py-2 rounded border border-theme bg-theme-surface text-sm text-theme-primary"
-              />
+              >
+                <option value="letsencrypt-staging">Let's Encrypt (staging)</option>
+                <option value="letsencrypt-prod">Let's Encrypt (production)</option>
+                <option value="internal-ca">Internal CA</option>
+              </select>
             </Field>
 
             <Field label="DNS credential" htmlFor="expose-dns-cred">
