@@ -54,6 +54,11 @@ fleet_policies = {
   # Routine + reversible (auto)
   "system.cert_rotate"             => "auto_approve",
 
+  # Platform ACME cert renewal (CertExpirySensor → platform_maintenance
+  # cert_rotate). notify_and_proceed: renewal is reversible/low-blast-radius
+  # but can fail on CA/DNS-01 issues, so an operator should be informed.
+  "system.acme_cert_rotate"        => "notify_and_proceed",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",

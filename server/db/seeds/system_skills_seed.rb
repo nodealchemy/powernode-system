@@ -688,6 +688,48 @@ SKILLS_DATA = [
       this provisions real infrastructure. The wizard phase is a safe
       no-op so use it generously to surface the form.
     PROMPT
+  },
+
+  # ─── Ingress / public exposure (north-star) ────────────────────────
+  {
+    name: "ACME Certificate Provision",
+    slug: "system-acme-certificate-provision",
+    description: "Provision (issue) a new ACME TLS certificate for the platform's public listeners. Creates the certificate record and drives it through issuance via the ACME server (Let's Encrypt by default). Inputs: common_name, sans, issuer, challenge_type, dns_credential_id (dns-01 only), acme_email.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::AcmeCertificateProvisionExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform acme certificates tls issuance provision],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to OBTAIN a new TLS certificate for a hostname.
+      Specify common_name, issuer (one of letsencrypt-prod,
+      letsencrypt-staging, internal-ca), and challenge_type (one of
+      dns-01, http-01, tls-alpn-01). dns-01 REQUIRES dns_credential_id
+      (a System::AcmeDnsCredential). For renewing or rotating an EXISTING
+      cert use platform_maintenance (action=cert_rotate) instead.
+    PROMPT
+  },
+  {
+    name: "Reverse Proxy Compose",
+    slug: "system-reverse-proxy-compose",
+    description: "Regenerate the reverse-proxy (Traefik) dynamic config for a certificate's account from its valid certs. Brings a valid certificate's HTTPS routers online; Traefik file-watches and reloads automatically.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::ReverseProxyComposeExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform reverse-proxy traefik certificates routing],
+    system_prompt: "Use this skill to (re)generate the Traefik dynamic config for the account that owns a given valid certificate, bringing its HTTPS routers online. Requires a single input certificate_id (must be status=valid). Read/regenerate only — it emits the account's dynamic YAML; it does not change proxy backend/frontend URLs or env."
+  },
+  {
+    name: "Expose Service Publicly",
+    slug: "system-expose-service-publicly",
+    description: "Expose a backend service to the public internet end-to-end: provisions an SDWAN Virtual IP, a hub DNAT port mapping (443 https / 80 http), an ACME TLS certificate, and regenerates the reverse proxy.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::ExposeServicePubliclyExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform sdwan vip port-mapping acme reverse-proxy expose public],
+    system_prompt: "Use this skill when the operator asks to make an internal backend service reachable from the public internet at a hostname with TLS. It chains an SDWAN Virtual IP, a hub DNAT port mapping (443/80), an ACME certificate, and a reverse-proxy regeneration into one approval-gated step."
   }
 ].freeze
 

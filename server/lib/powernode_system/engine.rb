@@ -131,7 +131,11 @@ module PowernodeSystem
           "system.metrics.read"          => "Read system metrics + telemetry",
           # Package catalog embedding pipeline
           "system.packages.embed"        => "Lease + write package embeddings (worker)",
-          "system.packages.reembed"      => "Manually re-embed a package repository's catalog (operator)"
+          "system.packages.reembed"      => "Manually re-embed a package repository's catalog (operator)",
+          # Ingress + public exposure + ACME provisioning (SystemIngressTool)
+          "system.ingress.read"          => "View ingress / reverse-proxy / public-exposure state (SystemIngressTool floor)",
+          "system.ingress.manage"        => "Compose reverse proxies + expose services publicly (SystemIngressTool)",
+          "system.acme.manage"           => "Provision/renew ACME certificates via the ingress tool"
         )
 
         # Worker role grants. Migrations already grant these (via
@@ -149,6 +153,18 @@ module PowernodeSystem
             system.gitops.read
             system.metrics.read
             system.packages.embed
+          ]
+        )
+
+        # Operator role grants for the ingress / ACME-provisioning tool
+        # surface. Registered here (not via migration alone) so db:seed's
+        # destructive permission sync doesn't wipe them.
+        ::Permissions.register_role_permissions(
+          "admin",
+          %w[
+            system.ingress.read
+            system.ingress.manage
+            system.acme.manage
           ]
         )
       rescue StandardError => e
@@ -184,7 +200,7 @@ module PowernodeSystem
 
         # Fleet Autonomy domain (existing)
         categories.concat(%w[
-          system.cert_rotate system.cert_revoke
+          system.cert_rotate system.cert_revoke system.acme_cert_rotate
           system.module_assign system.module_promote_to_live
           system.instance_reboot system.instance_reprovision system.instance_terminate
           system.fleet_rolling_upgrade system.region_expansion system.capacity_resize
