@@ -133,6 +133,10 @@ module System
         ::System::Fleet::Sensors::InstanceStateDriftSensor,
         ::System::Fleet::Sensors::ModuleDriftSensor,
         ::System::Fleet::Sensors::CertificateExpirySensor,
+        # Platform ACME (Traefik-terminated) cert expiry — distinct store +
+        # remediation path from CertificateExpirySensor (node identity certs).
+        # Emits system.acme_cert_expiring → platform_maintenance cert_rotate.
+        ::System::Fleet::Sensors::CertExpirySensor,
         ::System::Fleet::Sensors::ModulePromotionSensor,
         ::System::Fleet::Sensors::ConfigDriftSensor,
         ::System::Fleet::Sensors::SloViolationSensor,
@@ -247,6 +251,10 @@ module System
           key_value(metadata, "instance_id")
         when "system.module_promote_to_live", "system.module_assign"
           key_value(metadata, "module_id") || key_value(metadata, "module_version_id")
+        # Platform ACME cert rotation — per-cert dedup so the expiry sensor
+        # re-firing each tick doesn't queue duplicate approvals/notifications.
+        when "system.acme_cert_rotate"
+          key_value(metadata, "certificate_id")
         when "system.fleet_rolling_upgrade", "system.region_expansion",
              "system.capacity_resize"
           key_value(metadata, "template_id")

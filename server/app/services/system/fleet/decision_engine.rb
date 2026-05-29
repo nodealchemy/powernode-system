@@ -27,6 +27,15 @@ module System
           skill: nil, # cert rotation is handled directly via NodeCertificate#rotate
           action_category: "system.cert_rotate"
         },
+        # Platform ACME cert expiry (CertExpirySensor) → platform_maintenance
+        # cert_rotate. The executor's cert_rotate is fire-and-forget (queues
+        # the async renewal sweep), so invoke_skill fires it on the
+        # notify_and_proceed path — mirroring how CVE bindings invoke their
+        # executor.
+        "system.acme_cert_expiring" => {
+          skill: ::System::Ai::Skills::PlatformMaintenanceExecutor,
+          action_category: "system.acme_cert_rotate"
+        },
         "system.module_promotion_ready" => {
           skill: nil, # ModulePromotionService is invoked directly
           action_category: "system.module_promote_to_live"
@@ -220,6 +229,13 @@ module System
           executor.execute(instance_id: signal.dig(:payload, "instance_id"))
         when "System::Ai::Skills::CveResponseExecutor"
           invoke_cve_response(executor, signal)
+        when "System::Ai::Skills::PlatformMaintenanceExecutor"
+          # Fire-and-forget cert rotation: queues the async renewal sweep for
+          # the expiring cert. Scoped to the single cert the sensor flagged.
+          executor.execute(
+            action: "cert_rotate",
+            certificate_id: signal.dig(:payload, "certificate_id")
+          )
         else
           nil
         end
