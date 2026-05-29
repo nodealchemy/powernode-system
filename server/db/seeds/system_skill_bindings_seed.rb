@@ -61,6 +61,21 @@ registrations.each do |entry|
   desired_pairs << [ agent.id, skill.id ]
 end
 
+# Provisioning entry-skill binding (not in the SkillBindings registry — it has
+# no executor). Bind `system-provision-infrastructure` to the System Concierge
+# so the platform ConciergeRouter delegates provisioning intents to it. Appended
+# to desired_pairs so it is both upserted AND preserved by the drift-correction
+# below (which would otherwise destroy any System-Concierge binding absent from
+# the registry).
+entry_skill = ::Ai::Skill.find_by(slug: "system-provision-infrastructure")
+concierge   = ::Ai::Agent.find_by(name: "System Concierge")
+if entry_skill && concierge
+  desired_pairs << [ concierge.id, entry_skill.id ]
+  puts "    + provisioning entry-skill → System Concierge binding queued"
+else
+  puts "    ⚠️  provisioning entry-skill binding skipped (skill or System Concierge agent missing)"
+end
+
 if unknown_agents.any?
   unknown_agents.each do |name, count|
     puts "    ⚠️  agent '#{name}' not seeded — skipping #{count} binding(s); seed the agent first"

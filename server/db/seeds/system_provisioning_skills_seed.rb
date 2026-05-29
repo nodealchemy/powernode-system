@@ -212,4 +212,51 @@ PROVISIONING_SKILLS_DATA.each do |data|
 end
 
 puts "    ✓ Provisioning skills: #{created_count} created, #{updated_count} updated, #{skipped_count} skipped (#{PROVISIONING_SKILLS_DATA.size} total)"
+
+# Provisioning conversation ENTRY skill (no executor). A pure discovery +
+# delegation entry: the platform ConciergeRouter discovers it for provisioning
+# intents and — because it is a `workflow_step` skill in the `system` domain
+# bound to an assistant agent (the System Concierge, wired in
+# system_skill_bindings_seed.rb) — delegates the turn to the concierge, which
+# runs the capture→compose→review→execute conversation via the
+# platform_provisioning_* MCP actions. The executor-backed provisioning skills
+# above are the DAG steps; this is the front door. No executor_class on
+# purpose: delegation never invokes an executor.
+entry = ::Ai::Skill.find_or_initialize_by(slug: "system-provision-infrastructure")
+entry_was_new = entry.new_record?
+entry.assign_attributes(
+  account: account,
+  name: "Provision Infrastructure",
+  description: "Stand up or scale infrastructure from a natural-language brief — captures requirements, composes a provisioning plan, gates it for approval, and executes it end-to-end.",
+  category: "devops",
+  status: "active",
+  system_prompt: <<~PROMPT.strip,
+    Front door for AI-driven infrastructure provisioning. Use when an operator
+    asks to stand up, provision, deploy, or scale infrastructure (compute,
+    clusters, networks, storage, full stacks). Delegates to the System
+    Concierge, which captures a project brief, composes a multi-step plan
+    (provision → SDWAN → storage → app), surfaces it for approval, and
+    executes it with live progress + rollback. Input: a natural-language
+    description of the desired infrastructure.
+  PROMPT
+  commands: [],
+  activation_rules: {},
+  metadata: {
+    "author" => "system_extension",
+    "icon" => "provisioning",
+    "system_subdomain" => "provisioning",
+    # ConciergeRouter signals: workflow_step + system domain → the router
+    # delegates to the bound assistant rather than auto-invoking an executor.
+    "domain" => "system",
+    "invocation_mode" => "workflow_step",
+    "entry_point" => true
+  },
+  tags: %w[system workspace provisioning infrastructure concierge entry],
+  is_system: true,
+  is_enabled: true,
+  version: "1.0.0"
+)
+entry.save!
+puts "    ✓ Provisioning entry skill 'system-provision-infrastructure' (#{entry_was_new ? 'created' : 'updated'})"
+
 puts "  Done seeding AI-driven provisioning skills."
