@@ -39,7 +39,10 @@ module Acme
       "cloudflare"  => "Acme::Cloudflare::DnsClient",
       "digitalocean" => "Acme::DigitalOcean::DnsClient",
       "hetzner"     => "Acme::Hetzner::DnsClient",
-      "route53"     => "Acme::Route53::DnsClient"
+      "route53"     => "Acme::Route53::DnsClient",
+      "gcloud"      => "Acme::Gcloud::DnsClient",
+      "porkbun"     => "Acme::Porkbun::DnsClient",
+      "ovh"         => "Acme::Ovh::DnsClient"
     }.freeze
 
     class << self
