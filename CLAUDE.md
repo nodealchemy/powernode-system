@@ -31,6 +31,38 @@ The system extension seeds seven AI agents with distinct trust scores + approval
 - **Disk Image Manager** (`monitor`) — owns disk image CI publication lifecycle (build → verify → promote → retention). 6 intervention policies; 12h approval timeout; 5-minute tick. Seeded by `db/seeds/system_disk_image_manager_agent.rb` (2026-05-10). Operator guide: [`docs/DISK_IMAGE_MANAGER_AGENT.md`](./docs/DISK_IMAGE_MANAGER_AGENT.md). For the upstream CI pipeline see [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md).
 - **System Topology Designer** (`assistant`) — specialist agent for cross-cutting platform topology design (Phase O6, first specialist in the cross-cutting design track). Charter: SDWAN composition today (host bridges, OVN logical networks, IPFIX collectors); container networking + storage topology in future. Invoked by Concierge via `execute_agent` for topology composition. 5 compose skills bound: `system-sdwan-host-bridge-compose`, `system-sdwan-ovn-compose-topology`, `system-sdwan-ipfix-collector-compose`, `system-sdwan-compose-full-topology`, `system-sdwan-ovn-apply-acl`. Trust tier: monitored. Seeded by `db/seeds/system_topology_designer_agent.rb`.
 
+## Concierge-Driven Provisioning
+
+Operators run infrastructure provisioning by talking to the **System Concierge**
+in chat. A natural-language request becomes an approval-gated `Ai::Mission`
+(`mission_type: "infrastructure"`) bound to the `system_provisioning` template
+([`db/seeds/system_provisioning_mission_template.rb`](./server/db/seeds/system_provisioning_mission_template.rb)).
+
+- Operator guide: [`docs/CONCIERGE_PROVISIONING_GUIDE.md`](./docs/CONCIERGE_PROVISIONING_GUIDE.md) — how to ask the Concierge to provision, the phase pipeline, the inline Approve/Reject card, and how to monitor progress.
+- Architecture: [`docs/MISSION_COMPOSITION_ARCHITECTURE.md`](./docs/MISSION_COMPOSITION_ARCHITECTURE.md) — the two composition paths, hybrid routing, cross-step data flow, and how both converge on one runner + approval gate.
+
+**Orchestration spine** (all core services in the parent `server/` tree; the
+extension supplies the executors, the mission template, and the Concierge):
+
+```
+Concierge NL → ConciergeToolBridge.classify_and_dispatch_provisioning (intent + confidence ≥ 0.5)
+  → ProvisioningTool capture_brief (IntentCaptureService → mission.configuration["brief"])
+  → HYBRID ROUTING:
+       recognized provisioning scenario → PlanComposerService  (deterministic, ALLOWED_EXECUTORS)
+       novel intent                     → MissionComposer       (LLM-general, any agent-bound skill)
+     both → Ai::GoalPlan of provisioning_skill steps + mission.configuration["plan"]["plan_id"]
+  → review_plan gate (inline Approve card → OrchestratorService#handle_approval! → advance!)
+  → AiProvisioningExecuteJob → SkillCompositionRunner (topological layers, per-step AiProvisioningStepJob,
+       depends_on_outputs resolved from predecessor metadata.last_outputs, broadcast_step_event!)
+  → verify → handoff gate → RalphLoop → adapting (sensor-driven)
+```
+
+Phases (`capture_intent → compose_plan → review_plan → execute → verify → handoff
+→ adapting`) and the two approval gates (`review_plan`/`plan_review`, `handoff`)
+are defined on the template. Execution is reached **only** by approving
+`review_plan` — there is no separate execute action (it raced and
+double-provisioned).
+
 ## MCP Tools
 
 System-extension MCP actions follow these prefixes:
@@ -75,6 +107,8 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
 - `docs/SKILL_EXECUTORS.md` — 40 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
+- `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
+- `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
 - `docs/FLEET_SENSORS.md` — 18 sensor reference + intervention policy table (split per-agent post 2026-05-10)
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
