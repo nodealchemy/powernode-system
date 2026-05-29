@@ -327,6 +327,83 @@ module Acme
       raw.split(",").map(&:strip).reject(&:empty?)
     end
 
+    # The single TLS option (clientAuth) applied to every router. Exposed so
+    # the read-only ingress projection can report it alongside the write path.
+    TLS_RESOLVER = "mtls-optional@file"
+    ENTRYPOINT   = "websecure"
+
+    # Per-router specification: [name suffix, path prefix, logical service].
+    # ORDER + CONTENTS are the single source of truth shared by render_routers
+    # (write path → Traefik YAML) and routers_for (read path → ingress
+    # projection). The frontend catchall has no path prefix (Host-only rule).
+    ROUTER_SPECS = [
+      [ "node-api",       "/api/v1/system/node_api",       "powernode-backend"  ],
+      [ "federation-api", "/api/v1/system/federation_api", "powernode-backend"  ],
+      [ "internal-api",   "/api/v1/internal",              "powernode-backend"  ],
+      [ "worker-api",     "/api/v1/system/worker_api",     "powernode-backend"  ],
+      [ "worker-auth",    "/api/v1/worker_auth",           "powernode-backend"  ],
+      [ "api",            "/api",                          "powernode-backend"  ],
+      [ "agent",          "/agent",                        "powernode-backend"  ],
+      [ "cable",          "/cable",                        "powernode-backend"  ],
+      [ "frontend",       nil,                             "powernode-frontend" ]
+    ].freeze
+
+    # Builds Traefik's host matcher for a certificate's common_name. SOURCE OF
+    # TRUTH for the host_rule emitted in router rules (write path, via
+    # build_hosts_matcher) AND the host_rule reported by the read-only ingress
+    # projection. Without extra hosts configured, emits the single-host form
+    # `Host(`cn`)`. With POWERNODE_PROXY_EXTRA_HOSTS set, emits OR'd matchers
+    # `(Host(`cn`) || Host(`extra1`) ...)` — Traefik v3's `Host()` accepts one
+    # hostname per invocation, so multi-host fan-out is an OR group, wrapped in
+    # parens so precedence with a trailing `&& PathPrefix(...)` is correct.
+    # `extra_hosts:` defaults to the env-reading class method so the write path
+    # is unchanged. The read path (IngressRoutesController#index) passes a
+    # pre-computed list so the env is parsed once per request instead of once
+    # per cert.
+    def self.host_rule_for(primary_host, extra_hosts: nil)
+      extras = extra_hosts || self.extra_hosts
+      hosts = [ primary_host ] + extras
+      return "Host(`#{primary_host}`)" if hosts.size == 1
+      formatted = hosts.map { |h| "Host(`#{h}`)" }.join(" || ")
+      "(#{formatted})"
+    end
+
+    # Pure, side-effect-free projection of the router metadata for a single
+    # certificate. SOURCE OF TRUTH for both the written Traefik config
+    # (render_routers builds its YAML from this) and the read-only ingress
+    # routes endpoint (Api::V1::System::IngressRoutesController). Returns an
+    # Array of plain Hashes — no AR association touches, no filesystem, no env
+    # mutation. The frontend catchall router carries a nil path_prefix.
+    #
+    #   { name:, path_prefix:, backend_service:, backend_url:, entrypoint:, tls_resolver: }
+    # `backend_url:`/`frontend_url:` default to the env-reading class methods so
+    # the write path is unchanged. The read path (IngressRoutesController#index)
+    # passes pre-computed URLs so the env is parsed once per request instead of
+    # once per router (x9) per cert.
+    def self.routers_for(cert, backend_url: nil, frontend_url: nil)
+      be = backend_url || self.backend_url
+      fe = frontend_url || self.frontend_url
+      slug = router_slug_for(cert.common_name)
+      ROUTER_SPECS.map do |suffix, path_prefix, service|
+        {
+          name:            "#{slug}-#{suffix}",
+          path_prefix:     path_prefix,
+          backend_service: service,
+          backend_url:     service == "powernode-frontend" ? fe : be,
+          entrypoint:      ENTRYPOINT,
+          tls_resolver:    TLS_RESOLVER
+        }
+      end
+    end
+
+    # Traefik router names are arbitrary but should be deterministic +
+    # human-readable. Use the cert's common_name with non-DNS chars
+    # collapsed to dashes. Class-level so routers_for (and the read-side
+    # projection) can derive the slug without an instance.
+    def self.router_slug_for(common_name)
+      common_name.to_s.gsub(/[^a-zA-Z0-9]+/, "-").gsub(/(^-|-$)/, "")
+    end
+
     private
 
     def render_cert_entry(cert)
@@ -368,8 +445,13 @@ module Acme
     #   WorkerAuthController (in core) → looks up Worker by CN, validates user body
     #   ApplicationCable::Connection   → mTLS arm resolves Worker by CN, user-JWT arm resolves User
     def render_routers(cert)
-      slug = router_slug(cert)
       hosts_matcher = build_hosts_matcher(cert.common_name)
+      # Built from the SAME `routers_for` projection the read-only ingress
+      # endpoint consumes, so the two never drift. routers_for supplies the
+      # router name, path prefix, and service; this method layers on the
+      # write-only YAML concerns: the Host()/PathPrefix() rule string, the
+      # entryPoints array, and the per-router tls.options.
+      #
       # Every router sets `tls.options=mtls-optional@file` explicitly. Traefik
       # binds clientAuth options by the matched router's HostSNI, so an
       # entrypoint-level option is ignored for client-cert verification — the
@@ -378,66 +460,24 @@ module Acme
       # Each router gets its own literal `tls` hash (not a shared object) so
       # YAML.dump stays alias-free — a shared ref emits an anchor/alias that
       # Ruby's Psych.load_file (used by specs + reverse-proxy.sh) rejects.
-      [
-        [ "#{slug}-node-api", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/node_api`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-federation-api", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/federation_api`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-internal-api", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/internal`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-worker-api", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/system/worker_api`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-worker-auth", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api/v1/worker_auth`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-api", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/api`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-agent", {
-          # Federation-spawned children fetch the powernode-agent binary
-          # from their parent via this prefix on the public entrypoint.
-          # The Rails app symlinks the binary under public/agent/ so the
-          # static file server serves it — no controller required.
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/agent`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-cable", {
-          "rule"        => "#{hosts_matcher} && PathPrefix(`/cable`)",
-          "service"     => "powernode-backend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
-        } ],
-        [ "#{slug}-frontend", {
-          "rule"        => hosts_matcher,
-          "service"     => "powernode-frontend",
-          "entryPoints" => [ "websecure" ],
-          "tls"         => { "options" => "mtls-optional@file" }
+      #
+      # Federation-spawned children fetch the powernode-agent binary from their
+      # parent via the `/agent` prefix (the Rails app symlinks the binary under
+      # public/agent/ so the static file server serves it — no controller).
+      self.class.routers_for(cert).map do |router|
+        rule =
+          if router[:path_prefix].nil?
+            hosts_matcher
+          else
+            "#{hosts_matcher} && PathPrefix(`#{router[:path_prefix]}`)"
+          end
+        [ router[:name], {
+          "rule"        => rule,
+          "service"     => router[:backend_service],
+          "entryPoints" => [ router[:entrypoint] ],
+          "tls"         => { "options" => router[:tls_resolver] }
         } ]
-      ]
+      end
     end
 
     # Builds Traefik's host matcher. Without extra hosts configured, emits
@@ -448,10 +488,7 @@ module Acme
     # "unexpected number of parameters". Parentheses wrap the OR so the
     # operator precedence with the trailing `&& PathPrefix(...)` is right.
     def build_hosts_matcher(primary_host)
-      hosts = [ primary_host ] + self.class.extra_hosts
-      return "Host(`#{primary_host}`)" if hosts.size == 1
-      formatted = hosts.map { |h| "Host(`#{h}`)" }.join(" || ")
-      "(#{formatted})"
+      self.class.host_rule_for(primary_host)
     end
 
     def render_services
@@ -469,13 +506,6 @@ module Acme
           }
         }
       }
-    end
-
-    # Traefik router names are arbitrary but should be deterministic +
-    # human-readable. Use the cert's common_name with non-DNS chars
-    # collapsed to dashes.
-    def router_slug(cert)
-      cert.common_name.to_s.gsub(/[^a-zA-Z0-9]+/, "-").gsub(/(^-|-$)/, "")
     end
   end
 end

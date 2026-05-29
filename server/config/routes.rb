@@ -497,6 +497,12 @@ Rails.application.routes.draw do
           end
         end
 
+        # === Ingress routes (read-only reverse-proxy projection) ===
+        # Derives the Traefik routers from valid ACME certs — no model, no
+        # writes. Source of truth: Acme::TraefikConfigWriter.
+        # Plan reference: Decentralized Federation §J — Phase 2c (Ingress).
+        resources :ingress_routes, only: %i[index]
+
         # === Worker API (token-authenticated workers) ===
         namespace :worker_api do
           # Periodic sweep endpoints — workers POST here on cron tick.
