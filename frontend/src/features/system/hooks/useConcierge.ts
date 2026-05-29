@@ -10,6 +10,7 @@ export interface UseConciergeResult {
   pending: boolean;
   error: string | null;
   send: (content: string) => Promise<void>;
+  confirmAction: (actionType: string, actionParams: Record<string, unknown>) => Promise<void>;
   reset: () => void;
 }
 
@@ -109,6 +110,31 @@ export function useConcierge(active: boolean): UseConciergeResult {
     [conversationId]
   );
 
+  const confirmAction = useCallback(
+    async (actionType: string, actionParams: Record<string, unknown>) => {
+      if (!conversationId) {
+        setError('Concierge not ready');
+        return;
+      }
+      try {
+        setPending(true);
+        await conciergeApi.confirmAction(conversationId, actionType, actionParams);
+        // The backend resolves the pending approval message metadata and posts
+        // a follow-up milestone — re-fetch so the card flips to its resolved
+        // state and any new system message appears.
+        const refreshed = await conciergeApi.listMessages(conversationId);
+        setMessages(refreshed);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Action failed';
+        logger.error('[useConcierge] confirmAction failed', err);
+        setError(msg);
+      } finally {
+        setPending(false);
+      }
+    },
+    [conversationId]
+  );
+
   return {
     conversationId,
     agentName,
@@ -117,6 +143,7 @@ export function useConcierge(active: boolean): UseConciergeResult {
     pending,
     error,
     send,
+    confirmAction,
     reset,
   };
 }

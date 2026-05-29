@@ -1,5 +1,20 @@
 import { FC } from 'react';
 import { FileText } from 'lucide-react';
+import { ConciergeActionCard } from '@/shared/components/concierge/ConciergeActionCard';
+
+/**
+ * Inline approval-card metadata emitted by the backend on system messages for
+ * infrastructure-mission gates (see Ai::Mission#post_milestone_to_conversation).
+ * Carried through from BackendMessage.content_metadata.
+ */
+interface ConciergeActionMetadata {
+  concierge_action?: boolean;
+  actions?: Array<{ type: string; label: string; style: string; params?: Record<string, unknown> }>;
+  action_params?: Record<string, unknown>;
+  action_context?: { type?: string; action_type?: string; status?: string; resolved_at?: string };
+  action_type?: string;
+  [key: string]: unknown;
+}
 
 export interface ConciergeChatMessage {
   id: string;
@@ -11,11 +26,13 @@ export interface ConciergeChatMessage {
     arguments: Record<string, unknown>;
     result?: Record<string, unknown>;
   };
+  metadata?: ConciergeActionMetadata;
 }
 
 interface Props {
   message: ConciergeChatMessage;
   onCveRunbookRequest?: (cveId: string) => void;
+  onConfirmAction?: (actionType: string, actionParams: Record<string, unknown>) => Promise<void> | void;
 }
 
 const CVE_PATTERN = /CVE-\d{4}-\d{4,}/g;
@@ -26,9 +43,15 @@ function extractCveIds(content: string): string[] {
   return Array.from(new Set(matches));
 }
 
-export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest }) => {
+export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest, onConfirmAction }) => {
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool';
+
+  // Inline approval card — surfaced on infrastructure-mission gate messages
+  // via content_metadata.concierge_action (see Ai::Mission). Rendered with the
+  // shared presentational ConciergeActionCard; the hook owns the transport.
+  const meta = message.metadata;
+  const isConciergeAction = meta?.concierge_action === true && !!onConfirmAction;
 
   // Detect CVE references only on assistant messages — operator's own
   // typing isn't a useful action affordance.
@@ -68,6 +91,25 @@ export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest }) =>
           </div>
         ) : (
           <div className="whitespace-pre-wrap">{message.content}</div>
+        )}
+
+        {isConciergeAction && meta && (
+          <ConciergeActionCard
+            actions={
+              meta.actions ?? [
+                { type: 'confirm', label: 'Approve', style: 'primary' },
+                { type: 'reject', label: 'Reject', style: 'danger' },
+              ]
+            }
+            actionContext={{
+              type: meta.action_context?.type ?? 'concierge',
+              action_type: meta.action_context?.action_type ?? meta.action_type ?? '',
+              status: meta.action_context?.status ?? 'pending',
+              resolved_at: meta.action_context?.resolved_at,
+            }}
+            actionParams={meta.action_params ?? {}}
+            onConfirm={onConfirmAction!}
+          />
         )}
 
         {cveIds.length > 0 && (

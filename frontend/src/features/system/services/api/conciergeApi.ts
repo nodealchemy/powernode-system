@@ -50,4 +50,19 @@ export const conciergeApi = {
     );
     return extractData(response);
   },
+
+  // Resolves an inline concierge action gate (e.g. an infrastructure mission
+  // approval) surfaced via assistant content_metadata.concierge_action. Routes
+  // to the same platform endpoint the core chat uses
+  // (ConciergeService#handle_confirmed_action).
+  async confirmAction(
+    conversationId: string,
+    actionType: string,
+    actionParams: Record<string, unknown> = {}
+  ): Promise<void> {
+    await apiClient.post(`/ai/conversations/${conversationId}/confirm_action`, {
+      action_type: actionType,
+      action_params: actionParams,
+    });
+  },
 };

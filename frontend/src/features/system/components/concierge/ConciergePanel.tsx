@@ -24,6 +24,10 @@ function toDisplayMessage(msg: BackendMessage): ConciergeChatMessage {
     role,
     content: msg.content,
     timestamp: msg.created_at,
+    // Preserve approval-card metadata (concierge_action, actions,
+    // action_params, action_context) so ConciergeMessage can render the
+    // inline Approve/Reject card for infrastructure mission gates.
+    metadata: msg.content_metadata,
   };
 }
 
@@ -105,6 +109,7 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
             key={msg.id}
             message={msg}
             onCveRunbookRequest={handleCveRunbookRequest}
+            onConfirmAction={concierge.confirmAction}
           />
         ))}
         {concierge.pending && (
