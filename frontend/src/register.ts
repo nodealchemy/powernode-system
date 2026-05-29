@@ -39,6 +39,9 @@ const FederationHubPage = lazyPage(() => import('./pages/app/system/FederationHu
 // ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
 // Plan reference: Decentralized Federation §J + P2.5.8.
 const AcmePage = lazyPage(() => import('./pages/app/system/AcmePage'));
+// Ingress — derived Traefik routes + approval-gated Expose Service wizard.
+// Plan reference: Phase 2c (Ingress).
+const IngressPage = lazyPage(() => import('./pages/app/system/IngressPage'));
 // ServicesPage, WorkersPage, AuditLogsPage, StorageProvidersPage all removed:
 // each was a near-identical copy of an admin/* page with only import paths
 // differing. Functionality lives at /app/admin/* — operators with the
@@ -97,6 +100,11 @@ export function register(): void {
     // ACME hub — tabs: DNS Credentials (P2.5.8), Certificates (P2.5.9).
     // `/*` wildcard so path-based sub-tabs render.
     { path: '/system/acme/*', component: AcmePage },
+
+    // Ingress hub — tabs: Routes (read-only monitor), Expose Service
+    // (approval-gated Concierge wizard). `/*` wildcard so path-based
+    // sub-tabs render. Plan reference: Phase 2c (Ingress).
+    { path: '/system/ingress/*', component: IngressPage, permission: 'system.ingress.read' },
   ]);
 
   // Top-level "System" nav section. Phase B.5 collapses the previous
@@ -120,6 +128,7 @@ export function register(): void {
         { label: 'SDWAN',          path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 6 },
         { label: 'Federation',     path: '/app/system/federation',     icon: 'Share2',          order: 7 },
         { label: 'ACME',           path: '/app/system/acme',           icon: 'KeyRound',        order: 8 },
+        { label: 'Ingress',        path: '/app/system/ingress',        icon: 'Globe',           order: 9, permission: 'system.ingress.read' },
       ],
     },
   ]);
