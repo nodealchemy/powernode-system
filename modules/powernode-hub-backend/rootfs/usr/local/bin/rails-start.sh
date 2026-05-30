@@ -38,6 +38,7 @@ if [ ! -f "$SECRETS_FILE" ]; then
   ARD=$(openssl rand -hex 32)
   ARS=$(openssl rand -hex 32)
   ADMIN_PW=$(openssl rand -hex 16)
+  JWT_KEY=$(openssl rand -hex 64)
   umask 077
   cat > "$SECRETS_FILE" <<EOF
 RAILS_ENV=production
@@ -49,6 +50,13 @@ ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$ARS
 DATABASE_URL=postgres://powernode@localhost:5432/powernode_production
 REDIS_URL=redis://localhost:6379/0
 POWERNODE_INITIAL_ADMIN_PASSWORD=$ADMIN_PW
+# JWT signing for the platform's user-auth tokens. config/initializers/jwt.rb
+# raises if JWT_SECRET_KEY is unset in production, and production defaults to
+# RS256 (an RSA keypair, awkward as a multi-line PEM in this env file). A
+# self-contained hub signs + verifies its own tokens, so HS256 with a random
+# secret is sufficient (the agent/federation use mTLS + bootstrap tokens, not JWT).
+JWT_ALGORITHM=HS256
+JWT_SECRET_KEY=$JWT_KEY
 EOF
   cat > "$ADMIN_CREDS" <<EOF
 {
