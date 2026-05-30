@@ -56,6 +56,14 @@ module System
 
     belongs_to :account
 
+    # Phase 3a — push every platform-peer status transition to the operator
+    # dashboard the moment it commits. Acceptance, enrollment, activation,
+    # degradation, suspension, and revocation all flow through here so the
+    # live federation view reflects state changes without polling.
+    # record_heartbeat! emits its own "heartbeat"-kind event separately for
+    # liveness pings that don't change status.
+    after_update :broadcast_status_transition!, if: :saved_change_to_status?
+
     # Self-FK: a spawned child peer links to the parent peer record on
     # this side that points at the parent platform.
     belongs_to :parent_peer, class_name: "System::FederationPeer",
@@ -98,6 +106,22 @@ module System
     scope :sdwan_only_peers, -> { where(peer_kind: "sdwan_only") }
     scope :platform_peers,   -> { where(peer_kind: "platform") }
     scope :children_of,      ->(peer) { where(parent_peer_id: peer.id) }
+
+    # Peers whose advertised remote prefix should enter the local SDWAN
+    # data plane (WireGuard AllowedIPs + eBGP networks). Composed from the
+    # existing liveness scopes so it can NEVER drift from the peer state
+    # machine: platform peers contribute once `reachable` (enrolled →
+    # active ⇄ degraded — the same window #reachable? gates inbound
+    # federation_api calls on); sdwan_only peers contribute once `live`
+    # (which adds `accepted`, since sdwan_only peers stop at accepted and
+    # data-plane intent is live the moment they're accepted). Sdwan::
+    # FederationPrefixResolver is the consumer — see that service for the
+    # full selection rationale. Suspended/revoked peers are excluded by
+    # both scopes, so prefixes can't leak from a torn-down peer.
+    scope :federation_prefix_contributing, lambda {
+      where(id: platform_peers.reachable).or(where(id: sdwan_only_peers.live))
+    }
+
     scope :heartbeat_stale,  ->(threshold = HEARTBEAT_STALE_AFTER.ago) {
       where(peer_kind: "platform")
         .where(status: %w[enrolled active])
@@ -165,6 +189,10 @@ module System
 
       attrs[:status] = next_status if next_status
       update!(attrs)
+      # Phase 3a — real-time peer-state push. Emit on every heartbeat so
+      # the operator dashboard sees liveness + any enrolled/degraded →
+      # active recovery the moment it lands.
+      broadcast_peer_state!(kind: "heartbeat", previous_status: status_before_last_save)
       true
     end
 
@@ -178,6 +206,8 @@ module System
         status: "degraded",
         metadata: metadata.merge("degraded_reason" => reason.to_s.presence)
       )
+      # The active → degraded push is handled by broadcast_status_transition!
+      # (after_update, severity "medium"). No explicit broadcast needed here.
       true
     end
 
@@ -274,6 +304,54 @@ module System
     end
 
     private
+
+    # after_update hook (gated on saved_change_to_status?) that pushes any
+    # status transition to the operator dashboard. Maps status → severity:
+    # degraded/suspended → "medium", revoked → "high", everything else
+    # (accepted, enrolled, active) → "low". Emits kind
+    # "federation.peer.<status>". platform_peer? gating + best-effort rescue
+    # live in broadcast_peer_state!.
+    def broadcast_status_transition!
+      severity =
+        case status
+        when "degraded", "suspended" then "medium"
+        when "revoked"               then "high"
+        else                              "low"
+        end
+
+      broadcast_peer_state!(
+        kind: status,
+        severity: severity,
+        previous_status: status_before_last_save
+      )
+    end
+
+    # Persist a FleetEvent + push it on SystemFleetChannel so the operator
+    # dashboard reflects peer liveness in real time. Best-effort — an
+    # observability hiccup never blocks the heartbeat / degrade flow
+    # (EventBroadcaster swallows its own errors; this rescue is belt-and-
+    # braces for the `defined?` guard miss).
+    def broadcast_peer_state!(kind:, severity: "low", previous_status: nil, reason: nil)
+      return unless platform_peer?
+      return unless defined?(::System::Fleet::EventBroadcaster)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "federation.peer.#{kind}",
+        severity: severity,
+        source: "federation_peer",
+        payload: {
+          peer_id: id,
+          peer_kind: peer_kind,
+          status: status,
+          previous_status: previous_status,
+          last_heartbeat_at: last_heartbeat_at&.iso8601,
+          reason: reason.to_s.presence
+        }.compact
+      )
+    rescue StandardError => e
+      Rails.logger.debug("[System::FederationPeer##{id}] peer-state broadcast skipped: #{e.message}")
+    end
 
     # spawn_role is only meaningful for platform peers. Sdwan-only rows
     # leave it nil. Platform peers must declare parent | child | symmetric

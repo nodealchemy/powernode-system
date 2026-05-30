@@ -13,6 +13,14 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
   let(:plaintext_token) { peer.generate_acceptance_token!(ttl_seconds: 1.hour.to_i) }
   let(:path) { "/api/v1/system/federation_api/accept" }
 
+  # Phase 3a — the accept→enrolled transition fires FederationPeer's
+  # after_commit post-accept enqueue. Stub the worker dispatch so request
+  # specs don't reach Redis (async topology reconciliation is covered by
+  # the model + worker-side specs).
+  before do
+    allow(::System::WorkerDispatch).to receive(:enqueue).and_return("jid-stub")
+  end
+
   let(:valid_payload) do
     {
       acceptance_token: plaintext_token,
@@ -221,6 +229,45 @@ RSpec.describe "Api::V1::System::FederationApi::Accept", type: :request do
 
         expect(response).to have_http_status(:ok)
       end
+    end
+  end
+
+  # Phase 3a — the controller delegates to FederationAcceptanceService and
+  # threads request.base_url through as platform_url. It must also surface
+  # the post-accept chain results (sdwan_attach + governance) in the payload.
+  describe "POST /accept — service delegation (Phase 3a)" do
+    before { plaintext_token }
+
+    it "invokes FederationAcceptanceService with request.base_url as platform_url" do
+      expect(::System::Federation::FederationAcceptanceService)
+        .to receive(:call)
+        .with(hash_including(
+          token: plaintext_token,
+          contract_version: 1,
+          platform_url: a_string_matching(%r{\Ahttps?://})
+        ))
+        .and_call_original
+
+      post path, params: valid_payload, as: :json
+      expect(response).to have_http_status(:ok)
+    end
+
+    it "surfaces sdwan_attach + governance keys from the post-accept chain" do
+      post path, params: valid_payload, as: :json
+      expect(response).to have_http_status(:ok)
+
+      data = JSON.parse(response.body)["data"]
+      # out_of_band peer with no overlay binding → attach skipped cleanly.
+      expect(data["sdwan_attach"]).to be_present
+      expect(data["sdwan_attach"]["status"]).to eq("skipped")
+      expect(data["governance"]).to be_present
+      expect(data["governance"]["status"]).to eq("scanned")
+    end
+
+    it "maps a service failure Result back to render_error with its status" do
+      post path, params: valid_payload.merge(contract_version: 42), as: :json
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to include("contract_version")
     end
   end
 end

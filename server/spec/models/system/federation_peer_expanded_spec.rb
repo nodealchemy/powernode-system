@@ -193,6 +193,72 @@ RSpec.describe System::FederationPeer, type: :model do
     end
   end
 
+  # ── Phase 3a — real-time peer-state push ──────────────────────────────
+  describe "real-time peer-state broadcasts" do
+    it "emits a federation.peer.heartbeat FleetEvent on record_heartbeat!" do
+      # A first heartbeat on an enrolled peer also transitions enrolled →
+      # active, so the status-transition callback fires a federation.peer.active
+      # event alongside the heartbeat ping. Allow both; assert the heartbeat.
+      peer = create(:system_federation_peer, :enrolled)
+      allow(::System::Fleet::EventBroadcaster).to receive(:emit!)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .with(hash_including(kind: "federation.peer.heartbeat", account: peer.account))
+      peer.record_heartbeat!
+    end
+
+    it "emits a single federation.peer.heartbeat (no status event) for an already-active peer" do
+      # No status change → broadcast_status_transition! does not fire; only the
+      # liveness ping is emitted.
+      peer = create(:system_federation_peer, :active, last_heartbeat_at: 1.minute.ago)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .once
+        .with(hash_including(kind: "federation.peer.heartbeat"))
+      peer.record_heartbeat!
+    end
+
+    it "emits a federation.peer.degraded FleetEvent (severity medium) on mark_degraded!" do
+      peer = create(:system_federation_peer, :active)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .with(hash_including(kind: "federation.peer.degraded", severity: "medium"))
+      peer.mark_degraded!(reason: "stale")
+    end
+
+    it "emits a federation.peer.accepted FleetEvent (severity low) on accept!" do
+      peer = create(:system_federation_peer, :platform, status: "proposed")
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .with(hash_including(kind: "federation.peer.accepted", severity: "low"))
+      peer.accept!
+    end
+
+    it "emits a federation.peer.suspended FleetEvent (severity medium) on suspend!" do
+      peer = create(:system_federation_peer, :active)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .with(hash_including(kind: "federation.peer.suspended", severity: "medium"))
+      peer.suspend!(reason: "operator pause")
+    end
+
+    it "emits a federation.peer.revoked FleetEvent (severity high) on revoke!" do
+      peer = create(:system_federation_peer, :active)
+      expect(::System::Fleet::EventBroadcaster)
+        .to receive(:emit!)
+        .with(hash_including(kind: "federation.peer.revoked", severity: "high"))
+      peer.revoke!(reason: "trust withdrawn")
+    end
+
+    it "does not emit for sdwan_only peers (platform-only observability)" do
+      # sdwan_only peers don't progress past accepted; force a heartbeat-eligible
+      # state to confirm the platform_peer? guard short-circuits the broadcast.
+      peer = create(:system_federation_peer, status: "accepted", peer_kind: "sdwan_only")
+      expect(::System::Fleet::EventBroadcaster).not_to receive(:emit!)
+      peer.send(:broadcast_peer_state!, kind: "heartbeat")
+    end
+  end
+
   describe "#suspend!" do
     it "transitions any pre-revoked state to suspended" do
       peer = create(:system_federation_peer, :active)
