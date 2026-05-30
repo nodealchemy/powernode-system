@@ -35,7 +35,18 @@ module Api
               # exists — the agent needs the private half to drive `wg setconf`.
               # The operator-facing topology endpoint sets it to false so the
               # secret never leaves Vault on the operator path.
-              compiled = ::Sdwan::TopologyCompiler.compile_for_peer(peer, include_private_key: true)
+              #
+              # Federation prefixes are resolved ONCE per network for the
+              # request (see federation_resolver). A host with N peers — often
+              # all on the same network — would otherwise re-run identical
+              # account-scoped FederationPrefixResolver queries inside each
+              # TopologyCompiler. The injected resolver memoizes per network so
+              # the compiled output is identical while the DB work happens once.
+              compiled = ::Sdwan::TopologyCompiler.compile_for_peer(
+                peer,
+                federation_resolver: request_federation_resolver,
+                include_private_key: true
+              )
               compiled.merge(network_id: peer.sdwan_network_id, network_cidr_64: peer.network.cidr_64)
             end
 
@@ -59,7 +70,17 @@ module Api
               # hosts whose account has an active OvnDeployment. nil
               # for lightweight hosts; agent's manager.go treats nil
               # as "OVN not enabled, skip the OVN reconcile step".
-              ovn_control: ::Sdwan::TopologyCompiler.ovn_control_for(instance)
+              ovn_control: ::Sdwan::TopologyCompiler.ovn_control_for(instance),
+              # Phase 3 — the compiled OVN Northbound plan (ls-add /
+              # lsp-add / lsp-set-addresses / acl-add) the agent's
+              # OvnNbApplier replays against the central NB DB. Top-level
+              # (host-scoped) because the agent reads `desired.OvnNbPlan`
+              # separately from ovn_control. nil for lightweight hosts or
+              # accounts with no active OvnDeployment. Previously absent —
+              # the agent's NB applier existed and ran every tick but the
+              # server never served the plan, so OVN logical switches +
+              # isolation ACLs were never replayed on-host.
+              ovn_nb_plan: ::Sdwan::TopologyCompiler.ovn_nb_plan_for(instance)
             )
           end
 
@@ -124,6 +145,26 @@ module Api
           end
 
           private
+
+          # A federation resolver scoped to this request that memoizes the
+          # resolved entries per network. Matches the TopologyCompiler
+          # `federation_resolver:` lambda contract (`->(network)`), so it
+          # drops in transparently and returns byte-identical results to the
+          # default Sdwan::FederationPrefixResolver — the only difference is
+          # that peers sharing a network resolve the (account-scoped) prefix
+          # set once instead of once per peer.
+          def request_federation_resolver
+            @request_federation_resolver ||=
+              begin
+                cache = {}
+                lambda do |network|
+                  key = network&.id
+                  next ::Sdwan::FederationPrefixResolver.resolve(network) if key.nil?
+
+                  cache[key] ||= ::Sdwan::FederationPrefixResolver.resolve(network)
+                end
+              end
+          end
 
           def parse_time(raw)
             Time.parse(raw.to_s)

@@ -24,15 +24,21 @@ module Sdwan
       DEFAULT_HOLD_SECONDS      = 90
       DEFAULT_KEEPALIVE_SECONDS = 30
 
-      def self.compile_for_peer(peer)
-        new(peer).compile
+      def self.compile_for_peer(peer, federation_prefixes: [])
+        new(peer, federation_prefixes: federation_prefixes).compile
       end
 
-      def initialize(peer)
+      def initialize(peer, federation_prefixes: [])
         @peer = peer
         @network = peer.network
         @host = peer.node_instance
         @account_bgp = ::Sdwan::AccountBgp.find_by(account_id: peer.account_id)
+        # Phase 3 — federated remote prefixes (from
+        # Sdwan::FederationPrefixResolver). Route-reflector (hub) peers
+        # originate these into the iBGP fabric so every spoke learns a
+        # route to the federated network. Spokes do NOT re-originate them
+        # (they'd create a routing loop); only RR/hub peers announce.
+        @federation_prefixes = Array(federation_prefixes).reject(&:blank?).uniq
       end
 
       # Returns a BgpConf-shaped Hash for the agent. Even though FRR is
@@ -145,6 +151,13 @@ module Sdwan
            peer.k3s_host?
           out << peer.network.pod_subnet_prefix
         end
+        # Phase 3 — federated remote prefixes are originated ONLY by
+        # route-reflector (hub) peers. The hub forwards federated traffic
+        # out via its host routing table to the inter-platform tunnel; by
+        # announcing the prefix into iBGP it gives every spoke a route to
+        # the federated network through the hub. Spokes never re-originate
+        # (that would loop the prefix back into the fabric).
+        out.concat(@federation_prefixes) if route_reflector?(peer)
         out.compact.uniq
       end
 

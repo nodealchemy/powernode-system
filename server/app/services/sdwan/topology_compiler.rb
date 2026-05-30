@@ -38,7 +38,19 @@ module Sdwan
 
     class UnknownStrategy < StandardError; end
 
-    def self.compile_for_peer(peer, federation_resolver: ->(_) { [] }, include_private_key: false)
+    # Phase 3 — `federation_resolver` defaults to the real
+    # Sdwan::FederationPrefixResolver so federated remote prefixes enter
+    # the data plane automatically on the node_api serving path (which
+    # passes no resolver). Callers can still inject a custom resolver
+    # (operator preview, tests) — any object responding to `call(network)`
+    # and returning the structured federation entries works.
+    #
+    # A lambda (not a bound `.method(:resolve)`) so dev code-reloading
+    # re-resolves the class each call rather than holding a stale Method
+    # object across a Zeitwerk reload.
+    DEFAULT_FEDERATION_RESOLVER = ->(network) { ::Sdwan::FederationPrefixResolver.resolve(network) }
+
+    def self.compile_for_peer(peer, federation_resolver: DEFAULT_FEDERATION_RESOLVER, include_private_key: false)
       new(peer.network, federation_resolver: federation_resolver, include_private_key: include_private_key)
         .compile_peer_view(peer)
     end
@@ -53,7 +65,7 @@ module Sdwan
     # empty Array so callers (e.g. TopologyRendererService) can synthesize
     # a hypothetical preview from the brief instead. No DB writes occur in
     # either branch.
-    def self.compile_for_network(network, federation_resolver: ->(_) { [] })
+    def self.compile_for_network(network, federation_resolver: DEFAULT_FEDERATION_RESOLVER)
       return [] unless network&.persisted?
 
       compiler = new(network, federation_resolver: federation_resolver, include_private_key: false)
@@ -140,6 +152,89 @@ module Sdwan
       }
     end
 
+    # Phase 3 — the compiled OVN Northbound plan for this instance's
+    # account, served at the DesiredConfig top-level `ovn_nb_plan` key
+    # (NOT nested under ovn_control — the agent's manager reads
+    # `desired.OvnNbPlan` and hands it to OvnNbApplier separately from
+    # the ovn-controller intent).
+    #
+    # Previously this path did not exist: the agent's ShellOvnNbApplier
+    # and the OvnNbPlan wire struct were fully built, the manager already
+    # called OvnNbApplier.Apply(desired.OvnNbPlan) on every tick, but the
+    # server never serialized the plan — so `ovn_nb_plan` was always nil
+    # and the OVN logical topology (switches, port bindings, isolation
+    # ACLs) was never replayed on-host. This closes that gap.
+    #
+    # Shape mirrors Sdwan::OvnCompiler#compile ({ deployment_id, plan,
+    # compiled_at }) PLUS the `nb_db_endpoint` the compiler can't know
+    # (it lives on the OvnDeployment row, not in the logical-switch
+    # graph). The agent's applier validates nb_db_endpoint is present
+    # whenever the plan is non-empty.
+    #
+    # Gating mirrors ovn_control_for exactly: only heavyweight hosts
+    # whose account has an active OvnDeployment get a plan. Returns nil
+    # otherwise (agent treats nil as "no OVN logical topology to apply").
+    #
+    # The plan is served to EVERY heavyweight host (not just a single
+    # control host). `northd_host` on the deployment is explicitly an
+    # advisory hostname hint, not a NodeInstance pointer, so it can't be
+    # used as a serving gate. Serving to all heavyweight hosts is safe:
+    # the agent's ShellOvnNbApplier issues `--may-exist` on ls-add /
+    # lsp-add / acl-add and caches the last byte-identical plan, so
+    # concurrent replays from multiple chassis converge on the same NB
+    # DB state rather than conflicting. This matches how ovn_control_for
+    # already makes every heavyweight host an OVN chassis.
+    def self.ovn_nb_plan_for(instance)
+      return nil unless instance.network_profile == "heavyweight"
+
+      deployment = ::Sdwan::OvnDeployment
+                     .where(account_id: instance.account_id, status: "active")
+                     .first
+      return nil unless deployment
+
+      # Hot path — served on EVERY heavyweight host's node_api poll. The
+      # OvnCompiler reloads all switches/ports/acls and re-serializes a
+      # byte-stable plan for unchanged DB state (see the idempotency
+      # contract OvnCompiler honors), so caching the compiled plan keyed on
+      # the deployment id plus a cheap version stamp eliminates the repeated
+      # full recompile. The stamp is the most recent updated_at across the
+      # deployment and its OVN rows — any switch/port/acl change advances it
+      # and naturally invalidates the cache without an explicit purge.
+      cache_key = ovn_nb_plan_cache_key(deployment)
+      Rails.cache.fetch(cache_key) do
+        ::Sdwan::OvnCompiler.compile_for_deployment(deployment).merge(
+          nb_db_endpoint: deployment.nb_db_endpoint
+        )
+      end
+    end
+
+    # Version stamp for the OVN NB plan cache. Folds in the most recent
+    # updated_at across the deployment and every row the compiler reads:
+    # its logical switches, plus the ports and ACLs hanging off those
+    # switches. Ports/ACLs belong to a switch (not the deployment) and do
+    # NOT `touch:` their parent, and going `active` — which is exactly what
+    # makes the compiler emit a row — is itself a write that bumps the
+    # row's updated_at, so we must query the child tables directly through
+    # the switch ids. Any switch/port/acl mutation advances the key and
+    # naturally invalidates the cached plan without an explicit purge.
+    def self.ovn_nb_plan_cache_key(deployment)
+      switch_scope = ::Sdwan::OvnLogicalSwitch
+                       .where(sdwan_ovn_deployment_id: deployment.id)
+      switch_ids = switch_scope.pluck(:id)
+
+      stamps = [
+        deployment.updated_at,
+        switch_scope.maximum(:updated_at),
+        ::Sdwan::OvnLogicalSwitchPort
+          .where(sdwan_ovn_logical_switch_id: switch_ids).maximum(:updated_at),
+        ::Sdwan::OvnAcl
+          .where(sdwan_ovn_logical_switch_id: switch_ids).maximum(:updated_at)
+      ].compact
+
+      version = stamps.map { |t| t.utc.to_f }.max || 0
+      "sdwan/ovn_nb_plan/#{deployment.id}/#{version}"
+    end
+
     # Derives the host's SDWAN overlay address (the /128 without prefix
     # length) for use as the OVN Geneve tunnel endpoint. Returns "" when
     # the host has no SDWAN peers yet — the agent's OvnControllerApplier
@@ -158,6 +253,15 @@ module Sdwan
       @network = network
       @federation_resolver = federation_resolver
       @include_private_key = include_private_key
+      # Phase 3 — resolve federated remote prefixes ONCE per compile and
+      # thread the prefix list into both the topology strategy (WG
+      # AllowedIPs fold-in) and the BGP config compiler (eBGP `network`
+      # statements). The resolver is the operator/test injection seam;
+      # `federation_entries` is the structured per-peer block, while
+      # `federation_prefixes` is the de-duplicated CIDR list the data
+      # plane folds in.
+      @federation_entries = Array(@federation_resolver.call(@network))
+      @federation_prefixes = @federation_entries.filter_map { |e| federation_prefix_from(e) }.uniq
       @strategy = strategy_for(network)
     end
 
@@ -179,9 +283,16 @@ module Sdwan
         # Slice 9c — BGP config when network.routing_protocol == "ibgp".
         # When static, the compiler returns { enabled: false } so the
         # agent disables FRR for this network. The frr_applier consumes
-        # this block.
-        bgp: ::Sdwan::Bgp::ConfigCompiler.compile_for_peer(peer),
-        federation: @federation_resolver.call(@network), # [] in v1
+        # this block. Phase 3 — federated prefixes are passed so that
+        # route-reflector (hub) peers announce them into the iBGP fabric.
+        bgp: ::Sdwan::Bgp::ConfigCompiler.compile_for_peer(peer, federation_prefixes: @federation_prefixes),
+        # Phase 3 — federated remote prefixes for this network's account,
+        # resolved by Sdwan::FederationPrefixResolver. One entry per
+        # reachable federation peer carrying a remote_prefix_advertisement.
+        # The agent surfaces these for observability; the data-plane
+        # injection happens via WG AllowedIPs (see strategy peers_for)
+        # and, on iBGP networks, via the bgp.networks announcements.
+        federation: @federation_entries,
         # Phase N0 — signed membership credential. Carries the canonical
         # JSON envelope, Ed25519 signature, constellation handle, and
         # validity window. The agent verifies this every reconcile;
@@ -288,9 +399,26 @@ module Sdwan
     def strategy_for(network)
       name = network.settings.fetch("topology_strategy", "hub_and_spoke")
       class_name = "Sdwan::TopologyStrategies::#{name.camelize}"
-      class_name.constantize.new(network: network)
+      # Phase 3 — pass the resolved federated prefixes so the strategy can
+      # fold them into WG AllowedIPs (spokes route federated traffic out
+      # through the hub egress). Strategies accept it as a keyword with a
+      # default of [] so the contract stays additive.
+      class_name.constantize.new(network: network, federation_prefixes: @federation_prefixes)
     rescue NameError
       raise UnknownStrategy, "unknown SDWAN topology strategy: #{name.inspect}"
+    end
+
+    # Phase 3 — pulls the CIDR out of a federation entry. Tolerates both
+    # the structured Hash shape emitted by Sdwan::FederationPrefixResolver
+    # ({ prefix: "..." , ... }) and a bare String prefix, so a custom
+    # injected resolver can return either form.
+    def federation_prefix_from(entry)
+      case entry
+      when ::Hash
+        (entry[:prefix] || entry["prefix"]).to_s.strip.presence
+      when ::String
+        entry.strip.presence
+      end
     end
   end
 end

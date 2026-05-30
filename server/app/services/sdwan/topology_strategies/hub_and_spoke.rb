@@ -21,7 +21,7 @@ module Sdwan
     class HubAndSpoke
       DEFAULT_PERSISTENT_KEEPALIVE = 25
 
-      def initialize(network:)
+      def initialize(network:, federation_prefixes: [])
         @network = network
         @peers = network.peers.includes(:keys).to_a
         @hubs, @spokes = @peers.partition(&:publicly_reachable)
@@ -30,6 +30,13 @@ module Sdwan
         # Slice 9b — VIPs are reachable through their holder peers.
         # peer_id => [vip_cidrs] map; computed once per compile.
         @vips_by_holder = build_vips_by_holder_map
+        # Phase 3 — federated remote prefixes (from
+        # Sdwan::FederationPrefixResolver). These are CIDRs owned by
+        # remote federated Powernode installs. Spokes must route traffic
+        # destined to them out through the local hub egress, so we fold
+        # them into the spoke→hub AllowedIPs exactly like external LAN
+        # subnets and VIP CIDRs. Empty list = no federation = no change.
+        @federation_prefixes = Array(federation_prefixes).reject(&:blank?).uniq
       end
 
       def peers_for(peer)
@@ -100,7 +107,15 @@ module Sdwan
 
           allowed = [ @network.cidr_64 ] + external_subnets + vip_cidrs +
                     (static_subnet_routing? ? Array(hub.lan_subnets) : []) +
-                    pod_cidrs
+                    pod_cidrs +
+                    # Phase 3 — federated remote prefixes route through the
+                    # hub egress in BOTH static and iBGP modes. Unlike
+                    # lan_subnets, this is not gated on static_subnet_routing?:
+                    # WireGuard's AllowedIPs is a cryptographic routing filter,
+                    # so even when FRR distributes the route dynamically the
+                    # spoke's WG iface must permit the federated prefix or the
+                    # packets are dropped before they reach the tunnel.
+                    @federation_prefixes
           build_peer_entry(hub, key, allowed_ips: allowed.uniq,
                                      keepalive: DEFAULT_PERSISTENT_KEEPALIVE)
         end

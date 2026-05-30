@@ -60,6 +60,17 @@ type Manager struct {
 	// DesiredOvnControl and the applier short-circuits without
 	// touching OVS or systemctl.
 	OvnControllerApplier OvnControllerApplier
+	// Phase 3b-2: OVN Northbound plan applier. nil-tolerant — a nil
+	// DesiredConfig.OvnNbPlan (lightweight hosts, and heavyweight hosts
+	// whose account has no active deployment) makes the applier
+	// short-circuit without touching ovn-nbctl. The platform's
+	// topology compiler serves the SAME compiled NB plan to EVERY
+	// heavyweight host with an active deployment (not just one elected
+	// control host); each host replays it into the central NB DB.
+	// Convergence relies on the ovn-nbctl `--may-exist` idempotency
+	// plus the applier's last-signature cache, so concurrent replays
+	// from multiple hosts are safe and steady-state ticks no-op.
+	OvnNbApplier OvnNbApplier
 	// Phase N0: per-(peer, network) MC cache + Ed25519 trust store.
 	// The forwarding gate refuses to bring up tunnels without a valid
 	// cached MC.
@@ -70,6 +81,10 @@ type Manager struct {
 	lastReconcileAt time.Time
 	lastError       error
 	lastDesired     *DesiredConfig
+	// lastOvnNbState holds the observed result of the most recent NB
+	// plan replay (Phase 3b-2). nil on hosts that aren't the OVN control
+	// host. Snapshot-read by OvnNbStatus for the heartbeat block.
+	lastOvnNbState *ObservedOvnNbState
 }
 
 func NewManager(client *transport.Client, applier WgApplier, onError func(string, error)) *Manager {
@@ -93,6 +108,7 @@ func NewManager(client *transport.Client, applier WgApplier, onError func(string
 			NewOvsBridgeApplier(),
 		},
 		OvnControllerApplier: NewOvnControllerApplier(),
+		OvnNbApplier:         NewShellOvnNbApplier(),
 		MCVerifier:           NewMCVerifier(),
 		OnError:         onError,
 	}
@@ -157,6 +173,31 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		if err := m.OvnControllerApplier.Apply(ctx, desired.OvnControl); err != nil {
 			m.recordError("apply_ovn_control", err)
 		}
+	}
+
+	// Phase 3b-2: replay the compiled OVN Northbound plan into the
+	// central NB DB. A nil DesiredConfig.OvnNbPlan means this host has
+	// no NB plan to apply (lightweight host, or no active deployment on
+	// the account) — the applier no-ops without touching ovn-nbctl.
+	// Every heavyweight host with an active deployment receives the same
+	// compiled plan and replays it; there is no single elected control
+	// host. That is safe because each ovn-nbctl command is issued with
+	// `--may-exist` (server-side idempotency) and the applier caches the
+	// last-applied signature, so redundant replays from multiple hosts
+	// converge on the same NB state. Runs AFTER the ovn-controller
+	// applier (which ensures the local chassis is registered) and BEFORE
+	// the per-network loop. The observed result is stashed for the
+	// heartbeat so the platform sees how far the replay got. A replay
+	// error is recorded but never aborts the loop — the next tick
+	// re-attempts the full (idempotent) plan.
+	if m.OvnNbApplier != nil {
+		obs, err := m.OvnNbApplier.Apply(ctx, desired.OvnNbPlan)
+		if err != nil {
+			m.recordError("apply_ovn_nb_plan", err)
+		}
+		m.mu.Lock()
+		m.lastOvnNbState = obs
+		m.mu.Unlock()
 	}
 
 	// Build the desired-interface set so we can identify orphans below.
@@ -385,6 +426,18 @@ func (m *Manager) HeartbeatStatuses() []HeartbeatStatus {
 		})
 	}
 	return out
+}
+
+// OvnNbStatus returns the observed result of the most recent OVN
+// Northbound plan replay, or nil on hosts that aren't the OVN control
+// host (Phase 3b-2). Snapshot-style — safe to call concurrently with
+// Reconcile. The heartbeat integration nests this into the SDWAN status
+// payload so the platform's Sdwan::OvnDeployment detail view can show
+// applied/failed command counts and surface LastError.
+func (m *Manager) OvnNbStatus() *ObservedOvnNbState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastOvnNbState
 }
 
 // ------------------------------------------------------------------

@@ -40,6 +40,19 @@ type DesiredConfig struct {
 	// network. The OvnControllerApplier shells out to systemctl +
 	// ovs-vsctl to align local ovn-controller state with this intent.
 	OvnControl *DesiredOvnControl `json:"ovn_control"`
+	// Phase 3b-2: compiled OVN Northbound plan. Nil for lightweight hosts
+	// and for accounts with no active Sdwan::OvnDeployment; populated for
+	// every heavyweight host whose account has an active deployment. The
+	// OvnNbApplier replays the plan's ls-add/lsp-add/acl-add commands
+	// against the central NB DB via `ovn-nbctl --db=<nb_db_endpoint>`. The
+	// replay is idempotent (`--may-exist`) and last-plan-cached, so when
+	// several heavyweight chassis serve the same plan concurrently they
+	// converge on identical NB DB state rather than conflicting. Distinct
+	// from OvnControl: OvnControl makes a host a chassis (local
+	// ovn-controller + OVS encap), while OvnNbPlan populates the logical
+	// topology in the central NB DB that ovn-northd then translates into
+	// per-chassis flows.
+	OvnNbPlan *OvnNbPlan `json:"ovn_nb_plan"`
 }
 
 // ConstellationTrust pairs a constellation handle with its Ed25519
@@ -52,20 +65,28 @@ type ConstellationTrust struct {
 
 // DesiredNetworkConfig is one network's worth of per-peer config.
 type DesiredNetworkConfig struct {
-	NetworkID     string         `json:"network_id"`
-	NetworkCidr64 string         `json:"network_cidr_64"`
-	PeerID        string         `json:"peer_id"`
-	Interface     InterfaceConf  `json:"interface"`
-	Peers         []PeerConf     `json:"peers"`
-	Firewall      *FirewallConf  `json:"firewall"`     // slice 2 — nft ruleset
-	Federation    []any          `json:"federation"`   // always [] in v1
-	VipsHeld      []VipConf      `json:"vips_held"`    // slice 9b — VIPs to configure on lo
-	Bgp           *BgpConf       `json:"bgp"`          // slice 9c — FRR config when routing_protocol=ibgp
-	Nat           *NatConf       `json:"nat"`          // slice 7b — DNAT rules when this peer is a hub with port mappings
+	NetworkID     string        `json:"network_id"`
+	NetworkCidr64 string        `json:"network_cidr_64"`
+	PeerID        string        `json:"peer_id"`
+	Interface     InterfaceConf `json:"interface"`
+	Peers         []PeerConf    `json:"peers"`
+	Firewall      *FirewallConf `json:"firewall"` // slice 2 — nft ruleset
+	// Federation carries the resolved federated remote-prefix entries for
+	// this network's account (Phase 3 — Sdwan::FederationPrefixResolver):
+	// { federation_peer_id, remote_instance_id, remote_instance_url,
+	// prefix, status, peer_kind }. The data-plane fold-in happens
+	// upstream: federated prefixes already arrive inside Peers[].AllowedIPs
+	// (spoke→hub) and, on iBGP networks, inside Bgp.Networks. This block is
+	// surfaced for observability / heartbeat correlation, so it stays
+	// loosely typed (the agent does not parse individual fields).
+	Federation []any     `json:"federation"`
+	VipsHeld   []VipConf `json:"vips_held"` // slice 9b — VIPs to configure on lo
+	Bgp        *BgpConf  `json:"bgp"`       // slice 9c — FRR config when routing_protocol=ibgp
+	Nat        *NatConf  `json:"nat"`       // slice 7b — DNAT rules when this peer is a hub with port mappings
 	// Phase N0: signed membership credential proving this peer's
 	// membership in this network. The Manager forwarding gate refuses
 	// to keep the WG tunnel up if this is missing or invalid.
-	MC            *MCWire        `json:"mc_envelope"`
+	MC *MCWire `json:"mc_envelope"`
 }
 
 // NatConf is the per-network nat-chain ruleset. The agent's nat_applier
@@ -73,10 +94,10 @@ type DesiredNetworkConfig struct {
 // Ruleset = no port mappings on this peer; applier removes any
 // existing chain.
 type NatConf struct {
-	Table      string `json:"table"`        // "powernode_sdwan"
-	Chain      string `json:"chain"`        // "sdwan_nat_<8-char-net-id>"
+	Table      string `json:"table"` // "powernode_sdwan"
+	Chain      string `json:"chain"` // "sdwan_nat_<8-char-net-id>"
 	RuleCount  int    `json:"rule_count"`
-	Ruleset    string `json:"ruleset"`      // full nft script (may be empty)
+	Ruleset    string `json:"ruleset"` // full nft script (may be empty)
 	CompiledAt string `json:"compiled_at"`
 }
 
@@ -89,17 +110,17 @@ type NatConf struct {
 // stamped by the platform's TopologyCompiler from the holder host's
 // Sdwan::HostVrfAssignment row.
 type VipConf struct {
-	VipID                string `json:"virtual_ip_id"`
-	Name                 string `json:"name"`
-	Cidr                 string `json:"cidr"`
-	Anycast              bool   `json:"anycast"`
-	AdvertisedMed        int    `json:"advertised_med"`
-	AdvertisedLocalPref  int    `json:"advertised_local_pref"`
+	VipID               string `json:"virtual_ip_id"`
+	Name                string `json:"name"`
+	Cidr                string `json:"cidr"`
+	Anycast             bool   `json:"anycast"`
+	AdvertisedMed       int    `json:"advertised_med"`
+	AdvertisedLocalPref int    `json:"advertised_local_pref"`
 	// Phase N1a: kernel VRF master device the dummy iface backing
 	// this VIP must be bound to. Empty during the brief window
 	// between network creation and HostVrfAssignment activation —
 	// vip_applier.go skips entries with an empty VrfName.
-	VrfName              string `json:"vrf_name"`
+	VrfName string `json:"vrf_name"`
 }
 
 // BgpConf — slice 9c: per-network BGP config for this peer when the
@@ -109,11 +130,11 @@ type VipConf struct {
 type BgpConf struct {
 	Enabled              bool          `json:"enabled"`
 	AsNumber             int64         `json:"as_number"`
-	RouterID             string        `json:"router_id"`     // dotted-quad
+	RouterID             string        `json:"router_id"` // dotted-quad
 	IsRouteReflector     bool          `json:"is_route_reflector"`
 	RouteReflectorClient bool          `json:"route_reflector_client"`
 	Neighbors            []BgpNeighbor `json:"neighbors"`
-	Networks             []string      `json:"networks"`        // CIDRs to announce (own /128, lan_subnets, vips)
+	Networks             []string      `json:"networks"` // CIDRs to announce (own /128, lan_subnets, vips)
 	HoldTimeSeconds      int           `json:"hold_time_seconds"`
 	KeepaliveSeconds     int           `json:"keepalive_seconds"`
 	GracefulRestart      bool          `json:"graceful_restart"`
@@ -121,36 +142,36 @@ type BgpConf struct {
 	// writes this verbatim to /etc/frr/frr.conf. Single source of truth
 	// for routing config — the agent is "dumb" (just applies what the
 	// platform produces) so that operator-facing UI matches reality.
-	FrrText              string        `json:"frr_text"`
+	FrrText string `json:"frr_text"`
 }
 
 // BgpNeighbor — one iBGP peering session.
 type BgpNeighbor struct {
-	NeighborPeerID    string `json:"neighbor_peer_id"`
-	NeighborAddress   string `json:"neighbor_address"`   // overlay /128 of remote
-	RemoteAs          int64  `json:"remote_as"`           // same as local for iBGP
-	RouteReflectorClient bool `json:"route_reflector_client"`
-	Description       string `json:"description"`
+	NeighborPeerID       string `json:"neighbor_peer_id"`
+	NeighborAddress      string `json:"neighbor_address"` // overlay /128 of remote
+	RemoteAs             int64  `json:"remote_as"`        // same as local for iBGP
+	RouteReflectorClient bool   `json:"route_reflector_client"`
+	Description          string `json:"description"`
 }
 
 // ObservedBgpState — what frr_observer reports back via the heartbeat
 // after polling `vtysh -c "show bgp summary json"`. Slice 9c.
 type ObservedBgpState struct {
-	NetworkID   string                 `json:"network_id"`
-	RouterID    string                 `json:"router_id"`
-	LocalAs     int64                  `json:"local_as"`
-	Sessions    []ObservedBgpSession   `json:"sessions"`
-	LastError   string                 `json:"last_error,omitempty"`
+	NetworkID string               `json:"network_id"`
+	RouterID  string               `json:"router_id"`
+	LocalAs   int64                `json:"local_as"`
+	Sessions  []ObservedBgpSession `json:"sessions"`
+	LastError string               `json:"last_error,omitempty"`
 }
 
 // ObservedBgpSession — one BGP neighbor's live state.
 type ObservedBgpSession struct {
-	NeighborAddress   string `json:"neighbor_address"`
-	State             string `json:"state"`             // idle|connect|active|opensent|openconfirm|established
-	UptimeSeconds     int    `json:"uptime_seconds"`
-	PrefixesReceived  int    `json:"prefixes_received"`
-	PrefixesSent      int    `json:"prefixes_sent"`
-	LastError         string `json:"last_error,omitempty"`
+	NeighborAddress  string `json:"neighbor_address"`
+	State            string `json:"state"` // idle|connect|active|opensent|openconfirm|established
+	UptimeSeconds    int    `json:"uptime_seconds"`
+	PrefixesReceived int    `json:"prefixes_received"`
+	PrefixesSent     int    `json:"prefixes_sent"`
+	LastError        string `json:"last_error,omitempty"`
 }
 
 // FirewallConf is the per-network nft ruleset, compiled by the platform's
@@ -159,12 +180,12 @@ type ObservedBgpSession struct {
 // network (compiler returned no script — usually a transient state during
 // network creation before the chain is initialized).
 type FirewallConf struct {
-	Table      string `json:"table"`           // "powernode_sdwan"
-	Chain      string `json:"chain"`           // "sdwan_<8-char-net-id>"
-	Interface  string `json:"interface"`       // "wg-sdwan-<8-char-net-id>"
-	Policy     string `json:"policy"`          // "accept" | "drop"
+	Table      string `json:"table"`     // "powernode_sdwan"
+	Chain      string `json:"chain"`     // "sdwan_<8-char-net-id>"
+	Interface  string `json:"interface"` // "wg-sdwan-<8-char-net-id>"
+	Policy     string `json:"policy"`    // "accept" | "drop"
 	RuleCount  int    `json:"rule_count"`
-	Ruleset    string `json:"ruleset"`         // full nft script
+	Ruleset    string `json:"ruleset"` // full nft script
 	CompiledAt string `json:"compiled_at"`
 }
 
@@ -177,12 +198,12 @@ type FirewallConf struct {
 // We never persist it to disk — it lives only in process memory and in
 // the mode-0600 temp file we hand to `wg setconf`.
 type InterfaceConf struct {
-	Name          string         `json:"name"`             // wg-sdwan-<8>
-	Address       string         `json:"address"`          // /128
+	Name          string         `json:"name"`    // wg-sdwan-<8>
+	Address       string         `json:"address"` // /128
 	ListenPort    int            `json:"listen_port"`
 	MTU           int            `json:"mtu"`
-	PrivateKeyRef *PrivateKeyRef `json:"private_key_ref"`  // metadata pointer
-	PublicKey     string         `json:"public_key"`       // for log/heartbeat
+	PrivateKeyRef *PrivateKeyRef `json:"private_key_ref"`       // metadata pointer
+	PublicKey     string         `json:"public_key"`            // for log/heartbeat
 	PrivateKey    string         `json:"private_key,omitempty"` // node-API only
 	// Phase N1a: name of the VRF master device this WG iface must be
 	// bound to (`ip link set <iface> master <vrfName>`). The platform
@@ -190,7 +211,7 @@ type InterfaceConf struct {
 	// network this iface belongs to. Empty when the network is in
 	// static-only routing mode and no VRF has been allocated; in that
 	// case wg_applier leaves the iface in the default routing context.
-	VrfName       string         `json:"vrf_name,omitempty"`
+	VrfName string `json:"vrf_name,omitempty"`
 }
 
 // PrivateKeyRef points at the Sdwan::PeerKey row whose Vault entry holds
@@ -214,21 +235,21 @@ type PeerConf struct {
 // SDWAN-managed interface. Used by the diff to compute the apply plan
 // and by the Reporter to push state back to the platform.
 type ActualInterfaceState struct {
-	Name             string
-	Address          string
-	ListenPort       int
-	PublicKey        string
-	Peers            []ActualPeerState
+	Name       string
+	Address    string
+	ListenPort int
+	PublicKey  string
+	Peers      []ActualPeerState
 }
 
 // ActualPeerState — kernel-side observation for one peer.
 type ActualPeerState struct {
-	PublicKey        string
-	Endpoint         string
-	AllowedIPs       []string
-	LastHandshakeAt  time.Time
-	RxBytes          int64
-	TxBytes          int64
+	PublicKey       string
+	Endpoint        string
+	AllowedIPs      []string
+	LastHandshakeAt time.Time
+	RxBytes         int64
+	TxBytes         int64
 }
 
 // PeerStatusReport is what we POST to /status/sdwan per heartbeat tick.
