@@ -10,7 +10,6 @@
       "@system/*": ["./src/*"],
       "@business/*": ["../../business/frontend/src/*"]
     },
-    "baseUrl": ".",
     "noEmit": true
   },
   "include": [
