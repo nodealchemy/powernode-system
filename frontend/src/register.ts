@@ -35,7 +35,15 @@ const ComputePage = lazyPage(() => import('./pages/app/system/ComputePage'));
 const CatalogPage = lazyPage(() => import('./pages/app/system/CatalogPage'));
 const OperationsHubPage = lazyPage(() => import('./pages/app/system/OperationsHubPage'));
 const SdwanHubPage = lazyPage(() => import('./pages/app/system/SdwanHubPage'));
+// Federation Hub — Phase 3 multi-site control plane (Monitor | Control
+// PathTabs: peer liveness, topology, OVN isolation, VIP discovery,
+// subscriptions/governance, peer mgmt, offerings, isolation/DNS links).
 const FederationHubPage = lazyPage(() => import('./pages/app/system/FederationHubPage'));
+// Service Delivery — federated service catalog surfaces (Offerings,
+// Subscriptions, Catalog Browser, Children). Renamed from the former
+// FederationHubPage in Phase 3e; the multi-site hub above now owns the
+// /federation path, so service delivery moves to its own /service-delivery.
+const ServiceDeliveryPage = lazyPage(() => import('./pages/app/system/ServiceDeliveryPage'));
 // ACME — DNS provider credentials + Let's Encrypt cert lifecycle.
 // Plan reference: Decentralized Federation §J + P2.5.8.
 const AcmePage = lazyPage(() => import('./pages/app/system/AcmePage'));
@@ -92,10 +100,18 @@ export function register(): void {
     // graph via @xyflow/react).
     { path: '/system/sdwan/*', component: SdwanHubPage },
 
-    // Federation Services hub (Offerings + Subscriptions + Catalog
-    // Browser). P4.6.8 — operator-facing surfaces for federated
-    // service delivery. Plan reference: §L.7.
-    { path: '/system/federation/*', component: FederationHubPage },
+    // Federation Hub — Phase 3 multi-site control plane. Monitor | Control
+    // path-based sub-tabs, so the `/*` wildcard is required. Gated on
+    // system.peers.read (the page also renders its own permission-denied
+    // empty state). Mirrors the Ingress hub's route-level permission gate.
+    { path: '/system/federation/*', component: FederationHubPage, permission: 'system.peers.read' },
+
+    // Service Delivery — federated service catalog (Offerings +
+    // Subscriptions + Catalog Browser + Children). Renamed/moved from the
+    // former /system/federation in Phase 3e so the multi-site hub above can
+    // own /federation. Old /system/federation deep-links land on the new
+    // hub directly (no redirect — the hub now owns that path).
+    { path: '/system/service-delivery/*', component: ServiceDeliveryPage },
 
     // ACME hub — tabs: DNS Credentials (P2.5.8), Certificates (P2.5.9).
     // `/*` wildcard so path-based sub-tabs render.
@@ -125,10 +141,11 @@ export function register(): void {
         { label: 'Catalog',        path: '/app/system/catalog',        icon: 'Boxes',           order: 3 },
         { label: 'Operations',     path: '/app/system/operations',     icon: 'Activity',        order: 4 },
         { label: 'Instance Pools', path: '/app/system/instance-pools', icon: 'Droplet',         order: 5 },
-        { label: 'SDWAN',          path: '/app/system/sdwan',          icon: 'ShieldCheck',     order: 6 },
-        { label: 'Federation',     path: '/app/system/federation',     icon: 'Share2',          order: 7 },
-        { label: 'ACME',           path: '/app/system/acme',           icon: 'KeyRound',        order: 8 },
-        { label: 'Ingress',        path: '/app/system/ingress',        icon: 'Globe',           order: 9, permission: 'system.ingress.read' },
+        { label: 'SDWAN',            path: '/app/system/sdwan',            icon: 'ShieldCheck',     order: 6 },
+        { label: 'Federation',       path: '/app/system/federation',       icon: 'Share2',          order: 7, permission: 'system.peers.read' },
+        { label: 'Service Delivery', path: '/app/system/service-delivery', icon: 'Workflow',        order: 8 },
+        { label: 'ACME',             path: '/app/system/acme',             icon: 'KeyRound',        order: 9 },
+        { label: 'Ingress',          path: '/app/system/ingress',          icon: 'Globe',           order: 10, permission: 'system.ingress.read' },
       ],
     },
   ]);

@@ -1,15 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Network,
   AlertTriangle,
   X,
   Plus,
-  Clock,
   Trash2,
   RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
+import { usePlatformPeers } from '../../hooks/usePlatformPeers';
+import { PeerTable, PeerUrlCell, PeerStatusCell, PeerHeartbeatCell } from './PeerTable';
 import type {
   PlatformPeerSummary,
   PeerStatus,
@@ -26,32 +27,13 @@ import { PeerDetailDrawer } from './PeerDetailDrawer';
  * Plan reference: Decentralized Federation §I + P7.1.
  */
 export const PeersPanel: React.FC = () => {
-  const [peers, setPeers] = useState<PlatformPeerSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<PeerStatus | null>(null);
+  const { peers, loading, error, setError, refetch } = usePlatformPeers(
+    statusFilter ? { status: statusFilter } : undefined,
+  );
   const [inviteOpen, setInviteOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
-
-  const fetchPeers = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await platformPeersApi.listPeers(
-        statusFilter ? { status: statusFilter } : undefined,
-      );
-      setPeers(result.peers);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load peers');
-    } finally {
-      setLoading(false);
-    }
-  }, [statusFilter]);
-
-  useEffect(() => {
-    void fetchPeers();
-  }, [fetchPeers]);
 
   const handleRevoke = async (peer: PlatformPeerSummary) => {
     const reason = window.prompt(
@@ -64,7 +46,7 @@ export const PeersPanel: React.FC = () => {
     setRevokingId(peer.id);
     try {
       await platformPeersApi.revoke(peer.id, reason || undefined);
-      await fetchPeers();
+      await refetch();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to revoke peer');
     } finally {
@@ -86,7 +68,7 @@ export const PeersPanel: React.FC = () => {
           <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
           <button
             type="button"
-            onClick={() => void fetchPeers()}
+            onClick={() => void refetch()}
             disabled={loading}
             title="Refresh"
             className="p-1.5 rounded text-theme-secondary hover:text-theme-primary hover:bg-theme-surface-hover transition-colors disabled:opacity-40"
@@ -117,36 +99,33 @@ export const PeersPanel: React.FC = () => {
       )}
 
       {peers.length > 0 && (
-        <table className="w-full text-sm">
-          <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
-            <tr>
-              <th className="text-left px-4 py-2 font-medium">Remote URL</th>
-              <th className="text-left px-4 py-2 font-medium">Role</th>
-              <th className="text-left px-4 py-2 font-medium">Mode</th>
-              <th className="text-left px-4 py-2 font-medium">Status</th>
-              <th className="text-left px-4 py-2 font-medium">Endpoints</th>
-              <th className="text-left px-4 py-2 font-medium">Last Heartbeat</th>
-              <th className="text-right px-4 py-2 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {peers.map((peer) => (
-              <PeerRow
-                key={peer.id}
-                peer={peer}
-                onSelect={() => setSelectedId(peer.id)}
-                onRevoke={() => handleRevoke(peer)}
-                isRevoking={revokingId === peer.id}
-              />
-            ))}
-          </tbody>
-        </table>
+        <PeerTable
+          columns={[
+            { label: 'Remote URL' },
+            { label: 'Role' },
+            { label: 'Mode' },
+            { label: 'Status' },
+            { label: 'Endpoints' },
+            { label: 'Last Heartbeat' },
+            { label: 'Actions', align: 'right' },
+          ]}
+        >
+          {peers.map((peer) => (
+            <PeerRow
+              key={peer.id}
+              peer={peer}
+              onSelect={() => setSelectedId(peer.id)}
+              onRevoke={() => handleRevoke(peer)}
+              isRevoking={revokingId === peer.id}
+            />
+          ))}
+        </PeerTable>
       )}
 
       <InvitePeerModal
         isOpen={inviteOpen}
         onClose={() => setInviteOpen(false)}
-        onInvited={() => void fetchPeers()}
+        onInvited={() => void refetch()}
       />
 
       <PeerDetailDrawer
@@ -172,29 +151,18 @@ const PeerRow: React.FC<PeerRowProps> = ({ peer, onSelect, onRevoke, isRevoking 
       className="border-t border-theme cursor-pointer hover:bg-theme-surface-hover transition-colors"
       onClick={onSelect}
     >
-      <td className="px-4 py-3 text-theme-primary font-mono text-xs">{peer.remote_instance_url}</td>
+      <PeerUrlCell peer={peer} />
       <td className="px-4 py-3 text-theme-secondary text-xs">
         {peer.spawn_role ? <RoleBadge role={peer.spawn_role} /> : <span className="text-theme-tertiary">—</span>}
       </td>
       <td className="px-4 py-3 text-theme-secondary text-xs">
         {peer.spawn_mode ? <ModeBadge mode={peer.spawn_mode} /> : <span className="text-theme-tertiary">—</span>}
       </td>
-      <td className="px-4 py-3">
-        <StatusPill status={peer.status} />
-      </td>
+      <PeerStatusCell peer={peer} />
       <td className="px-4 py-3 text-xs text-theme-secondary">
         {peer.endpoints_count}
       </td>
-      <td className="px-4 py-3 text-xs text-theme-secondary">
-        {peer.last_heartbeat_at ? (
-          <span className="inline-flex items-center gap-1">
-            <Clock className="w-3 h-3" />
-            {new Date(peer.last_heartbeat_at).toLocaleString()}
-          </span>
-        ) : (
-          <span className="text-theme-tertiary">never</span>
-        )}
-      </td>
+      <PeerHeartbeatCell peer={peer} />
       <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
         {!isTerminal && (
           <button
@@ -270,20 +238,3 @@ const StatusFilterBar: React.FC<{
     ))}
   </div>
 );
-
-const StatusPill: React.FC<{ status: PeerStatus }> = ({ status }) => {
-  const styleByStatus: Record<PeerStatus, string> = {
-    proposed: 'bg-theme-background-tertiary text-theme-secondary',
-    accepted: 'bg-theme-info text-theme-info',
-    enrolled: 'bg-theme-info text-theme-info',
-    active: 'bg-theme-success text-theme-success',
-    degraded: 'bg-theme-warning text-theme-warning',
-    suspended: 'bg-theme-warning text-theme-warning',
-    revoked: 'bg-theme-danger text-theme-danger',
-  };
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}>
-      {status}
-    </span>
-  );
-};
