@@ -88,19 +88,25 @@ if ! $PSQL -c "SELECT 1 FROM pg_database WHERE datname='powernode_production'" 2
   /usr/bin/psql -h localhost -U postgres -c "CREATE DATABASE powernode_production OWNER powernode"
 fi
 
-# --- Vendor gems (first-boot only; ~5 min cold) ---
-# NOT using --deployment because parent's Gemfile.lock includes
-# all extension submodules' path gems (powernode_business, etc.)
-# whereas ops2 only mounts extension-system. Gemfile dynamically
-# resolves via discover_extension_gems so the in-memory Gemfile
-# diverges from the on-disk Gemfile.lock; --deployment treats
-# that divergence as fatal. Without --deployment, bundle adapts
-# the lock at install time to match the actual mounted extensions.
+# --- Install gems from the module-vendored cache (offline, first-boot) ---
+# Managed children have no rubygems.org egress, so the hub-backend module
+# ships every .gem in server/vendor/cache (populated by `bundle cache` at
+# build time — see .gitea/workflows/build-platform-modules.yaml) alongside a
+# Gemfile.lock already resolved to the extension set this template mounts.
+# `bundle install --local` therefore needs NO network: it installs from the
+# cache and compiles native extensions here, on-instance, against runtime-ruby
+# (build-essential + *-dev headers ship in that module) so they ABI-match.
+#
+# Still NOT --deployment: the parent's Gemfile.lock lists path gems for every
+# extension (powernode_business, etc.), but an instance only mounts a subset.
+# discover_extension_gems resolves the in-memory Gemfile to the mounted set;
+# the build-time cache ran with the same set staged, so the shipped lock
+# matches and --local resolves cleanly without --deployment's fatal-on-drift.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
-  echo "[rails-start] Vendoring gems (first boot)"
+  echo "[rails-start] Installing gems from vendored cache (offline)"
   /usr/bin/bundle config set --local path 'vendor/bundle'
   /usr/bin/bundle config set --local without 'development:test'
-  /usr/bin/bundle install --jobs 4 --retry 2
+  /usr/bin/bundle install --local --jobs 4
 fi
 
 # --- Migrate + seed (idempotent) ---

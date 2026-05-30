@@ -35,13 +35,16 @@ set +a
 
 cd "$WORKER_DIR"
 
-# Worker's own bundle (independent from backend's).
-# Same --path-not-deployment rationale as rails-start.sh.
+# Worker's own bundle (independent from backend's), installed offline
+# from the module-vendored cache — managed children have no rubygems
+# egress. The worker Gemfile has no extension path gems, so its lock is
+# self-consistent: `bundle install --local` installs from worker/vendor/
+# cache and compiles native extensions on-instance against runtime-ruby.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
-  echo "[sidekiq-start] Vendoring worker gems (first boot)"
+  echo "[sidekiq-start] Installing worker gems from vendored cache (offline)"
   /usr/bin/bundle config set --local path 'vendor/bundle'
   /usr/bin/bundle config set --local without 'development:test'
-  /usr/bin/bundle install --jobs 4 --retry 2
+  /usr/bin/bundle install --local --jobs 4
 fi
 
 echo "[sidekiq-start] Starting sidekiq"

@@ -455,12 +455,53 @@ jobs:
               if [ -d /tmp/parent/scripts ]; then
                 rsync -a /tmp/parent/scripts/ /tmp/fat/opt/powernode/scripts/
               fi
+
+              # --- Vendor gems offline (managed children have no rubygems egress) ---
+              # Populate server/vendor/cache with every .gem so the on-node
+              # rails-start.sh can `bundle install --local` (offline); native
+              # extensions compile on-instance against runtime-ruby.
+              #
+              # Resolve gems the SAME way the runtime does. discover_extension_gems
+              # (server/Gemfile) only promotes an extension to a path gem when its
+              # slug is in /opt/powernode/.gitmodules — which is NOT shipped to
+              # /sysroot — so at runtime NO extension is a path gem and the Gemfile
+              # resolves core-only. We therefore re-lock here WITHOUT staging
+              # .gitmodules or any extensions/, producing a core-only lock + cache
+              # that match the runtime resolution exactly (so the on-node --local
+              # install needs no re-resolution and no network).
+              if ! command -v bundle >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y --no-install-recommends ruby ruby-dev bundler git
+              fi
+              ( cd /tmp/fat/opt/powernode/server
+                bundle config set --local path vendor/bundle
+                bundle config set --local without development:test
+                bundle lock
+                bundle cache --no-install --all-platforms )
+              echo "=== hub-backend vendored cache: $(ls /tmp/fat/opt/powernode/server/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
               ;;
             powernode-hub-worker)
               mkdir -p /tmp/fat/opt/powernode
               rsync -a \
                 --exclude='.git' --exclude='node_modules' --exclude='tmp' --exclude='log' \
                 /tmp/parent/worker/ /tmp/fat/opt/powernode/worker/
+
+              # --- Vendor worker gems offline (same rationale as hub-backend) ---
+              # The worker Gemfile has no extension path gems, so its lock is
+              # self-consistent — just download every .gem into worker/vendor/cache
+              # so the on-node sidekiq-start.sh can `bundle install --local`
+              # (offline; native extensions compile on-instance against runtime-ruby).
+              if ! command -v bundle >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y --no-install-recommends ruby ruby-dev bundler git
+              fi
+              ( cd /tmp/fat/opt/powernode/worker
+                bundle config set --local path vendor/bundle
+                bundle config set --local without development:test
+                bundle cache --no-install --all-platforms )
+              echo "=== hub-worker vendored cache: $(ls /tmp/fat/opt/powernode/worker/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
               ;;
             powernode-hub-frontend)
               # Vite build needs node — install if missing. dist/ is
