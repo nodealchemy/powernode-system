@@ -660,7 +660,24 @@ jobs:
               # hook looks at /sbin first; post-switch_root systemd
               # unit uses /usr/sbin/. Both paths kept for either
               # codepath.
-              ln -sf /usr/sbin/powernode-agent /tmp/fat/sbin/powernode-agent
+              # CRITICAL: only create the /sbin compat symlink on a REAL /sbin.
+              # On a usrmerged base (Ubuntu noble: /sbin -> usr/sbin) this link
+              # name resolves THROUGH the /sbin symlink to
+              # /tmp/fat/usr/sbin/powernode-agent, and `ln -sf` would CLOBBER the
+              # real 9.7MB binary just installed there with a ~20-byte
+              # self-referential symlink — the carve then ships a 4 KB hollow
+              # erofs. On usrmerge, /sbin/powernode-agent already resolves to the
+              # real binary, so the extra link is unnecessary AND destructive.
+              if [ ! -L /tmp/fat/sbin ]; then
+                ln -sf /usr/sbin/powernode-agent /tmp/fat/sbin/powernode-agent
+              fi
+              # Guard what actually SHIPS (not just the build output at
+              # /tmp/powernode-agent): the rootfs binary must be a real >1MB
+              # file, never a symlink. Catches the usrmerge clobber + any future
+              # regression before Stage 2 can carve a hollow erofs.
+              if [ -L /tmp/fat/usr/sbin/powernode-agent ] || [ "$(stat -c%s /tmp/fat/usr/sbin/powernode-agent 2>/dev/null || echo 0)" -lt 1000000 ]; then
+                echo "[stage-1.5] FATAL: /tmp/fat/usr/sbin/powernode-agent is not a real >1MB binary (usrmerge clobber?)"; exit 1
+              fi
               ;;
             base-os-ubuntu-noble)
               # OS-specific layer: Ubuntu's apt-installed userland
