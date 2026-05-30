@@ -190,6 +190,212 @@ If you need a faster path for emergency revokes, see [`SDWAN_MANAGER_AGENT.md`](
 
 ---
 
+## Symptom: `federation_acceptance` skill sits in the approval queue
+
+**What you see:** an operator (or the Concierge) ran the
+`federation_acceptance` skill, but nothing happened — the peer never moved
+past `proposed`.
+
+**Root cause:** the skill is `requires_approval: true`. It lands in the
+`Ai::ApprovalRequest` queue and the accept chain only runs **after**
+approval. This is intentional — federation peering establishes trust and is
+never auto-approved.
+
+**Fix:**
+1. Visit `/ai/autonomy/approvals` in the operator UI.
+2. Approve the `federation_acceptance` request (needs the
+   `system.infra_tasks.control` permission).
+3. The chain runs synchronously on approval (verify token → accept! →
+   enroll! → grant → node_enrollment → SDWAN attach → governance scan).
+
+If you'd rather not wait on the queue for a plain out-of-band peering, use
+the `system_sdwan_accept_federation_peer` MCP action directly instead — it
+runs the same `FederationAcceptanceService` chain without the skill's
+approval gate (see [`federation-setup.md`](./federation-setup.md) Step 4 vs
+the skill-driven path).
+
+---
+
+## Symptom: accept succeeded but `sdwan_attach` / `governance` reported a warning
+
+**What you see:** the accept returned `status: "accepted"` (or the peer is
+`enrolled`/`active`) but the response `warnings` array contains a
+`sdwan_attach failed: ...` or `governance[...]: ...` entry.
+
+**Root cause:** the SDWAN attach and governance scan are **soft** steps in
+the acceptance chain. A failure there is collected as a warning and the
+accept still succeeds with the peer enrolled — the overlay attach and the
+health scan can be re-run independently.
+
+**Common `sdwan_attach` outcomes** (none of these are accept failures):
+- `status: "skipped", reason: "no_overlay_network"` — the peer has no
+  bound SDWAN network (e.g. a plain out-of-band peer). The overlay simply
+  isn't part of this peering. Nothing to fix unless you intended an overlay.
+- `status: "skipped", reason: "no_bound_instance"` — no
+  `node_instance_id` in `peer.metadata`. Expected for out-of-band peers.
+- `status: "skipped", reason: "account_mismatch"` — the bound instance
+  and the network belong to different accounts. Investigate the spawn
+  metadata.
+- `status: "error", error: "..."` — a real attach error. Re-run the
+  overlay attach by composing the federation topology (see
+  [`federation-setup.md`](./federation-setup.md) Step 7) or re-enrolling
+  the instance into the network.
+
+**Governance warnings** (`governance[peer_cert_expiring]`, etc.) are
+advisory — see the cert-rotation symptom below.
+
+---
+
+## Symptom: peer flapped to `degraded` by the liveness loop (not the sweep)
+
+**What you see:** a peer transitioned `active → degraded`, and the FleetEvent
+source is `federation_peer_remediate_executor` (not
+`federation_heartbeat_sweep`).
+
+**Root cause:** the **liveness autonomy loop** ran. The
+`FederationPeerLivenessSensor` emitted a `system.federation_peer_liveness`
+signal (reason `heartbeat_stale`) for a peer whose `last_heartbeat_at`
+exceeded `HEARTBEAT_STALE_AFTER` (5 min). The DecisionEngine routed it to
+`FederationPeerRemediateExecutor`, which **probed** the peer over mTLS
+(`PeerClient#fetch_catalog`); the probe failed (peer unreachable), so it
+degraded the active peer with a positive unreachability signal.
+
+This is the loop working as designed — it's faster + more decisive than the
+timer-driven sweep because it confirmed unreachability rather than just
+observing staleness.
+
+**Diagnose:**
+
+```ruby
+# rails console
+peer = System::FederationPeer.find(peer_id)
+puts peer.status                       # degraded
+puts peer.last_heartbeat_at            # how stale
+# Check the remediation FleetEvent for the probe error:
+```
+
+```
+platform.recent_events
+  source: "federation_peer_remediate_executor"
+  since: <ISO timestamp>
+# look for kind "federation.peer.degraded" with the probe error in payload.detail
+```
+
+**Fix:** if the remote is genuinely back, its next inbound heartbeat fires
+`record_heartbeat!` and the loop's next probe reports `rehandshaked` — the
+peer self-recovers `degraded → active`. No operator action. If the remote is
+permanently gone, suspend the row:
+
+```ruby
+peer.suspend!(reason: "remote site offline; investigation in progress")
+```
+
+---
+
+## Symptom: liveness loop keeps `alerting` but never degrades a peer
+
+**What you see:** repeated `federation.peer.unreachable` FleetEvents for a
+peer, but its status stays `enrolled` (or already `degraded`) — the loop
+alerts but never degrades.
+
+**Root cause:** `mark_degraded!` is gated by the peer state machine — only an
+`active` peer can degrade. An `enrolled`-never-came-up peer or an
+already-`degraded` peer can't transition, so the executor falls through to
+`alerted`. This is correct: the loop never forges a transition the state
+machine disallows.
+
+**Fix:** an `enrolled` peer that never reached `active` never completed its
+first heartbeat. Diagnose why the first heartbeat never landed — see
+[Peer stuck in `accepted`](#symptom-peer-stuck-in-accepted) (the same
+heartbeat-job diagnosis applies to the `enrolled → active` transition).
+Repeated unreachability past the dedup TTL re-queues, which is the intended
+escalation toward an operator `suspend!`.
+
+---
+
+## Symptom: liveness loop alerts `cert_rotation_required` but never rotates
+
+**What you see:** a `federation.peer.cert_rotation_required` FleetEvent
+(severity high for expired, medium for expiring) but the federation cert is
+never rotated automatically.
+
+**Root cause:** this is intentional. Rotating a federation **trust** cert
+requires a cross-CA handshake with the **remote** operator — the local
+platform can't unilaterally re-mint a cert the peer's CA must also trust. So
+the `federation_peer_remediate` executor only **alerts** for
+`cert_expiring` / `cert_expired`; it never silently rotates a trust cert.
+
+**Fix:** coordinate an operator-driven rotation with the remote site:
+1. Both operators agree on the rotation window.
+2. Re-establish the peer cert via the cross-CA flow (or revoke + re-propose
+   the peer for a clean slate — see the mTLS symptom above).
+3. The next governance scan clears the `peer_cert_expiring` finding.
+
+---
+
+## Symptom: tenant isolation slice half-built (partial)
+
+**What you see:** the `multi_tenant_isolation` skill returned
+`partial: true` with entries in `failures` — some of the network / firewall
+/ OVN switch / ACL steps landed but not all.
+
+**Root cause:** the executor composes five steps (network → firewall rules
+→ OVN switch → OVN ACLs) and collects per-step failures rather than aborting
+at the first one. A `partial: true` means it created *something* but hit a
+failure downstream (e.g. an OVN NB DB endpoint was unreachable so the switch
+step failed after the network + firewall rules succeeded).
+
+**Diagnose:** read the `failures` array — each entry names the `step` and the
+`error`. Common ones:
+- `step: "compose_ovn_switch"` with a connection error → the
+  `nb_db_endpoint` / `sb_db_endpoint` is wrong or OVN central isn't running.
+- `step: "create_firewall_rule"` validation error → a malformed
+  `tenant_cidr` (must be a valid v4/v6 CIDR).
+
+**Fix:** the cleanest recovery is to **roll back the partial slice**, fix the
+cause, and re-run. The skill's rollback tears down in reverse order (OVN ACLs
+→ OVN switch → firewall rules → network), skipping a pre-existing account
+OVN deployment. Re-run with corrected inputs (or `dry_run: true` first to
+confirm the plan). Architecture: [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §4a.
+
+> **`nb_db_endpoint`/`sb_db_endpoint` required error:** if the skill refuses
+> with "required when the account has no Sdwan::OvnDeployment yet," the
+> account has never had an OVN deployment. Supply both endpoints so the first
+> tenant slice creates it; subsequent slices reuse the one account-level
+> deployment automatically.
+
+---
+
+## Symptom: federated peer can't reach a service VIP
+
+**What you see:** Site B can't reach a Site-A service by its overlay VIP,
+even though the peer is `active`.
+
+**Diagnose order:**
+1. **VIP advertised?** Confirm the VIP emitted a `Sdwan::SubnetAdvertisement`
+   (source `virtual_ip`) and FRR is advertising the prefix:
+   ```
+   platform.system_sdwan_get_routing_summary network_id: "<site-a-network>"
+   # bgp_routes should include the VIP's /128 (or /32)
+   ```
+2. **Route policy permits cross-federation?** The VIP prefix is only learned
+   by a federated peer when route policy allows it across the federation
+   bridge. Check the route policies on both networks
+   (`system_sdwan_list_route_policies`).
+3. **Active bridge?** The federation_api auth chain (and route exchange)
+   requires an **active** `FederationNetworkBridge` for the (peer, network)
+   pair. A `proposed`/`suspended` bridge blocks it.
+4. **Holder seated?** A static VIP with no holder peer fronts nothing.
+   Confirm the VIP has a holder (`system_sdwan_get_virtual_ip`).
+
+**Fix:** seat a holder if missing, activate the bridge, and add a route
+policy permitting the prefix across the federation. For **public** consumers
+(not a federated peer), you instead need the Traefik + external-DNS path —
+see [`expose-service.md`](./expose-service.md). Discovery architecture:
+[`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §4b.
+
+---
+
 ## Escalation Paths
 
 When the runbook above doesn't resolve the issue:
@@ -197,9 +403,15 @@ When the runbook above doesn't resolve the issue:
 1. **Check the FleetEvent log for federation events:**
    ```
    platform.recent_events
-     source: "federation_heartbeat_sweep"   # or "sdwan_manager", "accept_controller"
+     source: "federation_heartbeat_sweep"   # or "sdwan_manager", "accept_controller",
+                                             # "federation_acceptance_service",
+                                             # "federation_peer_remediate_executor"
      since: <ISO timestamp>
    ```
+   The accept chain emits `federation.peer.accepted` from
+   `federation_acceptance_service`; the liveness loop emits
+   `federation.peer.rehandshaked` / `.degraded` / `.unreachable` /
+   `.cert_rotation_required` from `federation_peer_remediate_executor`.
 
 2. **Check governance for federation-related findings:**
    The `FederationGovernance` scanner emits findings like `stale_accepted_without_handshake`, `peer_capability_drift`, `overlapping_prefix_advertisement`. Visit the governance dashboard or query `Ai::GovernanceReport`.
@@ -215,6 +427,7 @@ When the runbook above doesn't resolve the issue:
 
 ## Related Documents
 
+- [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) — full architecture (acceptance orchestration, topology, isolation, discovery, liveness loop, security)
 - [`federation-setup.md`](./federation-setup.md) — the happy path
 - [`../federation/SPAWN_MODES.md`](../federation/SPAWN_MODES.md) — three spawn-mode variants
 - [`../federation/SOCIAL_CONTRACT.md`](../federation/SOCIAL_CONTRACT.md) — 12-commitment framework

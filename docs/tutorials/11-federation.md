@@ -264,6 +264,165 @@ platform.system_sdwan_get_routing_summary({ network_id: "<parent-network>" })
 // → bgp_routes includes "fd00:abcd:2::/64 source=federation:<peer-id>"
 ```
 
+## Step 8 — Complete an accept as an approval-gated skill (acceptance orchestration)
+
+The spawn flow above completes its handshake automatically against the
+parent's `AcceptController`. But the **same** accept chain
+(`System::Federation::FederationAcceptanceService`) is also exposed as an
+**approval-gated skill** — `federation_acceptance` — so an operator (via the
+System Concierge) or the SDWAN Manager autonomy loop can finish a peering
+whose acceptance token the platform holds. This is the path you use to
+re-accept after a transient failure, or to complete an out-of-band peer's
+handshake through the approval queue.
+
+Ask the Concierge in chat ("accept the federation peer using token `<X>`,
+contract version 1"), or run the skill directly:
+
+```javascript
+platform.execute_agent({
+  agent: "SDWAN Manager",
+  skill: "federation_acceptance",
+  inputs: {
+    acceptance_token: "<token from the proposing side>",
+    contract_version: 1,
+    capabilities: {},        // optional forward-compat advertisement
+    extension_slugs: [],     // optional — extensions the peer carries
+    endpoints: []            // optional — [{ url, scope, priority, cidr_hint? }]
+  }
+})
+// → lands in the approval queue (requires_approval: true)
+```
+
+The chain it runs on approval (hard steps abort; soft steps warn):
+
+```
+verify contract_version (HARD) → locate peer by token (HARD)
+  → accept! (HARD) → enroll! (HARD, platform peers)
+  → ensure managed_child operator grant (idempotent)
+  → issue node_api bootstrap token (HARD, managed_child spawns)
+  → SDWAN attach (SOFT) → governance scan (SOFT)
+```
+
+**Expected outcome:** after you approve at `/ai/autonomy/approvals` (needs
+`system.infra_tasks.control`), the peer transitions
+`proposed → accepted → enrolled` and the result returns `peer_id`,
+`contract_version_agreed`, the `node_enrollment` block (for managed-child
+spawns), the `sdwan_attach` result, the `governance` result, and any
+`warnings`. The soft-step warnings (SDWAN attach / governance) do **not**
+fail the accept — see the troubleshooting section.
+
+## Step 9 — Compose the federation overlay topology
+
+To carry workload traffic between sites over the encrypted overlay, compose
+a federation **topology** with the `sdwan_federation_compose` skill (bound to
+**System Topology Designer**). Two shapes:
+
+```javascript
+platform.execute_agent({
+  agent: "System Topology Designer",
+  skill: "sdwan_federation_compose",
+  inputs: {
+    network_name: "fed-overlay-parent-child",
+    topology: "hub_and_spoke",      // or "full_mesh"
+    routing_protocol: "ibgp",        // or "static"
+    peers: [
+      { node_instance_id: "<parent-hub-instance>", role: "hub",
+        endpoint_host_v6: "fd00:abcd:1::21", endpoint_port: 51820 },
+      { node_instance_id: "<child-instance>", role: "spoke" }
+    ],
+    dry_run: true                    // preview the fan-out first; then re-run with false
+  }
+})
+```
+
+- **`hub_and_spoke`** — spokes funnel through publicly-reachable hubs. At
+  least one `role: "hub"` is required, and **every hub must carry an
+  endpoint** (`endpoint_host_v6`/`v4` + `endpoint_port`) — the skill fails
+  fast otherwise.
+- **`full_mesh`** — any-to-any direct connectivity; no hub/spoke distinction.
+
+`routing_protocol: "ibgp"` enables FRR route-policy distribution between
+peers. Run with `dry_run: true` first to review the projected peer/hub
+counts and step list.
+
+**Expected outcome:** one `Sdwan::Network` is created with the chosen
+topology strategy, each member is enrolled as a peer (hubs publicly
+reachable), and the per-peer WireGuard + FRR route-policy envelope is
+compiled. Rollback (on failure) detaches peers in reverse order, then deletes
+the network.
+
+## Step 10 — Isolate a tenant on the overlay (SDWAN-native)
+
+Give one tenant a fully-segregated network slice — its own VRF, /64,
+firewall, and OVN ACLs — entirely over the SDWAN overlay. **No k8s
+NetworkPolicy, no CoreDNS, no VLAN.** Use the `multi_tenant_isolation` skill
+(bound to **System Topology Designer**, approval-gated):
+
+```javascript
+platform.execute_agent({
+  agent: "System Topology Designer",
+  skill: "multi_tenant_isolation",
+  inputs: {
+    tenant_key: "tenant-alpha",      // slug-safe; names network, rules, switch, ACLs
+    // tenant_cidr omitted ⇒ the auto-allocated /64 is used (recommended)
+    nb_db_endpoint: "tcp:127.0.0.1:6641",  // required only if no OvnDeployment yet
+    sb_db_endpoint: "tcp:127.0.0.1:6642",
+    dry_run: false
+  }
+})
+```
+
+The five composed layers (IDs threaded inline):
+
+1. A dedicated `Sdwan::Network` (`routing_protocol: "ibgp"`) → its own VRF +
+   isolated RIB (no shared forwarding table with other tenants).
+2. A non-overlapping `/64` via `Sdwan::PrefixAllocator` (the blast-radius
+   boundary).
+3. nftables firewall rules — allow the tenant's own `/64` (high priority) +
+   default-deny wildcard.
+4. An OVN logical switch scoped to the tenant CIDR (intra-host L2 domain).
+5. OVN ACLs — allow intra-tenant, drop cross-tenant.
+
+**Expected outcome:** a tenant cannot reach another tenant's prefix because
+the VRF's routing table doesn't contain the route and the nftables/OVN
+default-deny blocks any leak. Rollback (reverse order: OVN ACLs → switch →
+firewall → network) is available if a step fails (the skill returns
+`partial: true` with a `failures` array). Architecture:
+[`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §4a.
+
+## Step 11 — Watch the liveness autonomy loop
+
+You don't have to poll peer health by hand. The **liveness autonomy loop**
+keeps platform peers healthy:
+
+`FederationPeerLivenessSensor` (read-only, runs each fleet tick) emits a
+`system.federation_peer_liveness` signal when a peer's heartbeat goes stale
+(>5 min) or its bound cert is expiring/expired. The DecisionEngine routes the
+signal to `FederationPeerRemediateExecutor` (`federation_peer_remediate`,
+bound to **SDWAN Manager**), which branches on the reason:
+
+- **`heartbeat_stale`** → probe the peer over mTLS. Reachable ⇒
+  `rehandshaked` (awaits inbound heartbeat recovery); unreachable + active ⇒
+  `degraded`; unreachable + not degradable ⇒ `alerted`.
+- **`cert_expiring` / `cert_expired`** → `alerted` only. Federation cert
+  rotation is operator-driven (cross-CA handshake with the remote operator);
+  the loop never silently rotates a trust cert.
+
+Watch it run:
+
+```javascript
+platform.recent_events({
+  source: "federation_peer_remediate_executor",
+  limit: 20
+})
+// → federation.peer.rehandshaked / .degraded / .unreachable / .cert_rotation_required
+```
+
+**Expected outcome:** a peer that briefly goes quiet self-recovers
+`degraded → active` on its next inbound heartbeat; a genuinely-offline peer
+is degraded and alerted; cert expiry surfaces as an operator alert. Full
+detail: [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §5.
+
 ## Verification
 
 **Peering active:**
@@ -335,7 +494,41 @@ attempted a cross-region action prohibited by the policy. Either:
 - Relax the policy (operator-side change)
 - Use an explicit override (audit-logged) for a one-off
 
+**`federation_acceptance` skill ran but nothing happened** — the skill is
+`requires_approval: true`. It sits in the approval queue until you approve it
+at `/ai/autonomy/approvals` (needs `system.infra_tasks.control`); the accept
+chain runs only on approval. For a plain out-of-band peer you can skip the
+gate by using the `system_sdwan_accept_federation_peer` MCP action directly —
+same `FederationAcceptanceService` chain, no skill approval.
+
+**Accept succeeded but returned `sdwan_attach` / `governance` warnings** —
+those are **soft** steps. A warning there (e.g. `skipped` with reason
+`no_overlay_network` for an out-of-band peer, or a governance cert finding)
+does not fail the accept; the peer is enrolled and you can re-run the
+overlay attach / scan independently. See
+[`../runbooks/federation-troubleshooting.md`](../runbooks/federation-troubleshooting.md).
+
+**`multi_tenant_isolation` returned `partial: true`** — some isolation
+layers landed but a later step failed (read the `failures` array). The most
+common cause is an unreachable OVN NB/SB DB endpoint. Roll back the partial
+slice (reverse order: ACLs → switch → firewall → network), fix the endpoint,
+and re-run — try `dry_run: true` first. If it refuses with
+"nb_db_endpoint/sb_db_endpoint required," the account has no `OvnDeployment`
+yet; supply both endpoints so the first slice creates it.
+
+**Liveness loop degraded a peer you expected to be fine** — the
+`federation_peer_remediate` executor probed the peer over mTLS and it was
+unreachable, so it degraded an `active` peer. If the remote is genuinely
+back, its next inbound heartbeat self-recovers it `degraded → active`. Check
+`recent_events({ source: "federation_peer_remediate_executor" })` for the
+probe error.
+
 ## What's next
+
+- **[`docs/FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md)** —
+  the full multi-site architecture: acceptance orchestration, hub/full-mesh
+  SDWAN topology, SDWAN-native tenant isolation + service discovery, the
+  liveness autonomy loop, and security.
 
 - **[Tutorial 12 — Disk image CI](./12-disk-image-ci.md)** — for fleets of
   spawned children, you want a custom NodePlatform with pre-baked
