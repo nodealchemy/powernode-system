@@ -24,6 +24,28 @@ func acceptResponseBody(peerID, status string) []byte {
 	return data
 }
 
+// acceptResponseBodyWithEnrollment returns a success body that also carries
+// the optional node_enrollment block the parent includes for managed_child
+// spawns. The cmd-level federation-accept subcommand reads Data.NodeEnrollment
+// off the returned AcceptResponse to chain into node-api enrollment; the base
+// acceptResponseBody never populates it, so this covers Run's parse of that
+// branch.
+func acceptResponseBodyWithEnrollment(peerID, token, platformURL, subject string) []byte {
+	body := AcceptResponse{Success: true}
+	body.Data.PeerID = peerID
+	body.Data.Status = "enrolled"
+	body.Data.PeerKind = "platform"
+	body.Data.ContractVersionAgreed = 1
+	body.Data.NodeEnrollment = &NodeEnrollment{
+		BootstrapToken:  token,
+		PlatformURL:     platformURL,
+		IntendedSubject: subject,
+		ExpiresAt:       "2026-05-16T22:00:00Z",
+	}
+	data, _ := json.Marshal(body)
+	return data
+}
+
 func TestHandlerRun_HappyPath_WritesMarker(t *testing.T) {
 	var capturedBody AcceptRequest
 	var capturedPath string
@@ -74,6 +96,83 @@ func TestHandlerRun_HappyPath_WritesMarker(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "peer-abc-123") {
 		t.Errorf("marker missing peer_id: %s", string(data))
+	}
+}
+
+func TestHandlerRun_ParsesNodeEnrollment_WhenPresent(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(acceptResponseBodyWithEnrollment(
+			"peer-managed-1",
+			"bootstrap-tok-abc",
+			"https://parent.example.com",
+			"child-instance-uuid-7",
+		))
+	}))
+	defer ts.Close()
+
+	h := &Handler{
+		Client:     ts.Client(),
+		MarkerPath: filepath.Join(t.TempDir(), "marker"),
+		Logf:       func(string, ...any) {},
+	}
+	cfg := &Config{
+		ParentURL:       ts.URL,
+		AcceptanceToken: "tok",
+		SpawnMode:       "managed_child",
+		ContractVersion: "v1",
+	}
+
+	resp, err := h.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("Run returned nil response on success")
+	}
+	// The whole point of returning the parsed response: the cmd layer reads
+	// Data.NodeEnrollment to decide whether to chain into node-api enrollment.
+	if resp.Data.NodeEnrollment == nil {
+		t.Fatal("NodeEnrollment block was not parsed off the accept response")
+	}
+	ne := resp.Data.NodeEnrollment
+	if ne.BootstrapToken != "bootstrap-tok-abc" {
+		t.Errorf("BootstrapToken = %q", ne.BootstrapToken)
+	}
+	if ne.PlatformURL != "https://parent.example.com" {
+		t.Errorf("PlatformURL = %q", ne.PlatformURL)
+	}
+	if ne.IntendedSubject != "child-instance-uuid-7" {
+		t.Errorf("IntendedSubject = %q", ne.IntendedSubject)
+	}
+	if ne.ExpiresAt != "2026-05-16T22:00:00Z" {
+		t.Errorf("ExpiresAt = %q", ne.ExpiresAt)
+	}
+}
+
+func TestHandlerRun_NilNodeEnrollment_OnAutonomousPeer(t *testing.T) {
+	// The base success body (no node_enrollment) is what autonomous_peer
+	// spawns get — the cmd layer must see a nil NodeEnrollment and skip the
+	// enrollment chain. This guards the absent-block path of the same parse.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(acceptResponseBody("peer-autonomous-1", "enrolled"))
+	}))
+	defer ts.Close()
+
+	h := &Handler{Client: ts.Client(), MarkerPath: filepath.Join(t.TempDir(), "marker")}
+	cfg := &Config{ParentURL: ts.URL, AcceptanceToken: "tok", SpawnMode: "autonomous_peer"}
+
+	resp, err := h.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("Run returned nil response on success")
+	}
+	if resp.Data.NodeEnrollment != nil {
+		t.Errorf("expected nil NodeEnrollment for autonomous_peer, got %+v", resp.Data.NodeEnrollment)
 	}
 }
 

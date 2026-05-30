@@ -2,16 +2,21 @@ package enroll
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGenerateKeypair_BuildCSR_RoundTrip(t *testing.T) {
@@ -235,10 +240,141 @@ func TestSave_WritesAllFiles(t *testing.T) {
 	}
 }
 
-// caPEMForFakePlatform / base64 imports are kept for completeness even if
-// the current test suite doesn't exercise the TLS-pinning path against a
-// real https httptest server. Adding that test is a small follow-up; for
-// now buildHTTPClient is unit-covered for the rejection path.
-var _ = caPEMForFakePlatform
-var _ = filepath.Join
+// fakePlatformTLS is the HTTPS counterpart to fakePlatform. It presents the
+// httptest-generated self-signed cert, which the Client must trust via a
+// pinned CABundlePEM (extracted with caPEMForFakePlatform) — exercising the
+// security-critical buildHTTPClient RootCAs path end-to-end instead of only
+// the rejection branch.
+func fakePlatformTLS(t *testing.T, validToken string) *httptest.Server {
+	t.Helper()
+	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/system/node_api/enroll" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var body struct {
+			BootstrapToken string `json:"bootstrap_token"`
+			CSRPEM         string `json:"csr_pem"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if body.BootstrapToken != validToken {
+			w.WriteHeader(422)
+			_, _ = w.Write([]byte(`{"success":false,"error":"invalid token"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+		  "success": true,
+		  "data": {
+		    "cert_pem": "-----BEGIN CERTIFICATE-----\nFAKEFAKEFAKE\n-----END CERTIFICATE-----\n",
+		    "ca_chain_pem": "-----BEGIN CERTIFICATE-----\nFAKE-CA-FAKE\n-----END CERTIFICATE-----\n",
+		    "instance_id": "tls-instance-uuid",
+		    "mtls_subject": "tls-instance-uuid",
+		    "not_after": "2026-12-31T23:59:59Z",
+		    "certificate_id": "tls-cert-id"
+		  }
+		}`))
+	}))
+}
+
+// TestClient_Enroll_PinnedCA_HappyPath is the deferred TLS-pinning test
+// (previously self-admitted as a follow-up near the var _ = block). The
+// Client builds its own http.Client from CABundlePEM (HTTPClient left nil),
+// so a successful enroll proves buildHTTPClient pinned the right RootCAs
+// against a real HTTPS server.
+func TestClient_Enroll_PinnedCA_HappyPath(t *testing.T) {
+	srv := fakePlatformTLS(t, "good-token")
+	defer srv.Close()
+
+	caPEM := caPEMForFakePlatform(srv)
+	if len(caPEM) == 0 {
+		t.Fatal("expected a non-empty PEM bundle from the TLS test server")
+	}
+
+	c := &Client{
+		PlatformURL:  srv.URL, // https://127.0.0.1:port
+		CABundlePEM:  caPEM,   // pins the server's self-signed cert
+		AgentVersion: "test-tls-0.1",
+		// HTTPClient intentionally nil → buildHTTPClient constructs the
+		// pinned client. This is the path the follow-up was meant to cover.
+	}
+	id, err := c.Enroll(context.Background(), EnrollRequest{
+		BootstrapToken: "good-token",
+		Subject:        "tls-instance-uuid",
+	})
+	if err != nil {
+		t.Fatalf("Enroll over pinned TLS failed: %v", err)
+	}
+	if id.InstanceID != "tls-instance-uuid" {
+		t.Errorf("InstanceID = %q", id.InstanceID)
+	}
+	// The enrolled identity carries the bundle the client trusted, so the
+	// long-running service can re-pin without re-reading host CA roots.
+	if string(id.CABundlePEM) != string(caPEM) {
+		t.Errorf("EnrolledIdentity.CABundlePEM did not round-trip the pinned bundle")
+	}
+}
+
+// TestClient_Enroll_WrongCA_FailsTLS proves the pin is load-bearing: a Client
+// pinned to an unrelated CA must refuse to complete the handshake against the
+// TLS server, even with an otherwise-valid token. This is the negative half
+// of the security-critical pinning behavior.
+func TestClient_Enroll_WrongCA_FailsTLS(t *testing.T) {
+	srv := fakePlatformTLS(t, "good-token")
+	defer srv.Close()
+
+	// A syntactically valid but unrelated CA: generate a throwaway self-signed
+	// cert so AppendCertsFromPEM succeeds (buildHTTPClient passes) but the TLS
+	// handshake fails because it doesn't chain to the server's cert.
+	wrongCA := mustSelfSignedCAPEM(t)
+
+	c := &Client{
+		PlatformURL: srv.URL,
+		CABundlePEM: wrongCA,
+	}
+	_, err := c.Enroll(context.Background(), EnrollRequest{
+		BootstrapToken: "good-token",
+		Subject:        "x",
+	})
+	if err == nil {
+		t.Fatal("expected TLS verification failure when pinned to the wrong CA")
+	}
+	// Sanity: the failure is a transport/TLS error, not a CA-parse error
+	// (that path is covered by TestClient_buildHTTPClient_RejectsBadCA).
+	if strings.Contains(err.Error(), "no parseable certificates") {
+		t.Errorf("expected a TLS handshake failure, got a CA-parse error: %v", err)
+	}
+}
+
+// mustSelfSignedCAPEM mints a throwaway self-signed certificate and returns it
+// PEM-encoded. Used as a "valid PEM, wrong identity" CA for the pinning
+// negative test. base64/filepath are kept imported via the helpers below.
+func mustSelfSignedCAPEM(t *testing.T) []byte {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "unrelated-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// Keep the round-trip helpers referenced even if a future refactor drops their
+// only call site — they document the meta sidecar contract for Save consumers.
 var _ = base64.StdEncoding
+var _ = filepath.Join
