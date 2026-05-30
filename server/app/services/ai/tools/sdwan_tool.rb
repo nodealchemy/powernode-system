@@ -42,6 +42,13 @@ module Ai
         "system_sdwan_accept_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_revoke_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_federation_scan"         => "sdwan.federation.read",
+        # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills.
+        # Each dispatches to its skill executor (composition-of-services);
+        # gated by sdwan.federation.manage since all three stand up
+        # federation/multi-site overlay topology.
+        "system_sdwan_federation_compose"      => "sdwan.federation.manage",
+        "system_multi_tenant_isolation"        => "sdwan.federation.manage",
+        "system_service_discovery_compose"     => "sdwan.federation.manage",
         # Slice 9a: routing layer (static subnet routing)
         "system_sdwan_update_peer_lan_subnets"        => "sdwan.routing.manage",
         "system_sdwan_update_network_routing_mode"    => "sdwan.routing.manage",
@@ -284,10 +291,10 @@ module Ai
             }
           },
           "system_sdwan_accept_federation_peer" => {
-            description: "Transition a proposed federation peer to accepted (drill-mode v1 — no cross-account auth handshake yet; future Phase 11b adds token round-trip). Sets signed_at + audit metadata. Returns the updated peer.",
+            description: "Transition a proposed federation peer to accepted. When the proposing operator generated a single-use acceptance token, pass it as acceptance_token — it is verified (digest match + not expired + single-use) before the transition is allowed. Sets signed_at + audit metadata and (for platform peers) chains into enroll. Returns the updated peer.",
             parameters: {
               federation_peer_id: { type: "string", required: true },
-              acceptance_token:   { type: "string", required: false, description: "Forward-compat: token from the proposing-account operator. v1 records its presence in metadata; v11b verifies." }
+              acceptance_token:   { type: "string", required: false, description: "Single-use token from the proposing-account operator (from propose with generate_token: true). Verified against the stored digest; consumed on success." }
             }
           },
           "system_sdwan_revoke_federation_peer" => {
@@ -300,6 +307,49 @@ module Ai
           "system_sdwan_federation_scan" => {
             description: "Run the federation governance scanner — flags prefix overlaps and stale-accepted rows",
             parameters: {}
+          },
+          # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills.
+          # Each action dispatches to its skill executor (composition of
+          # existing SDWAN production services) — see
+          # System::Ai::Skills::{SdwanFederationCompose,MultiTenantIsolation,
+          # ServiceDiscoveryComposer}Executor.
+          "system_sdwan_federation_compose" => {
+            description: "Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances. Creates one Sdwan::Network, enrolls each member as a peer (hubs publicly_reachable), and compiles the per-peer WireGuard + FRR route-policy envelope (Sdwan::PeerEnroller + TopologyCompiler + RoutePolicyCompiler). Failures are collected, not short-circuited.",
+            parameters: {
+              network_name: { type: "string", required: true, description: "Display name for the new federation Sdwan::Network" },
+              topology: { type: "string", required: true, description: "hub_and_spoke | full_mesh" },
+              peers: { type: "array", required: true, description: "Member descriptors (1-200). Each: {node_instance_id (required), role: 'hub'|'spoke' (hub_and_spoke only; default spoke), endpoint_host_v6, endpoint_host_v4, endpoint_port, listen_port, lan_subnets: [cidr], bgp_route_reflector_client: bool}" },
+              routing_protocol: { type: "string", required: false, description: "static (default) | ibgp — 'ibgp' enables FRR route-policy distribution" },
+              dry_run: { type: "boolean", required: false, description: "Plan only — no rows persisted" }
+            }
+          },
+          "system_multi_tenant_isolation" => {
+            description: "Provision a fully-isolated SDWAN network slice for a single tenant: a dedicated overlay network with its own VRF + isolated iBGP RIB, a non-overlapping /64, default-deny nftables rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native — no k8s NetworkPolicy, no VLAN. Approval-gated.",
+            parameters: {
+              tenant_key: { type: "string", required: true, description: "Stable slug-safe tenant identifier within the account (names the network/rules/switch/ACLs)" },
+              network_name: { type: "string", required: false, description: "Display name for the tenant's Sdwan::Network (defaults to 'tenant-<tenant_key>')" },
+              tenant_cidr: { type: "string", required: false, description: "Explicit tenant CIDR; when omitted the auto-allocated /64 is used (recommended)" },
+              nb_db_endpoint: { type: "string", required: false, description: "OVN NB DB endpoint (e.g. tcp:127.0.0.1:6641) — required only when the account has no Sdwan::OvnDeployment yet" },
+              sb_db_endpoint: { type: "string", required: false, description: "OVN SB DB endpoint (e.g. tcp:127.0.0.1:6642) — required only when the account has no Sdwan::OvnDeployment yet" },
+              ovn_switch_name: { type: "string", required: false, description: "Override the OVN logical switch name (defaults to 'ls-tenant-<tenant_key>')" },
+              dry_run: { type: "boolean", required: false, description: "Plan only — no rows persisted" }
+            }
+          },
+          "system_service_discovery_compose" => {
+            description: "Make a backend service discoverable across the fleet over the SDWAN overlay — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering, regenerates local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names. Approval-gated.",
+            parameters: {
+              service_name: { type: "string", required: true, description: "Human-readable catalog display name" },
+              service_slug: { type: "string", required: true, description: "Lowercase-alphanumeric-hyphen slug — the catalog's natural key (also names the VIP)" },
+              sdwan_network_id: { type: "string", required: true, description: "SDWAN network the VIP lives in" },
+              backend_peer_id: { type: "string", required: true, description: "Sdwan::Peer hosting the service; seated as the VIP's primary holder (iBGP advertiser)" },
+              backend_port: { type: "integer", required: true, description: "Port the backend service listens on (advertised in the catalog offering)" },
+              vip_cidr: { type: "string", required: true, description: "Operator-supplied host CIDR for the VIP (a /128 v6 or /32 v4) within the network's /64" },
+              protocol: { type: "string", required: false, description: "Service protocol advertised in the catalog: https (default) | http | tcp | tls" },
+              grant_scopes: { type: "array", required: false, description: "Default FederationGrant scopes subscribers receive (subset of read, write, admin, migrate). Defaults to ['read']" },
+              grant_ttl_days: { type: "integer", required: false, description: "Default grant TTL in days (>= 7)" },
+              traefik_dynamic_dir: { type: "string", required: false, description: "Override for the Traefik dynamic-config directory" },
+              public_dns: { type: "object", required: false, description: "INTERNET-FACING name only: { dns_credential_id, record_name, record_type? (A|AAAA|CNAME), record_content?, ttl? }. Omit for overlay-only discovery." }
+            }
           },
           # Slice 9a — routing layer (static subnet routing baseline)
           "system_sdwan_update_peer_lan_subnets" => {
@@ -634,6 +684,10 @@ module Ai
         when "system_sdwan_accept_federation_peer"  then accept_federation_peer(params)
         when "system_sdwan_revoke_federation_peer"  then revoke_federation_peer(params)
         when "system_sdwan_federation_scan"         then federation_scan(params)
+        # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills
+        when "system_sdwan_federation_compose"      then federation_compose(params)
+        when "system_multi_tenant_isolation"        then multi_tenant_isolation(params)
+        when "system_service_discovery_compose"     then service_discovery_compose(params)
         # Slice 9a routing actions
         when "system_sdwan_update_peer_lan_subnets"       then set_peer_lan_subnets(params)
         when "system_sdwan_update_network_routing_mode"   then set_network_routing_mode(params)
@@ -1032,6 +1086,70 @@ module Ai
           finding_count: findings.size,
           severity_summary: findings.group_by { |f| f[:severity] }.transform_values(&:size)
         )
+      end
+
+      # === Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills ===
+      #
+      # Each MCP action is a thin adapter onto its skill executor. The
+      # executors do the composition-of-services work (they validate inputs,
+      # audit-log, and run the synchronous sibling/service chain with
+      # reverse-order rollback); the tool only threads the operator's params
+      # in and maps the executor's {success:, data:/error:} result onto the
+      # tool's success_result/error_result contract (the two shapes are
+      # identical, so this is a straight pass-through). Invocation is the
+      # plain synchronous executor entry point — NOT the async execute_agent
+      # path — matching the executor contract.
+
+      def federation_compose(params)
+        run_skill_executor(
+          ::System::Ai::Skills::SdwanFederationComposeExecutor,
+          network_name: params[:network_name],
+          topology: params[:topology],
+          peers: params[:peers],
+          routing_protocol: params[:routing_protocol],
+          dry_run: params[:dry_run]
+        )
+      end
+
+      def multi_tenant_isolation(params)
+        run_skill_executor(
+          ::System::Ai::Skills::MultiTenantIsolationExecutor,
+          tenant_key: params[:tenant_key],
+          network_name: params[:network_name],
+          tenant_cidr: params[:tenant_cidr],
+          nb_db_endpoint: params[:nb_db_endpoint],
+          sb_db_endpoint: params[:sb_db_endpoint],
+          ovn_switch_name: params[:ovn_switch_name],
+          dry_run: params[:dry_run]
+        )
+      end
+
+      def service_discovery_compose(params)
+        run_skill_executor(
+          ::System::Ai::Skills::ServiceDiscoveryComposerExecutor,
+          service_name: params[:service_name],
+          service_slug: params[:service_slug],
+          sdwan_network_id: params[:sdwan_network_id],
+          backend_peer_id: params[:backend_peer_id],
+          backend_port: params[:backend_port],
+          vip_cidr: params[:vip_cidr],
+          protocol: params[:protocol],
+          grant_scopes: params[:grant_scopes],
+          grant_ttl_days: params[:grant_ttl_days],
+          traefik_dynamic_dir: params[:traefik_dynamic_dir],
+          public_dns: params[:public_dns]
+        )
+      end
+
+      # Instantiate a skill executor with this tool's account/agent/user
+      # context, run it synchronously, and map its result. nil-valued inputs
+      # are dropped so the executor's own keyword defaults (e.g. dry_run:
+      # false, routing_protocol: "static") and required-input validation
+      # apply — passing explicit nils would clobber those defaults.
+      def run_skill_executor(executor_class, **inputs)
+        executor = executor_class.new(account: @account, agent: @agent, user: @user)
+        result = executor.execute(**inputs.compact)
+        result[:success] ? success_result(result[:data]) : error_result(result[:error])
       end
 
       # === Slice 9a — Routing (static subnet routing) ===

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# System extension — Ai::Skill catalog seed for the 14 system executors.
+# System extension — Ai::Skill catalog seed for the system executors.
 #
 # Each entry corresponds to a class at
 # extensions/system/server/app/services/system/ai/skills/*_executor.rb.
@@ -730,6 +730,131 @@ SKILLS_DATA = [
     invocation_mode: "one_shot",
     tags: %w[platform sdwan vip port-mapping acme reverse-proxy expose public],
     system_prompt: "Use this skill when the operator asks to make an internal backend service reachable from the public internet at a hostname with TLS. It chains an SDWAN Virtual IP, a hub DNAT port mapping (443/80), an ACME certificate, and a reverse-proxy regeneration into one approval-gated step."
+  },
+  # ─── Phase 3 (Federation & Multi-Site) — SDWAN-first federation ────────
+  # Five executors landed in Phase 3. Their descriptors all declare the
+  # tighter internal category "federation"; the platform Ai::Skill enum has
+  # no such value, so they map onto the closest enum category (the SDWAN
+  # composers → devops, matching system-sdwan-compose-full-topology; the
+  # liveness remediation reconciler → sre_observability, matching the other
+  # system-sdwan-*-remediate rows). The "federation" subdomain preserves the
+  # finer grouping in metadata for UI.
+  {
+    name: "Federation Acceptance",
+    slug: "system-federation-acceptance",
+    invocation_mode: "one_shot",
+    description: "Complete a federation handshake from a single-use acceptance token — runs the full accept chain (accept transition, platform enroll, managed-child operator grant, node_api bootstrap-token issuance, SDWAN overlay attach, and a federation governance health scan). Use when an operator wants to finish peering with a proposed federation peer whose acceptance token they hold.",
+    category: "devops",
+    subdomain: "federation",
+    executor: "System::Ai::Skills::FederationAcceptanceExecutor",
+    tags: %w[federation sdwan acceptance handshake peer multi-site],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to complete a federation handshake from a single-use
+      acceptance token (held after a peer was proposed). Inputs:
+      acceptance_token (required — consumed on success), contract_version
+      (required — must be a supported version, currently [1]), capabilities
+      (optional), extension_slugs (optional), endpoints (optional array of
+      { url, scope, priority, cidr_hint? }). Runs the full accept chain
+      synchronously: accept transition → platform enroll → managed-child
+      operator grant → node_api bootstrap-token issuance → SDWAN overlay
+      attach → governance health scan. Federation peering is sensitive, so
+      this skill is APPROVAL-GATED. Returns peer_id, status, peer_kind,
+      contract_version_agreed, node_enrollment, sdwan_attach, governance,
+      and any warnings from the soft post-accept steps.
+    PROMPT
+  },
+  {
+    name: "SDWAN Federation Compose",
+    slug: "system-sdwan-federation-compose",
+    invocation_mode: "workflow_step",
+    description: "Stand up a federation overlay topology (hub-and-spoke OR full-mesh) by composing per-peer Sdwan::PeerEnroller + Sdwan::TopologyCompiler + Sdwan::Bgp::RoutePolicyCompiler. Creates one Sdwan::Network, enrolls each member as a peer (hubs publicly_reachable), and compiles the per-peer WireGuard + FRR route-policy envelope. Reverse-order rollback tears down peers then the network.",
+    category: "devops",
+    subdomain: "federation",
+    executor: "System::Ai::Skills::SdwanFederationComposeExecutor",
+    tags: %w[sdwan federation composition topology multi-site],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to compose a federation overlay across instances. Inputs:
+      network_name (required), topology (required — "hub_and_spoke" or
+      "full_mesh"), peers (required array — each {node_instance_id (required),
+      role: "hub"|"spoke" for hub_and_spoke, endpoint_host_v6/v4 + endpoint_port
+      for hubs, lan_subnets, bgp_route_reflector_client}), routing_protocol
+      (optional — "static" default or "ibgp"), dry_run (default false).
+      hub_and_spoke requires >=1 hub and every hub needs an endpoint; full_mesh
+      has no hub/spoke split. Returns sdwan_network_id, sdwan_peer_ids,
+      hub_peer_ids, topology_preview (per-peer WG view), and route_policy_preview
+      (per-peer FRR route-maps; meaningful for ibgp). Failures are collected,
+      not short-circuited. Single-call rollback destroys peers in reverse
+      enrollment order then the network.
+    PROMPT
+  },
+  {
+    name: "Multi-Tenant Isolation",
+    slug: "system-multi-tenant-isolation",
+    invocation_mode: "one_shot",
+    description: "Provision a fully-isolated SDWAN network slice for a single tenant inside the account: a dedicated overlay network with its own VRF + isolated iBGP RIB (no shared routing table), a non-overlapping /64 (Sdwan::PrefixAllocator), default-deny nftables firewall rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native — no k8s NetworkPolicy, no VLAN.",
+    category: "devops",
+    subdomain: "federation",
+    executor: "System::Ai::Skills::MultiTenantIsolationExecutor",
+    tags: %w[sdwan federation isolation tenant ovn nftables multi-site],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when an operator asks to "isolate tenant <X>", "give
+      <tenant> its own segregated network", or "stand up a blast-radius
+      boundary for <tenant>". Inputs: tenant_key (required — slug-safe
+      identifier), network_name (optional), tenant_cidr (optional — defaults
+      to the auto-allocated /64), nb_db_endpoint + sb_db_endpoint (required
+      only when the account has no Sdwan::OvnDeployment yet), ovn_switch_name
+      (optional), dry_run (default false). Composes a VRF-isolated Sdwan::Network
+      (ibgp) + PrefixAllocator /64 + default-deny nftables rules + an OVN
+      logical switch + tenant-CIDR OVN ACLs — entirely on the SDWAN overlay.
+      APPROVAL-GATED (high blast radius). Reverse-order rollback: ACLs → switch
+      → firewall rules → network.
+    PROMPT
+  },
+  {
+    name: "Service Discovery Composer",
+    slug: "system-service-discovery-composer",
+    invocation_mode: "one_shot",
+    description: "Make a backend service discoverable across the fleet over the SDWAN overlay end-to-end — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering for federated peers, regenerates the local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names.",
+    category: "devops",
+    subdomain: "federation",
+    executor: "System::Ai::Skills::ServiceDiscoveryComposerExecutor",
+    tags: %w[sdwan federation discovery service-catalog dns multi-site],
+    system_prompt: <<~PROMPT.strip
+      Use this skill when an operator asks to "make <service> discoverable",
+      "publish <service> to the service catalog", or "advertise <service> to
+      other sites". Inputs: service_name + service_slug (required), sdwan_network_id
+      + backend_peer_id + backend_port + vip_cidr (required), protocol (optional —
+      https default), grant_scopes / grant_ttl_days (optional), traefik_dynamic_dir
+      (optional), public_dns (optional, INTERNET-FACING only — { dns_credential_id,
+      record_name, record_type?, record_content?, ttl? }). Discovery rides the
+      SDWAN overlay: the VIP is auto-advertised via iBGP and a VIP-backed
+      Federation::ServiceOffering lets federated peers subscribe. External DNS is
+      the only non-overlay substrate and is soft (a failure is a warning).
+      APPROVAL-GATED. Reverse-order rollback: DNS record → offering → VIP.
+    PROMPT
+  },
+  {
+    name: "Federation Peer Remediate",
+    slug: "system-federation-peer-remediate",
+    invocation_mode: "one_shot",
+    description: "Remediate a stale or cert-expiring federation peer: re-handshake a stale peer over mTLS (recovering it if reachable), degrade an unreachable active peer, or alert the operator that a federation cert needs an operator-driven rotation. Invoked by the fleet DecisionEngine off the FederationPeerLivenessSensor.",
+    category: "sre_observability",
+    subdomain: "federation",
+    executor: "System::Ai::Skills::FederationPeerRemediateExecutor",
+    tags: %w[federation sdwan peers liveness remediation heartbeat certs],
+    system_prompt: <<~PROMPT.strip
+      Use this skill to remediate a stale or cert-expiring federation peer.
+      Inputs: federation_peer_id (required), reason (optional —
+      heartbeat_stale | cert_expiring | cert_expired, defaults to
+      heartbeat_stale), dry_run (default false). For heartbeat_stale it
+      re-handshakes the peer over mTLS (a reachable peer self-recovers via
+      its inbound heartbeat; an unreachable active peer is degraded; a
+      non-degradable peer is alerted). For cert_expiring/cert_expired it
+      alerts the operator — federation cert rotation is operator-driven
+      (cross-CA handshake), never auto-rotated. Every branch emits a
+      FleetEvent. The SDWAN Manager autonomy loop invokes this off the
+      FederationPeerLivenessSensor; it is also operator-runnable.
+    PROMPT
   }
 ].freeze
 

@@ -223,6 +223,24 @@ module PowernodeSystem
           sdwan.federation_peer_propose sdwan.federation_peer_accept sdwan.federation_peer_revoke
         ])
 
+        # Phase 3 (Federation & Multi-Site) — SDWAN-first federation actions.
+        # `system.federation_peer_remediate` is the autonomy action the
+        # DecisionEngine gates off the FederationPeerLivenessSensor (routed
+        # through FleetAutonomyService#gate_action!) — registering it here is
+        # REQUIRED or the SDWAN Manager InterventionPolicy seed row for it
+        # fails validation. The three compose categories
+        # (federation_compose / multi_tenant_isolation / service_discovery_compose)
+        # are approval-gated, operator/Concierge-driven composer skills (bound
+        # to the System Topology Designer assistant, not autonomy reconcilers);
+        # they're registered so any operator-authored intervention policy for
+        # them validates uniformly.
+        categories.concat(%w[
+          system.federation_peer_remediate
+          system.sdwan_federation_compose
+          system.multi_tenant_isolation
+          system.service_discovery_compose
+        ])
+
         # CVE Responder domain
         categories.concat(%w[
           system.cve_remediate system.cve_sbom_ingest
