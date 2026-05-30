@@ -51,9 +51,15 @@ RSpec.describe Sdwan::MembershipCredentialSigner, type: :service do
         handle: mc.constellation_handle
       )
       pub_raw = Base64.decode64(holder.public_key_b64)
-      pkey = OpenSSL::PKey.new_raw_public_key("ED25519", pub_raw)
       sig_raw = Base64.decode64(mc.signature_b64)
-      expect(pkey.verify(nil, sig_raw, mc.envelope_json)).to be true
+      # Verify with the ed25519 gem rather than OpenSSL::PKey.new_raw_public_key.
+      # The bundled OpenSSL binding does not expose new_raw_public_key on every
+      # supported runtime (it was added to the openssl gem at 3.2.0), so the
+      # OpenSSL raw-key path raises NoMethodError under the bundle. The ed25519
+      # gem produces/consumes RFC 8032 keys + signatures byte-identically to the
+      # Go agent verifier (crypto/ed25519).
+      verify_key = Ed25519::VerifyKey.new(pub_raw)
+      expect(verify_key.verify(sig_raw, mc.envelope_json)).to be true
     end
 
     it "signs the canonical envelope (sorted keys at every level)" do

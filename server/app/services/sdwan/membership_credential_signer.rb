@@ -29,6 +29,7 @@
 require "base64"
 require "json"
 require "openssl"
+require "ed25519"
 
 module Sdwan
   class MembershipCredentialSigner
@@ -357,26 +358,23 @@ module Sdwan
       }
     end
 
-    # Ed25519 keypair via OpenSSL raw operations. Mirrors KeyDistributor's
-    # X25519 helpers — we want the same {private_b64, public_b64} shape so
-    # downstream consumers (verifier in agent, manifest signer in N2) can
-    # share one decoder.
+    # Ed25519 keypair via the ed25519 gem. We want the same
+    # {private_b64, public_b64} shape (32-byte raw seed + 32-byte raw
+    # public key, both RFC 8032) so downstream consumers (verifier in
+    # agent, manifest signer in N2) can share one decoder.
+    #
+    # NOTE: we deliberately do NOT use OpenSSL::PKey.new_raw_private_key /
+    # generate_key("ED25519") here. The bundled Ruby/OpenSSL binding does
+    # not expose new_raw_private_key on every supported runtime (it was
+    # only added to the openssl gem at 3.2.0), so OpenSSL-based signing
+    # raised NoMethodError under the bundle. The ed25519 gem is already in
+    # the bundle and produces byte-identical RFC 8032 signatures that a Go
+    # ed25519.Verify (the agent verifier) accepts.
     def generate_signing_keypair
-      pkey = ::OpenSSL::PKey.generate_key("ED25519")
+      signing_key = ::Ed25519::SigningKey.generate
 
-      raw_private =
-        if pkey.respond_to?(:raw_private_key)
-          pkey.raw_private_key
-        else
-          # PKCS#8 SEED for Ed25519 is the trailing 32 bytes per RFC 8410.
-          pkey.private_to_der.byteslice(-32, 32)
-        end
-      raw_public =
-        if pkey.respond_to?(:raw_public_key)
-          pkey.raw_public_key
-        else
-          pkey.public_to_der.byteslice(-32, 32)
-        end
+      raw_private = signing_key.to_bytes          # 32-byte seed
+      raw_public  = signing_key.verify_key.to_bytes # 32-byte public key
 
       raise SigningError, "ED25519 raw key wrong length" unless raw_private.bytesize == 32 && raw_public.bytesize == 32
 
@@ -389,9 +387,10 @@ module Sdwan
     def sign(envelope_json:, private_key_b64:)
       raw = ::Base64.decode64(private_key_b64)
       raise MissingKeyError, "constellation signing key not found" if raw.blank?
+      raise SigningError, "ED25519 raw key wrong length" unless raw.bytesize == 32
 
-      pkey = ::OpenSSL::PKey.new_raw_private_key("ED25519", raw)
-      sig = pkey.sign(nil, envelope_json)
+      signing_key = ::Ed25519::SigningKey.new(raw)
+      sig = signing_key.sign(envelope_json)
       ::Base64.strict_encode64(sig)
     end
 
