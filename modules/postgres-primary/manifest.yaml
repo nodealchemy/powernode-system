@@ -7,6 +7,10 @@ package_spec:
   - postgresql-16
   - postgresql-contrib-16
   - postgresql-client-16
+  # pgvector — the platform schema enables the `vector` extension for embeddings
+  # (db/schema.rb: enable_extension "vector"). Without it db:migrate aborts with
+  # PG::FeatureNotSupported: extension "vector" is not available.
+  - postgresql-16-pgvector
 # Ship the full apt-installed tree under the four standard FHS roots.
 # /usr covers /usr/lib/postgresql/16/bin/postgres + initdb + pg_ctl
 # + extension .so plugins + /usr/share/postgresql. /lib + /lib64
