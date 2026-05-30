@@ -31,6 +31,17 @@ import (
 // which makes integration testing impossible without injection.
 type SwitchRootFn func(target string) error
 
+// UnionComposer composes the module union at the target sysroot for the
+// direct_kernel/pivot_root boot path: pulls the assigned modules from the OCI
+// registry, mounts them, renders native (enabled) units + identity into the
+// union, and mounts the overlay at sysroot — leaving it ready for switch_root.
+// Injected so the boot package stays decoupled from runtime;
+// *runtime.Reconciler satisfies it via ComposeForPivot. When nil, mountUnion
+// falls back to the legacy libvirt 9p prepare-root path.
+type UnionComposer interface {
+	ComposeForPivot(ctx context.Context, sysroot string) error
+}
+
 // Orchestrator owns the boot flow's dependencies. Each field is
 // independently injectable so tests can stub piecewise.
 type Orchestrator struct {
@@ -45,6 +56,10 @@ type Orchestrator struct {
 	MountRunner mount.Runner
 	// Layout describes mount points (sysroot, modules cache, etc.).
 	Layout mount.Layout
+	// Composer, when set, composes the OCI module union at Layout.SysRoot for the
+	// direct_kernel/pivot_root path (Option B — native modular OS). Nil falls back
+	// to the legacy libvirt 9p prepare-root path.
+	Composer UnionComposer
 	// PKIDir is where to persist enrollment material. Defaults to
 	// enroll.ResolveDefaultPKIDir() — picks the persist-layer path in
 	// initramfs/pivot contexts, the FHS path in cloud-VM contexts.
@@ -221,22 +236,24 @@ func (o *Orchestrator) enroll(ctx context.Context, ident *identity.Identity, pat
 // mountUnion composes the modules into the overlay union rootfs.
 // In dry-run mode, no mount commands are issued — only the plan
 // is logged.
-func (o *Orchestrator) mountUnion(_ context.Context) error {
+func (o *Orchestrator) mountUnion(ctx context.Context) error {
 	if o.DryRun {
-		o.stage("mount", "would mount: composefs + overlayfs at "+o.Layout.SysRoot)
+		o.stage("mount", "would compose union at "+o.Layout.SysRoot)
 		return nil
 	}
-	// Phase 3 keeps mount orchestration light: the existing
-	// prepare-root subcommand handles the libvirt 9p path which is
-	// the active smoke-test target. Composefs-driven boot lands as
-	// a follow-up once the M3 disk-image pipeline produces signed
-	// composefs blobs; for now, the boot subcommand depends on the
-	// initramfs unit chain calling prepare-root explicitly, then
-	// invoking switch_root via systemctl.
-	//
-	// This matches the actual production wiring: the boot orchestrator
-	// ensures identity + enrollment + a usable PKI dir, and the
-	// prepare-root + switch_root systemd units handle the mount/pivot.
+	if o.Composer != nil {
+		// direct_kernel/pivot path (Option B): pull the assigned modules from the
+		// OCI registry, compose the native union in-place at Layout.SysRoot, render
+		// + enable native units (no RootDirectory), and write identity into the
+		// union — leaving it ready for the switch_root below.
+		o.stage("mount", "composing OCI module union (native)")
+		return o.Composer.ComposeForPivot(ctx, o.Layout.SysRoot)
+	}
+	// Legacy libvirt 9p path: the prepare-root subcommand (invoked by the
+	// initramfs unit chain) composes from the host-exposed 9p share, so the boot
+	// orchestrator has nothing to mount here — it only guarantees identity +
+	// enrollment + a usable PKI dir before prepare-root + switch_root run.
+	o.stage("mount", "skipped (9p prepare-root path)")
 	return nil
 }
 

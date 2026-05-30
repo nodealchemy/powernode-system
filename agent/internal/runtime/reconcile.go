@@ -401,8 +401,12 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	return nil
 }
 
-// attachModule pulls + verifies + mounts a single module.
-func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+// mountModuleArtifact pulls the module's erofs blob, verifies it (cosign bundle
+// + fs-verity digest), and loop-mounts it at /run/powernode/modules/<digest>.
+// Idempotent — MountModule no-ops when already mounted. Shared by attachModule
+// (cloud_init reconcile, which then applies policy + starts units) and
+// ComposeForPivot (direct_kernel boot, which composes + enables native units).
+func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) error {
 	ref := &oci.ModuleArtifactRef{
 		ModuleID:    mod.ID,
 		Digest:      mod.Digest,
@@ -421,19 +425,21 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 			return fmt.Errorf("verify fs-verity: %w", err)
 		}
 	}
-
-	// Mount this module's erofs blob at the per-module path
-	// (`/run/powernode/modules/<digest>`). Idempotent — if the
-	// previous reconcile tick already mounted it, MountModule's
-	// IsMountpoint check returns nil immediately. The overlay union
-	// (assembled at `Layout.SysRoot` post-loop) reads from these
-	// per-module mountpoints in priority order — overlayfs sees just
-	// a read-only lower-dir, agnostic to what produced it.
-	//
-	// Direct loop mount, no extraction: `mount -t erofs -o loop,ro`.
-	// Kernel allocates the loop device automatically.
+	// Direct loop mount, no extraction: `mount -t erofs -o loop,ro`. The kernel
+	// allocates the loop device automatically. The overlay union (composed at
+	// Layout.SysRoot) reads these per-module mountpoints as read-only lower-dirs
+	// in priority order.
 	if err := mount.MountModule(ctx, r.cfg.MountRunner, r.cfg.Layout, mod); err != nil {
 		return fmt.Errorf("mount erofs: %w", err)
+	}
+	return nil
+}
+
+// attachModule pulls + verifies + mounts a single module, then applies security
+// policy and starts its units in the cloud_init (RootDirectory chroot) model.
+func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *manifest.Manifest) error {
+	if err := r.mountModuleArtifact(ctx, mod); err != nil {
+		return err
 	}
 
 	// Apply security policy. SeccompProfile is a path inside the

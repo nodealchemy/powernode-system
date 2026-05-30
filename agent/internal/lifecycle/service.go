@@ -136,6 +136,69 @@ func AttachServices(ctx context.Context, runner mount.Runner, moduleID string, s
 	return results, nil
 }
 
+// AttachServicesNative renders + offline-enables a module's units inside the
+// composed union at `sysroot`, for the direct_kernel/pivot_root boot model.
+//
+// Difference from AttachServices (the cloud_init chroot path):
+//   - units render in RootModeNative (no RootDirectory — the union becomes /
+//     after switch_root, so ExecStart/proc/passwd resolve natively);
+//   - units are written under <sysroot>/etc/systemd/system (the union's own
+//     unit tree, which is /etc/systemd/system once it becomes /);
+//   - units are ENABLED offline via `systemctl --root=<sysroot> enable` (writes
+//     the WantedBy symlinks without a running systemd) rather than started —
+//     systemd-in-the-union starts them on boot after the pivot.
+//
+// No daemon-reload (no live systemd owns this root yet). Topological order
+// still drives the unit's After=/Requires= which systemd honors at boot.
+func AttachServicesNative(ctx context.Context, runner mount.Runner, moduleID string, services []manifest.Service, sysroot string) ([]AttachResult, error) {
+	if runner == nil {
+		return nil, errors.New("lifecycle.AttachServicesNative: nil runner")
+	}
+	if sysroot == "" {
+		return nil, errors.New("lifecycle.AttachServicesNative: empty sysroot")
+	}
+	if len(services) == 0 {
+		return nil, nil
+	}
+
+	ordered, err := topoSort(services)
+	if err != nil {
+		return nil, fmt.Errorf("topoSort: %w", err)
+	}
+
+	dir := filepath.Join(sysroot, "etc", "systemd", "system")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	results := make([]AttachResult, 0, len(ordered))
+	for _, svc := range ordered {
+		unitName := UnitName(moduleID, svc.Name)
+		path := filepath.Join(dir, unitName)
+		body := RenderUnitMode(svc, moduleID, RootModeNative)
+		written, err := writeIfChanged(path, body)
+		if err != nil {
+			results = append(results, AttachResult{Unit: unitName, StepErr: fmt.Errorf("write %s: %w", path, err)})
+			return results, err
+		}
+		results = append(results, AttachResult{Unit: unitName, Skipped: !written})
+	}
+
+	// Offline-enable each unit into the union so systemd-in-the-union starts it
+	// on boot (post-switch_root). `systemctl --root` operates on the on-disk unit
+	// tree without contacting a running manager.
+	for i, svc := range ordered {
+		unitName := UnitName(moduleID, svc.Name)
+		if err := runner.Run(ctx, "systemctl", "--root="+sysroot, "enable", unitName); err != nil {
+			results[i].StepErr = err
+			return results, fmt.Errorf("enable %s (--root=%s): %w", unitName, sysroot, err)
+		}
+		results[i].Started = true // enabled → systemd-in-union will start it at boot
+	}
+
+	return results, nil
+}
+
 // DetachServices stops each service in REVERSE topological order
 // (dependents come down before their dependencies), removes the unit
 // files, and reloads systemd. Best-effort: a single stop failure
