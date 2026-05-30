@@ -146,6 +146,35 @@ PVE VM boots -kernel/-initrd (no cloudimg, SeaBIOS, no grub)
    systemd‑in‑union starts postgres/redis/rails **at `/`** → `/health` green; the
    guest is *only* kernel+initramfs (no Ubuntu rootfs).
 
+### Prerequisite — base-OS layer in the template (CONFIRMED MISSING)
+`powernode-agent status` on the cloud_init ops2 shows **ROOTFS=no for all 9 hub
+modules** — none provides a base root OS. cloud_init gets its base from the
+**guest Ubuntu** (units chroot into `/sysroot` via `RootDirectory`), so the hub
+template never needed one. The pivot model has **no guest base**: after
+`switch_root` the union *is* `/`, so it must contain `/sbin/init` (systemd),
+coreutils, glibc, the FHS. The base layer is resolved by the **`base.os`
+capability**: `base-os-ubuntu-noble` provides `base.os` (Ubuntu 24.04 userland,
+systemd PID 1) and requires `powernode-system-base` (ships `/sbin/powernode-agent`),
+both at lowest priority. **Fix: the direct_kernel hub template must `require:
+base.os`** so the resolver folds these in as the bottom layers. This is a template
+change, not agent code — `ComposeForPivot` already composes the assigned set
+(including the resolved base) in priority order. Belongs in P2 wiring.
+
+**Verified on ops (2026‑05‑30):** the `powernode-hub` template lists 9 modules,
+none with a `base.os` capability and no base.os requirement column.
+`base-os-ubuntu-noble` (v6, ~70 MB, digest ✓) is built + ingested — the Ubuntu
+userland (systemd/FHS) to pivot into. **But `powernode-system-base` is v3 / 4 KB
+— HOLLOW**: the CI cross-compiles `/sbin/powernode-agent` into it and that didn't
+land (same build-gap class as the hollow frontend). Since `base-os-ubuntu-noble`
+*inherits* the agent from `powernode-system-base`, the composed union would have
+systemd+FHS but **no `/sbin/powernode-agent`** → hub services would still run
+post-pivot, but the post-pivot agent (heartbeat, cert rotation, module updates)
+couldn't start. So P2 base-OS work is **two** items: (a) template `require:
+base.os`; (b) fix the hollow `powernode-system-base` agent cross-compile (or have
+`base-os-ubuntu-noble` ship the agent directly). Also untangle the
+`powernode-system-base` vs `powernode-system-base-ubuntu-noble` (v3, ~70 MB)
+name duplication so the resolver picks the right base.
+
 ## Phased plan
 
 - **P1 — artifact:** build the kernel+initramfs from current `agent/`; confirm the
