@@ -29,8 +29,8 @@ type AuthorizedKeysOptions struct {
 //
 // The target user is taken from the response's `target_user` field
 // (instance.config["admin_user"] → node.config["admin_user"] →
-// "operator" on the platform side). When absent, defaults to
-// "operator" — the platform's standardized human-login account at
+// "pnadmin" on the platform side). When absent, defaults to
+// "pnadmin" — the platform's standardized human-login account at
 // UID 1000 (see etcidentity.Baseline). Per-instance overrides
 // (admin_user: "ubuntu" on cloud-image-derived nodes) still apply.
 //
@@ -70,7 +70,7 @@ func FetchAuthorizedKeys(ctx context.Context, opts AuthorizedKeysOptions) error 
 	if targetUser == "" {
 		// Platform-standardized human-login account; always present
 		// in the agent's etcidentity baseline at UID 1000.
-		targetUser = "operator"
+		targetUser = "pnadmin"
 	}
 
 	dir, uid, gid, err := resolveSSHDir(targetUser)
@@ -95,12 +95,16 @@ func FetchAuthorizedKeys(ctx context.Context, opts AuthorizedKeysOptions) error 
 		desired += "\n"
 	}
 	current, _ := os.ReadFile(path)
-	if string(current) == desired {
-		return nil
+	if string(current) != desired {
+		if err := os.WriteFile(path, []byte(desired), 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
 	}
-	if err := os.WriteFile(path, []byte(desired), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
+	// Always reconcile ownership, even when the content already matches.
+	// An earlier cloud-init runcmd may have created authorized_keys as
+	// root (before the pnadmin user existed), which sshd rejects under
+	// StrictModes. Re-chowning every tick is cheap and self-heals that
+	// bootstrap-ordering case.
 	if err := os.Chown(path, uid, gid); err != nil {
 		warn(opts.OnWarn, "authorized_keys_chown_file", err)
 	}

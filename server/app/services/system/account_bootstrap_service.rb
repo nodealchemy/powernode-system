@@ -298,11 +298,11 @@ module System
           tmpl.enabled       = true
           tmpl.public        = false
           # Seeded templates default to Powernode's standardized
-          # operator user (UID 1000, present in the agent's etcidentity
+          # pnadmin user (UID 1000, present in the agent's etcidentity
           # baseline). Cloud-image-derived templates that need to keep
           # the distro default user (ubuntu, ec2-user, debian, ...)
           # override admin_user explicitly after creation.
-          tmpl.admin_user    = "operator"
+          tmpl.admin_user    = "pnadmin"
           tmpl.description   = spec[:description]
           tmpl.config        = {}
         end

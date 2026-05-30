@@ -9,7 +9,7 @@ import (
 )
 
 // OperatorBreakGlassFilename is the basename of the drop-in that
-// grants the `operator` user unrestricted NOPASSWD sudo. Kept under
+// grants the `pnadmin` user unrestricted NOPASSWD sudo. Kept under
 // the powernode- prefix so the normal sweep() in Apply leaves it
 // alone (sweep only deletes managed files that aren't in the
 // keep-set; we never enumerate this one through that path because
@@ -21,19 +21,19 @@ const OperatorBreakGlassFilename = "powernode-operator-break-glass"
 // break-glass grant. Comment block explains intent + how to revoke.
 // The trailing newline is required by some visudo implementations
 // that flag missing-EOL as a hard error.
-const OperatorBreakGlassBody = `# Managed by Powernode: operator break-glass
+const OperatorBreakGlassBody = `# Managed by Powernode: pnadmin break-glass
 #
-# Grants the cloud-image-equivalent operator user unrestricted
+# Grants the cloud-image-equivalent pnadmin login user unrestricted
 # NOPASSWD sudo. Enabled via POWERNODE_OPERATOR_BREAK_GLASS=1 on
 # the agent process (e.g. systemd Environment=POWERNODE_OPERATOR_BREAK_GLASS=1).
 # Unset the env var (or set to anything except "1"/"true") + restart
 # the agent to revoke; the file is removed at the next agent start.
 #
 # Intended for dev/recovery loops on managed_child instances where
-# the operator user otherwise has no path to root. Production
+# the pnadmin user otherwise has no path to root. Production
 # deployments should rely on module-declared SudoersGrant rows
 # instead and keep this disabled.
-operator ALL=(ALL) NOPASSWD: ALL
+pnadmin ALL=(ALL) NOPASSWD: ALL
 `
 
 // ApplyOperatorBreakGlass writes or removes the operator break-glass

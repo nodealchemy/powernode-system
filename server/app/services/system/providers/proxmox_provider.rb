@@ -650,12 +650,12 @@ module System
           "vga"      => params[:vga] || "std",
           # ciuser is the cloud-init "default user" — cloud-init creates
           # this user on first boot with the SSH keys + (optional)
-          # password. Standardized on "operator" (UID 1000 in the agent's
+          # password. Standardized on "pnadmin" (UID 1000 in the agent's
           # etcidentity baseline) so the cloud-init-created user matches
           # the long-lived account the agent maintains. Caller can
           # override via :ci_user (e.g., to "ubuntu" for legacy
           # cloud-image workflows).
-          "ciuser"   => params[:ci_user] || "operator",
+          "ciuser"   => params[:ci_user] || "pnadmin",
           "ipconfig0" => ip_config
         }
         body["nameserver"]   = params[:nameserver]   if params[:nameserver]

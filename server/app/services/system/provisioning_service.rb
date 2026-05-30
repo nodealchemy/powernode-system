@@ -55,13 +55,13 @@ module System
         status: "pending",
         provider_region: region,
         provider_instance_type: instance_type,
-        # Final fallback is "operator" (Powernode's standardized
+        # Final fallback is "pnadmin" (Powernode's standardized
         # interactive-login account, UID 1000, present in the agent's
         # etcidentity baseline). Cloud-image-derived nodes may
         # override per-template or per-instance with "ubuntu", "ec2-user",
         # "debian", etc. — those still flow through options[:admin_user]
         # + node_template.admin_user.
-        admin_user: options[:admin_user] || node.node_template&.admin_user || "operator"
+        admin_user: options[:admin_user] || node.node_template&.admin_user || "pnadmin"
         # account is delegated from :node; no `account=` setter exists on NodeInstance.
       )
 

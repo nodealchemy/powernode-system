@@ -876,12 +876,12 @@ module System
             },
             osProfile: {
               computerName:   params[:name],
-              adminUsername:  params[:admin_user] || "powernode",
+              adminUsername:  params[:admin_user] || "pnadmin",
               linuxConfiguration: {
                 disablePasswordAuthentication: true,
                 ssh: {
                   publicKeys: [ {
-                    path: "/home/#{params[:admin_user] || 'powernode'}/.ssh/authorized_keys",
+                    path: "/home/#{params[:admin_user] || 'pnadmin'}/.ssh/authorized_keys",
                     keyData: params[:ssh_public_key]
                   } ]
                 }

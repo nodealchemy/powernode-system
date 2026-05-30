@@ -19,7 +19,7 @@ func TestApplyOperatorBreakGlass_WritesFileWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if !strings.Contains(string(body), "operator ALL=(ALL) NOPASSWD: ALL") {
+	if !strings.Contains(string(body), "pnadmin ALL=(ALL) NOPASSWD: ALL") {
 		t.Errorf("body missing canonical grant line:\n%s", string(body))
 	}
 

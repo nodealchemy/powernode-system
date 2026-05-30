@@ -125,7 +125,7 @@ module System
             # cloud-init layer rather than depending on agent code.
             "users" => [
               {
-                "name"                => "operator",
+                "name"                => "pnadmin",
                 "sudo"                => "ALL=(ALL) NOPASSWD:ALL",
                 "shell"               => "/bin/bash",
                 "ssh_authorized_keys" => ssh_authorized_keys
@@ -170,10 +170,10 @@ module System
           # creates /home/operator) guarantees the file lands.
           if ssh_authorized_keys.any?
             files << {
-              "path"        => "/home/operator/.ssh/authorized_keys",
+              "path"        => "/home/pnadmin/.ssh/authorized_keys",
               "permissions" => "0600",
-              "owner"       => "operator:operator",
-              "defer"       => true, # wait until operator's home dir exists
+              "owner"       => "pnadmin:pnadmin",
+              "defer"       => true, # wait until pnadmin's home dir exists
               "content"     => ssh_authorized_keys.join("\n") + "\n"
             }
           end
@@ -188,10 +188,10 @@ module System
           # has finished its first reconcile. Non-powernode- filename
           # so the agent's etcsudoers sweep never touches it.
           files << {
-            "path"        => "/etc/sudoers.d/91-operator-cloudinit",
+            "path"        => "/etc/sudoers.d/91-pnadmin-cloudinit",
             "permissions" => "0440",
             "owner"       => "root:root",
-            "content"     => "operator ALL=(ALL) NOPASSWD: ALL\n"
+            "content"     => "pnadmin ALL=(ALL) NOPASSWD: ALL\n"
           }
           # Netplan override that ensures systemd-networkd sends the
           # configured hostname in DHCPREQUEST option 12. The stock
@@ -306,15 +306,15 @@ module System
             # silently drops keys — operator gets created but with no
             # authorized_keys. Re-install directly so SSH works
             # regardless of cloud-init's user-module behavior.
-            "id operator >/dev/null 2>&1 || useradd -m -s /bin/bash operator",
-            "install -d -m 0700 -o operator -g operator /home/operator/.ssh",
+            "id pnadmin >/dev/null 2>&1 || useradd -m -s /bin/bash pnadmin",
+            "install -d -m 0700 -o pnadmin -g pnadmin /home/pnadmin/.ssh",
             *@ssh_authorized_keys.map { |k|
               # Append (not overwrite) so multiple keys accumulate; the
               # `grep -q` guard makes it idempotent across reboots/re-runs.
-              %Q(grep -qxF '#{k}' /home/operator/.ssh/authorized_keys 2>/dev/null || echo '#{k}' >> /home/operator/.ssh/authorized_keys)
+              %Q(grep -qxF '#{k}' /home/pnadmin/.ssh/authorized_keys 2>/dev/null || echo '#{k}' >> /home/pnadmin/.ssh/authorized_keys)
             },
-            "chmod 600 /home/operator/.ssh/authorized_keys",
-            "chown operator:operator /home/operator/.ssh/authorized_keys",
+            "chmod 600 /home/pnadmin/.ssh/authorized_keys",
+            "chown pnadmin:pnadmin /home/pnadmin/.ssh/authorized_keys",
             # Apply the netplan override (write_files dropped it into
             # /etc/netplan/99-powernode-dhcp.yaml) and renew the DHCP
             # lease so the upstream DHCP server sees the cloud-init-set

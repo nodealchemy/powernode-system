@@ -8,13 +8,15 @@ package etcidentity
 //
 // Members chosen to satisfy:
 //   - root (UID 0): always required; agent itself runs as root.
-//   - operator (UID 1000): the platform's standardized human-operator
-//     login account. Matches cloud-image convention (ubuntu/ec2-user
+//   - pnadmin (UID 1000): the platform's standardized human-login
+//     account. Matches cloud-image convention (ubuntu/ec2-user
 //     also land at 1000). Has NO default sudo grants — break-glass
 //     escalation goes through a sudoers grant in a deliberately-
 //     installed module, not via an implicit %sudo membership. The
-//     authorized_keys flow writes the operator's SSH public key to
-//     /home/operator/.ssh/authorized_keys.
+//     authorized_keys flow writes pnadmin's SSH public key to
+//     /home/pnadmin/.ssh/authorized_keys. Renamed from "operator"
+//     2026-05-30: that name collided with the Debian system group
+//     "operator" (GID 37), breaking useradd at cloud-init time.
 //   - nobody (UID 65534): NFS root-squash target, kernel-default
 //     unprivileged identity, used by countless setuid binaries as the
 //     "no permissions" fallback.
@@ -38,7 +40,7 @@ package etcidentity
 //     devices, shadow gates /etc/shadow read access (required for
 //     getpwent in some setups).
 //   - sudo (GID 27): Ubuntu/Debian convention for the sudoers group.
-//     Even though Powernode's operator has no implicit %sudo grant,
+//     Even though Powernode's pnadmin has no implicit %sudo grant,
 //     the GROUP must exist so cloud-init's standard /etc/sudoers
 //     line "%sudo ALL=(ALL:ALL) ALL" doesn't error at sudoers parse
 //     time. Without this group, `sudo -ln` returns "user X may not
@@ -56,7 +58,7 @@ func Baseline() *Set {
 			{Name: "bin", UID: 2, PrimaryGID: 2, PrimaryGroup: "bin", Shell: "/usr/sbin/nologin", Home: "/bin", Gecos: "bin"},
 			{Name: "sys", UID: 3, PrimaryGID: 3, PrimaryGroup: "sys", Shell: "/usr/sbin/nologin", Home: "/dev", Gecos: "sys"},
 			{Name: "sshd", UID: 105, PrimaryGID: 65534, PrimaryGroup: "nogroup", Shell: "/usr/sbin/nologin", Home: "/run/sshd", Gecos: ""},
-			{Name: "operator", UID: 1000, PrimaryGID: 1000, PrimaryGroup: "operator", Shell: "/bin/bash", Home: "/home/operator", Gecos: "Powernode operator"},
+			{Name: "pnadmin", UID: 1000, PrimaryGID: 1000, PrimaryGroup: "pnadmin", Shell: "/bin/bash", Home: "/home/pnadmin", Gecos: "Powernode admin"},
 			{Name: "nobody", UID: 65534, PrimaryGID: 65534, PrimaryGroup: "nogroup", Shell: "/usr/sbin/nologin", Home: "/nonexistent", Gecos: "nobody"},
 		},
 		Groups: []Group{
@@ -69,7 +71,7 @@ func Baseline() *Set {
 			{Name: "disk", GID: 6},
 			{Name: "sudo", GID: 27},
 			{Name: "shadow", GID: 42}, // /etc/shadow group-ownership — read by getpwent
-			{Name: "operator", GID: 1000},
+			{Name: "pnadmin", GID: 1000},
 			{Name: "nogroup", GID: 65534},
 		},
 	}

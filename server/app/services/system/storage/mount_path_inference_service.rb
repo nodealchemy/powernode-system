@@ -70,8 +70,8 @@ module System
         { pattern: %r{\A/var/lib/powernode(?:/|\z)},      kind: :service_user, username: "powernode" },
 
         # === Non-service owners — order matters: specific (/var/log/audit) before generic (/etc/*) ===
-        { pattern: %r{\A/home/operator(?:/|\z)},          kind: :operator },
-        { pattern: %r{\A/srv/operator(?:/|\z)},           kind: :operator },
+        { pattern: %r{\A/home/pnadmin(?:/|\z)},           kind: :operator },
+        { pattern: %r{\A/srv/pnadmin(?:/|\z)},            kind: :operator },
         { pattern: %r{\A/var/log/(?:audit|secure|system)(?:/|\z)}, kind: :root },
         { pattern: %r{\A/etc/(?!nginx|traefik)},          kind: :root },
         { pattern: %r{\A/boot(?:/|\z)},                   kind: :root },
