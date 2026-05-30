@@ -288,7 +288,7 @@ jobs:
         # The pad+contains pattern (leading + trailing space around the
         # needle) prevents false positives where "redis" matches inside
         # "redis-cluster" etc.
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         id: manifest
         run: |
           set -euo pipefail
@@ -316,7 +316,7 @@ jobs:
           echo "slug=${{ matrix.module }}" >> "$GITHUB_OUTPUT"
 
       - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         run: |
           set -euo pipefail
           # mmdebstrap produces a minimal Ubuntu noble rootfs at
@@ -421,7 +421,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby')
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby')
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -622,25 +622,38 @@ jobs:
               # binary that runs on every glibc/musl Linux without
               # additional deps — the whole point of decoupling the
               # agent from any specific base-OS.
-              if ! command -v go >/dev/null 2>&1; then
-                # Use the `golang-go` meta-package — Trixie's main archive
-                # doesn't carry every individual golang-1.X versioned
-                # package (verified by run 538 job 2689: golang-1.22 and
-                # golang-1.23 both fail "Unable to locate package"). The
-                # meta-package pulls in whatever Trixie's current default
-                # is (1.24 at trixie release time) and installs the binary
-                # at /usr/bin/go — no PATH manipulation needed. Trade-off:
-                # the exact Go minor version drifts with Trixie's archive,
-                # making reproducible builds depend on the apt snapshot
-                # rather than an explicit pin. For deterministic builds,
-                # switch to fetching the upstream go tarball from go.dev.
-                apt-get install -y --no-install-recommends golang-go git
-              fi
+              # The agent's go.mod pins a `go` directive (currently 1.25.x)
+              # NEWER than Debian Trixie's apt `golang-go` (1.24). Relying on
+              # apt + GOTOOLCHAIN=auto made `go build` try to fetch the pinned
+              # toolchain from the module proxy at build time; on a runner with
+              # a restricted GOPROXY that fetch fails, `go build` errors, and —
+              # because Stage 2/push run on the dirty closure — the carve+push
+              # still shipped an EMPTY 4 KB erofs (the agent is this module's
+              # ENTIRE payload, so a failed build = a hollow base = no
+              # /sbin/powernode-agent in any node that unions this layer).
+              # Fix: fetch the EXACT toolchain go.mod asks for straight from
+              # go.dev/dl (a plain HTTPS GET, bypassing GOPROXY) and pin
+              # GOTOOLCHAIN=local so the build uses precisely it and never
+              # attempts a surprise download. (success() guards on Stage 2/push
+              # below now also abort the publish if this step ever fails.)
+              GOVER=$(awk '/^go [0-9]/{print $2; exit}' agent/go.mod)
+              echo "[stage-1.5] go.mod requires go ${GOVER}; fetching official toolchain from go.dev"
+              curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tgz
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf /tmp/go.tgz
+              export PATH="/usr/local/go/bin:${PATH}"
+              export GOTOOLCHAIN=local
+              go version
               echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
               ( cd agent && \
                 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-                go build -trimpath -ldflags '-s -w' \
+                /usr/local/go/bin/go build -trimpath -ldflags '-s -w' \
                   -o /tmp/powernode-agent ./cmd/powernode-agent )
+              # Hard guard: the agent binary IS this module's payload. If the
+              # build silently produced nothing, fail loudly here rather than
+              # let Stage 2 carve + push a hollow erofs.
+              test -s /tmp/powernode-agent || { echo "[stage-1.5] FATAL: agent binary not built"; exit 1; }
+              echo "[stage-1.5] agent built: $(stat -c%s /tmp/powernode-agent) bytes"
               mkdir -p /tmp/fat/usr/sbin /tmp/fat/sbin /tmp/fat/etc/powernode
               install -m 0755 /tmp/powernode-agent /tmp/fat/usr/sbin/powernode-agent
               # /sbin/powernode-agent symlink — initramfs/dracut
@@ -680,7 +693,7 @@ jobs:
           find /tmp/fat -type f | wc -l
 
       - name: Stage 2 — composer (rsync filter + mkfs.erofs + fs-verity)
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         run: |
           set -euo pipefail
           # 1. Layer the module's static rootfs/ contents onto the
@@ -763,7 +776,7 @@ jobs:
           } > /tmp/${{ matrix.module }}.erofs.meta
 
       - name: Cosign sign + oras push
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
         id: push
         run: |
           set -euo pipefail
