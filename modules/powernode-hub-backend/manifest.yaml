@@ -20,7 +20,12 @@ mask:
   - /opt/powernode/server/node_modules/***
   - /opt/powernode/server/.git/***
   - /opt/powernode/server/coverage/***
-  - /opt/powernode/server/vendor/bundle/cache/***
+  # Mask the entire build-time vendor/bundle (it only contains an empty
+  # per-build-ruby skeleton from `bundle cache`, e.g. ruby/3.3.0/, which would
+  # otherwise make the on-node install-guard think gems are present). The .gem
+  # source files ship via vendor/cache; the node installs them into a fresh
+  # vendor/bundle/ruby/<runtime-ver> on first boot.
+  - /opt/powernode/server/vendor/bundle/***
 dependency_spec: []
 protected_spec:
   - /opt/powernode/server/config/master.key

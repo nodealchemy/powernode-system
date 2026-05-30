@@ -26,6 +26,12 @@ file_spec:
   - /lib/**
   - /lib64/**
   - /etc/**
+  # Bundler 2.7.1 (gem-installed at build to match the platform Gemfile.lock's
+  # `BUNDLED WITH`) lands under /var/lib/gems on Debian/Ubuntu — ship it so the
+  # on-node `bundle install --local` finds the exact matching bundler and never
+  # self-installs a different version over the (absent) network. Keep this in
+  # sync with server/worker Gemfile.lock BUNDLED WITH (see build workflow).
+  - /var/lib/gems/**
 mask: []
 dependency_spec: []
 protected_spec: []

@@ -421,7 +421,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble')
+        if: contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby')
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -443,6 +443,23 @@ jobs:
           fi
 
           case "${{ matrix.module }}" in
+            runtime-ruby)
+              # Ship the EXACT bundler the platform Gemfile.lock pins (BUNDLED
+              # WITH 2.7.1) into the runtime gem dir, so the on-node `bundle
+              # install --local` finds the matching bundler and never self-installs
+              # a different version over the (absent) network. noble's apt bundler
+              # is 2.4.20; bundler is pure-ruby, so the runner's gem can install
+              # 2.7.1 cross-version into noble ruby 3.2's gem dir (/var/lib/gems/
+              # 3.2.0, shipped via the manifest file_spec). Keep 2.7.1 in sync with
+              # server/worker Gemfile.lock BUNDLED WITH.
+              if ! command -v gem >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y --no-install-recommends ruby
+              fi
+              gem install bundler -v 2.7.1 --no-document --install-dir /tmp/fat/var/lib/gems/3.2.0
+              echo "=== runtime-ruby bundler 2.7.1: $(ls -d /tmp/fat/var/lib/gems/3.2.0/gems/bundler-2.7.1 2>/dev/null || echo MISSING) ==="
+              ;;
             powernode-hub-backend)
               mkdir -p /tmp/fat/opt/powernode
               rsync -a \
