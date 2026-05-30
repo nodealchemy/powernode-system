@@ -503,13 +503,22 @@ jobs:
                 apt-get update
                 apt-get install -y --no-install-recommends ruby ruby-dev git
               fi
-              # Pin the lockfile's exact bundler (see hub-backend note) so `bundle`
-              # never self-installs + re-execs mid-command (that exits 18).
+              # The worker Gemfile hard-pins `ruby '3.2.8'`, but the CI runner is
+              # ruby 3.3.x and runtime-ruby is noble's 3.2.x — neither is exactly
+              # 3.2.8, so bundler exits 18 ("Your Ruby version is X, but your
+              # Gemfile specified 3.2.8"). `bundle cache` only downloads .gem source
+              # (no ruby execution) and any 3.2.x satisfies the gems at runtime, so
+              # drop the strict pin from the staged (shipped) Gemfile — matching
+              # server/Gemfile, which carries no ruby directive.
+              sed -i -E "/^ruby[[:space:]]+['\"]3\.2\.8['\"]/d" /tmp/fat/opt/powernode/worker/Gemfile
+              # Pin the lockfile's exact bundler so `bundle` never self-installs +
+              # re-execs mid-command.
               WKRB=$(awk '/BUNDLED WITH/{getline; gsub(/[[:space:]]/, ""); print; exit}' /tmp/fat/opt/powernode/worker/Gemfile.lock)
               gem install bundler ${WKRB:+-v "$WKRB"} --no-document
               ( cd /tmp/fat/opt/powernode/worker
                 bundle ${WKRB:+_${WKRB}_} config set --local path vendor/bundle
                 bundle ${WKRB:+_${WKRB}_} config set --local without development:test
+                bundle ${WKRB:+_${WKRB}_} lock
                 bundle ${WKRB:+_${WKRB}_} cache --no-install --all-platforms )
               echo "=== hub-worker vendored cache: $(ls /tmp/fat/opt/powernode/worker/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
               ;;
