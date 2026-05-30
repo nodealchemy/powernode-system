@@ -88,6 +88,64 @@ PVE VM boots -kernel/-initrd (no cloudimg, SeaBIOS, no grub)
    the modules compose identically in both boot modes, so the cloud_init ops2
    run validated them for the direct_kernel path too.
 
+## P1 implementation design (from code read)
+
+- **`boot.Orchestrator.mountUnion` is a stub** (`internal/boot/boot.go:224‑241`,
+  returns nil) — the real mount is the separate `prepare-root` subcommand (9p).
+  The Orchestrator carries only `Resolver`/`EnrollClient`/`MountRunner`/`Layout`,
+  **not** the OCI deps. `runtime.RunOnce` (`reconcile.go:170‑402`) has the OCI
+  compose: `FetchAssignedModules` → manifest `LoadOrFetch` → `attachModule`
+  (Puller.Pull → Verifier → `MountModule`) → `etcidentity`/`etcsudoers` →
+  `AttachServices` (renders units with **`RootDirectory=/sysroot`** + starts them)
+  → `Overlay.MountUnion`.
+
+- **Minimal pivot only needs system-base.** The initramfs is minimal (agent +
+  busybox + systemd + CA); it pulls + composes **system-base** from OCI and
+  pivots. The hub modules (postgres/redis/rails/…) can be pulled + composed
+  **post‑pivot** by the existing `service`/reconcile loop running in the union.
+
+- **Decision — post‑pivot service model:**
+  - **(A) Chroot / reuse (pragmatic):** initramfs composes system-base from OCI →
+    `switch_root` → the agent (shipped in system-base) runs the *existing* reconcile,
+    which pulls the hub modules + renders units with `RootDirectory=/sysroot` (a
+    *re-composed* `/sysroot` nested inside the now-union root). **Smallest change**
+    — boot only learns to pull+compose the base from OCI; everything else is
+    today's code. Slightly redundant (double compose), services chroot rather than
+    run native, but functionally the guest is minimal and the OS is the module union.
+  - **(B) Native (pure modular OS):** compose the *full* assigned set pre‑pivot,
+    render units **without** `RootDirectory` + **enable** them, `switch_root`, and
+    systemd-in-the-union starts services natively at `/`. Closest to the stated
+    goal, but a real lifecycle refactor (native vs chroot units, enable-vs-start,
+    boot composes all modules, post-pivot reconcile must be native-aware).
+
+  **DECISION (2026‑05‑30): Option B — native modular OS.** Services run natively in
+  the union at `/` post‑pivot (no `RootDirectory`). The sysroot *is* the OS.
+
+### B implementation blueprint
+1. **lifecycle (`internal/lifecycle/service.go`):** add a *root mode* to
+   `RenderUnit`/`AttachServices`: **native** = no `RootDirectory`, add
+   `[Install] WantedBy=multi-user.target` + `systemctl enable` (no immediate
+   `start` — systemd-in-union starts it on boot); vs the current **chroot** =
+   `RootDirectory=/sysroot` + `start`. Gate via a flag threaded from the
+   Reconciler/Orchestrator. Keep chroot mode intact (cloud_init still uses it).
+2. **boot orchestrator (`internal/boot/boot.go`):** implement `mountUnion` to run a
+   *compose-for-pivot*: `FetchAssignedModules` → pull+verify+mount **all** erofs
+   (reuse `reconcile.attachModule`'s pull/mount) → `etcidentity`/`etcsudoers` into
+   the union → render+**enable** native units → `Overlay.MountUnion` → return; then
+   `Boot` calls `switch_root`. Add OCI deps to `Orchestrator` (construct a
+   `runtime.Reconciler` in native + compose‑only mode, or factor the compose core
+   into a shared func both call).
+3. **post‑pivot reconcile (`internal/runtime`):** run in **native** mode — the
+   union is `/`; new modules attach natively (no re‑compose‑and‑chroot); units
+   rendered native+enabled.
+4. **artifact + wiring:** rebuild kernel+initramfs from current `agent/`; stage on
+   PVE; spawn with `boot_mode=direct_kernel` + kernel/initrd paths; resolve the PVE
+   `args`/root@pam gate; attach a `/persist` disk.
+5. **prove:** spawn a hub via `direct_kernel` → fw‑cfg identity → enroll → all
+   modules composed in the initramfs → native units enabled → `switch_root` →
+   systemd‑in‑union starts postgres/redis/rails **at `/`** → `/health` green; the
+   guest is *only* kernel+initramfs (no Ubuntu rootfs).
+
 ## Phased plan
 
 - **P1 — artifact:** build the kernel+initramfs from current `agent/`; confirm the
