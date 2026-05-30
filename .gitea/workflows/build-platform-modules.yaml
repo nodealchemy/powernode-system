@@ -469,16 +469,22 @@ jobs:
               # .gitmodules or any extensions/, producing a core-only lock + cache
               # that match the runtime resolution exactly (so the on-node --local
               # install needs no re-resolution and no network).
-              if ! command -v bundle >/dev/null 2>&1; then
+              if ! command -v gem >/dev/null 2>&1; then
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
-                apt-get install -y --no-install-recommends ruby ruby-dev bundler git
+                apt-get install -y --no-install-recommends ruby ruby-dev git
               fi
+              # Install + pin the EXACT bundler the lockfile was generated with and
+              # invoke it via the _<version>_ selector. Otherwise an older apt bundler
+              # self-installs the lock's version and re-execs mid-command, which
+              # intermittently exits 18 (observed on hub-worker in CI run 682).
+              SRVB=$(awk '/BUNDLED WITH/{getline; gsub(/[[:space:]]/, ""); print; exit}' /tmp/fat/opt/powernode/server/Gemfile.lock)
+              gem install bundler ${SRVB:+-v "$SRVB"} --no-document
               ( cd /tmp/fat/opt/powernode/server
-                bundle config set --local path vendor/bundle
-                bundle config set --local without development:test
-                bundle lock
-                bundle cache --no-install --all-platforms )
+                bundle ${SRVB:+_${SRVB}_} config set --local path vendor/bundle
+                bundle ${SRVB:+_${SRVB}_} config set --local without development:test
+                bundle ${SRVB:+_${SRVB}_} lock
+                bundle ${SRVB:+_${SRVB}_} cache --no-install --all-platforms )
               echo "=== hub-backend vendored cache: $(ls /tmp/fat/opt/powernode/server/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
               ;;
             powernode-hub-worker)
@@ -492,15 +498,19 @@ jobs:
               # self-consistent — just download every .gem into worker/vendor/cache
               # so the on-node sidekiq-start.sh can `bundle install --local`
               # (offline; native extensions compile on-instance against runtime-ruby).
-              if ! command -v bundle >/dev/null 2>&1; then
+              if ! command -v gem >/dev/null 2>&1; then
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
-                apt-get install -y --no-install-recommends ruby ruby-dev bundler git
+                apt-get install -y --no-install-recommends ruby ruby-dev git
               fi
+              # Pin the lockfile's exact bundler (see hub-backend note) so `bundle`
+              # never self-installs + re-execs mid-command (that exits 18).
+              WKRB=$(awk '/BUNDLED WITH/{getline; gsub(/[[:space:]]/, ""); print; exit}' /tmp/fat/opt/powernode/worker/Gemfile.lock)
+              gem install bundler ${WKRB:+-v "$WKRB"} --no-document
               ( cd /tmp/fat/opt/powernode/worker
-                bundle config set --local path vendor/bundle
-                bundle config set --local without development:test
-                bundle cache --no-install --all-platforms )
+                bundle ${WKRB:+_${WKRB}_} config set --local path vendor/bundle
+                bundle ${WKRB:+_${WKRB}_} config set --local without development:test
+                bundle ${WKRB:+_${WKRB}_} cache --no-install --all-platforms )
               echo "=== hub-worker vendored cache: $(ls /tmp/fat/opt/powernode/worker/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
               ;;
             powernode-hub-frontend)
