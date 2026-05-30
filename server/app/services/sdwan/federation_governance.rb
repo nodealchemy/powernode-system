@@ -66,8 +66,41 @@ module Sdwan
       new(account: account).scan
     end
 
+    # Peer-scoped governance check. Returns the same flat array of finding
+    # hashes as .scan, but limited to the single accepting peer — running
+    # only the per-peer dimensions (prefix overlap vs the install + vs other
+    # peers in the account, stale-accepted, expired-trust-JWT, and the
+    # platform-peer health battery: heartbeat, capability/schema drift,
+    # residency, cert expiry). Avoids loading + walking the entire account
+    # fleet (and the per-account migration-chain sweep) on every federation
+    # accept, where only this peer's findings are wanted.
+    def self.scan_peer(peer:)
+      new(account: peer.account).scan_peer(peer)
+    end
+
     def initialize(account:)
       @account = account
+    end
+
+    # Single-peer governance scan. The prefix-overlap checks still need the
+    # install /48 and the other account peers' /48s for cross-peer collision
+    # detection, but everything else is evaluated against just this peer.
+    def scan_peer(peer)
+      install_prefix_48 = derive_install_prefix_48
+
+      # Other reachable/live peers in the account, so this peer's prefix can
+      # be checked for collision without scanning the whole fleet's findings.
+      seen_prefixes = {}
+      ::System::FederationPeer
+        .where(account_id: @account.id)
+        .where.not(id: peer.id)
+        .where.not(remote_prefix_advertisement: [ nil, "" ])
+        .find_each do |other|
+          p48 = other.remote_prefix_48
+          seen_prefixes[p48] ||= other if p48
+        end
+
+      scan_one_peer(peer, install_prefix_48: install_prefix_48, seen_prefixes: seen_prefixes)
     end
 
     def scan
@@ -78,138 +111,12 @@ module Sdwan
       seen_prefixes = {} # remote_prefix_48 → first peer that claimed it
 
       peers.each do |peer|
-        # 1. Overlap with our own /48
-        if install_prefix_48 && peer.remote_prefix_48 && peer.remote_prefix_48 == install_prefix_48
-          findings << build_finding(
-            :prefix_overlap_with_install, peer,
-            "Federation peer's remote_prefix_advertisement (#{peer.remote_prefix_advertisement}) " \
-            "overlaps with this install's account prefix (#{install_prefix_48}). " \
-            "Revoke and re-propose with a different prefix."
-          )
-        end
-
-        # 2. Overlap between two federation peers
-        if peer.remote_prefix_48
-          if (other = seen_prefixes[peer.remote_prefix_48])
-            findings << build_finding(
-              :prefix_overlap_with_other_peer, peer,
-              "Federation peer claims the same /48 (#{peer.remote_prefix_48}) as peer #{other.id}. " \
-              "Two federations cannot share an address space without NAT64-style remapping " \
-              "(deferred; not in v1)."
-            )
-          else
-            seen_prefixes[peer.remote_prefix_48] = peer
-          end
-        end
-
-        # 3. Stale accepted (status=accepted but no signed_at) — slice 6
-        # never produces this state itself (V1_TRANSITIONS gates it), but
-        # a future federation slice's accept flow could leave a row half-
-        # transitioned on error. Catching it now keeps the data clean.
-        if peer.status == "accepted" && peer.signed_at.nil?
-          findings << build_finding(
-            :stale_accepted_without_handshake, peer,
-            "Peer is in `accepted` status but has no signed_at — the cross-CA " \
-            "handshake never completed. Revoke and re-propose."
-          )
-        end
-
-        # 4. Expired trust JWT
-        if peer.expires_at && peer.expires_at < Time.current && peer.status != "revoked"
-          findings << build_finding(
-            :expired_trust_jwt, peer,
-            "Trust JWT expired at #{peer.expires_at.utc.iso8601}. " \
-            "Revoke and re-propose with a fresh JWT."
-          )
-        end
-
-        # === Platform-peer checks (P3.6) ===
-        next unless peer.platform_peer?
-
-        # 5. Heartbeat stale (platform peers in active/enrolled with no
-        # recent heartbeat). The HeartbeatSweepService transitions active
-        # → degraded automatically; this finding surfaces the staleness
-        # in the operator dashboard regardless of state.
-        if peer.status.in?(%w[enrolled active]) && peer.heartbeat_stale?
-          last_hb = peer.last_heartbeat_at&.utc&.iso8601 || "never"
-          findings << build_finding(
-            :peer_heartbeat_stale, peer,
-            "Platform peer hasn't heartbeated since #{last_hb}. " \
-            "Stale beyond #{::System::FederationPeer::HEARTBEAT_STALE_AFTER.inspect}."
-          )
-        end
-
-        # 6. Capability drift — peer's advertised extension_slugs
-        # don't match what was granted (capabilities key empty but
-        # extension_slugs declared, or vice-versa). Indicates a
-        # capability handshake that didn't fully complete.
-        if peer.extension_slugs.any? && peer.capabilities.blank?
-          findings << build_finding(
-            :peer_capability_drift, peer,
-            "Peer advertised extensions #{peer.extension_slugs.inspect} but " \
-            "exchanged no capabilities. Re-handshake to re-establish capability grants."
-          )
-        end
-
-        # 6a. P9.4 — Data residency declaration check. Active peers
-        # are expected to declare data_residency per Social Contract
-        # commitment #8. Silence on this is a low-severity nudge
-        # (operator should ask their peer to upgrade or set residency).
-        if peer.peer_kind == "platform" && peer.status == "active" && peer.data_residency.blank?
-          findings << build_finding(
-            :peer_residency_missing, peer,
-            "Active peer has not declared data_residency per Social Contract #8. " \
-            "Ask the remote operator to set POWERNODE_DATA_RESIDENCY and re-heartbeat."
-          )
-        end
-
-        # 6b. P9.3 — Schema version drift. Two flavors:
-        #   - missing: peer is `active` but hasn't reported a
-        #     platform_version yet. They're running an older release
-        #     that doesn't include the version-handshake hook.
-        #   - drift: pair's negotiated outcome is not "compatible".
-        #     Operator should pin an override row or schedule the
-        #     remote to upgrade.
-        if peer.peer_kind == "platform" && peer.status == "active"
-          if peer.platform_version.blank?
-            findings << build_finding(
-              :peer_schema_version_missing, peer,
-              "Peer is active but hasn't reported a platform_version. " \
-              "Likely running a pre-P9.3 release without the schema-version handshake."
-            )
-          else
-            negotiation = ::Federation::SchemaVersionNegotiator.negotiate(
-              remote_version: peer.platform_version
-            )
-            unless negotiation.compatible?
-              findings << build_finding(
-                :peer_schema_version_drift, peer,
-                "Peer's platform_version #{peer.platform_version.inspect} is " \
-                "#{negotiation.status} with ours " \
-                "(#{::Federation::SchemaVersionNegotiator.current_platform_version}); " \
-                "source=#{negotiation.source}. #{negotiation.notes}"
-              )
-            end
-          end
-        end
-
-        # 7. Cert expiring / expired (when a node_certificate is bound).
-        if peer.node_certificate && peer.node_certificate.not_after
-          days_remaining = ((peer.node_certificate.not_after - Time.current) / 1.day).to_i
-          if days_remaining < 0
-            findings << build_finding(
-              :peer_cert_expired, peer,
-              "Peer's federation cert expired #{-days_remaining} day(s) ago " \
-              "(#{peer.node_certificate.not_after.utc.iso8601}). Rotate immediately."
-            )
-          elsif days_remaining <= CERT_EXPIRY_WARN_DAYS
-            findings << build_finding(
-              :peer_cert_expiring, peer,
-              "Peer's federation cert expires in #{days_remaining} day(s) " \
-              "(#{peer.node_certificate.not_after.utc.iso8601}). Plan rotation."
-            )
-          end
-        end
+        findings.concat(
+          scan_one_peer(peer, install_prefix_48: install_prefix_48, seen_prefixes: seen_prefixes)
+        )
+        # Record this peer's /48 AFTER scanning so the first claimant isn't
+        # flagged against itself — collisions accrue to subsequent peers.
+        seen_prefixes[peer.remote_prefix_48] ||= peer if peer.remote_prefix_48
       end
 
       # P9.5 — Multi-hop migration chain findings. Iterates over chains
@@ -226,6 +133,146 @@ module Sdwan
     end
 
     private
+
+    # All per-peer governance dimensions for one peer. `seen_prefixes` maps
+    # remote_prefix_48 → the peer that first claimed it, used for cross-peer
+    # overlap detection; the caller is responsible for populating it (the
+    # account-wide #scan records each peer after scanning; #scan_peer
+    # pre-loads the other account peers). Returns an array of finding hashes.
+    def scan_one_peer(peer, install_prefix_48:, seen_prefixes:)
+      findings = []
+
+      # 1. Overlap with our own /48
+      if install_prefix_48 && peer.remote_prefix_48 && peer.remote_prefix_48 == install_prefix_48
+        findings << build_finding(
+          :prefix_overlap_with_install, peer,
+          "Federation peer's remote_prefix_advertisement (#{peer.remote_prefix_advertisement}) " \
+          "overlaps with this install's account prefix (#{install_prefix_48}). " \
+          "Revoke and re-propose with a different prefix."
+        )
+      end
+
+      # 2. Overlap between two federation peers
+      if peer.remote_prefix_48 && (other = seen_prefixes[peer.remote_prefix_48])
+        findings << build_finding(
+          :prefix_overlap_with_other_peer, peer,
+          "Federation peer claims the same /48 (#{peer.remote_prefix_48}) as peer #{other.id}. " \
+          "Two federations cannot share an address space without NAT64-style remapping " \
+          "(deferred; not in v1)."
+        )
+      end
+
+      # 3. Stale accepted (status=accepted but no signed_at) — slice 6
+      # never produces this state itself (V1_TRANSITIONS gates it), but
+      # a future federation slice's accept flow could leave a row half-
+      # transitioned on error. Catching it now keeps the data clean.
+      if peer.status == "accepted" && peer.signed_at.nil?
+        findings << build_finding(
+          :stale_accepted_without_handshake, peer,
+          "Peer is in `accepted` status but has no signed_at — the cross-CA " \
+          "handshake never completed. Revoke and re-propose."
+        )
+      end
+
+      # 4. Expired trust JWT
+      if peer.expires_at && peer.expires_at < Time.current && peer.status != "revoked"
+        findings << build_finding(
+          :expired_trust_jwt, peer,
+          "Trust JWT expired at #{peer.expires_at.utc.iso8601}. " \
+          "Revoke and re-propose with a fresh JWT."
+        )
+      end
+
+      # === Platform-peer checks (P3.6) ===
+      return findings unless peer.platform_peer?
+
+      # 5. Heartbeat stale (platform peers in active/enrolled with no
+      # recent heartbeat). The HeartbeatSweepService transitions active
+      # → degraded automatically; this finding surfaces the staleness
+      # in the operator dashboard regardless of state.
+      if peer.status.in?(%w[enrolled active]) && peer.heartbeat_stale?
+        last_hb = peer.last_heartbeat_at&.utc&.iso8601 || "never"
+        findings << build_finding(
+          :peer_heartbeat_stale, peer,
+          "Platform peer hasn't heartbeated since #{last_hb}. " \
+          "Stale beyond #{::System::FederationPeer::HEARTBEAT_STALE_AFTER.inspect}."
+        )
+      end
+
+      # 6. Capability drift — peer's advertised extension_slugs
+      # don't match what was granted (capabilities key empty but
+      # extension_slugs declared, or vice-versa). Indicates a
+      # capability handshake that didn't fully complete.
+      if peer.extension_slugs.any? && peer.capabilities.blank?
+        findings << build_finding(
+          :peer_capability_drift, peer,
+          "Peer advertised extensions #{peer.extension_slugs.inspect} but " \
+          "exchanged no capabilities. Re-handshake to re-establish capability grants."
+        )
+      end
+
+      # 6a. P9.4 — Data residency declaration check. Active peers
+      # are expected to declare data_residency per Social Contract
+      # commitment #8. Silence on this is a low-severity nudge
+      # (operator should ask their peer to upgrade or set residency).
+      if peer.peer_kind == "platform" && peer.status == "active" && peer.data_residency.blank?
+        findings << build_finding(
+          :peer_residency_missing, peer,
+          "Active peer has not declared data_residency per Social Contract #8. " \
+          "Ask the remote operator to set POWERNODE_DATA_RESIDENCY and re-heartbeat."
+        )
+      end
+
+      # 6b. P9.3 — Schema version drift. Two flavors:
+      #   - missing: peer is `active` but hasn't reported a
+      #     platform_version yet. They're running an older release
+      #     that doesn't include the version-handshake hook.
+      #   - drift: pair's negotiated outcome is not "compatible".
+      #     Operator should pin an override row or schedule the
+      #     remote to upgrade.
+      if peer.peer_kind == "platform" && peer.status == "active"
+        if peer.platform_version.blank?
+          findings << build_finding(
+            :peer_schema_version_missing, peer,
+            "Peer is active but hasn't reported a platform_version. " \
+            "Likely running a pre-P9.3 release without the schema-version handshake."
+          )
+        else
+          negotiation = ::Federation::SchemaVersionNegotiator.negotiate(
+            remote_version: peer.platform_version
+          )
+          unless negotiation.compatible?
+            findings << build_finding(
+              :peer_schema_version_drift, peer,
+              "Peer's platform_version #{peer.platform_version.inspect} is " \
+              "#{negotiation.status} with ours " \
+              "(#{::Federation::SchemaVersionNegotiator.current_platform_version}); " \
+              "source=#{negotiation.source}. #{negotiation.notes}"
+            )
+          end
+        end
+      end
+
+      # 7. Cert expiring / expired (when a node_certificate is bound).
+      if peer.node_certificate && peer.node_certificate.not_after
+        days_remaining = ((peer.node_certificate.not_after - Time.current) / 1.day).to_i
+        if days_remaining < 0
+          findings << build_finding(
+            :peer_cert_expired, peer,
+            "Peer's federation cert expired #{-days_remaining} day(s) ago " \
+            "(#{peer.node_certificate.not_after.utc.iso8601}). Rotate immediately."
+          )
+        elsif days_remaining <= CERT_EXPIRY_WARN_DAYS
+          findings << build_finding(
+            :peer_cert_expiring, peer,
+            "Peer's federation cert expires in #{days_remaining} day(s) " \
+            "(#{peer.node_certificate.not_after.utc.iso8601}). Plan rotation."
+          )
+        end
+      end
+
+      findings
+    end
 
     def scan_migration_chains
       chain_findings = []

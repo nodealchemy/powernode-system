@@ -153,7 +153,10 @@ module System
         # M2 of the AI-driven provisioning conversation — adaptive evolution.
         # Watches active infrastructure missions for SLO violations, brief
         # drift, and cost breaches. Emits project.* signals.
-        ::System::Fleet::Sensors::ProjectSloSensor
+        ::System::Fleet::Sensors::ProjectSloSensor,
+        # Phase 3c — federation peer liveness (stale heartbeat + cert expiry).
+        # Emits system.federation_peer_liveness → federation_peer_remediate.
+        ::System::Fleet::Sensors::FederationPeerLivenessSensor
       ].freeze
 
       def permitted_actions

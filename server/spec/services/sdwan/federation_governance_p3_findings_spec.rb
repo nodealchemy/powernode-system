@@ -109,4 +109,62 @@ RSpec.describe Sdwan::FederationGovernance, type: :service do
       expect(described_class::SEVERITY_BY_KIND[:peer_cert_expired]).to eq(:high)
     end
   end
+
+  # .scan_peer is the peer-scoped entry point: it runs the same per-peer
+  # battery as .scan but only for the given peer, avoiding a full account-wide
+  # walk on every federation accept.
+  describe ".scan_peer" do
+    def attach_cert!(peer, not_after:)
+      cert = ::System::NodeCertificate.create!(
+        account: account,
+        subject_kind: "federation_peer",
+        subject: "peer-cert-#{SecureRandom.uuid}",
+        serial: SecureRandom.hex(16),
+        not_before: 365.days.ago,
+        not_after: not_after,
+        pem_chain: "stub",
+        issuer_subject: "Powernode Internal CA"
+      )
+      peer.update!(node_certificate: cert)
+    end
+
+    it "returns the same per-peer findings as a full scan, scoped to one peer" do
+      peer = create(:system_federation_peer, :active, account: account, last_heartbeat_at: nil)
+      attach_cert!(peer, not_after: 1.day.ago)
+
+      findings = described_class.scan_peer(peer: peer)
+      kinds = findings.map { |f| f[:kind] }
+
+      expect(kinds).to include(:peer_heartbeat_stale, :peer_cert_expired)
+      expect(findings.map { |f| f[:federation_peer_id] }.uniq).to eq([ peer.id ])
+    end
+
+    it "does NOT include findings for other peers in the account" do
+      target = create(:system_federation_peer, :active, account: account, last_heartbeat_at: 30.seconds.ago)
+      other  = create(:system_federation_peer, :active, account: account, last_heartbeat_at: nil)
+
+      findings = described_class.scan_peer(peer: target)
+      peer_ids = findings.map { |f| f[:federation_peer_id] }
+
+      expect(peer_ids).not_to include(other.id)
+    end
+
+    it "detects prefix overlap against another reachable peer in the account" do
+      other = create(:system_federation_peer, :active, account: account,
+                                                       remote_prefix_advertisement: "fd11:2233:4455::/48")
+      target = create(:system_federation_peer, :active, account: account,
+                                                        remote_prefix_advertisement: "fd11:2233:4455::/48")
+
+      findings = described_class.scan_peer(peer: target)
+      expect(findings.map { |f| f[:kind] }).to include(:prefix_overlap_with_other_peer)
+    end
+
+    it "does NOT run the account-wide migration-chain sweep" do
+      peer = create(:system_federation_peer, :active, account: account, last_heartbeat_at: 30.seconds.ago)
+      # scan_peer must not iterate MigrationChain at all.
+      expect(::System::MigrationChain).not_to receive(:where) if defined?(::System::MigrationChain)
+
+      described_class.scan_peer(peer: peer)
+    end
+  end
 end

@@ -59,6 +59,32 @@ fleet_policies = {
   # but can fail on CA/DNS-01 issues, so an operator should be informed.
   "system.acme_cert_rotate"        => "notify_and_proceed",
 
+  # Phase 3 (Federation & Multi-Site) — federation peer liveness remediation
+  # (FederationPeerLivenessSensor → system.federation_peer_remediate). This
+  # policy MUST live on Fleet Autonomy, not SDWAN Manager: the sensor runs in
+  # FleetAutonomyService::SENSORS, whose tick! gates as the "Fleet Autonomy"
+  # agent, so gate_action! resolves permitted_actions against THIS agent.
+  # Re-handshake / degrade / alert is low-to-medium blast radius and the
+  # dedup TTL self-throttles repeat firings → notify_and_proceed.
+  "system.federation_peer_remediate" => "notify_and_proceed",
+
+  # Phase 3 (SDWAN autonomous remediation) — the 7 system.sdwan_* actions below
+  # were MOVED here from system_sdwan_manager_agent.rb. Like
+  # federation_peer_remediate, they fire from FleetAutonomyService::SENSORS,
+  # whose tick! gates as the "Fleet Autonomy" agent — so gate_action! resolves
+  # these policies against THIS agent. Seeded on SDWAN Manager they were
+  # stranded (silently 'not_permitted') in the sensor path. The operator-
+  # initiated sdwan.* CRUD policies stay on SDWAN Manager (gated via
+  # Ai::AutonomyGate as that agent). Autonomy levels preserved from the prior
+  # SDWAN Manager seed.
+  "system.sdwan_peer_remediate"        => "notify_and_proceed",
+  "system.sdwan_key_rotate"            => "auto_approve",
+  "system.sdwan_failover"              => "require_approval",
+  "system.sdwan_user_device_revoke"    => "require_approval",
+  "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
+  "system.sdwan_vip_failover"          => "require_approval",
+  "system.sdwan_route_policy_audit"    => "auto_approve",
+
   # Read/notify
   "system.module_assign"           => "notify_and_proceed",
   "system.instance_reboot"         => "notify_and_proceed",
@@ -96,7 +122,11 @@ fleet_policies = {
   "system.architecture.update"  => "require_approval",
   "system.architecture.delete"  => "require_approval"
 
-  # NOTE: SDWAN policies moved to system_sdwan_manager_agent.rb (2026-05-10).
+  # NOTE: Operator-initiated SDWAN CRUD policies (sdwan.*) live on
+  # system_sdwan_manager_agent.rb (2026-05-10) — they gate via Ai::AutonomyGate
+  # as the SDWAN Manager agent. The 7 AUTONOMOUS system.sdwan_* remediation
+  # policies were moved back HERE (above), because they fire from the sensor
+  # path which gates as Fleet Autonomy.
   # NOTE: CVE policies moved to system_cve_responder_agent.rb (2026-05-10).
   # NOTE: Disk Image policies moved to system_disk_image_manager_agent.rb (2026-05-10).
   # The 5-agent split keeps per-domain approval queues independent and lets

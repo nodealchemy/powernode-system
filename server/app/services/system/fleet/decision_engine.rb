@@ -123,6 +123,17 @@ module System
         "system.module_critical_upgrade_ready" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
           action_category: "system.module_critical_upgrade_ready"
+        },
+        # Phase 3c — federation peer liveness. The FederationPeerLivenessSensor
+        # emits one kind for both failure classes (stale heartbeat + cert
+        # expiry); the FederationPeerRemediateExecutor branches on
+        # payload.reason. The executor re-handshakes/degrades (heartbeat) or
+        # alerts (cert) and emits a FleetEvent — it's the real remediation,
+        # so invoke_skill fires it on the notify_and_proceed path (mirroring
+        # how the SDWAN peer-remediate binding auto-fires its executor).
+        "system.federation_peer_liveness" => {
+          skill: ::System::Ai::Skills::FederationPeerRemediateExecutor,
+          action_category: "system.federation_peer_remediate"
         }
       }.freeze
 
@@ -235,6 +246,14 @@ module System
           executor.execute(
             action: "cert_rotate",
             certificate_id: signal.dig(:payload, "certificate_id")
+          )
+        when "System::Ai::Skills::FederationPeerRemediateExecutor"
+          # Federation liveness remediation: re-handshake/degrade a stale peer
+          # or alert on an expiring cert. The executor branches on `reason`;
+          # both fields come straight off the sensor payload.
+          executor.execute(
+            federation_peer_id: signal.dig(:payload, "federation_peer_id"),
+            reason: signal.dig(:payload, "reason")
           )
         else
           nil

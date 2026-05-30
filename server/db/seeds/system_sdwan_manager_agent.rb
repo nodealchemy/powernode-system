@@ -47,14 +47,16 @@ puts "  ✅ SDWAN Manager agent: #{sdwan_agent.previously_new_record? ? 'created
 # validation passes when these policies are created.
 
 sdwan_policies = {
-  # Existing autonomous actions (carried over from Fleet Autonomy)
-  "system.sdwan_peer_remediate"        => "notify_and_proceed",
-  "system.sdwan_key_rotate"            => "auto_approve",
-  "system.sdwan_failover"              => "require_approval",
-  "system.sdwan_user_device_revoke"    => "require_approval",
-  "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
-  "system.sdwan_vip_failover"          => "require_approval",
-  "system.sdwan_route_policy_audit"    => "auto_approve",
+  # NOTE: The 7 autonomous SDWAN remediation actions (system.sdwan_peer_remediate,
+  # system.sdwan_key_rotate, system.sdwan_failover, system.sdwan_user_device_revoke,
+  # system.sdwan_bgp_session_remediate, system.sdwan_vip_failover,
+  # system.sdwan_route_policy_audit) were MOVED to fleet_autonomy_agent.rb.
+  # Those actions fire from FleetAutonomyService::SENSORS, whose tick! gates as
+  # the "Fleet Autonomy" agent, so gate_action! resolves the policy against THAT
+  # agent — seeding them here left them stranded (silently 'not_permitted') in
+  # the sensor path. This mirrors the system.federation_peer_remediate move.
+  # Only operator-initiated sdwan.* CRUD policies remain here; those gate via
+  # Ai::AutonomyGate as the SDWAN Manager agent (a different path).
 
   # Operator-initiated network ops (newly gated 2026-05-10)
   "sdwan.network_create"              => "notify_and_proceed",
