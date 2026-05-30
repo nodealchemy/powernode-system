@@ -19,6 +19,8 @@ module System
       #
       # Reference: AI-Driven Provisioning plan — slice 8 (M2 adaptive evolution).
       class ConfigureSdwanForProjectExecutor < BaseSkillExecutor
+        include SdwanCompositionPipeline
+
         TOPOLOGIES = %w[hub_and_spoke mesh].freeze
         MAX_PEERS  = 100
 
@@ -83,27 +85,11 @@ module System
             end
           end
 
-          Array(sdwan_peer_ids).reverse_each do |peer_id|
-            peer = ::Sdwan::Peer.where(account_id: @account.id).find_by(id: peer_id)
-            next unless peer
-
-            begin
-              peer.destroy!
-            rescue StandardError => e
-              errors << { resource: "sdwan_peer", id: peer_id, error: e.message }
-            end
-          end
-
-          if sdwan_network_id.present?
-            network = ::Sdwan::Network.where(account_id: @account.id).find_by(id: sdwan_network_id)
-            if network
-              begin
-                network.destroy!
-              rescue StandardError => e
-                errors << { resource: "sdwan_network", id: sdwan_network_id, error: e.message }
-              end
-            end
-          end
+          teardown_peers_then_network(
+            sdwan_network_id: sdwan_network_id,
+            sdwan_peer_ids: sdwan_peer_ids,
+            errors: errors
+          )
 
           { success: errors.empty?, errors: errors }
         end
@@ -132,12 +118,9 @@ module System
 
           # Verify all instance ids belong to this account up-front so we
           # don't half-create the network on a stranger.
-          instances_relation = ::System::NodeInstance.joins(:node)
-                                                      .where(system_nodes: { account_id: @account.id })
-                                                      .where(id: ids)
-          instances = instances_relation.to_a
+          instances = account_scoped_instances(ids).to_a
           if instances.size != ids.size
-            missing = ids - instances.map(&:id)
+            missing = missing_instance_ids(ids, instances)
             return failure("instance(s) not found: #{missing.join(', ')}")
           end
 
@@ -241,7 +224,7 @@ module System
               topology_preview: topology_preview
             },
             failures: failures,
-            partial: failures.any? && (peer_ids.any? || network_id.present?)
+            partial: partial_run?(failures: failures, peer_ids: peer_ids, network_id: network_id)
           )
         end
 
