@@ -28,6 +28,11 @@ cp /etc/redis/redis.conf "$CONF"
 # Log to stderr (journal) rather than a file so startup failures are visible;
 # the file logfile in the apt conf otherwise swallows the reason redis exits.
 sed -i 's#^[[:space:]]*logfile[[:space:]].*#logfile ""#' "$CONF"
+# Force foreground. The apt redis.conf ships `daemonize yes`; under a
+# Type=simple systemd unit that makes redis-server fork while the exec'd
+# foreground process exits 0, so systemd marks the service "deactivated"
+# and restart-loops it. Pin daemonize off so systemd tracks the real server.
+sed -i 's#^[[:space:]]*daemonize[[:space:]].*#daemonize no#' "$CONF"
 chown redis:redis "$CONF"
 chmod 0644 "$CONF"
 

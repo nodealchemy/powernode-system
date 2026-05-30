@@ -61,7 +61,11 @@ services:
     stop_command: "/usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast"
     restart_policy: always
     user: root
-    working_directory: /var/lib/postgresql
+    # No working_directory: the data dir (/var/lib/postgresql) does not exist
+    # in /sysroot on first boot (the module omits /var from file_spec), so a
+    # WorkingDirectory= there makes systemd fail the chdir with 200/CHDIR
+    # *before* ExecStart can mkdir it. postgres-start.sh uses absolute paths
+    # and execs `postgres -D <datadir>`, so it needs no specific cwd.
     exposed_ports:
       - { port: 5432, protocol: tcp, name: postgres }
     capabilities: []
