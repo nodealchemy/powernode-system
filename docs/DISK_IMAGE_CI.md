@@ -79,6 +79,40 @@ flowchart LR
     F6 --> A2
 ```
 
+### Building UEFI images (UKI) — the claim-by-ID fleet boot disk
+
+The `disk-image-amd64-uefi` and `disk-image-arm64-uefi` variants produce the
+generic, flashable **claim-by-ID** boot disk (one image for the whole fleet; a
+per-device `identity.cfg` is dropped onto the BOOT partition). Both use one
+consistent model — a **UKI (Unified Kernel Image)**: `ukify` fuses the kernel +
+initramfs + cmdline into a single EFI binary at the ESP's removable-media
+fallback path (`/EFI/BOOT/BOOTX64.EFI` on amd64, `/EFI/BOOT/BOOTAA64.EFI` on
+arm64). UEFI firmware boots it with zero config — no GRUB, no loader entries.
+Layout is a 2-partition GPT: ESP (FAT32, label `BOOT`) + persist (ext4, label
+`persist`), assembled loop-free (mtools + `mkfs.ext4 -E offset` + sgdisk).
+
+**Build-environment requirement.** `build.sh`'s `kernel-initrd` variant needs a
+real distro kernel (`/boot/vmlinuz-*` + `/lib/modules/*`) and `dracut` to build
+the generic (`hostonly=no`) initramfs; `ukify` + the systemd-boot stub
+(`linuxx64.efi.stub` / `linuxaa64.efi.stub`) then fuse the UKI. The CI runner is
+a container with neither, so each job installs them and builds in an
+**architecture-matched** environment:
+
+| Image | Build environment | Why |
+|-------|-------------------|-----|
+| `build-amd64-uefi` job | **native** on the amd64 runner (`apt install linux-image-generic dracut-core`) | runner is amd64 → dracut runs without emulation |
+| `disk-image-arm64-uefi` (in the `build` job) | **QEMU-emulated arm64 container** (`docker run --platform linux/arm64`; binfmt via setup-qemu) | no native arm64 runner, and dracut must run as arm64 to copy/resolve arm64 binaries |
+
+If dracut/kernel aren't present, `build.sh` emits a tiny placeholder kernel and
+the UKI assembler fails loud (`missing/empty .../kernel`) — never a silently
+non-bootable image.
+
+**Native arm64 runner (recommended reliability upgrade).** The arm64 build
+emulates apt + dracut, which is slow (~30–60 min) and inherently less reliable
+than native. Registering a native arm64 Gitea runner and pointing the arm64
+UEFI build at it (dropping the `docker run --platform` wrapper, building like
+amd64) is the highest-reliability path.
+
 ## Setup: Initial CI Worker + Webhook
 
 ### Step 1: Bootstrap the CI worker for an account

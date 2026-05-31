@@ -243,21 +243,41 @@ jobs:
         run: |
           ./build.sh --arch arm64 --variants disk-image-rpi4
 
-      - name: Build disk-image-arm64-uefi
-        # arm64-uefi delegates to build-raw.sh which uses a 3-partition GPT
-        # layout (512MB EFI + 1GB boot + persist) that doesn't fit in 1GB.
-        # Bumping size for arm64-uefi alone would re-trigger the registry's
-        # 413 limit. For the smoke flow we only need rpi4 working, so let
-        # this step's failure not block the workflow. Tracked as follow-up:
-        # split arm64-uefi into a separate workflow with size-aware partition
-        # math, OR shrink build-raw.sh's layout for smoke mode.
-        continue-on-error: true
+      - name: Build disk-image-arm64-uefi (UKI, in QEMU arm64 container)
+        # arm64-uefi now uses the same ukify-UKI model as amd64 (compact,
+        # 2-partition — fits SIZE_GB=1, unlike the old build-raw.sh 3-partition
+        # layout). There's no native arm64 runner, so build the REAL arm64
+        # kernel-initrd + UKI inside a QEMU-emulated arm64 container: apt +
+        # dracut + ukify run as arm64, so the initramfs/UKI carry arm64 binaries.
+        # Same build.sh path as the native amd64 build, just emulated (slower).
         working-directory: initramfs
-        env:
-          SIZE_GB: "1"
-          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
         run: |
-          ./build.sh --arch arm64 --variants disk-image-arm64-uefi
+          # The setup-qemu step above is continue-on-error; (re)register the
+          # arm64 binfmt handler and fail loud if emulation is unavailable.
+          docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null 2>&1 || true
+          docker run --rm --platform linux/arm64 ubuntu:24.04 true \
+            || { echo "FATAL: arm64 emulation unavailable (binfmt not registered)"; exit 1; }
+          # Host /tmp isn't visible in the container — stage the fetched CA into
+          # the mounted workspace and point CA_PEM_FILE at the in-container path.
+          ca_env=()
+          if [ -n "${{ inputs.ca_pem_url }}" ] && [ -f /tmp/platform-ca.pem ]; then
+            cp /tmp/platform-ca.pem ./platform-ca.pem
+            ca_env=(-e "CA_PEM_FILE=/work/platform-ca.pem")
+          fi
+          docker run --rm --platform linux/arm64 \
+            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" "${ca_env[@]}" \
+            -v "$PWD:/work" -w /work \
+            ubuntu:24.04 bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y --no-install-recommends \
+                gdisk mtools dosfstools e2fsprogs \
+                systemd-ukify systemd-boot-efi python3-pefile \
+                dracut-core linux-image-generic zstd ca-certificates
+              ./build.sh --arch arm64 --variants "kernel-initrd disk-image-arm64-uefi"
+            '
+          # Container ran as root; reclaim ownership for the host publish steps.
+          sudo chown -R "$(id -u):$(id -g)" build
 
       - name: Cosign sign disk images (keyless, Fulcio)
         working-directory: initramfs/build/arm64

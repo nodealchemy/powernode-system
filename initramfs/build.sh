@@ -250,8 +250,12 @@ build_disk_image_rpi4() {
 }
 
 # ── Variant: disk-image-arm64-uefi (Pi 5 / Ampere / generic UEFI arm64) ────
-# Plan: docs/plans/wondrous-yawning-anchor.md §3.
-# Wraps build-raw.sh + layers identity.cfg + ca.pem onto EFI partition.
+# A COMPLETE bootable image — identical model to disk-image-amd64-uefi: a UKI
+# (kernel+initramfs+cmdline fused via ukify) on a BOOT-labelled ESP at
+# /EFI/BOOT/BOOTAA64.EFI, plus an ext4 persist partition. UEFI firmware boots
+# the UKI; the initramfs mounts LABEL=BOOT at /boot for the claim-by-ID
+# identity.cfg. Needs a real arm64 kernel-initrd, so build it inside an arm64
+# environment (native arm64 runner, or a QEMU-emulated arm64 container).
 build_disk_image_arm64_uefi() {
   if [[ "$ARCH" != "arm64" ]]; then
     log "disk-image-arm64-uefi is arm64-only — skipping for $ARCH"
@@ -260,10 +264,11 @@ build_disk_image_arm64_uefi() {
   log "Building generic arm64 UEFI disk image…"
   local out="${ARCH_OUT}/disk-image-arm64-uefi"
   mkdir -p "${out}"
-  bash "${SCRIPT_DIR}/images/disk-image-arm64-uefi/build-disk-image-arm64-uefi.sh" \
-    --output "${out}/powernode-arm64-uefi.img" \
-    ${PLATFORM_URL:+--platform-url "$PLATFORM_URL"} \
-    ${CA_PEM_FILE:+--ca-pem-file "$CA_PEM_FILE"}
+  KERNEL_INITRD_DIR="${ARCH_OUT}/kernel-initrd" \
+    bash "${SCRIPT_DIR}/images/disk-image-arm64-uefi/build-disk-image-arm64-uefi.sh" \
+      --output "${out}/powernode-arm64-uefi.img" \
+      ${PLATFORM_URL:+--platform-url "$PLATFORM_URL"} \
+      ${CA_PEM_FILE:+--ca-pem-file "$CA_PEM_FILE"}
   sha256sum "${out}/powernode-arm64-uefi.img" >"${out}/SHA256SUMS" 2>/dev/null || true
   log "disk-image-arm64-uefi ✓ at ${out}"
 }
