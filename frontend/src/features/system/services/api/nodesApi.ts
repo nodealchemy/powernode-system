@@ -147,4 +147,31 @@ export const nodesApi = {
     );
     return extractData(response).node_instance;
   },
+
+  /**
+   * Download the per-instance claim-by-ID boot config (identity.cfg) for the
+   * generic-image fleet flow. Triggers a browser save using the filename from
+   * the backend's Content-Disposition. Valid only for physical, unclaimed
+   * instances — the endpoint returns 409 once the device has claimed it.
+   */
+  downloadInstanceBootConfig: async (nodeId: string, instanceId: string): Promise<void> => {
+    const response = await apiClient.get<Blob>(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/boot_config`,
+      { responseType: 'blob' }
+    );
+    const disposition = response.headers?.['content-disposition'] || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || `identity-${instanceId}.cfg`;
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([String(response.data)], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  },
 };

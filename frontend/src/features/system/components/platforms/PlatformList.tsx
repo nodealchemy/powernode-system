@@ -8,12 +8,15 @@ import {
   Globe,
   Lock,
   MoreVertical,
-  Filter
+  Filter,
+  Download
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { platformsApi } from '@system/features/system/services/api/platformsApi';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useResourceList } from '@system/features/system/hooks/useResourceList';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import type { SystemNodePlatform } from '@system/features/system/types/system.types';
@@ -46,6 +49,24 @@ export const PlatformList: React.FC<PlatformListProps> = ({
   const canCreate = hasPermission('system.platforms.create');
   const canUpdate = hasPermission('system.platforms.update');
   const canDelete = hasPermission('system.platforms.delete');
+
+  const { addNotification } = useNotifications();
+  const [downloadingId, setDownloadingId] = React.useState<string | null>(null);
+  // Download a platform's published generic disk image (.img) for fleet
+  // imaging (claim-by-ID). Offered only when an image is published; the
+  // endpoint streams the bytes with a Content-Disposition filename.
+  const handleDownloadImage = async (platform: SystemNodePlatform) => {
+    setDownloadingId(platform.id);
+    try {
+      await platformsApi.downloadDiskImage(platform.id);
+      addNotification({ type: 'success', message: `Downloading generic image for ${platform.name}…` });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to download image';
+      addNotification({ type: 'error', message: msg });
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   const {
     items: platforms,
@@ -192,6 +213,18 @@ export const PlatformList: React.FC<PlatformListProps> = ({
                       <Button variant="outline" size="sm" onClick={() => onView?.(platform)} title="View Details">
                         <Eye className="w-4 h-4" />
                       </Button>
+
+                      {platform.disk_image_publication_status === 'published' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDownloadImage(platform)}
+                          disabled={downloadingId === platform.id}
+                          title="Download the generic disk image (.img) for fleet imaging"
+                        >
+                          <Download className="w-4 h-4" />
+                        </Button>
+                      )}
 
                       {canUpdate && onEdit && (
                         <Button variant="outline" size="sm" onClick={() => onEdit(platform)} title="Edit Platform">

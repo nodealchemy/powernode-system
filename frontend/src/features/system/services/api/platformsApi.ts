@@ -51,4 +51,31 @@ export const platformsApi = {
   deletePlatform: async (id: string): Promise<void> => {
     await apiClient.delete(`/system/node_platforms/${id}`);
   },
+
+  /**
+   * Download the platform's published generic disk image (.img) for the
+   * claim-by-ID fleet flow. Triggers a browser save using the backend's
+   * Content-Disposition filename. Only meaningful when the platform's
+   * disk_image_publication_status is "published" (else the endpoint 404s).
+   */
+  downloadDiskImage: async (id: string): Promise<void> => {
+    const response = await apiClient.get<Blob>(
+      `/system/node_platforms/${id}/disk_image`,
+      { responseType: 'blob' }
+    );
+    const disposition = response.headers?.['content-disposition'] || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || `powernode-${id}.img`;
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([response.data as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  },
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
+import { Server, Cpu, Box, Activity, Copy, Check, Globe, Shield, Clock, Settings, Plus, Edit, Trash2, Link2, Unlink, Loader2, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
 import { Badge } from '@/shared/components/ui/Badge';
@@ -294,6 +294,28 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
     }
   }, [canControlInstances, nodeId, addNotification, onNodeUpdated]);
 
+  // Claim-by-ID fleet flow: download a physical instance's boot config
+  // (identity.cfg) to drop onto the device's BOOT partition. Read-level
+  // action; only offered for physical instances that aren't yet claimed
+  // (the endpoint returns 409 once a device has bound to the instance).
+  const [bootConfigInFlight, setBootConfigInFlight] = useState<string | null>(null);
+  const handleDownloadBootConfig = useCallback(async (instance: SystemNodeInstance) => {
+    if (!nodeId) return;
+    setBootConfigInFlight(instance.id);
+    try {
+      await systemApi.downloadInstanceBootConfig(nodeId, instance.id);
+      addNotification({
+        type: 'success',
+        message: `Boot config downloaded for ${instance.name}. Copy it to the device's BOOT partition as identity.cfg.`
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to download boot config';
+      addNotification({ type: 'error', message: errorMessage });
+    } finally {
+      setBootConfigInFlight(null);
+    }
+  }, [nodeId, addNotification]);
+
   // Status badge variant
   const getStatusBadge = (status?: string, enabled?: boolean) => {
     if (enabled === false) {
@@ -484,6 +506,17 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                 </button>
                 {/* Actions — compact icon buttons so the name has room to breathe */}
                 <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                  {instance.variety === 'physical' && !instance.claimed && (
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBootConfig(instance)}
+                      disabled={bootConfigInFlight === instance.id}
+                      title="Download claim-by-ID boot config (identity.cfg) — drop on the device's BOOT partition"
+                      className="p-1.5 text-theme-secondary hover:text-theme-primary hover:bg-theme-surface rounded transition-colors disabled:opacity-50"
+                    >
+                      {bootConfigInFlight === instance.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                    </button>
+                  )}
                   {canUpdateInstances && (
                     <button
                       type="button"
@@ -517,6 +550,15 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
               {/* Expanded body — IPs, agent runtime metadata, identity, audit */}
               {expanded && (
                 <div className="mt-3 pt-3 border-t border-theme space-y-3">
+                  {instance.variety === 'physical' && !instance.claimed && (
+                    <div className="text-xs text-theme-secondary bg-theme-surface rounded p-2 border border-theme">
+                      <span className="font-semibold text-theme-primary">Claim-by-ID provisioning:</span> download this
+                      instance's boot config (the <Download className="inline w-3 h-3" /> button above), copy it to the
+                      device's <code>BOOT</code> partition as <code>identity.cfg</code>, then boot — the device claims as
+                      this instance and auto-enrolls. The file carries no secret and is single-use (download is disabled
+                      once claimed). Runbook: <code>fleet-imaging-claim-by-id.md</code>.
+                    </div>
+                  )}
                   {/* IP Addresses with copy buttons + associate/disassociate */}
                   <div>
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Network</label>
