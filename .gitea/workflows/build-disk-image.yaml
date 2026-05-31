@@ -55,6 +55,12 @@ jobs:
     env:
       PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
       ARCH: arm64
+      # Surface the publish-routing inputs into the job `env:` context so the
+      # publish-step `if:` guards below can read them — a step's own `if:` does
+      # NOT see that step's `env:`. Unset STORAGE_MODE → OCI-pull + HMAC-webhook.
+      POWERNODE_STORAGE_MODE: ${{ vars.POWERNODE_STORAGE_MODE }}
+      POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
+      POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -142,8 +148,14 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-arm64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64" -o "$OUT"
-          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256"
-          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          # .sha256 sidecar is optional: verify when the agent host serves it,
+          # warn+skip when it doesn't. Mirrors the .cosign-bundle handling below.
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256" 2>/dev/null; then
+            (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256") \
+              || { echo "FATAL: sha256 mismatch for $OUT"; exit 1; }
+          else
+            echo "WARN: .sha256 sidecar absent — skipping integrity check."
+          fi
           if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.cosign-bundle" \
                  -o "$OUT.cosign-bundle" 2>/dev/null; then
             cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
@@ -486,6 +498,12 @@ jobs:
     env:
       PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
       ARCH: amd64
+      # See the arm64 `build` job: surface publish-routing inputs at job scope
+      # so the publish-step `if:` guards evaluate. Unset STORAGE_MODE → OCI-pull
+      # + HMAC-webhook (the on-prem path for ops).
+      POWERNODE_STORAGE_MODE: ${{ vars.POWERNODE_STORAGE_MODE }}
+      POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
+      POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -533,8 +551,15 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-amd64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64" -o "$OUT"
-          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256"
-          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          # .sha256 sidecar is optional: verify integrity when the agent host
+          # serves it, warn+skip when it doesn't (the /agent route serves the
+          # bare binary). Mirrors the .cosign-bundle handling below.
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256" 2>/dev/null; then
+            (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256") \
+              || { echo "FATAL: sha256 mismatch for $OUT"; exit 1; }
+          else
+            echo "WARN: .sha256 sidecar absent — skipping integrity check."
+          fi
           if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.cosign-bundle" \
                  -o "$OUT.cosign-bundle" 2>/dev/null; then
             cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
