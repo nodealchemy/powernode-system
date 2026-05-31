@@ -53,9 +53,9 @@ RSpec.describe ::System::Storage::MountPathInferenceService, type: :service do
     end
 
     {
-      "/home/operator"          => :operator,
-      "/home/operator/workdir"  => :operator,
-      "/srv/operator/data"      => :operator,
+      "/home/pnadmin"           => :operator,
+      "/home/pnadmin/workdir"   => :operator,
+      "/srv/pnadmin/data"       => :operator,
       "/var/log/audit"          => :root,
       "/var/log/secure"         => :root,
       "/etc/systemd"            => :root,

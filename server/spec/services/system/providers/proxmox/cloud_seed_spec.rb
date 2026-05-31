@@ -65,9 +65,9 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
     expect(JSON.parse(fed["content"])).to include("parent_url" => "https://ops.ipnode.net")
   end
 
-  it "writes the operator sudoers grant for break-glass access from first boot" do
-    sudoers = payload["write_files"].find { |f| f["path"] == "/etc/sudoers.d/91-operator-cloudinit" }
+  it "writes the pnadmin sudoers grant for break-glass access from first boot" do
+    sudoers = payload["write_files"].find { |f| f["path"] == "/etc/sudoers.d/91-pnadmin-cloudinit" }
     expect(sudoers).to be_present
-    expect(sudoers["content"]).to include("operator ALL=(ALL) NOPASSWD: ALL")
+    expect(sudoers["content"]).to include("pnadmin ALL=(ALL) NOPASSWD: ALL")
   end
 end

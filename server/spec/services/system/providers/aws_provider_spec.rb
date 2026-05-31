@@ -17,6 +17,10 @@ RSpec.describe System::Providers::AwsProvider do
   subject(:provider) { described_class.new(connection, region: region) }
 
   before do
+    # aws-sdk-ec2 is an optional provider gem, absent from the core bundle.
+    # Skip (rather than fail) when it isn't loaded — the specs run for real
+    # on deployments that install it.
+    skip "aws-sdk-ec2 not installed (optional provider gem)" unless defined?(Aws::EC2::Client)
     allow(Aws::EC2::Client).to receive(:new).and_return(ec2_client)
   end
 

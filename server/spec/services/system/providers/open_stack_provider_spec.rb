@@ -28,6 +28,10 @@ RSpec.describe System::Providers::OpenStackProvider do
   subject(:provider) { described_class.new(connection, region: region) }
 
   before do
+    # fog-openstack is an optional provider gem, absent from the core bundle.
+    # Skip (rather than fail) when it isn't loaded — the specs run for real
+    # on deployments that install it.
+    skip "fog-openstack not installed (optional provider gem)" unless defined?(Fog::OpenStack::Compute)
     allow(Fog::OpenStack::Compute).to receive(:new).and_return(compute_client)
     allow(Fog::OpenStack::Network).to receive(:new).and_return(network_client)
     allow(Fog::OpenStack::Volume).to receive(:new).and_return(volume_client)

@@ -48,7 +48,7 @@ RSpec.describe System::AccountBootstrapService do
       # convention to match production callers.
       expect(::System::NodeArchitecture.canonical.pluck(:name)).to include("amd64", "arm64")
       expect(::System::NodePlatform.where(account: account).pluck(:name)).to match_array(
-        %w[ubuntu-24.04-lts ubuntu-24.04-rpi4 ubuntu-24.04-arm64-uefi]
+        %w[ubuntu-24.04-lts ubuntu-24.04-rpi4 ubuntu-24.04-arm64-uefi ubuntu-24.04-amd64-uefi]
       )
       expect(::System::NodeTemplate.where(account: account).pluck(:name)).to match_array(
         %w[base hardened web-apache web-nginx rpi4-base rpi4-hardened arm64-uefi-base]
