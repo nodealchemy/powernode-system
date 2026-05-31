@@ -472,3 +472,190 @@ jobs:
             initramfs/build/arm64/disk-image-arm64-uefi/
             initramfs/build/arm64/disk-image-manifest.txt
           retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Generic amd64 UEFI image for the claim-by-ID fleet flow. Native amd64
+  # runner — NO QEMU emulation, NO rpi4 firmware. A UKI (kernel + initramfs +
+  # cmdline fused into one EFI binary by `ukify`) on a BOOT-labelled ESP plus
+  # an ext4 persist partition, assembled loop-free (mtools + mkfs.ext4 -E
+  # offset). Publishes to the `ubuntu-24.04-amd64-uefi` NodePlatform. Parallel
+  # to `build` (arm64) — distinct artifact + platform, no shared state.
+  # ───────────────────────────────────────────────────────────────────────
+  build-amd64-uefi:
+    runs-on: ubuntu-24.04
+    env:
+      PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
+      ARCH: amd64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps (incl. UKI tooling)
+        run: |
+          sudo apt-get update
+          # gdisk(sgdisk) + mtools + e2fsprogs = loop-free GPT/ESP/ext4 assembly.
+          # systemd-ukify + systemd-boot-efi + python3-pefile build the UKI
+          # (no separate GRUB/bootloader — OVMF boots /EFI/BOOT/BOOTX64.EFI).
+          sudo apt-get install -y \
+            gdisk mtools dosfstools e2fsprogs \
+            systemd-ukify systemd-boot-efi python3-pefile \
+            curl jq zstd
+          export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+          echo "Tool availability:"
+          for tool in sgdisk mformat mkfs.ext4 ukify cosign oras curl jq zstd; do
+            if path=$(command -v "$tool"); then echo "  ✓ $tool → $path"; else echo "  ✗ $tool MISSING"; fi
+          done
+          if [ -f /usr/lib/systemd/boot/efi/linuxx64.efi.stub ]; then
+            echo "  ✓ systemd-boot stub present"
+          else
+            echo "  ✗ systemd-boot stub MISSING (systemd-boot-efi)"; exit 1
+          fi
+          if ! command -v cosign >/dev/null 2>&1; then
+            curl -fsSL "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64" -o /tmp/cosign
+            sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+          fi
+          if ! command -v oras >/dev/null 2>&1; then
+            curl -fsSL "https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz" -o /tmp/oras.tar.gz
+            sudo tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras && sudo chmod +x /usr/local/bin/oras
+          fi
+
+      - name: Stage powernode-agent (amd64)
+        env:
+          POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
+        run: |
+          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
+            echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured — the agent"
+            echo "       is baked into the UKI's initramfs; a placeholder would produce"
+            echo "       a non-bootable / non-enrolling image."
+            exit 1
+          fi
+          mkdir -p initramfs/scripts
+          OUT="initramfs/scripts/powernode-agent-amd64"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64" -o "$OUT"
+          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256"
+          (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256")
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.cosign-bundle" \
+                 -o "$OUT.cosign-bundle" 2>/dev/null; then
+            cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
+              || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
+          else
+            echo "WARN: .cosign-bundle absent — skipping signature verify."
+          fi
+          chmod +x "$OUT"
+
+      - name: Fetch platform CA
+        if: inputs.ca_pem_url != ''
+        run: |
+          curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
+          openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
+
+      - name: Build kernel + initramfs (amd64)
+        working-directory: initramfs
+        run: ./build.sh --arch amd64 --variants kernel-initrd
+
+      - name: Build disk-image-amd64-uefi
+        working-directory: initramfs
+        env:
+          # 1GB keeps the image under the registry's typical ~1GB blob limit:
+          # 512MB ESP (the ~85MB UKI fits easily) + ~512MB ext4 persist.
+          # Operators with a larger-blob registry override SIZE_GB on dispatch
+          # for more persist headroom.
+          SIZE_GB: "1"
+          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
+        run: ./build.sh --arch amd64 --variants disk-image-amd64-uefi
+
+      - name: Push amd64 image to OCI registry (cosign-signed + attested)
+        if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
+        env:
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
+          POWERNODE_REGISTRY_USER: ${{ secrets.POWERNODE_REGISTRY_USER }}
+          POWERNODE_REGISTRY_TOKEN: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
+        run: |
+          platform="ubuntu-24.04-amd64-uefi"
+          img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"
+          [ -f "$img" ] || { echo "FATAL: $img not built"; exit 1; }
+          if [ -n "$POWERNODE_REGISTRY_USER" ] && [ -n "$POWERNODE_REGISTRY_TOKEN" ]; then
+            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" || true
+          fi
+          sha="$(sha256sum "$img" | awk '{print $1}')"
+          size="$(stat -c '%s' "$img")"
+          ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
+          timeout 30s cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" \
+            || echo "WARN: cosign sign-blob skipped/failed (smoke mode tolerates this)"
+          jq -nc --arg p "$platform" --arg sha "$sha" --argjson sz "$size" \
+            --arg gs "${{ github.sha }}" --arg ref "$ref" --arg arch "amd64" \
+            --arg ba "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{platform_name:$p,sha256:$sha,size_bytes:$sz,git_sha:$gs,oci_ref:$ref,arch:$arch,built_at:$ba}' \
+            >/tmp/payload-amd64.json
+          timeout 30s cosign attest-blob --yes --predicate /tmp/payload-amd64.json \
+            --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed"
+          push_args=("$ref" "--artifact-type" "application/vnd.powernode.disk-image.v1" "$img:application/octet-stream")
+          if [ -f "$img.cosign-bundle" ]; then
+            push_args+=("$img.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json")
+          fi
+          if [ -f "$img.attestation-bundle" ]; then
+            push_args+=("$img.attestation-bundle:application/vnd.dev.cosign.attestation.v1+json")
+          fi
+          if oras push "${push_args[@]}"; then
+            echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
+          else
+            echo "WARN: oras push failed — webhook fires but platform OCI pull will 404"
+          fi
+
+      - name: Notify platform of new amd64 image (HMAC webhook — OCI-pull mode)
+        if: env.POWERNODE_DISK_IMAGE_WEBHOOK_URL != '' && env.POWERNODE_STORAGE_MODE != 'cloud-direct'
+        env:
+          POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
+          POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
+          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
+        run: |
+          platform="ubuntu-24.04-amd64-uefi"
+          img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"
+          [ -f "$img" ] || { echo "FATAL: $img not built"; exit 1; }
+          sha="$(sha256sum "$img" | awk '{print $1}')"
+          size="$(stat -c '%s' "$img")"
+          ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
+          body=$(jq -nc --arg p "$platform" --arg ref "$ref" --arg sha "$sha" \
+            --arg gs "${{ github.sha }}" --argjson sz "$size" --arg arch "amd64" \
+            '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz, git_sha:$gs, arch:$arch}')
+          sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex | awk '{print $2}')
+          echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
+          curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \
+            -H "X-Powernode-Signature: sha256=$sig" \
+            -H "Content-Type: application/json" \
+            -d "$body" || echo "WARN: webhook POST failed"
+
+      - name: Direct-upload amd64 image (cloud-install mode)
+        if: env.POWERNODE_STORAGE_MODE == 'cloud-direct' && env.POWERNODE_CI_WORKER_TOKEN != ''
+        env:
+          POWERNODE_API_BASE: ${{ secrets.POWERNODE_API_BASE }}
+          POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+        run: |
+          : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
+          platform="ubuntu-24.04-amd64-uefi"
+          img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"
+          [ -f "$img" ] || { echo "FATAL: $img not built"; exit 1; }
+          if ! curl -fsSL -m 10 -o /dev/null "${POWERNODE_API_BASE}/api/v1/health"; then
+            echo "::error::POWERNODE_API_BASE=$POWERNODE_API_BASE not responding — skipping upload"; exit 1
+          fi
+          sha="$(sha256sum "$img" | awk '{print $1}')"
+          size="$(stat -c '%s' "$img")"
+          init=$(curl -fsSL -X POST "$POWERNODE_API_BASE/api/v1/system/worker_api/disk_image_publications/initiate" \
+            -H "X-Worker-Token: $POWERNODE_CI_WORKER_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"platform_name\":\"$platform\",\"sha256\":\"$sha\",\"size_bytes\":$size,\"git_sha\":\"${{ github.sha }}\",\"arch\":\"amd64\"}")
+          pub_id=$(echo "$init" | jq -r .data.publication_id)
+          url=$(echo "$init" | jq -r .data.signed_upload_url)
+          curl -fsSL -X PUT "$url" --data-binary "@$img" -H "Content-Type: application/octet-stream"
+          curl -fsSL -X POST "$POWERNODE_API_BASE/api/v1/system/worker_api/disk_image_publications/finalize" \
+            -H "X-Worker-Token: $POWERNODE_CI_WORKER_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"publication_id\":\"$pub_id\",\"sha256_verify\":\"$sha\"}"
+
+      - name: Upload artifacts
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: powernode-disk-image-amd64-uefi-${{ github.sha }}
+          path: |
+            initramfs/build/amd64/disk-image-amd64-uefi/
+          retention-days: 30
