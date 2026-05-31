@@ -7,7 +7,7 @@ module Api
         before_action :set_account
         before_action :set_node
         before_action :set_instance, only: [
-          :show, :update, :destroy,
+          :show, :update, :destroy, :boot_config,
           :start, :stop, :reboot, :terminate,
           :associate_public_ip, :disassociate_public_ip
         ]
@@ -29,6 +29,49 @@ module Api
         def show
           require_permission("system.instances.read")
           render_success(node_instance: serialize_instance(@instance))
+        end
+
+        # GET /api/v1/system/nodes/:node_id/node_instances/:id/boot_config
+        #
+        # Returns the per-instance identity.cfg for the claim-by-ID generic-image
+        # fleet flow. The operator flashes many cards from one generic image, then
+        # drops this file onto each card's BOOT partition as /boot/identity.cfg —
+        # the device claims as THIS instance on first boot, no UI confirmation.
+        #
+        # Secret-free by design: only the platform URL + the instance ID (a
+        # one-time binding capability gated by the instance's `claimable` state).
+        # The bootstrap token is delivered to the device over TLS by the claim
+        # poll, never written to this file. See
+        # PhysicalEnrollmentService.auto_confirm_by_instance_id!.
+        def boot_config
+          require_permission("system.instances.read")
+          # Once a device has claimed this instance it's bound (single-bind) —
+          # re-issuing its boot config would only invite a second device to try
+          # (and fail) to claim it. Don't offer it. The UI hides the action via
+          # the serialized claim state; this is the server-side guard.
+          if @instance.claimed?
+            return render_error(
+              "Boot config is unavailable: this instance has already been claimed by a device.",
+              status: :conflict
+            )
+          end
+          config = <<~CFG
+            # Powernode claim-by-ID identity for "#{@instance.name}" (#{@instance.id})
+            # Copy to the device's BOOT partition as /boot/identity.cfg. On first
+            # boot the device claims as this instance — no operator confirmation.
+            # No secret here: the bootstrap token is delivered to the device over
+            # TLS by the claim poll, never written to this file.
+            SERVER=#{::System::PhysicalEnrollmentService.platform_url}
+            ID=#{@instance.id}
+            # Private-CA platforms: also drop the CA PEM at /boot/powernode-ca.pem
+            # and uncomment the next line. Public/Let's Encrypt platforms can omit
+            # it (the generic image already trusts public roots).
+            # CA_PEM_FILE=/boot/powernode-ca.pem
+          CFG
+          send_data config,
+                    filename: "identity-#{@instance.name.parameterize}.cfg",
+                    type: "text/plain",
+                    disposition: "attachment"
         end
 
         def create

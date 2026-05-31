@@ -47,6 +47,9 @@ Rails.application.routes.draw do
               post :terminate
               post :associate_public_ip
               post :disassociate_public_ip
+              # Claim-by-ID generic-image fleet flow: downloads the per-instance
+              # identity.cfg the operator drops onto a card's BOOT partition.
+              get :boot_config
             end
           end
         end

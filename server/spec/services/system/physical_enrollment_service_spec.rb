@@ -126,4 +126,48 @@ RSpec.describe System::PhysicalEnrollmentService, type: :service do
       expect(poll.status).to eq("expired")
     end
   end
+
+  describe ".auto_confirm_by_instance_id!" do
+    let(:unclaimed) do
+      described_class.record_discovery!(
+        account: account, mac: "aa:bb:cc:dd:ee:10", dmi_uuid: "uuid-claim-by-id"
+      ).unclaimed
+    end
+
+    it "binds a claimable (physical, pending, unclaimed) instance by id" do
+      result = described_class.auto_confirm_by_instance_id!(unclaimed: unclaimed, instance_id: instance.id)
+      expect(result).not_to be_nil
+      expect(result.ok?).to be true
+      expect(unclaimed.reload.claimed_node_instance_id).to eq(instance.id)
+      # same poll now yields the token — no operator UI confirmation step
+      poll = described_class.poll_status(unclaimed.reload)
+      expect(poll.status).to eq("claimed")
+      expect(poll.instance_uuid).to eq(instance.id)
+      expect(poll.bootstrap_token).to be_present
+    end
+
+    it "is a no-op for an unknown instance_id" do
+      result = described_class.auto_confirm_by_instance_id!(unclaimed: unclaimed, instance_id: SecureRandom.uuid)
+      expect(result).to be_nil
+      expect(unclaimed.reload.claimed?).to be false
+    end
+
+    it "is a no-op (single-bind) when the instance is already claimed" do
+      described_class.confirm_claim!(unclaimed: unclaimed, node_instance: instance)
+      other = described_class.record_discovery!(account: account, mac: "aa:bb:cc:dd:ee:11").unclaimed
+      result = described_class.auto_confirm_by_instance_id!(unclaimed: other, instance_id: instance.id)
+      expect(result).to be_nil # instance no longer in the claimable scope
+      expect(other.reload.claimed?).to be false
+    end
+
+    it "is a no-op for a non-physical instance" do
+      cloud = create(:system_node_instance, node: node, variety: "cloud", status: "pending")
+      result = described_class.auto_confirm_by_instance_id!(unclaimed: unclaimed, instance_id: cloud.id)
+      expect(result).to be_nil
+    end
+
+    it "is a no-op when instance_id is blank" do
+      expect(described_class.auto_confirm_by_instance_id!(unclaimed: unclaimed, instance_id: "")).to be_nil
+    end
+  end
 end

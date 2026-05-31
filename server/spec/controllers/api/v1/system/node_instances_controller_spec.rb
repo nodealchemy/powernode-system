@@ -67,6 +67,39 @@ RSpec.describe "Api::V1::System::NodeInstances", type: :request do
     end
   end
 
+  describe "GET .../node_instances/:id/boot_config (claim-by-ID fleet flow)" do
+    let!(:pending_instance) do
+      create(:system_node_instance, account: account, node: node,
+                                     variety: "physical", status: "pending",
+                                     network_profile: "lightweight")
+    end
+
+    it "returns 401 without auth" do
+      get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config"
+      expect(response).to have_http_status(:unauthorized)
+    end
+
+    it "returns a secret-free identity.cfg (SERVER + ID) for an unclaimed instance" do
+      get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config",
+          headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+      expect(response.headers["Content-Disposition"].to_s).to include("attachment")
+      expect(response.body).to include("ID=#{pending_instance.id}")
+      expect(response.body).to match(/^SERVER=/)
+      expect(response.body).not_to match(/^KEY=/) # bootstrap token never written to the file
+    end
+
+    it "returns 409 once the instance has been claimed (no re-issue)" do
+      unclaimed = System::PhysicalEnrollmentService.record_discovery!(
+        account: account, mac: "aa:bb:cc:dd:ee:99"
+      ).unclaimed
+      System::PhysicalEnrollmentService.confirm_claim!(unclaimed: unclaimed, node_instance: pending_instance)
+      get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config",
+          headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:conflict)
+    end
+  end
+
   describe "PATCH /api/v1/system/nodes/:node_id/node_instances/:id" do
     it "returns 403 without update perm (read perm present so set_node_instance finds the row)" do
       patch "/api/v1/system/nodes/#{node.id}/node_instances/#{instance.id}",

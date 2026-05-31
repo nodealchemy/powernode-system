@@ -41,6 +41,20 @@ module Api
               platform_hint: params[:platform_hint].presence
             )
 
+            # Claim-by-ID auto-confirm: a device flashed from a generic image
+            # carries a per-instance identity.cfg (ID=<uuid>) and sends
+            # instance_id here. When it matches a claimable NodeInstance, bind
+            # it now so this same poll returns the bootstrap token — the
+            # operator never has to confirm in the Unclaimed Devices UI. A
+            # stray/unknown ID is a no-op (falls through to the normal
+            # claim-code path), so it can't strand a device.
+            if params[:instance_id].present?
+              ::System::PhysicalEnrollmentService.auto_confirm_by_instance_id!(
+                unclaimed:   discovery.unclaimed,
+                instance_id: params[:instance_id].to_s.strip
+              )
+            end
+
             poll = ::System::PhysicalEnrollmentService.poll_status(discovery.unclaimed)
 
             response = {

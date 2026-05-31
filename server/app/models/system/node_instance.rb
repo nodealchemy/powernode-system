@@ -160,6 +160,12 @@ module System
     scope :terminated, -> { where(status: "terminated") }
     scope :errored, -> { where(status: "error") }
     scope :active, -> { where(status: %w[pending provisioning running stopped]) }
+    # Claim-by-ID fleet flow: a physical instance pre-registered by an operator,
+    # still pending and not yet bound to a device, is eligible to be claimed by
+    # a booting device that presents its ID (baked into /boot/identity.cfg).
+    # Once claimed (claimed_at set) it drops out of this scope — single-bind,
+    # no re-claim, so a leaked ID can't hijack an already-provisioned device.
+    scope :claimable, -> { physical.where(status: "pending", claimed_at: nil) }
 
     # Phase O2 — network profile scopes (used by FleetAutonomyService and
     # the heavyweight-host dashboards to filter the fleet by which

@@ -131,6 +131,26 @@ module System
       ConfirmResult.new(ok?: false, error: e.message)
     end
 
+    # ---- 2b. Auto-confirm by instance ID (claim-by-ID, no operator) ---------
+
+    # Claim-by-ID path for the generic-image fleet workflow: a device flashed
+    # from a generic image carries a per-instance identity.cfg (ID=<uuid>) and
+    # sends instance_id in its /claim poll. If that ID matches a *claimable*
+    # NodeInstance (physical, pending, not yet bound to a device), bind it
+    # automatically via confirm_claim! — no operator confirmation — so the same
+    # poll mints + returns the bootstrap token. Returns nil (no-op) when the ID
+    # is blank/unknown, the instance isn't claimable, or the device is already
+    # claimed, leaving the caller on the normal pending/claim-code path so a
+    # wrong ID can't strand the device or hijack a live instance.
+    def self.auto_confirm_by_instance_id!(unclaimed:, instance_id:)
+      return nil if unclaimed.nil? || unclaimed.claimed? || instance_id.blank?
+
+      instance = ::System::NodeInstance.claimable.find_by(id: instance_id)
+      return nil unless instance
+
+      confirm_claim!(unclaimed: unclaimed, node_instance: instance, by_user: nil)
+    end
+
     # ---- 3. Poll status (every /claim POST after discovery) -----------------
 
     PollResponse = Struct.new(:status, :claim_code, :poll_after_seconds,

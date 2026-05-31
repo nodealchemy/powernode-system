@@ -110,8 +110,22 @@ module System
       end
       log.call("    ✓ NodePlatform: ubuntu-24.04-arm64-uefi (id=#{platform_arm64_uefi.id})")
 
+      # Generic amd64 UEFI platform — target for the claim-by-ID fleet disk
+      # image (build-disk-image-amd64-uefi.sh / the build-amd64-uefi CI job).
+      # amd64 arch. The disk-image publication webhook does find_by(name:),
+      # so this NodePlatform MUST exist per account for publishes to bind.
+      platform_amd64_uefi = ::System::NodePlatform.find_or_create_by!(account: account, name: "ubuntu-24.04-amd64-uefi") do |p|
+        p.node_architecture = arch
+        p.enabled       = true
+        p.public        = true
+        p.build_script  = "#!/bin/bash\nset -euo pipefail\nexec mmdebstrap --variant=minbase --architectures=amd64 noble \"$@\"\n"
+        p.init_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent boot\n"
+        p.sync_script   = "#!/bin/bash\nset -euo pipefail\nexec /sbin/powernode-agent sync\n"
+      end
+      log.call("    ✓ NodePlatform: ubuntu-24.04-amd64-uefi (id=#{platform_amd64_uefi.id})")
+
       # ── Cosign trust policy backfill (only sets when blank) ─────────
-      [ platform, platform_rpi4, platform_arm64_uefi ].each do |p|
+      [ platform, platform_rpi4, platform_arm64_uefi, platform_amd64_uefi ].each do |p|
         attrs = {}
         attrs[:cosign_identity_regexp] = "https://registry.example.com/powernode/.+" if p.cosign_identity_regexp.blank?
         attrs[:cosign_issuer_regexp]   = "https://registry.example.com"              if p.cosign_issuer_regexp.blank?
