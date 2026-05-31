@@ -24,7 +24,7 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci,disk-image-rpi4,disk-image-arm64-uefi"
+readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci,disk-image-rpi4,disk-image-arm64-uefi,disk-image-amd64-uefi"
 # Sentinel: build.sh fails loudly if a real digest isn't supplied (via
 # BASE_IMAGE_DIGEST env, --base-image arg, or CI workflow input). Per M3
 # reproducibility, no placeholder is ever permitted past the build gate.
@@ -156,7 +156,11 @@ build_kernel_initrd() {
   # 9p / 9pnet_virtio: filesystem passthrough from host (used by the dev-mode
   # local-fs module loader to expose /var/lib/powernode/modules into the guest).
   # overlay: union mount for stacking module rootfs lowers.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay"
+  # vfat + nls_*: the FAT32 boot partition (label BOOT) carries the claim-flow
+  # identity.cfg; boot.mount needs vfat (+ codepage/iocharset NLS modules) to
+  # mount it at /boot. Absent → "unknown filesystem type vfat" and the agent
+  # never reads /boot/identity.cfg.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1"
 
   dracut \
     "${conf_args[@]}" \
@@ -264,6 +268,28 @@ build_disk_image_arm64_uefi() {
   log "disk-image-arm64-uefi ✓ at ${out}"
 }
 
+# ── Variant: disk-image-amd64-uefi (generic UEFI amd64 — claim-by-ID fleet) ─
+# A COMPLETE bootable image (unlike raw/arm64-uefi which only partition): a UKI
+# (kernel+initramfs+cmdline fused via ukify) on a BOOT-labelled ESP at
+# /EFI/BOOT/BOOTX64.EFI, plus an ext4 persist partition. OVMF boots the UKI;
+# the initramfs mounts LABEL=BOOT at /boot for the claim-by-ID identity.cfg.
+build_disk_image_amd64_uefi() {
+  if [[ "$ARCH" != "amd64" ]]; then
+    log "disk-image-amd64-uefi is amd64-only — skipping for $ARCH"
+    return 0
+  fi
+  log "Building generic amd64 UEFI disk image…"
+  local out="${ARCH_OUT}/disk-image-amd64-uefi"
+  mkdir -p "${out}"
+  KERNEL_INITRD_DIR="${ARCH_OUT}/kernel-initrd" \
+    bash "${SCRIPT_DIR}/images/disk-image-amd64-uefi/build-disk-image-amd64-uefi.sh" \
+      --output "${out}/powernode-amd64-uefi.img" \
+      ${PLATFORM_URL:+--platform-url "$PLATFORM_URL"} \
+      ${CA_PEM_FILE:+--ca-pem-file "$CA_PEM_FILE"}
+  sha256sum "${out}/powernode-amd64-uefi.img" >"${out}/SHA256SUMS" 2>/dev/null || true
+  log "disk-image-amd64-uefi ✓ at ${out}"
+}
+
 # ── Variant: OCI image (bootc-compatible) ──────────────────────────────────
 build_oci() {
   log "Building OCI bootc image…"
@@ -296,6 +322,7 @@ for v in "${VARIANT_LIST[@]}"; do
     oci)                      build_oci ;;
     disk-image-rpi4)          build_disk_image_rpi4 ;;
     disk-image-arm64-uefi)    build_disk_image_arm64_uefi ;;
+    disk-image-amd64-uefi)    build_disk_image_amd64_uefi ;;
     *)                        log "WARN: unknown variant '$v' — skipped" ;;
   esac
 done

@@ -1,0 +1,28 @@
+# Mounts the FAT32 boot partition (label BOOT) read-only at /boot so the
+# agent's BootIdentityStrategy can read /boot/identity.cfg + powernode-ca.pem
+# — the claim-flow identity source for UEFI-disk / pivot_root boots.
+#
+# Why a systemd unit and not init-powernode.sh's mount: this initramfs boots
+# multi-user.target (default.target → multi-user.target), so the dracut
+# pre-mount hook never runs. The agent runs as powernode-agent.service, so the
+# /boot mount must be a unit ordered Before it — mirroring persist.mount.
+#
+# Label-based (not /dev/sdaN): VM disks vary (/dev/vda virtio, /dev/sda scsi),
+# so a stable LABEL=BOOT is the only reliable handle. nofail: cloud/non-pivot
+# boots have no BOOT partition — the agent falls back to other identity
+# strategies when /boot/identity.cfg is absent.
+[Unit]
+Description=Powernode boot partition (claim-flow identity source)
+Documentation=https://github.com/nodealchemy/powernode-platform
+DefaultDependencies=no
+ConditionPathIsMountPoint=!/boot
+Before=powernode-federation-accept.service powernode-agent.service local-fs.target
+
+[Mount]
+What=/dev/disk/by-label/BOOT
+Where=/boot
+Type=vfat
+Options=ro,nofail
+
+[Install]
+WantedBy=local-fs.target

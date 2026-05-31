@@ -150,6 +150,17 @@ install() {
         "${initdir}/etc/systemd/system/local-fs.target.wants/persist.mount"
     mkdir -p "${initdir}/persist"
 
+    # /boot — FAT32 boot partition (label BOOT) holding identity.cfg +
+    # powernode-ca.pem: the claim-flow identity source for UEFI-disk /
+    # pivot_root boots. Mounted Before powernode-agent.service so
+    # BootIdentityStrategy reads it; nofail so cloud/non-pivot boots (no
+    # BOOT partition) fall through to other identity strategies. The dracut
+    # pre-mount hook can't do this here — we boot multi-user.target, not the
+    # initrd sequence — so it must be a systemd mount unit, like persist.mount.
+    inst_simple "${moddir}/boot.mount" /etc/systemd/system/boot.mount
+    ln -sf ../boot.mount \
+        "${initdir}/etc/systemd/system/local-fs.target.wants/boot.mount"
+
     # Tools we lean on at boot.
     inst_multiple ip mount umount mkdir cp ln rm sleep sha256sum
 
