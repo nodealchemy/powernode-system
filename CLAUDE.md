@@ -124,6 +124,7 @@ This is a git submodule. Per root CLAUDE.md:
 See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime per runbook). Current set:
 
 - `node-provisioning.md` — full Node + NodeInstance lifecycle with per-state error recovery
+- `fleet-imaging-claim-by-id.md` — bulk-provision physical devices from one generic image + a per-device claim-by-ID `identity.cfg`
 - `sdwan-network-setup.md` — SDWAN end-to-end (networks, peers, VIPs, firewall, BGP, federation)
 - `module-authoring.md` — author + register + sign + publish a new NodeModule
 - `cve-response.md` — full CVE response workflow (SBOM-aware matching, triage, remediation)

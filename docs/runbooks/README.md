@@ -16,6 +16,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [expose-service.md](./expose-service.md) | SREs publishing public services, network operators | SDWAN network + publicly-reachable hub peer, free VIP CIDR, Cloudflare ACME DNS credential (https) | ~10–20 min per service |
 | [federation-setup.md](./federation-setup.md) | Multi-region / multi-account operators | Two reachable platforms, partner trust agreement | ~30 min per pairing |
 | [federation-troubleshooting.md](./federation-troubleshooting.md) | Operators triaging federation failures | Established federation peer in degraded state | ~5–60 min depending on cause |
+| [fleet-imaging-claim-by-id.md](./fleet-imaging-claim-by-id.md) | Operators provisioning physical fleets (SD/USB/NVMe) | `system.instances.create`+`read`, published generic image for the arch | ~5 min/device after one image flash |
 | [gitops-reconciliation.md](./gitops-reconciliation.md) | SREs adopting GitOps, multi-engineer teams | Git remote (Gitea / GitHub), Vault SSH credential | ~30 min initial setup |
 | [instance-pool-tuning.md](./instance-pool-tuning.md) | ML engineers, batch operators, CI platform owners | Provider quota for pool members | ~30 min initial sizing |
 | [module-authoring.md](./module-authoring.md) | Module authors, platform contributors | Gitea repo + cosign + oras CLIs | ~45 min per new module |
@@ -31,6 +32,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 |------------|------------|
 | New to the extension | [`../tutorials/01-first-boot.md`](../tutorials/01-first-boot.md) → then specific runbooks |
 | Provisioning a new node | [node-provisioning.md](./node-provisioning.md) |
+| Imaging a fleet of physical devices | [fleet-imaging-claim-by-id.md](./fleet-imaging-claim-by-id.md) |
 | Setting up SDWAN | [sdwan-network-setup.md](./sdwan-network-setup.md) |
 | Publishing a service publicly with TLS | [expose-service.md](./expose-service.md) (after [sdwan-network-setup.md](./sdwan-network-setup.md)) |
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
