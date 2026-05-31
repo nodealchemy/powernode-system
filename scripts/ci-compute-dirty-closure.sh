@@ -77,7 +77,19 @@ else
   # Default subcommand: compute dirty closure. Re-parse positional args
   # in the original way: $1=BASE_SHA, $2=HEAD_SHA (both optional).
   APT_HASH_TARGET=""
-  BASE_SHA="${1:-${GITEA_EVENT_BEFORE:-${GITHUB_BASE_SHA:-HEAD~1}}}"
+  # Resolve the diff base. HEAD~1 alone is WRONG for a multi-commit push:
+  # it is only the immediate parent, so a trigger change in an EARLIER commit
+  # of the same push lands below the diff base and is missed entirely
+  # (observed 2026-05-30: a workflow fix in commit 1 of a 2-commit push made
+  # every module skip — run 384). Prefer the push event's `before` SHA (the
+  # branch state before THIS push) from the Actions event payload, falling
+  # back to HEAD~1 for single-commit pushes / local runs.
+  push_before=""
+  if [[ -n "${GITHUB_EVENT_PATH:-}" && -f "${GITHUB_EVENT_PATH}" ]] && command -v jq >/dev/null 2>&1; then
+    push_before="$(jq -r '.before // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null || true)"
+    [[ "$push_before" =~ ^0+$ ]] && push_before=""   # all-zeros = branch creation, unusable
+  fi
+  BASE_SHA="${1:-${GITEA_EVENT_BEFORE:-${push_before:-${GITHUB_BASE_SHA:-HEAD~1}}}}"
   HEAD_SHA="${2:-${GITHUB_SHA:-HEAD}}"
 fi
 
