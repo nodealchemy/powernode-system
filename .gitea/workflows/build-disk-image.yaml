@@ -614,7 +614,12 @@ jobs:
 
       - name: Build kernel + initramfs (amd64)
         working-directory: initramfs
-        run: ./build.sh --arch amd64 --variants kernel-initrd
+        run: |
+          # dracut needs root (it mknod's device nodes into the initramfs); the
+          # runner job is non-root (it sudo's apt), so build as root then
+          # reclaim ownership for the non-root disk-image + publish steps.
+          sudo ./build.sh --arch amd64 --variants kernel-initrd
+          sudo chown -R "$(id -u):$(id -g)" build
 
       - name: Build disk-image-amd64-uefi
         working-directory: initramfs

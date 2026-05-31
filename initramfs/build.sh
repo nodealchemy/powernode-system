@@ -162,6 +162,20 @@ build_kernel_initrd() {
   # never reads /boot/identity.cfg.
   local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1"
 
+  # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
+  # is no CLI flag for an extra search dir). The powernode module-setup hook
+  # lives in this repo, so link it into dracut's search path before invoking
+  # dracut — otherwise `--modules powernode` fails with "Module 'powernode'
+  # cannot be found" in a fresh environment (CI / the arm64 build container).
+  # Idempotent; falls back to sudo only when the target dir isn't writable.
+  local dracut_moddir="/usr/lib/dracut/modules.d"
+  local powernode_mod="${SCRIPT_DIR}/modules.d/90powernode"
+  if [[ -d "${powernode_mod}" && ! -e "${dracut_moddir}/90powernode" ]]; then
+    ln -sfn "${powernode_mod}" "${dracut_moddir}/90powernode" 2>/dev/null \
+      || sudo ln -sfn "${powernode_mod}" "${dracut_moddir}/90powernode"
+    log "linked powernode dracut module → ${dracut_moddir}/90powernode"
+  fi
+
   dracut \
     "${conf_args[@]}" \
     --modules "powernode" \
