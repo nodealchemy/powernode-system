@@ -112,10 +112,39 @@ POWERNODE_PLATFORM_TEMPLATE_SPECS = {
     config: {
       "boot_mode" => "direct_kernel"
     }
+  },
+  # Pivot-bootable FULL hub — the powernode-hub service stack unioned on top
+  # of the Powernode-as-OS base layer, booted via direct_kernel/pivot_root
+  # with NO host OS. Same 9 services as `powernode-hub`, but the composed
+  # union itself becomes / (the modular OS) instead of chrooting into
+  # /sysroot under a guest Ubuntu. powernode-system-base (cross-compiled
+  # agent) + base-os-ubuntu-noble (systemd/FHS/userland) are the lowest
+  # union layers (priority is intrinsic to each module's manifest, not list
+  # order). This is the provider-agnostic modular-OS hub; `powernode-hub`
+  # (cloud_init) stays the default until the pivot path is proven end-to-end
+  # and promoted per-provider.
+  "powernode-hub-pivot" => {
+    description: "Pivot-bootable complete hub (Powernode-as-OS): the powernode-hub service stack unioned on top of the system-base + Ubuntu-noble base layer, booted via direct_kernel/pivot_root with no host OS. Provider-agnostic modular-OS variant of powernode-hub.",
+    modules: %w[
+      powernode-system-base
+      base-os-ubuntu-noble
+      reverse-proxy-traefik
+      runtime-ruby
+      postgres-primary
+      redis
+      powernode-hub-backend
+      powernode-hub-worker
+      powernode-hub-frontend
+      powernode-extension-system
+      qemu-guest-agent
+    ],
+    config: {
+      "boot_mode" => "direct_kernel"
+    }
   }
 }.freeze
 
-puts "\n  Seeding Powernode Platform templates (5 templates)..."
+puts "\n  Seeding Powernode Platform templates (#{POWERNODE_PLATFORM_TEMPLATE_SPECS.size} templates)..."
 
 created = 0
 updated = 0
