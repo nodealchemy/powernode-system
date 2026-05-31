@@ -515,15 +515,32 @@ jobs:
           # gdisk(sgdisk) + mtools + e2fsprogs = loop-free GPT/ESP/ext4 assembly.
           # systemd-ukify + systemd-boot-efi + python3-pefile build the UKI
           # (no separate GRUB/bootloader — OVMF boots /EFI/BOOT/BOOTX64.EFI).
-          sudo apt-get install -y \
+          # dracut-core + linux-image-generic provide the initramfs builder and
+          # a real distro kernel (/boot/vmlinuz-* + /lib/modules/*), so build.sh's
+          # kernel-initrd variant produces a REAL kernel+initramfs (not the
+          # dracut-absent placeholder) for ukify to fuse into the UKI. The amd64
+          # runner is native, so dracut runs without emulation. linux-image-generic
+          # carries the comprehensive module set the hostonly=no initramfs needs to
+          # boot arbitrary fleet hardware.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             gdisk mtools dosfstools e2fsprogs \
             systemd-ukify systemd-boot-efi python3-pefile \
+            dracut-core linux-image-generic \
             curl jq zstd
           export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
           echo "Tool availability:"
-          for tool in sgdisk mformat mkfs.ext4 ukify cosign oras curl jq zstd; do
+          for tool in sgdisk mformat mkfs.ext4 ukify dracut cosign oras curl jq zstd; do
             if path=$(command -v "$tool"); then echo "  ✓ $tool → $path"; else echo "  ✗ $tool MISSING"; fi
           done
+          # build.sh resolves kver from a /lib/modules/<v> that has a matching
+          # /boot/vmlinuz-<v>. Fail loud here if linux-image-generic didn't land
+          # both (a placeholder kernel would yield a non-bootable UKI).
+          kver="$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1)"
+          if [ -n "$kver" ] && [ -e "/boot/vmlinuz-$kver" ]; then
+            echo "  ✓ kernel present: $kver"
+          else
+            echo "  ✗ no usable kernel (/boot/vmlinuz-* + /lib/modules/*)"; exit 1
+          fi
           if [ -f /usr/lib/systemd/boot/efi/linuxx64.efi.stub ]; then
             echo "  ✓ systemd-boot stub present"
           else
