@@ -113,7 +113,7 @@ export const ExposeServicePanel: React.FC = () => {
         setDnsCredentials(creds.credentials);
         setNetworks(nets.networks);
       } catch (err) {
-        logger.warn('[ExposeServicePanel] failed to load reference data', err);
+        logger.warn('[ExposeServicePanel] failed to load reference data', { error: err });
       }
     })();
     return () => {
@@ -133,7 +133,7 @@ export const ExposeServicePanel: React.FC = () => {
         const result = await sdwanApi.getPeers(form.sdwan_network_id);
         if (!cancelled) setPeers(result.peers);
       } catch (err) {
-        logger.warn('[ExposeServicePanel] failed to load peers', err);
+        logger.warn('[ExposeServicePanel] failed to load peers', { error: err });
         if (!cancelled) setPeers([]);
       }
     })();
