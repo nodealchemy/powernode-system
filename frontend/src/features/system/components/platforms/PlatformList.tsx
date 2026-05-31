@@ -286,6 +286,16 @@ export const PlatformList: React.FC<PlatformListProps> = ({
                           <Eye className="w-4 h-4" />
                           View Details
                         </button>
+                        {platform.disk_image_publication_status === 'published' && (
+                          <button
+                            onClick={() => { handleDownloadImage(platform); setDropdownOpen(null); }}
+                            disabled={downloadingId === platform.id}
+                            className="w-full text-left px-4 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover flex items-center gap-2 disabled:opacity-50"
+                          >
+                            <Download className="w-4 h-4" />
+                            Download image
+                          </button>
+                        )}
                         {canUpdate && onEdit && (
                           <button
                             onClick={() => { onEdit(platform); setDropdownOpen(null); }}
