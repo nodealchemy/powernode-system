@@ -60,6 +60,12 @@ type Orchestrator struct {
 	// direct_kernel/pivot_root path (Option B — native modular OS). Nil falls back
 	// to the legacy libvirt 9p prepare-root path.
 	Composer UnionComposer
+	// ComposerFactory, when set and Composer is nil, builds the Composer AFTER
+	// enrollment — deferred because a *runtime.Reconciler's mTLS client needs the
+	// enrolled cert on disk, which only exists after Boot's enroll step. The
+	// direct_kernel bootCmd wires this to runtime.NewPivotComposer; the legacy 9p
+	// path leaves it nil (mountUnion then takes the prepare-root fallback).
+	ComposerFactory func(platformURL, pkiDir string) (UnionComposer, error)
 	// PKIDir is where to persist enrollment material. Defaults to
 	// enroll.ResolveDefaultPKIDir() — picks the persist-layer path in
 	// initramfs/pivot contexts, the FHS path in cloud-VM contexts.
@@ -153,6 +159,19 @@ func (o *Orchestrator) Boot(ctx context.Context) error {
 			return fmt.Errorf("enroll: %w", err)
 		}
 		o.stage("enroll", "ok")
+	}
+
+	// Build the OCI union composer now that PKI is on disk (post-enroll or the
+	// fast-path above) — the Reconciler's mTLS client needs the enrolled cert,
+	// so it can't be built before Boot. DryRun skips (no cert; mountUnion only
+	// logs the plan). Nil factory + nil Composer falls through to the 9p path.
+	if o.Composer == nil && o.ComposerFactory != nil && !o.DryRun {
+		o.stage("compose", "building OCI union composer from enrolled PKI")
+		c, err := o.ComposerFactory(ident.PlatformURL, o.PKIDir)
+		if err != nil {
+			return fmt.Errorf("composer factory: %w", err)
+		}
+		o.Composer = c
 	}
 
 	o.stage("mount", "composing union rootfs")

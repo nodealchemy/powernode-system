@@ -79,6 +79,14 @@ switch_root's into the assembled rootfs.`,
 				PKIDir:       pkiDir,
 				AgentVersion: Version,
 				DryRun:       dryRun,
+				// direct_kernel/pivot: build the union composer from the enrolled
+				// PKI after Boot's enroll step (the Reconciler's mTLS client needs
+				// the cert); mountUnion then ComposeForPivot's into /sysroot.
+				ComposerFactory: func(platformURL, dir string) (boot.UnionComposer, error) {
+					return runtime.NewPivotComposer(platformURL, dir, func(stage string, err error) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[boot:compose:%s] %v\n", stage, err)
+					})
+				},
 				OnStage: func(stage, msg string) {
 					fmt.Fprintf(cmd.OutOrStdout(), "[boot:%s] %s\n", stage, msg)
 				},
@@ -136,18 +144,21 @@ func serviceCmd() *cobra.Command {
 //   - The agent has already enrolled (cert at /persist/var/lib/powernode/pki/)
 //
 // Mount layout produced:
-//   /run/powernode/modules                 (9p share, ro)
-//   /run/powernode/overlay/{upper,work}    (tmpfs scratch)
-//   /sysroot                               (overlayfs union)
-//     /sysroot/persist  ← bind /persist (PKI + agent state survive pivot)
-//     /sysroot/dev      ← rbind /dev
-//     /sysroot/sys      ← rbind /sys
-//     /sysroot/proc     ← rbind /proc
-//     /sysroot/run      ← rbind /run    (lets agent in new root see fw-cfg /
-//                                        9p share without remounting)
+//
+//	/run/powernode/modules                 (9p share, ro)
+//	/run/powernode/overlay/{upper,work}    (tmpfs scratch)
+//	/sysroot                               (overlayfs union)
+//	  /sysroot/persist  ← bind /persist (PKI + agent state survive pivot)
+//	  /sysroot/dev      ← rbind /dev
+//	  /sysroot/sys      ← rbind /sys
+//	  /sysroot/proc     ← rbind /proc
+//	  /sysroot/run      ← rbind /run    (lets agent in new root see fw-cfg /
+//	                                     9p share without remounting)
 //
 // Caller (typically powernode-mount.service) follows up with
-//   systemctl switch-root /sysroot /sbin/init
+//
+//	systemctl switch-root /sysroot /sbin/init
+//
 // which kills the initramfs systemd and re-execs in the new rootfs.
 func prepareRootCmd() *cobra.Command {
 	var (

@@ -51,6 +51,7 @@ func (s *ClaimStrategy) Name() string { return "claim-poll" }
 type claimRequest struct {
 	MAC          string `json:"mac"`
 	DMIUUID      string `json:"dmi_uuid,omitempty"`
+	InstanceID   string `json:"instance_id,omitempty"`
 	Hostname     string `json:"hostname,omitempty"`
 	AgentVersion string `json:"agent_version,omitempty"`
 	Architecture string `json:"architecture,omitempty"`
@@ -98,7 +99,7 @@ func (s *ClaimStrategy) Discover(ctx context.Context) (*Identity, error) {
 		pollInterval = 30 * time.Second
 	}
 
-	req := s.buildRequest()
+	req := s.buildRequest(boot.InstanceUUID)
 	endpoint := strings.TrimSuffix(boot.PlatformURL, "/") + "/api/v1/system/node_api/claim"
 	httpClient := s.httpClient(boot)
 
@@ -151,11 +152,17 @@ func (s *ClaimStrategy) Discover(ctx context.Context) (*Identity, error) {
 	}
 }
 
-func (s *ClaimStrategy) buildRequest() claimRequest {
+// buildRequest assembles the claim poll body. instanceID is the operator-
+// assigned NodeInstance UUID from /boot/identity.cfg (ID=) when present — it
+// lets the platform auto-confirm this device as that specific instance
+// (claim-by-ID fleet flow) instead of waiting for an operator to confirm by
+// claim code. Empty for the plain claim-code flow.
+func (s *ClaimStrategy) buildRequest(instanceID string) claimRequest {
 	hostname, _ := os.Hostname()
 	return claimRequest{
 		MAC:          discoverMAC(),
 		DMIUUID:      discoverDMIUUID(),
+		InstanceID:   instanceID,
 		Hostname:     hostname,
 		AgentVersion: agentVersion(),
 		Architecture: runtime.GOARCH,

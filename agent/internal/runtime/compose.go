@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/transport"
+	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
 
 // ComposeForPivot performs a one-shot, native compose for the direct_kernel /
@@ -130,4 +134,43 @@ func unionIdentityPaths(sysroot string) etcidentity.Paths {
 		Shadow:  filepath.Join(sysroot, "etc", "shadow"),
 		Gshadow: filepath.Join(sysroot, "etc", "gshadow"),
 	}
+}
+
+// NewPivotComposer builds a Reconciler for use as the boot orchestrator's
+// UnionComposer on the direct_kernel/pivot_root path. It loads the mTLS
+// transport client from the post-enroll PKI dir and assembles a one-shot
+// reconciler via NewReconcilerForCLI — the same dependency set service.Run
+// wires for the cloud_init reconcile loop (Puller, AlwaysOK verifier,
+// ExecRunner, DefaultLayout), minus the long-lived loop. The returned
+// *Reconciler satisfies boot.UnionComposer through ComposeForPivot, which
+// mounts the assigned modules, composes the overlay union at sysroot, renders
+// identity + native units, and leaves /sysroot ready for switch_root.
+//
+// Called by bootCmd AFTER Boot's enroll step, because the mTLS client requires
+// the enrolled cert to exist on disk.
+func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (*Reconciler, error) {
+	if onError == nil {
+		onError = func(string, error) {}
+	}
+	paths := enroll.PathsUnder(pkiDir)
+	client, err := transport.LoadFromPKIDir(platformURL, paths)
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS client from %s: %w", pkiDir, err)
+	}
+	return NewReconcilerForCLI(FactoryConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   manifest.DefaultRoot,
+		Puller: &oci.Puller{
+			Transport:   client,
+			HTTPClient:  client.Client,
+			PlatformURL: client.PlatformURL,
+			Cache:       "/persist/cache/modules",
+		},
+		Verifier:    verify.AlwaysOK{},
+		MountRunner: mount.ExecRunner{},
+		Layout:      mount.DefaultLayout(),
+		StatePath:   mount.StatePath,
+		OnError:     onError,
+	})
 }
