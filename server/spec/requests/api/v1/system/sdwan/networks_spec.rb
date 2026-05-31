@@ -77,12 +77,18 @@ RSpec.describe "Api::V1::System::Sdwan::Networks", type: :request do
   end
 
   describe "DELETE /api/v1/system/sdwan/networks/:id" do
-    it "destroys the network and returns deleted=true" do
+    # Destructive SDWAN ops route through the autonomy gate. The default
+    # intervention policy is require_approval, so the request is accepted (202)
+    # and queued as a deferred operation pending approval — the network is not
+    # removed until the approval is granted (e.g. via approve_deferred_operation).
+    it "gates deletion behind approval as a pending deferred operation" do
       net = Sdwan::Network.create!(account_id: account.id, name: "kill-me")
       delete "/api/v1/system/sdwan/networks/#{net.id}", headers: headers
-      expect(response).to have_http_status(:ok)
-      expect(json_response_data["deleted"]).to eq(true)
-      expect(Sdwan::Network.where(id: net.id).count).to eq(0)
+      expect(response).to have_http_status(:accepted)
+      expect(json_response_data["pending"]).to eq(true)
+      expect(json_response_data["action_category"]).to eq("sdwan.network_delete")
+      expect(json_response_data["deferred_operation_id"]).to be_present
+      expect(Sdwan::Network.where(id: net.id).count).to eq(1)
     end
   end
 end
