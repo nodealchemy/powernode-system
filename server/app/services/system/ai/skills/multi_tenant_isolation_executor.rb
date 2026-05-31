@@ -371,44 +371,30 @@ module System
         # composed through Sdwan::Executors::CreateFirewallRule.
         def create_firewall_rules(network:, key:, tenant_cidr:, planned_actions:,
                                   failures:, firewall_rule_ids:)
-          allow_rule = create_firewall_rule(
-            network: network, failures: failures,
-            attributes: {
-              account_id: @account.id,
-              name: "tenant-#{key}-allow-intra",
-              priority: ALLOW_PRIORITY,
-              action: "accept",
-              direction: "both",
-              protocol: "any",
-              src_selector: { "cidr" => tenant_cidr },
-              dst_selector: { "cidr" => tenant_cidr },
-              enabled: true
-            }
-          )
-          if allow_rule
-            firewall_rule_ids << allow_rule.id
-            planned_actions << { step: "create_firewall_rule", rule_id: allow_rule.id,
-                                 name: allow_rule.name, action: "accept" }
-          end
+          firewall_rule_specs(key, tenant_cidr).each do |attributes|
+            rule = create_firewall_rule(network: network, failures: failures, attributes: attributes)
+            next unless rule
 
-          deny_rule = create_firewall_rule(
-            network: network, failures: failures,
-            attributes: {
-              account_id: @account.id,
-              name: "tenant-#{key}-deny-default",
-              priority: DENY_PRIORITY,
-              action: "drop",
-              direction: "ingress",
-              protocol: "any",
-              src_selector: { "all" => true },
-              enabled: true
-            }
-          )
-          if deny_rule
-            firewall_rule_ids << deny_rule.id
-            planned_actions << { step: "create_firewall_rule", rule_id: deny_rule.id,
-                                 name: deny_rule.name, action: "drop" }
+            firewall_rule_ids << rule.id
+            planned_actions << { step: "create_firewall_rule", rule_id: rule.id,
+                                 name: rule.name, action: attributes[:action] }
           end
+        end
+
+        # The two tenant nftables rules (attribute hashes), composed in order by
+        # the caller through Sdwan::Executors::CreateFirewallRule: an explicit
+        # intra-tenant allow (the tenant's own /64, high priority) and a default
+        # ingress deny (wildcard, lower priority).
+        def firewall_rule_specs(key, tenant_cidr)
+          [
+            { account_id: @account.id, name: "tenant-#{key}-allow-intra",
+              priority: ALLOW_PRIORITY, action: "accept", direction: "both", protocol: "any",
+              src_selector: { "cidr" => tenant_cidr }, dst_selector: { "cidr" => tenant_cidr },
+              enabled: true },
+            { account_id: @account.id, name: "tenant-#{key}-deny-default",
+              priority: DENY_PRIORITY, action: "drop", direction: "ingress", protocol: "any",
+              src_selector: { "all" => true }, enabled: true }
+          ]
         end
 
         # Compose Sdwan::Executors::CreateFirewallRule — the canonical rule
@@ -435,16 +421,10 @@ module System
         def tenant_acls(key:, tenant_cidr:)
           fam = cidr_family(tenant_cidr)
           [
-            { name: "tenant-#{key}-allow-intra",
-              direction: "to-lport",
-              priority: ACL_ALLOW_PRIORITY,
-              match: "#{fam}.src == #{tenant_cidr}",
-              action: "allow-related" },
-            { name: "tenant-#{key}-deny-cross",
-              direction: "to-lport",
-              priority: ACL_DENY_PRIORITY,
-              match: "#{fam}.src != #{tenant_cidr}",
-              action: "drop" }
+            { name: "tenant-#{key}-allow-intra", direction: "to-lport", priority: ACL_ALLOW_PRIORITY,
+              match: "#{fam}.src == #{tenant_cidr}", action: "allow-related" },
+            { name: "tenant-#{key}-deny-cross", direction: "to-lport", priority: ACL_DENY_PRIORITY,
+              match: "#{fam}.src != #{tenant_cidr}", action: "drop" }
           ]
         end
 
@@ -452,30 +432,38 @@ module System
                      sdwan_network:, tenant_cidr_resolved:, firewall_rule_ids:,
                      ovn_deployment_id:, created_ovn_deployment:, ovn_logical_switch_id:,
                      ovn_acl_ids:, ovn_acl_allocations:)
-          created_anything = sdwan_network.present? || firewall_rule_ids.any? ||
-                             ovn_logical_switch_id.present? || ovn_acl_ids.any?
-          success(
-            dry_run: false,
-            tenant_key: tenant_key,
-            tenant_cidr: tenant_cidr_resolved,
-            planned_actions: planned_actions,
-            outputs: {
-              sdwan_network_id: sdwan_network&.id,
-              sdwan_network_handle: sdwan_network&.network_handle,
-              vrf_name: sdwan_network&.vrf_name_for,
-              tenant_cidr: tenant_cidr_resolved,
-              firewall_rule_ids: firewall_rule_ids,
-              ovn_deployment_id: ovn_deployment_id,
-              # Carried for the rollback path so it knows whether to tear the
-              # account deployment down (only when this run created it).
-              created_ovn_deployment: created_ovn_deployment,
-              ovn_logical_switch_id: ovn_logical_switch_id,
-              ovn_acl_ids: ovn_acl_ids,
-              ovn_acl_allocations: ovn_acl_allocations
-            },
-            failures: failures,
-            partial: failures.any? && created_anything
+          created = tenant_resources_created?(sdwan_network, firewall_rule_ids, ovn_logical_switch_id, ovn_acl_ids)
+          outputs = finalize_outputs(
+            sdwan_network: sdwan_network, tenant_cidr_resolved: tenant_cidr_resolved,
+            firewall_rule_ids: firewall_rule_ids, ovn_deployment_id: ovn_deployment_id,
+            created_ovn_deployment: created_ovn_deployment, ovn_logical_switch_id: ovn_logical_switch_id,
+            ovn_acl_ids: ovn_acl_ids, ovn_acl_allocations: ovn_acl_allocations
           )
+          success(dry_run: false, tenant_key: tenant_key, tenant_cidr: tenant_cidr_resolved,
+                  planned_actions: planned_actions, outputs: outputs, failures: failures,
+                  partial: failures.any? && created)
+        end
+
+        # True when this run created any tenant resource — drives the `partial`
+        # flag (failures alongside real progress) in the success envelope.
+        def tenant_resources_created?(sdwan_network, firewall_rule_ids, ovn_logical_switch_id, ovn_acl_ids)
+          sdwan_network.present? || firewall_rule_ids.any? ||
+            ovn_logical_switch_id.present? || ovn_acl_ids.any?
+        end
+
+        # Success/partial outputs payload. created_ovn_deployment is carried so
+        # the rollback path knows whether to tear the account OVN deployment
+        # down (only when this run created it).
+        def finalize_outputs(sdwan_network:, tenant_cidr_resolved:, firewall_rule_ids:,
+                             ovn_deployment_id:, created_ovn_deployment:, ovn_logical_switch_id:,
+                             ovn_acl_ids:, ovn_acl_allocations:)
+          {
+            sdwan_network_id: sdwan_network&.id, sdwan_network_handle: sdwan_network&.network_handle,
+            vrf_name: sdwan_network&.vrf_name_for, tenant_cidr: tenant_cidr_resolved,
+            firewall_rule_ids: firewall_rule_ids, ovn_deployment_id: ovn_deployment_id,
+            created_ovn_deployment: created_ovn_deployment, ovn_logical_switch_id: ovn_logical_switch_id,
+            ovn_acl_ids: ovn_acl_ids, ovn_acl_allocations: ovn_acl_allocations
+          }
         end
 
         def build_plan(net_name:, switch_name:, tenant_cidr:, creating_deployment:)
