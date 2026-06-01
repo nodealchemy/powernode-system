@@ -113,12 +113,20 @@ trap 'rm -rf "$STAGE"' EXIT
 # ── 1. Build the UKI ───────────────────────────────────────────────────────
 UKI="$STAGE/BOOTAA64.EFI"
 log "building UKI (kernel + initramfs + cmdline) via ukify"
-# shellcheck disable=SC2086 # $UKIFY may be "python3 /path/ukify" for local runs
+# ukify autodetects --uname by scraping the kernel as an ELF; the arm64 vmlinuz
+# is an arm64 Image (not ELF), so ukify's scrape_elf raises
+# "TypeError: expected str, bytes or os.PathLike object, not NoneType". Supply
+# --uname explicitly (the build kernel's version, from its modules dir) to skip
+# autodetection. amd64's bzImage scrapes fine, but being explicit is harmless.
+UNAME_KVER="${UNAME_KVER:-$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -n1)}"
+[[ -n "$UNAME_KVER" ]] && log "ukify --uname=$UNAME_KVER (skipping ELF autodetect — arm64 kernel isn't ELF)"
+# shellcheck disable=SC2086 # $UKIFY may be "python3 /path/ukify"; ${UNAME_KVER:+…} intentionally unquoted
 $UKIFY build \
   --linux="$KERNEL" \
   --initrd="$INITRD" \
   --cmdline="$CMDLINE" \
   --stub="$EFI_STUB" \
+  ${UNAME_KVER:+--uname "$UNAME_KVER"} \
   --output="$UKI"
 [[ -s "$UKI" ]] || { log "ERROR: ukify produced no output"; exit 1; }
 log "UKI ✓ $(stat -c%s "$UKI") bytes"

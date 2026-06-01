@@ -258,25 +258,40 @@ jobs:
           docker run --rm --platform linux/arm64 ubuntu:24.04 true \
             || { echo "FATAL: arm64 emulation unavailable (binfmt not registered)"; exit 1; }
           # Host /tmp isn't visible in the container — stage the fetched CA into
-          # the mounted workspace and point CA_PEM_FILE at the in-container path.
+          # the workspace so it rides along with the docker cp below; CA_PEM_FILE
+          # points at the in-container path.
           ca_env=()
           if [ -n "${{ inputs.ca_pem_url }}" ] && [ -f /tmp/platform-ca.pem ]; then
             cp /tmp/platform-ca.pem ./platform-ca.pem
             ca_env=(-e "CA_PEM_FILE=/work/platform-ca.pem")
           fi
-          docker run --rm --platform linux/arm64 \
+          # The runner's docker is host-side (docker-outside-of-docker), so a
+          # `-v "$PWD:/work"` bind-mount of this job-container path resolves to an
+          # empty dir on the host daemon → build.sh "No such file or directory".
+          # DinD-safe: copy the workspace (incl. scripts/powernode-agent-arm64)
+          # INTO a long-lived arm64 container, build, then copy artifacts back.
+          C=pn-arm64-uefi
+          docker rm -f "$C" >/dev/null 2>&1 || true
+          docker run -d --name "$C" --platform linux/arm64 \
             -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" "${ca_env[@]}" \
-            -v "$PWD:/work" -w /work \
-            ubuntu:24.04 bash -euo pipefail -c '
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y --no-install-recommends \
-                gdisk mtools dosfstools e2fsprogs \
-                systemd-ukify systemd-boot-efi python3-pefile \
-                dracut-core linux-image-generic zstd ca-certificates
-              ./build.sh --arch arm64 --variants "kernel-initrd disk-image-arm64-uefi"
-            '
-          # Container ran as root; reclaim ownership for the host publish steps.
+            ubuntu:24.04 sleep 3600
+          docker exec "$C" mkdir -p /work
+          docker cp ./. "$C":/work
+          docker exec "$C" bash -euo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y --no-install-recommends \
+              systemd iproute2 gdisk mtools dosfstools e2fsprogs \
+              systemd-ukify systemd-boot-efi python3-pefile \
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates
+            cd /work && ./build.sh --arch arm64 --variants "kernel-initrd,disk-image-arm64-uefi"
+          '
+          # Copy built artifacts back out (contents only, to avoid build/arm64/arm64
+          # nesting and to preserve the host's rpi4 image), drop the container,
+          # reclaim ownership for the publish steps.
+          mkdir -p build/arm64
+          docker cp "$C":/work/build/arm64/. build/arm64/
+          docker rm -f "$C" >/dev/null 2>&1 || true
           sudo chown -R "$(id -u):$(id -g)" build
 
       - name: Cosign sign disk images (keyless, Fulcio)
@@ -545,7 +560,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             gdisk mtools dosfstools e2fsprogs \
             systemd-ukify systemd-boot-efi python3-pefile \
-            dracut-core linux-image-generic \
+            dracut-core linux-image-generic systemd-resolved \
             curl jq zstd
           export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
           echo "Tool availability:"
@@ -612,25 +627,46 @@ jobs:
           curl -fsSL "${{ inputs.ca_pem_url }}" -o /tmp/platform-ca.pem
           openssl x509 -in /tmp/platform-ca.pem -noout -fingerprint -sha256 || true
 
-      - name: Build kernel + initramfs (amd64)
+      - name: Build amd64 UEFI image (UKI, in clean amd64 container)
         working-directory: initramfs
         run: |
-          # dracut needs root (it mknod's device nodes into the initramfs); the
-          # runner job is non-root (it sudo's apt), so build as root then
-          # reclaim ownership for the non-root disk-image + publish steps.
-          sudo ./build.sh --arch amd64 --variants kernel-initrd
+          # Build in a fresh ubuntu:24.04 container (native amd64 — no emulation,
+          # so fast) for an env-independent, complete-systemd toolchain. The
+          # act-runner host's systemd lacks the networkd binary, so dracut's
+          # systemd-networkd module can't install there ("Module powernode
+          # depends on systemd-networkd, which can't be installed"); a fresh
+          # container's apt pulls a complete systemd and always can. Mirrors the
+          # arm64 build for one consistent, reproducible path across both arches.
+          # 1GB image: 512MB ESP (the ~85MB UKI fits) + ~512MB ext4 persist —
+          # under the registry's typical ~1GB blob limit.
+          ca_env=()
+          if [ -n "${{ inputs.ca_pem_url }}" ] && [ -f /tmp/platform-ca.pem ]; then
+            cp /tmp/platform-ca.pem ./platform-ca.pem
+            ca_env=(-e "CA_PEM_FILE=/work/platform-ca.pem")
+          fi
+          # docker-outside-of-docker: a bind-mount of the job path is empty on the
+          # host daemon, so copy the workspace (incl. scripts/powernode-agent-amd64)
+          # into the container, build, then copy artifacts back out.
+          C=pn-amd64-uefi
+          docker rm -f "$C" >/dev/null 2>&1 || true
+          docker run -d --name "$C" --platform linux/amd64 \
+            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" "${ca_env[@]}" \
+            ubuntu:24.04 sleep 3600
+          docker exec "$C" mkdir -p /work
+          docker cp ./. "$C":/work
+          docker exec "$C" bash -euo pipefail -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y --no-install-recommends \
+              systemd iproute2 gdisk mtools dosfstools e2fsprogs \
+              systemd-ukify systemd-boot-efi python3-pefile \
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates
+            cd /work && ./build.sh --arch amd64 --variants "kernel-initrd,disk-image-amd64-uefi"
+          '
+          mkdir -p build/amd64
+          docker cp "$C":/work/build/amd64/. build/amd64/
+          docker rm -f "$C" >/dev/null 2>&1 || true
           sudo chown -R "$(id -u):$(id -g)" build
-
-      - name: Build disk-image-amd64-uefi
-        working-directory: initramfs
-        env:
-          # 1GB keeps the image under the registry's typical ~1GB blob limit:
-          # 512MB ESP (the ~85MB UKI fits easily) + ~512MB ext4 persist.
-          # Operators with a larger-blob registry override SIZE_GB on dispatch
-          # for more persist headroom.
-          SIZE_GB: "1"
-          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
-        run: ./build.sh --arch amd64 --variants disk-image-amd64-uefi
 
       - name: Push amd64 image to OCI registry (cosign-signed + attested)
         if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
