@@ -358,7 +358,7 @@ jobs:
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
             img="initramfs/build/arm64/${entry#*:}"
-            [ -f "$img" ] || continue
+            [ -f "$img" ] || { echo "FATAL: $img not built — refusing to publish a partial set"; exit 1; }
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
             size="$(stat -c '%s' "$img")"
@@ -422,7 +422,7 @@ jobs:
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
             img="initramfs/build/arm64/${entry#*:}"
-            [ -f "$img" ] || continue
+            [ -f "$img" ] || { echo "FATAL: $img not built — refusing to publish a partial set"; exit 1; }
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
             size="$(stat -c '%s' "$img")"
@@ -479,7 +479,7 @@ jobs:
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
             platform="${entry%%:*}"
             img="initramfs/build/arm64/${entry#*:}"
-            [ -f "$img" ] || continue
+            [ -f "$img" ] || { echo "FATAL: $img not built — refusing to publish a partial set"; exit 1; }
 
             sha="$(sha256sum "$img" | awk '{print $1}')"
             size="$(stat -c '%s' "$img")"
