@@ -403,15 +403,14 @@ module System
     end
 
     # Best-effort hardware-model lookup, normalised to a lowercase
-    # snake_case token. Reads from `config["hardware_model"]` (or the
-    # legacy `config["board_model"]` alias) — operator-asserted at row
-    # creation or filled in by the on-node agent's DMI scrape. Returns
-    # nil when nothing is known — the suggester then falls through to
-    # lightweight via the safe default. The `discovered_dmi_uuid`
-    # column is intentionally skipped here (DMI UUID is opaque and not
-    # a model discriminator).
+    # snake_case token. Reads from `config["hardware_model"]` —
+    # operator-asserted at row creation or filled in by the on-node agent's
+    # DMI scrape. Returns nil when nothing is known — the suggester then
+    # falls through to lightweight via the safe default. The
+    # `discovered_dmi_uuid` column is intentionally skipped here (DMI UUID is
+    # opaque and not a model discriminator).
     def hardware_model_hint
-      raw = config && (config["hardware_model"] || config["board_model"])
+      raw = config && config["hardware_model"]
       return nil if raw.nil? || raw.to_s.strip.empty?
       raw.to_s.downcase.strip.gsub(/[\s-]+/, "_")
     end
