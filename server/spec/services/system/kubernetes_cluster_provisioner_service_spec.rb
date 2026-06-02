@@ -314,6 +314,14 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         expect(result[:agent_token]).to eq("agent-B")
       end
 
+      it "emits an ambiguity FleetEvent (but still auto-selects) when >1 cluster and no target" do
+        expect {
+          described_class.join_request!(node_instance: agent_instance)
+        }.to change {
+          System::FleetEvent.where(account: account, kind: "system.k3s_ambiguous_cluster_autoselect").count
+        }.by(1)
+      end
+
       it "joins the specified cluster when target_cluster_id matches" do
         result = described_class.join_request!(
           node_instance: agent_instance,

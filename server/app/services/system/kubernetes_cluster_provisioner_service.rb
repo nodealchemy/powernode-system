@@ -298,11 +298,19 @@ module System
         end
         c
       else
-        ::Devops::KubernetesCluster
-          .where(account_id: account.id)
-          .where.not(status: "error")
-          .order(created_at: :desc)
-          .first
+        candidates = ::Devops::KubernetesCluster
+                       .where(account_id: account.id)
+                       .where.not(status: "error")
+                       .order(created_at: :desc)
+                       .to_a
+        selected = candidates.first
+        # Single-cluster v1 contract: auto-select the most-recent cluster.
+        # With MORE than one active cluster this is ambiguous — the node could
+        # join the wrong cluster. We keep the legacy contract (callers depend on
+        # it) but make the choice observable rather than silent, so a missing
+        # target_cluster_id surfaces in logs + the fleet event stream.
+        warn_ambiguous_auto_select!(selected, candidates.size) if selected && candidates.size > 1
+        selected
       end
 
       unless cluster
@@ -317,6 +325,31 @@ module System
         agent_token: cluster.encrypted_agent_token,
         ca_pem: extract_ca_pem(cluster.encrypted_kubeconfig)
       }
+    end
+
+    # Make an ambiguous auto-select (no target_cluster_id + >1 active cluster)
+    # observable instead of silent — a node joining the wrong cluster is an
+    # isolation risk. Best-effort: never blocks a join.
+    def warn_ambiguous_auto_select!(selected, count)
+      Rails.logger.warn(
+        "[KubernetesClusterProvisionerService] auto-selected cluster #{selected.id} for " \
+        "node_instance #{@node_instance&.id} but account #{@node_instance&.account_id} has " \
+        "#{count} active clusters — pass target_cluster_id to disambiguate"
+      )
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: @node_instance.account,
+        kind: "system.k3s_ambiguous_cluster_autoselect",
+        severity: :medium,
+        source: "kubernetes_cluster_provisioner",
+        payload: {
+          selected_cluster_id: selected.id,
+          active_cluster_count: count,
+          node_instance_id: @node_instance.id
+        },
+        node_instance_id: @node_instance.id
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[KubernetesClusterProvisionerService] ambiguity event emit failed: #{e.class}: #{e.message}")
     end
 
     # ──────────────────────────────────────────────────────────────────
