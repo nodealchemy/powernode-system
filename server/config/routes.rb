@@ -517,6 +517,11 @@ Rails.application.routes.draw do
           # System::Federation::HeartbeatSweepService to transition
           # active peers with stale last_heartbeat_at to degraded.
           post "federation/heartbeat_sweep", to: "federation_heartbeat#create"
+          # Federation mTLS Phase 2 (symmetric) — periodic CA-anchor refresh.
+          # Worker ticks hourly; controller invokes
+          # Federation::TrustBundleRefreshService to re-fetch peer CA bundles,
+          # update trusted_ca_pem on rotation, and rewrite the Traefik bundle.
+          post "federation/trust_bundle_refresh", to: "federation_trust_bundle#create"
           # P9 — periodic auto-policy capability sweep. Worker ticks
           # every 5min via Sidekiq cron; controller invokes
           # Federation::CapabilityAutoSyncService which walks
