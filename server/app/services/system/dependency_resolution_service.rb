@@ -39,17 +39,14 @@ module System
     #   inclusion. When set, an edge is followed only if (a) :include_optional
     #   is true AND (b) the predicate returns true. Used by TemplateExpansionService
     #   to apply per-template recommends overrides.
-    def initialize(available_modules, options_or_legacy = {}, recommends_predicate: nil, **kwargs)
-      # Backward-compat: original API was (available_modules, options_hash).
-      # New API: (available_modules, **opts, recommends_predicate:).
-      legacy_opts = options_or_legacy.is_a?(Hash) ? options_or_legacy : {}
+    def initialize(available_modules, recommends_predicate: nil, **kwargs)
       @available_modules = available_modules.to_a
       @available_module_ids = Set.new(@available_modules.map(&:id))
       @options = {
         include_optional: true,
         fail_on_missing: false,
         detect_conflicts: true
-      }.merge(legacy_opts).merge(kwargs)
+      }.merge(kwargs)
       @recommends_predicate = recommends_predicate
     end
 
@@ -280,7 +277,7 @@ module System
         available = node.node_modules.enabled.includes(:module_dependencies, :dependencies)
         requested = available.to_a
 
-        new(available, options).resolve(requested)
+        new(available, **options).resolve(requested)
       end
 
       # Convenience method to resolve for a template
@@ -291,7 +288,7 @@ module System
         available = template.node_modules.enabled.includes(:module_dependencies, :dependencies)
         requested = available.to_a
 
-        new(available, options).resolve(requested)
+        new(available, **options).resolve(requested)
       end
 
       # Check if a set of modules can be resolved without errors
