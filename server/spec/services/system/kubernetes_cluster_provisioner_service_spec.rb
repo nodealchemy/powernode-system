@@ -308,17 +308,19 @@ RSpec.describe System::KubernetesClusterProvisionerService do
         )
       end
 
-      it "auto-selects most recent when target_cluster_id is omitted (single-cluster legacy contract)" do
-        result = described_class.join_request!(node_instance: agent_instance)
-        expect(result[:cluster_id]).to eq(@cluster_b.id) # most recent
-        expect(result[:agent_token]).to eq("agent-B")
-      end
-
-      it "emits an ambiguity FleetEvent (but still auto-selects) when >1 cluster and no target" do
+      it "refuses to auto-select among multiple clusters (raises AmbiguousClusterError)" do
         expect {
           described_class.join_request!(node_instance: agent_instance)
-        }.to change {
-          System::FleetEvent.where(account: account, kind: "system.k3s_ambiguous_cluster_autoselect").count
+        }.to raise_error(described_class::AmbiguousClusterError, /pass target_cluster_id/)
+      end
+
+      it "emits a refusal FleetEvent when it refuses an ambiguous join" do
+        expect do
+          described_class.join_request!(node_instance: agent_instance)
+        rescue described_class::AmbiguousClusterError
+          # expected — assert the side-effect event was recorded
+        end.to change {
+          System::FleetEvent.where(account: account, kind: "system.k3s_ambiguous_cluster_join_refused").count
         }.by(1)
       end
 

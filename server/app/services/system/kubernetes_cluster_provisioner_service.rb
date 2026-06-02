@@ -46,6 +46,10 @@ module System
     class ProvisionError < StandardError; end
     class MissingSdwanPeerError < ProvisionError; end
     class NoClusterAvailableError < ProvisionError; end
+    # Raised when a join_request omits target_cluster_id but the account has
+    # more than one active cluster. Auto-select among many is refused — a node
+    # joining the wrong cluster is an isolation breach.
+    class AmbiguousClusterError < ProvisionError; end
     # Phase O4 — raised when an operator-supplied cni_plugin disagrees
     # with the bootstrap NodeInstance's network_profile, OR when a
     # joining NodeInstance has a network_profile that conflicts with
@@ -303,14 +307,17 @@ module System
                        .where.not(status: "error")
                        .order(created_at: :desc)
                        .to_a
-        selected = candidates.first
-        # Single-cluster v1 contract: auto-select the most-recent cluster.
-        # With MORE than one active cluster this is ambiguous — the node could
-        # join the wrong cluster. We keep the legacy contract (callers depend on
-        # it) but make the choice observable rather than silent, so a missing
-        # target_cluster_id surfaces in logs + the fleet event stream.
-        warn_ambiguous_auto_select!(selected, candidates.size) if selected && candidates.size > 1
-        selected
+        # Refuse to auto-select among multiple clusters — a node joining the
+        # wrong cluster is an isolation breach. The agent must pass
+        # target_cluster_id. A single active cluster is unambiguous and is
+        # still resolved without a target.
+        if candidates.size > 1
+          emit_ambiguous_join_refused!(candidates.size)
+          raise AmbiguousClusterError,
+                "account #{account.id} has #{candidates.size} active clusters; " \
+                "pass target_cluster_id to choose one (auto-select refused)"
+        end
+        candidates.first
       end
 
       unless cluster
@@ -327,29 +334,28 @@ module System
       }
     end
 
-    # Make an ambiguous auto-select (no target_cluster_id + >1 active cluster)
-    # observable instead of silent — a node joining the wrong cluster is an
-    # isolation risk. Best-effort: never blocks a join.
-    def warn_ambiguous_auto_select!(selected, count)
+    # Record a refused ambiguous join (no target_cluster_id + >1 active cluster)
+    # for operator visibility before raising. Best-effort: an emit failure must
+    # not mask the AmbiguousClusterError.
+    def emit_ambiguous_join_refused!(count)
       Rails.logger.warn(
-        "[KubernetesClusterProvisionerService] auto-selected cluster #{selected.id} for " \
-        "node_instance #{@node_instance&.id} but account #{@node_instance&.account_id} has " \
-        "#{count} active clusters — pass target_cluster_id to disambiguate"
+        "[KubernetesClusterProvisionerService] refused ambiguous join for node_instance " \
+        "#{@node_instance&.id}: account #{@node_instance&.account_id} has #{count} active " \
+        "clusters and no target_cluster_id was provided"
       )
       ::System::Fleet::EventBroadcaster.emit!(
         account: @node_instance.account,
-        kind: "system.k3s_ambiguous_cluster_autoselect",
-        severity: :medium,
+        kind: "system.k3s_ambiguous_cluster_join_refused",
+        severity: :high,
         source: "kubernetes_cluster_provisioner",
         payload: {
-          selected_cluster_id: selected.id,
           active_cluster_count: count,
           node_instance_id: @node_instance.id
         },
         node_instance_id: @node_instance.id
       )
     rescue StandardError => e
-      Rails.logger.warn("[KubernetesClusterProvisionerService] ambiguity event emit failed: #{e.class}: #{e.message}")
+      Rails.logger.warn("[KubernetesClusterProvisionerService] refusal event emit failed: #{e.class}: #{e.message}")
     end
 
     # ──────────────────────────────────────────────────────────────────

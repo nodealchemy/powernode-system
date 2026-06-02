@@ -340,11 +340,10 @@ module Api
           # cluster's api_endpoint + agent_token so it can run
           # `k3s agent --server <api> --token <token>`.
           #
-          # Multi-cluster awareness (Phase 2.5): the agent may include
-          # target_cluster_id to disambiguate when the account has
-          # more than one cluster. Without it, behavior falls back to
-          # auto-selecting the most recent active cluster (single-
-          # cluster v1 contract).
+          # Multi-cluster awareness: the agent must include target_cluster_id
+          # when the account has more than one active cluster. A single active
+          # cluster is resolved without one; with several, the request is
+          # refused (409) rather than auto-selecting the wrong cluster.
           def handle_join_request(_runtime)
             payload = ::System::KubernetesClusterProvisionerService.join_request!(
               node_instance: current_instance,
@@ -353,6 +352,8 @@ module Api
             render_success(data: payload)
           rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
             render_error(e.message, :unprocessable_content)
+          rescue ::System::KubernetesClusterProvisionerService::AmbiguousClusterError => e
+            render_error(e.message, :conflict)
           end
 
           # Generic K3s ready handler — applies to both server (HA
