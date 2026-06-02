@@ -54,6 +54,56 @@ RSpec.describe System::Providers::BaseProvider do
     end
   end
 
+  describe "#sync_status (default reconciliation hook)" do
+    it "delegates to get_instance and returns its state on success" do
+      allow(provider).to receive(:get_instance).with("i-1")
+        .and_return(success: true, status: "running", private_ip_address: "10.0.0.5")
+
+      result = provider.sync_status("i-1")
+      expect(result).to include(success: true, status: "running", private_ip_address: "10.0.0.5")
+    end
+
+    it "reconciles a NotFound error-hash (aws/gcp style) to :terminated" do
+      allow(provider).to receive(:get_instance)
+        .and_return(success: false, error: "Instance not found", error_code: "NotFound")
+
+      expect(provider.sync_status("i-gone")).to include(success: true, status: "terminated")
+    end
+
+    it "reconciles a raised ResourceNotFoundError (azure/openstack style) to :terminated" do
+      allow(provider).to receive(:get_instance)
+        .and_raise(System::Providers::BaseProvider::ResourceNotFoundError, "Instance not found")
+
+      expect(provider.sync_status("i-gone")).to include(success: true, status: "terminated")
+    end
+
+    it "passes a non-NotFound error hash through unchanged" do
+      allow(provider).to receive(:get_instance)
+        .and_return(success: false, error: "rate limited", error_code: "RateLimit")
+
+      expect(provider.sync_status("i-1")).to include(success: false, error_code: "RateLimit")
+    end
+
+    it "re-raises a non-NotFound exception (real errors must not look terminated)" do
+      allow(provider).to receive(:get_instance).and_raise(StandardError, "network boom")
+
+      expect { provider.sync_status("i-1") }.to raise_error(StandardError, /network boom/)
+    end
+  end
+
+  describe "concrete cloud providers inherit the default sync_status" do
+    it "AWS/GCP/Azure/OpenStack all respond to #sync_status" do
+      [
+        System::Providers::AwsProvider,
+        System::Providers::GcpProvider,
+        System::Providers::AzureProvider,
+        System::Providers::OpenStackProvider
+      ].each do |klass|
+        expect(klass.instance_methods).to include(:sync_status), "#{klass} is missing #sync_status"
+      end
+    end
+  end
+
   describe "abstract interface" do
     let(:abstract_provider) { described_class.new(connection, region: region) }
 

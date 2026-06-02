@@ -145,6 +145,36 @@ module System
         raise NotImplementedError, "#{self.class} must implement #get_instance"
       end
 
+      # Reconcile the platform's view of an instance against the provider's
+      # current truth. Default implementation delegates to #get_instance (which
+      # every concrete provider implements) and maps a "gone" instance to
+      # :terminated so the controller's in-flight reconcile loop stops waiting
+      # on a deleted instance — mirroring local_qemu/proxmox, which override
+      # this with cheaper status-only queries.
+      #
+      # Handles both ways providers signal "gone": a `{ success: false,
+      # error_code: "NotFound" }` hash (aws/gcp) and a raised
+      # ResourceNotFoundError (azure/openstack). Any other error propagates to
+      # the caller (the controller logs + skips it).
+      #
+      # @param instance_id [String] Cloud instance ID
+      # @return [Hash] { success:, status:, private_ip_address:, public_ip_address: }
+      def sync_status(instance_id)
+        result = get_instance(instance_id)
+        return result if result.is_a?(Hash) && result[:success]
+
+        if result.is_a?(Hash) &&
+           (result[:error_code].to_s.casecmp?("NotFound") || result[:error].to_s.match?(/not found/i))
+          return build_instance_response(cloud_id: instance_id, status: "terminated")
+        end
+
+        result
+      rescue StandardError => e
+        raise unless e.class.name.to_s.match?(/NotFound/i) || e.message.to_s.match?(/not found/i)
+
+        build_instance_response(cloud_id: instance_id, status: "terminated")
+      end
+
       # List instances with optional filters and pagination.
       #
       # Adapters MUST page through all results up to the caller's `max_pages`
