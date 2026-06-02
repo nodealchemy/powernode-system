@@ -468,7 +468,7 @@ module System
           severity: "low",
           source: "federation_acceptance_service",
           payload: {
-            peer_id: peer.id,
+            federation_peer_id: peer.id,
             peer_kind: peer.peer_kind,
             spawn_role: peer.spawn_role,
             spawn_mode: peer.spawn_mode,

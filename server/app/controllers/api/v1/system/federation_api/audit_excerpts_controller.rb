@@ -83,10 +83,7 @@ module Api
             ::System::FleetEvent
               .where(account_id: peer.account_id)
               .where(emitted_at: since..until_at)
-              .where(
-                "(payload->>'federation_peer_id' = ?) OR (payload->>'peer_id' = ?)",
-                peer.id, peer.id
-              )
+              .where("payload->>'federation_peer_id' = ?", peer.id)
               .order(:emitted_at)
               .limit(limit)
           end

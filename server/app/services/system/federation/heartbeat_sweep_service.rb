@@ -58,7 +58,7 @@ module System
           severity: "medium",
           source: "federation_heartbeat_sweep",
           payload: {
-            peer_id: peer.id,
+            federation_peer_id: peer.id,
             last_heartbeat_at: peer.last_heartbeat_at&.iso8601,
             previous_status: "active",
             new_status: peer.status

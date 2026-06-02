@@ -113,18 +113,14 @@ module Federation
     end
 
     # Pick FleetEvent rows for this peer that are older than the cutoff
-    # AND not yet stamped as worm_shipped_at. The "for this peer"
-    # filter looks at three places where peer-id might land:
-    # payload.federation_peer_id, payload.peer_id (legacy alias), and
-    # source containing "federation" with payload.peer in metadata.
+    # AND not yet stamped as worm_shipped_at. The "for this peer" filter
+    # matches FleetEvents whose payload.federation_peer_id is this peer
+    # (every federation emitter now stamps that canonical key).
     def events_for_peer(peer)
       ::System::FleetEvent
         .where(account_id: peer.account_id)
         .where("emitted_at < ?", @cutoff)
-        .where(
-          "(payload->>'federation_peer_id' = ?) OR (payload->>'peer_id' = ?)",
-          peer.id, peer.id
-        )
+        .where("payload->>'federation_peer_id' = ?", peer.id)
         .where("(payload->>'worm_shipped_at') IS NULL")
         .order(:emitted_at)
         .limit(5_000)
