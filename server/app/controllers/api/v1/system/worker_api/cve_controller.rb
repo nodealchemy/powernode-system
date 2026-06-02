@@ -25,7 +25,7 @@ module Api
               return render_error("CVE ingest failed: #{ingest_result.error}", 422)
             end
 
-            exposures_updated = recompute_exposures_for_recent_cves
+            exposures_updated = ::System::CveOps::ExposureRecomputeService.recompute_recent!
             render_success(
               ingested_count: ingest_result.ingested_count,
               updated_count: ingest_result.updated_count,
@@ -40,26 +40,6 @@ module Api
             Time.iso8601(params[:since])
           rescue ArgumentError
             nil
-          end
-
-          # For each CVE ingested or updated in the last 30 minutes, recompute
-          # exposures across every account that has a NodeModule. The window
-          # must be at least the worker tick interval (60s) plus generous
-          # slack for clock skew between worker and server.
-          def recompute_exposures_for_recent_cves
-            cutoff = 30.minutes.ago
-            recent = ::System::Cve.where("ingested_at >= ?", cutoff)
-            total_updated = 0
-
-            Account.find_each do |account|
-              recent.find_each do |cve|
-                result = ::System::CveOps::ExposureCalculator.calculate!(cve: cve, account: account)
-                # ExposureCalculator::Result = Struct.new(:ok?, ...) — accessor is `ok?`.
-                total_updated += result.exposures_created + result.exposures_updated if result.ok?
-              end
-            end
-
-            total_updated
           end
         end
       end
