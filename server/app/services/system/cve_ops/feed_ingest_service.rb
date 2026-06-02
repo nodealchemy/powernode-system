@@ -20,6 +20,13 @@ module System
 
       DEFAULT_NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
+      # NVD v2 API allows up to 2000 results/page. Larger pages mean fewer
+      # requests and less rate-limit pressure (anon clients get 5 req/30s).
+      NVD_PAGE_SIZE = (ENV["POWERNODE_NVD_PAGE_SIZE"] || 2000).to_i
+      # Safety cap so a wide lastModStartDate window (or a full backfill) can't
+      # loop unbounded. 25 * 2000 = up to 50k CVEs per run.
+      NVD_MAX_PAGES = (ENV["POWERNODE_NVD_MAX_PAGES"] || 25).to_i
+
       def self.ingest!(source: "nvd", since: nil, fixture_path: nil)
         new.ingest!(source: source, since: since, fixture_path: fixture_path)
       end
@@ -67,16 +74,55 @@ module System
       end
 
       def fetch_from_feed(source, since)
-        url = source == "nvd" ? DEFAULT_NVD_URL : raise(ArgumentError, "Unsupported source: #{source}")
-        params = { resultsPerPage: 100 }
-        params[:lastModStartDate] = since.iso8601 if since
+        raise ArgumentError, "Unsupported source: #{source}" unless source == "nvd"
 
-        # Real implementation streams + paginates. v0 stub fetches one page.
-        json = URI.open("#{url}?#{params.to_query}", read_timeout: 30) { |io| JSON.parse(io.read) }
-        normalize_nvd(json)
+        start_index = 0
+        collected   = []
+        pages       = 0
+
+        loop do
+          params = { resultsPerPage: NVD_PAGE_SIZE, startIndex: start_index }
+          params[:lastModStartDate] = since.iso8601 if since
+
+          json = fetch_nvd_page(params)
+          break if json.nil? # page fetch failed — keep the pages we already have
+
+          collected.concat(normalize_nvd(json))
+          pages += 1
+
+          total     = json["totalResults"].to_i
+          page_size = json["resultsPerPage"].to_i
+          start_index += page_size.positive? ? page_size : NVD_PAGE_SIZE
+
+          break if total.zero? || start_index >= total
+
+          if pages >= NVD_MAX_PAGES
+            Rails.logger.warn("[CveFeedIngestService] hit NVD_MAX_PAGES=#{NVD_MAX_PAGES} of #{total} total results — truncating this run")
+            break
+          end
+
+          sleep(nvd_page_delay) # NVD rate-limit politeness between pages
+        end
+
+        collected
+      end
+
+      # Fetch one NVD page. Extracted so the pagination loop is unit-testable
+      # without HTTP (stub this). Returns the parsed JSON Hash, or nil on HTTP
+      # error so the caller stops paginating but keeps the pages already pulled.
+      def fetch_nvd_page(params)
+        open_args = { read_timeout: 30 }
+        api_key = ENV["POWERNODE_NVD_API_KEY"]
+        open_args["apiKey"] = api_key if api_key.present? # string key => request header
+
+        URI.open("#{DEFAULT_NVD_URL}?#{params.to_query}", open_args) { |io| JSON.parse(io.read) }
       rescue OpenURI::HTTPError => e
-        Rails.logger.warn("[CveFeedIngestService] NVD fetch failed: #{e.message}")
-        []
+        Rails.logger.warn("[CveFeedIngestService] NVD fetch failed (startIndex=#{params[:startIndex]}): #{e.message}")
+        nil
+      end
+
+      def nvd_page_delay
+        (ENV["POWERNODE_NVD_PAGE_DELAY_SECONDS"] || 0.6).to_f
       end
 
       def normalize_nvd(json)
