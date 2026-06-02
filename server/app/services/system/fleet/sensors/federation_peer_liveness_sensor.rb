@@ -102,10 +102,10 @@ module System
 
           ::System::FederationPeer
             .where(account_id: account.id)
-            .where.not(node_certificate_id: nil)
-            .joins(:node_certificate)
+            .where.not(outbound_certificate_id: nil)
+            .joins(:outbound_certificate)
             .where(system_node_certificates: { not_after: ..warn_at })
-            .includes(:node_certificate)
+            .includes(:outbound_certificate)
             .find_each
             .filter_map { |peer| cert_signal_for(peer) }
         rescue StandardError => e
@@ -114,7 +114,7 @@ module System
         end
 
         def cert_signal_for(peer)
-          cert = peer.node_certificate
+          cert = peer.outbound_certificate
           return nil unless cert&.not_after
 
           expired = cert.not_after <= Time.current

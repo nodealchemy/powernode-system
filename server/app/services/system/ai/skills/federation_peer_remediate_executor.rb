@@ -174,13 +174,13 @@ module System
         # the remote operator; v1 does not auto-rotate. We surface the need.
         def remediate_cert(peer, reason)
           severity = reason == "cert_expired" ? :high : :medium
-          cert = peer.node_certificate
+          cert = peer.outbound_certificate
           detail =
             if cert&.not_after
               "Federation cert (id=#{cert.id}) not_after=#{cert.not_after.utc.iso8601}. " \
               "Operator-driven rotation required (cross-CA handshake with the remote operator)."
             else
-              "Federation cert flagged #{reason} but no bound node_certificate found; verify peer cert binding."
+              "Federation cert flagged #{reason} but no bound outbound_certificate found; verify peer cert binding."
             end
 
           emit_event!(peer, kind: "federation.peer.cert_rotation_required",

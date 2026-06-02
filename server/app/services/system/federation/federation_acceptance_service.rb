@@ -71,27 +71,35 @@ module System
         #        falls back to the install's configured platform_url).
         # @return [Result]
         def call(token:, contract_version:, capabilities: {}, extension_slugs: [],
-                 endpoints: [], platform_url: nil)
+                 endpoints: [], csr_pem: nil, peer_ca_bundle_pem: nil,
+                 caller_inbound_subject: nil, platform_url: nil)
           new(
             token: token,
             contract_version: contract_version,
             capabilities: capabilities,
             extension_slugs: extension_slugs,
             endpoints: endpoints,
+            csr_pem: csr_pem,
+            peer_ca_bundle_pem: peer_ca_bundle_pem,
+            caller_inbound_subject: caller_inbound_subject,
             platform_url: platform_url
           ).call
         end
       end
 
       def initialize(token:, contract_version:, capabilities: {}, extension_slugs: [],
-                     endpoints: [], platform_url: nil)
-        @token            = token
-        @contract_version = contract_version.to_i
-        @capabilities     = normalize_capabilities(capabilities)
-        @extension_slugs  = Array(extension_slugs).map(&:to_s).reject(&:blank?)
-        @endpoints        = normalize_endpoints(endpoints)
-        @platform_url     = platform_url
-        @warnings         = []
+                     endpoints: [], csr_pem: nil, peer_ca_bundle_pem: nil,
+                     caller_inbound_subject: nil, platform_url: nil)
+        @token                  = token
+        @contract_version       = contract_version.to_i
+        @capabilities           = normalize_capabilities(capabilities)
+        @extension_slugs        = Array(extension_slugs).map(&:to_s).reject(&:blank?)
+        @endpoints              = normalize_endpoints(endpoints)
+        @csr_pem                = csr_pem
+        @peer_ca_bundle_pem     = peer_ca_bundle_pem
+        @caller_inbound_subject = caller_inbound_subject
+        @platform_url           = platform_url
+        @warnings               = []
       end
 
       def call
@@ -120,14 +128,30 @@ module System
 
         peer.update!(contract_version_agreed: @contract_version)
 
-        # ── HARD step: enroll platform peers (issue outbound client cert) ─
+        # ── HARD step: enroll platform peers (capability handshake) ──────
+        # Cert issuance is a separate concern now: we sign the child's CSR
+        # (carried in the accept request) with our own CA and return the cert
+        # in the response. inbound_subject is stamped at signing time so later
+        # mTLS calls resolve to this peer. Because the cert chains to OUR CA —
+        # already trusted by Traefik — the child→parent direction needs no
+        # proxy trust changes.
+        federation_certificate = nil
+        trust_exchange = nil
         if peer.platform_peer?
           peer.enroll!(
-            node_certificate: issue_peer_client_certificate!(peer),
             capabilities: @capabilities,
             extension_slugs: @extension_slugs,
             endpoints: @endpoints
           )
+          # Two mTLS trust modes, dispatched by what the caller advertised:
+          #   hierarchical → caller sent a CSR; we sign it off OUR own CA.
+          #   symmetric    → caller sent its CA bundle; we exchange trust
+          #                  anchors and each side self-issues.
+          if @csr_pem.present?
+            federation_certificate = sign_federation_csr!(peer)
+          elsif @peer_ca_bundle_pem.present?
+            trust_exchange = establish_symmetric_trust!(peer)
+          end
         end
 
         # ── ensure grant: managed_child operator FederationGrant ─────────
@@ -146,10 +170,12 @@ module System
         emit_event!(peer, action: "accepted")
 
         payload = build_payload(peer)
-        payload[:node_enrollment] = node_enrollment if node_enrollment
-        payload[:sdwan_attach]    = sdwan_attach if sdwan_attach
-        payload[:governance]      = governance if governance
-        payload[:warnings]        = @warnings if @warnings.any?
+        payload[:node_enrollment]       = node_enrollment if node_enrollment
+        payload[:federation_certificate] = federation_certificate if federation_certificate
+        payload[:trust_exchange]        = trust_exchange if trust_exchange
+        payload[:sdwan_attach]          = sdwan_attach if sdwan_attach
+        payload[:governance]            = governance if governance
+        payload[:warnings]              = @warnings if @warnings.any?
 
         Result.new(ok?: true, peer: peer, payload: payload, warnings: @warnings)
       end
@@ -159,48 +185,67 @@ module System
       # 90 days, matching the InternalCaService default TTL.
       FEDERATION_CLIENT_CERT_TTL_SECONDS = 90 * 24 * 60 * 60
 
-      # Federation mTLS Phase 1 — issue THIS account's outbound client cert for
-      # the peer so PeerClient presents a client identity instead of falling back
-      # to plaintext. Mirrors DockerDaemonProvisionerService#issue_client_tls_pair!
-      # (Ed25519 key + CSR signed by InternalCaService); the cert + key land in
-      # the Vault-backed NodeCertificate.credentials that PeerClient reads.
+      # Federation mTLS Phase 2 (hierarchical) — sign the child's federation
+      # CSR with our own internal CA and stamp the peer's inbound_subject.
       #
-      # Cross-account CA trust (so the remote ACCEPTS this cert) is Phase 2 —
-      # until then a strict remote still rejects, which is the correct fail-closed
-      # behavior. Best-effort: a PKI hiccup must not abort acceptance (returns
-      # nil, the prior behavior).
-      def issue_peer_client_certificate!(peer)
-        common_name = "federation-peer-#{peer.id}"
-        key = OpenSSL::PKey.generate_key("ED25519")
-        csr = OpenSSL::X509::Request.new
-        csr.version = 0
-        csr.subject = OpenSSL::X509::Name.parse("/CN=#{common_name}")
-        csr.public_key = key
-        csr.sign(key, nil) # Ed25519 — digest must be nil
+      # The child generated its keypair locally and sent only the CSR in the
+      # accept request (key-safe). We force the CN to `fed:<peer.id>` — an
+      # identity WE assign — so the child cannot claim another peer's identity,
+      # and FederationApi::BaseController can resolve inbound mTLS calls back to
+      # this exact peer row. The signed cert (and the CA chain, but NEVER any
+      # private key) is returned to the caller in the accept response; the
+      # child seals it as its outbound_certificate via
+      # Federation::OutboundIdentityService#store_issued!.
+      #
+      # Because the cert chains to OUR CA — already in Traefik's client-auth
+      # trust bundle — the child→parent direction needs no proxy trust change.
+      #
+      # Best-effort: a PKI hiccup is recorded as a warning and returns nil (the
+      # peer stays enrolled; an operator can re-issue). Returns nil when no CSR
+      # was supplied (e.g. an operator-driven out-of-band accept).
+      def sign_federation_csr!(peer)
+        return nil if @csr_pem.blank?
 
+        common_name = "fed:#{peer.id}"
         issued = ::System::InternalCaService.issue_certificate(
-          csr_pem: csr.to_pem,
+          csr_pem: @csr_pem,
           ttl_seconds: FEDERATION_CLIENT_CERT_TTL_SECONDS,
           common_name: common_name
         )
 
-        cert = ::System::NodeCertificate.new(
-          account_id: peer.account_id,
-          subject_kind: "federation_peer",
-          serial: issued[:serial],
-          subject: issued[:subject] || "CN=#{common_name}",
-          not_before: issued[:not_before] || Time.current,
-          not_after: issued[:not_after] || (Time.current + FEDERATION_CLIENT_CERT_TTL_SECONDS)
-        )
-        cert.credentials = {
-          "cert_pem" => issued[:cert_pem],
-          "private_key_pem" => key.private_to_pem,
-          "ca_chain_pem" => issued[:ca_chain_pem]
+        # Stamp the identity the peer will present so inbound mTLS resolves
+        # here. Only set on successful signing — without a cert the peer has
+        # nothing to present, so inbound_subject must stay nil.
+        peer.update!(inbound_subject: common_name)
+
+        {
+          cert_pem:     issued[:cert_pem],
+          ca_chain_pem: issued[:ca_chain_pem],
+          serial:       issued[:serial],
+          not_after:    issued[:not_after]&.utc&.iso8601
         }
-        cert.save!
-        cert
       rescue StandardError => e
-        Rails.logger.warn("[FederationAcceptanceService] peer client cert issuance failed for peer #{peer.id}: #{e.class}: #{e.message}")
+        @warnings << "federation_csr_signing_failed: #{e.message}"
+        Rails.logger.warn("[FederationAcceptanceService] federation CSR signing failed for peer #{peer.id}: #{e.class}: #{e.message}")
+        nil
+      end
+
+      # Federation mTLS Phase 2 (SYMMETRIC) — exchange CA trust anchors with a
+      # peer of equals. We trust the caller's CA, assign the CN it presents to
+      # us, and self-issue our outbound cert (signed by OUR CA, CN = what the
+      # caller assigned us). Returns the bits to echo in the accept response so
+      # the caller can absorb the reverse half via
+      # Federation::PeerTrustService.absorb_response!. Best-effort: a failure is
+      # a warning, not an abort (the peer is still enrolled).
+      def establish_symmetric_trust!(peer)
+        ::Federation::PeerTrustService.establish_from_request!(
+          peer: peer,
+          peer_ca_bundle_pem: @peer_ca_bundle_pem,
+          caller_inbound_subject: @caller_inbound_subject
+        )
+      rescue StandardError => e
+        @warnings << "symmetric_trust_exchange_failed: #{e.message}"
+        Rails.logger.warn("[FederationAcceptanceService] symmetric trust exchange failed for peer #{peer.id}: #{e.class}: #{e.message}")
         nil
       end
 

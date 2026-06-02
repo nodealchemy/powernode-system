@@ -91,7 +91,7 @@ RSpec.describe System::Fleet::Sensors::FederationPeerLivenessSensor do
       it "emits a medium-severity cert_expiring signal for a peer cert near not_after" do
         cert = federation_cert(not_before: 60.days.ago, not_after: 10.days.from_now)
         peer = create(:system_federation_peer, :active, account: account,
-                                                        node_certificate: cert,
+                                                        outbound_certificate: cert,
                                                         last_heartbeat_at: 30.seconds.ago)
 
         sig = sensor.sense.find do |s|
@@ -106,7 +106,7 @@ RSpec.describe System::Fleet::Sensors::FederationPeerLivenessSensor do
       it "emits a high-severity cert_expired signal for an already-expired peer cert" do
         cert = federation_cert(not_before: 100.days.ago, not_after: 2.days.ago)
         peer = create(:system_federation_peer, :active, account: account,
-                                                        node_certificate: cert,
+                                                        outbound_certificate: cert,
                                                         last_heartbeat_at: 30.seconds.ago)
 
         sig = sensor.sense.find do |s|
@@ -120,7 +120,7 @@ RSpec.describe System::Fleet::Sensors::FederationPeerLivenessSensor do
       it "does NOT emit a cert signal for a healthy long-lived cert" do
         cert = federation_cert(not_before: 1.day.ago, not_after: 180.days.from_now)
         peer = create(:system_federation_peer, :active, account: account,
-                                                        node_certificate: cert,
+                                                        outbound_certificate: cert,
                                                         last_heartbeat_at: 30.seconds.ago)
         cert_sigs = sensor.sense.select do |s|
           s.payload["federation_peer_id"] == peer.id &&
@@ -133,10 +133,10 @@ RSpec.describe System::Fleet::Sensors::FederationPeerLivenessSensor do
         peer = create(:system_federation_peer, :active, account: account,
                                                         last_heartbeat_at: 10.minutes.ago)
         # Force only the direct cert query to blow up (it's the sole path
-        # that joins node_certificate); heartbeat signals — a separate
+        # that joins outbound_certificate); heartbeat signals — a separate
         # query — must still surface, proving the cert rescue is scoped.
         allow_any_instance_of(::ActiveRecord::Relation)
-          .to receive(:joins).with(:node_certificate).and_raise(StandardError, "boom")
+          .to receive(:joins).with(:outbound_certificate).and_raise(StandardError, "boom")
 
         signals = sensor.sense
         expect(signals.map { |s| s.payload["federation_peer_id"] }).to include(peer.id)

@@ -253,20 +253,21 @@ module Sdwan
         end
       end
 
-      # 7. Cert expiring / expired (when a node_certificate is bound).
-      if peer.node_certificate && peer.node_certificate.not_after
-        days_remaining = ((peer.node_certificate.not_after - Time.current) / 1.day).to_i
+      # 7. Cert expiring / expired (when an outbound cert is bound).
+      cert = peer.outbound_certificate
+      if cert&.not_after
+        days_remaining = ((cert.not_after - Time.current) / 1.day).to_i
         if days_remaining < 0
           findings << build_finding(
             :peer_cert_expired, peer,
             "Peer's federation cert expired #{-days_remaining} day(s) ago " \
-            "(#{peer.node_certificate.not_after.utc.iso8601}). Rotate immediately."
+            "(#{cert.not_after.utc.iso8601}). Rotate immediately."
           )
         elsif days_remaining <= CERT_EXPIRY_WARN_DAYS
           findings << build_finding(
             :peer_cert_expiring, peer,
             "Peer's federation cert expires in #{days_remaining} day(s) " \
-            "(#{peer.node_certificate.not_after.utc.iso8601}). Plan rotation."
+            "(#{cert.not_after.utc.iso8601}). Plan rotation."
           )
         end
       end

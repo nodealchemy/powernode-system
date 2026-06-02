@@ -76,10 +76,10 @@ module System
         def cert_rotation_candidates
           ::System::FederationPeer
             .where(account_id: @account.id, peer_kind: "platform")
-            .where.not(node_certificate_id: nil)
-            .includes(:node_certificate)
+            .where.not(outbound_certificate_id: nil)
+            .includes(:outbound_certificate)
             .filter_map do |peer|
-              cert = peer.node_certificate
+              cert = peer.outbound_certificate
               next unless cert&.not_after && cert.not_before
               lifetime = cert.not_after - cert.not_before
               elapsed  = Time.current - cert.not_before

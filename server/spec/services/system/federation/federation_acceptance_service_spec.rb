@@ -16,6 +16,10 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
   # round-trip via FederationPeer#accept!.
   let(:plaintext_token) { peer.generate_acceptance_token!(ttl_seconds: 1.hour.to_i) }
 
+  # The child generates its federation keypair + CSR locally and sends only
+  # the CSR in the accept request (key-safe); the parent signs it with our CA.
+  let(:prepared) { Federation::OutboundIdentityService.prepare_csr }
+
   let(:base_args) do
     {
       token: plaintext_token,
@@ -23,6 +27,7 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
       capabilities: { "skill" => { "read" => true } },
       extension_slugs: [ "trading" ],
       endpoints: [ { "url" => "https://child.example.com:443", "scope" => "wan", "priority" => 1 } ],
+      csr_pem: prepared.csr_pem,
       platform_url: "https://parent.example.com"
     }
   end
@@ -51,17 +56,24 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
       expect(result.payload[:handshake_at]).to be_present
     end
 
-    it "issues a Vault-backed outbound client certificate for the enrolled peer" do
+    it "signs the child's CSR with our CA and returns the cert (no private key)" do
+      result = described_class.call(**base_args)
+
+      fed = result.payload[:federation_certificate]
+      expect(fed).to be_present
+      expect(fed[:cert_pem]).to include("BEGIN CERTIFICATE")
+      expect(fed[:ca_chain_pem]).to include("BEGIN CERTIFICATE")
+      # The child's key never leaves the child — the response carries no key.
+      expect(fed).not_to have_key(:private_key_pem)
+
+      # The CN is the identity WE assign, so the child can't claim another peer.
+      leaf = OpenSSL::X509::Certificate.new(fed[:cert_pem])
+      expect(leaf.subject.to_s).to include("fed:#{peer.id}")
+    end
+
+    it "stamps inbound_subject so future inbound mTLS calls resolve to this peer" do
       described_class.call(**base_args)
-
-      cert = peer.reload.node_certificate
-      expect(cert).to be_present
-      expect(cert.subject_kind).to eq("federation_peer")
-      expect(cert.account_id).to eq(account.id)
-
-      creds = cert.credentials
-      expect(creds["cert_pem"]).to include("BEGIN CERTIFICATE")
-      expect(creds["private_key_pem"]).to include("PRIVATE KEY")
+      expect(peer.reload.inbound_subject).to eq("fed:#{peer.id}")
     end
 
     it "persists capabilities, extension_slugs, endpoints on the peer" do
@@ -86,6 +98,36 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
 
       result = described_class.call(**base_args)
       expect(result.payload[:governance][:status]).to eq("scanned")
+    end
+  end
+
+  describe ".call — symmetric trust exchange (peer of equals)" do
+    let(:peer_ca_pem) { "-----BEGIN CERTIFICATE-----\nPEERCA\n-----END CERTIFICATE-----\n" }
+    # Symmetric peers send a CA bundle instead of a CSR.
+    let(:symmetric_args) do
+      base_args.except(:csr_pem).merge(
+        peer_ca_bundle_pem: peer_ca_pem,
+        caller_inbound_subject: "fed:caller-assigned-123"
+      )
+    end
+
+    it "trusts the peer CA, assigns inbound_subject, and self-issues our cert" do
+      result = described_class.call(**symmetric_args)
+
+      peer.reload
+      expect(peer.trusted_ca_pem).to eq(peer_ca_pem)
+      expect(peer.inbound_subject).to eq("fed:#{peer.id}")
+      leaf = OpenSSL::X509::Certificate.new(peer.outbound_certificate.credentials["cert_pem"])
+      expect(leaf.subject.to_s).to include("fed:caller-assigned-123")
+
+      ex = result.payload[:trust_exchange]
+      expect(ex[:ca_bundle_pem]).to include("BEGIN CERTIFICATE")
+      expect(ex[:assigned_inbound_subject]).to eq("fed:#{peer.id}")
+    end
+
+    it "does not return a federation_certificate (symmetric peers self-issue)" do
+      result = described_class.call(**symmetric_args)
+      expect(result.payload).not_to have_key(:federation_certificate)
     end
   end
 

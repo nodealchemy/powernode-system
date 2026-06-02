@@ -13,15 +13,16 @@ module Federation
   #   - PeerSubscriptionsController (proxy /federation_api/subscriptions)
   #   - (future) FederationManager AI Skill periodic ops
   #
-  # mTLS posture: in production this client must present a client cert
-  # signed by the platform's internal CA so the remote peer's
-  # BaseController#authenticate_federation_peer! recognizes us.
-  # The cert lives at @peer.node_certificate (the cert the OPERATOR
-  # minted for US when we federated with them; we hold a copy).
+  # mTLS posture: this client presents a client cert signed by the REMOTE
+  # peer's internal CA so the remote's
+  # BaseController#authenticate_federation_peer! resolves us by CN. In the
+  # hierarchical model the parent issued us this cert from our CSR (CN
+  # fed:<the id the parent assigned us>); it lives at
+  # @peer.outbound_certificate with our private key in the Vault-backed
+  # credentials blob.
   #
   # For v1 + tests, the HTTPClient interface is stub-friendly:
   # tests inject a fake client that returns canned responses.
-  # Real mTLS wiring is a P2.5.7 acceptance-time concern.
   #
   # Plan reference: Decentralized Federation §J + §L.3 + P4.6.8e.
   class PeerClient
@@ -59,6 +60,17 @@ module Federation
       parsed_data(response, context: "GET catalog from peer #{@peer.id}")
     end
 
+    # Federation mTLS Phase 2 (symmetric) — fetch the peer's current CA bundle
+    # so we can refresh our stored trust anchor when its CA rotates. Returns the
+    # parsed { "ca_bundle_pem", "generated_at" } hash.
+    def fetch_trust_bundle
+      response = @http_client.get(
+        url_for("/api/v1/system/federation_api/trust_bundle"),
+        headers: mtls_headers
+      )
+      parsed_data(response, context: "GET trust_bundle from peer #{@peer.id}")
+    end
+
     # POSTs to the peer's federation_api/subscriptions endpoint.
     # Returns the parsed connection details hash:
     #   { "grant_id", "backend_host", "backend_port", "protocol",
@@ -86,32 +98,31 @@ module Federation
 
     private
 
-    # Returns the client-cert PEM for outbound mTLS, or nil when the peer's
-    # cert/key haven't been wired yet (federation P2.5 — the CSR-and-store
-    # flow that populates `peer.node_certificate.credentials` is still
-    # scaffolded; see accept_controller.rb). When nil, NetHttpAdapter
-    # falls back to plaintext; a remote peer enforcing client-cert
-    # verification will reject the call with ConnectionError, which is the
-    # right failure mode (vs silent insecure traffic).
+    # Returns the client-cert PEM for outbound mTLS, or nil when this peer has
+    # no outbound_certificate yet (e.g. an out-of-band peer we haven't enrolled
+    # against). When nil, NetHttpAdapter falls back to plaintext; a remote peer
+    # enforcing client-cert verification will reject the call with
+    # ConnectionError, which is the right failure mode (vs silent insecure
+    # traffic).
     def extract_client_cert_pem
-      cert_record = peer_node_certificate
+      cert_record = peer_outbound_certificate
       return nil unless cert_record
       creds = safe_credentials(cert_record)
       creds && (creds[:cert_pem] || creds["cert_pem"])
     end
 
     def extract_client_key_pem
-      cert_record = peer_node_certificate
+      cert_record = peer_outbound_certificate
       return nil unless cert_record
       creds = safe_credentials(cert_record)
       creds && (creds[:private_key_pem] || creds["private_key_pem"])
     end
 
-    def peer_node_certificate
-      return nil unless @peer.respond_to?(:node_certificate)
-      @peer.node_certificate
+    def peer_outbound_certificate
+      return nil unless @peer.respond_to?(:outbound_certificate)
+      @peer.outbound_certificate
     rescue StandardError => e
-      Rails.logger.warn("[PeerClient] failed to load node_certificate for peer #{@peer.id}: #{e.class}: #{e.message}")
+      Rails.logger.warn("[PeerClient] failed to load outbound_certificate for peer #{@peer.id}: #{e.class}: #{e.message}")
       nil
     end
 
@@ -178,11 +189,10 @@ module Federation
 
   # Default HTTP adapter — small wrapper around Net::HTTP so tests
   # can swap in a stub. mTLS wiring takes the cert + key extracted from
-  # peer.node_certificate.credentials (Vault-backed via VaultCredential
-  # concern). When credentials aren't yet wired (federation P2.5 in
-  # progress), this falls back to plaintext — a remote peer enforcing
-  # client-cert verification will reject the call, which is the right
-  # failure mode vs silent insecure traffic.
+  # peer.outbound_certificate.credentials (Vault-backed via VaultCredential
+  # concern). When no outbound_certificate is wired, this falls back to
+  # plaintext — a remote peer enforcing client-cert verification will reject
+  # the call, which is the right failure mode vs silent insecure traffic.
   class NetHttpAdapter
     def initialize(timeout_seconds: PeerClient::DEFAULT_TIMEOUT_SECONDS,
                    client_cert_pem: nil, client_key_pem: nil)

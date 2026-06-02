@@ -161,7 +161,7 @@ RSpec.describe System::Ai::Skills::FederationPeerRemediateExecutor do
     end
 
     it "alerts (never auto-rotates) on cert_expiring" do
-      peer = create(:system_federation_peer, :active, account: account, node_certificate: cert)
+      peer = create(:system_federation_peer, :active, account: account, outbound_certificate: cert)
       # The probe must never run for a cert remediation.
       expect(::Federation::PeerClient).not_to receive(:new)
 
@@ -173,7 +173,7 @@ RSpec.describe System::Ai::Skills::FederationPeerRemediateExecutor do
     end
 
     it "emits a high-severity FleetEvent on cert_expired" do
-      peer = create(:system_federation_peer, :active, account: account, node_certificate: cert)
+      peer = create(:system_federation_peer, :active, account: account, outbound_certificate: cert)
       expect(::System::Fleet::EventBroadcaster).to receive(:emit!).with(
         hash_including(kind: "federation.peer.cert_rotation_required", severity: :high)
       ).and_call_original

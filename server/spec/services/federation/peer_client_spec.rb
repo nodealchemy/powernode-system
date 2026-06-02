@@ -16,6 +16,31 @@ RSpec.describe Federation::PeerClient, type: :service do
     { status: 200, body: body.to_json }
   end
 
+  # Federation mTLS Phase 2 — the client presents the peer's
+  # outbound_certificate (our key + the parent-signed cert) on outbound calls.
+  describe "outbound mTLS identity" do
+    it "extracts the cert + key from the peer's outbound_certificate" do
+      prepared = Federation::OutboundIdentityService.prepare_csr
+      issued = System::InternalCaService.issue_certificate(
+        csr_pem: prepared.csr_pem, ttl_seconds: 90 * 24 * 3600, common_name: "fed:#{peer.id}"
+      )
+      Federation::OutboundIdentityService.store_issued!(
+        peer: peer, cert_pem: issued[:cert_pem],
+        private_key: prepared.private_key, ca_chain_pem: issued[:ca_chain_pem]
+      )
+
+      client = described_class.new(peer: peer.reload, http_client: stub_http)
+      expect(client.send(:extract_client_cert_pem)).to eq(issued[:cert_pem])
+      expect(client.send(:extract_client_key_pem)).to eq(prepared.private_key.private_to_pem)
+    end
+
+    it "returns nil cert material when the peer has no outbound_certificate" do
+      client = described_class.new(peer: peer, http_client: stub_http)
+      expect(client.send(:extract_client_cert_pem)).to be_nil
+      expect(client.send(:extract_client_key_pem)).to be_nil
+    end
+  end
+
   describe "#fetch_catalog" do
     it "calls the peer's lan endpoint first (highest priority)" do
       allow(stub_http).to receive(:get).and_return(

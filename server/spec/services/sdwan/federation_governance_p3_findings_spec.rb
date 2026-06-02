@@ -75,7 +75,7 @@ RSpec.describe Sdwan::FederationGovernance, type: :service do
         pem_chain: "stub",
         issuer_subject: "Powernode Internal CA"
       )
-      peer.update!(node_certificate: cert)
+      peer.update!(outbound_certificate: cert)
     end
 
     it "flags peer_cert_expiring when cert is within 30 days of expiry" do
@@ -125,7 +125,7 @@ RSpec.describe Sdwan::FederationGovernance, type: :service do
         pem_chain: "stub",
         issuer_subject: "Powernode Internal CA"
       )
-      peer.update!(node_certificate: cert)
+      peer.update!(outbound_certificate: cert)
     end
 
     it "returns the same per-peer findings as a full scan, scoped to one peer" do

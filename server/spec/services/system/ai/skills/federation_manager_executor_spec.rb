@@ -39,7 +39,7 @@ RSpec.describe System::Ai::Skills::FederationManagerExecutor, type: :service do
           pem_chain: "stub", issuer_subject: "Powernode Internal CA"
         )
         peer = create(:system_federation_peer, :active,
-                      account: account, node_certificate: cert)
+                      account: account, outbound_certificate: cert)
         result = executor.execute
         candidates = result[:data][:cert_rotation_candidates]
         expect(candidates.size).to eq(1)
@@ -56,7 +56,7 @@ RSpec.describe System::Ai::Skills::FederationManagerExecutor, type: :service do
           pem_chain: "stub", issuer_subject: "Powernode Internal CA"
         )
         create(:system_federation_peer, :active,
-               account: account, node_certificate: cert)
+               account: account, outbound_certificate: cert)
         result = executor.execute
         expect(result[:data][:cert_rotation_candidates]).to be_empty
       end
@@ -169,7 +169,7 @@ RSpec.describe System::Ai::Skills::FederationManagerExecutor, type: :service do
         pem_chain: "stub", issuer_subject: "Powernode Internal CA"
       )
       create(:system_federation_peer, :active,
-             account: account, node_certificate: cert,
+             account: account, outbound_certificate: cert,
              extension_slugs: [ "trading" ])
       create(:system_federation_grant,
              account: account,
