@@ -46,6 +46,20 @@ RSpec.describe System::NodeEnrollmentService do
       expect(result.node_certificate.subject).to include(instance.id)
     end
 
+    it "emits a system.instance_enrolled FleetEvent on success" do
+      expect {
+        described_class.enroll!(
+          bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem, agent_version: "0.1.0"
+        )
+      }.to change {
+        System::FleetEvent.where(account: account, kind: "system.instance_enrolled").count
+      }.by(1)
+
+      ev = System::FleetEvent.where(account: account, kind: "system.instance_enrolled").last
+      expect(ev.node_instance_id).to eq(instance.id)
+      expect(ev.source).to eq("node_enrollment_service")
+    end
+
     it "consumes the bootstrap token" do
       described_class.enroll!(
         bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem,

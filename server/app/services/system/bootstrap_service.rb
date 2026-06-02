@@ -42,6 +42,18 @@ module System
         ca_pem_inline: ca_pem_url.nil? ? ca_pem_inline : nil
       )
 
+      # Observability: surfaces "boot script issued" so a stuck provision is
+      # traceable through the pipeline. Best-effort — never block boot rendering.
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: instance.account,
+        kind: "system.bootstrap_issued",
+        severity: :low,
+        source: "bootstrap_service",
+        payload: { purpose: purpose, token_id: token.id },
+        node_id: instance.node_id,
+        node_instance_id: instance.id
+      )
+
       Result.new(ok?: true, script: script, token_id: token.id)
     rescue ActiveRecord::RecordInvalid, ArgumentError => e
       Result.new(ok?: false, error: e.message)

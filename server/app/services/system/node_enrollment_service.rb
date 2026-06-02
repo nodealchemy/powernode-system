@@ -121,6 +121,19 @@ module System
         )
       end
 
+      # Observability: enrollment is the "node came up and got its mTLS cert"
+      # milestone the provisioning pipeline previously emitted nothing for.
+      # Best-effort (EventBroadcaster never raises) — never block enrollment.
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: instance.account,
+        kind: "system.instance_enrolled",
+        severity: :low,
+        source: "node_enrollment_service",
+        payload: { agent_version: agent_version, mtls_subject: instance.mtls_subject },
+        node_id: instance.node_id,
+        node_instance_id: instance.id
+      )
+
       Result.new(
         success?: true,
         node_certificate: cert_record,

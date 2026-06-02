@@ -46,6 +46,24 @@ module System
 
       Rails.logger.info("[ProvisioningService] Provisioning instance for node #{node.name} in #{region.name} using #{provider_adapter.provider_type}")
 
+      # Idempotency — a retried call carrying the same operation_id must not
+      # spin up a second instance. Reuse a prior non-terminated instance
+      # tagged with this operation_id (dedups sequential client retries on
+      # transient errors). A unique index on config->>'operation_id' would
+      # harden this against concurrent racers; the check-then-create here
+      # covers the common sequential-retry case.
+      if operation_id.present?
+        existing = ::System::NodeInstance
+                     .where(node_id: node.id)
+                     .where("config->>'operation_id' = ?", operation_id.to_s)
+                     .where.not(status: "terminated")
+                     .first
+        if existing
+          Rails.logger.info("[ProvisioningService] Reusing instance #{existing.name} for operation #{operation_id}")
+          return Runtime::Result.ok(data: { instance: existing, cloud_instance_id: existing.cloud_instance_id })
+        end
+      end
+
       instance_name = generate_instance_name(node, options)
 
       instance = ::System::NodeInstance.create!(
@@ -55,6 +73,9 @@ module System
         status: "pending",
         provider_region: region,
         provider_instance_type: instance_type,
+        # Stamp the operation_id into config so a retry can find-and-reuse this
+        # row instead of duplicating (see the idempotency guard above).
+        config: operation_id.present? ? { "operation_id" => operation_id.to_s } : {},
         # Final fallback is "pnadmin" (Powernode's standardized
         # interactive-login account, UID 1000, present in the agent's
         # etcidentity baseline). Cloud-image-derived nodes may
@@ -91,6 +112,11 @@ module System
         # `created` lifecycle event. Best-effort: a metering failure must
         # never abort a successful provision.
         record_meter_event(instance, "created")
+        emit_provision_event(
+          account: node.account, kind: "system.instance_provisioned", severity: :low,
+          instance: instance, node: node,
+          payload: { cloud_instance_id: cloud_result[:cloud_instance_id] }
+        )
 
         Runtime::Result.ok(data: {
           instance: instance,
@@ -99,18 +125,36 @@ module System
       else
         # `:failed` was used historically but isn't a valid NodeInstance status;
         # `:error` is the platform-standard terminal-failure state.
-        instance.mark_errored! if instance.may_mark_errored?
+        mark_instance_errored(instance)
+        emit_provision_event(
+          account: node.account, kind: "system.instance_provision_failed", severity: :high,
+          instance: instance, node: node,
+          payload: { error: cloud_result[:error] || "Cloud provisioning failed" }
+        )
 
         Runtime::Result.err(error: cloud_result[:error] || "Cloud provisioning failed", data: { instance: instance })
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[ProvisioningService] Provider error: #{e.message}")
-      Runtime::Result.err(error: e.message)
+      # The instance row is created before the provider call — a provider
+      # exception must never leave it orphaned in :pending. Transition it to
+      # the terminal :error state so it's visible as failed (and reapable).
+      mark_instance_errored(instance)
+      emit_provision_event(
+        account: node.account, kind: "system.instance_provision_failed", severity: :high,
+        instance: instance, node: node, payload: { error: e.message }
+      )
+      Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
     rescue ArgumentError, ProvisioningError
       raise
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.message}")
-      Runtime::Result.err(error: e.message)
+      mark_instance_errored(instance)
+      emit_provision_event(
+        account: node.account, kind: "system.instance_provision_failed", severity: :high,
+        instance: instance, node: node, payload: { error: e.message }
+      )
+      Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
     end
 
     def self.terminate_instance(instance:)
@@ -167,7 +211,40 @@ module System
     def generate_instance_name(node, options)
       base_name = options[:name] || "#{node.name}-instance"
       timestamp = Time.current.strftime("%Y%m%d%H%M%S")
-      "#{base_name}-#{timestamp}"
+      # Random suffix guards against name collisions when two instances are
+      # provisioned for the same node within the same second — the timestamp
+      # alone isn't unique at sub-second cadence, and `name` is unique per
+      # node_id, so a bare timestamp would raise RecordInvalid on the second.
+      "#{base_name}-#{timestamp}-#{SecureRandom.hex(2)}"
+    end
+
+    # Ensure a partially-provisioned instance never lingers in :pending after a
+    # failure — transition it to the terminal :error state so it surfaces as
+    # failed (and is reapable) instead of orphaned. Best-effort: a transition
+    # failure must not mask the original provisioning error.
+    def mark_instance_errored(instance)
+      return unless instance.respond_to?(:persisted?) && instance.persisted?
+
+      instance.mark_errored! if instance.may_mark_errored?
+    rescue StandardError => e
+      Rails.logger.warn("[ProvisioningService] failed to mark instance #{instance&.id} errored: #{e.class}: #{e.message}")
+    end
+
+    # Emit a provision-lifecycle FleetEvent (provisioned / provision_failed) so
+    # the autonomy loop + operators can observe the provisioning pipeline that
+    # was previously silent. Routed through EventBroadcaster, which persists +
+    # broadcasts and is itself best-effort (never raises) — observability must
+    # never break a provision.
+    def emit_provision_event(account:, kind:, severity:, instance: nil, node: nil, payload: {})
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: kind,
+        severity: severity,
+        source: "provisioning_service",
+        payload: payload,
+        node_id: (node || instance&.node)&.id,
+        node_instance_id: instance&.id
+      )
     end
 
     def build_provider_params(region:, instance_type:, instance:, node:, options:)

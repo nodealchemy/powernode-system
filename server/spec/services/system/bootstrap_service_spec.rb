@@ -23,6 +23,18 @@ RSpec.describe System::BootstrapService do
       }.to change(System::BootstrapToken, :count).by(1)
     end
 
+    it "emits a system.bootstrap_issued FleetEvent on success" do
+      expect {
+        described_class.render_for_instance(instance: instance)
+      }.to change {
+        System::FleetEvent.where(account: account, kind: "system.bootstrap_issued").count
+      }.by(1)
+
+      ev = System::FleetEvent.where(account: account, kind: "system.bootstrap_issued").last
+      expect(ev.node_instance_id).to eq(instance.id)
+      expect(ev.source).to eq("bootstrap_service")
+    end
+
     it "uses the provided image_base override" do
       result = described_class.render_for_instance(
         instance: instance,
