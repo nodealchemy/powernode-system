@@ -71,10 +71,19 @@ module System
     has_many :child_peers, class_name: "System::FederationPeer",
                             foreign_key: :parent_peer_id, dependent: :nullify
 
-    # mTLS cert minted for this peer (subject_kind="federation_peer"). nil
-    # for sdwan_only peers and for platform peers still in `proposed`.
-    belongs_to :node_certificate, class_name: "System::NodeCertificate",
-                                   foreign_key: :node_certificate_id, optional: true
+    # OUTBOUND identity: the cert WE present when calling this peer's
+    # federation_api (our private key, Vault-backed). Read by
+    # Federation::PeerClient. nil for sdwan_only peers and for platform
+    # peers that haven't completed federation enrollment yet.
+    #
+    # Distinct from `inbound_subject` (the CN the peer presents to US, used
+    # by FederationApi::BaseController to resolve the caller) and
+    # `trusted_ca_pem` (the peer's CA anchor we accept on the federation
+    # mTLS Traefik route). Federation mTLS Phase 2 split the old conflated
+    # single node_certificate into these three concerns — see migration
+    # 20260602120000.
+    belongs_to :outbound_certificate, class_name: "System::NodeCertificate",
+                                      foreign_key: :outbound_certificate_id, optional: true
 
     attribute :endpoints,       :jsonb, default: -> { [] }
     attribute :extension_slugs, :jsonb, default: -> { [] }
@@ -128,6 +137,21 @@ module System
         .where("last_heartbeat_at IS NULL OR last_heartbeat_at < ?", threshold)
     }
 
+    # The set of peer CA anchors (PEM) the federation mTLS Traefik route
+    # must trust so we accept inbound client certs that SYMMETRIC peers
+    # signed with their OWN CA. Hierarchical children we issued to off our
+    # own CA leave trusted_ca_pem nil (our CA is already in the bundle).
+    # Only reachable platform peers contribute, so a suspended/revoked
+    # peer's anchor drops out of the bundle on the next write — trust can't
+    # leak from a torn-down peer. Consumed by
+    # Acme::TraefikConfigWriter#write_federation_ca!.
+    def self.trusted_ca_pems
+      platform_peers.reachable
+                    .where.not(trusted_ca_pem: [ nil, "" ])
+                    .pluck(:trusted_ca_pem)
+                    .uniq
+    end
+
     # Returns true if the proposed transition is permitted. The
     # controller / MCP tool consults this before mutating to avoid
     # partial-state rows.
@@ -155,14 +179,17 @@ module System
       last_heartbeat_at.nil? || last_heartbeat_at < threshold
     end
 
-    # Transitions accepted → enrolled. Used by FederationApi::AcceptController
-    # after a successful mTLS cert mint + initial capability handshake.
-    def enroll!(node_certificate:, capabilities: {}, extension_slugs: [], endpoints: [])
+    # Transitions accepted → enrolled and records the capability/endpoint
+    # handshake artifacts. The mTLS material is set separately by the
+    # acceptance service: `inbound_subject` (how we resolve this peer's
+    # inbound calls) and, for the calling side, `outbound_certificate`
+    # (what we present back). Keeping cert wiring out of the transition
+    # keeps this method a pure state move.
+    def enroll!(capabilities: {}, extension_slugs: [], endpoints: [])
       return false unless can_transition_to?("enrolled")
 
       update!(
         status: "enrolled",
-        node_certificate: node_certificate,
         capabilities: capabilities,
         extension_slugs: Array(extension_slugs),
         endpoints: Array(endpoints),

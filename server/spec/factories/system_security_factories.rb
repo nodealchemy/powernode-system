@@ -32,6 +32,15 @@ FactoryBot.define do
     trait :worker_kind do
       subject_kind { "worker" }
     end
+
+    # Outbound federation identity cert: represents a remote platform peer,
+    # not an on-node agent — so no node_instance, account-scoped directly.
+    # Used for FederationPeer#outbound_certificate (Federation mTLS Phase 2).
+    trait :federation_peer do
+      node_instance { nil }
+      subject_kind { "federation_peer" }
+      sequence(:subject) { |n| "CN=fed:#{n}-#{SecureRandom.hex(4)}" }
+    end
   end
 
   factory :system_gitops_repository, class: "System::GitopsRepository" do

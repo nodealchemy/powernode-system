@@ -126,11 +126,9 @@ RSpec.describe System::FederationPeer, type: :model do
 
   describe "#enroll!" do
     let(:peer) { create(:system_federation_peer, :platform, status: "accepted") }
-    let(:cert) { build_stubbed(:system_node_certificate) }  # any stand-in
 
     it "transitions accepted → enrolled and stores handshake artifacts" do
       result = peer.enroll!(
-        node_certificate: nil,  # cert may be issued separately
         capabilities: { "skill" => { "read" => true } },
         extension_slugs: %w[trading],
         endpoints: [ { "url" => "https://peer.example.com:443", "scope" => "wan", "priority" => 1 } ]
@@ -146,7 +144,7 @@ RSpec.describe System::FederationPeer, type: :model do
 
     it "refuses to enroll from non-accepted states" do
       peer.update!(status: "proposed")
-      expect(peer.enroll!(node_certificate: nil)).to be false
+      expect(peer.enroll!).to be false
       expect(peer.reload.status).to eq("proposed")
     end
   end
@@ -275,6 +273,58 @@ RSpec.describe System::FederationPeer, type: :model do
       child = create(:system_federation_peer, :spawned_child, parent_peer: parent)
       expect(child.parent_peer).to eq(parent)
       expect(parent.child_peers).to include(child)
+    end
+  end
+
+  # ── Federation mTLS Phase 2 — three separated certificate concerns ────
+  # The conflated single `node_certificate` was split into: outbound
+  # identity (what we present), inbound_subject (what the peer presents),
+  # and trusted_ca_pem (the peer CA we accept on the federation route).
+  describe "certificate directionality (Phase 2)" do
+    let(:account) { create(:account) }
+
+    it "binds an outbound_certificate — the cert WE present to the peer" do
+      cert = create(:system_node_certificate, :federation_peer, account: account)
+      peer = create(:system_federation_peer, :enrolled, account: account,
+                                                         outbound_certificate: cert)
+      expect(peer.reload.outbound_certificate).to eq(cert)
+    end
+
+    it "no longer responds to the removed node_certificate association" do
+      peer = build(:system_federation_peer, :platform)
+      expect(peer).not_to respond_to(:node_certificate)
+    end
+
+    it "stores an inbound_subject — the CN the peer presents to us" do
+      peer = create(:system_federation_peer, :enrolled, account: account,
+                                                         inbound_subject: "fed:abc")
+      expect(peer.reload.inbound_subject).to eq("fed:abc")
+    end
+
+    it "enforces inbound_subject uniqueness so no peer can claim another's identity" do
+      create(:system_federation_peer, :enrolled, account: account, inbound_subject: "fed:dup")
+      dup = build(:system_federation_peer, :enrolled, account: account, inbound_subject: "fed:dup")
+      expect { dup.save!(validate: false) }.to raise_error(ActiveRecord::RecordNotUnique)
+    end
+
+    describe ".trusted_ca_pems" do
+      it "collects non-blank anchors from reachable platform peers only" do
+        create(:system_federation_peer, :active,   account: account, trusted_ca_pem: "-----CA-A-----")
+        create(:system_federation_peer, :enrolled, account: account, trusted_ca_pem: "-----CA-B-----")
+        # proposed → not reachable, excluded
+        create(:system_federation_peer, :platform, account: account, status: "proposed",
+                                                    trusted_ca_pem: "-----CA-C-----")
+        # reachable but no anchor (hierarchical child off our own CA) → excluded
+        create(:system_federation_peer, :active,   account: account, trusted_ca_pem: nil)
+
+        expect(described_class.trusted_ca_pems).to contain_exactly("-----CA-A-----", "-----CA-B-----")
+      end
+
+      it "deduplicates identical anchors" do
+        create(:system_federation_peer, :active,   account: account, trusted_ca_pem: "-----SAME-----")
+        create(:system_federation_peer, :enrolled, account: account, trusted_ca_pem: "-----SAME-----")
+        expect(described_class.trusted_ca_pems).to eq([ "-----SAME-----" ])
+      end
     end
   end
 end
