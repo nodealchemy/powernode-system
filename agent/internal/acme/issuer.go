@@ -15,6 +15,12 @@ import (
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
+	"github.com/go-acme/lego/v4/providers/dns/digitalocean"
+	"github.com/go-acme/lego/v4/providers/dns/gcloud"
+	"github.com/go-acme/lego/v4/providers/dns/hetzner"
+	"github.com/go-acme/lego/v4/providers/dns/ovh"
+	"github.com/go-acme/lego/v4/providers/dns/porkbun"
+	"github.com/go-acme/lego/v4/providers/dns/route53"
 	"github.com/go-acme/lego/v4/registration"
 )
 
@@ -152,8 +158,11 @@ func Issue(params IssueParams) (*IssueResult, error) {
 	}, nil
 }
 
-// buildDNSProvider dispatches on the DNSProvider slug. v1 wires
-// Cloudflare; the rest return a clear "not yet wired" error.
+// buildDNSProvider dispatches on the DNSProvider slug. Cloudflare uses its
+// param-named token env var; the rest read go-acme/lego's standard env vars,
+// which the Rails caller (Acme::LegoClient#build_provider_env) already exports
+// into this process's environment (DO_AUTH_TOKEN, AWS_*, GCE_*, PORKBUN_*,
+// OVH_*, HETZNER_API_KEY) — keeping the credential contract in one place.
 func buildDNSProvider(params IssueParams) (challenge.Provider, error) {
 	switch params.DNSProvider {
 	case "cloudflare":
@@ -164,10 +173,22 @@ func buildDNSProvider(params IssueParams) (challenge.Provider, error) {
 		cfg := cloudflare.NewDefaultConfig()
 		cfg.AuthToken = token
 		return cloudflare.NewDNSProviderConfig(cfg)
+	case "digitalocean":
+		return digitalocean.NewDNSProvider()
+	case "hetzner":
+		return hetzner.NewDNSProvider()
+	case "route53":
+		return route53.NewDNSProvider()
+	case "gcloud":
+		return gcloud.NewDNSProvider()
+	case "porkbun":
+		return porkbun.NewDNSProvider()
+	case "ovh":
+		return ovh.NewDNSProvider()
 	case "":
 		return nil, errors.New("acme: DNSProvider required")
 	default:
-		return nil, fmt.Errorf("acme: DNS provider %q not yet wired in powernode-acme v1 (Cloudflare only)", params.DNSProvider)
+		return nil, fmt.Errorf("acme: DNS provider %q not supported by powernode-acme", params.DNSProvider)
 	}
 }
 
