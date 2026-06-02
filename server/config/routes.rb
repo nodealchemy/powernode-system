@@ -835,8 +835,14 @@ Rails.application.routes.draw do
           post :accept, to: "accept#create"
 
           # Heartbeat + capability/cursor refresh. mTLS-authenticated
-          # against the FederationPeer's node_certificate.
+          # against the FederationPeer's inbound_subject.
           post :heartbeat, to: "heartbeat#create"
+
+          # Federation mTLS Phase 2 (symmetric) — peers fetch OUR current CA
+          # bundle to refresh their stored trust anchor when our CA rotates
+          # (SPIFFE bundle-endpoint pattern). CA chain is public key material;
+          # no secret is exposed. mTLS-authenticated.
+          get :trust_bundle, to: "trust_bundle#index"
 
           # Cross-peer resource fetch. mTLS + Bearer grant-token-authenticated.
           # GET /resources/:kind/:id

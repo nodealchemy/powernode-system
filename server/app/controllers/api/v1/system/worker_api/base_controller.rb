@@ -21,7 +21,11 @@ module Api
           private
 
           def authenticate_worker!
-            subject_cn = mtls_subject_cn
+            # Federation mTLS Phase 2: verify against OUR CA before trusting the
+            # CN (peer CAs now share the Traefik client-auth bundle), so a
+            # peer-CA-signed cert can't impersonate a worker. Graceful when no
+            # full cert is forwarded (pre-symmetric posture).
+            subject_cn = ::Security::MtlsTrust.verify_request(request)
             return render_unauthorized("mTLS client certificate required") if subject_cn.blank?
 
             @current_worker = ::Worker.find_by(node_instance_id: subject_cn)
@@ -29,15 +33,6 @@ module Api
             return render_unauthorized("Worker is not active") unless @current_worker.active?
 
             @current_worker.touch(:last_seen_at)
-          end
-
-          def mtls_subject_cn
-            info = request.headers["X-Forwarded-Tls-Client-Cert-Info"].presence
-            return nil unless info
-
-            decoded = CGI.unescape(info)
-            match = decoded.match(/\bCN\s*=\s*"?([^,"]+)"?/i)
-            match && match[1].strip
           end
 
           # Check worker has specific permission

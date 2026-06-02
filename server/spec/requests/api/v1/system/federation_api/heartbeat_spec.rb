@@ -4,32 +4,9 @@ require "rails_helper"
 
 RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
   let(:account) { create(:account) }
-  let(:cert) do
-    # Direct create (no factory yet for system_node_certificates with
-    # subject_kind = "federation_peer"). Instance is nil for federation
-    # peer certs.
-    ::System::NodeCertificate.create!(
-      account: account,
-      subject_kind: "federation_peer",
-      subject: "federation-peer-#{SecureRandom.uuid}",
-      serial: SecureRandom.hex(16),
-      not_before: 1.day.ago,
-      not_after: 180.days.from_now,
-      pem_chain: "stub-pem",
-      issuer_subject: "Powernode Internal CA"
-    )
-  end
-  let(:peer) do
-    create(:system_federation_peer, :enrolled,
-           account: account,
-           node_certificate: cert)
-  end
-  let(:path) { "/api/v1/system/federation_api/heartbeat" }
-
-  let(:mtls_headers) do
-    # Simulate the reverse proxy forwarding the verified subject CN.
-    { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) }
-  end
+  let(:peer)    { enrolled_federation_peer(account: account) }
+  let(:path)    { "/api/v1/system/federation_api/heartbeat" }
+  let(:mtls_headers) { federation_mtls_headers(peer) }
 
   describe "POST /heartbeat (happy path)" do
     it "transitions enrolled → active on first heartbeat" do
@@ -71,55 +48,32 @@ RSpec.describe "Api::V1::System::FederationApi::Heartbeat", type: :request do
   end
 
   describe "POST /heartbeat (auth failures)" do
-    it "401s without mTLS subject header" do
+    it "401s without an mTLS subject header" do
       peer
       post path, params: {}, as: :json
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it "401s when cert is not subject_kind=federation_peer" do
-      instance_cert = ::System::NodeCertificate.create!(
-        account: account,
-        subject_kind: "instance",
-        subject: "instance-xyz",
-        serial: SecureRandom.hex(16),
-        not_before: 1.day.ago,
-        not_after: 180.days.from_now,
-        pem_chain: "stub",
-        issuer_subject: "Powernode Internal CA"
-      )
+    it "401s when the forwarded CN matches no peer" do
       post path, params: {},
-           headers: { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{instance_cert.id}")) },
+           headers: federation_cert_info_header("fed:#{SecureRandom.uuid}"),
            as: :json
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it "401s when no FederationPeer is bound to the cert" do
-      orphan_cert = ::System::NodeCertificate.create!(
-        account: account,
-        subject_kind: "federation_peer",
-        subject: "orphan-#{SecureRandom.uuid}",
-        serial: SecureRandom.hex(16),
-        not_before: 1.day.ago,
-        not_after: 180.days.from_now,
-        pem_chain: "stub",
-        issuer_subject: "Powernode Internal CA"
-      )
-      post path, params: {},
-           headers: { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{orphan_cert.id}")) },
-           as: :json
-      expect(response).to have_http_status(:unauthorized)
-    end
-
-    it "401s when peer is suspended" do
+    it "401s when the peer is not in a reachable status (suspended)" do
       peer.update!(status: "suspended")
       post path, params: {}, headers: mtls_headers, as: :json
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it "401s when cert is revoked" do
-      cert.update!(revoked_at: Time.current, revocation_reason: "rotation")
-      post path, params: {}, headers: mtls_headers, as: :json
+    it "401s when an sdwan_only peer presents a matching CN (federation_api is platform-only)" do
+      sdwan_peer = create(:system_federation_peer, account: account, status: "accepted")
+      sdwan_peer.update_column(:inbound_subject, "fed:#{sdwan_peer.id}")
+
+      post path, params: {},
+           headers: federation_cert_info_header(sdwan_peer.inbound_subject),
+           as: :json
       expect(response).to have_http_status(:unauthorized)
     end
   end

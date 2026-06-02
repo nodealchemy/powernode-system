@@ -4,23 +4,10 @@ require "rails_helper"
 
 RSpec.describe "Api::V1::System::FederationApi::ServiceCatalog", type: :request do
   let(:account) { create(:account) }
-  let(:cert) do
-    ::System::NodeCertificate.create!(
-      account: account, subject_kind: "federation_peer",
-      subject: "federation-peer-#{SecureRandom.uuid}",
-      serial: SecureRandom.hex(16),
-      not_before: 1.day.ago, not_after: 180.days.from_now,
-      pem_chain: "stub", issuer_subject: "Powernode Internal CA"
-    )
-  end
-  # let! — must eagerly create so the mTLS lookup in BaseController
-  # finds a FederationPeer linked to this cert. Without this, the
-  # peer is lazy + never instantiated + every request returns 401.
-  let!(:peer) do
-    create(:system_federation_peer, :platform, :active,
-           account: account, node_certificate: cert)
-  end
-  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
+  # let! — eagerly create so the peer (and its inbound_subject) exists before
+  # the mTLS lookup in BaseController resolves the forwarded CN.
+  let!(:peer) { enrolled_federation_peer(account: account, status: "active") }
+  let(:mtls_headers) { federation_mtls_headers(peer) }
 
   let(:path) { "/api/v1/system/federation_api/service_catalog" }
 

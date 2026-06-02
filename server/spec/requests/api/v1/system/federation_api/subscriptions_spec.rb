@@ -4,22 +4,10 @@ require "rails_helper"
 
 RSpec.describe "Api::V1::System::FederationApi::Subscriptions", type: :request do
   let(:operator_account) { create(:account) }
-  let(:cert) do
-    ::System::NodeCertificate.create!(
-      account: operator_account, subject_kind: "federation_peer",
-      subject: "federation-peer-#{SecureRandom.uuid}",
-      serial: SecureRandom.hex(16),
-      not_before: 1.day.ago, not_after: 180.days.from_now,
-      pem_chain: "stub", issuer_subject: "Powernode Internal CA"
-    )
-  end
-  # let! — must eagerly create so the mTLS lookup in BaseController
-  # finds a FederationPeer linked to this cert.
-  let!(:peer) do
-    create(:system_federation_peer, :platform, :active,
-           account: operator_account, node_certificate: cert)
-  end
-  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")), "Content-Type" => "application/json" } }
+  # let! — eagerly create so the peer (and its inbound_subject) exists before
+  # the mTLS lookup resolves the forwarded CN.
+  let!(:peer) { enrolled_federation_peer(account: operator_account, status: "active") }
+  let(:mtls_headers) { federation_mtls_headers(peer).merge("Content-Type" => "application/json") }
 
   let(:path) { "/api/v1/system/federation_api/subscriptions" }
 

@@ -24,7 +24,12 @@ module Api
           private
 
           def authenticate_instance!
-            subject_cn = mtls_subject_cn
+            # Federation mTLS Phase 2: verify the forwarded cert against OUR CA
+            # (peer CAs now share the Traefik client-auth bundle) before trusting
+            # the CN, so a peer-CA-signed cert can't impersonate a node. Graceful
+            # when no full cert is forwarded (pre-symmetric posture) — Traefik's
+            # our-CA chain-check is authoritative there.
+            subject_cn = ::Security::MtlsTrust.verify_request(request)
             if subject_cn.blank?
               render_unauthorized("mTLS client certificate required")
               return
@@ -59,29 +64,6 @@ module Api
             end
 
             @current_instance = instance
-          end
-
-          # Reads the verified mTLS client subject CN from the request. The
-          # reverse proxy (Traefik v3) terminates the mTLS handshake against
-          # the internal CA chain (mtls-optional@file TLS option) and, when
-          # the cert is valid, the passTLSClientCert middleware emits
-          # `X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"`
-          # (URL-encoded). This is the only header path supported — there
-          # is no nginx-style env interop, no Traefik v2 legacy header.
-          def mtls_subject_cn
-            info = request.headers["X-Forwarded-Tls-Client-Cert-Info"].presence
-            return nil unless info
-
-            extract_cn_from_dn(CGI.unescape(info))
-          end
-
-          # extract_cn_from_dn parses Traefik v3's `Subject="CN=foo,O=Powernode"`
-          # and returns the CN value. Tolerates spaces and the surrounding
-          # `Subject="..."` wrapper Traefik adds (anchored by word boundary
-          # rather than start-of-string so CN= after `Subject="` matches).
-          def extract_cn_from_dn(dn)
-            match = dn.match(/\bCN\s*=\s*"?([^,"]+)"?/i)
-            match && match[1].strip
           end
 
           attr_reader :current_instance

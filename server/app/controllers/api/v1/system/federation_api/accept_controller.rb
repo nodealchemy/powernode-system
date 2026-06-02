@@ -38,6 +38,14 @@ module Api
               capabilities: capabilities_param,
               extension_slugs: extension_slugs_param,
               endpoints: endpoints_param,
+              # The child generates its federation keypair locally and sends
+              # only the CSR here; the service signs it with our CA and returns
+              # the cert (no private key) in the response.
+              csr_pem: params[:csr_pem],
+              # Symmetric peers exchange CA bundles instead of a CSR: the caller
+              # advertises its CA + the CN we should present when calling it.
+              peer_ca_bundle_pem: params[:peer_ca_bundle_pem],
+              caller_inbound_subject: params[:caller_inbound_subject],
               # platform_url is where the child agent POSTs /node_api/enroll
               # to redeem its bootstrap_token. That endpoint lives on the
               # PARENT (this platform). request.base_url derives the parent's

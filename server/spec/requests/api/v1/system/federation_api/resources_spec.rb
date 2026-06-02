@@ -5,21 +5,9 @@ require "rails_helper"
 RSpec.describe "Api::V1::System::FederationApi::Resources", type: :request do
   let(:account) { create(:account) }
   let(:grantor) { create(:user, account: account) }
-  let(:cert) do
-    ::System::NodeCertificate.create!(
-      account: account, subject_kind: "federation_peer",
-      subject: "federation-peer-#{SecureRandom.uuid}",
-      serial: SecureRandom.hex(16),
-      not_before: 1.day.ago, not_after: 180.days.from_now,
-      pem_chain: "stub", issuer_subject: "Powernode Internal CA"
-    )
-  end
-  let(:peer) do
-    create(:system_federation_peer, :active,
-           account: account, node_certificate: cert)
-  end
+  let(:peer) { enrolled_federation_peer(account: account, status: "active") }
 
-  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
+  let(:mtls_headers) { federation_mtls_headers(peer) }
 
   before do
     # Install a fake inventory so "skill" is a known kind without

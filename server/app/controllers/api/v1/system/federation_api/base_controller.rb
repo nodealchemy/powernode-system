@@ -9,18 +9,18 @@ module Api
         #
         # Subjects of these endpoints are REMOTE POWERNODE PLATFORMS
         # (System::FederationPeer rows with peer_kind="platform"), NOT
-        # NodeInstances. The mTLS subject_kind on the verified client
-        # cert distinguishes the two; we refuse certs where subject_kind
-        # != "federation_peer" to prevent an on-node agent's cert from
-        # being used to call federation_api endpoints.
+        # NodeInstances.
         #
-        # Auth chain:
-        #   mTLS subject CN → System::NodeCertificate (subject_kind="federation_peer")
-        #     → System::FederationPeer (via node_certificate_id)
-        #     → peer must be in a reachable status (enrolled|active|degraded)
+        # Auth chain (Federation mTLS Phase 2):
+        #   mTLS subject CN (`fed:<peer.id>`, forwarded by Traefik after it
+        #     cryptographically verifies the cert against our CA bundle)
+        #     → System::FederationPeer via inbound_subject
+        #     → scoped to platform_peers.reachable (enrolled|active|degraded),
+        #       so sdwan-only / not-yet-enrolled / suspended peers are refused
+        #       even if they present a structurally valid cert.
         #
-        # Bootstrap path (Accept) bypasses mTLS — the peer doesn't have
-        # a cert yet — and uses bootstrap-token auth instead.
+        # Bootstrap path (Accept) bypasses mTLS — the peer doesn't have a cert
+        # yet — and uses bootstrap-token auth instead.
         class BaseController < ApplicationController
           skip_before_action :authenticate_request, raise: false
           before_action :authenticate_federation_peer!
@@ -31,27 +31,36 @@ module Api
             subject_cn = mtls_subject_cn
             return render_unauthorized("mTLS client certificate required") if subject_cn.blank?
 
-            cert = ::System::NodeCertificate.find_by(id: subject_cn) ||
-                   ::System::NodeCertificate.find_by(subject: subject_cn)
-            return render_unauthorized("Certificate not found for mTLS subject") unless cert
+            # The presented cert's CN is the identity WE assigned this peer at
+            # accept (`fed:<peer.id>`), stamped on inbound_subject. Traefik has
+            # already cryptographically verified the cert chains to our trusted
+            # CA bundle (every federation cert is signed by our own CA in the
+            # hierarchical model), so here we simply map the verified CN to its
+            # peer row.
+            #
+            # Scoping to platform_peers.reachable means an sdwan-only peer, a
+            # not-yet-enrolled peer, or a suspended/revoked one cannot
+            # authenticate even if it still holds a valid cert — peer status is
+            # the inbound revocation lever.
+            peer = ::System::FederationPeer
+                   .platform_peers.reachable
+                   .find_by(inbound_subject: subject_cn)
+            return render_unauthorized("No reachable FederationPeer for mTLS subject") unless peer
 
-            unless cert.respond_to?(:subject_kind) && cert.subject_kind == "federation_peer"
-              return render_unauthorized("Certificate is not a federation_peer cert")
-            end
-
-            if cert.respond_to?(:revoked_at) && cert.revoked_at.present?
-              return render_unauthorized("Certificate is revoked")
-            end
-
-            peer = ::System::FederationPeer.find_by(node_certificate_id: cert.id)
-            return render_unauthorized("No FederationPeer bound to this certificate") unless peer
-
-            unless peer.reachable?
-              return render_unauthorized("FederationPeer is not in a reachable status (#{peer.status})")
+            # Federation mTLS Phase 2 (symmetric): bind the presented cert to
+            # THIS peer's CA. When a full cert is forwarded it must verify
+            # against the peer's own trust anchor (its CA for symmetric peers,
+            # our CA for hierarchical children we issued) AND its CN must match
+            # the resolved subject — so one trusted peer can't present a cert in
+            # another peer's name. No PEM forwarded (pre-symmetric posture) →
+            # Traefik's our-CA chain-check is authoritative.
+            anchor = peer.trusted_ca_pem.presence || ::Security::MtlsTrust.own_ca_pem
+            verified = ::Security::MtlsTrust.verify_request_against(request, anchors: [ anchor ])
+            if verified != :no_pem && (verified.blank? || verified != subject_cn)
+              return render_unauthorized("Client certificate not issued by this peer's CA")
             end
 
             @current_federation_peer = peer
-            @current_federation_cert = cert
           end
 
           # Reads the verified mTLS client subject CN from the request. The
@@ -71,7 +80,7 @@ module Api
             match && match[1].strip
           end
 
-          attr_reader :current_federation_peer, :current_federation_cert
+          attr_reader :current_federation_peer
 
           def current_account
             @current_account ||= current_federation_peer&.account

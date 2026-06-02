@@ -5,7 +5,7 @@ module Api
     module System
       module FederationApi
         # Periodic heartbeat from a federated peer. mTLS-authenticated
-        # against the peer's node_certificate.
+        # via the peer's inbound_subject (see FederationApi::BaseController).
         #
         # POST /api/v1/system/federation_api/heartbeat
         # Body:

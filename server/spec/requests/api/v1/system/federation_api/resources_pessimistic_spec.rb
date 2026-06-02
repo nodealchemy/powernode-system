@@ -17,19 +17,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
                 type: :request do
   let(:account) { create(:account) }
   let(:grantor) { create(:user, account: account) }
-  let(:cert) do
-    ::System::NodeCertificate.create!(
-      account: account, subject_kind: "federation_peer",
-      subject: "federation-peer-#{SecureRandom.uuid}",
-      serial: SecureRandom.hex(16),
-      not_before: 1.day.ago, not_after: 180.days.from_now,
-      pem_chain: "stub", issuer_subject: "Powernode Internal CA"
-    )
-  end
-  let(:peer) do
-    create(:system_federation_peer, :active,
-           account: account, node_certificate: cert)
-  end
+  let(:peer) { enrolled_federation_peer(account: account, status: "active") }
   let(:network) { create(:sdwan_network, account: account) }
   let!(:active_bridge) do
     create(:system_federation_network_bridge, :active,
@@ -52,7 +40,7 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
   let(:resource_uuid) { SecureRandom.uuid }
   let(:path)          { "/api/v1/system/federation_api/resources/skill/#{resource_uuid}" }
 
-  let(:mtls_headers) { { "X-Forwarded-Tls-Client-Cert-Info" => CGI.escape(%(Subject="CN=#{cert.id}")) } }
+  let(:mtls_headers) { federation_mtls_headers(peer) }
 
   let(:calling_instance_uuid) { SecureRandom.uuid }
   let(:full_headers) do
