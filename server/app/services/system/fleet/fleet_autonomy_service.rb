@@ -263,6 +263,12 @@ module System
           key_value(metadata, "template_id")
         when "system.cve_remediate"
           key_value(metadata, "cve_id")
+        # Federation peer remediation — per-peer dedup so a peer flapping in and
+        # out of staleness (heartbeat or cert) doesn't queue a duplicate
+        # ApprovalRequest every 60s tick. Mirrors system.sdwan_peer_remediate;
+        # the sensor stamps federation_peer_id onto the signal payload.
+        when "system.federation_peer_remediate"
+          key_value(metadata, "federation_peer_id")
         # Slice 5 of the SDWAN plan: per-peer dedup for remediation/rotation/
         # failover; per-device for revocation. Without these, repeat sensor
         # firings would queue duplicate ApprovalRequests every tick.
