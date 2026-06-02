@@ -51,6 +51,19 @@ RSpec.describe System::Federation::FederationAcceptanceService, type: :service d
       expect(result.payload[:handshake_at]).to be_present
     end
 
+    it "issues a Vault-backed outbound client certificate for the enrolled peer" do
+      described_class.call(**base_args)
+
+      cert = peer.reload.node_certificate
+      expect(cert).to be_present
+      expect(cert.subject_kind).to eq("federation_peer")
+      expect(cert.account_id).to eq(account.id)
+
+      creds = cert.credentials
+      expect(creds["cert_pem"]).to include("BEGIN CERTIFICATE")
+      expect(creds["private_key_pem"]).to include("PRIVATE KEY")
+    end
+
     it "persists capabilities, extension_slugs, endpoints on the peer" do
       described_class.call(**base_args)
 

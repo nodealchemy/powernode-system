@@ -120,10 +120,10 @@ module System
 
         peer.update!(contract_version_agreed: @contract_version)
 
-        # ── HARD step: enroll platform peers (cert nil for now) ──────────
+        # ── HARD step: enroll platform peers (issue outbound client cert) ─
         if peer.platform_peer?
           peer.enroll!(
-            node_certificate: nil,
+            node_certificate: issue_peer_client_certificate!(peer),
             capabilities: @capabilities,
             extension_slugs: @extension_slugs,
             endpoints: @endpoints
@@ -155,6 +155,54 @@ module System
       end
 
       private
+
+      # 90 days, matching the InternalCaService default TTL.
+      FEDERATION_CLIENT_CERT_TTL_SECONDS = 90 * 24 * 60 * 60
+
+      # Federation mTLS Phase 1 — issue THIS account's outbound client cert for
+      # the peer so PeerClient presents a client identity instead of falling back
+      # to plaintext. Mirrors DockerDaemonProvisionerService#issue_client_tls_pair!
+      # (Ed25519 key + CSR signed by InternalCaService); the cert + key land in
+      # the Vault-backed NodeCertificate.credentials that PeerClient reads.
+      #
+      # Cross-account CA trust (so the remote ACCEPTS this cert) is Phase 2 —
+      # until then a strict remote still rejects, which is the correct fail-closed
+      # behavior. Best-effort: a PKI hiccup must not abort acceptance (returns
+      # nil, the prior behavior).
+      def issue_peer_client_certificate!(peer)
+        common_name = "federation-peer-#{peer.id}"
+        key = OpenSSL::PKey.generate_key("ED25519")
+        csr = OpenSSL::X509::Request.new
+        csr.version = 0
+        csr.subject = OpenSSL::X509::Name.parse("/CN=#{common_name}")
+        csr.public_key = key
+        csr.sign(key, nil) # Ed25519 — digest must be nil
+
+        issued = ::System::InternalCaService.issue_certificate(
+          csr_pem: csr.to_pem,
+          ttl_seconds: FEDERATION_CLIENT_CERT_TTL_SECONDS,
+          common_name: common_name
+        )
+
+        cert = ::System::NodeCertificate.new(
+          account_id: peer.account_id,
+          subject_kind: "federation_peer",
+          serial: issued[:serial],
+          subject: issued[:subject] || "CN=#{common_name}",
+          not_before: issued[:not_before] || Time.current,
+          not_after: issued[:not_after] || (Time.current + FEDERATION_CLIENT_CERT_TTL_SECONDS)
+        )
+        cert.credentials = {
+          "cert_pem" => issued[:cert_pem],
+          "private_key_pem" => key.private_to_pem,
+          "ca_chain_pem" => issued[:ca_chain_pem]
+        }
+        cert.save!
+        cert
+      rescue StandardError => e
+        Rails.logger.warn("[FederationAcceptanceService] peer client cert issuance failed for peer #{peer.id}: #{e.class}: #{e.message}")
+        nil
+      end
 
       # The acceptance_token plaintext maps to ONE peer via its digest.
       # We scan candidates whose digest matches; since digest is sha256
