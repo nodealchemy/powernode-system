@@ -77,35 +77,100 @@ module System
       @mission.mission_type.to_s == "infrastructure"
     end
 
-    # Discovers a sample for every known metric. Sensors will gracefully
-    # ignore missing samples, so adding a metric here is forward-compatible.
+    # Discovers a sample for every known metric. Sensors gracefully ignore
+    # missing samples (observed: nil), so adding a metric here is
+    # forward-compatible.
     #
-    # TODO(metrics-backend): Replace stub_sample with real per-instance
-    # telemetry once the production metrics backend lands. Intended sources:
-    #   - p99_latency_ms / availability_pct: SDWAN edge probes
+    # Real sources are wired per-metric in `sample_metric`. Metrics whose
+    # backend hasn't landed yet return an honest `unavailable` sample
+    # (observed: nil) — never a fabricated zero (see `unavailable_sample`).
+    # Intended sources for the still-unwired metrics:
+    #   - p99_latency_ms / availability_pct: SDWAN edge probes (the
+    #     Slo::TelemetryAdapter `metric.latency_ms` FleetEvent transport)
     #   - cpu_pct / memory_pct: node agent heartbeat (FleetEvent payload)
-    #   - replica_count / region_count: NodeInstance.where(mission scope)
     #   - cost_usd_mtd: billing engine MTD aggregation
     def sample_all
+      instance_ids = resolvable_instance_ids
       METRIC_TYPE_MAP.keys.each_with_object({}) do |metric_name, samples|
-        samples[metric_name] = sample_metric(metric_name)
+        samples[metric_name] = sample_metric(metric_name, instance_ids)
       end
     end
 
-    # Stub-sampler: records zero with a note flagging this as a placeholder.
-    # Subclasses / replacement implementations should override this to read
-    # from the real metrics backend.
-    def sample_metric(metric_name)
-      stub_sample(metric_name)
+    # Per-metric dispatch. Each metric reads its real source where one is
+    # wired; everything else returns an honest `unavailable` sample so the
+    # SLO sensor skips it instead of reading a fabricated zero as a real
+    # measurement. Wiring a new real source is a one-branch change here.
+    def sample_metric(metric_name, instance_ids)
+      case metric_name
+      when "replica_count" then sample_replica_count(instance_ids)
+      when "region_count"  then sample_region_count(instance_ids)
+      else unavailable_sample(metric_name)
+      end
     end
 
-    def stub_sample(metric_name)
+    # replica_count = live (non-terminated) instances this mission provisioned.
+    # `unavailable` when the mission has no resolvable instances (we genuinely
+    # can't tell); a resolvable mission with zero live instances reports a real
+    # 0 — a meaningful "nothing came up" drift signal, not a stub.
+    def sample_replica_count(instance_ids)
+      return unavailable_sample("replica_count") if instance_ids.empty?
+
+      count = ::System::NodeInstance.where(id: instance_ids)
+                                    .where.not(status: "terminated").count
+      live_sample("replica_count", count)
+    end
+
+    # region_count = distinct provider regions across the mission's live instances.
+    def sample_region_count(instance_ids)
+      return unavailable_sample("region_count") if instance_ids.empty?
+
+      count = ::System::NodeInstance.where(id: instance_ids)
+                                    .where.not(status: "terminated")
+                                    .distinct.count(:provider_region_id)
+      live_sample("region_count", count)
+    end
+
+    # A real measurement read from a wired backend.
+    def live_sample(metric_name, observed)
+      { "observed" => observed, "unit" => unit_for(metric_name), "source" => "live" }
+    end
+
+    # Honest stand-in for a metric whose telemetry backend isn't wired yet.
+    # `observed: nil` (NOT 0) so ProjectSloSensor's `.present?` guards skip it
+    # rather than treating a fabricated zero as a real sample. Replaces the
+    # prior zero-valued stub, which risked false SLO/availability violations
+    # the moment any single real metric was wired alongside it.
+    def unavailable_sample(metric_name)
       {
-        "observed" => 0,
+        "observed" => nil,
         "unit" => unit_for(metric_name),
-        "source" => "stub",
-        "note" => "TODO(metrics-backend): replace with real telemetry"
+        "source" => "unavailable",
+        "note" => "no telemetry backend wired for #{metric_name} yet (TODO metrics-backend)"
       }
+    end
+
+    # Resolves the NodeInstance ids this mission provisioned, via the
+    # provisioning runner's recorded step outputs. The mission soft-links to
+    # its Ai::GoalPlan through configuration["plan"]["plan_id"] (stamped by
+    # PlanComposerService); each completed step records produced ids under
+    # metadata["last_outputs"]["node_instance_ids"] — the same seam the runner
+    # uses for cross-step data flow. Returns [] (never raises) so a mission
+    # without a resolvable plan degrades to `unavailable`, not a false zero.
+    def resolvable_instance_ids
+      cfg = @mission.configuration
+      plan_id = cfg.is_a?(Hash) ? cfg.dig("plan", "plan_id") : nil
+      return [] if plan_id.blank?
+
+      plan = ::Ai::GoalPlan.find_by(id: plan_id)
+      return [] unless plan
+
+      plan.steps.where(status: "completed").flat_map { |step|
+        meta = step.metadata.is_a?(Hash) ? step.metadata : {}
+        Array(meta.dig("last_outputs", "node_instance_ids"))
+      }.compact.uniq
+    rescue StandardError => e
+      Rails.logger.warn("[ProjectMetricsCollector] instance resolution failed for mission=#{@mission&.id}: #{e.class}: #{e.message}")
+      []
     end
 
     def unit_for(metric_name)

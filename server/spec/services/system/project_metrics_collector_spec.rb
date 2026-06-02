@@ -40,14 +40,77 @@ RSpec.describe System::ProjectMetricsCollector do
       end
     end
 
-    it "writes the stub-sampler placeholder shape (observed=0, source=stub, note flagged TODO)" do
+    it "writes honest 'unavailable' samples (observed=nil, source=unavailable) for un-backed metrics" do
       mission = build_active_infrastructure_mission
       described_class.collect!(mission: mission)
 
+      %w[p99_latency_ms availability_pct cpu_pct memory_pct cost_usd_mtd].each do |name|
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: name).first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable"),
+          "expected #{name} to be an honest unavailable sample, got #{row.value.inspect}"
+      end
+
       latency = System::ProjectMetric.where(mission_id: mission.id, metric_name: "p99_latency_ms").first
-      expect(latency.value).to include("observed" => 0, "source" => "stub")
-      expect(latency.value["note"]).to match(/TODO\(metrics-backend\)/)
       expect(latency.value["unit"]).to eq("ms")
+    end
+
+    it "never records a fabricated zero observation for an un-backed metric" do
+      mission = build_active_infrastructure_mission
+      described_class.collect!(mission: mission)
+
+      fabricated_zeros = System::ProjectMetric
+        .where(mission_id: mission.id)
+        .reject { |r| r.value["source"] == "live" }
+        .select { |r| r.value["observed"] == 0 }
+      expect(fabricated_zeros).to be_empty
+    end
+
+    it "reports replica_count/region_count as 'unavailable' when the mission has no resolvable plan" do
+      mission = build_active_infrastructure_mission # no configuration["plan"]
+      described_class.collect!(mission: mission)
+
+      %w[replica_count region_count].each do |name|
+        row = System::ProjectMetric.where(mission_id: mission.id, metric_name: name).first
+        expect(row.value).to include("observed" => nil, "source" => "unavailable")
+      end
+    end
+
+    it "samples real replica_count/region_count from the mission's provisioned instances" do
+      # Reproduce the mission -> GoalPlan -> completed step -> last_outputs
+      # chain the provisioning runner records, then point the mission at it.
+      agent = create(:ai_agent, account: account)
+      goal  = Ai::AgentGoal.create!(
+        account: account, agent: agent, title: "provision",
+        goal_type: "creation", status: "active", priority: 3, progress: 0.0
+      )
+      plan = Ai::GoalPlan.create!(
+        account: account, goal: goal, agent: agent, status: "approved", version: 1
+      )
+
+      node   = create(:system_node, account: account)
+      region = create(:system_provider_region)
+      inst_a = create(:system_node_instance, :running, node: node, provider_region: region)
+      inst_b = create(:system_node_instance, :running, node: node, provider_region: region)
+
+      plan.steps.create!(
+        step_number: 1, status: "completed", step_type: "provisioning_skill",
+        metadata: { "last_outputs" => { "node_instance_ids" => [ inst_a.id, inst_b.id ] } }
+      )
+
+      mission = create(
+        :ai_mission, account: account, created_by: user, mission_type: "infrastructure",
+        custom_phases: [ { "key" => "adapting", "label" => "Adapting", "order" => 0 } ],
+        configuration: { "plan" => { "plan_id" => plan.id } }
+      )
+      mission.update_columns(status: "active")
+
+      described_class.collect!(mission: mission)
+
+      replica    = System::ProjectMetric.where(mission_id: mission.id, metric_name: "replica_count").first
+      region_row = System::ProjectMetric.where(mission_id: mission.id, metric_name: "region_count").first
+      expect(replica.value).to include("observed" => 2, "source" => "live")
+      # both instances share one provider region → 1 distinct region
+      expect(region_row.value).to include("observed" => 1, "source" => "live")
     end
 
     it "threads the supplied correlation_id onto every row" do

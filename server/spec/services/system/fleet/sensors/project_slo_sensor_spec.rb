@@ -208,8 +208,9 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
   # legacy mission.configuration["latest_observations"] test seam. When the
   # collector has populated rows for a mission, those drive the signals;
   # the config-blob fallback only kicks in for missions without persisted
-  # samples (or when all DB samples are stub zeros — e.g. before a real
-  # metrics backend lands).
+  # samples (or when every DB sample is `unavailable` — observed nil —
+  # i.e. no metric has a real backend wired yet). A real 0 observation is
+  # NOT discarded — it is a meaningful measurement.
   describe "DB-backed metrics path" do
     def write_metric(mission, metric_name, observed:, sampled_at: Time.current)
       metric_type = ::System::ProjectMetricsCollector::METRIC_TYPE_MAP.fetch(metric_name)
@@ -267,20 +268,34 @@ RSpec.describe System::Fleet::Sensors::ProjectSloSensor do
       expect(cost.payload["target_usd"]).to eq(200.0)
     end
 
-    it "falls back to mission.configuration['latest_observations'] when only stub-zero metrics exist" do
-      # Collector wrote zero-valued stub metrics (no real telemetry yet).
-      # Sensor must NOT use those — drift/violation should come from config blob.
+    it "falls back to config blob when every DB sample is 'unavailable' (nil observation)" do
+      # The collector writes observed:nil for metrics with no real backend
+      # yet. The sensor must skip those and source signals from the config blob.
       mission = build_mission(observations: {
         "p99_latency_ms" => 500.0, # config-blob breach
         "availability_pct" => 99.9
       })
       ::System::ProjectMetricsCollector::METRIC_TYPE_MAP.each_key do |name|
-        write_metric(mission, name, observed: 0)
+        write_metric(mission, name, observed: nil)
       end
 
       slo = sensor.sense.find { |s| s.kind == "system.project_slo_violation" }
       expect(slo).not_to be_nil
       expect(slo.payload["observed"]).to eq(500.0) # came from config blob
+    end
+
+    it "emits replica drift for a real DB-backed replica_count of 0 (nothing came up)" do
+      # Regression guard for the placeholder-telemetry fix: a real 0 must NOT
+      # be swallowed as "no data". Before the fix the all-zero guard discarded
+      # it and the drift was missed.
+      mission = build_mission(observations: { "p99_latency_ms" => 100 }) # within target
+      write_metric(mission, "replica_count", observed: 0) # brief expects 3
+
+      drift = sensor.sense.find { |s| s.kind == "system.project_drift" }
+      expect(drift).not_to be_nil
+      expect(drift.payload["drift_type"]).to eq("replica_count")
+      expect(drift.payload["observed"]).to eq(0)
+      expect(drift.payload["target"]).to eq(3)
     end
 
     it "falls back to config blob when no DB metrics exist for the mission" do

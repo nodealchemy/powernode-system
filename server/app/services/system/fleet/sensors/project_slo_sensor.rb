@@ -112,7 +112,12 @@ module System
           by_name = rows.each_with_object({}) { |row, h| h[row.metric_name] = row.observed }
 
           return nil if by_name.empty?
-          return nil if by_name.values.all? { |v| v.nil? || (v.respond_to?(:zero?) && v.zero?) }
+
+          # Fall through to the config seam only when there is NO real
+          # observation at all. `unavailable` metrics arrive as nil (skip
+          # them); but a real 0 — e.g. replica_count 0 when nothing came up —
+          # is a meaningful drift signal and must NOT be discarded.
+          return nil if by_name.values.all?(&:nil?)
 
           {
             "availability_pct" => by_name["availability_pct"]&.to_f,
