@@ -41,11 +41,18 @@ module Acme
     # calls `write_mtls_shared_dynamic!` before per-account `write!` runs.
     SHARED_MTLS_FILENAME = "_mtls.yaml"
 
-    # Bundle filename for the internal CA chain used by Traefik to verify
-    # client certificates (when presented) on the optional-mTLS entrypoint.
-    # Written by `write_internal_ca!`; referenced from the shared mTLS YAML
-    # via `tls.options.mtls-optional.clientAuth.caFiles`.
+    # OUR internal CA chain ONLY. Written by `write_internal_ca!`. This is the
+    # anchor core auth (Security::MtlsTrust) verifies node/worker/internal certs
+    # against — a peer-CA cert must NOT validate here.
     INTERNAL_CA_FILENAME = "internal-ca.pem"
+
+    # Traefik's CLIENT-cert trust bundle: our CA + every reachable federation
+    # peer's CA (symmetric peers sign with their own). Written by
+    # `write_client_auth_bundle!`; referenced from the shared mTLS YAML via
+    # `tls.options.mtls-optional.clientAuth.caFiles`. Distinct from
+    # internal-ca.pem so peer CAs are trusted at the TLS handshake WITHOUT being
+    # trusted for node/worker identity (the backend re-binds per-peer).
+    CLIENT_AUTH_BUNDLE_FILENAME = "client-auth-bundle.pem"
 
     class << self
       def write!(account:, dynamic_dir: nil, cert_dir: nil)
@@ -145,6 +152,25 @@ module Acme
         out
       end
 
+      # Writes the Traefik client-auth trust bundle: our internal CA PLUS every
+      # reachable federation peer's CA (symmetric peers sign with their own).
+      # This is what the shared mtls-optional clientAuth.caFiles points at, so
+      # Traefik accepts a peer-signed cert at the handshake — the backend then
+      # re-binds it to the specific peer (federation) or rejects it on node/
+      # worker routes (Security::MtlsTrust verifies against our CA only).
+      # Idempotent; rewriting it is how peer-CA rotation/teardown propagates
+      # (Traefik file-watches the directory and reloads).
+      def write_client_auth_bundle!(ca_dir: nil)
+        dir = ca_dir || default_ca_dir
+        FileUtils.mkdir_p(dir)
+        out = File.join(dir, CLIENT_AUTH_BUNDLE_FILENAME)
+        pems = [ ::System::InternalCaService.ca_chain_pem ]
+        pems.concat(::System::FederationPeer.trusted_ca_pems) if defined?(::System::FederationPeer)
+        body = pems.compact.map { |p| p.to_s.strip }.reject(&:empty?).join("\n")
+        File.write(out, "#{body}\n")
+        out
+      end
+
       # Writes the shared dynamic config holding the OPTIONAL-mTLS TLS
       # option set + the passTLSClientCert middleware. These primitives are
       # applied at the websecure entrypoint via `mtls-optional@file` and
@@ -163,7 +189,11 @@ module Acme
       # without consulting a JWT.
       def write_mtls_shared_dynamic!(dynamic_dir: nil, ca_dir: nil)
         dir = dynamic_dir || default_dynamic_dir
-        ca_path = File.join(ca_dir || default_ca_dir, INTERNAL_CA_FILENAME)
+        cadir = ca_dir || default_ca_dir
+        # Write/refresh the client-auth bundle BEFORE the option references it,
+        # so peer-CA trust and the pem-forwarding it requires ship together.
+        write_client_auth_bundle!(ca_dir: cadir)
+        ca_path = File.join(cadir, CLIENT_AUTH_BUNDLE_FILENAME)
         FileUtils.mkdir_p(dir)
         out = File.join(dir, SHARED_MTLS_FILENAME)
         File.write(out, YAML.dump(shared_mtls_config(ca_path)))
@@ -189,6 +219,13 @@ module Acme
             "middlewares" => {
               "pass-tls-client-cert" => {
                 "passTLSClientCert" => {
+                  # pem:true forwards the full client cert (X-Forwarded-Tls-
+                  # Client-Cert) so the backend can re-verify it against the
+                  # right per-identity anchor (Security::MtlsClientVerifier).
+                  # Coupled with the peer CAs in caFiles above — they ship
+                  # together, which is the invariant the backend's graceful
+                  # no-PEM path relies on.
+                  "pem" => true,
                   "info" => {
                     "subject" => { "commonName" => true }
                   }

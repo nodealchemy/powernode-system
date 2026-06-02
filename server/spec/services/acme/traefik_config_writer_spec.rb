@@ -170,16 +170,42 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
     end
 
     describe ".write_mtls_shared_dynamic!" do
-      it "emits a YAML with the mtls-optional TLS option + pass-tls-client-cert middleware" do
+      it "points caFiles at the client-auth bundle and forwards the full PEM" do
         out = described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
         expect(File.basename(out)).to eq("_mtls.yaml")
         parsed = YAML.load_file(out)
         expect(parsed.dig("tls", "options", "mtls-optional", "clientAuth", "clientAuthType"))
           .to eq("VerifyClientCertIfGiven")
+        # caFiles → the bundle (our CA + peer CAs), NOT internal-ca.pem.
         expect(parsed.dig("tls", "options", "mtls-optional", "clientAuth", "caFiles"))
-          .to eq([ File.join(tmp_ca_dir, "internal-ca.pem") ])
-        expect(parsed.dig("http", "middlewares", "pass-tls-client-cert", "passTLSClientCert", "info", "subject", "commonName"))
-          .to be true
+          .to eq([ File.join(tmp_ca_dir, "client-auth-bundle.pem") ])
+        mw = parsed.dig("http", "middlewares", "pass-tls-client-cert", "passTLSClientCert")
+        expect(mw["pem"]).to be true # full cert forwarded for backend re-verify
+        expect(mw.dig("info", "subject", "commonName")).to be true
+      end
+
+      it "writes the client-auth bundle alongside the option (coupled)" do
+        described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
+        expect(File.exist?(File.join(tmp_ca_dir, "client-auth-bundle.pem"))).to be true
+      end
+    end
+
+    describe ".write_client_auth_bundle! (two-file split)" do
+      it "bundles our CA PLUS reachable peer CAs, while internal-ca.pem stays our-CA-only" do
+        allow(::System::InternalCaService).to receive(:ca_chain_pem)
+          .and_return("-----BEGIN CERTIFICATE-----\nOURCA\n-----END CERTIFICATE-----\n")
+        peer_ca = "-----BEGIN CERTIFICATE-----\nPEERCA\n-----END CERTIFICATE-----\n"
+        create(:system_federation_peer, :active, account: account).tap do |p|
+          p.update_columns(inbound_subject: "fed:#{p.id}", trusted_ca_pem: peer_ca)
+        end
+
+        bundle = described_class.write_client_auth_bundle!(ca_dir: tmp_ca_dir)
+        own    = described_class.write_internal_ca!(ca_dir: tmp_ca_dir)
+
+        expect(File.read(bundle)).to include("OURCA").and include("PEERCA")
+        # internal-ca.pem (core's anchor) must NOT contain the peer CA.
+        expect(File.read(own)).to include("OURCA")
+        expect(File.read(own)).not_to include("PEERCA")
       end
     end
 

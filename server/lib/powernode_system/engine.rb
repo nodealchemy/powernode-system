@@ -103,6 +103,20 @@ module PowernodeSystem
       end
     end
 
+    # Federation mTLS Phase 2 — inject our internal-CA bundle into the core
+    # Security::MtlsTrust seam so core auth (worker / internal / cable) can
+    # verify client certs against OUR CA without depending on the extension
+    # (dependency points extension → core). InternalCaService owns the CA.
+    initializer "powernode_system.mtls_trust", after: :load_config_initializers do
+      config.after_initialize do
+        next unless defined?(::Security::MtlsTrust) && defined?(::System::InternalCaService)
+
+        ::Security::MtlsTrust.own_ca_provider = -> { ::System::InternalCaService.ca_chain_pem }
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not wire MtlsTrust CA provider: #{e.message}"
+      end
+    end
+
     # Register extension permissions + role grants with the parent platform's
     # Permissions module. Without this, db:seed's Role.sync_from_config! would
     # destructively replace role_permissions with ONLY the parent config's
