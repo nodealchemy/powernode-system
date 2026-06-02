@@ -15,7 +15,6 @@ module System
     # canary status only via the dedicated honeypot dashboard tile).
     class CanaryModuleService
       CONFIG_KEY = "honeypot"
-      HONEYPOT_TAG = "honeypot:canary" # legacy alias kept for any external reference
 
       def self.mark!(node_module:, lure_kind: "credential_store")
         new.mark!(node_module: node_module, lure_kind: lure_kind)
