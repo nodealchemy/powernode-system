@@ -66,6 +66,14 @@ module System
     scope :replenishable, -> { where(status: %w[active draining]) }
     scope :by_oldest_replenish, -> { order(Arel.sql("last_replenished_at NULLS FIRST")) }
     scope :for_account, ->(account) { where(account_id: account.is_a?(::Account) ? account.id : account) }
+    # GPU-bearing pools — a pool's accelerator capability derives from its bound
+    # provider_instance_type SKU (audit P6). Optionally narrow by gpu_type + a
+    # minimum GPU count to schedule a GPU workload onto a pre-warmed pool.
+    scope :with_gpu, -> { joins(:provider_instance_type).where("system_provider_instance_types.gpu_count > 0") }
+    scope :by_gpu, ->(gpu_type = nil, min_count: 1) {
+      rel = joins(:provider_instance_type).where("system_provider_instance_types.gpu_count >= ?", min_count)
+      gpu_type.present? ? rel.where("LOWER(system_provider_instance_types.gpu_type) = LOWER(?)", gpu_type) : rel
+    }
 
     # === Attributes ===
     attribute :metadata, :json, default: -> { {} }

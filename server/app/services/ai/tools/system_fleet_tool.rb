@@ -25,6 +25,8 @@ module Ai
         "system_get_node"               => "system.nodes.read",
         "system_list_instances"         => "system.node_instances.read",
         "system_get_instance"           => "system.node_instances.read",
+        "system_find_node_with_gpu"     => "system.node_instances.read",
+        "system_list_instance_types_by_gpu" => "system.nodes.read",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -243,6 +245,21 @@ module Ai
           "system_get_instance" => {
             description: "Fetch a node instance with its current status + metrics",
             parameters: { instance_id: { type: "string", required: true } }
+          },
+          "system_find_node_with_gpu" => {
+            description: "Find live node instances that expose a GPU/accelerator, optionally filtered by gpu_type, a minimum per-GPU VRAM (min_gpu_memory_mb), and a minimum GPU count. GPU is resolved from the instance's provider_instance_type SKU or its agent-reported config[\"gpu\"] hint.",
+            parameters: {
+              gpu_type: { type: "string", required: false },
+              min_gpu_memory_mb: { type: "integer", required: false },
+              min_gpu_count: { type: "integer", required: false }
+            }
+          },
+          "system_list_instance_types_by_gpu" => {
+            description: "List provider instance-type catalog SKUs that carry a GPU, optionally filtered by gpu_type and a minimum GPU count. Use to pick a GPU SKU for provisioning.",
+            parameters: {
+              gpu_type: { type: "string", required: false },
+              min_gpu_count: { type: "integer", required: false }
+            }
           },
           "system_provision_instance" => {
             description: "Provision a new cloud instance for a node (asynchronous; returns task_id)",
@@ -776,6 +793,8 @@ module Ai
         when "system_refresh_instance_modules" then refresh_instance_modules(params)
         when "system_list_instances"           then list_instances(params)
         when "system_get_instance"             then get_instance(params)
+        when "system_find_node_with_gpu"       then find_node_with_gpu(params)
+        when "system_list_instance_types_by_gpu" then list_instance_types_by_gpu(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -986,6 +1005,40 @@ module Ai
       def get_instance(params)
         instance = account_instances.find(params[:instance_id])
         success_result(instance: serialize_instance_full(instance))
+      end
+
+      # GPU discovery (audit P6). GPU is resolved per-instance from the
+      # provider_instance_type SKU OR the agent's config["gpu"] hint, so the
+      # type/count/vram predicate is applied in Ruby after eager-loading.
+      # Scoped to non-terminated instances — you schedule GPU work on live
+      # compute. A SQL/GIN pre-filter is a follow-up if fleet size ever makes
+      # this scan material.
+      def find_node_with_gpu(params)
+        type      = params[:gpu_type].presence
+        min_mem   = params[:min_gpu_memory_mb].to_i
+        min_count = [ params[:min_gpu_count].to_i, 1 ].max
+
+        matches = account_instances
+                  .where.not(status: "terminated")
+                  .includes(:provider_instance_type)
+                  .select do |i|
+                    i.gpu_count >= min_count &&
+                      (type.nil? || i.gpu_type.to_s.casecmp?(type)) &&
+                      (min_mem.zero? || i.gpu_memory_mb.to_i >= min_mem)
+                  end
+
+        success_result(instances: matches.map { |i| serialize_instance(i) }, count: matches.size)
+      end
+
+      # GPU catalog discovery (audit P6) — provider instance-type SKUs with a GPU.
+      def list_instance_types_by_gpu(params)
+        scope = ::System::ProviderInstanceType
+                .where(account_id: @account.id)
+                .by_gpu(params[:gpu_type].presence, min_count: [ params[:min_gpu_count].to_i, 1 ].max)
+        success_result(
+          instance_types: scope.order(:gpu_type, :gpu_count).map { |t| serialize_instance_type_gpu(t) },
+          count: scope.size
+        )
       end
 
       def provision_instance(params)
@@ -1941,7 +1994,10 @@ module Ai
           public_ip: i.public_ip_address,
           last_heartbeat_at: i.last_heartbeat_at&.iso8601,
           mtls_subject: i.mtls_subject,
-          agent_version: i.agent_version
+          agent_version: i.agent_version,
+          gpu_count: i.gpu_count,
+          gpu_type: i.gpu_type,
+          gpu_memory_mb: i.gpu_memory_mb
         }
       end
 
@@ -1953,6 +2009,21 @@ module Ai
           provider_region_id: i.provider_region_id,
           provider_instance_type_id: i.provider_instance_type_id
         )
+      end
+
+      def serialize_instance_type_gpu(t)
+        {
+          id: t.id,
+          name: t.name,
+          provider_id: t.provider_id,
+          instance_type_code: t.instance_type_code,
+          vcpus: t.vcpus,
+          memory_mb: t.memory_mb,
+          gpu_count: t.gpu_count,
+          gpu_type: t.gpu_type,
+          gpu_memory_mb: t.gpu_memory_mb,
+          summary: t.display_name
+        }
       end
 
       def serialize_template(t)

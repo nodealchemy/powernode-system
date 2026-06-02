@@ -24,6 +24,36 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "GPU discovery (audit P6)" do
+    let(:gpu_type) { create(:system_provider_instance_type, account: account, gpu_count: 8, gpu_type: "H100", gpu_memory_mb: 81_920) }
+    let(:cpu_type) { create(:system_provider_instance_type, account: account, gpu_count: 0) }
+
+    it "system_list_instance_types_by_gpu returns only GPU SKUs, filtered by type" do
+      gpu_type
+      cpu_type
+      r = call("system_list_instance_types_by_gpu", gpu_type: "h100")
+      expect(r[:success]).to be true
+      expect(r[:data][:instance_types].map { |t| t[:id] }).to eq([ gpu_type.id ])
+      expect(r[:data][:instance_types].first[:gpu_type]).to eq("H100")
+    end
+
+    it "system_find_node_with_gpu finds GPU-bearing live instances and excludes CPU-only" do
+      gpu_node = create(:system_node_instance, account: account, status: "running", provider_instance_type: gpu_type)
+      create(:system_node_instance, account: account, status: "running", provider_instance_type: cpu_type)
+      r = call("system_find_node_with_gpu", gpu_type: "H100", min_gpu_memory_mb: 40_000)
+      expect(r[:success]).to be true
+      expect(r[:data][:instances].map { |i| i[:id] }).to eq([ gpu_node.id ])
+      expect(r[:data][:instances].first[:gpu_count]).to eq(8)
+    end
+
+    it "system_find_node_with_gpu resolves a config['gpu'] agent hint" do
+      hinted = create(:system_node_instance, account: account, status: "running", provider_instance_type: cpu_type,
+                                             config: { "gpu" => { "count" => 1, "type" => "RTX4090", "memory_mb" => 24_576 } })
+      r = call("system_find_node_with_gpu")
+      expect(r[:data][:instances].map { |i| i[:id] }).to include(hinted.id)
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)

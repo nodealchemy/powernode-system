@@ -382,6 +382,40 @@ module System
       physical? && claimed_at.nil?
     end
 
+    # === GPU / accelerator capability (audit P6) ===
+    #
+    # Resolved like #available_memory_mb: prefer the bound
+    # provider_instance_type (cloud / templated physical declares its SKU),
+    # then fall back to a `config["gpu"]` hint the on-node agent reports from
+    # nvidia-smi (`{ "count" => 1, "type" => "H100", "memory_mb" => 81920 }`).
+    # Public — read by GPU discovery (system_find_node_with_gpu) + scheduling.
+    def gpu_count
+      type_count = provider_instance_type&.gpu_count.to_i
+      return type_count if type_count.positive?
+
+      Integer(config&.dig("gpu", "count") || 0)
+    rescue ArgumentError, TypeError
+      0
+    end
+
+    def gpu_type
+      provider_instance_type&.gpu_type.presence || config&.dig("gpu", "type").presence
+    end
+
+    def gpu_memory_mb
+      type_mb = provider_instance_type&.gpu_memory_mb
+      return type_mb if type_mb
+
+      raw = config&.dig("gpu", "memory_mb")
+      raw.nil? ? nil : Integer(raw)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    def gpu?
+      gpu_count.positive?
+    end
+
     private
 
     # Best-effort memory lookup used by #suggest_network_profile. Reads
