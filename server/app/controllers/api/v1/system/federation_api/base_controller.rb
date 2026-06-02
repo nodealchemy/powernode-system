@@ -28,7 +28,7 @@ module Api
           private
 
           def authenticate_federation_peer!
-            subject_cn = mtls_subject_cn
+            subject_cn = ::Security::MtlsTrust.forwarded_subject_cn(request)
             return render_unauthorized("mTLS client certificate required") if subject_cn.blank?
 
             # The presented cert's CN is the identity WE assigned this peer at
@@ -61,23 +61,6 @@ module Api
             end
 
             @current_federation_peer = peer
-          end
-
-          # Reads the verified mTLS client subject CN from the request. The
-          # reverse proxy (Traefik v3) terminates the handshake on the single
-          # websecure entrypoint (tls.options=mtls-optional@file, which the
-          # `<slug>-federation-api` router inherits) and forwards the cert
-          # subject via the passTLSClientCert middleware
-          # as `X-Forwarded-Tls-Client-Cert-Info: Subject="CN=<value>"`
-          # (URL-encoded). Mirrors NodeApi::BaseController's helper exactly —
-          # both routes share the same shared mTLS YAML.
-          def mtls_subject_cn
-            info = request.headers["X-Forwarded-Tls-Client-Cert-Info"].presence
-            return nil unless info
-
-            decoded = CGI.unescape(info)
-            match = decoded.match(/\bCN\s*=\s*"?([^,"]+)"?/i)
-            match && match[1].strip
           end
 
           attr_reader :current_federation_peer
