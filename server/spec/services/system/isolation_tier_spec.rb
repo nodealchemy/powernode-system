@@ -59,4 +59,25 @@ RSpec.describe System::IsolationTier do
       expect(gvisor["default"]).to be false
     end
   end
+
+  describe ".requires_runtime? / .required_runtimes_for" do
+    it "is true for gvisor/kata/firecracker, false for native/vm" do
+      expect(described_class.requires_runtime?("gvisor")).to be true
+      expect(described_class.requires_runtime?("kata")).to be true
+      expect(described_class.requires_runtime?("firecracker")).to be true
+      expect(described_class.requires_runtime?("native")).to be false
+      expect(described_class.requires_runtime?("vm")).to be false
+    end
+
+    it "derives the required runtimes from an instance's isolation config" do
+      gvisor_inst = double(config: { "isolation" => { "tier" => "gvisor", "docker_runtime" => "runsc" } })
+      expect(described_class.required_runtimes_for(gvisor_inst)).to eq(%w[gvisor])
+
+      native_inst = double(config: { "isolation" => { "tier" => "native" } })
+      expect(described_class.required_runtimes_for(native_inst)).to eq([])
+
+      bare_inst = double(config: {})
+      expect(described_class.required_runtimes_for(bare_inst)).to eq([])
+    end
+  end
 end

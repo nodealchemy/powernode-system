@@ -104,5 +104,25 @@ module System
         }
       end
     end
+
+    # Does this tier need a real OCI runtime binary provisioned on the host?
+    # native -> runc (built into dockerd) and vm -> full guest (no container
+    # runtime) need nothing extra; gvisor/kata/firecracker do.
+    def requires_runtime?(tier)
+      return false unless valid?(tier)
+      rt = TIERS.fetch(tier.to_s)[:docker_runtime]
+      rt.present? && rt != "runc"
+    end
+
+    # The isolation runtimes a NODE must provision, derived from the instance's
+    # recorded isolation profile (NodeInstance.config["isolation"]). Returns the
+    # tier names that need a runtime (e.g. ["gvisor"]) — the agent feeds these to
+    # the dockerd reconcile's RequestedRuntimes.
+    def required_runtimes_for(instance)
+      cfg = instance&.config
+      iso = cfg.is_a?(Hash) ? cfg["isolation"] : nil
+      tier = iso.is_a?(Hash) ? iso["tier"].to_s : ""
+      requires_runtime?(tier) ? [tier] : []
+    end
   end
 end

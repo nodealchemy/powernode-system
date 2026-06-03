@@ -177,11 +177,14 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.OnError,
 	)
 
-	// Substrate L0 — provision the requested isolation runtimes (e.g. gvisor)
-	// before the daemon starts: install runsc + register it in daemon.json so
-	// dockerd comes up with --runtime=runsc available.
-	if len(s.cfg.IsolationRuntimes) > 0 {
-		dockerMgr.RequestedRuntimes = s.cfg.IsolationRuntimes
+	// Substrate L0 — provision the isolation runtimes this node needs (e.g.
+	// gvisor) before the daemon starts: install runsc + register it in
+	// daemon.json. Sources: static Config + the platform's per-node isolation
+	// config (node_api/isolation/runtimes), derived from the instance's tier.
+	isoRuntimes := append([]string(nil), s.cfg.IsolationRuntimes...)
+	isoRuntimes = append(isoRuntimes, fetchIsolationRuntimes(client)...)
+	if len(isoRuntimes) > 0 {
+		dockerMgr.RequestedRuntimes = isoRuntimes
 		dockerMgr.Runtimes = dockerd.GvisorRuntimeEnsurer{Runner: mount.ExecRunner{}}
 	}
 

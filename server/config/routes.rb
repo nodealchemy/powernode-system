@@ -709,6 +709,10 @@ Rails.application.routes.draw do
           # offline. Mirrors SDWAN constellation-key advertisement.
           get "a2a/capability_keys", to: "a2a#capability_keys"
 
+          # AI/MCP workload substrate L0 — the agent pulls the isolation runtimes
+          # it should provision on its Docker daemon (e.g. ["gvisor"]).
+          get "isolation/runtimes", to: "isolation#runtimes"
+
           # Physical-device claim polling — anonymous, used BEFORE the
           # device has a bootstrap token. Devices flashed from a generic
           # disk image poll here while waiting for an operator to bind
