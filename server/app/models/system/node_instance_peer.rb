@@ -18,6 +18,10 @@ module System
 
     delegate :node, to: :node_instance
 
+    # AI/MCP workload substrate L2 — glob patterns this instance-agent is
+    # authorized to invoke on the platform MCP (default-deny: empty = none).
+    attribute :granted_mcp_tools, :jsonb, default: -> { [] }
+
     validates :handle, presence: true, length: { maximum: 64 },
                        uniqueness: { scope: :account_id }
     validates :status, inclusion: { in: STATUSES }
@@ -62,6 +66,17 @@ module System
 
     def addresses_array
       Array(addresses)
+    end
+
+    # Grant (or extend) the MCP tool-name glob patterns this instance-agent may
+    # invoke on the platform MCP. mode: :replace (default) or :add (union). Read
+    # by core Mcp::Principal via the injected tool_grant_resolver.
+    def grant_mcp_tools!(patterns, mode: :replace)
+      incoming = Array(patterns).map(&:to_s).reject(&:blank?).uniq
+      self.granted_mcp_tools =
+        mode.to_sym == :add ? (Array(granted_mcp_tools) | incoming) : incoming
+      save!
+      granted_mcp_tools
     end
 
     private

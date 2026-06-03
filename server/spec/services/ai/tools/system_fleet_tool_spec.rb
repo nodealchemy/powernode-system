@@ -89,6 +89,26 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Instance MCP grants (L2)" do
+    it "system_grant_instance_mcp_tools grants tool patterns to an announced instance" do
+      inst = create(:system_node_instance, account: account, status: "running")
+      System::NodeInstancePeer.create!(node_instance: inst, account: inst.node.account,
+                                       handle: "a-#{SecureRandom.hex(3)}", status: "active",
+                                       trust_score: 0.5, daily_decision_budget: 10)
+      r = call("system_grant_instance_mcp_tools", instance_id: inst.id,
+                                                  tool_patterns: %w[platform.system_*_read platform.health])
+      expect(r[:success]).to be true
+      expect(r[:data][:granted_mcp_tools]).to contain_exactly("platform.system_*_read", "platform.health")
+      expect(System::NodeInstancePeer.find_by(node_instance_id: inst.id).granted_mcp_tools).to include("platform.health")
+    end
+
+    it "errors when the instance has not announced as a peer" do
+      inst = create(:system_node_instance, account: account, status: "running")
+      r = call("system_grant_instance_mcp_tools", instance_id: inst.id, tool_patterns: %w[platform.health])
+      expect(r[:success]).to be false
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)

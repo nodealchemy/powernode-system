@@ -28,6 +28,7 @@ module Ai
         "system_find_node_with_gpu"     => "system.node_instances.read",
         "system_list_instance_types_by_gpu" => "system.nodes.read",
         "system_deploy_inference_server" => "system.instances.create",
+        "system_grant_instance_mcp_tools" => "system.node_instances.control",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -272,6 +273,14 @@ module Ai
               endpoint_override: { type: "string", required: false },
               sdwan_network_id: { type: "string", required: false },
               vip_cidr: { type: "string", required: false }
+            }
+          },
+          "system_grant_instance_mcp_tools" => {
+            description: "Grant an instance-agent the MCP tool-name glob patterns it may invoke on the platform MCP (default-deny: an instance can call nothing until granted). Patterns match the 'platform.<tool>' name, e.g. 'platform.system_*_read' or 'platform.health'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              tool_patterns: { type: "array", required: true },
+              mode: { type: "string", required: false }
             }
           },
           "system_provision_instance" => {
@@ -809,6 +818,7 @@ module Ai
         when "system_find_node_with_gpu"       then find_node_with_gpu(params)
         when "system_list_instance_types_by_gpu" then list_instance_types_by_gpu(params)
         when "system_deploy_inference_server"  then deploy_inference_server(params)
+        when "system_grant_instance_mcp_tools" then grant_instance_mcp_tools(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1085,6 +1095,22 @@ module Ai
             (type.nil? || i.gpu_type.to_s.casecmp?(type)) &&
             (min_mem.zero? || i.gpu_memory_mb.to_i >= min_mem)
         end
+      end
+
+      # Grant an instance-agent the MCP tool-name glob patterns it may invoke
+      # (default-deny authorization; AI/MCP workload substrate L2).
+      def grant_instance_mcp_tools(params)
+        instance = account_instances.find_by(id: params[:instance_id])
+        return error_result("instance not found") unless instance
+
+        peer = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+        return error_result("instance has not announced as an agent peer yet") unless peer
+
+        patterns = Array(params[:tool_patterns]).map(&:to_s).reject(&:blank?)
+        return error_result("tool_patterns is required") if patterns.empty?
+
+        granted = peer.grant_mcp_tools!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
+        success_result(instance_id: instance.id, granted_mcp_tools: granted)
       end
 
       def provision_instance(params)

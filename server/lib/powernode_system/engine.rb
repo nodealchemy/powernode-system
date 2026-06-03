@@ -120,6 +120,14 @@ module PowernodeSystem
           ::Mcp::Principal.instance_resolver = lambda do |cn|
             ::System::NodeInstance.where(id: cn).where.not(status: "terminated").first
           end
+          # Default-deny tool grant: an instance's allowed tool-name glob patterns
+          # come from its NodeInstancePeer (empty until explicitly granted).
+          ::Mcp::Principal.tool_grant_resolver = lambda do |node_instance|
+            next [] if node_instance.nil?
+
+            ::System::NodeInstancePeer
+              .where(node_instance_id: node_instance.id).pick(:granted_mcp_tools) || []
+          end
         end
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not wire MtlsTrust CA provider: #{e.message}"
