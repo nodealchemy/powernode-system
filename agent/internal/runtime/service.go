@@ -49,6 +49,7 @@ type Config struct {
 	PKIDir            string  // defaults to enroll.ResolveDefaultPKIDir()
 	StatePath         string  // defaults to mount.StatePath
 	A2AListenAddr     string  // agent-to-agent MCP server listen addr (empty = disabled)
+	A2AInferenceEndpoint string // local inference runtime (ollama) for the A2A inference.* skills (empty = no inference skills)
 	OnError           func(string, error)
 }
 
@@ -123,7 +124,17 @@ func (s *Service) Run(ctx context.Context) error {
 	// tokens (verified offline against the advertised signing key).
 	if s.cfg.A2AListenAddr != "" {
 		reg := a2a.NewRegistry()
-		reg.RegisterPing()
+		a2a.RegisterStandardSkills(reg, a2a.StandardSkillOptions{
+			Descriptor: func(skills []string) a2a.NodeDescriptor {
+				return a2a.NodeDescriptor{
+					InstanceID: readCertCN(paths.Cert),
+					OS:         runtime.GOOS,
+					Arch:       runtime.GOARCH,
+					Skills:     skills,
+				}
+			},
+			InferenceEndpoint: s.cfg.A2AInferenceEndpoint,
+		})
 		go func() {
 			if err := a2a.Run(ctx, a2a.RunnerConfig{
 				SelfInstanceID: readCertCN(paths.Cert),
