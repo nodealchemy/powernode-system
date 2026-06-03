@@ -147,6 +147,29 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     end
   end
 
+  describe "isolation tier (L0)" do
+    it "defaults to native and records the runtime profile in the plan" do
+      service.plan!
+      plan = mission.reload.configuration.dig("fleet", "plan")
+      expect(plan["isolation_tier"]).to eq("native")
+      expect(plan["isolation"]["docker_runtime"]).to eq("runc")
+    end
+
+    it "honors a requested tier and stamps it on members + instance config" do
+      mission.update!(configuration: { "fleet_spec" => fleet_spec.merge("isolation_tier" => "gvisor") })
+      service.plan!
+      result = service.provision!
+      expect(result[:members].first["isolation"]["docker_runtime"]).to eq("runsc")
+      inst = System::NodeInstance.find(result[:members].first["instance_id"])
+      expect(inst.config.dig("isolation", "tier")).to eq("gvisor")
+    end
+
+    it "rejects an unknown tier" do
+      mission.update!(configuration: { "fleet_spec" => fleet_spec.merge("isolation_tier" => "nope") })
+      expect { service.plan! }.to raise_error(described_class::FleetError, /isolation_tier/)
+    end
+  end
+
   it "runs the full plan -> provision -> delegate -> aggregate -> reap loop" do
     expect(service.plan![:ok]).to be true
     expect(service.provision![:count]).to eq(3)

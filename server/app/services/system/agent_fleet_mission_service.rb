@@ -44,6 +44,10 @@ module System
       delegation = spec["delegation"].to_s.presence || "hybrid"
       raise FleetError, "unknown delegation '#{delegation}'" unless DELEGATION_MODES.include?(delegation)
 
+      # L0 isolation tier — first-class deployment dimension (default native).
+      raise FleetError, "unknown isolation_tier '#{spec['isolation_tier']}'" unless spec["isolation_tier"].blank? || ::System::IsolationTier.valid?(spec["isolation_tier"])
+      isolation_tier = ::System::IsolationTier.normalize(spec["isolation_tier"])
+
       if source == "provision"
         %w[node_id provider_region_id provider_instance_type_id].each do |k|
           raise FleetError, "provision source requires '#{k}'" if spec[k].blank?
@@ -66,6 +70,8 @@ module System
         "member_skills" => Array(spec["member_skills"]).map(&:to_s).reject(&:blank?),
         "subtasks" => normalize_subtasks(spec["subtasks"]),
         "inference" => spec["inference"], # carried for L1 wiring (deferred per-member)
+        "isolation_tier" => isolation_tier,
+        "isolation" => ::System::IsolationTier.profile(isolation_tier),
         "reap" => spec.fetch("reap", true) ? true : false
       }
       persist_fleet!("plan", plan)
@@ -82,8 +88,9 @@ module System
       members = []
       plan["size"].times do |slot|
         instance = acquire_member(plan, slot)
+        record_isolation_on_instance!(instance, plan["isolation"])
         peer = enroll_member!(instance, plan)
-        members << member_record(slot, instance, peer)
+        members << member_record(slot, instance, peer, plan["isolation"])
         persist_fleet!("members", members)
       end
       { ok: true, count: members.size, members: members }
@@ -255,7 +262,7 @@ module System
       peer
     end
 
-    def member_record(slot, instance, peer)
+    def member_record(slot, instance, peer, isolation = nil)
       {
         "slot" => slot,
         "instance_id" => instance.id,
@@ -263,8 +270,21 @@ module System
         "handle" => peer.handle,
         "granted_mcp_tools" => Array(peer.granted_mcp_tools),
         "granted_peer_skills" => Array(peer.granted_peer_skills),
-        "offered_skills" => peer.offered_skill_names
+        "offered_skills" => peer.offered_skill_names,
+        "isolation" => isolation
       }
+    end
+
+    # Record the resolved isolation profile on the member's NodeInstance.config
+    # so the on-node agent selects the container runtime (Docker --runtime /
+    # K8s RuntimeClass) at deploy time. The deploy-path consumption point of the
+    # L0 seam.
+    def record_isolation_on_instance!(instance, isolation)
+      return if isolation.blank?
+
+      cfg = instance.config.is_a?(Hash) ? instance.config.deep_dup : {}
+      cfg["isolation"] = isolation
+      instance.update_columns(config: cfg)
     end
 
     def peers_for(members)

@@ -35,6 +35,7 @@ module Ai
         "system_launch_agent_fleet" => "system.node_instances.control",
         "system_agent_fleet_status" => "system.node_instances.read",
         "system_mint_peer_capability_token" => "system.node_instances.control",
+        "system_list_isolation_tiers" => "system.node_instances.read",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -333,6 +334,10 @@ module Ai
               skill: { type: "string", required: true },
               ttl_seconds: { type: "integer", required: false }
             }
+          },
+          "system_list_isolation_tiers" => {
+            description: "L0: list the isolation tiers an agent deployment can request (native | gvisor | kata | firecracker | vm) with their Docker runtime / K8s RuntimeClass mapping, isolation strength, overhead, and host requirements. Pass isolation_tier inside a fleet_spec (system_launch_agent_fleet) to select one (default native).",
+            parameters: {}
           },
           "system_provision_instance" => {
             description: "Provision a new cloud instance for a node (asynchronous; returns task_id)",
@@ -876,6 +881,7 @@ module Ai
         when "system_launch_agent_fleet"       then launch_agent_fleet(params)
         when "system_agent_fleet_status"       then agent_fleet_status(params)
         when "system_mint_peer_capability_token" then mint_peer_capability_token(params)
+        when "system_list_isolation_tiers"     then list_isolation_tiers(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1297,6 +1303,11 @@ module Ai
         error_result("not authorized: #{e.message}")
       rescue ::System::PeerCapabilityTokenSigner::SigningError => e
         error_result("token minting failed: #{e.message}")
+      end
+
+      # L0: discover the isolation tiers + their container-runtime mapping.
+      def list_isolation_tiers(_params)
+        success_result(tiers: ::System::IsolationTier.catalog, default: ::System::IsolationTier::DEFAULT)
       end
 
       def provision_instance(params)

@@ -84,6 +84,7 @@ template.assign_attributes(
       "subtasks" => [],                 # [{ "id", "skill", "payload" }]
       "delegation" => "hybrid",         # "central" | "a2a" | "hybrid"
       "inference" => nil,               # optional { "model", "endpoint_override", ... } to wire shared GPU
+      "isolation_tier" => "native",     # L0 isolation dimension: native | gvisor | kata | firecracker | vm
       "reap" => true
     },
     # Populated by AgentFleetMissionService across phases:

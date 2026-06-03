@@ -245,6 +245,18 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Isolation tiers (L0)" do
+    it "system_list_isolation_tiers returns the catalog + default" do
+      r = call("system_list_isolation_tiers")
+      expect(r[:success]).to be true
+      expect(r[:data][:default]).to eq("native")
+      tiers = r[:data][:tiers].map { |t| t["tier"] }
+      expect(tiers).to include("native", "gvisor", "kata", "firecracker", "vm")
+      native = r[:data][:tiers].find { |t| t["tier"] == "native" }
+      expect(native["docker_runtime"]).to eq("runc")
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)
