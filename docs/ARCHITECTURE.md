@@ -573,7 +573,6 @@ flowchart TB
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
 - [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (18 seeds, 8 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
-- [docs/history/](./history/) — archived phase plans + acceptance reports
 - [Parent platform's CLAUDE.md](../../../CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details
 - [initramfs/README.md](../initramfs/README.md) — boot artifact builder details

@@ -338,7 +338,7 @@ Source: `db/seeds/system_sdwan_manager_agent.rb`. Approval chain: `SDWAN Manager
 
 ### Disk Image Manager agent (6 policies)
 
-Source: `db/seeds/system_disk_image_manager_agent.rb`. Approval chain: `Disk Image Manager Actions` (12-hour timeout — image promotions span release windows). See [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md) for the full table. Categories include `system.disk_image_publication_promote`, `system.disk_image_publication_rollback`, `system.disk_image_webhook_trigger`, `system.disk_image_retention_update`. **Note (2026-05-19 audit):** two policies (`system.disk_image_webhook_revoke`, `system.disk_image_webhook_rotate_secret`) are seeded but their executors are pending — see [B2 in the audit report](./history/audits/2026-05-19-doc-accuracy-audit.md#6-suspected-code-bugs).
+Source: `db/seeds/system_disk_image_manager_agent.rb`. Approval chain: `Disk Image Manager Actions` (12-hour timeout — image promotions span release windows). See [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md) for the full table. Categories include `system.disk_image_publication_promote`, `system.disk_image_publication_rollback`, `system.disk_image_webhook_trigger`, `system.disk_image_retention_update`. **Note:** the 2026-05-19 accuracy audit found two seeded policies (`system.disk_image_webhook_revoke`, `system.disk_image_webhook_rotate_secret`) whose executors were still pending — confirm their current status before relying on autonomous handling.
 
 ### Runtime Manager agent (7 policies)
 
