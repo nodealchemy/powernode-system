@@ -213,7 +213,11 @@ module System
         ef = OpenSSL::X509::ExtensionFactory.new(ca_cert, cert)
         cert.add_extension(ef.create_extension("basicConstraints", "CA:FALSE", true))
         cert.add_extension(ef.create_extension("keyUsage", "digitalSignature, keyEncipherment", true))
-        cert.add_extension(ef.create_extension("extendedKeyUsage", "clientAuth", false))
+        # clientAuth: node calls the platform + peers. serverAuth: node also
+        # ACCEPTS inbound agent-to-agent (A2A) MCP calls (substrate L2.5), where
+        # it presents this same cert as its TLS server cert. (The Vault PKI role
+        # used in prod needs server_flag=true for the same reason.)
+        cert.add_extension(ef.create_extension("extendedKeyUsage", "clientAuth, serverAuth", false))
         cert.add_extension(ef.create_extension("subjectKeyIdentifier", "hash", false))
         cert.sign(ca_key, nil) # Ed25519 — no digest (must be nil)
 
