@@ -34,6 +34,148 @@ RSpec.describe Ai::Tools::SdwanTool do
         expect(keys).to include(action), "expected #{action} in action_definitions"
       end
     end
+
+    it "registers the federation peer mutation + residency + audit actions" do
+      keys = described_class.action_definitions.keys
+      %w[
+        system_sdwan_update_federation_peer
+        system_sdwan_set_data_residency
+        system_sdwan_get_audit_log
+      ].each do |action|
+        expect(keys).to include(action), "expected #{action} in action_definitions"
+      end
+    end
+  end
+
+  # ─── Federation peer mutation + residency + audit ────────────────────
+
+  describe "system_sdwan_update_federation_peer" do
+    let!(:peer) { create(:system_federation_peer, account: account, status: "proposed") }
+
+    it "updates mutable fields and serializes the peer" do
+      r = call(
+        "system_sdwan_update_federation_peer",
+        federation_peer_id: peer.id,
+        remote_instance_url: "https://renamed.example.com",
+        metadata: { "note" => "updated" }
+      )
+      expect(r[:success]).to be true
+      fp = r[:data][:federation_peer]
+      expect(fp[:id]).to eq(peer.id)
+      expect(fp[:remote_instance_url]).to eq("https://renamed.example.com")
+      expect(peer.reload.metadata["note"]).to eq("updated")
+    end
+
+    it "allows an in-matrix status transition (proposed → accepted)" do
+      r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "accepted")
+      expect(r[:success]).to be true
+      expect(r[:data][:federation_peer][:status]).to eq("accepted")
+      expect(peer.reload.status).to eq("accepted")
+    end
+
+    it "rejects an out-of-matrix status transition (proposed → active)" do
+      r = call("system_sdwan_update_federation_peer", federation_peer_id: peer.id, status: "active")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/not permitted/)
+      expect(peer.reload.status).to eq("proposed")
+    end
+
+    it "rejects a peer belonging to a different account" do
+      other_peer = create(:system_federation_peer, account: create(:account))
+      r = call("system_sdwan_update_federation_peer", federation_peer_id: other_peer.id, status: "accepted")
+      expect(r[:success]).to be false
+    end
+  end
+
+  describe "system_sdwan_set_data_residency" do
+    let!(:peer) { create(:system_federation_peer, account: account) }
+
+    it "sets the data_residency tag and surfaces it in the serializer" do
+      r = call("system_sdwan_set_data_residency", federation_peer_id: peer.id, data_residency: "eu-west")
+      expect(r[:success]).to be true
+      expect(r[:data][:federation_peer][:data_residency]).to eq("eu-west")
+      expect(peer.reload.data_residency).to eq("eu-west")
+    end
+
+    it "rejects a peer belonging to a different account" do
+      other_peer = create(:system_federation_peer, account: create(:account))
+      r = call("system_sdwan_set_data_residency", federation_peer_id: other_peer.id, data_residency: "eu-west")
+      expect(r[:success]).to be false
+    end
+  end
+
+  describe "system_sdwan_get_audit_log" do
+    let!(:peer) { create(:system_federation_peer, account: account) }
+
+    it "returns audit shipments (non-secret fields) and federation events for the peer" do
+      shipment = ::System::FederationAuditShipment.create!(
+        account: account,
+        federation_peer: peer,
+        period_start: 2.days.ago,
+        period_end: 1.day.ago,
+        event_count: 3,
+        sha256: "a" * 64,
+        sealed_path: "/worm/secret-path.jsonl",
+        status: "sealed"
+      )
+      event = ::System::FleetEvent.create!(
+        account: account,
+        kind: "federation.peer.accepted",
+        severity: "low",
+        source: "federation_peer",
+        payload: { "federation_peer_id" => peer.id }
+      )
+
+      r = call("system_sdwan_get_audit_log", federation_peer_id: peer.id)
+      expect(r[:success]).to be true
+
+      shipments = r[:data][:audit_shipments]
+      expect(shipments.map { |s| s[:id] }).to include(shipment.id)
+      shipment_row = shipments.find { |s| s[:id] == shipment.id }
+      expect(shipment_row[:event_count]).to eq(3)
+      expect(shipment_row[:status]).to eq("sealed")
+      # Secret fields are not surfaced.
+      expect(shipment_row).not_to have_key(:sealed_path)
+      expect(shipment_row).not_to have_key(:error_message)
+
+      expect(r[:data][:events].map { |e| e[:id] }).to include(event.id)
+    end
+
+    it "excludes events that don't reference this peer" do
+      other_peer = create(:system_federation_peer, account: account)
+      ::System::FleetEvent.create!(
+        account: account,
+        kind: "federation.peer.accepted",
+        severity: "low",
+        source: "federation_peer",
+        payload: { "federation_peer_id" => other_peer.id }
+      )
+
+      r = call("system_sdwan_get_audit_log", federation_peer_id: peer.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:events]).to be_empty
+    end
+
+    it "honors the limit param" do
+      3.times do
+        ::System::FleetEvent.create!(
+          account: account,
+          kind: "federation.peer.heartbeat",
+          severity: "low",
+          source: "federation_peer",
+          payload: { "federation_peer_id" => peer.id }
+        )
+      end
+      r = call("system_sdwan_get_audit_log", federation_peer_id: peer.id, limit: 2)
+      expect(r[:success]).to be true
+      expect(r[:data][:events].size).to eq(2)
+    end
+
+    it "rejects a peer belonging to a different account" do
+      other_peer = create(:system_federation_peer, account: create(:account))
+      r = call("system_sdwan_get_audit_log", federation_peer_id: other_peer.id)
+      expect(r[:success]).to be false
+    end
   end
 
   # ─── Phase O6 — host bridges (O1) ────────────────────────────────────

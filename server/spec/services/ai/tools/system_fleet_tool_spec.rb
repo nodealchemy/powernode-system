@@ -304,6 +304,23 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:success]).to be true
       expect(System::TemplateModule.where(node_template: template, node_module: mod)).to exist
     end
+
+    it "system_create_template builds an account-scoped NodeTemplate" do
+      r = call("system_create_template", name: "edge-template", node_platform_id: platform_record.id,
+                                         description: "edge nodes", enabled: true, admin_user: "ops",
+                                         config: { "tier" => "edge" })
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :template, :name)).to eq("edge-template")
+      created = System::NodeTemplate.find(r.dig(:data, :template, :id))
+      expect(created.account_id).to eq(account.id)
+      expect(created.admin_user).to eq("ops")
+      expect(created.config["tier"]).to eq("edge")
+    end
+
+    it "system_create_template returns an error when the model fails validation" do
+      r = call("system_create_template", name: template.name, node_platform_id: platform_record.id)
+      expect(r[:success]).to be false
+    end
   end
 
   describe "Modules + Versions" do
@@ -362,6 +379,26 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       r = call("system_get_instance", instance_id: running_instance.id)
       expect(r.dig(:data, :instance, :status)).to eq("running")
       expect(r.dig(:data, :instance)).to have_key(:running_module_digests)
+    end
+
+    it "system_update_instance updates mutable metadata + IP fields" do
+      r = call("system_update_instance", instance_id: running_instance.id,
+                                         name: "renamed-instance", private_ip_address: "10.0.5.5",
+                                         vpn_ip_address: "100.64.0.5", config: { "label" => "edge" })
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :instance, :name)).to eq("renamed-instance")
+      expect(r.dig(:data, :instance, :private_ip)).to eq("10.0.5.5")
+
+      running_instance.reload
+      expect(running_instance.name).to eq("renamed-instance")
+      expect(running_instance.vpn_ip_address).to eq("100.64.0.5")
+      expect(running_instance.config["label"]).to eq("edge")
+      expect(running_instance.status).to eq("running") # status not touched by update_instance
+    end
+
+    it "system_update_instance returns an error for an unknown instance id" do
+      r = call("system_update_instance", instance_id: SecureRandom.uuid, name: "nope")
+      expect(r[:success]).to be false
     end
   end
 

@@ -47,8 +47,10 @@ module Ai
         # Mutate
         "system_create_node"            => "system.nodes.create",
         "system_delete_node"            => "system.nodes.delete",
+        "system_create_template"        => "system.templates.create",
         "system_delete_template"        => "system.nodes.delete",
         "system_update_template"        => "system.nodes.update",
+        "system_update_instance"        => "system.instances.update",
         "system_delete_module"          => "system.modules.delete",
         "system_refresh_instance_modules" => "system.node_instances.control",
         "system_assign_module_to_template" => "system.modules.update",
@@ -226,6 +228,18 @@ module Ai
             description: "Delete a NodeTemplate. Restricted: errors if any Node uses this template (System::NodeTemplate has dependent::restrict_with_error on nodes).",
             parameters: { template_id: { type: "string", required: true } }
           },
+          "system_create_template" => {
+            description: "Create a new NodeTemplate for the current account. Binds to a NodePlatform via node_platform_id (required by the model). Lets the model validate (name presence + per-account uniqueness).",
+            parameters: {
+              name: { type: "string", required: true },
+              description: { type: "string", required: false },
+              enabled: { type: "boolean", required: false },
+              public: { type: "boolean", required: false },
+              node_platform_id: { type: "string", required: false },
+              admin_user: { type: "string", required: false },
+              config: { type: "object", required: false }
+            }
+          },
           "system_update_template" => {
             description: "Update mutable NodeTemplate fields: name, description.",
             parameters: {
@@ -254,6 +268,19 @@ module Ai
           "system_get_instance" => {
             description: "Fetch a node instance with its current status + metrics",
             parameters: { instance_id: { type: "string", required: true } }
+          },
+          "system_update_instance" => {
+            description: "Update mutable NodeInstance metadata: name, description, config, and the IP address fields. " \
+                         "Deliberately does NOT expose status/variety/key — status is governed by the AASM lifecycle (use the lifecycle actions), and key is encrypted signing material.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              name: { type: "string", required: false },
+              description: { type: "string", required: false },
+              config: { type: "object", required: false },
+              private_ip_address: { type: "string", required: false },
+              public_ip_address: { type: "string", required: false },
+              vpn_ip_address: { type: "string", required: false }
+            }
           },
           "system_find_node_with_gpu" => {
             description: "Find live node instances that expose a GPU/accelerator, optionally filtered by gpu_type, a minimum per-GPU VRAM (min_gpu_memory_mb), and a minimum GPU count. GPU is resolved from the instance's provider_instance_type SKU or its agent-reported config[\"gpu\"] hint.",
@@ -865,12 +892,14 @@ module Ai
         when "system_get_node"                 then get_node(params)
         when "system_create_node"              then create_node(params)
         when "system_delete_node"              then delete_node(params)
+        when "system_create_template"          then create_template(params)
         when "system_delete_template"          then delete_template(params)
         when "system_update_template"          then update_template(params)
         when "system_delete_module"            then delete_module(params)
         when "system_refresh_instance_modules" then refresh_instance_modules(params)
         when "system_list_instances"           then list_instances(params)
         when "system_get_instance"             then get_instance(params)
+        when "system_update_instance"          then update_instance(params)
         when "system_find_node_with_gpu"       then find_node_with_gpu(params)
         when "system_list_instance_types_by_gpu" then list_instance_types_by_gpu(params)
         when "system_deploy_inference_server"  then deploy_inference_server(params)
@@ -1041,6 +1070,23 @@ module Ai
         success_result(deleted: true, template_id: params[:template_id], name: name)
       end
 
+      def create_template(params)
+        attrs = {}
+        attrs[:name]             = params[:name]             if params[:name].present?
+        attrs[:description]      = params[:description]      if params[:description].present?
+        attrs[:enabled]          = params[:enabled]          unless params[:enabled].nil?
+        attrs[:public]           = params[:public]           unless params[:public].nil?
+        attrs[:node_platform_id] = params[:node_platform_id] if params[:node_platform_id].present?
+        attrs[:admin_user]       = params[:admin_user]       if params[:admin_user].present?
+        attrs[:config]           = params[:config]           if params[:config].is_a?(Hash)
+
+        template = account_templates.build(attrs)
+        template.save!
+        success_result(template: serialize_template(template))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Template create failed: #{e.record.errors.full_messages.join(', ')}")
+      end
+
       def update_template(params)
         template = account_templates.find(params[:template_id])
         attrs = {}
@@ -1092,6 +1138,28 @@ module Ai
       def get_instance(params)
         instance = account_instances.find(params[:instance_id])
         success_result(instance: serialize_instance_full(instance))
+      end
+
+      # Update mutable NodeInstance metadata. status/variety/key are
+      # deliberately NOT in the safe attribute set — status transitions go
+      # through the AASM lifecycle (system_terminate_instance, etc.), and key
+      # is encrypted signing material.
+      def update_instance(params)
+        instance = account_instances.find(params[:instance_id])
+        attrs = {}
+        attrs[:name]               = params[:name]               if params[:name].present?
+        attrs[:description]        = params[:description]        if params[:description].present?
+        attrs[:config]             = params[:config]             if params[:config].is_a?(Hash)
+        attrs[:private_ip_address] = params[:private_ip_address] if params[:private_ip_address].present?
+        attrs[:public_ip_address]  = params[:public_ip_address]  if params[:public_ip_address].present?
+        attrs[:vpn_ip_address]     = params[:vpn_ip_address]     if params[:vpn_ip_address].present?
+
+        instance.update!(attrs)
+        success_result(instance: serialize_instance(instance))
+      rescue ActiveRecord::RecordNotFound => e
+        error_result(e.message)
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Instance update failed: #{e.record.errors.full_messages.join(', ')}")
       end
 
       # GPU discovery (audit P6). GPU is resolved per-instance from the

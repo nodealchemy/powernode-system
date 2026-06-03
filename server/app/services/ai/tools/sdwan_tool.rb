@@ -42,6 +42,9 @@ module Ai
         "system_sdwan_accept_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_revoke_federation_peer"  => "sdwan.federation.manage",
         "system_sdwan_federation_scan"         => "sdwan.federation.read",
+        "system_sdwan_update_federation_peer"  => "sdwan.federation.manage",
+        "system_sdwan_set_data_residency"      => "sdwan.federation.manage",
+        "system_sdwan_get_audit_log"           => "sdwan.federation.read",
         # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills.
         # Each dispatches to its skill executor (composition-of-services);
         # gated by sdwan.federation.manage since all three stand up
@@ -307,6 +310,34 @@ module Ai
           "system_sdwan_federation_scan" => {
             description: "Run the federation governance scanner — flags prefix overlaps and stale-accepted rows",
             parameters: {}
+          },
+          "system_sdwan_update_federation_peer" => {
+            description: "Update a federation peer's mutable fields. When `status` is supplied it is gated by the v1 transition matrix (FederationPeer#can_transition_to?) — disallowed transitions return an error. Mirrors the FederationPeersController#update permitted keys.",
+            parameters: {
+              federation_peer_id: { type: "string", required: true },
+              status: { type: "string", required: false, description: "Target status — must be an allowed v1 transition from the current status" },
+              remote_instance_url: { type: "string", required: false },
+              remote_instance_id: { type: "string", required: false },
+              remote_account_id: { type: "string", required: false },
+              remote_prefix_advertisement: { type: "string", required: false, description: "/48|/56|/64 ULA prefix the remote instance claims" },
+              signed_at: { type: "string", required: false },
+              expires_at: { type: "string", required: false },
+              metadata: { type: "object", required: false }
+            }
+          },
+          "system_sdwan_set_data_residency" => {
+            description: "Set a federation peer's data residency region tag (the system_federation_peers.data_residency column, a scalar string ≤64 chars). Used by the residency enforcer to gate which peers may home a given record.",
+            parameters: {
+              federation_peer_id: { type: "string", required: true },
+              data_residency: { type: "string", required: true, description: "Region/residency tag, e.g. 'us-east' or 'eu'" }
+            }
+          },
+          "system_sdwan_get_audit_log" => {
+            description: "Read-only audit trail for a federation peer: WORM audit shipments (P9.2 sealed FleetEvent batches) plus recent federation.* FleetEvents pertaining to this peer. Secret fields (sealed_path, error_message) are not surfaced.",
+            parameters: {
+              federation_peer_id: { type: "string", required: true },
+              limit: { type: "integer", required: false, description: "Max rows per collection (default 50)" }
+            }
           },
           # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills.
           # Each action dispatches to its skill executor (composition of
@@ -684,6 +715,9 @@ module Ai
         when "system_sdwan_accept_federation_peer"  then accept_federation_peer(params)
         when "system_sdwan_revoke_federation_peer"  then revoke_federation_peer(params)
         when "system_sdwan_federation_scan"         then federation_scan(params)
+        when "system_sdwan_update_federation_peer"  then update_federation_peer(params)
+        when "system_sdwan_set_data_residency"      then set_data_residency(params)
+        when "system_sdwan_get_audit_log"           then get_audit_log(params)
         # Phase 3 (Federation & Multi-Site) — SDWAN-first composer skills
         when "system_sdwan_federation_compose"      then federation_compose(params)
         when "system_multi_tenant_isolation"        then multi_tenant_isolation(params)
@@ -1085,6 +1119,77 @@ module Ai
           findings: findings,
           finding_count: findings.size,
           severity_summary: findings.group_by { |f| f[:severity] }.transform_values(&:size)
+        )
+      end
+
+      # Update a federation peer's mutable fields. When status is supplied
+      # it is gated by the v1 transition matrix (mirrors
+      # FederationPeersController#update) so we never write a partial-state
+      # row. Permitted keys match the controller's peer_update_params (no
+      # endpoints — that's outside the REST surface). RecordNotFound /
+      # RecordInvalid bubble to the dispatch rescue.
+      def update_federation_peer(params)
+        peer = account_federation_peers.find(params[:federation_peer_id])
+
+        if params[:status].present? && !peer.can_transition_to?(params[:status])
+          return error_result(
+            "peer #{peer.id} is in status=#{peer.status.inspect}; transition to #{params[:status].inspect} is not permitted (transition matrix: #{::System::FederationPeer::V1_TRANSITIONS.fetch(peer.status, []).inspect})"
+          )
+        end
+
+        update_attrs = {}
+        update_attrs[:status]                      = params[:status]                      if params.key?(:status)
+        update_attrs[:remote_instance_url]         = params[:remote_instance_url]         if params.key?(:remote_instance_url)
+        update_attrs[:remote_instance_id]          = params[:remote_instance_id]          if params.key?(:remote_instance_id)
+        update_attrs[:remote_account_id]           = params[:remote_account_id]           if params.key?(:remote_account_id)
+        update_attrs[:remote_prefix_advertisement] = params[:remote_prefix_advertisement] if params.key?(:remote_prefix_advertisement)
+        update_attrs[:signed_at]                   = params[:signed_at]                   if params.key?(:signed_at)
+        update_attrs[:expires_at]                  = params[:expires_at]                  if params.key?(:expires_at)
+        update_attrs[:metadata]                    = params[:metadata]                    if params[:metadata].is_a?(Hash)
+
+        peer.update!(update_attrs) if update_attrs.any?
+        success_result(federation_peer: serialize_federation_peer(peer.reload))
+      end
+
+      # Set a federation peer's data residency region tag (scalar
+      # system_federation_peers.data_residency column, ≤64 chars).
+      def set_data_residency(params)
+        peer = account_federation_peers.find(params[:federation_peer_id])
+        peer.update!(data_residency: params[:data_residency])
+        success_result(federation_peer: serialize_federation_peer(peer.reload))
+      end
+
+      # Read-only audit trail for a federation peer.
+      #
+      # audit_shipments: P9.2 WORM shipment rows (sealed FleetEvent batches),
+      # newest period first. Only non-secret fields are surfaced — the
+      # content-addressable sealed_path and any error_message are withheld.
+      #
+      # events: federation.* FleetEvents pertaining to this peer. Scoped by
+      # account + kind prefix `federation.` + payload->>'federation_peer_id'
+      # — the canonical key every federation emitter stamps (same filter
+      # Federation::AuditShipmentService#events_for_peer uses). FleetEvent
+      # has no direct FK to FederationPeer, so scoping is by that JSON
+      # payload field rather than an association.
+      def get_audit_log(params)
+        peer  = account_federation_peers.find(params[:federation_peer_id])
+        limit = (params[:limit] || 50).to_i
+
+        shipments = ::System::FederationAuditShipment
+                    .where(federation_peer: peer)
+                    .order(period_start: :desc)
+                    .limit(limit)
+
+        events = ::System::FleetEvent
+                 .where(account_id: peer.account_id)
+                 .where("kind LIKE ?", "federation.%")
+                 .where("payload->>'federation_peer_id' = ?", peer.id)
+                 .recent
+                 .limit(limit)
+
+        success_result(
+          audit_shipments: shipments.map { |s| serialize_audit_shipment(s) },
+          events: events.map { |e| serialize_audit_event(e) }
         )
       end
 
@@ -1645,10 +1750,38 @@ module Ai
           remote_account_id: p.remote_account_id,
           remote_prefix_advertisement: p.remote_prefix_advertisement,
           status: p.status,
+          data_residency: p.data_residency,
           v1_allowed_transitions: ::System::FederationPeer::V1_TRANSITIONS.fetch(p.status, []),
           signed_at: p.signed_at&.iso8601,
           expires_at: p.expires_at&.iso8601,
           created_at: p.created_at&.iso8601
+        }
+      end
+
+      # Non-secret projection of a FederationAuditShipment (P9.2 WORM
+      # batch). sealed_path (content-addressable seal location) and
+      # error_message are deliberately omitted.
+      def serialize_audit_shipment(s)
+        {
+          id: s.id,
+          period_start: s.period_start&.iso8601,
+          period_end: s.period_end&.iso8601,
+          event_count: s.event_count,
+          sha256: s.sha256,
+          status: s.status
+        }
+      end
+
+      # Compact projection of a federation FleetEvent for the audit log view.
+      def serialize_audit_event(e)
+        {
+          id: e.id,
+          kind: e.kind,
+          severity: e.severity,
+          source: e.source,
+          payload: e.payload,
+          correlation_id: e.correlation_id,
+          emitted_at: e.emitted_at&.iso8601
         }
       end
 
