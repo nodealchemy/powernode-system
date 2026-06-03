@@ -71,7 +71,7 @@ type IssueParams struct {
 	Email         string
 	ACMEServer    string // ACME directory URL (LE prod or staging)
 	Issuer        string // "letsencrypt-prod" | "letsencrypt-staging" — passed through to result
-	DNSProvider   string // "cloudflare" (other providers stubbed in v1)
+	DNSProvider   string // one of: cloudflare, digitalocean, gcloud, hetzner, ovh, porkbun, route53 (see buildDNSProvider)
 	AccountKeyPEM string // optional; empty = generate new
 
 	// Provider-specific config — read from env so the secret value

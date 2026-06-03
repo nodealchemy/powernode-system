@@ -10,16 +10,15 @@
 // the same boundary as `powernode-tcp-forwarder` (sibling Go module
 // in the agent tree).
 //
-// v1 scope (P2.5.7):
+// Scope (shipped, originating in P2.5.7):
 //
-//   - Cloudflare DNS-01 issuance against Let's Encrypt prod + staging
+//   - DNS-01 issuance against Let's Encrypt prod + staging
 //   - Account key reuse via caller-supplied PEM (Rails passes from Vault)
 //   - JSON output of cert, private key, issuer chain, account key
 //
-// Other DNS providers (route53, gcloud, digitalocean, hetzner, porkbun,
-// ovh) are stubbed with a clear "not yet wired" error message and will
-// land incrementally — each lego provider is one import + one switch
-// case below.
+// All 7 DNS providers are wired in the buildDNSProvider switch below:
+// cloudflare, digitalocean, gcloud, hetzner, ovh, porkbun, route53.
+// Adding another is one lego import + one switch case.
 //
 // Plan reference: Decentralized Federation §J + P2.5.7.
 package acme
