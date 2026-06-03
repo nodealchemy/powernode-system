@@ -1,5 +1,7 @@
 # Module Manifest — Complete Schema Reference
 
+> Status: active
+
 Every Powernode NodeModule ships a `manifest.yaml` at the root of its OCI artifact. This document is the **complete, authoritative reference** for every field — content selection, dependencies, init lifecycle, security policy, services, build hints.
 
 > **Federation services?** For the `services:` key (added by the Decentralized Federation work) and on-node runtime semantics, see [`federation/MODULE_MANIFEST_SCHEMA.md`](./federation/MODULE_MANIFEST_SCHEMA.md). That doc is the source of truth for service-related fields; this doc covers the rest of the manifest and links across.
@@ -56,11 +58,20 @@ security:
 # AI skills shipped by this module (forward-compat, Track F-4)
 skills: []
 
+# Fleet-managed Unix identity (users / groups / sudoers grants)
+users:    [<user spec>, ...]
+groups:   [<group spec>, ...]
+sudoers:  [<sudoers grant>, ...]
+
 # Build pipeline hints
 build:
   ubuntu_digest: <sha256 | null>
   apt_snapshot:  <RFC-3339 timestamp | null>
 ```
+
+> **Authoritative top-level key set.** The 20 keys above are exactly
+> `System::ManifestImportService::KNOWN_TOP_KEYS`. Anything else is preserved
+> verbatim under `config.manifest_extras` (forward-compat) but is not validated.
 
 ---
 
@@ -231,6 +242,38 @@ skills: []
 ```
 
 A list of AI skill definitions this module ships. When attached, the on-node agent registers each declared skill with the platform via `ModuleSkillRegistrar`. Format under active design — see Track F-4 of the Golden Eclipse plan.
+
+### Fleet-managed Unix identity (`users`, `groups`, `sudoers`)
+
+Three top-level arrays declare the Unix identity a module needs at runtime. `System::ManifestImportService` validates them and reconciles them into `System::ServiceUser`, `System::ServiceGroup`, and `System::SudoersGrant` rows; the on-node agent materializes the corresponding accounts and `/etc/sudoers.d` drop-ins on module attach.
+
+```yaml
+groups:
+  - name: powernode          # must match System::ServiceGroup::GROUPNAME_RX
+
+users:
+  - name: powernode          # must match System::ServiceUser::USERNAME_RX; unique within the manifest
+    shell: /usr/sbin/nologin # optional
+    home: /var/lib/powernode # optional
+    gecos: "Powernode runtime user"   # optional
+    primary_group: powernode          # optional; declared above OR already allocated platform-wide
+    supplementary_groups: [docker]    # optional; each declared above OR allocated platform-wide
+
+sudoers:
+  - id: powernode-reload     # must match System::SudoersGrant::GRANT_ID_RX; unique within the manifest
+    user: powernode          # declared in `users:` above OR a live platform ServiceUser
+    runas: root              # optional
+    commands: ["/usr/bin/systemctl reload powernode-backend"]
+    flags: [NOPASSWD]        # optional
+```
+
+| Array | Required subkeys | Notes |
+|---|---|---|
+| `groups[*]` | `name` | Name must match `GROUPNAME_RX`; unique within the manifest. |
+| `users[*]` | `name` | Name must match `USERNAME_RX`; unique. `shell`/`home`/`gecos` are optional strings. `primary_group` + each `supplementary_groups` entry must be declared in this manifest's `groups:` OR already allocated platform-wide (`ServiceGroup.live`). |
+| `sudoers[*]` | `id`, `user` | `id` must match `GRANT_ID_RX`; unique. `user` must be declared in `users:` OR a live platform `ServiceUser`. `runas`, `commands`, `flags` shape the granted sudo rule. |
+
+Validation collects the full error set in one pass (not first-error-wins), so a bad manifest surfaces every offending entry at once.
 
 ### Build hints
 
@@ -538,14 +581,16 @@ Manifests are validated at **two distinct moments**: at PR/CI time by a JSON Sch
 ```bash
 cd extensions/system
 schema="modules/.schema/module-manifest.schema.json"
-for m in $(find modules templates -name manifest.yaml); do
+# Same YAML→JSON tool (yq) the CI workflow uses — install via
+#   sudo curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+while IFS= read -r m; do
   tmp="/tmp/$(echo "$m" | tr '/' '_').json"
-  python3 -c "import yaml,json; print(json.dumps(yaml.safe_load(open('$m'))))" > "$tmp"
+  yq -o=json '.' "$m" > "$tmp"
   npx --yes ajv-cli@5 validate -s "$schema" -d "$tmp" --spec=draft2020 --all-errors
-done
+done < <(find modules templates -name manifest.yaml | sort)
 ```
 
-(In CI the workflow uses `yq` instead of Python; either works.)
+This mirrors [`.gitea/workflows/module-validate.yaml`](../.gitea/workflows/module-validate.yaml) exactly (mikefarah `yq` for YAML→JSON, then `ajv-cli@5`), so a local pass and the CI gate agree.
 
 ### Runtime (`System::ManifestImportService`)
 
@@ -558,6 +603,7 @@ When the platform ingests a new OCI artifact, `System::ManifestImportService.imp
 - `dependencies.requires` entries match the `<org>/<repo>@<constraint>` pattern
 - `security.privileged: true` requires operator confirmation (handled at attach time, not import)
 - `init` and `services` may both be present (init runs first; new modules prefer services-only)
+- `users` / `groups` / `sudoers` entries validate name/id regexes, intra-manifest uniqueness, and group/user cross-references (each `primary_group`, `supplementary_groups` entry, and sudoers `user` must be declared in the same manifest OR already allocated platform-wide via `ServiceGroup.live` / `ServiceUser.live`)
 
 For the full `services:` validation rules (name uniqueness, restart_policy enum, health endpoint format, dependency cycles), see [`federation/MODULE_MANIFEST_SCHEMA.md`](./federation/MODULE_MANIFEST_SCHEMA.md).
 
@@ -570,3 +616,5 @@ For the full `services:` validation rules (name uniqueness, restart_policy enum,
 - [`runbooks/module-authoring.md`](./runbooks/module-authoring.md) — end-to-end "ship a new module" walkthrough
 - `templates/module-repo/manifest.yaml` — canonical authoring-time template
 - `templates/module-repo/Containerfile` — the build context that consumes `build.ubuntu_digest` + `build.apt_snapshot`
+
+_Last verified: 2026-06-03_

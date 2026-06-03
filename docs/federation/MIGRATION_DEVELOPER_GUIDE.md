@@ -1,14 +1,18 @@
 # Migration Framework — Extension Developer Guide
 
+> Status: active
+
 This guide explains how an extension author declares its resources as
 **migratable** so they participate in cross-peer migration + duplication
 via the Decentralized Federation Migration framework.
 
 The framework lives at `System::Migrations::*` (model, PlanComposer,
-ConflictDetector, ApplyExecutor) and is driven by per-extension
+ConflictDetector, ApplyExecutor) for single-hop transfers, plus the
+multi-hop chain layer (MigrationChain, ChainComposer, ChainExecutor,
+ChainSweepService) for P9.5 chains. It is driven by per-extension
 `federation_inventory.yaml` files.
 
-Plan reference: Decentralized Federation §F + P5 + Locked Decision #14.
+Plan reference: Decentralized Federation §F + P5 + P9.5 + Locked Decision #14.
 
 ---
 
@@ -244,6 +248,78 @@ or `action: skip`) record themselves on the step and continue.
 
 ---
 
+## Multi-hop migration chains (P9.5)
+
+A single `System::Migration` moves a resource from peer A to peer B in one
+hop. A **`System::MigrationChain`** threads several such hops in sequence —
+A → B → C → … — so a resource can traverse a federation route. This is
+implemented, not hypothetical:
+
+| Concern | Class / file |
+|---|---|
+| Chain model + state machine | `System::MigrationChain` (`app/models/system/migration_chain.rb`) |
+| Compose a chain from a hop list | `System::Migrations::ChainComposer` |
+| Advance the chain one hop | `System::Migrations::ChainExecutor.advance!(chain:)` |
+| Per-tick forward-progress sweep | `System::Migrations::ChainSweepService` |
+| Worker → platform advance endpoint | `POST /api/v1/system/worker_api/migration_chains/advance` |
+| Operator API | `Api::V1::System::Platform::MigrationChainsController` |
+
+### Chain state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> planned: ChainComposer
+    planned --> in_flight: advance (first hop dispatched)
+    planned --> cancelled: operator cancel
+    in_flight --> completed: final hop landed
+    in_flight --> failed: a hop failed (stuck at hop K)
+    completed --> [*]
+    failed --> [*]
+    cancelled --> [*]
+```
+
+`STATUSES = %w[planned in_flight completed failed cancelled]`;
+terminal = `completed | failed | cancelled`. When a hop fails the chain
+lands in `failed` with `current_hop_index = K+1` (stuck-at-hop-K) — it does
+not auto-roll-back prior hops.
+
+### How the chain advances
+
+`MigrationChainAdvanceJob` (worker cron, 60s) POSTs to the advance endpoint,
+which runs `ChainSweepService.run!`. For each `planned`/`in_flight` chain the
+sweep calls `ChainExecutor.advance!`, dispatching the next pending hop. The
+sweep is idempotent: a chain whose final hop already landed transitions to
+`completed` on the next advance call rather than queueing another hop. A
+per-chain failure is caught and recorded so one bad chain doesn't poison the
+rest of the tick.
+
+### Stuck-chain detection vs. recovery (a real gap)
+
+The forward-progress sweep **detects** stalls but does **not** auto-recover
+them:
+
+- **Detection works.** A chain `in_flight` for longer than
+  `ChainSweepService::STALL_THRESHOLD` (1 hour) without audit-log progress is
+  treated as stalled. `Sdwan::FederationGovernance.scan` emits a
+  `migration_chain_stalled` finding (`:medium`) for it, surfacing it on the
+  operator governance dashboard.
+- **Auto-recovery does not.** The sweep **skips** a stalled chain rather than
+  retrying it — there is no reconciler that re-drives a stuck `transferring`
+  hop, no dedicated sensor, and no automatic retry/backoff. Recovery is
+  **operator-driven**: the operator inspects the governance finding and either
+  cancels the chain or hand-advances it via the operator API.
+- **Audit shipment is write-only.** `Federation::AuditShipmentService` /
+  `System::FederationAuditShipment` ship a WORM audit trail; they do **not**
+  walk `migration_chains` to reconcile stuck transfers. Don't mistake audit
+  shipment for a stuck-migration reconciler.
+
+So: multi-hop chains **run** (compose + advance + complete) and stalls are
+**surfaced**, but stuck-chain **recovery** is manual. If you need a hop to be
+retried automatically after a transient peer outage, that's not in the
+framework yet.
+
+---
+
 ## What's NOT in v1
 
 The following are explicitly deferred:
@@ -272,11 +348,13 @@ The following are explicitly deferred:
   ApplyExecutor returns a clear "not implemented in v1" error if a step
   uses it. Per-kind rename strategy is deferred.
 
-- **Bidirectional sync.** This is a one-shot Migration operation, not
-  a continuous-sync arrangement. Continuous sync requires a future
-  `replication_pair` mapping table (P9 hypothetical) that links distinct
-  local UUIDs across peers — preserves the single-home-per-UUID invariant
-  while enabling identity-as-relation.
+- **Bidirectional / continuous sync.** A single `System::Migration` is a
+  one-shot transfer (and a `System::MigrationChain` is a one-shot
+  *multi-hop* transfer — see [Multi-hop chains](#multi-hop-migration-chains-p95)).
+  Neither is a continuous-sync arrangement. Continuous sync would require a
+  `replication_pair`-style mapping table linking distinct local UUIDs across
+  peers while preserving the single-home-per-UUID invariant; that table does
+  **not** exist today and is not scoped.
 
 ---
 
@@ -335,5 +413,11 @@ end
 - `app/services/system/migrations/plan_composer.rb` — composer source
 - `app/services/system/migrations/conflict_detector.rb` — detector source
 - `app/services/system/migrations/apply_executor.rb` — apply executor source
-- `app/models/system/migration.rb` — state machine
+- `app/models/system/migration.rb` — single-hop state machine
 - `app/models/system/migration_plan_step.rb` — per-step record
+- `app/models/system/migration_chain.rb` — multi-hop chain state machine (P9.5)
+- `app/services/system/migrations/chain_composer.rb` — chain composer source
+- `app/services/system/migrations/chain_executor.rb` — chain advance source
+- `app/services/system/migrations/chain_sweep_service.rb` — per-tick chain sweep + stall detection
+
+_Last verified: 2026-06-03_

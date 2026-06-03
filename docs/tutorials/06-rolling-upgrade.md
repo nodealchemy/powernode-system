@@ -1,5 +1,7 @@
 # Tutorial 06 — Rolling module upgrade with canary
 
+> Status: active
+
 > **What you'll learn:** Upgrade a module version across a fleet in batches,
 > with health-check gates between batches and an automatic circuit breaker
 > that pauses for operator review when too many instances fail in a row.
@@ -18,7 +20,7 @@
 
 ```mermaid
 flowchart TD
-    Op[Operator] --> Plan[execute_skill<br/>rolling_module_upgrade<br/>batch_pct=20%]
+    Op[Operator] --> Plan[RollingModuleUpgradeExecutor<br/>plan mode<br/>batch_pct=20%]
     Plan --> Plan2[Skill plans batches:<br/>50 instances → 5 × 10]
     Plan2 --> Apr[ApprovalRequest<br/>created]
     Apr --> Op2{Operator<br/>approves?}
@@ -45,7 +47,7 @@ across a 50-instance fleet with zero unsafe rollouts.
 **`rolling_module_upgrade`** is a skill executor (see
 [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md)) that:
 
-1. Plans a batched sequence based on `batch_pct` (default 20%)
+1. Plans a batched sequence based on `batch_pct` (default 10%; this tutorial uses 20%)
 2. Creates an `ApprovalRequest` per Fleet Autonomy intervention policy
    (`system.fleet_rolling_upgrade` is `require_approval`)
 3. On approval, walks batches one at a time
@@ -74,10 +76,10 @@ controlled production change — operator should sign off on timing.
 ## Step 1 — Identify the upgrade target
 
 ```javascript
-platform.system_list_module_versions({ module_name: "nginx" })
+platform.system_list_module_versions({ module_id: "<nginx-module-id>" })
 // → { versions: [
-//      { id: "v-1.24.0", lifecycle_state: "live", ... },
-//      { id: "v-1.26.0", lifecycle_state: "blessed", ... }
+//      { id: "v-1.24.0", promotion_state: "live", ... },
+//      { id: "v-1.26.0", promotion_state: "blessed", ... }
 //    ] }
 
 platform.system_list_instances({ template_id: "<edge-template>" })
@@ -87,33 +89,42 @@ platform.system_list_instances({ template_id: "<edge-template>" })
 **Expected outcome:** confirm 50 instances running v1.24.0 and v1.26.0
 available for promotion.
 
-## Step 2 — Plan the upgrade (dry-run via skill)
+## Step 2 — Plan the upgrade (dry-run via the executor)
 
-```javascript
-platform.execute_skill({
-  skill: "system-rolling-module-upgrade",
-  inputs: {
-    template_id: "<edge-template>",
-    module_id: "<nginx-module-id>",
-    target_version_id: "v-1.26.0",
-    batch_pct: 20,
-    max_consecutive_failures: 2,
-    health_timeout_sec: 300
-  }
-})
-// → {
-//      total_instances: 50,
-//      batch_size: 10,
-//      batch_count: 5,
-//      estimated_total_seconds: 1500,
-//      circuit_breaker: { max_consecutive_failures: 2 },
-//      batches: [
-//        { index: 0, instance_ids: [...10], phase: "pending" },
-//        ...
-//      ],
-//      approval_request_id: "<id>"
-//    }
+The `rolling_module_upgrade` skill is a `monitor`-agent executor: in
+production the **autonomy reconciler** runs the batches (Step 3), but you
+can compute the plan up-front in **plan mode** by invoking the executor
+directly. (There is no `execute_skill` MCP action — the executor is a Ruby
+class; run it via `rails runner` or a seed, exactly as
+[`db/seeds/example_rolling_upgrade.rb`](../../server/db/seeds/example_rolling_upgrade.rb)
+does.)
+
+```ruby
+result = ::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
+  account: account, agent: fleet_autonomy_agent
+).execute(
+  template_id:               "<edge-template>",
+  module_id:                 "<nginx-module-id>",
+  target_version_id:         "v-1.26.0",
+  batch_pct:                 20,
+  max_consecutive_failures:  2,
+  health_timeout_sec:        300
+)
+# → {
+#      total_instances: 50,
+#      batch_size: 10,
+#      batch_count: 5,
+#      estimated_total_seconds: 1500,
+#      circuit_breaker: { trips_after_consecutive_failures: 2, status: "armed" },
+#      batches: [
+#        { index: 0, instance_ids: [...10], phase: "pending" },
+#        ...
+#      ]
+#    }
 ```
+
+(Defaults if you omit them: `batch_pct: 10`, `max_consecutive_failures: 2`,
+`health_timeout_sec: 600`.)
 
 **Expected outcome:** plan shows 5 batches of 10 instances each, ~25 min
 total (5 batches × 5 min health window).
@@ -202,16 +213,18 @@ Future similar upgrades surface this learning in the
 
 If you ran the circuit-breaker drill, restore the fleet to a known state:
 
-```javascript
-// If you chose abort/rollback, no further action needed
-// If you chose continue_anyway and the version was actually broken, manually rollback:
-platform.execute_skill({
-  skill: "system-rolling-module-upgrade",
-  inputs: {
-    template_id, module_id, target_version_id: "v-1.24.0",
-    batch_pct: 50               // faster rollback
-  }
-})
+```ruby
+# If you chose abort/rollback, no further action needed
+# If you chose continue_anyway and the version was actually broken, manually
+# rollback by re-running the executor with the previous version as target:
+::System::Ai::Skills::RollingModuleUpgradeExecutor.new(
+  account: account, agent: fleet_autonomy_agent
+).execute(
+  template_id: template_id,
+  module_id: module_id,
+  target_version_id: "v-1.24.0",
+  batch_pct: 50                 # faster rollback
+)
 ```
 
 ## Troubleshooting
@@ -244,10 +257,12 @@ either raise the threshold or fix the underlying networking (the
 threshold is a symptom, not the cause).
 
 **Rollback doesn't fully restore previous version** — the rollback path
-re-runs `rolling_module_upgrade` with the previous version as target.
-If that version has been GC'd (lifecycle_state: archived), rollback
-fails. Don't archive old versions until you're certain you'll never roll
-back.
+re-runs `rolling_module_upgrade` with the previous version as target. A
+`retired` version is still kept for rollback/audit, so retiring the old
+version doesn't break rollback by itself — but if the version **row was
+deleted** outright, rollback fails because `target_version_id` no longer
+resolves. Keep the prior version row (even `retired`) until you're certain
+you'll never roll back.
 
 ## What's next
 
@@ -262,3 +277,5 @@ back.
   full skill input/output reference.
 - **[`FLEET_SENSORS.md`](../FLEET_SENSORS.md)** — `system.fleet_rolling_upgrade`
   intervention policy.
+
+_Last verified: 2026-06-03_

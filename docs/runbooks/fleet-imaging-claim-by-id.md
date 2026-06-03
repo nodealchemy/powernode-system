@@ -1,5 +1,7 @@
 # Fleet Imaging — Generic Image + Claim-by-ID
 
+> Status: active
+
 Provision many physical devices from **one** generic disk image plus a tiny
 per-device config file. Image every card identically, drop a per-device
 `identity.cfg`, install — each device enrolls as the instance you assigned it.
@@ -56,6 +58,13 @@ only to the device over TLS by the claim poll — never written to the file. Bin
 - **Device keeps polling, never claims:** confirm the instance is still `pending`
   (claimable) and the `ID` in `identity.cfg` matches. A claimed/terminated instance
   won't match — its boot config download also returns 409.
+  > **The operator must bind the claim.** The agent's claim poll
+  > (`agent/internal/boot/boot.go`) defaults to an **infinite** `ClaimPollTimeout`
+  > — a device that never matches a claimable instance will poll on
+  > `ClaimPollInterval` (30 s) forever rather than fail fast. There is no
+  > self-service binding: you must pre-create the physical NodeInstance (Procedure
+  > step 3) so the `ID` has a claimable target. (A finite default — 10 min — is
+  > proposed but not yet shipped, so today the burden is on the operator to bind.)
 - **TLS errors on the device:** the platform's serving cert must be trusted by the
   image. Public/Let's-Encrypt certs work out of the box; for a private CA, drop
   `powernode-ca.pem` and set `CA_PEM_FILE=/boot/powernode-ca.pem`.
@@ -66,3 +75,5 @@ only to the device over TLS by the claim poll — never written to the file. Bin
 - [`node-provisioning.md`](./node-provisioning.md) — full single-node lifecycle + per-state recovery.
 - [`federation-setup.md`](./federation-setup.md) — multi-site federation (managed children).
 - [`disk-image-ci.md`](./disk-image-ci.md) — how the generic images are built + published.
+
+_Last verified: 2026-06-03_

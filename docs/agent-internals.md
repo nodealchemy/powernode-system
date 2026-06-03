@@ -1,5 +1,7 @@
 # Powernode Agent — Internals Reference
 
+> Status: active
+
 The `powernode-agent` Go binary is the on-node runtime — a single static
 binary (~20MB), embedded in the initramfs, runs as PID 1's child via
 systemd after switch_root. This document is the package-by-package
@@ -32,9 +34,9 @@ flowchart TD
     Term -->|continue| Heart
 ```
 
-## Package map — 23 internal packages
+## Package map — 27 internal packages
 
-The agent's `internal/` directory contains 23 packages. Each is a tight
+The agent's `internal/` directory contains 27 packages. Each is a tight
 domain unit with focused responsibilities; no cross-package state.
 
 ### Identity + enrollment
@@ -77,12 +79,20 @@ domain unit with focused responsibilities; no cross-package state.
 | `manifest` | Parses `manifest.yaml` from each module artifact: identity, package_spec, file_spec, dependency_spec, cosign trust policy, declared skills. |
 | `migration` | On-node data migration for module version bumps. Hooks into the rolling upgrade flow when a module's new version requires schema or data changes inside the module's persistent state. |
 
+### On-node identity files
+
+| Package | Responsibility |
+|---------|----------------|
+| `etcidentity` | Authoritatively renders `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` from the platform's module-supplied user/group declarations. The agent owns these files end-to-end: anything outside the platform set (plus a hardcoded baseline of root/nobody/daemon/bin/sys) is removed, escaping per-node UID drift. Locks `/etc/.pwd.lock` (the same advisory lock glibc's `lckpwdf()` and useradd/passwd/vipw respect) and writes each file via `fsutil.AtomicWrite` (temp + fsync + rename) so shadow never desyncs from passwd. |
+| `etcsudoers` | Renders one file per declared sudo grant into `/etc/sudoers.d/`, validated by `visudo` before each atomic write. Files are named `powernode-<module>-<grant_id>` (strict kebab-case so sudo accepts them). Unlike `/etc/passwd`, grants are NOT drained on removal — the sweep deletes `powernode-`-prefixed files whose backing grant is gone with no grace window. Operator-authored files (e.g. `/etc/sudoers.d/90-admins`) are never touched. |
+
 ### Runtime integrations
 
 | Package | Responsibility |
 |---------|----------------|
 | `dockerd` | Phase 1 Docker runtime handshake. Generates Ed25519 server keypair, posts CSR via `runtime/handshake` phase=`wants_cert`, receives signed cert, writes `daemon.json` binding to SDWAN /128, starts `docker.service`. |
 | `k3sd` | Phase 2 K3s runtime handshake. Manages `k3s-server` vs `k3s-agent` mode based on assigned module; captures k3s-generated kubeconfig + tokens; posts via `bootstrap` / `join_request` phases. |
+| `gvisor` | gVisor (`runsc`) container-runtime provisioner — the first real isolation tier of the AI/MCP workload substrate (L0). Downloads + sha512-verifies the `runsc` binary for the host arch, contributes the `daemon.json` `runtimes` fragment that registers runsc with the Docker daemon (merged via the dockerd applier's `ExtraConfig` path), and detects readiness. Containers launched with `--runtime=runsc` (the mapping `System::IsolationTier` resolves for `isolation_tier=gvisor`) run inside gVisor's userspace-kernel sandbox. |
 
 ### Networking
 
@@ -96,36 +106,40 @@ domain unit with focused responsibilities; no cross-package state.
 | Package | Responsibility |
 |---------|----------------|
 | `agent_peer` | NodeInstance-as-Agent peering: `Announce` to platform on first heartbeat, expose declared skills, receive remote task delegations from operators. See [`docs/agent-peering.md`](./agent-peering.md). |
+| `a2a` | On-node agent-to-agent (A2A) transport for the AI/MCP workload substrate (L2.5/L3). Runs a small MCP JSON-RPC 2.0 server over mTLS so OTHER instances can invoke this instance's registered skills, plus an MCP client to call peers. Authorization is by signed **capability token**: the caller mints an Ed25519-signed token from the platform (`System::PeerCapabilityTokenSigner`) and the callee verifies it offline against the platform's advertised public key — no per-call platform round-trip. The verifier checks `token.sub == mTLS CN`, `token.aud == self`, `token.skill == tool`, and the time window (mirrors `internal/sdwan/mc_verifier.go`). |
 | `federation` | Cross-platform federation client. Sovereign auth handshake (sovereign-instance certs with URI SAN), bridge negotiation, grant verification on incoming federation_api requests. See [`docs/federation/NETWORK_TRUST.md`](./federation/NETWORK_TRUST.md). |
 
 ### Operator-facing services
 
 | Package | Responsibility |
 |---------|----------------|
-| `acme` | On-node DNS-01 challenge runner. Drives `powernode-acme` per-provider adapters (Cloudflare / Hetzner / DigitalOcean). Stamps + cleans up TXT records during cert issuance. See [`docs/runbooks/acme-issuance.md`](./runbooks/acme-issuance.md). |
+| `acme` | On-node DNS-01 challenge runner. Drives `powernode-acme`'s per-provider adapters — all 7 DNS providers are wired: Cloudflare, DigitalOcean, GCloud, Hetzner, OVH, Porkbun, Route53 (`buildDNSProvider` switch in `acme/issuer.go`). Stamps + cleans up TXT records during cert issuance. See [`docs/runbooks/acme-issuance.md`](./runbooks/acme-issuance.md). |
 | `fleetevent` | Local event buffer + batched POST to `/node_api/events`. Reliably delivers events even across platform outages (event buffer persists across agent restarts). |
 
 ## Subcommand surface
 
-The agent exposes 16 subcommands via `powernode-agent <command>`:
+The agent exposes 18 subcommands via `powernode-agent <command>` (registered in
+`cmd/powernode-agent/main.go`):
 
 ```
-powernode-agent boot             # first-boot (initramfs init-bottom path)
-powernode-agent service          # long-lived loop (30s heartbeat + task lease)
-powernode-agent enroll           # token → mTLS cert exchange
-powernode-agent verify <path>    # cosign + fs-verity verification
-powernode-agent introspect       # print agent's view of self (identity + modules + state)
-powernode-agent attach <id>      # mount module into union (legacy ipn -a)
-powernode-agent detach <id>      # unmount module (legacy ipn -d)
-powernode-agent update           # reconcile with /node_api/modules (legacy ipn -u)
-powernode-agent commit <id>      # capture live delta + push (legacy ipn -c)
-powernode-agent status           # module attach/detach state (legacy ipn -s)
-powernode-agent exec <id>        # fetch + run NodeScript (legacy ipn -e)
-powernode-agent sync             # reconcile cycle (legacy ipn -S)
-powernode-agent init <id> <act>  # module init action (legacy ipn -I)
-powernode-agent volume-setup     # partition disks (legacy ipn -X)
-powernode-agent puppet apply     # puppet integration (legacy ipn -p)
-powernode-agent version          # build info (git SHA + go version)
+powernode-agent boot               # first-boot (initramfs init-bottom path)
+powernode-agent service            # long-lived loop (30s heartbeat + task lease)
+powernode-agent prepare-root       # mount module rootfs as overlayfs at /sysroot, ready for switch-root
+powernode-agent enroll             # token → mTLS cert exchange
+powernode-agent federation-accept  # one-shot federation acceptance handshake to the parent platform
+powernode-agent verify <path>      # cosign + fs-verity verification
+powernode-agent introspect         # print agent's view of self (identity + modules + state)
+powernode-agent attach <id>        # mount module into union (legacy ipn -a)
+powernode-agent detach <id>        # unmount module (legacy ipn -d)
+powernode-agent update             # reconcile with /node_api/modules (legacy ipn -u)
+powernode-agent commit <id>        # capture live delta + push (legacy ipn -c)
+powernode-agent status             # module attach/detach state (legacy ipn -s)
+powernode-agent exec <id>          # fetch + run NodeScript (legacy ipn -e)
+powernode-agent sync               # reconcile cycle (legacy ipn -S)
+powernode-agent init <id> <act>    # module init action (legacy ipn -I)
+powernode-agent volume-setup       # partition disks (legacy ipn -X)
+powernode-agent puppet apply       # puppet integration (legacy ipn -p)
+powernode-agent version            # build info (git SHA + go version)
 ```
 
 Operator runbooks (`docs/runbooks/`) cover when to use which subcommand
@@ -312,3 +326,5 @@ push (signed with cosign keyless via Sigstore Fulcio).
 - [`federation/NETWORK_TRUST.md`](./federation/NETWORK_TRUST.md) — sovereign auth (`federation`)
 - [`runbooks/acme-issuance.md`](./runbooks/acme-issuance.md) — DNS-01 issuance (`acme`)
 - [`initramfs/README.md`](../initramfs/README.md) — how the agent gets embedded
+
+_Last verified: 2026-06-03_

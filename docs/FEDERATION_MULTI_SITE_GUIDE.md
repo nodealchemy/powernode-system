@@ -1,5 +1,7 @@
 # Federation & Multi-Site Guide
 
+> Status: active
+
 How Powernode federates independent platforms across sites, accounts, and
 organizations — and how it delivers **tenant isolation** and **service
 discovery** entirely over the SDWAN overlay rather than k8s-native seams.
@@ -169,11 +171,29 @@ Step detail:
 - **Token verification + `accept!`** — the plaintext hashes to the stored
   digest; on a match the peer transitions `proposed → accepted` and the
   digest is cleared (single-use). `contract_version_agreed` is recorded.
-- **`enroll!`** — platform peers transition `accepted → enrolled`, storing
-  the negotiated capabilities, the peer's extension slugs, and its
-  endpoints. (The bound node certificate is wired in a later flow; the
-  outbound peer client falls back to plaintext when a cert isn't yet
-  stored — see troubleshooting.)
+- **`enroll!` + mTLS trust exchange** — platform peers transition
+  `accepted → enrolled`, storing the negotiated capabilities, the peer's
+  extension slugs, and its endpoints. Cert issuance happens **here**, in one
+  of two modes dispatched by what the caller advertised:
+  - **hierarchical** — the caller (typically a `managed_child`) sends a CSR;
+    the parent signs it off its **own** CA and returns the cert in the accept
+    response. The child seals it as its `outbound_certificate`. Because the
+    cert chains to the parent's CA (already trusted by Traefik's client-auth),
+    the child→parent mTLS direction needs no proxy trust changes.
+  - **symmetric** — the caller sends its CA bundle; `establish_symmetric_trust!`
+    exchanges trust anchors and each side self-issues its outbound cert.
+
+  > **Caveat — peers enrolled without trust material fall back to plaintext.**
+  > If a peer enrolls advertising **neither** a CSR nor a CA bundle, no
+  > `outbound_certificate` is issued, and `Federation::PeerClient` (via
+  > `NetHttpAdapter`) **silently downgrades outbound `federation_api` calls to
+  > plaintext** — a remote peer enforcing client-cert verification then
+  > rejects the call. Single-account SDWAN peering (where the overlay carries
+  > the traffic) works regardless; what is **not** robust today is
+  > authenticated cross-account `federation_api` for a peer that skipped the
+  > trust exchange. Always complete the CSR (hierarchical) or CA-bundle
+  > (symmetric) exchange at accept time. See [§6](#6-security) and
+  > troubleshooting.
 - **Managed-child operator grant** — fires only when the peer represents a
   parent's view of a `managed_child` spawn. Idempotent: reuses a live grant
   if one exists. The grant is operator-scope (`read/write/admin`), 365-day
@@ -200,11 +220,29 @@ block (if any), the `sdwan_attach` result, the `governance` result, and any
 
 ### Enrollment + activation
 
-Once both sides are `accepted`/`enrolled`, the `FederationHeartbeatJob`
-(60s cadence, declared in `worker/config/sidekiq.yml`) drives the rest:
-the first successful heartbeat fires `record_heartbeat!`, transitioning
-the peer `enrolled → active`. From then on `last_heartbeat_at` tracks
-liveness, which the §5 autonomy loop watches.
+Once both sides are `accepted`/`enrolled`, the `enrolled → active` advance
+fires on the **first inbound heartbeat** a peer receives (`record_heartbeat!`,
+via `FederationApi::HeartbeatController`). From then on `last_heartbeat_at`
+tracks liveness.
+
+Two heartbeat mechanisms exist, and only one is wired today:
+
+- **Platform → platform (wired).** `FederationHeartbeatJob` (60s cron,
+  `:federation_heartbeat` queue in `worker/config/sidekiq.yml`) runs
+  `HeartbeatSweepService.run!`, which walks **active** platform peers whose
+  `last_heartbeat_at` is stale (>5min) and transitions them `active →
+  degraded` so the dashboard flags the silence. Note this sweep is a
+  **degradation** sweep — it does not itself advance `enrolled → active`.
+- **Agent → platform (NOT wired).** A spawned `managed_child` whose liveness
+  would come from its **on-node Go agent** has **no federation heartbeat
+  sender**: `agent/internal/federation/handler.go` completes the one-shot
+  accept handshake but never starts a heartbeat loop. So such a child stays
+  `enrolled` and never auto-advances to `active`. Until that loop ships,
+  advance it by driving an inbound heartbeat manually (or rely on the
+  out-of-band platform↔platform path above for symmetric peers).
+
+The §5 autonomy loop watches `last_heartbeat_at` for the liveness signals it
+acts on.
 
 ---
 
@@ -451,9 +489,16 @@ federation-specific copies.
 
 ### Trust chain
 
-- **mTLS** — federation_api calls are mutually authenticated. The calling
-  peer presents a client cert; the proxy → backend hop is itself mTLS
-  against the platform's internal CA.
+- **mTLS** — federation_api calls are mutually authenticated **when the peer
+  completed the trust exchange at accept** (hierarchical CSR-signing or
+  symmetric CA-bundle exchange — see [§2](#accept--the-acceptance-orchestration)).
+  The calling peer presents its `outbound_certificate`; the proxy → backend
+  hop is itself mTLS against the platform's internal CA. **A peer that
+  enrolled without trust material has no client cert and `PeerClient`
+  downgrades its outbound calls to plaintext** — so authenticated
+  cross-account `federation_api` is only robust once trust is exchanged.
+  Single-account SDWAN peering (traffic over the encrypted overlay) is
+  unaffected by this.
 - **Network-scoped trust (Locked Decision #12)** — SDWAN is a first-class
   participant. A federation_api request is denied unless the calling
   NodeInstance (`X-Calling-Instance`), the SDWAN network it arrived over
@@ -519,3 +564,5 @@ VRF boundary.
 - [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — full skill-executor reference
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system extension architecture (Subsystems §5 = SDWAN)
 - [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — sensor + intervention-policy reference
+
+_Last verified: 2026-06-03_

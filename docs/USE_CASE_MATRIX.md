@@ -1,5 +1,7 @@
 # NodeInstance Use Case Compatibility Matrix
 
+> Status: active
+
 What works, what doesn't, and what to expect when running container workloads on Powernode-managed NodeInstances. Read this before designing your deployment.
 
 This matrix exists because the platform's auto-registration plumbing is **bimodal-by-default** (long-lived persistent vs. tmpfs-wiped) but operators bring a spectrum of use cases. Here's the honest story for each.
@@ -250,12 +252,15 @@ When an operator chats "I want to run X", the System Concierge should:
 3. For ⚠️: show the relevant caveats before the operator commits
 4. For ❌: explain why + suggest the closest supported alternative
 5. For the chosen use case: drive the setup workflow via MCP tools (assign module, etc.)
+6. For cross-cutting topology design (SDWAN composition — host bridges, OVN logical networks, IPFIX collectors), delegate to the **System Topology Designer** via `execute_agent` rather than composing it inline. The Concierge frames the operator's intent; the specialist returns the topology plan. See the System extension `CLAUDE.md` §"AI Agents" for the agent split.
 
 This matrix is designed to be ingested into the System Concierge's RAG context — it's structured for that purpose.
 
 ## Related Docs
 
-- `CONTAINER_RUNTIMES.md` — operator workflow for Phase 1 Docker + Phase 2 K3s
-- `SKILL_EXECUTORS.md` — `docker_provision`, `provision_cluster` skills
-- `FLEET_SENSORS.md` — what triggers fleet autonomy actions
-- `ARCHITECTURE.md` — 8 subsystems including container runtimes
+- [`CONTAINER_RUNTIMES.md`](./CONTAINER_RUNTIMES.md) — operator workflow for Phase 1 Docker + Phase 2 K3s
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — `docker_provision`, `provision_cluster` skills
+- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — what triggers fleet autonomy actions
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — 8 subsystems including container runtimes
+
+_Last verified: 2026-06-03_

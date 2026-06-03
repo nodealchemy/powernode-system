@@ -1,9 +1,14 @@
 # Authoring System Skill Executors (with cross-step data flow)
 
+> Status: active
+
 How to write a system-extension AI skill executor so it is (a) invocable by an agent, (b) discoverable
 by the concierge, and (c) **composable** — its outputs can feed a later step in a multi-step
-provisioning mission. Companion to `SKILL_EXECUTORS.md` (reference) and `SKILL_EXECUTOR_CATALOG.md`
-(auto-generated; never hand-edit).
+provisioning mission. Companion to [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) (reference) and
+[`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) (auto-generated; never hand-edit —
+regenerate with `cd server && bundle exec rails system:skills:generate_catalog` run from the
+**parent platform** `server/` tree, since the extension ships no `server/lib/tasks`). The extension
+currently ships **48 executors**.
 
 > A new skill is "done" only with: executor + `Ai::Skill` row + agent binding + (if autonomous) an
 > intervention policy + MCP action + tests + this doc's output convention. See the root plan's
@@ -71,7 +76,8 @@ or `failure(message)`.
    fails the seed otherwise).
 3. **Autonomous** skills also need a `system.<action>` **intervention policy** in the owning agent
    seed (e.g. `fleet_autonomy_agent.rb`).
-4. After seed changes: `cd server && rails db:seed` and watch for `SkillBindings.validate!` errors.
+4. After seed changes: `cd server && rails db:seed` (from the **parent platform** `server/` tree) and
+   watch for `SkillBindings.validate!` errors.
 
 ## 3. Output-key convention (REQUIRED for composability)
 
@@ -99,8 +105,15 @@ and a consumer references the dot-path `outputs.node_instance_ids`.
 ## 4. Cross-step data flow (`depends_on_outputs`)
 
 `SkillCompositionRunner` (`server/app/services/ai/provisioning/skill_composition_runner.rb`) executes a
-provisioning plan as a DAG. A step that needs a value produced by a predecessor declares it in its
-`execution_config`:
+provisioning plan as a DAG. It resolves each step's executor by convention —
+`"#{skill_name.camelize}Executor"` constantized under `System::Ai::Skills::` (falling back to
+`Ai::Skills::`) — so the executor class name must match the skill slug. A step that needs a value
+produced by a predecessor declares it in its `execution_config`:
+
+> **Forward-looking:** resolution is convention-based today; an unknown skill name surfaces as a raw
+> `NameError` at runtime. A proposed `ExecutorRegistry` pre-validation pass would resolve all step
+> executors up front and fail compose-time with a structured `error_code: "EXECUTOR_NOT_FOUND"`
+> instead. Not yet shipped — until then, a typo'd skill slug fails late, mid-run.
 
 ```ruby
 "depends_on_outputs" => {
@@ -160,3 +173,5 @@ and invokes each one's rollback hook with its recorded outputs. (Note: rollback 
 - **Composer**: if a composer appends the step, assert the emitted `execution_config` carries the
   expected `depends_on_outputs` (see `plan_composer_service_spec.rb`).
 - End-to-end provider verification runs against a **Proxmox host** (`ProxmoxProvider`), not LocalQemu.
+
+_Last verified: 2026-06-03_

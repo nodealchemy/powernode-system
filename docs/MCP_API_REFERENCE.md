@@ -1,5 +1,7 @@
 # MCP API Reference
 
+> Status: active
+
 Action catalog for the system extension's MCP surface. Lists every `system_*`, `system_sdwan_*`, `kubernetes_*`, and `docker_*` action callable via the Powernode MCP server.
 
 **Audience:** AI Concierge prompt authors, external operators integrating with the platform's MCP server, contributors adding new actions.
@@ -58,9 +60,9 @@ Every action requires a permission grant on the calling user/agent. Permissions 
 
 ## Action catalog
 
-### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology (102 actions)
+### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (122 actions)
 
-Backed by `Ai::Tools::SystemFleetTool` (parent platform) + `Ai::Tools::DockerProvisioningTool` (managed Docker runtimes).
+Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented) plus the managed-Docker, package-repository, architecture-catalog, disk-image, ingress, storage-owner, and agent-fleet tool classes. The registry routing lives in the parent (`platform_api_tool_registry.rb`); the tool-class implementations live in the extension under `server/app/services/ai/tools/`.
 
 #### Nodes + instances
 
@@ -237,6 +239,71 @@ See [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) for the operator-facing workflow th
 
 **Permissions:** `system.providers.{view,update}`
 
+#### Ingress + public TLS (VIP → port-map → ACME → reverse proxy)
+
+Backed by `Ai::Tools::SystemIngressTool` (wraps the `ExposeServicePublicly` / `AcmeCertificateProvision` / `ReverseProxyCompose` skill executors). See [`INGRESS_TLS_GUIDE.md`](./INGRESS_TLS_GUIDE.md) for the operator-facing workflow.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_expose_service_publicly` | Expose a service end-to-end: create/reuse an SDWAN VIP, port-map it on the hub, provision a TLS cert for the hostname, regenerate the reverse proxy | operator, agent |
+| `system_acme_provision_certificate` | Issue an ACME TLS certificate for a hostname (dns-01 / http-01 / tls-alpn-01); stored as a `System::AcmeCertificate` | operator, agent |
+| `system_reverse_proxy_compose` | Regenerate the Traefik dynamic config so the platform serves an already-valid issued certificate | operator, agent |
+
+**Permissions:** `system.ingress.manage`, `system.acme.manage`
+
+#### Storage ownership (chown lifecycle)
+
+Backed by `Ai::Tools::SystemStorageOwnerTool`. Manages StorageAssignment ownership (service_user / operator / nobody / root) and tracks the on-node chown that applies it.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_assign_storage_owner` | Assign a StorageAssignment's owner (kind + service user); dispatches the on-node chown | operator |
+| `system_list_storage_assignments_by_owner` | Audit query — filter assignments by `owner_kind`, `service_user_username`, `chown_state`, or `node_instance_id` (e.g. "which assignments still use owner_kind=root?") | operator, agent |
+| `system_storage_chown_status` | Inspect chown state of one assignment — current state, previous_uid/gid, task id, timestamps, recorded error | operator, agent |
+| `system_storage_chown_retry` | Re-dispatch a failed / `manual_required` chown (resets `chown_last_error` → `pending`); `force_complete: true` escape hatch for operator-handled external mounts | operator |
+
+**Permissions:** `system.storage_owner.{assign,view}` (chown status/retry covered by the owner-management grant).
+
+#### GPU + inference
+
+Backed by `Ai::Tools::SystemFleetTool`. Locate GPU-bearing capacity and stand up an inference runtime.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_find_node_with_gpu` | Find live NodeInstances exposing a GPU/accelerator; filter by `gpu_type`, `min_gpu_memory_mb`, minimum GPU count | operator, agent |
+| `system_list_instance_types_by_gpu` | List provider instance-type SKUs that carry a GPU (filter by `gpu_type` + min count) — pick a SKU before provisioning | operator, agent |
+| `system_deploy_inference_server` | Deploy an inference runtime (ollama) onto a GPU node: assigns `gpu-nvidia-runtime` + `inference-ollama` modules and registers an `Ai::Provider` so the endpoint is consumable | operator, agent |
+
+**Permissions:** `system.instances.view` (discovery) + `system.instances.provision` (deploy).
+
+#### Agent-fleet + agent-to-agent (A2A) substrate
+
+Backed by `Ai::Tools::SystemFleetTool`. The L0–L3 substrate for running agents *on* fleet instances: isolation-tier selection (L0), per-instance platform-MCP grants (L2), agent-to-agent capability tokens + grants (L2.5/A2A), and full agent-fleet orchestration missions (L3). All capability surfaces are **default-deny**.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_list_isolation_tiers` | L0 — list isolation tiers an agent deployment can request (`native` / `gvisor` / `kata` / `firecracker` / `vm`) with their Docker runtime + K8s RuntimeClass mapping | operator, agent |
+| `system_grant_instance_mcp_tools` | L2 — grant an instance-agent the platform-MCP tool-name glob patterns it may invoke (default-deny until granted) | operator |
+| `system_discover_peers` | A2A — list online, operator-enabled agent peers in the account and the skills they offer (capability discovery) | operator, agent |
+| `system_grant_instance_peer_skills` | A2A — grant an instance-agent the peer skill-name glob patterns it may invoke on *other* instances (default-deny) | operator |
+| `system_mint_peer_capability_token` | A2A — mint an Ed25519-signed capability token proving `caller_instance` may invoke a `skill` on `target_instance`; gated on the A2A policy | operator, agent |
+| `system_authorize_peer_call` | A2A — three-gate, default-deny authorization decision for a peer skill invocation (caller granted + target online/enabled + skill offered) | agent |
+| `system_launch_agent_fleet` | L3 — launch an agent-fleet orchestration mission: provision a fleet of agent-instances, grant L2 + L2.5 capabilities, delegate work | operator |
+| `system_agent_fleet_status` | L3 — inspect an agent-fleet mission: status, current_phase, member/assignment counts, aggregated report, reaped count | operator, agent |
+
+**Permissions:** `system.a2a.{discover,grant,authorize}`, `system.agent_fleet.{launch,view}`, `system.instances.grant_mcp_tools`.
+
+#### SDWAN-adjacent composition (system_*-prefixed)
+
+These two actions are `system_*`-prefixed (not `system_sdwan_*`) but route through `Ai::Tools::SdwanTool` — they compose multiple SDWAN primitives into one operator-facing call.
+
+| Action | What it does | Audience |
+|---|---|---|
+| `system_multi_tenant_isolation` | Provision a fully-isolated SDWAN network slice for a single tenant — dedicated overlay with its own VRF + isolated iBGP RIB, non-overlapping /64, default-deny nftables baseline | operator |
+| `system_service_discovery_compose` | Make a backend service discoverable across the fleet over the overlay — provisions a VIP (auto-advertised via iBGP) + a VIP-backed front end | operator, agent |
+
+**Permissions:** `system.sdwan.networks.manage` (composition wraps the underlying network/VIP grants).
+
 #### Platform deploy + maintenance (Decentralized Federation surface)
 
 | Action | What it does | Audience |
@@ -285,7 +352,7 @@ See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spaw
 
 **Permissions:** `system.vault.rotate_transit_pepper`. See [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md) for the broader rotation workflow.
 
-### `system_sdwan_*` — SDWAN networking + OVN + IPFIX + host bridges + federation accept (69 actions)
+### `system_sdwan_*` — SDWAN networking + OVN + IPFIX + host bridges + federation accept (70 actions)
 
 Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 
@@ -340,6 +407,7 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "active"`) |
 | `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
+| `system_sdwan_federation_compose` | Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances — creates one `Sdwan::Network`, enrolls each member as a peer (hubs `publicly_reachable`), and compiles the routing plan |
 
 **Permissions:** `system.sdwan.federation_peers.{view,propose,accept,revoke}`
 
@@ -520,7 +588,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 
 A small set of `system_*` / `system_sdwan_*` action names are referenced in operator runbooks + tutorials using `platform.X(...)` syntax but are **not yet registered** in `platform_api_tool_registry.rb`. The doc-verification harness reports these as unknown actions; they are intentional placeholders documenting the *intended* MCP surface, with a REST workaround called out at the call site.
 
-The authoritative list (15 entries as of 2026-05-19) lives at [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). When adding a new doc reference to a not-yet-registered action, also append a row to that catalog so the harness output remains interpretable. When implementing one of the cataloged actions, remove its row + cross-link the new entry in the catalog below.
+The authoritative list (15 entries, re-confirmed unimplemented as of 2026-06-03 — e.g. `system_get_task`, `system_execute_task`, `system_create_template`, `system_update_module_assignment`) lives at [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). When adding a new doc reference to a not-yet-registered action, also append a row to that catalog so the harness output remains interpretable. When implementing one of the cataloged actions, remove its row + cross-link the new entry in the catalog below.
 
 Operator runbooks under `docs/runbooks/` should reference current registry actions only; cross-validate against this doc + the aspirational catalog before adding a new runbook step.
 
@@ -538,15 +606,19 @@ Operator runbooks under `docs/runbooks/` should reference current registry actio
 
 | Prefix | Unique actions | Tool classes |
 |---|---|---|
-| `system_*` (excl. sdwan) | 102 | `SystemFleetTool` + `SystemArchitectureCatalogTool` + `SystemPackageRepositoryTool` + `DockerProvisioningTool` + `DiskImageOperatorTool` + topology / storage tools |
-| `system_sdwan_*` | 69 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept subsections) |
+| `system_*` (excl. sdwan) | 122 | `SystemFleetTool` + `SystemArchitectureCatalogTool` + `SystemPackageRepositoryTool` + `DockerProvisioningTool` + `DiskImageOperatorTool` + `SystemIngressTool` + `SystemStorageOwnerTool` + topology / storage tools |
+| `system_sdwan_*` | 70 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept/compose subsections) |
 | `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
 | `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
-| **Total** | **228** registered actions (as of 2026-05-19); see [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) for 15 additional referenced-but-unregistered actions | |
+| **Total** | **249** registered actions (as of 2026-06-03); see [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) for 15 additional referenced-but-unregistered actions | |
+
+> Counts are code-derived from `platform_api_tool_registry.rb` on 2026-06-03. The parent platform's full machine-generated catalog (with parameter schemas) is the authoritative cross-check — regenerate it with `cd server && bundle exec rails mcp:generate_tool_catalog`.
 
 ## Related docs
 
-- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — 40 skill executors (compose multiple MCP actions into orchestrations)
-- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — 12 sensors (signals → autonomy actions → MCP action invocation)
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — skill executors (compose multiple MCP actions into orchestrations); [`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) is the auto-generated full list
+- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — fleet sensors (signals → autonomy actions → MCP action invocation)
 - [`runbooks/`](./runbooks/) — operator runbooks (use these MCP actions in concrete workflows)
 - `server/app/services/ai/tools/platform_api_tool_registry.rb` (parent platform) — source of truth for action-to-tool mapping
+
+_Last verified: 2026-06-03_

@@ -1,5 +1,7 @@
 # Tutorial Decision Tree
 
+> Status: active
+
 Not sure where to start? Pick the leaf that matches your goal and follow
 the path back up to know which tutorials precede it.
 
@@ -67,3 +69,5 @@ flowchart TD
 - [`README.md`](./README.md) — the full sequence with builds-on graph
 - [`../SMOKE_TEST.md`](../SMOKE_TEST.md) — what gets validated at the platform layer
 - [`../USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) — what works / what doesn't for 10 NodeInstance scenarios
+
+_Last verified: 2026-06-03_

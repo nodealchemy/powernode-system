@@ -1,12 +1,16 @@
 # Fleet Sensors — System Extension Reference
 
-The system extension ships **18 concrete sensors** (plus a `BaseSensor` abstract class) at `extensions/system/server/app/services/system/fleet/sensors/`. Sixteen are registered for the live tick loop via `FleetAutonomyService::SENSORS`; the other two (`PackageDriftSensor`, `StorageAssignmentDriftSensor`) run via separate invocation paths and emit signals into the same pipeline. Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
+> Status: active
+
+The `fleet/sensors/` directory at `extensions/system/server/app/services/system/fleet/sensors/` holds **21 files**: one `BaseSensor` abstract class, **17 sensors registered** for the live tick loop via `FleetAutonomyService::SENSORS`, and **3 unregistered fleet sensors** (`PackageDriftSensor`, `StorageAssignmentDriftSensor`, `SdwanCredentialExpirySensor`) that run via separate invocation paths and emit signals into the same pipeline. (A further 2 CVE sensors live under `cve_ops/sensors/` and are owned by the CVE Responder agent — see [its section](#cve-responder-agent-5-policies) — not part of this directory's count.) Each sensor inspects a slice of fleet state on a recurring tick, emits typed `FleetEvent` signals when thresholds trip, and feeds the autonomy `DecisionEngine` which gates remediation actions per intervention policy.
+
+The 17 registered sensors, in `SENSORS` order: `InstanceStatusSensor`, `InstanceStateDriftSensor`, `ModuleDriftSensor`, `CertificateExpirySensor`, `CertExpirySensor`, `ModulePromotionSensor`, `ConfigDriftSensor`, `SloViolationSensor`, `HoneypotAccessSensor`, `TradingPressureSensor`, `SdwanDriftSensor`, `SdwanReachabilitySensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `GitopsDriftSensor`, `ProjectSloSensor`, `FederationPeerLivenessSensor`.
 
 ## Architecture (one-paragraph summary)
 
 The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.interval_seconds` on the Fleet Autonomy agent; with the 2026-05-10 7-agent split, CVE / SDWAN / Disk Image / Runtime Manager agents each carry their own `interval_seconds` for their respective scopes). Each tick:
 
-1. The 16 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects). `PackageDriftSensor` and `StorageAssignmentDriftSensor` run on the same cadence via their owning services and emit signals into the same pipeline.
+1. The 17 sensors in `FleetAutonomyService::SENSORS` run in series (cheap; per-sensor work is bounded by the data it inspects). `PackageDriftSensor`, `StorageAssignmentDriftSensor`, and `SdwanCredentialExpirySensor` run on the same cadence via their owning services and emit signals into the same pipeline.
 2. Each sensor emits zero or more `FleetEvent` signals with `kind`, `severity`, `payload`, `correlation_id`
 3. The DecisionEngine maps signals → action categories → intervention policy lookup
 4. Policy = `auto_approve` → executor runs immediately
@@ -15,30 +19,32 @@ The Fleet Autonomy reconciler runs every 60s (configurable via `autonomy_config.
 
 ```mermaid
 flowchart LR
-    subgraph Sensors["18 sensors (16 registered for 60s tick, 2 via separate paths)"]
+    subgraph Sensors["20 fleet sensors (17 registered for 60s tick, 3 via separate paths)"]
         S1[instance_status]
         S2[module_drift]
         S3[module_promotion]
         S4[certificate_expiry]
+        S4b[cert_expiry / ACME]
         S5[config_drift]
         S6[instance_state_drift]
         S7[sdwan_reachability]
         S8[sdwan_drift]
         S9[sdwan_bgp_session_health]
         S10[sdwan_vip_reachability]
-        S11[sdwan_credential_expiry]
+        S11[sdwan_credential_expiry*]
         S12[honeypot_access]
         S13[slo_violation]
         S14[project_slo]
         S15[gitops_drift]
         S16[trading_pressure]
-        S17[package_drift]
-        S18[storage_assignment_drift]
+        S17[federation_peer_liveness]
+        S18[package_drift*]
+        S19[storage_assignment_drift*]
     end
     subgraph Signals["FleetEvent signal kinds"]
         Sig[instance.* / module.* / cert.* / config.* / gitops.*<br/>sdwan.* / honeypot.* / slo.* / project.* / storage.* / fleet.trading_*]
     end
-    subgraph Executors["Skill executors (representative — see SKILL_EXECUTORS.md for all 40)"]
+    subgraph Executors["Skill executors (representative — see SKILL_EXECUTOR_CATALOG.md for all 48)"]
         E1[drift_remediate]
         E2[cve_response / cve_remediation_orchestration]
         E3[rolling_module_upgrade]
@@ -54,6 +60,8 @@ flowchart LR
     DE --> FA[FleetAutonomyService<br/>gate_action!]
     FA --> Executors
 ```
+
+`*` = not in `FleetAutonomyService::SENSORS`; invoked on the same cadence by its owning service. The 17 unstarred nodes are the registered set.
 
 ## Sensor Reference
 
@@ -264,15 +272,17 @@ If no `Fleet::SensorConfig` exists for an account, sensor defaults from constant
 
 Seven AI agents seed intervention policies (action_category → policy mapping) since the 2026-05-10 domain split. Sourced from:
 
-- `db/seeds/fleet_autonomy_agent.rb` — **18 policies** (non-CVE / non-SDWAN / non-disk-image fleet ops)
+- `db/seeds/fleet_autonomy_agent.rb` — **27 policies** (non-CVE / non-SDWAN / non-disk-image fleet ops, including the 7 AUTONOMOUS `system.sdwan_*` remediations Fleet Autonomy owns)
 - `db/seeds/system_runtime_manager_agent.rb` — **7 policies** (Phase 1 Docker + Phase 2 K3s runtime; the prior `system.runtime_docker_tls_rotate` was removed 2026-05-19 — no executor existed)
 - `db/seeds/system_cve_responder_agent.rb` — **5 policies** (CVE feed → exposure → remediation; CVE policies historically lived on Fleet Autonomy)
-- `db/seeds/system_sdwan_manager_agent.rb` — **31 policies** (SDWAN networks / peers / VIPs / firewall / route policies / federation — moved off Fleet Autonomy 2026-05-10)
+- `db/seeds/system_sdwan_manager_agent.rb` — **24 policies** (operator-initiated `sdwan.*` CRUD — networks / peers / VIPs / firewall / route policies / federation; moved off Fleet Autonomy 2026-05-10)
 - `db/seeds/system_disk_image_manager_agent.rb` — **6 policies** (disk image CI publication lifecycle)
-- `db/seeds/system_concierge_agent.rb` — Concierge is a chat agent; intervention via `request_confirmation` skill rather than action-category policies
-- `db/seeds/system_topology_designer_agent.rb` — Topology Designer is a specialist invoked by Concierge via `execute_agent`; intervention is on the parent agent's queue
+- `db/seeds/system_concierge_agent.rb` — **0 action-category policies** — Concierge is a chat agent; intervention is via the `request_confirmation` skill, not policy gating
+- `db/seeds/system_topology_designer_agent.rb` — **0 action-category policies** — Topology Designer is a skill-gated specialist invoked by Concierge via `execute_agent`; intervention rides on the parent agent's queue
 
-**= 68 action-category policies across the seven system-extension agents.**
+**= 69 action-category policies across the seven system-extension agents.**
+
+> **Prefix split (important):** autonomous remediations use the `system.sdwan_*` action prefix and are owned by **Fleet Autonomy**; operator-initiated CRUD uses the bare `sdwan.*` prefix and is owned by the **SDWAN Manager**. The two prefixes are distinct policy namespaces.
 
 **Policy semantics:**
 
@@ -285,9 +295,9 @@ Seven AI agents seed intervention policies (action_category → policy mapping) 
 
 All policies decay to the agent's `trust_tier_minimum: monitored` condition — agents below trust threshold are auto-blocked regardless of policy.
 
-### Fleet Autonomy agent (18 policies)
+### Fleet Autonomy agent (27 policies)
 
-Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, SDWAN policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb` — they no longer live here.**
+Source: `db/seeds/fleet_autonomy_agent.rb`. Approval chain: `Fleet Autonomy Actions` (4-hour timeout, `*` approver, sequential). **Note: as of 2026-05-10, CVE policies moved to `system_cve_responder_agent.rb`, the operator-initiated `sdwan.*` CRUD policies to `system_sdwan_manager_agent.rb`, and Disk Image policies to `system_disk_image_manager_agent.rb` — they no longer live here. Fleet Autonomy retains the 7 AUTONOMOUS `system.sdwan_*` remediation policies (peer remediate, key rotate, failover, VIP failover, BGP session remediate, route policy audit, federation peer remediate), which is why this count exceeds the categories tabulated below.**
 
 | Action category | Default policy | Why |
 |---|---|---|
@@ -322,15 +332,15 @@ Source: `db/seeds/system_cve_responder_agent.rb`. Approval chain: `CVE Response 
 | `system.cve_auto_remediate` | `require_approval` | Auto-remediation candidate (`CriticalUpgradeAvailableSensor`) |
 | `system.module_critical_upgrade_ready` | `notify_and_proceed` | Patch already in catalog — fly it (gated by operator notify) |
 
-### SDWAN Manager agent (31 policies)
+### SDWAN Manager agent (24 policies)
 
-Source: `db/seeds/system_sdwan_manager_agent.rb`. Approval chain: `SDWAN Manager Actions` (4-hour timeout). Mix of network/peer/firewall/VIP/route-policy/port-mapping/access-grant/user-device/federation categories. Examples: `system.sdwan_peer_remediate` (notify), `system.sdwan_key_rotate` (auto), `system.sdwan_failover` (require), `system.sdwan_vip_failover` (require), `system.sdwan_route_policy_audit` (auto), `system.sdwan_user_device_revoke` (require), `system.sdwan_federation_accept` (require). See [`SDWAN_MANAGER_AGENT.md`](./SDWAN_MANAGER_AGENT.md) for the full table.
+Source: `db/seeds/system_sdwan_manager_agent.rb`. Approval chain: `SDWAN Manager Actions` (4-hour timeout). These are **operator-initiated `sdwan.*` CRUD** categories (network/peer/firewall/VIP/route-policy/port-mapping/access-grant/user-device/federation create/update/delete) — distinct from the AUTONOMOUS `system.sdwan_*` remediations that stay on Fleet Autonomy. Examples: `sdwan.network_create`, `sdwan.firewall_rule_create`, `sdwan.access_grant_revoke`, `sdwan.federation_peer_accept`. See [`SDWAN_MANAGER_AGENT.md`](./SDWAN_MANAGER_AGENT.md) for the full table.
 
 ### Disk Image Manager agent (6 policies)
 
 Source: `db/seeds/system_disk_image_manager_agent.rb`. Approval chain: `Disk Image Manager Actions` (12-hour timeout — image promotions span release windows). See [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md) for the full table. Categories include `system.disk_image_publication_promote`, `system.disk_image_publication_rollback`, `system.disk_image_webhook_trigger`, `system.disk_image_retention_update`. **Note (2026-05-19 audit):** two policies (`system.disk_image_webhook_revoke`, `system.disk_image_webhook_rotate_secret`) are seeded but their executors are pending — see [B2 in the audit report](./history/audits/2026-05-19-doc-accuracy-audit.md#6-suspected-code-bugs).
 
-### Runtime Manager agent (8 policies)
+### Runtime Manager agent (7 policies)
 
 Source: `db/seeds/system_runtime_manager_agent.rb`. Approval chain: `Runtime Manager Actions` (4-hour timeout, `*` approver, sequential, separate from Fleet Autonomy chain).
 
@@ -338,7 +348,6 @@ Source: `db/seeds/system_runtime_manager_agent.rb`. Approval chain: `Runtime Man
 |---|---|---|
 | `system.runtime_docker_provision` | `notify_and_proceed` | Operator opted in by assigning `docker-engine` module; provisioning is the obvious follow-through |
 | `system.runtime_docker_decommission` | `require_approval` | Destructive — destroys managed `Devops::DockerHost` row + Vault TLS material |
-| `system.runtime_docker_tls_rotate` | `auto_approve` | Aligns with `system.cert_rotate` hands-off posture |
 | `system.runtime_k8s_cluster_bootstrap` | `notify_and_proceed` | Operator opted in by assigning `k3s-server` module |
 | `system.runtime_k8s_cluster_decommission` | `require_approval` | Destructive — cascade-deletes member node rows |
 | `system.runtime_k8s_node_join` | `notify_and_proceed` | Operator opted in by assigning `k3s-agent` module |
@@ -366,8 +375,10 @@ In addition to per-policy gates, operators can set a per-module **consent budget
 
 ## Related Docs
 
-- `extensions/system/docs/SKILL_EXECUTORS.md` — remediation actions invoked by sensor signals
-- `extensions/system/docs/ARCHITECTURE.md` — autonomy + decision engine subsystem
-- `extensions/system/docs/CONTAINER_RUNTIMES.md` — runtime-specific monitoring (Runtime Manager agent has its own policies)
-- `extensions/system/docs/runbooks/cve-response.md` — operator runbook using `cve_remediate` policy chain
-- `extensions/system/docs/runbooks/sdwan-network-setup.md` — operator runbook covering SDWAN policies
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — remediation actions invoked by sensor signals ([`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) for the full auto-generated list)
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — autonomy + decision engine subsystem
+- [`CONTAINER_RUNTIMES.md`](./CONTAINER_RUNTIMES.md) — runtime-specific monitoring (Runtime Manager agent has its own policies)
+- [`runbooks/cve-response.md`](./runbooks/cve-response.md) — operator runbook using `cve_remediate` policy chain
+- [`runbooks/sdwan-network-setup.md`](./runbooks/sdwan-network-setup.md) — operator runbook covering SDWAN policies
+
+_Last verified: 2026-06-03_

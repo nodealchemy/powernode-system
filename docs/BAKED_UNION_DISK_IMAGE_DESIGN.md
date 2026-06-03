@@ -168,3 +168,5 @@ or the claim flow. No new identity mechanism required.
 
 `DISK_IMAGE_CI.md` still describes the module blob as "composefs" — that predates the
 erofs migration (commit `80b57be`) and should be refreshed alongside this work.
+
+_Last verified: 2026-06-03_

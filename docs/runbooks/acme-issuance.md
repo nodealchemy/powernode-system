@@ -1,5 +1,7 @@
 # ACME Certificate Issuance — Operator Runbook
 
+> Status: active
+
 Day-2 operator workflow for ACME DNS-01 cert lifecycle: provider setup,
 Vault credential layout, single + multi-SAN issuance, renewal/revocation,
 LAN-preference endpoint discovery, Traefik termination, failover.
@@ -11,20 +13,39 @@ engineers, security operators.
 - [`acme-smoke.md`](./acme-smoke.md) — P2.5.7 acceptance smoke test (6 live scenarios)
 - [`vault-credential-restoration.md`](./vault-credential-restoration.md) — Vault DR for ACME credential restoration
 
-> **MCP coverage note:** ACME cert management currently flows through the
-> REST API (`/api/v1/system/acme_certificates`, `/api/v1/system/acme_dns_credentials`)
-> and the operator UI. The `platform.system_acme_*` MCP wrappers shown in
-> this runbook are **aspirational** — they're not yet in the
-> [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md) registry. For
-> operator scripts that need cert management today, use `curl` against
-> the REST endpoints. The MCP examples below illustrate the intended
-> shape once those wrappers ship.
+> **MCP coverage note:** one ACME MCP action ships today —
+> `platform.system_acme_provision_certificate` (see the auto-generated
+> [MCP tool catalog](../../../../docs/reference/auto/mcp-tools.md)). The
+> finer-grained `system_acme_*` wrappers shown in this runbook
+> (`create_dns_credential`, `request_certificate`, `get_certificate`,
+> `renew_certificate`, `revoke_certificate`) are **aspirational** — those
+> lifecycle steps still flow through the REST API
+> (`/api/v1/system/acme_certificates`, `/api/v1/system/acme_dns_credentials`)
+> and the operator UI. For operator scripts that need that granularity today,
+> use `curl` against the REST endpoints; the MCP examples below illustrate the
+> intended shape once the remaining wrappers ship.
 
 ## Architecture summary
 
-Powernode bundles `powernode-acme` (a Go binary, embedded in the platform
-image) that drives DNS-01 challenges via per-provider adapters. Cert
-material persists to Vault under `acme_certificate_pem/<cert-id>` and
+Two layers cooperate on DNS-01 issuance:
+
+- **Rails side** (`extensions/system/server/app/services/acme/`) — the
+  control plane. `Acme::CertificateManager` orchestrates issue / renew /
+  revoke; `Acme::DnsProviderRegistry` declares the **7 supported providers**
+  (cloudflare, route53, gcloud, digitalocean, hetzner, porkbun, ovh) and
+  validates each credential's required fields before issuance; per-provider
+  Ruby adapters live at `app/services/acme/<provider>/dns_client.rb` and back
+  the "Test Connectivity" probe. `Acme::LegoClient` shells out to the on-node
+  Go binary and exports the provider credentials into its environment.
+- **On-node Go binary** (`powernode-acme`, built from
+  `extensions/system/agent/internal/acme/`) — embedded in the platform image,
+  wraps the `go-acme/lego` library and runs the actual ACME ceremony. Its
+  `buildDNSProvider` switch wires all **7** providers; Cloudflare reads its
+  param-named token env var, the other six read lego's standard env vars
+  (`DO_AUTH_TOKEN`, `AWS_*`, `GCE_*`, `PORKBUN_*`, `OVH_*`, `HETZNER_API_KEY`)
+  that `LegoClient#build_provider_env` already exported.
+
+Cert material persists to Vault under `acme_certificate_pem/<cert-id>` and
 `acme_certificate_key/<cert-id>`. Traefik (the production reverse proxy)
 file-watches `/etc/traefik/dynamic/` for changes and reloads without
 dropping connections.
@@ -34,7 +55,7 @@ sequenceDiagram
     actor Op as Operator
     participant API as AcmeCertificates<br/>Controller
     participant Mgr as Acme::Certificate<br/>Manager
-    participant Provider as DNS adapter<br/>(Cloudflare/Hetzner/DO)
+    participant Provider as DNS adapter<br/>(1 of 7 providers)
     participant LE as Let's Encrypt<br/>(staging / prod)
     participant Vault
     participant Trf as Traefik
@@ -63,17 +84,38 @@ sequenceDiagram
 
 ## Provider matrix
 
-| Provider | Status | Token scope |
-|----------|--------|-------------|
-| Cloudflare | Production | `Zone:Zone:Read` + `Zone:DNS:Edit`, scoped to the target zone |
-| Hetzner | Production | DNS API token (read+write) for the zone |
-| DigitalOcean | Production | Personal access token with read+write to DNS |
-| Route53 | Stub-only | (not production-ready; needs AWS-SDK adapter completion) |
+All seven providers in `Acme::DnsProviderRegistry::PROVIDERS` are wired both
+Rails-side (credential validation) and in the on-node Go issuer. The
+`required_fields` column is what the operator must supply when creating the
+DNS credential (validated before issuance — missing fields are a hard
+failure).
 
-To add a provider: implement a Go adapter in
-`extensions/system/server/vendor/powernode-acme/internal/dns/` mirroring
-the existing cloudflare/hetzner/do adapters. Each adapter implements
-`Stamp(domain, txt_value, ttl) → error` + `Cleanup(domain) → error`.
+| Provider (slug) | Required credential fields | Notes |
+|-----------------|----------------------------|-------|
+| `cloudflare` | `api_token` | `Zone:Read` + `Zone:DNS:Edit`, scoped to the target zone |
+| `route53` | `access_key_id`, `secret_access_key`, `region` | AWS IAM access key + secret |
+| `gcloud` | `service_account_json`, `project_id` | Google Cloud DNS service-account JSON |
+| `digitalocean` | `auth_token` | Personal access token with read+write to DNS |
+| `hetzner` | `api_token` | Hetzner DNS Console API token |
+| `porkbun` | `api_key`, `secret_api_key` | Porkbun API key + secret API key |
+| `ovh` | `application_key`, `application_secret`, `consumer_key`, `endpoint` | `endpoint` is one of `ovh-eu` / `ovh-us` / `ovh-ca` |
+
+To add an **eighth** provider, both layers need a touch:
+
+1. **Rails side** — add an entry to `Acme::DnsProviderRegistry::PROVIDERS`
+   (`lego_id`, `required_fields`, `description`), add the slug to
+   `System::AcmeDnsCredential::SUPPORTED_PROVIDERS`, optionally wire a
+   network-validation probe in `validate_credentials_via_api!`, and add a
+   `app/services/acme/<provider>/dns_client.rb` adapter for "Test
+   Connectivity".
+2. **Go side** — add a `case "<slug>":` to `buildDNSProvider` in
+   `agent/internal/acme/issuer.go` (one `import` of the matching
+   `go-acme/lego/v4/providers/dns/<slug>` package + one switch case) and
+   export its credential env var(s) in `Acme::LegoClient#build_provider_env`.
+
+(lego's library carries adapters for ~50 providers, so the Go-side change is
+usually just the import + switch case — there's no custom `Stamp`/`Cleanup`
+adapter to write.)
 
 ## Vault credential layout
 
@@ -153,9 +195,11 @@ once per SAN sequentially. Total duration scales linearly with SAN count.
 
 ## Step 4 — Renew (manual or automatic)
 
-**Automatic:** the renewal worker (`acme_certificate_renewal`, Sidekiq
-cron every 6h) finds certs within 30 days of expiry and re-runs the
-issuance flow. No operator action required.
+**Automatic:** the renewal worker (`acme_certificate_renewal`, Sidekiq cron
+every 6h → `AcmeCertificateRenewalJob`) POSTs the worker_api renewal-sweep
+endpoint, which drives `Acme::RenewalSweepService` to find certs `pending` or
+within 30 days of expiry and re-run the issuance flow. No operator action
+required.
 
 **Manual:** UI cert detail → "Renew" button, or:
 
@@ -342,7 +386,8 @@ must be in zones the same token can edit. Either:
 
 **`endpoints_jsonb` ignored / wrong endpoint used** — probe interval
 not yet expired. Either wait (`endpoint_probe_interval_seconds`) or force
-a probe via `system_sdwan_probe_federation_peer`.
+a probe via the aspirational `system_sdwan_probe_federation_peer` MCP
+wrapper (REST-only today; the prober otherwise runs on its own schedule).
 
 **OCSP staple stale after revoke** — OCSP propagation is hours, not
 minutes. Verify the cert is revoked in DB; OCSP responders eventually
@@ -372,4 +417,9 @@ auto-rotate on every issue).
 - [`../credential-restoration.md`](../credential-restoration.md) — design-level credential lifecycle
 - [`../federation/NETWORK_TRUST.md`](../federation/NETWORK_TRUST.md) — sovereign auth handshake; cert is the mTLS material
 - `extensions/system/server/app/services/acme/certificate_manager.rb` — issuance + renewal + revocation entry point
+- `extensions/system/server/app/services/acme/renewal_sweep_service.rb` — 6h renewal-sweep driver (`AcmeCertificateRenewalJob` worker_api target)
+- `extensions/system/server/app/services/acme/dns_provider_registry.rb` — the 7-provider registry + required-fields validation
+- `extensions/system/agent/internal/acme/issuer.go` — on-node Go ACME ceremony (`buildDNSProvider` wires all 7 providers)
 - `extensions/system/server/app/services/federation/endpoint_prober.rb` — LAN-preference probe logic
+
+_Last verified: 2026-06-03_

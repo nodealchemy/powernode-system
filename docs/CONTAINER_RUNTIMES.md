@@ -1,5 +1,7 @@
 # Container Runtimes — Operator Guide
 
+> Status: active
+
 System extension support for managed Docker daemons (Phase 1) and K3s Kubernetes clusters (Phase 2). Phase 3 will add kubeadm + HA control plane.
 
 ## Architecture (one-paragraph summary)
@@ -91,8 +93,16 @@ flowchart TB
     W2 -. "joins via VIP" .-> S2
 ```
 
-Without `target_cluster_id`, the agent picks the first cluster the API
-returns — wrong in multi-cluster accounts.
+Without `target_cluster_id`, the agent silently joins the most-recently-created
+active cluster the API returns — wrong in multi-cluster accounts.
+
+> **Known gap (2026-06-03):** there is no server-side validation guard that
+> *rejects* an ambiguous join (no `NoClusterAvailableError` / multi-cluster
+> disambiguation error) when `target_cluster_id` is omitted in an account with
+> more than one cluster. Until that guard ships, always set
+> `metadata.target_cluster_id` on `k3s-agent` assignments in multi-cluster
+> accounts. The join-time *mismatch* check below (rejecting a wrong explicit ID)
+> already works; only the *missing*-ID case is unguarded.
 
 ## Module Catalog
 
@@ -244,7 +254,7 @@ The bootstrap node has installed k3s but the agent hasn't captured + posted stat
 Symptoms: `platform.docker_list_containers` returns `x509: certificate signed by unknown authority` or `tls: bad certificate`. Common causes:
 
 - Operator's local truststore isn't the issue — the platform manages mTLS internally; the API call from the platform to the daemon uses Vault-stored client certs.
-- Server cert was rotated but agent didn't pick it up: trigger `system.runtime_docker_tls_rotate` skill (auto-approved), then re-test after one heartbeat tick.
+- Server cert was rotated but agent didn't pick it up: rotate Docker daemon TLS via the broader `system.cert_rotate` flow (there is no dedicated `runtime_docker_tls_rotate` action — it was removed in the 2026-05-19 audit; no executor backed it), then re-test after one heartbeat tick.
 - Server cert was minted by a different InternalCaService root than the platform now trusts (rare; only happens after CA replacement). Decommission via `system_decommission_docker_runtime` and re-provision; the new host gets a fresh cert from the current CA.
 - On the node itself: `journalctl -u docker.service | grep -i tls` shows the actual handshake error.
 
@@ -285,7 +295,12 @@ journalctl -u k3s-agent.service -n 200        # k3s-agent
 Or via the agent task channel (no SSH required):
 
 ```javascript
-// ⚠️ aspirational — use system_provision_instance / system_terminate_instance and platform.recent_events for task progress
+// ⚠️ aspirational (still unimplemented as of 2026-06-03 — one of the 15
+//    entries in .verify/ASPIRATIONAL_MCP.md). Today, use
+//    system_provision_instance / system_terminate_instance and
+//    platform.recent_events for task progress. A 2026-06 remediation
+//    proposal pairs implementing system_execute_task with the multi-cluster
+//    join validation guard noted above.
 platform.system_execute_task({
   node_instance_id: "...",
   command: ["journalctl", "-u", "k3s-agent.service", "-n", "200"]
@@ -405,6 +420,8 @@ Symptoms: `docker pull` fails with timeout or `connection refused`.
 
 ## Related Docs
 
-- `extensions/system/docs/SKILL_EXECUTORS.md` — `docker_provision` + `provision_cluster` skill executors
-- `extensions/system/docs/ARCHITECTURE.md` — Container Runtimes subsystem entry
-- `docs/platform/MCP_TOOL_CATALOG.md` — full action reference
+- [`SKILL_EXECUTORS.md`](./SKILL_EXECUTORS.md) — `docker_provision` + `provision_cluster` skill executors
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — Container Runtimes subsystem entry
+- [`MCP_API_REFERENCE.md`](./MCP_API_REFERENCE.md) — operator-curated `system_*` / `kubernetes_*` / `docker_*` action subset (the parent platform's full machine-generated `MCP_TOOL_CATALOG.md` is gitignored — regenerate with `cd server && bundle exec rails mcp:generate_tool_catalog`)
+
+_Last verified: 2026-06-03_

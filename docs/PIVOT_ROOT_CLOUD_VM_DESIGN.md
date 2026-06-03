@@ -1,5 +1,10 @@
 # Cloud‑VM `pivot_root` Deployment — Design
 
+> Status: design — not yet shipped. The kernel+initramfs artifact is mechanically
+> proven (boot → systemd-in-initramfs → agent invoked; see memory
+> `powernode.pivot_root_smoke_proven_2026_05_24`); the OCI/dynamic boot compose +
+> `switch_root` path (P1 below) is the primary unimplemented work.
+
 **Status:** design (2026-05-30) · **Goal owner:** maintainer
 
 ## Goal
@@ -202,3 +207,7 @@ name duplication so the resolver picks the right base.
   signed OCI artifact vs. an ops pre‑stage step), refreshed on each disk‑image publish.
 - root@pam vs token for qemu `args` on managed‑child spawns (the known PVE gate;
   security + automation tradeoff).
+
+---
+
+_Last verified: 2026-06-03_

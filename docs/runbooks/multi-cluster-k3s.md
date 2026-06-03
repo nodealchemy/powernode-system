@@ -1,5 +1,7 @@
 # Multi-cluster K3s Runbook
 
+> Status: active
+
 Operator guide for running multiple K3s clusters in one account: bootstrap, agent targeting via `metadata.target_cluster_id`, HA control plane via slice 3 VIP failover, kubeconfig retrieval, and cross-cluster operator workflows.
 
 **Audience:** operators running multi-environment fleets (prod + staging, multi-region, multi-tenant); SREs managing K3s upgrades.
@@ -108,8 +110,8 @@ If any check fails, the join is rejected and the agent retries on the next recon
 **What to watch:**
 
 - **Agent must restart** to pick up changes to `target_cluster_id` in module metadata. If you change a worker's target cluster mid-life, terminate + reprovision.
-- **Empty `target_cluster_id`** falls back to "join most recent active cluster" — preserves single-cluster contract for legacy templates.
-- Slice 6 hardened the validation; before slice 6, mismatched IDs silently joined the wrong cluster.
+- **Empty `target_cluster_id`** falls back to "join most recent active cluster" — fine for a single-cluster account, but in a **multi-cluster account this is a footgun**: the agent silently joins whichever cluster was created most recently, not the one you intended. Always set `target_cluster_id` explicitly on every k3s-agent (and every secondary k3s-server) once a second cluster exists in the account.
+- Slice 6 hardened the validation of a *supplied* ID (existence + same-account + active state); it does not invent one when the field is absent — the most-recent-active fallback still applies.
 
 ## Phase 4 — HA control plane (≥2 servers) ✅
 
@@ -140,18 +142,20 @@ platform.kubernetes_list_nodes({ cluster_id: "cluster-prod-id" })
 
 The second server is now a VIP failover candidate. `Sdwan::VirtualIp.failover_holder_peer_ids` includes its peer ID.
 
-**Verify failover behavior:**
+**Inspect failover candidates, then fail over:**
 
 ```javascript
-// Dry-run a VIP failover to see who would be promoted
-platform.system_sdwan_failover_virtual_ip({
-  virtual_ip_id: "<cluster-vip-id>",
-  dry_run: true
-})
-// → { resolved: false, dry_run: true, current_holder: <peer-1>, candidates: [{ peer: <peer-2>, score: 0.92 }, ...] }
+// Who currently holds the VIP and who's queued to take over
+platform.system_sdwan_get_virtual_ip({ virtual_ip_id: "<cluster-vip-id>" })
+// → { virtual_ip: { id, current_holder_peer_id, failover_holder_peer_ids: [<peer-2>, ...], ... } }
+
+// Manual failover promotes the head of failover_holder_peer_ids to holder.
+// Single required param: virtual_ip_id (no dry-run / scoring mode).
+platform.system_sdwan_failover_virtual_ip({ virtual_ip_id: "<cluster-vip-id>" })
+// → { virtual_ip: { ...new holder... }, failed_over: true }
 ```
 
-`sdwan_vip_reachability_sensor` automatically fires `sdwan.vip_holder_silent` when the primary is silent, and `sdwan_vip_failover` skill (require_approval policy) handles promotion.
+`sdwan_vip_reachability_sensor` automatically fires `sdwan.vip_holder_silent` when the primary is silent, and the `sdwan_vip_failover` skill (require_approval policy) handles promotion without operator intervention.
 
 ## Phase 5 — Get kubeconfig per cluster ✅
 
@@ -200,20 +204,21 @@ platform.kubernetes_decommission_cluster({ cluster_id: "cluster-staging-id" })
 // → cascade-deletes all member KubernetesNode rows; underlying NodeInstances are NOT terminated
 ```
 
-For per-cluster module rolling upgrades, scope by template:
+For per-cluster module rolling upgrades, scope by template. The
+`system-rolling-module-upgrade` skill is driven by the autonomy reconciler
+(Fleet Autonomy / CVE Responder); operators trigger it by opening a rolling
+upgrade from `/app/system/operations` rather than a one-shot MCP call. Its
+input contract, scoped to one cluster's server template:
 
-```javascript
-// Upgrade k3s-server module across cluster-prod only
-platform.execute_skill({
-  skill: "system-rolling-module-upgrade",
-  inputs: {
-    template_id: "<k3s-prod-server-template>",     // scopes to cluster-prod's servers
-    module_id: "mod-k3s-server",
-    target_version_id: "v-k3s-1.31.0",
-    batch_pct: 50,                                  // smaller batches for control plane
-    max_consecutive_failures: 1
-  }
-})
+```jsonc
+// system-rolling-module-upgrade skill inputs — upgrade k3s-server on cluster-prod only
+{
+  "template_id": "<k3s-prod-server-template>",     // scopes to cluster-prod's servers
+  "module_id": "mod-k3s-server",
+  "target_version_id": "v-k3s-1.31.0",
+  "batch_pct": 50,                                  // smaller batches for control plane
+  "max_consecutive_failures": 1
+}
 ```
 
 ## Anti-pattern: single-server cluster
@@ -247,7 +252,7 @@ platform.system_assign_module_to_template({
 | Worker stuck in `join_request`, "bad token" | Token rotated since last cache | Restart `powernode-agent` on the worker; or re-fetch via terminate + reprovision |
 | Second server fails to join (HA setup) | Token mismatch or etcd quorum issue | Check `journalctl -u k3s.service` on both servers; etcd needs majority to write |
 | VIP doesn't fail over after primary loss | Single-server cluster, or `sdwan_vip_failover` blocked by `require_approval` | Add a second server; check approval queue |
-| `kubectl` works but pods can't reach external services | Pods using flannel/CNI default route | Verify worker Nodes have proper egress; not an SDWAN issue (slice 9 doesn't cover pod plane yet) |
+| `kubectl` works but pods can't reach external services | Pods using flannel/CNI default route | Verify worker Nodes have proper egress. This is a pod *egress* concern, distinct from the encrypted pod-to-pod overlay (flannel-over-SDWAN, which ships per "Per-tenant pod plane" above). |
 | Multiple clusters but `kubernetes_list_clusters` shows only one | Recent cluster decommissioning, or auth scope issue | Check `?include_decommissioned=true` filter; verify the account has access |
 
 ## How the System Concierge should use this
@@ -268,3 +273,7 @@ The Concierge filter includes `kubernetes_*` actions — this entire workflow is
 - [`runbooks/node-provisioning.md`](./node-provisioning.md) — Node + NodeInstance lifecycle (each cluster member is a NodeInstance)
 - [`runbooks/sdwan-network-setup.md`](./sdwan-network-setup.md) — SDWAN setup (required for cluster api_endpoint VIPs)
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `provision_cluster` for one-shot multi-server cluster bootstrap; `sdwan_vip_failover`
+
+---
+
+_Last verified: 2026-06-03_

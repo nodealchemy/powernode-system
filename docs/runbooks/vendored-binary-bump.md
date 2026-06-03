@@ -1,10 +1,12 @@
 # Vendored Binary Bump Playbook
 
+> Status: active
+
 **Audience:** platform maintainers updating an upstream dependency the platform ships with itself.
 **Prerequisites:** clean working tree on `develop`; ability to run `make` in `agent/`; for ARM-only items, access to a Pi 4 or QEMU-aarch64 for boot smoke.
 **Runtime:** 15–60 min depending on item + smoke depth.
 
-Why this exists: per [`feedback_no_host_dependencies.md`](../../../../../.claude/projects/-home-rett-Drive-Projects-powernode-platform/memory/feedback_no_host_dependencies.md) the platform **ships** the external binaries it depends on instead of `apt install`-ing them on target nodes. Each pinned item needs a clear, reviewable bump path. This runbook is that path.
+Why this exists: the platform follows a "no host dependencies" rule — it **ships** the external binaries it depends on (Ruby gem, Go binary in `agent/cmd/`, or vendored release artifact) instead of `apt install`-ing them on target nodes. Each pinned item needs a clear, reviewable bump path. This runbook is that path.
 
 ## Inventory of vendored items
 
@@ -132,11 +134,11 @@ Kernel selection happens in `build_kernel_initrd()` (`initramfs/build.sh:79-110`
 3. Re-run the build pipeline
 4. **Boot smoke is mandatory** for kernel bumps:
    - QEMU boot (cheap, every PR)
-   - Real-hardware boot (release gate, per `project_smoke_test_state.md`)
+   - Real-hardware boot (release gate — see [`../SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 8, hardware/CI extras)
 
 **Why this needs more care than Traefik:** a bad kernel bumps bricks every node booting the new image. Treat kernel bumps as separate PRs with explicit release-engineer sign-off.
 
-**Rollback:** revert the pin commit; the prior kernel image is still in the artifact store (per `disk_image_retention_count` default of 5).
+**Rollback:** revert the pin commit; the prior kernel image is still in the artifact store (per `disk_image_retention_count`, which keeps the last 3 publications by default — see [`set_disk_image_retention`](../DISK_IMAGE_CI.md)).
 
 ## k3s (deferred — Phase 3)
 
@@ -151,3 +153,5 @@ Until then, k3s on-node is installed via `curl | sh` (`agent/internal/k3sd/shell
 - [`../../initramfs/build.sh`](../../initramfs/build.sh) — kernel selection logic
 - [`../../agent/Makefile`](../../agent/Makefile) — Traefik + ACME + agent build targets
 - Related forthcoming work: k3s on-node bundling (covered above under "k3s — deferred Phase 3"), reproducibility gate (M3 byte-identical builds via APT snapshot pinning — already wired into the build workflow).
+
+_Last verified: 2026-06-03_

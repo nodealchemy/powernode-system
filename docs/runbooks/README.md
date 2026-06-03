@@ -1,5 +1,7 @@
 # Operator Runbooks
 
+> Status: active
+
 Step-by-step procedures for production operations on the System extension.
 Each runbook is focused on **one workflow** an operator might run — for
 the broader learning sequence, see [`../tutorials/`](../tutorials/).
@@ -19,6 +21,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [fleet-imaging-claim-by-id.md](./fleet-imaging-claim-by-id.md) | Operators provisioning physical fleets (SD/USB/NVMe) | `system.instances.create`+`read`, published generic image for the arch | ~5 min/device after one image flash |
 | [gitops-reconciliation.md](./gitops-reconciliation.md) | SREs adopting GitOps, multi-engineer teams | Git remote (Gitea / GitHub), Vault SSH credential | ~30 min initial setup |
 | [instance-pool-tuning.md](./instance-pool-tuning.md) | ML engineers, batch operators, CI platform owners | Provider quota for pool members | ~30 min initial sizing |
+| [k3s-smoke-full-lifecycle.md](./k3s-smoke-full-lifecycle.md) | System operators validating the K3s + SDWAN surface before a release / post-incident | Local platform running, `local_qemu` provider, seeded k3s modules | varies by tier (db / single / site / full) |
 | [module-authoring.md](./module-authoring.md) | Module authors, platform contributors | Gitea repo + cosign + oras CLIs | ~45 min per new module |
 | [multi-cluster-k3s.md](./multi-cluster-k3s.md) | Kubernetes-focused operators | Multiple NodeInstances + SDWAN | ~1 hour per cluster |
 | [node-provisioning.md](./node-provisioning.md) | New operators, on-call SREs | Provider connection configured | ~5–15 min per node |
@@ -40,6 +43,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Building federation | [federation-setup.md](./federation-setup.md) → [federation-troubleshooting.md](./federation-troubleshooting.md) when stuck |
 | Adopting GitOps | [gitops-reconciliation.md](./gitops-reconciliation.md) |
 | Managing TLS certs | [acme-issuance.md](./acme-issuance.md) for day-2, [acme-smoke.md](./acme-smoke.md) for release gates |
+| Validating K3s + SDWAN before a release | [k3s-smoke-full-lifecycle.md](./k3s-smoke-full-lifecycle.md) |
 | Recovering Vault | [vault-credential-restoration.md](./vault-credential-restoration.md) |
 
 ## Authoring conventions
@@ -59,3 +63,5 @@ When writing a new runbook:
 For learning-oriented content (concept refreshers, builds-on chains), use
 [`../tutorials/`](../tutorials/) instead. Runbooks are for operators who
 already know the concepts and need the procedure.
+
+_Last verified: 2026-06-03_

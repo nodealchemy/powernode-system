@@ -1,5 +1,7 @@
 # Tutorial 05 — Multi-cluster K3s with SDWAN isolation
 
+> Status: active
+
 > **What you'll learn:** Run multiple K3s clusters in the same account with
 > per-tenant SDWAN networks providing the trust boundary. Tenant clusters
 > can't see or reach each other's apiservers; the operator can manage both
@@ -80,15 +82,18 @@ peers (Tutorial 11).
 ```javascript
 platform.system_sdwan_create_network({
   name: "tenant-b",
-  description: "Tenant B's isolated cluster",
-  routing_mode: "static"            // or "ibgp" for production HA
+  description: "Tenant B's isolated cluster"
+  // No prefix input — the /64 is server-allocated from the account's /48.
 })
-// → { network: { id: "net-tenant-b", prefix: "fd00:abcd:2::/64", ... } }
+// → { network: { id: "net-tenant-b", cidr_64: "fd00:abcd:2::/64", ... } }
 ```
 
-**Expected outcome:** different `/64` than tenant-a's network. The two `/64`s
-have no overlapping address space and no inter-network routes (verify with
-`system_sdwan_get_routing_summary` once peers are attached).
+**Expected outcome:** the server allocates a `/64` (returned as `cidr_64`) that
+differs from tenant-a's network — you don't supply it. The two `/64`s have no
+overlapping address space and no inter-network routes (verify with
+`system_sdwan_get_routing_summary` once peers are attached). The default routing
+mode is `static`; switch a network to iBGP after creation with
+`system_sdwan_update_network_routing_mode({ network_id, routing_protocol: "ibgp" })`.
 
 ## Step 2 — Provision tenant B's nodes + attach to network
 
@@ -334,3 +339,5 @@ SDWAN network is supported — each cluster's pod CIDR is independent.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 3** — `smoke_test_ovn_models.rb`,
   `smoke_test_multi_vrf.rb`, `smoke_test_ovn_k8s_cni.rb` validate the
   SDWAN topology compiler that's doing the isolation work.
+
+_Last verified: 2026-06-03_

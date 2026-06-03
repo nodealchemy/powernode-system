@@ -1,5 +1,7 @@
 # Tutorial 03 — Container runtime — Docker
 
+> Status: active
+
 > **What you'll learn:** Provision a managed Docker daemon on a NodeInstance —
 > the platform handles TLS provisioning via Vault-backed InternalCaService,
 > binds the daemon to the SDWAN overlay /128, and exposes the host through
@@ -59,7 +61,21 @@ in `InternalCaService` (Vault PKI when available; fixture PEM in dev).
 The daemon is provisioned via the `runtime/handshake` API — a stateless
 phase machine the agent walks through (`wants_cert` → `wants_config` →
 `ready`) on heartbeat ticks. The platform creates the corresponding
-`Devops::DockerHost` row when the agent posts `wants_cert`.
+`Devops::DockerHost` row when the agent posts `wants_cert`. Host status
+moves `pending → connected` only when the agent reports `ready`
+(promotion is `system_mark_docker_ready` under the hood). Honest caveat:
+the platform trusts that `ready` report — it does **not** run an
+independent platform-side connectivity probe before flipping the host to
+`connected`. If the agent reports `ready` but the daemon isn't actually
+reachable, the first `docker_*` call surfaces the failure, not the
+handshake.
+
+The client mTLS keypair is signed by `InternalCaService`, then persisted
+to Vault **and** mirrored onto the `DockerHost` row inside the same DB
+transaction (so the hot path never needs a Vault round-trip). The
+Vault-store-after-DB-commit ordering means a reader hitting the row in the
+narrow window before the Vault write lands still gets the mirrored
+material — the DB copy is the source of truth on the read path.
 
 Crucially, the trust boundary is **SDWAN network membership**, not just
 TLS daemon credentials. A Docker host on SDWAN network A cannot be reached
@@ -99,10 +115,14 @@ platform.system_sdwan_attach_peer({
 platform.system_get_instance({ id: "<instance-id>" })
 // → { instance: { node_template_id: "<template-id>", ... } }
 
+// Resolve the docker-engine module's id (assign takes module_id, not a name)
+platform.system_list_modules()
+// → { modules: [{ id: "<docker-module-id>", name: "docker-engine", ... }, ...] }
+
 // Assign the module
 platform.system_assign_module_to_template({
   template_id: "<template-id>",
-  module_name: "docker-engine"
+  module_id: "<docker-module-id>"
 })
 ```
 
@@ -204,7 +224,7 @@ platform.system_decommission_docker_runtime({ host_id: "host-<uuid>" })
 // Optionally unassign the module from the template
 platform.system_unassign_module_from_template({
   template_id: "<template-id>",
-  module_name: "docker-engine"
+  module_id: "<docker-module-id>"
 })
 ```
 
@@ -262,3 +282,5 @@ platform.system_sdwan_create_access_grant({
   Docker (single-host only — no cross-host Swarm).
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 2** — `smoke_test_docker_runtime.rb`
   exercises the same handshake at the platform layer without a live VM.
+
+_Last verified: 2026-06-03_

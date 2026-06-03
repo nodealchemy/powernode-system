@@ -1,5 +1,7 @@
 # Module Authoring Runbook
 
+> Status: active
+
 Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`. Covers `manifest.yaml` schema, `package_spec` / `file_spec` / `protected_spec` semantics, Containerfile patterns, two-stage CI pipeline, and Cosign keyless signing.
 
 **Audience:** module authors (internal + external open-source contributors), template designers composing fleet-wide assignments.
@@ -9,9 +11,9 @@ Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`
 | Concept | What it is | Backing model |
 |---|---|---|
 | **NodeModule** | A reusable userspace component (e.g., nginx, k3s-server). Has a category + variety. | `NodeModule` |
-| **NodeModuleCategory** | Ordered grouping (network=60, container runtimes=70, userland=90+) | `NodeModuleCategory` |
+| **NodeModuleCategory** | Ordered grouping (network=60, container runtimes=70, userland=90+). A platform-side DB row, **not** a manifest key — see note below. | `NodeModuleCategory` |
 | **Module variety** | `subscription` (always-on) / `config` (overrides another module's config) / `instance` (per-instance customization) | enum on `NodeModule` |
-| **NodeModuleVersion** | A specific build of a module. Lifecycle: `draft → staging → blessed → live → archived` | `NodeModuleVersion` |
+| **NodeModuleVersion** | A specific build of a module. State column is `promotion_state`: `built → staging → blessed → live`, with `retired` as the terminal/rollback state | `NodeModuleVersion` |
 | **manifest.yaml** | Authoring-time spec describing module identity + composition rules | YAML at the root of module-repo |
 | **package_spec** | Debian packages installed via `mmdebstrap` in the Containerfile builder stage | YAML field |
 | **file_spec** | rsync-glob patterns determining which files from the rootfs/ tree end up in the module artifact | YAML field |
@@ -92,7 +94,7 @@ dependencies:
 - `protected_spec` — files this module owns that NO neighbor module may ship. The build pipeline folds these into every neighbor's effective_mask in both priority directions, so a sensitive lower-module file (e.g. `/etc/shadow` from system-base) cannot be overridden by a service module's overlay layer.
 - `dependencies.requires` — modules pulled in transitively. Form is `<owner>/<module>@<version-constraint>`.
 
-**Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new` or via the registration MCP action). They are not validated by the manifest schema. The seeded `NodeModuleCategory` slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on the platform-side row, not manifest fields. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
+**Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new`, or as the `category_id:` argument to `system_create_module_from_package`). They are not validated by the manifest schema. The `NodeModuleCategory` a module belongs to is a **platform-side DB row** selected at registration — the seeded slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on that row, never a manifest field. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
 
 For the authoritative shape see `extensions/system/templates/module-repo/manifest.yaml` and `extensions/system/modules/.schema/module-manifest.schema.json`. The `MODULE_MANIFEST_COMPLETE_SCHEMA.md` doc in this directory is the operator-facing prose reference.
 
@@ -222,7 +224,7 @@ The column is `promotion_state` (not `lifecycle_state`); valid states are `built
 Promote through the lifecycle:
 
 ```javascript
-// draft → staging (visible to operators; can be assigned to test instances)
+// built → staging (visible to operators; can be assigned to test instances)
 platform.system_promote_module_version({ id: "<version-id>", to: "staging" })
 
 // staging → blessed (passes operator review)
@@ -250,15 +252,15 @@ platform.system_assign_module_to_template({
 // → { assignment: { id, template_id, module_id, priority, ... } }
 ```
 
-Priorities are determined by the module's category position + variety. To override (e.g., for a per-node config module that should win over a base subscription module):
+Priorities are determined by the module's category position + variety. To override (e.g., for a per-node config module that should win over a base subscription module), there is **no `system_update_module_assignment` MCP action** — edit the assignment over REST:
 
-```javascript
-// ⚠️ aspirational MCP — use REST today: PATCH /api/v1/system/node_module_assignments/<id>
-platform.system_update_module_assignment({
-  id: "<assignment-id>",
-  effective_priority: 95               // higher than userland (90)
-})
+```bash
+# Bump effective_priority above userland (90) so a per-node config wins.
+PATCH /api/v1/system/node_module_assignments/<assignment-id>
+{ "effective_priority": 95 }
 ```
+
+To change *which* modules a template carries, use the assign/unassign MCP actions (`system_assign_module_to_template` / `system_unassign_module_from_template`) rather than an update call.
 
 Once assigned, every NodeInstance built from this template will pull the module on its next reconcile tick. Use `system_drift_report` to verify.
 
@@ -266,47 +268,53 @@ Once assigned, every NodeInstance built from this template will pull the module 
 
 ### Override a base module's config (variety: config)
 
-```yaml
-identity:
-  name: nginx-tokyo-config
-  variety: config
-  parent_module: my-nginx              # the module being overridden
+`variety` and `parent_module` are **platform-side `NodeModule` fields**, not
+manifest keys — set them when you register the module (UI or
+`system_create_module_from_package`). The manifest itself stays flat and only
+contributes the override file:
 
-# This module *only* contributes file_spec — no packages, no composefs lower
+```yaml
+schema_version: 1
+name: nginx-tokyo-config
+display_name: "nginx Tokyo overrides"
+
+# This module *only* contributes file_spec — no packages, no composefs lower.
 file_spec:
-  include:
-    - "/etc/nginx/conf.d/99-tokyo.conf"
+  - "/etc/nginx/conf.d/99-tokyo.conf"
 ```
 
 ### Per-instance customization (variety: instance)
 
+Register this module with `variety: instance` on its platform-side row (higher
+`effective_priority` than a `subscription` module). The manifest stays flat:
+
 ```yaml
-identity:
-  name: hostname-override
-  variety: instance
+schema_version: 1
+name: hostname-override
+display_name: "Per-instance hostname"
 
-# Templates evaluated per-NodeInstance with metadata bindings
+# Templates evaluated per-NodeInstance with metadata bindings.
 file_spec:
-  include:
-    - "/etc/hostname"
-    - "/etc/hosts"
+  - "/etc/hostname"
+  - "/etc/hosts"
 
-# The module-builder substitutes ${instance.hostname} from NodeInstance metadata
+# The module-builder substitutes ${instance.hostname} from NodeInstance metadata.
 ```
 
 ### Mask a parent module's protected file (carve-out)
 
+Register with `variety: config` + `parent_module: chrony` on the platform-side
+row. `file_spec` and `mask` are flat top-level arrays in the manifest:
+
 ```yaml
-identity:
-  name: chrony-no-pool
-  variety: config
-  parent_module: chrony
+schema_version: 1
+name: chrony-no-pool
+display_name: "chrony without pool directives"
 
 file_spec:
-  include:
-    - "/etc/chrony/chrony.conf"
-  mask:
-    - "/etc/chrony/chrony.conf"        # carve out parent's protected_spec ownership
+  - "/etc/chrony/chrony.conf"
+mask:
+  - "/etc/chrony/chrony.conf"          # carve out parent's protected_spec ownership
 ```
 
 The `mask` directive is a deliberate escape hatch — use sparingly; it inverts the safety guarantee of `protected_spec`.
@@ -319,7 +327,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 | Cosign signature rejected | `cosign_identity_regexp` doesn't match the OIDC issuer | Verify the Gitea Actions OIDC URL matches your regexp |
 | Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u powernode-worker@default \| grep ModuleOciIngest` |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
-| Assignment to template succeeds but agent doesn't pull | Module is `draft` lifecycle_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |
+| Assignment to template succeeds but agent doesn't pull | Module is still `built` promotion_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |
 | fs-verity digest mismatch on agent | Module artifact corrupted during transit | Re-run CI build; the platform re-ingests on next OCI poll |
 
 ## How the System Concierge should use this
@@ -338,3 +346,5 @@ When an operator chats "I need a new module for X" / "compose a template for ngi
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `module_compose` skill for AI-assisted composition
 - [`runbooks/cve-response.md`](./cve-response.md) — module updates triggered by CVE response
 - [`DISK_IMAGE_CI.md`](../DISK_IMAGE_CI.md) — companion pipeline for base disk images (vs. modules)
+
+_Last verified: 2026-06-03_

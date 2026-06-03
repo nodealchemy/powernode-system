@@ -1,5 +1,7 @@
 # P2.5.7 — ACME DNS-01 + LAN-Preference Smoke Runbook
 
+> Status: active
+
 **Acceptance gate** for P2.5 (Reverse Proxy + ACME DNS-01 + Endpoint
 Discovery). Run this end-to-end against a `powernode-hub` deployment on
 the operator's preferred QEMU host. Expected duration: ~30 min.
@@ -13,8 +15,10 @@ issuance, renewal, revocation, endpoint failover), see the
 Before starting, gather:
 
 - [ ] **Cloudflare API token** with `Zone:Read` + `DNS:Edit` scoped to a
-      test zone you own. (Other DNS providers work too — Hetzner /
-      DigitalOcean adapters are in tree; Route53 is stub-only.)
+      test zone you own. (Cloudflare is used here for concreteness; the
+      on-node ACME agent supports all 7 DNS providers —
+      `cloudflare`, `digitalocean`, `gcloud`, `hetzner`, `ovh`, `porkbun`,
+      `route53` — so any of them works with the equivalent provider token.)
 - [ ] **A test domain** in that zone (e.g. `acme-smoke.example.com`).
       Picked fresh for the demo so you can revoke at the end.
 - [ ] **One or two `local_qemu` instances** ready to boot
@@ -107,8 +111,16 @@ LAN.
    LAN URL at priority 1 and the WAN URL at priority 3.
 2. Accept the handshake on hub2.
 3. Trigger a heartbeat: ssh hub1, `sudo systemctl restart powernode-worker@default` (or wait 60s).
-4. `tcpdump` the LAN interface on hub2 — expect to see traffic from
-   hub1's LAN IP, not the public NAT address.
+4. On hub2, capture on its **LAN-facing physical NIC** — the interface that
+   holds hub2's LAN address (e.g. `enp1s0` / `eth0`; confirm with
+   `ip -br addr | grep <hub2-lan-ip>`), *not* the SDWAN tunnel `wg-sdwan-*`.
+   Filter to hub1's LAN source so you can prove the path:
+   ```bash
+   sudo tcpdump -ni <hub2-lan-nic> "src host <hub1-lan-ip> and tcp port 443"
+   ```
+   Expect packets sourced from hub1's **LAN IP** (not its public NAT
+   address, and not arriving over `wg-sdwan-*`) — that confirms the client
+   preferred the priority-1 LAN endpoint.
 
 ### 5. Endpoint failover (sub-500ms)
 
@@ -187,3 +199,18 @@ under `docs/federation/phase-reports/P2.5-acceptance-<date>.md`:
 
 Once submitted + accepted, mark task #21 (P2.5.7) completed and the
 gate is closed.
+
+## Related docs
+
+- [`acme-issuance.md`](./acme-issuance.md) — day-2 ACME operator workflow
+  (provider setup, single + multi-SAN issuance, renewal, revocation,
+  endpoint failover). Run that for steady-state operations; this runbook is
+  the one-time acceptance gate.
+- [`../SMOKE_TEST.md`](../SMOKE_TEST.md) — Pass 5 (ACME) in the platform-level
+  smoke catalog; `smoke_test_acme_preflight.rb` is the pre-flight invoked above.
+- [`expose-service.md`](./expose-service.md) — publish a service publicly with
+  TLS (VIP → port map → ACME → Traefik).
+
+---
+
+_Last verified: 2026-06-03_

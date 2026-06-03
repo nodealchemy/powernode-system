@@ -1,5 +1,7 @@
 # System Extension Smoke Test
 
+> Status: active
+
 End-to-end validation that the System extension can boot a node, attach a
 runtime, build an overlay network, federate, issue certs, provision
 storage, exercise hardware / CI publication paths, and run a full
@@ -353,11 +355,9 @@ bundle exec rails runner \
 ```
 
 A companion VM-mesh smoke that spawns nodes and exercises mTLS handshakes
-across the mesh is a future addition (the file is not present on disk
-today; the seed header for `smoke_test_membership_credentials.rb` reserves
-the name `smoke_test_membership_credentials_vm.rb` for when the VM
-companion lands). Until it ships, this in-tree DB-level pass is the only
-in-tree exerciser for the credential lifecycle.
+across the mesh is a future addition (not present on disk today). Until it
+ships, this in-tree DB-level pass is the only in-tree exerciser for the
+credential lifecycle.
 
 ---
 
@@ -757,3 +757,7 @@ capabilities. Pass 8 (hardware / CI extras) has no dedicated tutorial yet
 — the bare-metal claim flow is exercised inline within
 [`tutorials/12-disk-image-ci.md`](./tutorials/12-disk-image-ci.md) when
 the operator publishes a platform image.
+
+---
+
+_Last verified: 2026-06-03_

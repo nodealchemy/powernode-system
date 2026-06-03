@@ -1,5 +1,7 @@
 # Tutorial 11 — Multi-region federation
 
+> Status: active
+
 > **What you'll learn:** Federate two Powernode platforms across accounts /
 > regions / organizations — three spawn modes (managed_child,
 > autonomous_peer, cluster_member), the propose → accept → activate
@@ -159,7 +161,19 @@ platform.recent_events({ kind_prefix: "federation.", limit: 20 })
 
 Spawn-side events (the child NodeInstance's provisioning + fw-cfg stamping + handshake) are NOT currently surfaced as `FleetEvent` rows; operators monitor spawn progress via `system_get_instance` polling on the child NodeInstance instead. A future change may add structured spawn events; until then, the stream above is the authoritative one.
 
-**Expected outcome:** ~5–10 min wall clock for full sequence on a warm instance + reachable parent. Final state: parent + child both see the peer as `active` (status column on `System::FederationPeer`); the `federation.peer.accepted` event lands when the child's acceptance handshake completes.
+**Expected outcome:** ~5–10 min wall clock for full sequence on a warm instance + reachable parent. The `federation.peer.accepted` event lands when the child's acceptance handshake completes, and the peer settles at `status: "enrolled"` (status column on `System::FederationPeer`).
+
+> **Heartbeat caveat — `enrolled` vs `active`:** the `enrolled → active`
+> transition fires only when an **inbound** `/federation_api/heartbeat` call
+> hits the parent and runs `peer.record_heartbeat!`. The timer-driven
+> `HeartbeatSweepService` deliberately does **not** advance `enrolled` peers
+> (it only degrades already-`active` ones). If the peer's agent-side heartbeat
+> isn't emitting yet, the peer stays `enrolled` — that's healthy, not stuck.
+> To advance it manually, POST a heartbeat from the peer side (or re-run the
+> peer's heartbeat job). See
+> [`../runbooks/federation-troubleshooting.md`](../runbooks/federation-troubleshooting.md)
+> "Peer stuck in `accepted`" for the same heartbeat-job diagnosis applied to
+> the `enrolled → active` step.
 
 ## Step 3 — Verify the peering
 
@@ -189,7 +203,10 @@ platform.system_sdwan_list_federation_peers()
 //    }] }
 ```
 
-**Expected outcome:** symmetric view of the peering on both sides.
+**Expected outcome:** symmetric view of the peering on both sides. The
+`status` reads `active` once heartbeats are flowing in both directions; until
+the first inbound heartbeat lands it shows `enrolled` (see the heartbeat
+caveat in Step 2).
 
 ## Step 4 — Apply data residency (P9.4)
 
@@ -462,7 +479,7 @@ parent's `/federation/accept` endpoint. Three common causes:
 
 - Parent's federation listener isn't reachable from the child's overlay
   (check `system_sdwan_get_routing_summary` on both sides)
-- Acceptance token expired (default 30 min); revoke + re-propose
+- Acceptance token expired (default 7 days, per `System::SpawnPlatformService::DEFAULT_TOKEN_TTL`); revoke + re-propose
 - mTLS chain mismatch (child's spawn fw-cfg carries the parent's CA;
   check it matches what InternalCaService currently issues)
 
@@ -547,3 +564,5 @@ probe error.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 4** — `smoke_test_powernode_hub.rb`
   and `smoke_test_cluster_member_ha.rb` exercise the federation control
   plane at the platform layer.
+
+_Last verified: 2026-06-03_

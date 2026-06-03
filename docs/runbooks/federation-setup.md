@@ -1,5 +1,7 @@
 # Federation Setup — Quick Start
 
+> Status: active
+
 Get two Powernode platforms federated in ~5 minutes. This runbook covers the **happy path** for proposing → accepting → activating a federation peer. For failure modes, see [`federation-troubleshooting.md`](./federation-troubleshooting.md).
 
 For the underlying protocol (sovereign auth model, social contract, three spawn modes), see the federation reference docs:
@@ -26,44 +28,61 @@ At the end, both A's and B's platforms have a `System::FederationPeer` row for e
 ## Prerequisites
 
 - Both platforms reachable from each other (no NAT issues; each platform's `remote_instance_url` resolves from the other side)
-- An operator account on each side with the `system.federation_peers.manage` permission (defined by the system extension)
+- An operator account on each side with the `system.peers.invite` permission (to propose/accept) and `system.peers.manage` (to revoke) — both defined by the system extension
 - (Recommended) An out-of-band secure channel — Signal, 1Password share, in-person — for token handoff
 
-If your platform is behind NAT or you're peering with a sovereign on-prem satellite, see [`SPAWN_MODES.md`](../federation/SPAWN_MODES.md#nat-traversal) for the host-bridge + UPnP options.
+If your platform is behind NAT or you're peering with a sovereign on-prem satellite, front the federation traffic through a publicly-reachable hub peer — see the hub-and-spoke topology in [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §3 and the `publicly_reachable` hub guidance in [`sdwan-network-setup.md`](./sdwan-network-setup.md) Phase 2.
 
 ---
 
-## Step 1 — A: Propose the peer
+## Step 1 — A: Propose the peer (and get the acceptance token)
 
-On **A**, propose a federation with B. From the operator UI: **Network → Federation → Propose Peer**. Or via MCP:
+`peer_kind: "platform"` peers live on the **Platform Peers** surface, not
+the SDWAN federation-peer surface. From the operator UI: **Compute →
+Platform → Peers → Invite Peer**. Or via the REST endpoint
+(`POST /api/v1/system/platform/peers`, served by `Platform::PeersController`;
+requires the `system.peers.invite` permission):
 
+```bash
+# On A
+curl -s -X POST \
+  -H "Authorization: Bearer $JWT_A" \
+  -H "Content-Type: application/json" \
+  http://localhost:3000/api/v1/system/platform/peers \
+  -d '{
+    "remote_instance_url": "https://platform-b.example.com",
+    "spawn_role":          "symmetric",
+    "spawn_mode":          "out_of_band",
+    "token_ttl_seconds":   604800
+  }'
+# → { "data": { "peer": { "id": "...", "peer_kind": "platform", "status": "proposed", ... },
+#               "acceptance_token": "fbazXyZ123abc456..." } }
 ```
-platform.system_sdwan_propose_federation_peer
-  remote_instance_url: "https://platform-b.example.com"
-  peer_kind: "platform"
-  spawn_role: "symmetric"
-  description: "Peering with Org B for shared SDWAN + service catalog"
-```
 
-This creates a `System::FederationPeer` row on A's side with `status: "proposed"`. It does **not** contact B yet.
+This creates a `System::FederationPeer` row on A's side with
+`peer_kind: "platform"` + `status: "proposed"`, **and returns the single-use
+acceptance token in the same response** (`spawn_mode` defaults to
+`out_of_band` for hand-paired peers; see
+[`../federation/SPAWN_MODES.md`](../federation/SPAWN_MODES.md)). It does
+**not** contact B yet.
+
+> Why not `system_sdwan_propose_federation_peer`? That MCP action proposes a
+> **SDWAN-scoped** cross-account peer (`peer_kind: "sdwan_only"`) and does not
+> accept `peer_kind`/`spawn_role` — it cannot create a `platform` peer. Use
+> it only for pure overlay bridging (see
+> [`sdwan-network-setup.md`](./sdwan-network-setup.md) Phase 9).
 
 ---
 
-## Step 2 — A: Generate an acceptance token
+## Step 2 — A: Capture the acceptance token
 
-The peer record needs a single-use token that B will present when accepting. Generate it:
+The plaintext token from Step 1's response is shown **exactly once** — copy
+it now. Only its SHA-256 digest is persisted (`acceptance_token_digest`
+column). B will present it when accepting.
 
-```ruby
-# rails console (on A)
-peer = System::FederationPeer.find_by(remote_instance_url: "https://platform-b.example.com")
-token = peer.generate_acceptance_token!(ttl_seconds: 7.days.to_i)
-puts token
-# => fbazXyZ123abc456... (urlsafe-base64, 32 bytes of entropy)
-```
-
-The plaintext token is shown **exactly once** here — copy it now. Only its SHA-256 digest is persisted (`acceptance_token_digest` column).
-
-The default TTL is **7 days**. You can pass a shorter `ttl_seconds:` if you're handing it off immediately (`1.hour.to_i`) or want a tighter window.
+The TTL above is **7 days** (`token_ttl_seconds: 604800`). Pass a shorter
+value if you're handing it off immediately (`3600` = 1 hour) or want a
+tighter window.
 
 ---
 
@@ -80,32 +99,46 @@ Don't drop the token into a shared Slack channel; it grants peer enrollment on A
 
 ## Step 4 — B: Accept the peer
 
-On **B**, accept using the token A shared. From the operator UI: **Network → Federation → Accept Peer**. Or via MCP:
+On **B**, first register A as a platform peer (same Platform Peers endpoint
+as Step 1, now pointing back at A), then accept it with the token A shared.
+From the operator UI: **Compute → Platform → Peers → Invite Peer**, then
+**Accept**. Or via REST + MCP:
+
+```bash
+# On B — register A, capture B's local peer id for the accept call
+curl -s -X POST \
+  -H "Authorization: Bearer $JWT_B" \
+  -H "Content-Type: application/json" \
+  http://platform-b.example.com/api/v1/system/platform/peers \
+  -d '{ "remote_instance_url": "https://platform-a.example.com", "spawn_role": "symmetric" }'
+# → { "data": { "peer": { "id": "<B-side-peer-id>", "status": "proposed", ... } } }
+```
 
 ```
+# Then accept by B-side peer id, presenting A's token (MCP):
 platform.system_sdwan_accept_federation_peer
-  remote_instance_url: "https://platform-a.example.com"
+  federation_peer_id: "<B-side-peer-id>"
   acceptance_token: "<token from A>"
-  spawn_role: "symmetric"
 ```
 
 The accept flow:
-1. B's API creates its own `System::FederationPeer` row pointing at A
+1. B already has its own `System::FederationPeer` row pointing at A (created above)
 2. B calls A's `POST /api/v1/system/federation_api/accept` with the token
 3. A's `AcceptController` verifies the token against the stored digest (SHA-256 secure_compare)
 4. If valid, A's peer row transitions `proposed → accepted` and the token digest is cleared (single-use)
 5. B's peer row transitions `proposed → accepted` on success response
 
-**Verify the accept landed on both sides:**
+**Verify the accept landed on both sides** (platform peers live on
+`/platform/peers`, which scopes to `peer_kind: "platform"`):
 
 ```bash
 # On A
-curl -s -H "Authorization: Bearer $JWT_A" http://localhost:3000/api/v1/system/sdwan/federation_peers \
+curl -s -H "Authorization: Bearer $JWT_A" http://localhost:3000/api/v1/system/platform/peers \
   | jq '.data[] | select(.remote_instance_url=="https://platform-b.example.com") | {id, status}'
 # => { "id": "...", "status": "accepted" }
 
 # On B
-curl -s -H "Authorization: Bearer $JWT_B" http://platform-b.example.com/api/v1/system/sdwan/federation_peers \
+curl -s -H "Authorization: Bearer $JWT_B" http://platform-b.example.com/api/v1/system/platform/peers \
   | jq '.data[] | select(.remote_instance_url=="https://platform-a.example.com") | {id, status}'
 # => { "id": "...", "status": "accepted" }
 ```
@@ -123,7 +156,7 @@ Once both sides are `accepted`, the next steps are automatic:
 Wait ~60s, then verify:
 
 ```bash
-curl -s -H "Authorization: Bearer $JWT_A" http://localhost:3000/api/v1/system/sdwan/federation_peers \
+curl -s -H "Authorization: Bearer $JWT_A" http://localhost:3000/api/v1/system/platform/peers \
   | jq '.data[] | {id, status, last_heartbeat_at}'
 # => { "id": "...", "status": "active", "last_heartbeat_at": "2026-05-17T13:45:12Z" }
 ```
@@ -134,21 +167,48 @@ If status hasn't advanced past `accepted` after ~3 minutes, see [`federation-tro
 
 ## Step 6 — (Optional) Issue your first cross-peer grant
 
-Now that the peer is `active`, you can issue a service-subscription grant so B can call A's federation_api/resources endpoints. Example: grant B read-only access to A's nginx module catalog:
+Now that the peer is `active`, you can issue a **cross-peer service grant**
+(a `System::FederationGrant`) so B can call A's `federation_api/resources`
+endpoints. This is **not** an `system_sdwan_*` MCP action — it is a REST
+endpoint on A under the **Platform Peers** surface
+(`POST /api/v1/system/platform/peers/:peer_id/grants`, served by
+`Platform::PeerGrantsController`; the operator UI exposes it as the per-peer
+**Grants editor**). Example: grant B read-only access to A's nginx module
+catalog:
 
-```
-platform.system_sdwan_create_access_grant
-  federation_peer_id: "<B's id on A>"
-  remote_subject: "operator@platform-b.example.com"
-  resource_kind: "NodeModule"
-  permission_scopes: ["read"]
-  # Optional pessimistic scope (Locked Decision #12)
-  node_instance_ids: []   # empty = unrestricted on this axis
-  sdwan_network_ids: []
-  source_cidrs: []        # empty = any source IP
+```bash
+# On A — :peer_id is B's System::FederationPeer id on A's side
+curl -s -X POST \
+  -H "Authorization: Bearer $JWT_A" \
+  -H "Content-Type: application/json" \
+  http://localhost:3000/api/v1/system/platform/peers/<B-peer-id>/grants \
+  -d '{
+    "remote_subject":    "operator@platform-b.example.com",
+    "resource_kind":     "NodeModule",
+    "resource_id":       null,
+    "permission_scopes": ["read"],
+
+    "node_instance_ids": [],
+    "sdwan_network_ids": [],
+    "source_cidrs":      []
+  }'
 ```
 
-The grant returns a bearer token (`fg-<grant_id>`) that B presents alongside its mTLS cert when calling A's federation_api. Default TTL is 30 days; the grant validates well-formed array contents (UUIDs, CIDRs) on save (LD #12).
+`resource_id: null` means "all of `resource_kind`"; the three trailing arrays
+are the optional **pessimistic-scope** allowlists (Locked Decision #12) —
+empty leaves that axis unrestricted (`FederationGrant#unrestricted?`). The
+grant returns a bearer token (`fg-<grant_id>`) that B presents alongside its
+mTLS cert when calling A's `federation_api`. Default TTL is 30 days; the
+grant validates well-formed array contents (UUIDs, CIDRs) on save (LD #12).
+See [`../federation/NETWORK_TRUST.md`](../federation/NETWORK_TRUST.md) for the
+pessimistic-grant matching algorithm.
+
+> **Don't confuse this with `system_sdwan_create_access_grant`** — that MCP
+> action issues a `Sdwan::AccessGrant`, which is a **VPN user-access
+> entitlement** (a user's right to attach WireGuard devices to one SDWAN
+> network: `network_id` + `user_id` + `tags`). It has nothing to do with
+> cross-peer federation grants. See
+> [`sdwan-network-setup.md`](./sdwan-network-setup.md) Phase 7.
 
 ---
 
@@ -340,3 +400,7 @@ See [`SPAWN_MODES.md`](../federation/SPAWN_MODES.md) for the operator runbook co
 - **Migrate a resource across peers:** see the Migration framework documentation
 - **Monitor peer health:** the Fleet Dashboard's federation tab surfaces every peer, current status, and heartbeat freshness. The **liveness autonomy loop** (`FederationPeerLivenessSensor` → `federation_peer_remediate`) automatically probes stale peers over mTLS, degrades unreachable ones, and alerts on cert expiry — see [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §5
 - **Pause federation operations** (during maintenance): the SDWAN Manager agent's federation actions are gated by `require_approval` — drain the approval queue or pause the agent per [`SDWAN_MANAGER_AGENT.md`](../SDWAN_MANAGER_AGENT.md#pause--resume--maintenance-window-runbook)
+
+---
+
+_Last verified: 2026-06-03_

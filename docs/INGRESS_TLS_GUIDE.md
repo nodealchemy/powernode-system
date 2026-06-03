@@ -1,5 +1,7 @@
 # Ingress & TLS Guide
 
+> Status: active
+
 Operator guide for the System extension's **ingress / TLS** feature — how the
 platform fronts an internal service with a stable public endpoint, terminates
 TLS at the reverse proxy (Traefik v3), and keeps the certificate live through
@@ -209,11 +211,13 @@ via the DNS provider's API. That is configured once as a
 - In the Expose-Service wizard the credential appears in the **DNS
   credential** dropdown by `name (provider)`.
 
-> **v1 limitation: Cloudflare only.** The model's `SUPPORTED_PROVIDERS` list
-> includes several provider slugs, but the bundled ACME binary only
-> implements the **Cloudflare** adapter in v1. A credential for any other
-> provider validates at save time but **errors at issuance**. Until other
-> adapters ship, use `provider: cloudflare`.
+> **Supported DNS providers (all wired end-to-end).** Both the model's
+> `SUPPORTED_PROVIDERS` and the on-node ACME issuer implement seven DNS-01
+> providers: **cloudflare, route53, gcloud, digitalocean, hetzner, porkbun,
+> ovh**. A credential for any of the seven validates at save time and issues
+> at challenge time — the on-node Go issuer wires the matching lego adapter
+> in `buildDNSProvider`
+> ([`agent/internal/acme/issuer.go`](../agent/internal/acme/issuer.go)).
 
 ---
 
@@ -262,6 +266,14 @@ permission shown below.
 `challenge_type`, optional `sans`, `dns_credential_id` (required for
 `dns-01`), and `acme_email`. `system_reverse_proxy_compose` takes a single
 `certificate_id` whose status must be `valid`.
+
+> **No MCP action to validate a DNS credential (yet).** Credential validation
+> runs through the Rails-only `Acme::DnsCredentialValidator` service (and the
+> "Test Connectivity" button in the ACME UI). There is **no**
+> `system_acme_validate_dns_credential` MCP action today, so a script can't
+> pre-flight a stored credential before calling `system_acme_provision_certificate`
+> — exposing such an action is a proposed enhancement. For now, validate via
+> the UI before scripting issuance.
 
 > When run through the Concierge as a mission, the operation is
 > approval-gated. Calling the MCP action directly still flows through the
@@ -361,12 +373,16 @@ polling propagation, sidestepping the internal NS entirely.
 own external validation still has to succeed, so this only helps when the
 *local* propagation check is the false blocker.
 
-### Cloudflare-only provider in v1
+### DNS provider credential fails at issuance
 
-A DNS credential for any non-Cloudflare provider validates at save time but
-**errors at issuance** — the bundled ACME binary only implements the
-Cloudflare adapter in v1 (see [§4](#4-certificate-issuance-renewal-revocation-and-the-dns-credential-model)).
-Use `provider: cloudflare` until other adapters ship.
+All seven providers (cloudflare, route53, gcloud, digitalocean, hetzner,
+porkbun, ovh) are wired end-to-end (see
+[§4](#4-certificate-issuance-renewal-revocation-and-the-dns-credential-model)),
+so a save-time validation pass no longer implies a different provider would
+silently fail. If a credential that validated at save time now errors at
+issuance, the usual cause is a **scope-narrowed or expired token** — re-test
+the credential's connectivity (stale tokens >24h are re-tested by the renewal
+job, but a manual re-test surfaces the failure immediately).
 
 ### 403 on the served hostname — host allowlists
 
@@ -431,3 +447,5 @@ record points at it. See
   — the end-to-end orchestrator
 - [`TraefikConfigWriter`](../server/app/services/acme/traefik_config_writer.rb)
   — derives the routers shown in the Routes monitor and the live config
+
+_Last verified: 2026-06-03_

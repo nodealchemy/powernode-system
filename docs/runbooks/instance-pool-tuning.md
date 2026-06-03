@@ -1,6 +1,8 @@
 # Instance Pool Tuning Runbook
 
-Operator guide for `System::InstancePool` (slice 7 — pre-warmed ephemeral instances with atomic claim and reaper auto-replenishment). Covers pool creation, sizing heuristics, reaping, draining, and troubleshooting.
+> Status: active
+
+Operator guide for `System::InstancePool` (pre-warmed ephemeral instances with atomic claim and reaper auto-replenishment). Covers pool creation, sizing heuristics, reaping, draining, and troubleshooting.
 
 **Audience:** operators running bursty / ephemeral workloads (CI runners, ML training, batch processing) who need <30 s claim latency instead of 5–10 min cold provisioning.
 
@@ -25,27 +27,42 @@ See [`USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) use cases 4 (bursty batch) + 5
 ```javascript
 platform.system_create_instance_pool({
   name: "ci-runner-pool",
-  description: "Warm pool for Gitea Actions runners",
-  template_id: "<ci-runner-template>",         // Template all pool members are built from
+  template_id: "<ci-runner-template>",         // Template all pool members are built from (required)
+  target_size: 5,                               // desired warm+ready members (required)
+  min_size: 2,                                  // lower bound (default 0)
+  max_size: 10,                                 // upper bound (default target_size + 10)
+  lifecycle_class: "ephemeral",                 // "ephemeral" | "spot" (default "ephemeral")
   provider_region_id: "region-aws-us-east-1",
-  provider_instance_type_id: "type-t3-medium",
-  target_size: 5,                               // desired warm members
-  min_size: 2,                                  // never reap below this
-  max_size: 10,                                 // never replenish above this
-  warmup_grace_seconds: 600                     // how long an instance can warm before reaper retries
+  provider_instance_type_id: "type-t3-medium"
 })
-// → { instance_pool: { id, status: "warming", member_count: 0, target_size: 5, ... } }
+// → { instance_pool: { id, status: "active", target_size: 5,
+//      ready_count: 0, warming_count: 0, claimed_count: 0, ... } }
 ```
 
-The pool reaper job (`system_pool_replenish`) runs every 60 s, sees `member_count < target_size`, and provisions new instances up to `target_size`. Each new member starts in `status: "warming"` until its agent posts `phase=ready`; then it transitions to `status: "ready"`.
+> The warming-retry window isn't a top-level create field. The reaper reads
+> it from `metadata["warming_timeout_seconds"]` (with `metadata["ready_ttl_seconds"]`
+> for stale ready members) — set those on the pool's `metadata` if you need
+> to override the defaults.
+
+A new pool's **`status`** is `active` (the pool-level lifecycle:
+`active | paused | draining | archived`). "warming" / "ready" / "claimed"
+are per-member **`pool_state`** values — don't confuse the two.
+
+The reaper — worker job `System::InstancePoolReplenisherJob`, scheduled as
+the `instance_pool_replenisher` cron in `worker/config/sidekiq.yml` (every
+60 s) — runs a 2-phase tick (recycle stale members, then replenish). When
+`ready_count + warming_count < target_size` it provisions new members up to
+`target_size`. Each new member starts in `pool_state: "warming"` until its
+agent posts `phase=ready`; then it flips to `pool_state: "ready"`.
 
 **Verify:**
 
 ```javascript
 platform.system_get_instance_pool({ id: "<pool-id>" })
-// → { instance_pool: { ... }, members: [
-//      { instance_id, status: "warming", warming_started_at, ... },
-//      { instance_id, status: "ready", warmed_at, ... }
+// → { instance_pool: { ..., status: "active", ready_count, warming_count, claimed_count },
+//      members: [
+//      { instance_id, pool_state: "warming", ... },
+//      { instance_id, pool_state: "ready", ... }
 //    ] }
 ```
 
@@ -61,12 +78,12 @@ platform.system_acquire_pooled_instance({
 // → { instance: { id, status: "running", host_address, ... }, claim_id }
 ```
 
-The claim is **atomic**: the platform uses `SELECT ... FOR UPDATE SKIP LOCKED` on the pool member rows to ensure only one caller claims each member. If no `ready` member exists, the claim fails with `PoolEmptyError`.
+The claim is **atomic**: the platform uses `SELECT ... FOR UPDATE SKIP LOCKED` on the pool member rows to ensure only one caller claims each member (the oldest `ready` member by `pool_warming_started_at`). If no `ready` member exists, the claim raises `NoReadyMembersError`.
 
 After claim:
-- The instance leaves the pool — `pool_id` is nullified
-- `member_count` decreases by 1
-- Reaper job sees the deficit on next tick → provisions a replacement
+- The member's `pool_state` flips to `claimed` and `pool_acquired_at` is stamped — the instance **stays in the pool** as a claimed member (its `instance_pool_id` is not cleared)
+- `ready_count` drops by 1 (claimed members don't count toward `ready_count + warming_count`)
+- Reaper job sees the resulting deficit on its next tick → provisions a replacement warm member
 
 **Use the claimed instance** like any other NodeInstance:
 
@@ -101,7 +118,7 @@ platform.system_return_pooled_instance({
 The right sizes depend on three numbers:
 
 - **C** = claim rate (claims per minute, peak)
-- **W** = warmup latency (seconds from `system_create_node` to `phase=ready`)
+- **W** = warmup latency (seconds from a member's provision to `phase=ready`)
 - **R** = reaper interval (60 s, fixed)
 
 **Minimum target_size** (so the pool never empties under peak load):
@@ -128,20 +145,25 @@ Worked example: peak 4 claims/min, warmup 90 s, reaper 60 s →
 To wind down a pool (e.g., load is gone, or you're switching templates):
 
 ```javascript
-platform.system_drain_instance_pool({
-  id: "<pool-id>",
-  terminate_members: true                  // false → release members (claim them all)
-})
-// → { drained: true, terminated_count: 5 }
+platform.system_drain_instance_pool({ id: "<pool-id>" })
+// → { pool: { ..., status: "draining" },
+//      drain_result: { drained: <ready_terminated>, claimed_remaining: <still_running> } }
 ```
 
-`terminate_members: true` (default) destroys all pool members. `false` releases them as standalone NodeInstances (they survive but no longer back the pool).
+Drain sets the pool `status` to `draining`, terminates every **ready**
+member at the cloud provider, and halts replenishment. **Claimed** members
+keep running — they finish their workload and are torn down by the normal
+terminate flow. There is no `terminate_members` flag and no "release them
+as standalone" mode; drain always terminates the ready members.
 
 **What to watch:**
 
-- Drain is async — the pool's `status: "draining"` until all members are processed
-- `target_size` is set to 0 during drain; reaper stops replenishing
-- After drain, the pool row remains with `status: "drained"`. To delete: `system_delete_instance_pool`
+- Drain runs in a single transaction (synchronous) — by the time the call
+  returns, ready members have had `terminate_instance` issued
+- A `draining` pool stops being replenished (the reaper skips replenish for
+  draining pools, though it still recycles)
+- The pool row stays at `status: "draining"` — there is **no** `drained`
+  status. Once members are gone, delete it with `system_delete_instance_pool`
 
 ## Phase 5 — Decommission a pool ✅
 
@@ -150,7 +172,10 @@ platform.system_delete_instance_pool({ id: "<pool-id>" })
 // → permanently removes the pool row; cannot be undone
 ```
 
-Only valid after a successful drain. Trying to delete a non-empty pool returns `PoolNotEmpty`.
+Only valid once the pool has **zero** members. Trying to delete a pool that
+still has members returns an error: `pool <name> still has N member(s) —
+drain first via system_drain_instance_pool`. Drain the ready members, wait
+for any claimed members to finish their normal terminate, then delete.
 
 ## Troubleshooting
 
@@ -158,23 +183,30 @@ Only valid after a successful drain. Trying to delete a non-empty pool returns `
 |---|---|---|
 | Pool stuck at 0 members despite `target_size: 5` | Provider quota exhausted, or template references a missing module version | Check `recent_events` for `provider_quota_exceeded` or `module_pull_failed`; resolve and the reaper retries |
 | Members stuck `warming` >10 min | Bootstrap failed (module pull, mTLS handshake) | Use `attribute_failure` skill; common causes: missing `Sdwan::Peer`, expired bootstrap token |
-| `PoolEmptyError` despite `member_count: 5` in dashboard | All 5 members are still `warming` (none `ready` yet) | Either wait, increase `target_size`, or pre-bake a faster boot image |
-| Pool stuck `draining` | Provider VM teardown stalled | Check provider console; manually cancel via `system_cancel_task` |
-| `target_size` increase doesn't replenish | Reaper job not running | Check `sudo systemctl status powernode-worker@default`; confirm `system_pool_replenish` job in Sidekiq queue |
+| `NoReadyMembersError` despite 5 members in dashboard | All 5 members are still `warming` (`ready_count: 0`) | Either wait, increase `target_size`, or pre-bake a faster boot image |
+| Pool stuck `draining` | Provider VM teardown stalled, or claimed members still running | Check provider console; for a stalled teardown task cancel via `system_cancel_task` |
+| `target_size` increase doesn't replenish | Reaper job not running | Check `sudo systemctl status powernode-worker@default`; confirm the `instance_pool_replenisher` cron (`System::InstancePoolReplenisherJob`) is firing every 60 s — or force it with `system_replenish_instance_pool` |
 | Members continuously cycle (warm → claim → terminate → repeat) | Claim rate exceeds replenish rate | Increase `target_size`; reduce W (pre-bake image) |
 | Pool's claim metric oscillates | Sizing too tight; reaper can't keep up after bursts | Add more headroom: `target_size += 2 × max_burst_size` |
 
-## Pool sensor signals
+## Observing pool health
 
-The pool reaper emits `FleetEvent` signals visible in `recent_events`:
+The reaper does **not** emit dedicated `pool.*` FleetEvent signals — its
+replenish / recycle / drain decisions go to the worker log
+(`[InstancePoolService] ...`, `[InstancePoolReaperService] ...`). To
+observe a pool:
 
-- `pool.member_provisioned` — replenish created a new member
-- `pool.member_warmed` — member transitioned `warming → ready`
-- `pool.member_warmup_timeout` — member exceeded `warmup_grace_seconds`; reaper terminates + provisions another
-- `pool.empty_during_claim` — `system_acquire_pooled_instance` failed because no ready member existed
-- `pool.drain_started` / `pool.drain_completed`
+- **Live counts** — `system_get_instance_pool` returns `ready_count`,
+  `warming_count`, `claimed_count`, `errored_count`. A `ready_count` that
+  sits at 0 while `target_size > 0` is the user-visible failure mode.
+- **Worker log** — `journalctl -u powernode-worker@default -f | grep
+  InstancePool` shows each tick's replenish/recycle/drain activity.
+- **Underlying instance events** — individual member provision / terminate
+  flows surface in `recent_events` like any other NodeInstance lifecycle
+  (e.g. `provider_quota_exceeded`, `module_pull_failed`).
 
-Tune your dashboards to alert on `pool.empty_during_claim` — that's the user-visible failure mode.
+Alert on a sustained `ready_count == 0` (with `target_size > 0`) — that
+means claims will start raising `NoReadyMembersError`.
 
 ## How the System Concierge should use this
 
@@ -191,3 +223,5 @@ When an operator chats "I need 50 ephemeral instances for an ML run" / "claim a 
 - [`runbooks/node-provisioning.md`](./node-provisioning.md) — for non-pool ephemeral provisioning
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `provision_cluster` for one-shot multi-instance bursts
 - [`FLEET_SENSORS.md`](../FLEET_SENSORS.md) — `instance_status_sensor` covers pool members
+
+_Last verified: 2026-06-03_

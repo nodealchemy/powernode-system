@@ -1,5 +1,7 @@
 # Node Provisioning Runbook
 
+> Status: active
+
 Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I have a Template" through "the instance is decommissioned and rows cleaned up." Includes per-state error recovery and the LocalQemuProvider variant for offline / smoke-test environments.
 
 **Audience:** external operators (open-source consumers), internal Powernode operators, on-call SREs handling stuck instances.
@@ -17,38 +19,47 @@ Step-by-step operator guide for the full Node + NodeInstance lifecycle: from "I 
 
 ## Lifecycle diagram
 
+The `NodeInstance` AASM has **9 states**: `pending`, `provisioning`, `starting`,
+`running`, `stopping`, `stopped`, `rebooting`, `terminated`, `error`. There is
+**no `draining` state** (drain is an *operation* that ultimately drives the
+instance `running → stopping → stopped`; `draining` is a `pool_state` on pooled
+instances, not an instance AASM state) and **no `failed` state** — the terminal
+failure state is `error`. The "bootstrapping" box below is the agent-driven boot
+window *within* the `provisioning` state, not a separate AASM state.
+
 ```
   ┌──────────────┐
-  │ no instance  │  Node row exists; no provider VM yet
+  │ (no instance)│  Node row exists; no provider VM yet
   └──────┬───────┘
          │ system_provision_instance
          ▼
-  ┌──────────────┐  Task: pending → provisioning
+  ┌──────────────┐  AASM: pending → mark_provisioning → provisioning
   │ provisioning │  Provider creates VM; netboot fetches kernel + initramfs
   └──────┬───────┘
-         │ first heartbeat from agent
-         ▼
-  ┌──────────────┐  Agent: enrolling (CSR → mTLS)
-  │ bootstrapping│  Modules pulled, fs-verity verified, composefs mounted
-  └──────┬───────┘
-         │ module reconcile complete + handshake POST
-         ▼
-  ┌──────────────┐  Task: running
-  │   running    │  Heartbeats every 30s; task lease ready
-  └──────┬───────┘
-         │ system_drain_instance (graceful) │
-         ▼                                  │ system_terminate_instance (hard)
-  ┌──────────────┐                          │
-  │   draining   │ Workloads cordoned + relocated; services stopped
-  └──────┬───────┘                          │
-         │                                  │
-         ▼                                  ▼
+         │  (agent boot window: enroll CSR → mTLS,
+         │   modules pulled, fs-verity verified, composefs mounted)
+         │                                   ╲  provider error / boot failure
+         │ first phase=ready heartbeat        ╲  → mark_errored
+         ▼                                     ▼
+  ┌──────────────┐  AASM: mark_running    ┌──────────┐
+  │   running    │  heartbeats every 30s  │  error   │ terminal failure
+  └──────┬───────┘  task lease ready      └────┬─────┘ (no orphaned row)
+         │                                      │ terminate
+         │ system_drain_instance (graceful):    │ (allowed from error)
+         │   stop/cordon → AASM stopping→stopped │
+         │ -or- system_terminate_instance (hard)│
+         ▼                                       ▼
   ┌──────────────────────────────────────────────────┐
   │              terminated                          │
   │  Cascade FKs: Devops::DockerHost / KubernetesNode│
   │  cleanup, Vault TLS revoked, Sdwan::Peer removed │
   └──────────────────────────────────────────────────┘
 ```
+
+> The `terminate` event currently transitions only from `running`, `stopped`,
+> and `error` — **not** directly from `provisioning` or `starting`. See
+> [Per-state error recovery](#per-state-error-recovery) for how to clear an
+> instance still mid-`provisioning`.
 
 ## Phase 1 — Create Node ✅
 
@@ -94,7 +105,18 @@ The platform creates a `Task` (status=`pending`), enqueues a worker job, and ret
 - **AWS / GCP / Azure / OpenStack** — provider-specific API calls; takes 30 s – 5 min
 - **LocalQemuProvider** — libvirt domain creation with direct kernel boot from M3 artifacts; takes ~10-30 s in `real` mode, instant in `recorder` mode (per `project_local_qemu_provider` memory)
 
-Status transitions: `pending → provisioning → running` (via Task AASM).
+Instance AASM transitions on the happy path: `pending → provisioning → running`
+(`mark_provisioning`, then `mark_running` on the first `phase=ready` heartbeat).
+If the provider call or boot fails, the worker drives `mark_errored` so the
+instance lands in `error` rather than dangling in `provisioning` — there is no
+orphaned-`pending` row left behind.
+
+**Idempotent retries.** `system_provision_instance` accepts an `operation_id`.
+A retried call carrying the **same** `operation_id` reuses the existing instance
+row (tagged in `config->>'operation_id'`) instead of creating a second VM —
+this dedups transient-error retries. A retry *without* an `operation_id` falls
+back to time-stamped naming and **will** create a distinct instance, so always
+thread the same `operation_id` through when retrying a failed provision.
 
 **Verify provisioning:**
 
@@ -165,7 +187,10 @@ platform.system_drain_instance({
   timeout_seconds: 600,           // give workloads up to 10 min to relocate
   cordon_only: false              // false → also stop services after cordon
 })
-// → { task_id, status: "draining" }
+// → { instance_id, instance_name, drain_initiated_at, drain_timeout_seconds }
+// (records drain markers + emits platform.resilience.drain_started; the
+//  instance AASM moves running → stopping → stopped as services wind down —
+//  there is no "draining" instance state)
 ```
 
 Drain coordinates with Devops layer:
@@ -182,7 +207,9 @@ Drain coordinates with Devops layer:
 
 ```javascript
 platform.system_terminate_instance({ id: "<instance-id>" })
-// → { task_id, status: "terminating" }
+// → { instance_id, status: "terminated" }
+// (single-step AASM transition running/stopped/error → terminated; there is
+//  no intermediate "terminating" instance state)
 ```
 
 Cascade actions (FK + service-level):
@@ -198,14 +225,40 @@ Cascade actions (FK + service-level):
 
 ## Per-state error recovery
 
+Stuck states map to the **9 real AASM states**. "bootstrapping" is the agent
+boot window inside `provisioning`; drain/terminate are operations (the instance
+moves `running → stopping → stopped` or `→ terminated`), not states.
+
 | Stuck in… | Likely cause | Recovery |
 |---|---|---|
-| `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart powernode-worker@default`; retry |
-| `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task({ id: "<task-id>" })`; investigate provider; retry with `system_provision_instance` |
-| `bootstrapping` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
+| `pending` (>5 min) | Worker queue stalled or provider quota | Check `platform.recent_events` for `provider_quota_exceeded`; restart worker via `sudo systemctl restart powernode-worker@default`; retry with the **same `operation_id`** |
+| `provisioning` (>10 min) | Provider API timeout, libvirt domain creation hung | `platform.system_cancel_task` the provision task; investigate provider. `terminate` does **not** fire from `provisioning` today — see "Clearing a stuck `provisioning` instance" below |
+| `provisioning`, agent up but never `running` (>5 min after first heartbeat) | Module pull failure | SSH to node (if SDWAN attached) → `journalctl -u powernode-agent` shows the failed module + reason; common: cosign signature mismatch, OCI 404, network |
 | `running` but no heartbeats >5 min | Network partition or agent crash | `platform.recent_events` for `instance.silent`; SSH or console-access via libvirt; manual restart of `powernode-agent.service` |
-| `draining` (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate with explicit `force: true` |
-| `terminating` (>5 min) | Provider VM teardown stuck | Check provider console; in worst case, mark task `failed` via `system_cancel_task` and clean orphan rows |
+| `error` (terminal) | Provider/boot failure drove `mark_errored` | Inspect `platform.recent_events`; once the cause is understood, `system_terminate_instance` (allowed from `error`) to release provider resources, then re-provision with a fresh `operation_id` |
+| Drain stalled (>30 min) | Pods can't reschedule (capacity) | Add capacity, or hard-terminate via `system_terminate_instance` |
+| Terminate stalled (>5 min) | Provider VM teardown stuck | Check provider console; in the worst case `system_cancel_task` the teardown task and clean orphan rows manually |
+
+### Clearing a stuck `provisioning` instance
+
+Because the `terminate` event only fires from `running`, `stopped`, or `error`,
+an instance wedged in `provisioning` cannot be terminated directly. Recovery
+path:
+
+1. `system_cancel_task` the provision task so the worker stops retrying.
+2. Reconcile real provider state — for **all** cloud providers (AWS, GCP, Azure,
+   OpenStack) and LocalQEMU/Proxmox, the provider's `sync_status` reconciles
+   in-flight state against the provider API; a provider that reports the VM as
+   gone maps to `terminated`, which stops the controller's in-flight wait loop.
+3. If the VM genuinely failed to come up, the worker's `mark_errored` lands the
+   instance in `error`; from there `system_terminate_instance` releases any
+   provider resources and the row is cleaned up cascade-style.
+4. Re-provision with the **same `operation_id`** to reuse the row, or a **fresh**
+   one to start clean.
+
+> A proposed remediation (#7) would let `terminate` fire directly from
+> `provisioning`/`starting` to simplify this path; it is **not shipped yet**, so
+> use the cancel→sync→error→terminate sequence above today.
 
 For all stuck states, use the `attribute_failure` skill (bound to the System Concierge) to enumerate recent module/version changes that may have caused the failure. The skill is invoked through the System Concierge chat agent (operator describes the failure; Concierge calls the executor internally and returns the analysis):
 
@@ -270,3 +323,5 @@ The Concierge has 4 read-shape skills useful here: `capacity_recommend` (for "do
 - [`runbooks/instance-pool-tuning.md`](./instance-pool-tuning.md) — pre-warmed pools (slice 7) for ephemeral workloads
 - [`SMOKE_TEST.md`](../SMOKE_TEST.md) — LocalQemuProvider smoke test setup
 - `db/seeds/smoke_test_provision.rb` — canonical provisioning seed
+
+_Last verified: 2026-06-03_

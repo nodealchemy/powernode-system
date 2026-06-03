@@ -1,5 +1,7 @@
 # TODO Taxonomy
 
+> Status: active
+
 Every **standalone TODO comment** in this extension's Ruby source must be labeled. The label tells future-readers (and future-you) what scheduling bucket the work belongs to — preventing the "what does this TODO mean?" pile-up that audits surface.
 
 The gate runs in CI via [`scripts/audit-todos.sh`](../scripts/audit-todos.sh).
@@ -44,6 +46,8 @@ Add it here first (PR to this file), then start using it. Labels should be one o
 
 `audit-todos.sh` walks `server/app/` and `worker/app/` for `*.rb` files. On a bare `# TODO` it prints the file + line + offending text, plus the list of valid labels, and exits non-zero.
 
+> **Scope of the gate:** it enforces label *presence* (any `# TODO(<label>)` parenthesized form passes) — it does **not** validate `<label>` against the five buckets above. Keeping to the taxonomy is the contributor's responsibility: a topic-specific slug that isn't `M<N>-…`/`P<N>-…` and isn't one of the three keyword labels should be `unscheduled` (or get a milestone/phase prefix), or be added to the table first per [When to add a new label](#when-to-add-a-new-label).
+
 ```bash
 # Run locally before pushing:
 bash extensions/system/scripts/audit-todos.sh
@@ -68,3 +72,7 @@ server/app/services/foo.rb:12:    # TODO: rename
 - [`CONTRIBUTING.md` → TODO Discipline](../CONTRIBUTING.md#todo-discipline)
 - [`scripts/audit-todos.sh`](../scripts/audit-todos.sh)
 - [`.gitea/workflows/ci.yaml`](../.gitea/workflows/ci.yaml) — `todo-audit` job
+
+---
+
+_Last verified: 2026-06-03_

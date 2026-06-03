@@ -1,5 +1,7 @@
 # Disk Image Manager Agent — Operator Guide
 
+> Status: active
+
 The **Disk Image Manager** is one of the autonomous agents seeded into every Powernode account. It owns the disk image CI publication lifecycle: build → verify → promote → retention. Carved out of Fleet Autonomy on 2026-05-10 so image-publishing automations have an independent queue (e.g., a nightly canary promotion can be paused independently of fleet ops).
 
 Source of truth for this guide: `extensions/system/server/db/seeds/system_disk_image_manager_agent.rb`.
@@ -12,7 +14,9 @@ For the upstream CI pipeline (Gitea workflows, OCI artifact format, cosign signi
 
 The Disk Image Manager is a **monitor** agent (no chat surface). It carries the intervention-policy table + approval chain below and runs deferred-operation executors when operators approve.
 
-**Autonomy-tick status (2026-05-19):** the agent declares `interval_seconds: 300, scope: "disk_image"` in its seed, but the autonomy-tick loop in `FleetAutonomyService` does **not** currently route any `system.disk_image_*` signals to this agent — the policies + approval chain are live and gate operator-initiated actions correctly, but no sensor today emits the disk-image-scoped signals listed in the §"Sensor → Action Map" below (those signals are aspirational and will land alongside `DiskImagePublishedSensor` + `DiskImageWebhookSecretStaleSensor` work). For now, the agent's value is in the intervention-policy table: every operator-initiated promote/rollback/retention-update/webhook-revoke/webhook-rotate flows through this agent's chain rather than the Fleet Autonomy chain, keeping disk-image work routable separately.
+**Autonomy-tick status (verified 2026-06-03):** the agent declares `interval_seconds: 300, scope: "disk_image"` in its seed, but the autonomy-tick loop in `FleetAutonomyService` does **not** route any `system.disk_image_*` signals to this agent — no sensor today emits the disk-image-scoped signals listed in the §"Sensor → Action Map" below (those signals are aspirational and will land alongside `DiskImagePublishedSensor` + `DiskImageWebhookSecretStaleSensor` work). For now, the agent's value is in the intervention-policy table: every operator-initiated promote/rollback/retention-update/webhook-revoke/webhook-rotate flows through this agent's chain rather than the Fleet Autonomy chain, keeping disk-image work routable separately.
+
+Operator-approved **promote and rollback now execute correctly** via a NodePlatform pointer column-flip — the executors (`System::Executors::DiskImage::{PromotePublication,RollbackPublication}`) and the controller's `rollback` action repoint `disk_image_oci_ref` / `disk_image_git_sha` / `disk_image_file_object_id` at the target publication and retire the prior `published` row. (Earlier 2026-05 revisions flagged these as crashing on approval; that bug is fixed.) **Caveat:** of the 6 policies below, only four are wired to an executor — `system.disk_image_publication_promote`, `system.disk_image_publication_rollback`, `system.disk_image_retention_update`, and `system.disk_image_webhook_trigger`. The two webhook-lifecycle policies (`system.disk_image_webhook_revoke`, `system.disk_image_webhook_rotate_secret`) are registered as valid action categories and gate through the approval chain, but have **no executor** in `app/services/system/executors/disk_image/` yet — approving them is a no-op until the revoke/rotate executors land. Rotate the webhook secret today via `provision_disk_image_webhook` (re-run with the same `label`); see [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md#secret-rotation).
 
 What it owns:
 - **Publication promotion** — moving a verified disk image from `staging` to `default` (the version new instances boot from)
@@ -31,14 +35,16 @@ What it does **not** own:
 
 The agent ships with **6 intervention policies**:
 
-| Action | Policy | Why |
-|---|---|---|
-| `system.disk_image_publication_promote` | `require_approval` | Production rollout — affects every new instance that boots |
-| `system.disk_image_publication_rollback` | `require_approval` | Reverting changes the active fleet's boot path |
-| `system.disk_image_retention_update` | `auto_approve` | GC config; reversible at any time |
-| `system.disk_image_webhook_trigger` | `notify_and_proceed` | Webhook ingest — running the verify pipeline is safe |
-| `system.disk_image_webhook_revoke` | `require_approval` | Cuts active CI integration; recovery requires re-enrollment |
-| `system.disk_image_webhook_rotate_secret` | `notify_and_proceed` | Invalidates old secret, but the rotation is recoverable |
+| Action | Policy | Executor wired? | Why |
+|---|---|---|---|
+| `system.disk_image_publication_promote` | `require_approval` | ✅ `PromotePublication` | Production rollout — affects every new instance that boots |
+| `system.disk_image_publication_rollback` | `require_approval` | ✅ `RollbackPublication` | Reverting changes the active fleet's boot path |
+| `system.disk_image_retention_update` | `auto_approve` | ✅ `UpdateRetention` | GC config; reversible at any time |
+| `system.disk_image_webhook_trigger` | `notify_and_proceed` | ✅ `TriggerWebhook` | Webhook ingest — running the verify pipeline is safe |
+| `system.disk_image_webhook_revoke` | `require_approval` | ⚠️ **no executor yet** | Cuts active CI integration; recovery requires re-enrollment |
+| `system.disk_image_webhook_rotate_secret` | `notify_and_proceed` | ⚠️ **no executor yet** | Invalidates old secret, but the rotation is recoverable |
+
+The two ⚠️ webhook-lifecycle policies are seeded + registered as valid action categories, but no executor exists for them yet (see the autonomy-tick caveat above). Until they land, manage webhook secrets directly via [`DISK_IMAGE_CI.md` → Secret Rotation](./DISK_IMAGE_CI.md#secret-rotation).
 
 ### Why these defaults
 
@@ -185,20 +191,27 @@ on next netboot.
 
 ### Agent-driven (autonomy loop)
 
-When a sensor emits `system.disk_image_regression_reported`, the policy
-`system.disk_image_publication_rollback` (default `require_approval` per
-the Sensor → Action Map above) opens an `ApprovalRequest` proposing the
-previous publication as the new default. An operator confirms; the agent
-then invokes `set_default_disk_image_publication` automatically.
+The `system.disk_image_publication_rollback` policy (default
+`require_approval`) opens an `ApprovalRequest` proposing the previous
+publication as the new default. On approval, the
+`System::Executors::DiskImage::RollbackPublication` executor flips the
+NodePlatform pointer (and restores a soft-deleted artifact if the target
+was retired). This rollback path works today; what is **not** yet wired
+is the *sensor* that would emit `system.disk_image_regression_reported`
+to trigger it autonomously (see the autonomy-tick caveat at the top) —
+so the rollback executor is reached via operator-initiated approval, not
+a sensor tick.
 
-### Why no dedicated revert wrapper today
+### Why no dedicated revert wrapper
 
-`set_default_disk_image_publication` already atomically swaps the
-NodePlatform's default. A `system_revert_disk_image` wrapper would need
-to remember "previous default" server-side — adding persistent state for
-ergonomics only. When the wrapper eventually ships (see audit plan
-P2.16), it will preserve the existing semantics: it's a thin
-look-up-and-swap on top of the existing action.
+`system_set_default_disk_image_publication` already atomically swaps the
+NodePlatform's default, and the `RollbackPublication` executor handles
+the approval-gated path including artifact restore. A separate
+`system_revert_disk_image` MCP wrapper would only add server-side
+"previous default" memory for ergonomics — it has not shipped and is not
+required; both the set-default action and the rollback executor are the
+supported swap mechanisms. (`system_revert_disk_image` is still listed as
+aspirational in [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md).)
 
 ---
 
@@ -211,6 +224,30 @@ Every Disk Image Manager decision lands in three places:
 3. **Approval queue** — `Ai::ApprovalRequest` rows for `require_approval` actions, visible at `/ai/autonomy/approvals` in the operator UI
 
 Promotion events are flagged `severity: "high"` so they pop in the dashboard's filtered views; retention sweeps are `severity: "low"` and stay in the background log.
+
+---
+
+## Retrying a failed publication
+
+A publication that fails verification lands in `status: "failed"` with the
+reason in `error_message`. The AASM permits re-verifying a failed row
+(`start_verifying` transitions from `failed → verifying`), so a re-delivered
+webhook for the same artifact retries ingest in place rather than orphaning
+the row. There is no `can_retry?` predicate on the model today — decide
+whether to retry by reading `error_message`:
+
+- **Transient (retry the build / re-deliver the webhook):** registry pull
+  timeouts, `oras`/network errors, a temporarily-unreachable OCI registry.
+  Re-running the build (or re-POSTing the webhook for the same digest) is
+  safe and idempotent.
+- **Permanent (fix configuration, then rebuild):** `sha256 mismatch`,
+  `cosign verify` failures, or `no cosign trust policy configured`. These
+  will fail identically on retry until you correct the NodePlatform's
+  `cosign_identity_regexp` / `cosign_issuer_regexp` (or the artifact itself),
+  then trigger a fresh build. See [`DISK_IMAGE_CI.md` → Troubleshooting](./DISK_IMAGE_CI.md#cosign-verification-fails).
+
+`attempt_count` on the publication tracks how many ingest attempts a row has
+seen, which helps distinguish a flaky-transient row from a hard-failing one.
 
 ---
 
@@ -229,7 +266,9 @@ Rolling back rebooting nodes is itself disruptive — the rollback IS a fleet ev
 ## Related Documents
 
 - [`DISK_IMAGE_CI.md`](./DISK_IMAGE_CI.md) — upstream CI pipeline (Gitea workflows, OCI artifact format, cosign signing)
-- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — the sensors that emit `system.disk_image_*` signals
+- [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — the sensors that will emit `system.disk_image_*` signals (aspirational; see autonomy-tick caveat)
 - [`runbooks/disk-image-ci.md`](./runbooks/disk-image-ci.md) — operator runbook for the full CI flow
 - [`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) — full skill executor catalog (auto-generated)
 - [`CLAUDE.md`](../CLAUDE.md) — index of all extension agents, including this one
+
+_Last verified: 2026-06-03_

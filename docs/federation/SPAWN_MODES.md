@@ -1,6 +1,8 @@
 # Powernode Spawn Modes — Operator Guide
 
-**Status:** v1 (lands in P6 of the Decentralized Federation plan)
+> Status: active
+
+**Status:** v1 — shipped (P6 of the Decentralized Federation plan)
 **Audience:** platform operators provisioning child platforms
 **Plan reference:** Decentralized Federation §H + Locked Decision #4 + P6.
 
@@ -25,12 +27,18 @@ the materialization of replication slots.
 
 ## The three spawn modes
 
-The operator picks one of three modes at spawn time. Each mode is a
-**different social + operational relationship** between the parent and
-the child once the handshake completes. The mode is recorded on the
+The operator picks one of three **spawn** modes at spawn time. Each mode
+is a **different social + operational relationship** between the parent
+and the child once the handshake completes. The mode is recorded on the
 parent-side `System::FederationPeer` row at
 `spawn_role: "parent"` / `spawn_mode: <mode>` and ships in the
 virtio-fw-cfg payload so the child knows how to configure itself.
+
+> `spawn_mode` accepts a **fourth** value, `out_of_band`, which is **not**
+> a spawn mode — it marks a peer that was paired by manual token exchange
+> rather than spawned by a parent (see [Out-of-band peers](#out-of-band-peers-non-spawn)
+> below). `FederationPeer::SPAWN_MODES` is therefore
+> `%w[managed_child autonomous_peer cluster_member out_of_band]`.
 
 ```mermaid
 flowchart LR
@@ -154,6 +162,32 @@ include auto-failover; that's a P9 follow-up.
 **When to pick this mode:** when you're horizontally scaling the
 platform tier (API + worker capacity) on a separate node, OR when
 you need a hot-standby for HA.
+
+---
+
+## Out-of-band peers (non-spawn)
+
+`out_of_band` is the fourth `spawn_mode` value, but it is **not** something
+an operator selects in the **Spawn Platform** modal — there is no spawn. It
+labels a peer that came into being through the manual
+propose → token-handoff → accept ritual between two **pre-existing**
+platforms (the [federation-setup runbook](../runbooks/federation-setup.md)
+flow), rather than one platform provisioning the other.
+
+- No NodeInstance is provisioned by the local platform (the peer already
+  runs its own).
+- No virtio-fw-cfg payload, no acceptance-token injection at boot — the
+  token is exchanged out of band by the two operators.
+- No auto-grants. Cross-peer access is entirely operator-issued on each
+  side, exactly like `autonomous_peer` after its handshake completes.
+- `spawn_role` is `symmetric` for out-of-band peers (neither side is the
+  parent).
+
+In short: `autonomous_peer` and `out_of_band` end up in the *same*
+"equal peers, no privilege" relationship — the difference is purely
+**provenance**. `autonomous_peer` was spawned (one-click provisioning
+convenience); `out_of_band` was hand-paired. Use `out_of_band` when you
+are federating with a platform you did not spawn.
 
 ---
 
@@ -342,3 +376,7 @@ parent-side grant's `remote_subject` + scope.
 - **Cross-region cluster_member** — v1 assumes parent + child share an SDWAN network with low RTT.
 - **Bulk spawn** — one child per click; bulk spawning is a deferred operator-convenience.
 - **Spawn from template variant** — operator picks the template by ID; richer template-with-overrides UX is post-v1.
+
+---
+
+_Last verified: 2026-06-03_

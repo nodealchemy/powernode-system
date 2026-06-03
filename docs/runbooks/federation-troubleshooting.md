@@ -1,8 +1,10 @@
 # Federation Troubleshooting
 
+> Status: active
+
 When a federation flow doesn't behave as the [setup runbook](./federation-setup.md) describes, this is the diagnosis playbook. Symptoms are listed by what the operator sees; each diagnosis has a fix or escalation path.
 
-For the underlying state machine, see `System::FederationPeer::TRANSITIONS` in `extensions/system/server/app/models/system/federation_peer.rb`.
+For the underlying state transitions, see `System::FederationPeer::V1_TRANSITIONS` in `extensions/system/server/app/models/system/federation_peer.rb` — a plain `status → [allowed next statuses]` Hash guarded by a `transition_allowed?` check (not an AASM state machine).
 
 ---
 
@@ -111,18 +113,18 @@ peer.suspend!(reason: "remote platform offline; investigation in progress")
 
 **What you see:** `[PeerClient] partial mTLS config — cert_pem=true, key_pem=false; falling back to plaintext` (or the inverse) in Rails logs every time the outbound peer client runs.
 
-**Root cause:** `peer.node_certificate.credentials` returned one half of the cert/key pair, not both. This typically means the federation P2.5 CSR-and-store flow ran partially — the cert was minted and stored but the private key wasn't, or vice versa.
+**Root cause:** the peer's stored federation identity returned one half of the cert/key pair, not both. The federation **mTLS Phase 2** trust flow normally seals both halves at accept time:
+- **Hierarchical (parent↔child / `managed_child`):** the child generates its keypair locally and sends only the CSR in the accept call; `FederationAcceptanceService#sign_federation_csr!` signs it off this platform's internal CA (CN forced to `fed:<peer.id>`), stamps `peer.inbound_subject`, and returns the cert (never the private key) for the child to seal via `Federation::OutboundIdentityService#store_issued!`.
+- **Symmetric (peer-of-equals):** `Federation::PeerTrustService` exchanges CA anchors and `OutboundIdentityService.self_issue!` self-issues off the local CA with the CN the peer assigned.
 
-**Fix:** the wiring for full P2.5 cert/key storage is the responsibility of the AcceptController + a forthcoming CSR generation flow (see `accept_controller.rb:28` for the pending TODO). For now, the defensive behavior is:
+A `partial mTLS config` warning means one of those steps half-completed — e.g. the CSR was signed but the outbound key never sealed locally, or a Vault write dropped one half. (This is now an edge case, not an unbuilt flow — both trust modes ship and are exercised by the live two-platform federation smoke.) The defensive behavior:
 - Plaintext request is attempted
 - A remote peer enforcing client-cert verification will reject; you'll see `ConnectionError` in the call site
-- A peer that accepts plaintext (because it's also in pre-P2.5 mode) will succeed but unauthenticated
+- A peer that accepts plaintext will succeed but unauthenticated
 
-If the remote peer is rejecting:
-1. Manually re-mint and re-store the peer's cert via `System::InternalCaService.issue_certificate(csr_pem: ...)` and store via `peer.node_certificate.store_in_vault(cert_pem: ..., private_key_pem: ...)`
-2. Or revoke + re-propose the federation peer (clean slate)
+If the remote peer is rejecting, the clean recovery is to **revoke + re-propose** the peer so the accept chain re-runs the trust exchange from scratch and re-seals both halves. For a targeted re-mint, re-run the CSR sign via `System::InternalCaService.issue_certificate(csr_pem: ...)` and re-seal the outbound identity through `Federation::OutboundIdentityService`.
 
-Escalate to the federation P2.5 owner if this is blocking — the cert flow is under active development.
+> **Production auth note:** the `child → parent` (hierarchical) direction needs no Traefik trust change because the child's cert chains to the parent's own CA, already in the proxy's client-auth bundle. The symmetric tier uses the two-file Traefik split (`internal-ca.pem` vs `client-auth-bundle.pem` written by `Acme::TraefikConfigWriter`) so federation peers terminate mTLS at the reverse proxy. This is distinct from the `/node_api/*` (on-node agent) surface, where mTLS termination is still forward-compat scaffold and JWT is the operational auth.
 
 ---
 
@@ -166,11 +168,11 @@ puts grant.applies_to?(
 
 **Diagnose order:**
 1. **Cert chain valid?** A's `FederationApi::BaseController#authenticate_federation_peer!` walks the cert chain. Use `openssl s_client -showcerts -connect platform-a:443` from B's side to see what cert is being presented.
-2. **Cert belongs to a known peer?** The cert's subject hash maps to a `System::NodeCertificate.id` which maps via `node_certificate_id` to a `System::FederationPeer`. If that peer row doesn't exist (or is `revoked` / `suspended`), auth fails.
+2. **Cert belongs to a known peer?** The cert's subject CN (`fed:<peer.id>`, assigned by A at accept time) resolves back to the `System::FederationPeer` via `inbound_subject`. If that peer row doesn't exist (or is `revoked` / `suspended`), auth fails.
 3. **Grant token parses?** The `Authorization: Bearer fg-<uuid>` token must start with `fg-` and resolve to an existing `FederationGrant` row via `find_by_bearer_token`.
-4. **Trust chain mismatch?** If B presents a cert signed by their CA but A only trusts its own CA, the chain validation fails. The P2.5 flow has A mint certs for B (so they chain to A's CA from A's perspective).
+4. **Trust chain mismatch?** In the **hierarchical** mode A signed B's CSR off A's own CA, so B's cert chains to A's CA from A's perspective — no mismatch. In the **symmetric** mode each side trusts the other's advertised CA anchor (`peer.trusted_ca_pem`); if that anchor wasn't absorbed at accept, A validates B's cert against the wrong CA and the chain fails.
 
-**Fix:** re-run the cert mint flow for that peer. In the meantime, revoke the peer and re-propose from scratch.
+**Fix:** revoke the peer and re-propose from scratch so the accept chain re-runs the CSR sign (hierarchical) or CA-anchor exchange (symmetric) and re-stamps `inbound_subject` / `trusted_ca_pem`.
 
 ---
 
@@ -434,3 +436,5 @@ When the runbook above doesn't resolve the issue:
 - [`../federation/NETWORK_TRUST.md`](../federation/NETWORK_TRUST.md) — cryptographic trust model
 - [`../SDWAN_MANAGER_AGENT.md`](../SDWAN_MANAGER_AGENT.md) — the agent that gates federation actions
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — system extension architecture reference
+
+_Last verified: 2026-06-03_

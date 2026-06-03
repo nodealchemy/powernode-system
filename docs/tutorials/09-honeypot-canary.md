@@ -1,5 +1,7 @@
 # Tutorial 09 — Honeypot canaries
 
+> Status: active
+
 > **What you'll learn:** Deploy a honeypot canary module that creates decoy
 > assets on a NodeInstance, simulate unauthorized access, watch the
 > `honeypot_access_sensor` fire, and escalate through the operator
@@ -265,9 +267,13 @@ platform.recent_events({
 **Drill vs real** — always tag drill events explicitly (learning title
 prefixed with `DRILL:`); never confuse drill response with real IR.
 
-**Sub-minute alerts** — `honeypot_access_sensor` runs every 60s. For
-faster propagation, push directly via WebSocket or escalate via
-`send_proactive_notification`.
+**Sub-minute alerts** — `honeypot_access_sensor` runs every 60s and only
+considers events inside a fixed 15-minute lookback window (hardcoded
+today; an env-configurable lookback is proposed). Access events older
+than that window on the sensor's first tick after a long pause won't
+re-escalate — they're already in the FleetEvent log. For faster
+propagation than the 60s tick, push directly via WebSocket or escalate
+via `send_proactive_notification`.
 
 ## What's next
 
@@ -275,8 +281,10 @@ faster propagation, push directly via WebSocket or escalate via
   prod node gets honeypot-canary" in `fleet.yaml` so new nodes are
   automatically instrumented.
 - **[`FLEET_SENSORS.md`](../FLEET_SENSORS.md)** — `honeypot_access_sensor`
-  reference + the 11 other sensors that watch your fleet.
+  reference + the 16 other registered sensors that watch your fleet.
 - **[`ARCHITECTURE.md`](../ARCHITECTURE.md)** §7 — Honeypot canary
   subsystem design.
 - **Run drills quarterly** — same logic as CVE drills (Tutorial 07):
   muscle memory is what matters.
+
+_Last verified: 2026-06-03_

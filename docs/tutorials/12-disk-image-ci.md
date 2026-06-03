@@ -1,5 +1,7 @@
 # Tutorial 12 — Disk image CI publication
 
+> Status: active
+
 > **What you'll learn:** Set up a continuous build pipeline that produces
 > kernel + initramfs + composefs disk images for your custom NodePlatform,
 > signs them with cosign, publishes as OCI artifacts, and propagates
@@ -221,9 +223,10 @@ jobs:
 
 ```javascript
 platform.dispatch_gitea_workflow({
-  account_id: "<account>",
-  repo: "<account>/disk-images",
-  workflow: "build-disk-image.yml",
+  owner: "<account>",                       // Gitea owner
+  repo: "disk-images",                      // repo name (not "<owner>/<repo>")
+  workflow_file: "build-disk-image.yaml",   // workflow filename (the param is `workflow_file`, not `workflow`)
+  ref: "master",                            // branch/tag ref (required)
   inputs: { platform_slug: "ubuntu-2404-custom" }
 })
 // → { run_id: "..." }
@@ -233,12 +236,14 @@ platform.dispatch_gitea_workflow({
 
 ```javascript
 platform.list_gitea_workflow_runs({
-  account_id: "<account>",
-  repo: "<account>/disk-images"
+  owner: "<account>",
+  repo: "disk-images",
+  workflow_file: "build-disk-image.yaml"    // optional filter
 })
 // → { runs: [{ id, status: "in_progress", ... }] }
 
-platform.get_gitea_job_logs({ run_id: "<run-id>", job_id: "<job-id>" })
+// job_id comes from get_gitea_workflow_run(...).jobs[].id
+platform.get_gitea_job_logs({ owner: "<account>", repo: "disk-images", job_id: "<job-id>" })
 ```
 
 Total runtime: ~30–60 min on cold cache (apt-mirror + kernel build
@@ -292,7 +297,10 @@ at runtime).
 
 ```javascript
 platform.system_list_disk_image_publications({ node_platform_id })
-// → { publications: [{ id, oci_ref, oci_digest, cosign_verified: true, is_default: true, ... }] }
+// → { publications: [{ id, status: "published", oci_ref, sha256, arch,
+//      active: true, attestation_present: true, verified_at, published_at, ... }] }
+// (the row exposes `active` for the current default and `attestation_present`/`verified_at`
+//  for the cosign result — there is no `oci_digest`, `cosign_verified`, or `is_default` field)
 ```
 
 **New provision uses it:**
@@ -327,8 +335,9 @@ platform.system_set_disk_image_retention({
   retention_count: 1            // keep only the current default
 })
 
-// Decommission the CI worker if no longer needed
-platform.system_terminate_ci_worker({ id: "<worker-id>" })
+// Decommission the CI worker if no longer needed (flips the Worker row to
+// "revoked" + invalidates its token; then stop/deregister act_runner on the host)
+platform.system_terminate_ci_worker({ worker_id: "<worker-id>" })
 ```
 
 ## Troubleshooting
@@ -342,9 +351,11 @@ repo doesn't match what was returned from `provision_disk_image_webhook`.
 Regenerate (re-call provision_disk_image_webhook — it rotates the secret)
 and re-paste in Gitea.
 
-**`cosign_verified: false`** in publication row — same as module CI:
-identity / issuer regex mismatch on the NodePlatform record. Edit those
-fields to match the Gitea Actions OIDC subject.
+**Publication shows `status: "failed"`** with a cosign error in
+`error_message` — same as module CI: identity / issuer regex mismatch on
+the NodePlatform record (`cosign_identity_regexp` / `cosign_issuer_regexp`).
+Edit those fields to match the Gitea Actions OIDC subject, then re-trigger
+the build (a re-delivered webhook re-verifies the row in place).
 
 **Build runs but webhook never fires** — workflow last step (the curl)
 failed silently. Add `set -e` to the bash script and check job logs.
@@ -365,8 +376,10 @@ platform.agent_introspect({ agent_id: "<uuid>" })
 If `require_approval`, an `ApprovalRequest` per prune awaits in
 `/app/approvals`. For non-prod, switch the policy to `auto_approve`.
 
-**New instances still boot the old image** — `is_default` wasn't updated.
-Verify via `system_list_disk_image_publications` and re-call
+**New instances still boot the old image** — the publication's `active`
+flag wasn't flipped (the NodePlatform default pointer still references the
+prior image). Verify via `system_list_disk_image_publications` (look for
+`active: true` on the intended row) and re-call
 `system_set_default_disk_image_publication` if needed. Existing
 instances **do not auto-reboot** to the new image — that's an
 operator-driven roll (see Tutorial 06 rolling upgrade pattern with
@@ -385,3 +398,5 @@ operator-driven roll (see Tutorial 06 rolling upgrade pattern with
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md)** — Pass 1 boots an instance from
   a known initramfs build; once you have your own published images,
   smoke seeds work the same way against them.
+
+_Last verified: 2026-06-03_

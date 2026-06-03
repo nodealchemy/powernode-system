@@ -1,5 +1,7 @@
 # K3s full-lifecycle smoke runbook
 
+> Status: active
+
 End-to-end operator workflow for the Pass 9 K3s lifecycle smoke. Covers
 all 8 phases across 4 tiers (db / single / site / full). Use this when
 you need to verify the K3s + SDWAN capability surface end-to-end after
@@ -154,6 +156,13 @@ failover via `Sdwan::VirtualIp#failover!(reason: "manual_failover")` and
 asserts the primary holder changes to one of the HA peers, with the old
 primary moving to the failover list.
 
+> **Honest expectation:** the smoke asserts the failover *bookkeeping*
+> (holder rows flip) — it does **not** measure the wall-clock convergence
+> time for the new holder to actually answer on the VIP. There is no
+> server-side holder-transition timeout/SLA; on a real failover the
+> `K3S_URL` gap until the new holder advertises the `/128` depends on the
+> agent's reconcile tick. Treat sub-second cutover as *not* guaranteed.
+
 #### Phase 3 — Agent join
 
 ```bash
@@ -239,6 +248,13 @@ of `system_drain_instance`), destroys the KubernetesNode + NodeInstance,
 then reprovisions a replacement agent and re-joins it. Asserts
 `cluster.node_count` decrements then restores.
 
+> **Honest expectation:** this exercises the *clean* drain→destroy→re-join
+> path. A bootstrap that dies mid-handshake leaves an **orphan** `KubernetesNode`
+> row that is **not** auto-reaped — the operator cleans it via MCP (see
+> [`CONTAINER_RUNTIMES.md`](../CONTAINER_RUNTIMES.md) on orphan recovery). The
+> smoke does not inject a mid-bootstrap crash, so orphan recovery is a manual
+> day-2 step, not a covered assertion.
+
 ## Live pod-plane verification (phase 4, site+ tier)
 
 The headline operator claim is "pod traffic flows over the encrypted
@@ -318,3 +334,5 @@ single point of control for resuming vs. starting over.
 - [`../tutorials/05-multi-cluster-k3s.md`](../tutorials/05-multi-cluster-k3s.md) — multi-cluster tutorial
 - [`../tutorials/11-federation.md`](../tutorials/11-federation.md) — federation tutorial
 - [`../CONTAINER_RUNTIMES.md`](../CONTAINER_RUNTIMES.md) §"Routing pod traffic over SDWAN"
+
+_Last verified: 2026-06-03_

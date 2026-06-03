@@ -1,5 +1,7 @@
 # Expose a Service Publicly with TLS — Operator Runbook
 
+> Status: active
+
 End-to-end operator procedure for publishing an internal backend service to
 the public internet with a Let's Encrypt TLS certificate, fronted by the
 platform's reverse proxy. One approval-gated skill chains the four primitives
@@ -86,18 +88,18 @@ Before exposing anything, confirm all of the following:
       (`System::NodeInstance`). An instance must already have an SDWAN peer in
       this network (the executor resolves the instance → its holder peer and
       refuses to create a holderless VIP).
-- [ ] **For https: a stored Cloudflare DNS credential** —
-      `System::AcmeDnsCredential` with `provider: cloudflare`, whose API token
-      lives in Vault. Create it under `/app/system/acme` → **DNS Credentials**
-      and run **Test Connectivity** until it reads `valid`. See
+- [ ] **For https: a stored DNS credential** — a `System::AcmeDnsCredential`
+      for one of the supported providers, whose API token/secret lives in Vault.
+      Create it under `/app/system/acme` → **DNS Credentials** and run **Test
+      Connectivity** until it reads `valid`. See
       [`acme-issuance.md`](./acme-issuance.md) Step 1.
 
-> **DNS provider support — Cloudflare only in v1.** The bundled
-> `powernode-acme` binary is compiled with the Cloudflare DNS-01 provider only.
-> `System::AcmeDnsCredential::SUPPORTED_PROVIDERS` lists other slugs and the UI
-> will let you save them, but issuance with any non-Cloudflare provider **errors
-> at the ACME step**. Use `provider: cloudflare` for the expose flow today.
-> Let's Encrypt **staging** and **prod** are both supported.
+> **DNS provider support — all 7 providers ship.** The bundled `powernode-acme`
+> binary wires every slug in `System::AcmeDnsCredential::SUPPORTED_PROVIDERS`:
+> `cloudflare`, `route53`, `gcloud`, `digitalocean`, `hetzner`, `porkbun`, `ovh`.
+> Pick whichever provider hosts the service hostname's zone — the expose flow's
+> DNS-01 step issues against it via the on-node agent's `buildDNSProvider`
+> switch. Let's Encrypt **staging** and **prod** are both supported.
 
 ## Required inputs
 
@@ -113,7 +115,7 @@ action directly:
 | `vip_cidr` | yes | Operator-supplied host CIDR — a `/128` within the network's `/64` (or `/32` v4). No allocator |
 | `backend_port` | yes | Port the backend service listens on (the DNAT target port) |
 | `target_peer_id` *or* `target_instance_id` | yes | Exactly one (XOR) — the backend to front |
-| `dns_credential_id` | https + dns-01 | The Cloudflare `System::AcmeDnsCredential` id. Required and validated up front for https |
+| `dns_credential_id` | https + dns-01 | The `System::AcmeDnsCredential` id (any supported provider). Required and validated up front for https |
 | `tls_issuer` | no | `letsencrypt-staging` \| `letsencrypt-prod`. **Default `letsencrypt-prod` — use staging first** |
 | `challenge_type` | no | Default `dns-01` (the only mode wired for the public flow) |
 
@@ -150,7 +152,7 @@ permission.
      network selection)
    - **VIP CIDR** — your chosen free host CIDR, e.g. `fd00:abcd:1::100/128`
    - **TLS issuer** — for the first run, type `letsencrypt-staging`
-   - **DNS credential** — the Cloudflare credential
+   - **DNS credential** — the credential for the provider hosting your zone
 3. Click **Submit expose request**. The Concierge classifies the brief,
    composes the mission, and emits an **inline Approve/Reject card** in the
    Mission approval panel.
@@ -181,7 +183,7 @@ platform.system_expose_service_publicly({
   vip_cidr:          "fd00:abcd:1::100/128", // free /128 in the network's /64
   backend_port:      8080,
   target_instance_id: "<backend-instance-id>", // XOR target_peer_id
-  dns_credential_id: "<cloudflare-credential-id>",
+  dns_credential_id: "<dns-credential-id>",   // any supported provider
   tls_issuer:        "letsencrypt-staging",  // STAGING first
   challenge_type:    "dns-01"                // default
 })
@@ -378,17 +380,21 @@ expose fronts the platform's own proxy hosts, the `POWERNODE_PROXY_EXTRA_HOSTS`
 env (consumed by the Traefik config writer / ingress route presenter) is the
 matching knob for the router host rule.
 
-### Cloudflare-only DNS provider (v1)
+### DNS provider credential errors
 
-**Symptom:** issuance fails at the ACME step with a "DNS provider not yet wired"
-/ provider error for a non-Cloudflare credential.
+**Symptom:** issuance fails at the ACME step with a provider/auth error (e.g.
+a 401/403 from the provider API, or "could not create DNS provider").
 
-**Cause:** the bundled `powernode-acme` binary is compiled with the **Cloudflare
-DNS-01 provider only** in v1. Other slugs validate in the UI but error at
-issuance.
+**Cause:** the credential's token/secret is missing a scope the provider needs
+to write the `_acme-challenge` TXT record, or the wrong provider slug was chosen
+for the zone. All 7 providers (`cloudflare`, `route53`, `gcloud`,
+`digitalocean`, `hetzner`, `porkbun`, `ovh`) are wired — this is a credential
+problem, not a missing-provider problem.
 
-**Fix:** use a `provider: cloudflare` credential for the expose flow. (Both LE
-staging and prod issuers work with Cloudflare.)
+**Fix:** re-run **Test Connectivity** on the DNS Credentials tab until it reads
+`valid`, confirm the credential's provider matches the zone host, and re-run the
+expose. See [`acme-issuance.md`](./acme-issuance.md) for per-provider token
+scopes.
 
 ### Other common failures
 
@@ -396,8 +402,8 @@ staging and prod issuers work with Cloudflare.)
 |---|---|---|
 | `provide exactly one of target_peer_id or target_instance_id` | Passed both or neither | Pass exactly one (XOR) |
 | `target_instance_id ... has no SDWAN peer in network ...` | Instance not attached to this network | Attach it first ([`sdwan-network-setup.md`](./sdwan-network-setup.md) Phase 2) or pass `target_peer_id` |
-| `dns_credential_id is required for https exposures using the dns-01 challenge` | https + dns-01 without a credential | Pass the Cloudflare `dns_credential_id` (validated up front, before any VIP/port mapping is created) |
-| Cert stuck / never validates (TXT missing) | Credential token scope insufficient, or propagation slow | Re-test connectivity (DNS Credentials tab); for Cloudflare disable proxying on the challenge subdomain; see [`acme-issuance.md`](./acme-issuance.md) failure modes |
+| `dns_credential_id is required for https exposures using the dns-01 challenge` | https + dns-01 without a credential | Pass a `dns_credential_id` for any supported provider (validated up front, before any VIP/port mapping is created) |
+| Cert stuck / never validates (TXT missing) | Credential token scope insufficient, or propagation slow | Re-test connectivity (DNS Credentials tab); on Cloudflare disable proxying on the challenge subdomain; see [`acme-issuance.md`](./acme-issuance.md) failure modes |
 | LE rate limit hit | Repeated **prod** issuance for the same domain | Switch to `letsencrypt-staging` for iteration; wait out the prod rate window |
 | Served cert is the Traefik default, not the LE leaf | Reverse-proxy regen didn't run / cert not valid yet | Confirm `certificate_status: valid`; re-run `system_reverse_proxy_compose` with the `certificate_id`; check Traefik file-watch (see [`acme-issuance.md`](./acme-issuance.md) Step 7) |
 
@@ -415,7 +421,10 @@ staging and prod issuers work with Cloudflare.)
 - `extensions/system/server/app/services/ai/tools/system_ingress_tool.rb` — the
   MCP action surface (`system_expose_service_publicly`,
   `system_acme_provision_certificate`, `system_reverse_proxy_compose`).
-- `extensions/system/agent/internal/acme/issuer.go` — `POWERNODE_ACME_DNS_RESOLVERS`
-  / `POWERNODE_ACME_DISABLE_PROPAGATION_CHECK` handling.
+- `extensions/system/agent/internal/acme/issuer.go` — the `buildDNSProvider`
+  switch (all 7 providers) plus `POWERNODE_ACME_DNS_RESOLVERS` /
+  `POWERNODE_ACME_DISABLE_PROPAGATION_CHECK` handling.
+
+_Last verified: 2026-06-03_
 </content>
 </invoke>

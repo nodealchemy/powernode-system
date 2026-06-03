@@ -1,5 +1,7 @@
 # Concierge Provisioning Guide
 
+> Status: active
+
 Operator guide for running a provisioning mission by talking to the **System
 Concierge** chat agent. This walks the full lifecycle — describe what you want,
 review the composed plan, approve it inline in chat, and watch the resources
@@ -61,6 +63,14 @@ before the general chat tool loop:
 
 You can also drive the same flow directly through MCP tool actions if you are
 scripting against the platform — see [§7](#7-mcp-tool-surface).
+
+> **Why the Concierge stays on-topic.** The System Concierge runs with a
+> `concierge_tool_filter` that narrows its tool surface to the provisioning- and
+> fleet-relevant actions (`system_*`, `docker_*`, `kubernetes_*`, plus
+> `discover_skills` / `get_skill_context` / `request_confirmation`) — roughly
+> two dozen actions rather than the full platform catalog. This keeps plan
+> composition focused and prevents the agent from reaching for unrelated tools
+> mid-provision.
 
 ---
 
@@ -162,7 +172,16 @@ advances the mission to `adapting`. A system message marks the handoff in chat.
 
 The terminal, long-lived phase. There is no worker job — the mission stays in
 `adapting` while the `ProjectSloSensor` reconciler samples health and the
-mission's RalphLoop drives ongoing adaptation. The mission remains active here.
+mission's RalphLoop holds the adaptation context. The mission remains active here.
+
+> **What "adapting" does and doesn't do today.** The phase, the per-mission
+> RalphLoop, and the SLO sensor are all live, so the mission keeps **monitoring**
+> health. What is **not** yet wired is the step that turns an observed breach
+> into a *new* adaptation plan: the `platform_provisioning_adapt` action is an
+> M0 stub that returns `{ todo: "M2", adaptation_plan: nil }`. So treat
+> `adapting` as continuous monitoring for now — don't expect the mission to
+> self-replan or re-provision in response to drift until the M2 sensor
+> reconciler ships.
 
 ### Rejections
 
@@ -299,7 +318,7 @@ The whole lifecycle is also available as MCP tool actions on
 | `platform_provisioning_compose_plan` | `mission_id` → plan id + DAG, with cost / topology / risk enrichments |
 | `platform_provisioning_approve_plan` | `plan_id` + `decision` (`approved` / `rejected` / `modified`) → advances or rolls back the mission |
 | `platform_provisioning_status` | `mission_id` → phase + step lists by status |
-| `platform_provisioning_adapt` | adaptation entry point (returns the adaptation engine status) |
+| `platform_provisioning_adapt` | adaptation entry point — **M0 stub** today; returns `{ todo: "M2", adaptation_plan: nil }`. Wires up with the M2 SLO-sensor reconciler |
 
 For live progress, prefer subscribing to `MissionChannel` over polling
 `platform_provisioning_status`.
@@ -317,3 +336,5 @@ For live progress, prefer subscribing to `MissionChannel` over polling
 | Mission stuck at `review_plan` | Awaiting your approval | Use the inline Approve card |
 | Mission stuck at `handoff` after one approval | Second-signature gate (Business+) | Have a second distinct user approve |
 | Steps not progressing past the first layer | Worker not draining `ai_execution` | Check `powernode-worker@default` status |
+
+_Last verified: 2026-06-03_

@@ -1,5 +1,7 @@
 # SDWAN Network Setup Runbook
 
+> Status: active
+
 End-to-end operator guide for the system extension's SDWAN layer: WireGuard-based overlay networks with first-class VIPs, port mappings, firewall rules, route policies, iBGP/FRR routing, and cross-account federation. Covers slices 1–9 (per memory `project_sdwan_routing_state` — slice 9 a–f fully complete) plus slice 11 federation acceptance (also live; `system_sdwan_propose_federation_peer`, `system_sdwan_accept_federation_peer`, and `system_sdwan_revoke_federation_peer` are all registered MCP actions).
 
 **Audience:** external operators, internal SREs, network engineers configuring multi-region overlays.
@@ -274,8 +276,9 @@ States: `Idle → Connect → Active → OpenSent → OpenConfirm → Establishe
 **Troubleshooting unhealthy sessions:**
 
 ```javascript
-// Run the planning-only triage skill
-platform.execute_skill({
+// Run the planning-only triage skill (SDWAN Manager owns the executor)
+platform.execute_agent({
+  agent: "SDWAN Manager",
   skill: "system-sdwan-bgp-session-remediate",
   inputs: { bgp_session_id: "<session-id>", dry_run: true }
 })
@@ -331,12 +334,33 @@ platform.system_sdwan_list_federation_peers({ network_id: "<network-id>" })
 | Firewall rule shadows another | Selector specificity — more-specific selectors match first | Use `system.sdwan_route_policy_audit` (auto_approve) to surface shadowed rules |
 | User device can't connect after issue | Bootstrap URL expired (>15 min) | Re-issue via `create_access_grant` → `issue_user_device` |
 
+## Composition skills (multi-step topology)
+
+The phase-by-phase MCP actions above are the primitives. For multi-step
+topology builds, the **System Topology Designer** agent owns five
+composition skills that chain those primitives into one approval-gated
+operation (the Concierge invokes them via `execute_agent`):
+
+| Skill | Composes |
+|---|---|
+| `sdwan_host_bridge_compose` | Host bridge create → activate for a node's physical NIC |
+| `sdwan_ovn_compose_topology` | OVN deployment + logical switch(es) + ports for an account |
+| `sdwan_ovn_apply_acl` | OVN ACL rules onto an existing logical switch |
+| `sdwan_ipfix_collector_compose` | IPFIX/NetFlow collector + flow export wiring |
+| `sdwan_compose_full_topology` | End-to-end: network + peers + VIPs + firewall + (optional) OVN, threaded inline |
+
+These are not in the `system_sdwan_*` MCP action set — they run through the
+Topology Designer (see [`../SDWAN_MANAGER_AGENT.md`](../SDWAN_MANAGER_AGENT.md)
+and the extension's `docs/SKILL_EXECUTORS.md`). Cross-account federation
+topology has its own `sdwan_federation_compose` skill — see
+[`federation-setup.md`](./federation-setup.md) Step 7.
+
 ## How the System Concierge should use this
 
 When an operator chats "set up a VPN" / "add a Tokyo edge to our SDWAN" / "kubectl can't reach the cluster":
 
 1. Identify the phase (network creation, peer attach, VIP, firewall, BGP, federation, user device)
-2. For each phase, surface the relevant MCP action + required inputs
+2. For each phase, surface the relevant MCP action + required inputs — or, for a multi-step build, hand off to the **System Topology Designer** via a composition skill (see above)
 3. For destructive actions (revoke, failover), use `request_confirmation` before invoking
 4. After invoking, watch `last_handshake_at` and BGP `state` transitions; report changes
 5. If a sensor fires while the operator is waiting (e.g., `sdwan.hub_unreachable`), surface the relevant skill (`sdwan_failover` / `sdwan_peer_remediate`) for operator approval
@@ -347,4 +371,8 @@ When an operator chats "set up a VPN" / "add a Tokyo edge to our SDWAN" / "kubec
 - [`runbooks/multi-cluster-k3s.md`](./multi-cluster-k3s.md) — multi-cluster K3s with slice 3 VIPs for HA
 - [`FLEET_SENSORS.md`](../FLEET_SENSORS.md) — `sdwan_reachability_sensor`, `sdwan_drift_sensor`, `sdwan_bgp_session_health_sensor`, `sdwan_vip_reachability_sensor`
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `sdwan_failover`, `sdwan_peer_remediate`, `sdwan_bgp_session_remediate`, `sdwan_vip_failover`
-- [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md) — full `system_sdwan_*` action catalog (~70 actions)
+- [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md) — full `system_sdwan_*` action catalog (70 actions)
+
+---
+
+_Last verified: 2026-06-03_

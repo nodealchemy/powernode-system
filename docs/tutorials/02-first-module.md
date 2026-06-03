@@ -1,5 +1,7 @@
 # Tutorial 02 — Your first custom module
 
+> Status: active
+
 > **What you'll learn:** Author, sign, publish, and assign a custom NodeModule — the full module supply chain from blank git repo to a Module showing up on a NodeInstance.
 >
 > **Time:** ~45 min (most of which is waiting for CI)
@@ -239,7 +241,7 @@ The workflow runs:
 
 **Expected outcome:** ~5–8 min runtime. Workflow shows `success`. The
 platform's `ModuleOciIngestService` polls the registry and creates a
-`NodeModuleVersion` row in `lifecycle_state: draft`.
+`NodeModuleVersion` row in `promotion_state: built`.
 
 ## Step 8 — Verify ingestion
 
@@ -369,3 +371,5 @@ non-pool NodeInstance.
   system-base, rpi4-firmware) you can study for patterns.
 - **[`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md)** —
   every manifest field explained.
+
+_Last verified: 2026-06-03_

@@ -1,5 +1,7 @@
 # Powernode Federation Social Contract — v1
 
+> Status: active
+
 **Effective:** 2026-05-14
 **Version:** 1
 
@@ -17,9 +19,14 @@ possible.
 ## The Twelve Commitments
 
 By accepting a federation peering (`status: proposed → accepted`), each
-operator commits to the following twelve norms. Violations are surfaced via
-the platform's `Sdwan::FederationGovernance` scanner; repeated violations
-may auto-suspend the peer pending operator review.
+operator commits to the following twelve norms. Violations of the
+programmatically-checkable norms are surfaced as **findings** by the
+platform's `Sdwan::FederationGovernance` scanner. The scanner emits
+findings only — there is **no** auto-suspend on social-contract
+violation today; an operator reviews each finding and decides whether to
+`suspend!`/`revoke!`. (Automatic suspend-on-repeated-violation is
+aspirational — see remediation #5's proposed liveness-driven suspend
+executor; do not assume it runs.)
 
 ### 1. Identity disclosure
 
@@ -105,8 +112,10 @@ A peer that detects compromise (cert theft, intrusion, data exfiltration)
 commits to notifying all federation partners within **24 hours** — faster
 is better, even if embarrassing.
 
-Notification triggers automatic `suspend!` on the receiving end pending
-operator review.
+On notification, the receiving operator is expected to `suspend!` the
+affected peering pending review. This is operator-driven — the platform
+does not auto-suspend on a compromise notice (see Enforcement
+Classification: #9 is a critical, operator-driven norm).
 
 ### 10. Backwards compatibility window
 
@@ -137,12 +146,18 @@ violation of commitments #3 and #6.
 
 ## Enforcement Classification
 
-- **Soft norms** (#1, #4, #5, #8) — verified by operator review; surfaced
+- **Soft norms** (#1, #4, #5) — verified by operator review; surfaced
   in the dashboard's Peers panel.
-- **Hard norms** (#3, #6, #7, #10, #12) — verified programmatically
-  (governance scan, schema-version handshake, migration validation).
-  Violation triggers automatic findings; repeated violation auto-suspends
-  the peer.
+- **Programmatically-scanned norms** (#3, #6, #7, #8, #10, #12) — the
+  `Sdwan::FederationGovernance` scanner, the schema-version handshake,
+  and migration validation surface deviations as **findings**. The
+  scanner today emits these specific finding types:
+  - `peer_capability_drift` → commitment **#3** (truthful capability declaration)
+  - `peer_schema_version_drift` → commitment **#10** (N-1 compatibility window)
+  - `peer_residency_missing` → commitment **#8** (data residency disclosure)
+
+  Findings do **not** auto-suspend or auto-revoke the peer — an operator
+  reviews each finding and acts (`suspend!` / `revoke!`) as warranted.
 - **Critical norms** (#9, #11) — operator-driven; technical primitives
   support but cannot enforce.
 
@@ -183,3 +198,7 @@ behalf of their platform. The acknowledgement is recorded on both peers'
 Revocation of a federation peering does NOT retroactively revoke the
 acknowledgement — the contract remains the framework under which the
 peering operated for forensic and audit purposes.
+
+---
+
+_Last verified: 2026-06-03_

@@ -1,5 +1,7 @@
 # Tutorial 01 — First boot (single-node QEMU)
 
+> Status: active
+>
 > **What you'll learn:** Boot your first Powernode node end-to-end on
 > local QEMU — from a clean database through a running VM that's enrolled
 > with the platform and reachable on the LAN.
@@ -287,3 +289,5 @@ kernel (`uname -r`), then newest kernel with both `/boot/vmlinuz-*` and
 - **[`../ARCHITECTURE.md`](../ARCHITECTURE.md)** §2 — deeper read on the
   Node + NodeInstance lifecycle, AASM state machines, and the polymorphic
   Task model.
+
+_Last verified: 2026-06-03_

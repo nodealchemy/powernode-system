@@ -1,5 +1,7 @@
 # Tutorial 13 — Expose a service publicly with TLS
 
+> Status: active
+
 > **What you'll learn:** Publish an internal backend service to the public
 > internet end-to-end — a stable SDWAN Virtual IP, a hub DNAT port mapping,
 > a Let's Encrypt certificate (DNS-01), and a regenerated reverse proxy —
@@ -109,23 +111,25 @@ flow is green.
 | Tutorial 04 worked — a running backend NodeInstance attached to an SDWAN network | Implies platform + node + SDWAN |
 | At least one SDWAN **hub peer** with `publicly_reachable: true` | See [`../runbooks/sdwan-network-setup.md`](../runbooks/sdwan-network-setup.md) |
 | The backend instance is a **peer** in the same SDWAN network (or you have its `target_peer_id`) | The flow refuses to create a holderless VIP |
-| A **public DNS zone** you control (e.g. `example.com`), hosted on **Cloudflare** | DNS-01 publishes a TXT record via the provider API |
-| A Cloudflare API token scoped `Zone:Zone:Read` + `Zone:DNS:Edit` for that zone | Cloudflare dashboard → API Tokens |
+| A **public DNS zone** you control (e.g. `example.com`), hosted on one of the seven supported providers (this tutorial uses **Cloudflare**) | DNS-01 publishes a TXT record via the provider API |
+| A provider API credential scoped to edit that zone's DNS (for Cloudflare: a token with `Zone:Zone:Read` + `Zone:DNS:Edit`) | Provider dashboard → API tokens/keys |
 | Operator with `system.ingress.manage` + `system.acme.manage` permissions | Default for admins |
 | The bundled `powernode-acme` binary built | `cd extensions/system/agent && make build-acme` |
 
-> **DNS provider scope (v1):** the bundled `powernode-acme` binary is
-> **Cloudflare-only** at issuance time. The credential model and provider
-> registry list other providers, but only the Cloudflare path is wired into
-> issuance today — other providers error at issuance. Use a Cloudflare-hosted
-> zone for this tutorial. See [`../runbooks/acme-issuance.md`](../runbooks/acme-issuance.md)
-> for the provider matrix.
+> **DNS provider scope:** the bundled `powernode-acme` binary now wires
+> **all seven** DNS-01 providers in its `buildDNSProvider` switch —
+> `cloudflare`, `digitalocean`, `gcloud`, `hetzner`, `ovh`, `porkbun`,
+> `route53`. This tutorial uses Cloudflare as its worked example, but any of
+> the seven works; just store the matching credential in Step 1. See
+> [`../runbooks/acme-issuance.md`](../runbooks/acme-issuance.md) for the
+> per-provider credential field matrix.
 
 ## Step 1 — Store a DNS provider credential
 
 DNS-01 needs the platform to write a `_acme-challenge.<hostname>` TXT record
-via the provider API. Store the Cloudflare token as a `System::AcmeDnsCredential`
-— its secret lands in Vault, never in the database in plaintext.
+via the provider API. Store your provider credential (this tutorial uses a
+Cloudflare token) as a `System::AcmeDnsCredential` — its secret lands in
+Vault, never in the database in plaintext.
 
 Via UI: `/app/system/acme` → **DNS Credentials** tab → **New** → name it,
 pick provider `cloudflare`, paste the API token → **Test Connectivity**
@@ -347,9 +351,12 @@ propagation wait):
 POWERNODE_ACME_DISABLE_PROPAGATION_CHECK=true
 ```
 
-**Cert step fails with "DNS provider … not yet wired in powernode-acme v1"** —
-you selected a non-Cloudflare provider. v1 issuance is Cloudflare-only; use a
-Cloudflare-hosted zone + credential.
+**Cert step fails with a DNS provider auth/credential error** — the
+credential for your provider (`cloudflare`, `digitalocean`, `gcloud`,
+`hetzner`, `ovh`, `porkbun`, or `route53`) is missing a required field or
+the token lacks DNS-edit scope. Re-run **Test Connectivity** on the
+credential (Step 1) — it surfaces a bad token before issuance. Check the
+per-provider field matrix in [`../runbooks/acme-issuance.md`](../runbooks/acme-issuance.md).
 
 **`dns_credential_id is required for https exposures using the dns-01
 challenge`** — you left the DNS credential empty (or picked `http` validation,
@@ -388,3 +395,5 @@ the frontend Vite `allowedHosts` and Rails `HostAuthorization` (Step 6B).
   that gates this flow.
 - **[`../SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 5 (ACME)** — the platform-level
   smoke that validates ACME issuance + Traefik termination.
+
+_Last verified: 2026-06-03_

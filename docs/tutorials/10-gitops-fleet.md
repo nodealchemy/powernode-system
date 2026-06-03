@@ -1,5 +1,7 @@
 # Tutorial 10 — GitOps-managed fleet via fleet.yaml
 
+> Status: active
+
 > **What you'll learn:** Declare your fleet's desired state in `fleet.yaml`,
 > commit to git, let the GitOps reconciler compute the diff against
 > reality, approve through the standard intervention policy, apply.
@@ -48,11 +50,13 @@ PR review as the gating mechanism for fleet changes.
 - **SDWAN networks + peers + VIPs** — the overlay topology
 
 The reconciler walks this and computes the delta against current
-platform state. Each delta becomes an `Ai::AgentProposal` requiring
-operator approval (per `system.gitops_*` intervention policy in the Fleet
-Autonomy agent).
+platform state. Each delta becomes an `Ai::AgentProposal` (with
+`proposed_changes.source = "gitops"`) requiring operator approval. The
+reconciler opens these proposals **directly** — there is no
+`system.gitops_*` intervention policy; approval flows through the
+standard proposal review queue, not a per-action autonomy policy.
 
-**Implementation status (honest, as of 2026-05-17):**
+**Implementation status (honest, as of 2026-06-03):**
 
 | Capability | Status |
 |---|---|
@@ -60,14 +64,17 @@ Autonomy agent).
 | Compute diff against current state | Shipped (`DiffEngine`) |
 | Reconciler opens proposals per change | Shipped (`Reconciler`) |
 | MCP actions: register / sync / get_sync_run / get_drift_report | Shipped (gap remediation slices closed) |
-| Proposal-apply path (post-approval execution) | Partial — designed; full ApplyService landing in follow-up |
-| Drift sensor (alert when reality drifts from git) | Partial — periodic compare designed |
+| Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` kinds via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
+| Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `gitops.drift_detected`) |
 | Operator UI for diff review + approval | Partial — generic `ApprovalRequest` UI works; GitOps-specific drill-in panel forthcoming |
 
-**For now**, GitOps is best treated as **declarative + diff-aware** — the
-source-of-truth comparison is useful for audit + PR review even before
-full automated apply. Use approved proposals as a checklist to drive
-standard MCP actions manually until ApplyService lands.
+GitOps now applies the **create/update** path automatically for the core
+kinds (`template`, `module`, `assignment`) once a proposal is approved —
+the source-of-truth comparison drives both audit/PR review and execution.
+The **conservative v1 gap** is deliberate: resource **destroy** and
+`provider_config` changes are NOT auto-applied — review the drift and
+remove resources manually so a stray `fleet.yaml` edit can never delete
+fleet infrastructure unattended.
 
 **Why GitOps:** git history is the audit trail; PR review is the change
 control; reconciler convergence catches drift. Replaces "operator runs
@@ -139,8 +146,7 @@ sdwan:
 ```
 
 **Expected outcome:** YAML validates locally (run a YAML linter; full
-schema docs in `docs/runbooks/gitops-reconciliation.md` forthcoming as
-part of Phase A4).
+schema docs in [`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)).
 
 ## Step 2 — Register the GitOps repo
 
@@ -221,39 +227,51 @@ Operator opens `/app/approvals` UI:
 2. Optionally edits parts of the plan (e.g., comments out one node before apply)
 3. Click Approve on each (or bulk-approve if `Ai::ApprovalRequest` UI supports it)
 
-## Step 6 — Apply (currently partial)
+## Step 6 — Apply an approved proposal
 
-**Once ApplyService lands** (M-D2-3 finalization, follow-up to A1+A2), the
-reconciler picks up approved proposals on its next tick and executes them
-in dependency order: Templates → Nodes → SDWAN networks → peer attaches →
-VIPs.
-
-**Until ApplyService lands** (current state), the approved proposals
-serve as an authoritative checklist for the operator to execute via
-standard MCP actions:
+For the core kinds (`template`, `module`, `assignment`), apply each
+approved proposal directly with `system_gitops_apply_proposal` — it
+executes the diff against the DB:
 
 ```javascript
-// For each approved proposal, the action is in proposal.payload.
-// Note: not all create/update actions exist as MCP yet (e.g. template +
-// instance management is REST-only today). Use the appropriate
-// /api/v1/system/* REST endpoint per proposal.kind.
-platform.system_create_node({ ...proposal.payload })            // exists
-// platform.system_create_template({ ... })                     // ⚠️ aspirational — use POST /api/v1/system/node_templates
-// platform.system_update_instance({ ... })                     // ⚠️ aspirational — use PATCH /api/v1/system/instances/:id
+platform.system_gitops_apply_proposal({
+  proposal_id: "prop-1"   // must be in 'approved' status with proposed_changes.source = 'gitops'
+})
+// → executes the create/update against the DB.
+//   Errors with stale_conflict if reality drifted after the proposal was opened
+//   (re-sync to regenerate a fresh proposal, then re-approve).
 ```
 
-This still gives you the audit trail + PR review benefits; only the
-auto-apply convenience is deferred.
+Apply in dependency order: templates → module assignments. Node
+provisioning and SDWAN topology proposals are surfaced for review the
+same way; provision the corresponding resources with the standard
+actions (`system_create_node`, `system_sdwan_create_network`, …) once
+their proposals are approved.
+
+**v1-conservative gap — destroy + provider_config are NOT auto-applied.**
+`system_gitops_apply_proposal` supports `template` / `module` /
+`assignment` create+update only. Resource **deletion** and
+`provider_config` changes still require a deliberate manual action so a
+stray `fleet.yaml` edit can never tear down fleet infrastructure
+unattended:
+
+```javascript
+// Deletes proposed by the diff are review-only — remove the resource yourself:
+platform.system_delete_node({ id: "<node-id>" })   // explicit, operator-initiated
+```
+
+You keep the audit trail + PR review benefits, and create/update converges
+automatically; only destructive operations stay hands-on by design.
 
 ## Step 7 — Verify convergence
 
 ```javascript
 platform.system_gitops_get_sync_run({ sync_run_id })
 // → {
-//      status: "applied",                    // or "applied_manually" in the interim
+//      status: "applied",                    // "partial" if some proposals are still pending approval
 //      applied_actions: [...],
 //      failed_actions: [],
-//      drift_after_apply: {}                 // should be empty
+//      drift_after_apply: {}                 // should be empty for applied create/update kinds
 //    }
 ```
 
@@ -277,9 +295,10 @@ platform.system_gitops_get_drift_report({ repository_id: "gitops-repo-1" })
 ```
 
 When drift exists (reality diverges from git — e.g., an operator made an
-imperative change), drift_sensor (when shipped) will emit
-`gitops.drift_detected` FleetEvents; operator must either commit the
-change back to git or reconcile it away.
+imperative change), `GitopsDriftSensor` (registered in the Fleet Autonomy
+reconciler, runs every 60s) emits `gitops.drift_detected` FleetEvents;
+the operator must either commit the change back to git or reconcile it
+away.
 
 ## Cleanup
 
@@ -295,8 +314,9 @@ curl -X DELETE http://localhost:3000/api/v1/system/gitops_repositories/<id> \
 
 **`DesiredStateParser` fails with "schema validation error"** — `fleet.yaml`
 doesn't match the expected schema. Check the schema doc at
-`docs/runbooks/gitops-reconciliation.md` (forthcoming) or look at the
-parser source: `app/services/system/gitops/desired_state_parser.rb`.
+[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)
+or look at the parser source:
+`app/services/system/gitops/desired_state_parser.rb`.
 
 **Diff shows changes you didn't make** — drift between platform state and
 git source-of-truth. Either:
@@ -329,10 +349,11 @@ the right one.
 - **[Tutorial 11 — Multi-region federation](./11-federation.md)** — codify
   federation peer declarations in `fleet.yaml` alongside the rest of the
   fleet topology.
-- **`docs/runbooks/gitops-reconciliation.md`** (forthcoming in Phase A4) —
+- **[`../runbooks/gitops-reconciliation.md`](../runbooks/gitops-reconciliation.md)** —
   full operator runbook with schema details, advanced patterns, DR
   scenarios.
-- **`docs/gitops.md`** — current GitOps reconciler design reference.
+- **[`../gitops.md`](../gitops.md)** — current GitOps reconciler design reference.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md)** — once `smoke_test_gitops_reconciler.rb`
-  lands (M-D2-3 finalization), it'll exercise this flow at the platform
-  layer.
+  lands, it'll exercise this flow at the platform layer.
+
+_Last verified: 2026-06-03_

@@ -1,10 +1,12 @@
 # Disk Image CI/CD — Operator Guide
 
+> Status: active
+
 End-to-end disk image build pipeline: NodePlatform → Gitea Actions → OCI ingest → publication. Uses the platform's GitOps + CI worker infrastructure with Cosign signing for supply-chain integrity.
 
 ## Architecture (one-paragraph summary)
 
-A `System::NodePlatform` carries a `build_script` that produces a disk image (kernel + initramfs + composefs blob). The build runs on a self-hosted Gitea Actions runner (provisioned via `provision_ci_worker`) triggered by a webhook. After build, the runner pushes the artifact as an OCI blob (Cosign-signed via the platform's keyless identity), POSTs the webhook back to platform, which ingests via `DiskImagePublicationProcessor`. The resulting `DiskImagePublication` row links the OCI digest to the platform record + retention policy.
+A `System::NodePlatform` carries a `build_script` that produces a disk image (kernel + initramfs + composefs blob). The build runs on a self-hosted Gitea Actions runner (provisioned via `provision_ci_worker`) triggered by a webhook. After build, the runner pushes the artifact as an OCI blob (Cosign-signed via the platform's keyless identity), POSTs the webhook back to platform, which ingests via `DiskImagePublicationProcessor`. Ingest verifies the **Cosign signature + SHA-256** over the pulled artifact (the CI pipeline produces composefs blobs, but the server does **not** perform a server-side composefs/fs-verity verification — see `DiskImageOciIngestService`). The resulting `DiskImagePublication` row links the OCI digest to the platform record + retention policy.
 
 ## End-to-End Flow
 
@@ -20,9 +22,9 @@ sequenceDiagram
     Op->>Runner: 1. trigger build<br/>(push tag OR dispatch_gitea_workflow)
     Runner->>Runner: 2. run build_script:<br/>apt-mirror, kernel,<br/>composefs blob, initramfs
     Runner->>Reg: oras push artifact<br/>cosign sign keyless
-    Runner->>Plat: 3. POST webhook<br/>OCI digest + SBOM<br/>HMAC-signed
+    Runner->>Plat: 3. POST webhook<br/>OCI digest + sha256<br/>HMAC-signed
     Plat->>Plat: 4. DiskImageWebhook<br/>validates signature
-    Plat->>Reg: 5. DiskImagePublicationProcessor<br/>fetch manifest + cosign verify
+    Plat->>Reg: 5. DiskImagePublicationProcessor<br/>fetch manifest + cosign verify + sha256
     Reg-->>Plat: verified manifest
     Plat->>Plat: 6. create DiskImagePublication<br/>update NodePlatform.disk_image_oci_ref
     Ret->>Plat: 7. prune images beyond retention_count
@@ -167,11 +169,12 @@ Operator configures the webhook URL + secret in the build repo's CI workflow YAM
 ### Triggering a build
 
 ```javascript
-// Direct dispatch
+// Direct dispatch (params: owner, repo, workflow_file, ref, inputs)
 platform.dispatch_gitea_workflow({
-  account_id: "<account>",
-  repo: "<account>/disk-images",
-  workflow: "build-disk-image.yml",
+  owner: "<account>",                       // Gitea owner
+  repo: "disk-images",                      // repo name
+  workflow_file: "build-disk-image.yaml",   // the param is `workflow_file`, not `workflow`
+  ref: "master",                            // branch/tag ref (required)
   inputs: { platform_slug: "ubuntu-2404-base" }
 })
 
@@ -183,12 +186,14 @@ platform.dispatch_gitea_workflow({
 ```javascript
 // List recent runs
 platform.list_gitea_workflow_runs({
-  account_id: "<account>",
-  repo: "<account>/disk-images"
+  owner: "<account>",
+  repo: "disk-images",
+  workflow_file: "build-disk-image.yaml"    // optional filter
 })
 
-// Tail a specific job's logs
-platform.get_gitea_job_logs({ run_id: "<run-id>", job_id: "<job-id>" })
+// Get a run + its jobs, then tail a specific job's logs by job_id
+platform.get_gitea_workflow_run({ owner: "<account>", repo: "disk-images", run_id: "<run-id>" })
+platform.get_gitea_job_logs({ owner: "<account>", repo: "disk-images", job_id: "<job-id>" })
 ```
 
 ### Inspecting publications
@@ -202,34 +207,41 @@ curl "/api/v1/system/node_platforms/<id>/disk_image_publications" \
   -H "Authorization: Bearer $JWT"
 ```
 
-Each publication carries (full row shape):
+Each publication serializes as (per `System::DiskImagePublicationSerializer`):
 - `id` — publication UUID
-- `node_platform_id` — owning NodePlatform
+- `platform_id` — owning NodePlatform (serialized as `platform_id`, sourced from the `node_platform_id` column)
 - `status` — one of `queued, awaiting_upload, verifying, published, failed, retired, purged`
+- `active` — boolean; whether this publication is the platform's current default
 - `arch` — `amd64` / `arm64`
-- `git_sha` — source commit
+- `firmware_ref` — UEFI/firmware artifact ref (nil for non-UEFI families)
+- `git_sha` / `git_sha_short` — source commit
 - `oci_ref` — fully-qualified registry path (e.g. `registry.example.com/account/disk-images@sha256:...`)
-- `sha256` — artifact content digest
+- `sha256` / `sha256_short` — artifact content digest
 - `size_bytes` — artifact size
+- `attempt_count` — number of ingest attempts (a publication may re-verify after a transient failure)
+- `attestation_predicate` / `attestation_present` / `cosign_bundle_present` — Cosign attestation surface for inline display
+- `file_object_id` / `prior_file_object_id` — current + previous artifact object (the prior link drives rollback-chain visualization)
+- `webhook_id` / `webhook_label` / `triggered_by_worker_id` — provenance of the ingest
+- `verified_at` — UTC timestamp when cosign + sha256 verification passed
 - `published_at` — UTC timestamp when the publication transitioned to `published`
 - `retired_at` — UTC timestamp when a newer publication superseded this one (nil while current)
+- `purged_at` — UTC timestamp when the artifact was hard-deleted past the grace window
 - `error_message` — populated when `status = failed` (e.g. cosign verify failure detail)
 
-Fields **not** in the serialized row: `built_at` (use `published_at`), `cosign_identity` (verification result is in `error_message` on failure; the identity used is recorded elsewhere), `sbom_url`, `version`, `signed_at`, `composefs_digest` (composefs verification is a future addition; the current pipeline verifies cosign signature + SHA256 over the OCI manifest). Doc revisions before 2026-05-19 listed those fields aspirationally.
+Fields **not** in the serialized row: `built_at` (use `published_at`), `cosign_identity` (verification result is in `error_message` on failure; the identity used is recorded elsewhere), `sbom_url`, `version`, `signed_at`, `composefs_digest` (there is **no** server-side composefs verification; the current pipeline verifies the cosign signature + SHA256 over the pulled artifact). SBOM ingest from the OCI registry is **not yet wired** — `System::Sbom::CycloneDxParser` exists but is only used by the *modules* SBOM webhook, not by disk-image publication; no SBOM package data is populated on a `DiskImagePublication` today. Doc revisions before 2026-05-19 listed several of these fields aspirationally.
 
 ### Promoting a publication
 
-The latest publication is auto-promoted to `current` for its NodePlatform when ingest succeeds. To roll back:
+The latest publication is auto-promoted to `current` for its NodePlatform when ingest succeeds. Promotion (and rollback) is a **pointer column-flip** on the NodePlatform: `disk_image_oci_ref` / `disk_image_git_sha` / `disk_image_file_object_id` are repointed at the target publication and the previously-`published` publication is transitioned to `retired`. To set a specific publication as the default (promote or roll back), pass its id:
 
 ```javascript
-// ⚠️ aspirational rollback shorthand — use system_set_default_disk_image_publication with the previous publication id to revert
-platform.system_revert_disk_image({
+platform.system_set_default_disk_image_publication({
   node_platform_id: "<id>",
-  to_publication_id: "<earlier-publication-id>"
+  publication_id: "<publication-id>"   // must currently be in status "published"
 })
 ```
 
-The next NodeInstance provisioned from a Template using this Platform will fetch the rolled-back image.
+To roll back, pass an earlier publication's id (it must still be `published`; a `retired` row's artifact is restored during the agent-driven rollback path — see [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow)). The next NodeInstance provisioned from a Template using this Platform will fetch the newly-pointed image. There is no separate `system_revert_disk_image` wrapper — `system_set_default_disk_image_publication` is the single set-default action.
 
 ## Retention Policy
 
@@ -252,7 +264,7 @@ Three secret types in this pipeline:
 2. **OCI registry credentials** — used by Gitea runner to push artifacts. Stored as Gitea Actions secret. Rotate via:
    ```javascript
    platform.set_gitea_action_secret({
-     account_id: "<account>",
+     owner: "<account>",
      repo: "<repo>",
      name: "OCI_REGISTRY_TOKEN",
      value: "<new-token>"
@@ -339,6 +351,8 @@ platform.bootstrap_disk_image_ci({
 
 ## Related Docs
 
-- `extensions/system/initramfs/README.md` — multi-arch boot artifact build details
-- `docs/system/threat-model.md` — supply-chain integrity rationale
-- `extensions/system/docs/ARCHITECTURE.md` — disk image pipeline subsystem
+- [`../initramfs/README.md`](../initramfs/README.md) — multi-arch boot artifact build details
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — disk image pipeline subsystem
+- [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md) — the autonomy surface that promotes/rolls back these publications
+
+_Last verified: 2026-06-03_

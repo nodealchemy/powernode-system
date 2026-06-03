@@ -1,5 +1,7 @@
 # Tutorials
 
+> Status: active
+
 A numbered, dependency-aware sequence for learning the Powernode System
 extension from first boot to multi-region federation. Each tutorial
 declares what the previous one set up and what the next one will extend,
@@ -45,7 +47,7 @@ re-learning the layout:
 ## Companion surfaces
 
 - [`../SMOKE_TEST.md`](../SMOKE_TEST.md) — platform-level smoke catalog
-  (18 seeded scripts across 8 passes); every tutorial cross-references the
+  (28 seeded scripts across nine passes); every tutorial cross-references the
   smoke that validates the same capability at the platform layer.
 - [`../runbooks/`](../runbooks/) — operator workflows for specific
   scenarios (CVE response, vault credential rotation, federation
@@ -54,3 +56,5 @@ re-learning the layout:
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — subsystem reference. When
   a tutorial says "this happens via the FleetAutonomyService," the
   architecture doc is where you learn what that service is.
+
+_Last verified: 2026-06-03_

@@ -1,5 +1,7 @@
 # Mission Composition Architecture
 
+> Status: active
+
 How the platform turns an operator's intent into an executable, approval-gated
 infrastructure plan — and runs it. This is the architecture reference behind the
 operator-facing [`CONCIERGE_PROVISIONING_GUIDE.md`](./CONCIERGE_PROVISIONING_GUIDE.md).
@@ -269,6 +271,34 @@ conversation, and a `provisioning_step_changed` broadcast through
 `Ai::Missions::OrchestratorService#broadcast_step_event!` — the single canonical
 emission path for step events.
 
+### Known gaps in the runner (current)
+
+The runner spine is sound, but three sharp edges are worth knowing when
+debugging a stuck or surprising run:
+
+- **Undefined-executor fallback swallows the cause.** In `execute_step!`
+  (`skill_composition_runner.rb` ~L128–143), an unresolved executor raises
+  `"skill not found: <name>"`, which is caught by the surrounding
+  `rescue StandardError` and routed through `handle_failure` like any other
+  step error. The step is marked failed and the message is logged, but there is
+  no *structured* error code distinguishing "the skill name was wrong / not an
+  executor" from "the executor ran and failed" — operators see a generic
+  failure string. When triaging, read the logged `[SkillCompositionRunner]
+  step … raised:` line for the real class.
+- **Idempotency is step-status–scoped, not run-scoped.** `execute!` generates a
+  `runner_id` and short-circuits (`already_running: true`) if any step is past
+  `pending`, which closes the common double-dispatch race. But because the
+  guard keys off step status rather than a persisted owning `runner_id`, two
+  *simultaneous* `execute!` calls that both observe an all-`pending` plan can
+  still race the first status write. The single-trigger approval path (§6,
+  "Why approval is the single execution trigger") is what keeps this from
+  happening in practice — there is deliberately one way to reach a run.
+- **Cost-cap zero-handling is a footgun.** `CostCapGuard.resolve_cap` treats a
+  `plan_cap.zero?` as "unset" and falls back to `DEFAULT_DAILY_CAP_USD` — so a
+  plan configured with a deliberate **\$0 cap** does not block composition; it
+  silently inherits the default. Treat \$0 as "no explicit cap," not "disable
+  LLM spend."
+
 ### The approval gates (`OrchestratorService#handle_approval!`)
 
 Execution is never automatic — it is gated. The `system_provisioning` template
@@ -332,6 +362,15 @@ Operator NL  ──▶  ConciergeToolBridge.classify_and_dispatch_provisioning
               verify → handoff gate → RalphLoop → adapting (sensor-driven)
 ```
 
+> **Adaptation is not yet wired end to end.** The `adapting` phase exists and
+> the per-mission `RalphLoop` + `ProjectSloSensor` reconciler run, but the
+> compose→adapt link that would turn an observed SLO breach into a *new*
+> adaptation plan is still a stub: the `platform_provisioning_adapt` MCP action
+> returns `{ todo: "M2", adaptation_plan: nil }`
+> (`server/app/services/ai/tools/provisioning_tool.rb#adapt`). Adaptation-proposal
+> generation lands with the M2 sensor reconciler — until then, treat `adapting`
+> as a monitoring phase, not a self-replanning one.
+
 ---
 
 ## 8. Key source files
@@ -351,3 +390,5 @@ Operator NL  ──▶  ConciergeToolBridge.classify_and_dispatch_provisioning
 | Compose worker job | `worker/app/jobs/ai_provisioning_compose_plan_job.rb` |
 | Execute worker job | `worker/app/jobs/ai_provisioning_execute_job.rb` |
 | Per-step worker job | `worker/app/jobs/ai_provisioning_step_job.rb` |
+
+_Last verified: 2026-06-03_

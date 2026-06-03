@@ -1,5 +1,7 @@
 # Tutorial 04 — Container runtime — K3s cluster
 
+> Status: active
+
 > **What you'll learn:** Provision a K3s control plane + worker on Powernode
 > NodeInstances. The platform auto-bootstraps `k3s-server`, allocates a
 > SDWAN-backed `api_endpoint` VIP (slice 3 — survives bootstrap-node loss
@@ -256,11 +258,19 @@ isn't healthy. SSH to the instance and check `systemctl status k3s` and
 
 **VIP not allocated** — `system.sdwan.virtual_ip.allocated` event never
 fires. The cluster status falls back to using the bootstrap server's
-instance `/128` as `api_endpoint` (no failover). Check `SdwanManager` agent
-logs:
+instance `/128` as `api_endpoint` (no failover). Check the SDWAN Manager
+agent's recent activity — `agent_introspect` takes the agent's **UUID**, not
+a slug, so resolve it via `list_agents` first:
 
 ```javascript
-platform.agent_introspect({ agent_id: "sdwan_manager_agent" })
+// 1. List agents and find the SDWAN Manager's UUID — agent_introspect resolves
+//    its agent_id by UUID only (a slug like "sdwan_manager_agent" silently
+//    resolves to nothing).
+platform.list_agents()
+// → { agents: [{ id: "<sdwan-manager-uuid>", name: "SDWAN Manager", ... }, ...] }
+
+// 2. Introspect it by UUID
+platform.agent_introspect({ agent_id: "<sdwan-manager-uuid>" })
 ```
 
 **Worker stuck at `join_request`** — most common cause is wrong
@@ -307,14 +317,19 @@ SDWAN network.
 
 **Set `pod_subnet_prefix` on the SDWAN network** (must not overlap the
 SDWAN /64, peer LAN subnets, VIP CIDRs, or another network's
-`pod_subnet_prefix`):
+`pod_subnet_prefix`). Create the network first — the `/64` is
+server-allocated, so you don't pass a prefix — then stamp
+`pod_subnet_prefix` as a network attribute:
 
 ```javascript
 platform.system_sdwan_create_network({
-  name: "k3s-prod-net",
-  pod_subnet_prefix: "10.42.0.0/16",     // flannel default size
-  routing_mode: "ibgp"                   // recommended for >2 hosts (direct peer-to-peer)
+  name: "k3s-prod-net"
+  // No prefix input — the overlay /64 (cidr_64) is server-allocated.
 })
+// pod_subnet_prefix is a Sdwan::Network attribute (flannel pod CIDR, e.g.
+// "10.42.0.0/16"); the k3s smoke seeds set it directly on the network row.
+// For >2 hosts, run the network in iBGP mode (direct peer-to-peer):
+//   system_sdwan_update_network_routing_mode({ network_id, routing_protocol: "ibgp" })
 ```
 
 **Bootstrap the cluster with `cni_plugin: "flannel"`** on a NodeInstance
@@ -366,3 +381,5 @@ otherwise bootstraps normally.
 - **[`SMOKE_TEST.md`](../SMOKE_TEST.md) Pass 2** — `smoke_test_k3s_runtime.rb`
   and `smoke_test_ovn_k8s_cni.rb` exercise the same handshake at the
   platform layer without a live K3s install.
+
+_Last verified: 2026-06-03_

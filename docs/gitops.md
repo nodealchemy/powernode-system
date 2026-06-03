@@ -1,10 +1,16 @@
 # GitOps Reconciliation
 
-**Status:** Active stabilization sweep, Phase 5 (~80% complete). Target close: Q3 2026.
-Implementation present in `extensions/system/server/app/services/system/gitops/`
-(5 services: `apply_service.rb`, `desired_state_parser.rb`, `diff_engine.rb`,
-`reconciler.rb`, `repo_sync_service.rb`). Remaining work is documented under
-"Known limitations" below.
+> Status: active
+
+The read path is fully shipped: the `gitops_drift_sensor` runs each fleet tick,
+`RepoSyncService` + `DesiredStateParser` + `DiffEngine` produce diffs, and every
+diff opens an `Ai::AgentProposal` for operator review. Two write-path gaps remain
+(see "Known limitations"): the `auto_apply` flag is parsed but its apply path is
+not yet executed, and `ApplyService` template/module **destroy** raises
+`UnsupportedDiffError` (only assignment destroy is wired). Implementation lives in
+`extensions/system/server/app/services/system/gitops/` (6 services:
+`apply_service.rb`, `desired_state_parser.rb`, `desired_state_validator.rb`,
+`diff_engine.rb`, `reconciler.rb`, `repo_sync_service.rb`).
 
 This document describes the GitOps reconciler — the system that lets
 operators declare desired fleet state in a git repository and continuously
@@ -66,7 +72,11 @@ flowchart TD
     Recon -.records.-> Run
 ```
 
-## Proposal Flow with Auto-Apply Branch
+## Proposal Flow (with planned auto-apply branch)
+
+The auto-apply branch below is the intended design; today it is **not yet
+wired** (see "Known limitations"), so every diff currently follows the
+proposal-queue path regardless of the `auto_apply` flag.
 
 ```mermaid
 flowchart TD
@@ -76,13 +86,13 @@ flowchart TD
     OpenAll --> Mode{repository<br/>auto_apply?}
     OpenSome --> Mode
     Mode -->|false default| Queue[Proposal queue<br/>operator reviews]
-    Mode -->|true trusted repo| AutoApply[Reconciler applies<br/>without operator gate]
+    Mode -->|true: planned,<br/>not yet wired| AutoApply[Reconciler applies<br/>without operator gate]
     Queue --> Op{Operator<br/>decision}
     Op -->|approve| Apply[Reconciler applies]
     Op -->|reject| Retain[Live state retained<br/>diff re-detected next tick]
     Op -->|ignore| Retain
     Apply --> Sync2[Live DB updated]
-    AutoApply --> Sync2
+    AutoApply -.planned.-> Sync2
     Sync2 --> Audit[Audit trail:<br/>GitopsSyncRun<br/>+ FleetEvent]
 ```
 
@@ -143,11 +153,13 @@ operator UI. Each proposal shows:
 
 Approve to apply; reject to retain live state.
 
-### 4. Auto-apply mode
+### 4. Auto-apply mode (flag only — not yet executed)
 
-Setting `auto_apply: true` on a repository bypasses the proposal queue —
-diffs are applied directly. Only use this for fully-trusted repositories
-(e.g., after a thorough review process). Default is `false`.
+`auto_apply: true` is intended to bypass the proposal queue and apply diffs
+directly, for fully-trusted repositories. The flag is accepted and persisted,
+but the unattended apply path is **not yet wired** (see "Known limitations") —
+today every diff still routes through the proposal queue for operator
+approval regardless of this flag. Default is `false`.
 
 ---
 
@@ -233,7 +245,9 @@ recent runs per repository.
 | Reconciler orchestrator | `extensions/system/server/app/services/system/gitops/reconciler.rb` |
 | Repo clone/pull | `extensions/system/server/app/services/system/gitops/repo_sync_service.rb` |
 | YAML parsing | `extensions/system/server/app/services/system/gitops/desired_state_parser.rb` |
+| Desired-state validation | `extensions/system/server/app/services/system/gitops/desired_state_validator.rb` |
 | Live-vs-desired diff | `extensions/system/server/app/services/system/gitops/diff_engine.rb` |
+| Apply (create/update; destroy for assignments only) | `extensions/system/server/app/services/system/gitops/apply_service.rb` |
 | Models | `extensions/system/server/app/models/system/gitops_repository.rb`, `gitops_sync_run.rb` |
 | Migrations | `db/migrate/20260503040300_create_system_gitops_repositories.rb`, `_040400_*sync_runs.rb`, `_040500_seed_gitops_permissions.rb` |
 | Permissions seed | `system.gitops.read`, `.write`, `.sync`, `.reconcile` |
@@ -243,15 +257,22 @@ recent runs per repository.
 
 ## Known limitations
 
-- **Auto-apply implementation is partial** — the schema flag is honored
-  but the actual auto-apply path (proposal → apply → mark approved) is
-  in active development. For now, all diffs require operator approval.
+- **Auto-apply not yet executed** — `repository.auto_apply` is parsed and
+  surfaced, but the unattended apply path (proposal → apply → mark approved)
+  is not yet wired in `reconciler.rb`. For now, every diff requires explicit
+  operator approval regardless of the flag.
+- **Template / module destroy unimplemented** — `ApplyService` applies
+  `create` / `update` for all kinds and `destroy` for **assignments**, but a
+  `destroy` diff for a `template` or `module` raises `UnsupportedDiffError`
+  (v1-conservative: destructive template/module ops require manual
+  confirmation; expected in Phase 6c). Assignment destroy works today.
 - **No multi-document YAML** — `fleet.yaml` is a single document. To
   manage many concerns, use `path_prefix` with multiple repositories
   pointing at different roots.
 - **No drift back-pressure** — if you apply a diff via the operator UI
   and then revert it manually in the DB, the next reconcile will re-open
-  the same proposal. Auto-apply mode mitigates this.
+  the same proposal. (Auto-apply will mitigate this once its apply path is
+  wired.)
 - **No webhook trigger** — diffs only get detected on the 5-minute cron
   or via manual `sync_now`. A future enhancement would accept Gitea /
   GitHub webhooks to trigger immediate reconciliation on push.
@@ -263,6 +284,8 @@ recent runs per repository.
 - **Operator runbook**: [`runbooks/gitops-reconciliation.md`](./runbooks/gitops-reconciliation.md) — day-2 procedure (register, sync, review, apply, DR scenarios)
 - **Tutorial**: [`tutorials/10-gitops-fleet.md`](./tutorials/10-gitops-fleet.md) — first-time walkthrough
 - Module system: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- Active sweep plan: `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-- Golden Eclipse plan: `~/.claude/plans/we-are-working-on-golden-eclipse.md` (M-D2-3)
-- Threat model: `docs/system/threat-model.md`
+- Threat model: [`threat-model-2026-04.md`](../../../docs/history/audits/threat-model-2026-04.md) (parent platform; STRIDE analysis incl. worker API + internal CA)
+
+---
+
+_Last verified: 2026-06-03_

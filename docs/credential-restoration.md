@@ -1,6 +1,8 @@
 # Credential Restoration
 
-**Status:** Living design + operator runbook. Last revised 2026-05-03.
+> Status: active
+
+**Status:** Living design + operator runbook. Last revised 2026-06-03.
 **Implementation:** active stabilization sweep, Phase 3 (full).
 
 This document describes the per-account encryption key restoration path —
@@ -165,9 +167,11 @@ in the migration is fine.
 
 Before this can be deployed:
 
-1. **Vault transit engine must be mounted.** As of 2026-05-03 the production
-   Vault deployment (per `docs/infrastructure/vault-example/`) has only KV v2
-   + AppRole. Transit needs:
+1. **Vault transit engine must be mounted.** As of 2026-06-03 the production
+   Vault deployment (per `docs/infrastructure/vault-example/`) mounts KV v2 +
+   transit + AppRole (the `pki`/`pki_int` engines remain aspirational — see
+   [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md)).
+   If transit is ever provisioned fresh:
    ```bash
    vault secrets enable transit
    vault write -force transit/keys/test-config exportable=false
@@ -328,7 +332,7 @@ Files to look at when extending this system:
 | Sample consumer | `extensions/system/server/app/models/system/provider_connection.rb` |
 | Backfill job | `server/app/jobs/security/account_reencryption_job.rb` |
 | Specs | `server/spec/services/security/account_encryption_key_service_spec.rb` |
-| Threat model | `docs/system/threat-model.md` |
+| Threat model | [`../../../docs/history/audits/threat-model-2026-04.md`](../../../docs/history/audits/threat-model-2026-04.md) (parent platform repo) |
 
 To add a new peppered attribute on an existing model:
 
@@ -364,3 +368,5 @@ To add a new model with peppered attributes:
 
 *For DR procedure see [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md);
 for historical sweep tracking see [`history/TASKS.md`](./history/TASKS.md).*
+
+_Last verified: 2026-06-03_

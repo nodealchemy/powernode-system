@@ -1,5 +1,7 @@
 # Disk Image CI Runbook
 
+> Status: active
+
 Operator companion to [`DISK_IMAGE_CI.md`](../DISK_IMAGE_CI.md) (which covers architecture). This runbook focuses on hands-on setup, day-2 operations, and troubleshooting for the disk image CI pipeline that produces the netboot images (`kernel + initramfs + raw + qcow2 + ISO + iPXE + OCI`) that NodeInstances boot from.
 
 **Audience:** operators bootstrapping a new platform install; SREs investigating CI failures; platform admins tuning retention.
@@ -19,7 +21,7 @@ Push to platform's image-build repo (or trigger via webhook)
        ▼
 .gitea/workflows/build.yaml runs:
   - Stage 1: Containerfile builder (mmdebstrap → Debian rootfs)
-  - Stage 2: composefs composer (mkcomposefs → fs-verity digest)
+  - Stage 2: composefs composer (mkcomposefs → composefs blob)
   - Stage 3: emit 6 artifact families (kernel, initramfs, raw, qcow2, ISO, iPXE) × amd64 + arm64
        │
        ▼
@@ -29,12 +31,14 @@ Cosign keyless signing (Sigstore Fulcio, ephemeral OIDC certs)
 oras push to registry.example.com/<account>/disk-images/<platform>:<version>
        │
        ▼
-DiskImageWebhook fires (POST /api/v1/system/webhooks/disk_image_built)
+DiskImageWebhook fires (POST /api/v1/system/webhooks/disk_image/built/<webhook_id>)
        │
        ▼
 DiskImagePublicationProcessor:
   - Verify Cosign signature against NodePlatform's cosign_identity_regexp
-  - Verify fs-verity digest from artifact metadata
+  - Verify SHA-256 of the pulled artifact against publication.sha256
+    (no server-side composefs/fs-verity verification — the composefs blob
+     is produced in CI but the server trusts the cosign+sha256 envelope)
   - Create DiskImagePublication row (status=published)
        │
        ▼
@@ -119,8 +123,8 @@ Or via the workflow-dispatch MCP action (`bootstrap_disk_image_ci` is NOT a buil
 platform.dispatch_gitea_workflow({
   owner: "<account>",
   repo: "disk-images",
-  workflow: "build-disk-image.yml",
-  ref: "v0.3.0",
+  workflow_file: "build-disk-image.yaml",   // workflow filename, NOT `workflow`
+  ref: "v0.3.0",                            // branch/tag ref (required)
   inputs: { platform_slug: "ubuntu-2404-base", arch: "amd64" }
 })
 // → { run_id: "<gitea-run-id>", status: "queued" }
@@ -129,12 +133,12 @@ platform.dispatch_gitea_workflow({
 ## Phase 4 — Watch the build ✅
 
 ```javascript
-platform.get_gitea_workflow_run({ run_id: "<run-id>" })
-// → { status: "in_progress", started_at, jobs: [{ name, status, conclusion }, ...] }
+platform.get_gitea_workflow_run({ owner: "<account>", repo: "disk-images", run_id: "<run-id>" })
+// → { status: "in_progress", started_at, jobs: [{ id, name, status, conclusion }, ...] }
 
-// Stream job logs
-platform.get_gitea_job_logs({ run_id: "<run-id>", job_name: "build-amd64" })
-// → { logs: "..." }
+// Stream a job's logs (job_id comes from the run's jobs[].id above)
+platform.get_gitea_job_logs({ owner: "<account>", repo: "disk-images", job_id: "<job-id>" })
+// → { logs: "..." }    // optional: tail: <N>, grep: "<regex>"
 ```
 
 A typical build takes 15–25 minutes (mmdebstrap is the slow stage; cached after first run).
@@ -195,14 +199,19 @@ The action accepts only `retention_count` — there is no `routine_days` / `crit
 ## Phase 7 — Decommission a CI worker ⚠️
 
 ```javascript
-platform.system_terminate_ci_worker({ id: "<worker-id>" })
-// → { task_id, status: "terminating" }
+platform.system_terminate_ci_worker({ worker_id: "<worker-id>" })
+// → { revoked: true, worker_id: "<worker-id>" }
 ```
 
-Triggers:
-- Gitea API call to deregister the runner
-- Cancel any in-flight jobs (operator gets notification)
-- Standard NodeInstance termination cascade (provider VM destroyed, etc.)
+This flips the `Worker` row to `status: "revoked"`, which immediately
+invalidates its registration token (the digest is retained for the audit
+trail but is unusable once status ≠ `active`). It does **not** create a
+`System::Task`, does **not** call the Gitea API to deregister the runner,
+and does **not** destroy any VM — the CI worker is a `Worker` row, not a
+managed NodeInstance (see Phase 1). After revoking, **manually stop and
+deregister the act_runner** on the host where you installed it (e.g.
+`systemctl --user disable --now act_runner.service` + remove it from the
+Gitea repo/org runner list).
 
 ## Troubleshooting
 
@@ -211,25 +220,28 @@ Triggers:
 | Build fails at "mmdebstrap" stage | Network issue to debian.org mirror, or out-of-disk on builder | SSH the host running the Gitea Actions runner; check disk + network. Resizing is operator-managed (the CI worker is not a managed NodeInstance — see Phase 1) |
 | Build succeeds but webhook doesn't fire | `.gitea/workflows/build.yaml` last step missing or webhook secret mismatch | Verify the workflow's "Post to platform" step; rotate secret by re-running `bootstrap_disk_image_ci` with the same `label` (idempotent — rotates secrets) |
 | Webhook fires but `DiskImagePublication` not created | Cosign signature verification failed | Use `platform.recent_events({ kind_prefix: "system.disk_image_publish_failed" })` to find the failure; common cause is OIDC issuer mismatch |
-| Cosign signature mismatch | NodePlatform's `cosign_identity_regexp` doesn't match the CI runner's OIDC URL | Edit the NodePlatform row via the operator UI or `PATCH /api/v1/system/node_platforms/<id>` (no dedicated `system_update_node_platform` MCP wrapper yet); or update the CI workflow to use the right OIDC scope |
-| fs-verity digest mismatch | Artifact corrupted in transit (rare; oras has retry built-in) | Re-trigger the build; the deduper detects identical artifacts and skips redundant ingestion |
+| Cosign signature mismatch | NodePlatform's `cosign_identity_regexp` doesn't match the CI runner's OIDC URL | Edit the NodePlatform row via the operator UI or `PATCH /api/v1/system/node_platforms/<id>` (no dedicated `system_update_node_platform` MCP wrapper); or update the CI workflow to use the right OIDC scope |
+| SHA-256 mismatch on ingest | Artifact bytes differ from the digest the webhook reported (corruption in transit, or wrong digest posted) | Re-trigger the build; the publication record carries `error_message` with the expected/actual sha prefix. Re-delivering the same webhook re-verifies in place (`failed → verifying`) |
 | CI worker offline | gitea-runner systemd unit failed | SSH (if SDWAN attached) → `journalctl -u gitea-runner.service`; common: token expired, network |
 | Reproducibility check fails | Same source produces different output (timestamp leakage, locale, dpkg state) | Use SOURCE_DATE_EPOCH everywhere in build scripts; pin tool versions in Containerfile |
-| Retention deletes still-needed image | Was set as default after retention threshold passed | Mark `critical: true` on important publications; or extend retention window |
+| Retention deletes still-needed image | A non-default publication aged past the retention count | Retention never purges the publication currently set as the platform default — keep the one you need promoted, or raise `disk_image_retention_count` (there is no per-publication `critical` flag) |
 
 ## How the System Concierge should use this
 
 When an operator chats "build a new disk image" / "publish v0.3.0" / "tune image retention":
 
-1. For build trigger: surface `bootstrap_disk_image_ci` with required inputs
-2. For status check: chain `get_gitea_workflow_run` → `system_list_disk_image_publications`
-3. For retention tune: surface `system_set_disk_image_retention` and remind about default values
-4. For decommission of CI worker: use `request_confirmation` (destructive)
+1. For first-time setup: surface `bootstrap_disk_image_ci` (one-shot — provisions the CI worker + webhook + repo secrets; **not** a build trigger)
+2. For a build trigger: surface `dispatch_gitea_workflow` (owner, repo, `workflow_file`, ref, inputs) — or remind the operator a `git push` of a matching tag also triggers it
+3. For status check: chain `get_gitea_workflow_run` → `system_list_disk_image_publications`
+4. For retention tune: surface `system_set_disk_image_retention` (only `node_platform_id` + `retention_count`) and remind about default values
+5. For decommission of a CI worker: use `request_confirmation` (destructive), then `system_terminate_ci_worker({ worker_id })`
 
 ## Related docs
 
 - [`DISK_IMAGE_CI.md`](../DISK_IMAGE_CI.md) — architecture reference (this runbook complements it)
-- [`runbooks/module-authoring.md`](./module-authoring.md) — companion authoring flow for **modules** (vs disk images)
-- [`initramfs/README.md`](../../initramfs/README.md) — local multi-arch builder for initramfs (no CI required for testing)
+- [`module-authoring.md`](./module-authoring.md) — companion authoring flow for **modules** (vs disk images)
+- [`../../initramfs/README.md`](../../initramfs/README.md) — local multi-arch builder for initramfs (no CI required for testing)
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `cve_runbook_generate` if a published image has a CVE
-- [`runbooks/node-provisioning.md`](./node-provisioning.md) — NodeInstances boot from these published images
+- [`node-provisioning.md`](./node-provisioning.md) — NodeInstances boot from these published images
+
+_Last verified: 2026-06-03_

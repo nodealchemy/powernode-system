@@ -1,8 +1,21 @@
 # Powernode System Extension — Architecture
 
+> Status: active
+
 This document is the canonical design reference for the system extension.
 It complements [README.md](../README.md) (operator-facing summary) and
 [CONTRIBUTING.md](../CONTRIBUTING.md) (development workflow).
+
+**North star.** The system extension is the substrate on which AI agents and
+MCP applications proliferate. Its job is to let an AI agent stand up complex,
+distributed infrastructure with ease — provision nodes across bare metal, VMs,
+and clouds; compose signed module supply chains; wire SDWAN overlays; and run
+container workloads — all through the same MCP surface a human operator uses.
+The fleet then keeps watch over itself: sensors emit signals, a decision engine
+binds them to skills, and intervention policies gate every autonomous action,
+so the substrate steadily self-improves while staying governable. Every count
+below is code-derived; the substrate is meant to support the deployment of
+advanced distributed automation systems, not to be hand-curated documentation.
 
 ---
 
@@ -12,15 +25,15 @@ It complements [README.md](../README.md) (operator-facing summary) and
 flowchart TB
     subgraph Surface["Operator + AI surface"]
         UI[UI: Template Composer<br/>Fleet Dashboard<br/>Module Detail / Autonomy]
-        MCP[MCP: ~170 system_* tools]
+        MCP[MCP: 192 system_* actions<br/>122 + 70 sdwan]
         REST[REST: /api/v1/system/*<br/>+ /worker_api]
         AC[ActionCable: SystemChannel<br/>+ SystemFleetChannel]
     end
 
     subgraph Control["Control plane (Rails 8)"]
-        Models[~96 models<br/>Node, NodeInstance, NodeTemplate<br/>NodeModule + NodeModuleVersion AASM<br/>NodeModuleAssignment, BootstrapToken<br/>NodeCertificate, FleetEvent<br/>Cve, CveExposure, Slo::Definition]
-        Services[~187 services<br/>ProvisioningService<br/>ModuleBuildDispatchService<br/>ModuleOciIngestService<br/>InternalCaService<br/>FleetAutonomyService<br/>DecisionEngine, EventBroadcaster<br/>AttributionFeedbackService<br/>ConsentBudgetService]
-        Ctrl[3 controller surfaces:<br/>operator JWT<br/>worker token<br/>node mTLS]
+        Models[105 models<br/>80 system/ + 25 sdwan/<br/>Node, NodeInstance, NodeTemplate<br/>NodeModule + NodeModuleVersion AASM<br/>NodeModuleAssignment, BootstrapToken<br/>NodeCertificate, FleetEvent<br/>Cve, CveExposure, Slo::Definition]
+        Services[259 services<br/>incl. 48 skill executors<br/>ProvisioningService<br/>ModuleBuildDispatchService<br/>ModuleOciIngestService<br/>InternalCaService<br/>FleetAutonomyService<br/>DecisionEngine, EventBroadcaster<br/>AttributionFeedbackService<br/>ConsentBudgetService]
+        Ctrl[154 controllers across<br/>3 surfaces:<br/>operator JWT<br/>worker token<br/>node mTLS]
         Worker[Worker:<br/>SystemFleetReconcileJob 60s<br/>SystemCveFeedJob 1h<br/>SystemFleetEventRetentionJob 4:30 AM<br/>SystemTaskReaperJob 1h]
     end
 
@@ -216,7 +229,7 @@ by `System::NetbootService.render_ipxe_script` with a fresh
 
 ### 4. Fleet autonomy
 
-Eighteen sensors detect operational signals (16 are registered in the live tick loop via `FleetAutonomyService::SENSORS`; two on-disk sensors run via separate invocation paths). See [FLEET_SENSORS.md](./FLEET_SENSORS.md) for the full reference. Representative examples:
+Seventeen sensors are registered in the live tick loop via `FleetAutonomyService::SENSORS`. Three additional on-disk fleet sensors (`PackageDriftSensor`, `StorageAssignmentDriftSensor`, `SdwanCredentialExpirySensor`) are not in that array — they run via separate invocation paths — and the two CVE sensors live under `cve_ops/sensors/` (owned by the CVE Responder agent, not the fleet tick). See [FLEET_SENSORS.md](./FLEET_SENSORS.md) for the full reference. Representative examples of the registered set:
 
 - `InstanceStatusSensor` — heartbeat older than 3 × interval → `system.instance_silent`
 - `ModuleDriftSensor` — `running_module_digests` ≠ assigned digests → `system.module_drift`
@@ -226,11 +239,16 @@ Eighteen sensors detect operational signals (16 are registered in the live tick 
 - `SloViolationSensor` / `ProjectSloSensor` — SLO target not met → `system.slo_violation` / `project.slo_violation`
 - `HoneypotAccessSensor` — canary module accessed → `system.honeypot_access`
 - `GitopsDriftSensor` — fleet.yaml-declared state vs effective fleet diverges → `gitops.drift_detected`
-- `PackageDriftSensor` — package repository freshness → `system.package_drift_pressure`
 - `InstanceStateDriftSensor` — DB-recorded status disagrees with provider truth → `system.instance_state_drift`
-- `StorageAssignmentDriftSensor` — volume assignment freshness window expires → `system.storage_assignment_drift`
-- `SdwanReachabilitySensor`, `SdwanDriftSensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor`, `SdwanCredentialExpirySensor` — SDWAN-side reachability, drift, BGP, VIP, credential expiry
+- `FederationPeerLivenessSensor` — stale peer heartbeat or cert expiry → `system.federation_peer_liveness`
+- `SdwanReachabilitySensor`, `SdwanDriftSensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor` — SDWAN-side reachability, drift, BGP session health, VIP reachability
 - `TradingPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions (originally trading-specific; broader cross-domain refactor pending)
+
+The three on-disk fleet sensors run outside the tick array via their own paths:
+
+- `PackageDriftSensor` — package repository freshness → `system.package_drift_pressure`
+- `StorageAssignmentDriftSensor` — volume assignment freshness window expires → `system.storage_assignment_drift`
+- `SdwanCredentialExpirySensor` — SDWAN credential approaching expiry
 
 Each signal routes through `DecisionEngine` (binds signal → skill →
 action_category) → `FleetAutonomyService.gate_action!` (consults
@@ -338,6 +356,12 @@ flowchart LR
 - Schema: `kind, severity, payload (jsonb), correlation_id, source, account_id, +optional resource refs`
 - GIN index on payload, composite (account_id, emitted_at), correlation_id index
 - Retention: 90 days for routine (low/medium severity), 365 days for critical (high/critical) — sweep nightly via `SystemFleetEventRetentionJob`
+
+Revoked `System::FederationGrant` rows are archived past a 90-day retention
+window by `System::Federation::GrantArchivalService`, run daily and idempotent
+(re-runs are no-ops once eligible rows are processed) — the audit trail for a
+revoked cross-peer grant survives the grant itself for three months before
+archival. Each archival emits a `federation.grant.archived` FleetEvent.
 
 `SystemFleetChannel` (ActionCable) broadcasts to `system_fleet:<account_id>`
 for live UI updates. Frontend's `FleetDashboardPage` subscribes + renders
@@ -450,10 +474,12 @@ agent-auth mTLS conversion.
 
 ### 4. MCP (`mcp__powernode__platform_system_*`)
 
-170+ tool actions exposed via the platform's MCP server, callable from
-any AI agent or Claude Code MCP client. The catalog is split into
-`system_*` (102 actions) + `system_sdwan_*` (69) + `kubernetes_*` (5) +
-`docker_*` (52). The auto-generated tool catalog lives at
+192 system tool actions exposed via the platform's MCP server, callable
+from any AI agent or Claude Code MCP client — the substrate's primary
+agent-facing surface. The catalog is split into `system_*` (122 actions)
++ `system_sdwan_*` (70). Alongside these the extension also drives
+`kubernetes_*` (5) + `docker_*` (52) container-runtime actions. The
+auto-generated tool catalog lives at
 `docs/platform/MCP_TOOL_CATALOG.md` in the **parent platform tree**
 (gitignored — regenerate via `cd server && bundle exec rails mcp:generate_tool_catalog`
 from parent root). For an operator-curated subset see
@@ -548,10 +574,14 @@ flowchart TB
 - [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (18 seeds, 8 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
 - [docs/history/](./history/) — archived phase plans + acceptance reports
-- [Parent platform's CLAUDE.md](https://github.com/nodealchemy/powernode-platform/blob/master/CLAUDE.md) — full platform context
+- [Parent platform's CLAUDE.md](../../../CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details
 - [initramfs/README.md](../initramfs/README.md) — boot artifact builder details
 
 ---
 
-*Last updated 2026-05-02 during the system extension extraction.*
+Counts and signatures in this document are code-derived; relative links were
+audited against the on-disk tree per
+[doc-conventions.md](../../../docs/contributing/doc-conventions.md).
+
+_Last verified: 2026-06-03_

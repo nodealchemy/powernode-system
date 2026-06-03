@@ -1,5 +1,15 @@
 # Module Manifest YAML Schema (v1)
 
+> Status: active
+
+> **Scope.** This doc is the source of truth for the manifest's **`services:`**
+> key (added by the Decentralized Federation work) and the on-node runtime
+> semantics. Every other top-level field — content specs, dependencies, `init`,
+> `security`, `skills`, `build`, `users`/`groups`/`sudoers` — is owned by
+> [`../MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md).
+> The manifest is **flat**: `services:` sits at the top level alongside `name`,
+> `file_spec`, etc. — there is no `identity:` (or any other) wrapper object.
+
 Authoritative source: each NodeModule ships a `manifest.yaml` that describes
 its filesystem content selection, declared dependencies, init lifecycle hooks,
 and (added in the Decentralized Federation work) **service definitions**.
@@ -148,6 +158,9 @@ next reconcile tick).
 
 ## Related Documentation
 
-- `docs/federation/SOCIAL_CONTRACT.md` (v1 ships in P4) — operator commitments around manifest accuracy
-- `docs/federation/REVERSE_PROXY_GUIDE.md` (P2.5) — how Traefik consumes `exposed_ports` from these rows
-- `docs/federation/OPERATOR_GUIDE.md` (P7) — dashboard-side service operations
+- [`../MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md) — every non-service top-level field (content specs, dependencies, `init`, `security`, `skills`, `build`, `users`/`groups`/`sudoers`)
+- [`./SOCIAL_CONTRACT.md`](./SOCIAL_CONTRACT.md) — operator commitments around manifest accuracy
+- [`../INGRESS_TLS_GUIDE.md`](../INGRESS_TLS_GUIDE.md) — how Traefik consumes a service's `exposed_ports` (Expose-Service wizard → VIP → port map → ACME → Traefik)
+- [`./SPAWN_MODES.md`](./SPAWN_MODES.md) — federation spawn modes that consume these service definitions
+
+_Last verified: 2026-06-03_

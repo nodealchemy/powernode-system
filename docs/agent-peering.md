@@ -1,15 +1,28 @@
 # NodeInstance-as-Agent Peering
 
-**Status:** Active stabilization sweep, Phase 6 (~80% complete). Target close: Q3 2026.
-Core implementation present in `extensions/system/server/app/services/system/agent_peering_service.rb`
-plus `extensions/system/agent/internal/agent_peer/registrar.go` (with `registrar_test.go` companion).
-Remaining work is documented under "Known limitations / future work" below.
+> Status: active — Phase 6 stabilization (~80%). The register/activate/execute
+> path works end-to-end; the open items are the operator-UX niceties tracked
+> under [Known limitations](#known-limitations--future-work) (no chat
+> mention-picker, no synchronous result polling).
+
+Core implementation present in
+`extensions/system/server/app/services/system/agent_peering_service.rb` (with
+`peer_agent_mirror.rb` projecting peers into the agent graph) plus
+`extensions/system/agent/internal/agent_peer/registrar.go` (with
+`registrar_test.go` companion).
 
 This document describes the protocol by which a running NodeInstance
 auto-registers as a peer in the platform's agent graph. Registered peers
 are addressable by handle (`@instance-abc12345`) and can have remote
 tasks delegated to them — pattern-mirror of the Module-as-Skill registrar
 already shipped under Track F-4.
+
+> **Hub-mediated, not peer-to-peer.** Delegation is **platform-mediated**:
+> the operator POSTs to the platform
+> (`/api/v1/system/node_instance_peers/:id/execute`), which dispatches to the
+> target instance's agent over the existing platform→agent mTLS channel; the
+> agent posts the result back to the platform. There is no direct
+> instance-to-instance (p2p) call path — every delegation transits the hub.
 
 ---
 
@@ -238,7 +251,7 @@ the throttle so legitimate module changes propagate quickly.
 
 ## Reference
 
-- Active sweep plan: `~/.claude/plans/perform-comprehensive-examination-of-glistening-perlis.md`
-- Golden Eclipse plan: `~/.claude/plans/we-are-working-on-golden-eclipse.md` (F-3)
-- Threat model: `docs/system/threat-model.md`
+- Threat model: `<parent>/docs/history/audits/threat-model-2026-04.md` (lives in the parent platform tree; STRIDE analysis across the operator/worker/node API + MCP + CA + GitHub-mirror surfaces)
 - Module-as-Skill (parallel pattern): `extensions/system/server/app/services/system/module_skill_registrar.rb`
+
+_Last verified: 2026-06-03_

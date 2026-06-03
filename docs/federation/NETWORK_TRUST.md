@@ -1,5 +1,7 @@
 # Network-Scoped Federation Trust (Locked Decision #12)
 
+> Status: active
+
 How SDWAN routing integrates into federation trust, how pessimistic
 grants gate cross-peer access, and what headers the reverse proxy MUST
 forward to make the auth chain work.
@@ -223,20 +225,25 @@ allowlist contents to make this triage straightforward.
 ## Back-compat (grants created before §K)
 
 Grants created before the LD #12 migration ship with all three
-allowlists empty. The predicates return `true` for empty allowlists, so
+allowlists empty (`node_instance_ids` / `sdwan_network_ids` /
+`source_cidrs` each default to `[]`). The predicates return `true` for
+empty allowlists — i.e. `FederationGrant#unrestricted?` is `true` — so
 those grants continue to work unchanged.
 
-The FederationManager AI Skill flags grants with all three allowlists
-empty AND `admin` or `migrate` permission scope as
-`grant_unrestricted_scope` findings — surfacing pre-K grants that
-warrant tightening.
+The FederationManager AI Skill surfaces grants carrying `admin` or
+`migrate` permission scope as `broad_scope_grants` findings —
+flagging pre-K grants that warrant tightening (pair with
+`#unrestricted?` to spot a broad scope that is also unscoped on every
+pessimistic axis).
 
 ---
 
 ## See also
 
-- `docs/federation/SOCIAL_CONTRACT.md` — operator commitments (#3 truthful capability, #6 no-undermining)
-- `docs/federation/REVERSE_PROXY_GUIDE.md` — Traefik configuration (P2.5 deliverable; this doc supplements it)
-- `app/models/system/federation_grant.rb` — `#applies_to_*?` predicates
+- [`SOCIAL_CONTRACT.md`](./SOCIAL_CONTRACT.md) — operator commitments (#3 truthful capability, #6 no-undermining)
+- [`../FEDERATION_MULTI_SITE_GUIDE.md`](../FEDERATION_MULTI_SITE_GUIDE.md) §4b + [`../runbooks/expose-service.md`](../runbooks/expose-service.md) — Traefik / reverse-proxy configuration (this doc supplements them)
+- `app/models/system/federation_grant.rb` — `#applies_to_*?` and `#unrestricted?` predicates
 - `app/models/system/federation_network_bridge.rb` — bridge model + state machine
 - `app/controllers/api/v1/system/federation_api/base_controller.rb` — full auth chain
+
+_Last verified: 2026-06-03_

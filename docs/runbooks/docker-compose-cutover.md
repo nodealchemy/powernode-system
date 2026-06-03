@@ -1,5 +1,7 @@
 # Docker-Compose → Native Module Deployment — Cutover Runbook
 
+> Status: active
+
 **Scope**: operator-facing migration from the legacy
 `docker-compose.prod.yml` stack to the platform's native module-based
 deployment (Golden Eclipse P8 dogfooding). Single-host installations.
@@ -30,27 +32,36 @@ the per-service Docker images.
 | Image tags (mutable) | Cosign-signed OCI artifacts (immutable digests) |
 | Docker restart loops | systemd `Restart=` directive per service |
 
-All eight modules ship as composefs blobs from the M1 supply-chain
+The six service modules above (postgres-primary, redis,
+powernode-hub-backend, powernode-hub-worker, powernode-hub-frontend,
+reverse-proxy-traefik) ship as composefs blobs from the M1 supply-chain
 pipeline (`.gitea/workflows/build-platform-modules.yaml`) and are
 attached to a `powernode-hub` NodeInstance via the on-node Go agent
-(internal/lifecycle/AttachServices).
+(internal/lifecycle/AttachServices). The remaining rows are
+infrastructure mappings (networks → SDWAN, volume → ProviderVolume),
+not modules.
 
 ## 2. Prerequisites
 
 - [ ] **Platform code at or after P8.5** (this commit).
 - [ ] **Powernode platform module manifests on disk**:
-      `ls extensions/system/modules/powernode-*/manifest.yaml` returns
-      9 files.
+      `ls extensions/system/modules/*/manifest.yaml` lists the platform
+      modules (the seed scans every directory under
+      `extensions/system/modules/`, not just the `powernode-*` ones).
 - [ ] **Seeds run**: `bundle exec rails runner
       "load Rails.root.join('../extensions/system/server/db/seeds/powernode_platform_modules.rb')"`
-      reports "9 platform module manifests" loaded.
+      prints a "Loaded N platform module manifests" line and seeds
+      without errors (N = the directory count on disk — the seed is the
+      source of truth, so don't hardcode it).
 - [ ] **Local QEMU provider configured** (for the cutover target host)
       OR a Linux host with composefs + fs-verity kernel support.
 - [ ] **A reachable Postgres** containing the data you're migrating.
       Either the docker-compose Postgres still up, or an external dump
       file.
-- [ ] **DNS + Cloudflare token** for the target hostname (if you want
-      HTTPS via ACME DNS-01 — same setup as P2.5 acceptance gate).
+- [ ] **DNS + a supported ACME DNS-01 provider token** for the target
+      hostname (the on-node ACME agent supports cloudflare, digitalocean,
+      gcloud, hetzner, ovh, porkbun, and route53) — same setup as the
+      P2.5 acceptance gate.
 - [ ] **A scheduled maintenance window** (10–30 min of database
       unavailability during cutover).
 
@@ -142,8 +153,9 @@ cd server && POWERNODE_LIBVIRT_MODE=real SMOKE_HUB_HOSTNAME=hub.example.com \
   "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_powernode_hub.rb')"
 ```
 
-Expected: 11/11 pass, including HTTPS reachability + `/up` returning
-200.
+Expected: the script prints a `Powernode Hub smoke: N/N passed` line
+with zero failures (the check count is computed at runtime and varies by
+mode), including HTTPS reachability + `/up` returning 200.
 
 Additional smoke checks against the live HTTPS endpoint:
 - [ ] Operator login via the dashboard
@@ -222,3 +234,5 @@ powernode-019e2...-sidekiq.service    loaded active running
 ```
 
 Journals: `journalctl -u powernode-019e2...-rails.service -f`.
+
+_Last verified: 2026-06-03_

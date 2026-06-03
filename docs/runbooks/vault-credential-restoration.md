@@ -1,5 +1,7 @@
 # Vault Credential Restoration Runbook
 
+> Status: active
+
 Disaster-recovery runbook for the platform's credential storage layer. Operator companion to [`credential-restoration.md`](../credential-restoration.md) (which covers the design). This runbook focuses on hands-on backup, restoration, and audit verification procedures.
 
 **Audience:** platform admins, security operators, on-call SREs handling DR drills or actual data-loss incidents.
@@ -21,9 +23,14 @@ Loss of Vault means: any encrypted user-supplied secret (API keys, OAuth tokens,
 Per memory `project_vault_pki_state.md`:
 
 - Vault is deployed via `docs/infrastructure/vault-example/`
-- Uses **manual Shamir unseal** + KV v2 + AppRole
-- **NO PKI engine** mounted yet — `M0.N InternalCaService.VaultCaAdapter` blocked on production until `pki_int` + auto-unseal lands
-- `LocalCaAdapter` works for tests/dev
+- Uses **manual Shamir unseal**
+- **Mounted today:** KV v2, transit, AppRole. The account-encryption pepper
+  (transit) and mTLS keypair storage (KV v2) both depend only on these engines.
+- **Aspirational (NOT mounted):** `pki`, `pki_int` — `M0.N
+  InternalCaService.VaultCaAdapter` stays blocked on production until `pki_int`
+  + auto-unseal lands. `LocalCaAdapter` works for tests/dev. **The restoration
+  steps below assume only KV v2 + transit** — they do NOT depend on a mounted
+  PKI engine.
 
 For production restoration, you need:
 
@@ -174,10 +181,11 @@ Annual cadence for the Vault transit pepper. The `CredentialRestorationService` 
 
 ```javascript
 platform.system_rotate_vault_transit_pepper({
-  scheme: "v2",                                 // bumps version label on transit key
-  reencrypt_existing: true                      // walks all per-account keys; re-encrypts
+  reencrypt_existing: true   // walks all stale accounts + re-wraps. Default true.
+                             // false = bump the key version only, phase rotation manually.
 })
-// → { rotated_count: 47, status: "in_progress", task_id }
+// → { rotated: true, latest_version, rotated_count: 47,
+//     skipped_count, failed_count, errors: [] }
 ```
 
 Re-encryption is online — the service walks accounts in batches, decrypts with old pepper, re-encrypts with new pepper, atomically swaps. No downtime; no operator action required after kicking off.
@@ -224,3 +232,5 @@ When an operator chats "vault is down" / "restore credentials" / "rotate encrypt
 - `docs/infrastructure/vault-example/` (in parent platform repo) — Vault deployment topology
 - Memory: `project_vault_pki_state.md`, `project_credential_pattern.md`
 - Root `CLAUDE.md` Cryptographic Material Safety rules — operator behavior constraints
+
+_Last verified: 2026-06-03_

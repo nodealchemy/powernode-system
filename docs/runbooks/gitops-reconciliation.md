@@ -1,5 +1,7 @@
 # GitOps Reconciliation — Operator Runbook
 
+> Status: active
+
 Operator-facing companion to design-level [`docs/gitops.md`](../gitops.md).
 Covers the day-2 workflow for managing fleet state via git: when to use
 GitOps vs operator-UI changes, authoring `fleet.yaml`, registering
@@ -9,11 +11,20 @@ and recovering from common failure modes.
 **Audience:** SREs adopting GitOps for fleet config, multi-engineer teams
 needing PR-based change control.
 
-**Status:** GitOps reconciler is in active stabilization sweep, Phase 5.
-Parser, diff engine, and reconciler ship today; the auto-apply branch is
-landing incrementally. Until ApplyService completes, approved proposals
-serve as the operator's authoritative checklist for executing standard
-MCP actions.
+**Apply maturity (v1):** parser, diff engine, reconciler, the drift sensor,
+and `ApplyService` all ship today. Approving a proposal calls
+`system_gitops_apply_proposal`, which runs `ApplyService` to make the
+change. Two carve-outs remain v1-conservative:
+
+- **Reconciler-driven auto-apply is not wired yet.** `auto_apply: true` is
+  accepted and stored, but the every-5-min reconciler only *opens*
+  proposals — it never applies them on its own. Today every change still
+  goes through an explicit approve → `system_gitops_apply_proposal` step.
+- **Template/module destroy via GitOps is intentionally blocked.** Removing
+  a `templates:`/`modules:` entry from `fleet.yaml` returns
+  `UnsupportedDiffError` (destructive ops require manual confirmation).
+  Only **assignment** destroy (removing a `<node>:<module>` line) applies
+  through GitOps. Template/module create + update apply normally.
 
 ## End-to-end flow
 
@@ -27,7 +38,7 @@ sequenceDiagram
     participant Diff as DiffEngine
     participant Prop as Ai::AgentProposal
     participant Op2 as Operator (reviewer)
-    participant Apply as Reconciler / ApplyService
+    participant Apply as ApplyService
     participant DB as Platform DB
 
     Op->>Git: git push fleet.yaml
@@ -37,10 +48,10 @@ sequenceDiagram
     Parse->>Diff: compare vs live DB
     Diff->>Prop: open one proposal per change<br/>(capped at POWERNODE_GITOPS_<br/>MAX_PROPOSALS_PER_TICK)
     Prop-->>Op2: appear in /app/approvals
-    Op2->>Apply: approve (or batch-approve)
-    Apply->>DB: walk in dependency order:<br/>templates → modules → nodes → SDWAN
-    DB-->>Apply: success / partial / failed
-    Apply->>Prop: mark proposal applied
+    Op2->>Apply: approve →<br/>system_gitops_apply_proposal
+    Apply->>DB: apply this proposal's diff<br/>(template/module/assignment)
+    DB-->>Apply: success / stale conflict / unsupported
+    Apply->>Prop: mark proposal implemented
 ```
 
 ## When to use GitOps (vs operator UI)
@@ -59,9 +70,9 @@ sequenceDiagram
 - You're working in a single-operator environment with no PR review process
 
 You can mix — most teams declare the steady-state in `fleet.yaml` and
-let operators make one-off tactical changes via UI. The drift sensor (when
-shipped) flags the mismatch so operators can either commit it back to git
-or revert.
+let operators make one-off tactical changes via UI. The `GitopsDriftSensor`
+(registered in the Fleet Autonomy sensor set) flags the mismatch so
+operators can either commit it back to git or revert.
 
 ## Authoring `fleet.yaml`
 
@@ -188,12 +199,17 @@ approve or change the source.
 
 ## Step 4 — Apply (auto vs gated)
 
-**`auto_apply: false`** (default) — every diff requires operator approval.
-Safest; recommended until your team's PR review process is mature enough
-that git itself is trusted as the source of truth.
+**`auto_apply: false`** (default, and the only path wired today) — every
+diff requires operator approval. Approving a proposal calls
+`system_gitops_apply_proposal` → `ApplyService`. Recommended until your
+team's PR review process is mature enough that git itself is trusted as
+the source of truth.
 
-**`auto_apply: true`** — the reconciler applies approved diffs directly,
-no operator interaction. Use only when:
+**`auto_apply: true`** — accepted and stored on the `GitopsRepository`,
+but the reconciler-driven apply path is **not yet wired** (v1-conservative):
+the reconciler still only opens proposals, and you must approve each one to
+apply it. Treat the flag as a forward-looking toggle. When it does land,
+restrict it to repos where:
 
 - The repo's branch protection requires multi-reviewer PRs
 - All committers are trusted operators
@@ -203,13 +219,12 @@ no operator interaction. Use only when:
 
 ```mermaid
 flowchart TD
-    Approve[Operator approves<br/>proposal] --> Pickup[Reconciler picks up<br/>on next tick]
-    Pickup --> Order[Topological order:<br/>templates → modules → nodes → SDWAN]
-    Order --> Apply[ApplyService.apply!<br/>per proposal in batch]
+    Approve[Operator approves proposal<br/>→ system_gitops_apply_proposal] --> Apply[ApplyService.apply!<br/>for that proposal]
     Apply --> TXN{atomic transaction<br/>per resource}
-    TXN -->|success| Mark[Mark proposal applied<br/>+ FleetEvent]
-    TXN -->|failure| Rollback[Rollback +<br/>mark proposal failed<br/>+ FleetEvent]
-    Rollback --> Op[Operator investigates<br/>retry or revert]
+    TXN -->|success| Mark[proposal.status = implemented<br/>+ FleetEvent]
+    TXN -->|stale conflict| Stale[Reject as stale<br/>operator re-syncs for a fresh proposal]
+    TXN -->|unsupported diff| Unsup[Return error<br/>e.g. template/module destroy]
+    TXN -->|validation failure| Fail[Return validation error<br/>operator investigates]
 ```
 
 ## Step 5 — Verify convergence
@@ -220,8 +235,10 @@ curl http://localhost:3000/api/v1/system/gitops_sync_runs/<run-id> \
 # → { status: "applied", applied_actions: [...], failed_actions: [], ... }
 ```
 
-Subsequent reconcile ticks verify no drift. When the drift sensor ships,
-it emits `gitops.drift_detected` FleetEvents on divergence.
+Subsequent reconcile ticks verify no drift. The `GitopsDriftSensor`
+(registered in the Fleet Autonomy sensor set) emits a
+`system.gitops.drift_detected` signal per repo with unresolved drift, so
+observability tooling can surface divergence.
 
 ## DR scenarios
 
@@ -230,9 +247,9 @@ it emits `gitops.drift_detected` FleetEvents on divergence.
 1. Reconciler tick logs `RepoSyncService` failures (`Failed to clone`)
 2. Existing fleet state is unaffected — nothing in the DB depends on the
    repo being reachable
-3. Restore the repo (from backup or rebuild from current DB state by
-   exporting via `system_export_fleet_yaml` — when shipped — or manual
-   composition)
+3. Restore the repo (from backup, or rebuild `fleet.yaml` from current DB
+   state by hand — there is no `fleet.yaml` export action yet, so manual
+   composition is the path today)
 4. Re-register if the URL changed
 
 ### Account moved (operator migration to a new account)
@@ -291,10 +308,12 @@ revert** — expected behavior. Either commit the UI change back to git
 (treats operator change as authoritative) or accept the reversion (treats
 git as authoritative).
 
-**Apply runs in wrong order, FK violation** — topological order is
-templates → modules → nodes → SDWAN. If you're getting FK violations,
-the diff engine is missing a dependency edge — file an issue with the
-specific diff payload.
+**Assignment apply fails "template/module not found"** — `ApplyService`
+resolves an assignment's template + module by name at apply time and
+returns a stale-conflict if either is missing. Apply the
+template/module-create proposals first, then the assignment that depends
+on them (apply is per-proposal, so ordering is operator-driven, not an
+automatic topological batch). Re-sync if the names drifted.
 
 ## Cross-references
 
@@ -302,3 +321,5 @@ specific diff payload.
 - [`../tutorials/10-gitops-fleet.md`](../tutorials/10-gitops-fleet.md) — first-time tutorial walking through registering a repo + seeing proposals
 - [`../history/plans/missing-features.md`](../history/plans/missing-features.md) — historical M-D2-3 implementation plan (archived; some items now shipped)
 - `extensions/system/server/app/services/system/gitops/` — source code (DesiredStateParser, DiffEngine, Reconciler, RepoSyncService, ApplyService)
+
+_Last verified: 2026-06-03_
