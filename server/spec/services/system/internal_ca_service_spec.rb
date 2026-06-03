@@ -42,6 +42,26 @@ RSpec.describe System::InternalCaService do
       expect(cert.verify(ca.public_key)).to be true
     end
 
+    it "adds a subjectAltName extension (DNS + IP) when sans are supplied" do
+      result = described_class.issue_certificate(
+        csr_pem: csr_pem, ttl_seconds: 3600, common_name: "localhost",
+        sans: ["localhost", "127.0.0.1"]
+      )
+      cert = OpenSSL::X509::Certificate.new(result[:cert_pem])
+      san  = cert.extensions.find { |e| e.oid == "subjectAltName" }
+      expect(san).to be_present
+      expect(san.value).to include("DNS:localhost")
+      expect(san.value).to include("IP Address:127.0.0.1")
+    end
+
+    it "omits subjectAltName when no sans are supplied (client certs stay SAN-free)" do
+      result = described_class.issue_certificate(
+        csr_pem: csr_pem, ttl_seconds: 3600, common_name: "test-instance-uuid"
+      )
+      cert = OpenSSL::X509::Certificate.new(result[:cert_pem])
+      expect(cert.extensions.map(&:oid)).not_to include("subjectAltName")
+    end
+
     it "rejects a malformed CSR PEM" do
       expect {
         described_class.issue_certificate(csr_pem: "this is not a CSR", ttl_seconds: 60)

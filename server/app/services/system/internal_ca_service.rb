@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "openssl"
+require "ipaddr"
 
 module System
   # Issues mTLS certificates for NodeInstances against the platform's
@@ -59,11 +60,17 @@ module System
         }
       end
 
-      def issue_certificate(csr_pem:, ttl_seconds: DEFAULT_TTL_SECONDS, common_name: nil)
+      # sans: optional Subject Alternative Names for SERVER certs (e.g. a
+      # localhost/overlay serving cert). Go (and modern TLS stacks) require a
+      # SAN match — CN alone no longer satisfies verification — so any cert a
+      # daemon will verify by hostname/IP must carry them. Node CLIENT certs
+      # (CN = instance id) don't need SANs and pass [] (the default).
+      def issue_certificate(csr_pem:, ttl_seconds: DEFAULT_TTL_SECONDS, common_name: nil, sans: [])
         result = adapter.issue_certificate(
           csr_pem: csr_pem,
           ttl_seconds: ttl_seconds,
-          common_name: common_name
+          common_name: common_name,
+          sans: sans
         )
         emit_audit_event!(
           event_type: "system.internal_ca.issue",
@@ -193,7 +200,7 @@ module System
         end
       end
 
-      def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil)
+      def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil, sans: [])
         csr = begin
           OpenSSL::X509::Request.new(csr_pem)
         rescue OpenSSL::X509::RequestError, ArgumentError, TypeError => e
@@ -219,6 +226,8 @@ module System
         # used in prod needs server_flag=true for the same reason.)
         cert.add_extension(ef.create_extension("extendedKeyUsage", "clientAuth, serverAuth", false))
         cert.add_extension(ef.create_extension("subjectKeyIdentifier", "hash", false))
+        san_value = san_extension_value(sans)
+        cert.add_extension(ef.create_extension("subjectAltName", san_value, false)) if san_value
         cert.sign(ca_key, nil) # Ed25519 — no digest (must be nil)
 
         {
@@ -279,6 +288,24 @@ module System
 
         OpenSSL::X509::Name.parse("/CN=#{common_name}")
       end
+
+      # Build an OpenSSL subjectAltName value (e.g. "DNS:localhost,IP:127.0.0.1")
+      # from a list of names. Entries that parse as an IP become IP: SANs, the
+      # rest DNS:. Returns nil when there are no SANs so the caller skips the
+      # extension entirely.
+      def san_extension_value(sans)
+        entries = Array(sans).map(&:to_s).map(&:strip).reject(&:empty?).uniq
+        return nil if entries.empty?
+
+        entries.map { |name| ip_literal?(name) ? "IP:#{name}" : "DNS:#{name}" }.join(",")
+      end
+
+      def ip_literal?(name)
+        IPAddr.new(name)
+        true
+      rescue IPAddr::InvalidAddressError, ArgumentError
+        false
+      end
     end
 
     # ----------------------------------------------------------------------
@@ -299,8 +326,8 @@ module System
         @pki   = pki_client || ::Security::VaultPkiClient.new(mount: @mount, role: @role)
       end
 
-      def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil)
-        data = @pki.sign(csr_pem: csr_pem, ttl_seconds: ttl_seconds, common_name: common_name)
+      def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil, sans: [])
+        data = @pki.sign(csr_pem: csr_pem, ttl_seconds: ttl_seconds, common_name: common_name, sans: sans)
 
         # ca_chain_pem can be either a single ca cert or full chain;
         # join multi-element chains into one PEM stream for callers.
