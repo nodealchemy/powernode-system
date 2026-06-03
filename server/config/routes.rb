@@ -541,6 +541,20 @@ Rails.application.routes.draw do
           # materialization. Plan: P6.4.
           post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"
 
+          # AI/MCP workload substrate L3 — agent-fleet mission phase callbacks.
+          # Each AiAgentFleet*Job (dispatched by core's OrchestratorService)
+          # POSTs its phase here; the controller runs the matching
+          # System::AgentFleetMissionService method then self-advances the
+          # mission (the verify/handoff pattern). review_fleet is the lone
+          # approval gate (no job → no callback).
+          scope "agent_fleet/missions/:mission_id" do
+            post "plan_fleet",      to: "agent_fleet#plan_fleet"
+            post "provision_fleet", to: "agent_fleet#provision_fleet"
+            post "delegate",        to: "agent_fleet#delegate"
+            post "aggregate",       to: "agent_fleet#aggregate"
+            post "reap",            to: "agent_fleet#reap"
+          end
+
           # Async module publication processor — long-pole work the
           # webhook receiver dispatches to the worker so Gitea acks fast.
           post "module_publications/process",

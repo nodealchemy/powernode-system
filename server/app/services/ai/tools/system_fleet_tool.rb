@@ -32,6 +32,8 @@ module Ai
         "system_grant_instance_peer_skills" => "system.node_instances.control",
         "system_discover_peers" => "system.node_instances.read",
         "system_authorize_peer_call" => "system.node_instances.read",
+        "system_launch_agent_fleet" => "system.node_instances.control",
+        "system_agent_fleet_status" => "system.node_instances.read",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -306,6 +308,20 @@ module Ai
               caller_instance_id: { type: "string", required: true },
               target_instance_id: { type: "string", required: true },
               skill: { type: "string", required: true }
+            }
+          },
+          "system_launch_agent_fleet" => {
+            description: "L3: launch an agent-fleet orchestration mission — dynamically provision a fleet of agent-instances, grant them L2 (platform-MCP) + L2.5 (A2A) capabilities, delegate subtasks (hybrid coordinator + peer sub-delegation), aggregate, and reap. Creates an approval-gated Ai::Mission (mission_type: agent_fleet) bound to the system_agent_fleet template and starts it; the operator approves the review_fleet gate before any instances are provisioned. fleet_spec: { size, source('provision'|'pool'), node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[{id,skill}], delegation('central'|'a2a'|'hybrid'), reap }.",
+            parameters: {
+              fleet_spec: { type: "object", required: true },
+              name: { type: "string", required: false },
+              objective: { type: "string", required: false }
+            }
+          },
+          "system_agent_fleet_status" => {
+            description: "L3: inspect an agent-fleet mission — returns status, current_phase, and a summary of the fleet (plan, member/assignment counts, aggregated report, reaped count).",
+            parameters: {
+              mission_id: { type: "string", required: true }
             }
           },
           "system_provision_instance" => {
@@ -847,6 +863,8 @@ module Ai
         when "system_grant_instance_peer_skills" then grant_instance_peer_skills(params)
         when "system_discover_peers"           then discover_peers(params)
         when "system_authorize_peer_call"      then authorize_peer_call(params)
+        when "system_launch_agent_fleet"       then launch_agent_fleet(params)
+        when "system_agent_fleet_status"       then agent_fleet_status(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1183,6 +1201,64 @@ module Ai
           caller_peer: caller_peer, target_peer: target_peer, skill: params[:skill].to_s
         )
         success_result(authorized: decision.authorized, reason: decision.reason)
+      end
+
+      # L3: create + start an agent-fleet orchestration mission. Binds the
+      # system_agent_fleet template and stores the operator's fleet_spec, then
+      # OrchestratorService#start! dispatches the plan_fleet phase. The mission
+      # stops at the review_fleet gate for operator approval before any
+      # instances are provisioned.
+      def launch_agent_fleet(params)
+        return error_result("user context required to launch an agent fleet") unless @user
+
+        spec = params[:fleet_spec] || params["fleet_spec"]
+        return error_result("fleet_spec (object) is required") unless spec.is_a?(Hash)
+
+        template = ::Ai::MissionTemplate.find_by(name: "system_agent_fleet", template_type: "system")
+        return error_result("system_agent_fleet mission template is not seeded") unless template
+
+        mission = ::Ai::Mission.create!(
+          account: @account,
+          created_by: @user,
+          name: params[:name].presence || "Agent fleet #{Time.current.utc.iso8601}",
+          mission_type: "agent_fleet",
+          mission_template: template,
+          status: "draft",
+          objective: params[:objective].presence || "Provision + orchestrate an agent fleet",
+          configuration: { "fleet_spec" => spec.deep_stringify_keys }
+        )
+
+        ::Ai::Missions::OrchestratorService.new(mission: mission).start!
+
+        success_result(
+          mission_id: mission.id,
+          status: mission.reload.status,
+          current_phase: mission.current_phase,
+          template: template.name
+        )
+      rescue StandardError => e
+        error_result("agent fleet launch failed: #{e.message}")
+      end
+
+      # L3: read-only fleet mission summary (status + per-phase fleet state).
+      def agent_fleet_status(params)
+        mission = ::Ai::Mission.where(account_id: @account.id, mission_type: "agent_fleet")
+                               .find_by(id: params[:mission_id])
+        return error_result("agent_fleet mission not found") unless mission
+
+        fleet = (mission.configuration.is_a?(Hash) ? mission.configuration["fleet"] : nil) || {}
+        success_result(
+          mission_id: mission.id,
+          status: mission.status,
+          current_phase: mission.current_phase,
+          fleet: {
+            plan: fleet["plan"],
+            member_count: Array(fleet["members"]).size,
+            assignment_count: Array(fleet["assignments"]).size,
+            report: fleet["report"],
+            reaped_count: Array(fleet["reaped"]).size
+          }
+        )
       end
 
       def provision_instance(params)

@@ -42,6 +42,7 @@ SYSTEM_SEED_FILES = %w[
   system_manual_operation_policies.rb
   system_provisioning_intervention_policies.rb
   system_provisioning_mission_template.rb
+  system_agent_fleet_mission_template.rb
   system_skills_seed.rb
   system_provisioning_skills_seed.rb
   system_skill_bindings_seed.rb

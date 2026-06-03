@@ -158,6 +158,57 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Agent fleet missions (L3)" do
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.control system.node_instances.read]) }
+    let(:fleet_tool) { described_class.new(account: account, user: user) }
+    let(:node) { create(:system_node, account: account) }
+    let!(:fleet_template) do
+      create(:ai_mission_template, name: "system_agent_fleet", template_type: "system",
+                                   mission_type: "agent_fleet",
+                                   phases: [
+                                     { "order" => 0, "key" => "plan_fleet",      "requires_approval" => false, "job_class" => "AiAgentFleetPlanJob" },
+                                     { "order" => 1, "key" => "review_fleet",    "requires_approval" => true,  "job_class" => nil, "gate_name" => "fleet_review" },
+                                     { "order" => 2, "key" => "provision_fleet", "requires_approval" => false, "job_class" => "AiAgentFleetProvisionJob" },
+                                     { "order" => 3, "key" => "delegate",        "requires_approval" => false, "job_class" => "AiAgentFleetDelegateJob" },
+                                     { "order" => 4, "key" => "aggregate",       "requires_approval" => false, "job_class" => "AiAgentFleetAggregateJob" },
+                                     { "order" => 5, "key" => "reap",            "requires_approval" => false, "job_class" => "AiAgentFleetReapJob" }
+                                   ],
+                                   approval_gates: %w[review_fleet],
+                                   rejection_mappings: { "review_fleet" => "plan_fleet" })
+    end
+
+    before { allow(WorkerJobService).to receive(:enqueue_job) } # don't dispatch the real plan_fleet job
+
+    it "system_launch_agent_fleet creates + starts a mission stopped at plan_fleet" do
+      spec = { "size" => 1, "source" => "provision", "node_id" => node.id,
+               "provider_region_id" => "r", "provider_instance_type_id" => "t",
+               "subtasks" => [], "delegation" => "hybrid" }
+      r = fleet_tool.execute(params: { action: "system_launch_agent_fleet", fleet_spec: spec })
+      expect(r[:success]).to be true
+      expect(r[:data][:current_phase]).to eq("plan_fleet")
+      expect(r[:data][:status]).to eq("active")
+      mission = Ai::Mission.find(r[:data][:mission_id])
+      expect(mission.mission_type).to eq("agent_fleet")
+      expect(mission.configuration.dig("fleet_spec", "size")).to eq(1)
+    end
+
+    it "system_launch_agent_fleet requires a user context" do
+      r = call("system_launch_agent_fleet", fleet_spec: { "size" => 1 })
+      expect(r[:success]).to be false
+    end
+
+    it "system_agent_fleet_status summarizes the fleet" do
+      mission = create(:ai_mission, account: account, mission_type: "agent_fleet",
+                                    mission_template: fleet_template,
+                                    configuration: { "fleet" => { "members" => [ { "x" => 1 }, { "x" => 2 } ],
+                                                                   "report" => { "completed" => 2 } } })
+      r = fleet_tool.execute(params: { action: "system_agent_fleet_status", mission_id: mission.id })
+      expect(r[:success]).to be true
+      expect(r[:data][:fleet][:member_count]).to eq(2)
+      expect(r[:data][:fleet][:report]["completed"]).to eq(2)
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)
