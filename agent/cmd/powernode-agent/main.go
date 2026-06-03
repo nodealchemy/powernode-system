@@ -57,6 +57,7 @@ See https://docs.powernode.org/agent for full documentation.`,
 	root.AddCommand(
 		bootCmd(),
 		serviceCmd(),
+		a2aCallCmd(),
 		prepareRootCmd(),
 		enrollCmd(),
 		federationAcceptCmd(),

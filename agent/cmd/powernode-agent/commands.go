@@ -7,10 +7,13 @@
 package main
 
 import (
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +25,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	agentcli "github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
 	"github.com/nodealchemy/powernode-system/agent/internal/boot"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
@@ -108,16 +112,30 @@ func serviceCmd() *cobra.Command {
 		platformURL       string
 		heartbeatInterval time.Duration
 		pkiDir            string
+		a2aListen         string
+		a2aInference      string
+		isolationRuntimes []string
 	)
 	c := &cobra.Command{
 		Use:   "service",
 		Short: "Long-lived agent loop (heartbeat, task lease, cert rotation)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Env fallbacks: provisioned nodes configure the agent through
+			// module environment, not hand-typed flags. A set flag always
+			// wins over the env var (cobra has already parsed it here).
+			a2aListen = envOr(a2aListen, "POWERNODE_A2A_LISTEN")
+			a2aInference = envOr(a2aInference, "POWERNODE_A2A_INFERENCE")
+			if len(isolationRuntimes) == 0 {
+				isolationRuntimes = splitCSV(os.Getenv("POWERNODE_ISOLATION_RUNTIMES"))
+			}
 			svc := runtime.New(runtime.Config{
-				PlatformURL:       platformURL,
-				AgentVersion:      Version,
-				HeartbeatInterval: heartbeatInterval,
-				PKIDir:            pkiDir,
+				PlatformURL:          platformURL,
+				AgentVersion:         Version,
+				HeartbeatInterval:    heartbeatInterval,
+				PKIDir:               pkiDir,
+				A2AListenAddr:        a2aListen,
+				A2AInferenceEndpoint: a2aInference,
+				IsolationRuntimes:    isolationRuntimes,
 				OnError: func(stage string, err error) {
 					fmt.Fprintf(os.Stderr, "[powernode-agent service] %s: %v\n", stage, err)
 				},
@@ -128,10 +146,140 @@ func serviceCmd() *cobra.Command {
 	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (overrides identity-discovered URL)")
 	c.Flags().DurationVar(&heartbeatInterval, "heartbeat-interval", 30*time.Second, "interval between heartbeats")
 	c.Flags().StringVar(&pkiDir, "pki-dir", enroll.PKIDir, "directory containing node.crt/node.key/ca-bundle.crt")
+	// AI/MCP workload substrate (L2.5/L3 + L0). Default-OFF: the A2A server
+	// starts only when a listen address is configured (flag or
+	// POWERNODE_A2A_LISTEN). The inference endpoint enables the inference.*
+	// peer skills; isolation runtimes (e.g. "gvisor") are provisioned on the
+	// docker daemon before it starts.
+	c.Flags().StringVar(&a2aListen, "a2a-listen", "", "agent-to-agent MCP server listen address, e.g. :7777 (env POWERNODE_A2A_LISTEN; empty = disabled)")
+	c.Flags().StringVar(&a2aInference, "a2a-inference", "", "local inference runtime endpoint for A2A inference.* skills, e.g. http://127.0.0.1:11434 (env POWERNODE_A2A_INFERENCE)")
+	c.Flags().StringSliceVar(&isolationRuntimes, "isolation-runtime", nil, "isolation runtimes to provision on the docker daemon, e.g. gvisor (repeatable; env POWERNODE_ISOLATION_RUNTIMES=comma,sep)")
 	// --platform-url is intentionally NOT required: the agent self-bootstraps
 	// from identity (kernel cmdline / virtio-fw-cfg / cloud metadata). Pass
 	// the flag only when the operator wants to override the discovered URL.
 	return c
+}
+
+// envOr returns flagVal when it's non-empty, otherwise the value of the named
+// environment variable. Lets a set flag win over an env fallback.
+func envOr(flagVal, envKey string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv(envKey)
+}
+
+// splitCSV parses a comma-separated env value into a trimmed, non-empty slice.
+// Returns nil for an empty string (so callers can treat "unset" uniformly).
+func splitCSV(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// --- a2a-call ----------------------------------------------------------------
+// a2aCallCmd is the operator/diagnostic entrypoint for agent-to-agent (A2A)
+// calls. It loads THIS node's enrolled mTLS identity from --pki-dir, presents a
+// platform-minted capability token, and invokes a skill on a peer instance's
+// A2A server. This is the first consumer of internal/a2a's client — the same
+// a2a.Client path a mission-driven peer call uses, exposed for reachability
+// testing (the A2A analogue of a ping). The peer's server cert is verified
+// against the platform's *issuing* chain (ca-chain.crt) — the same trust root
+// the A2A server presents — so mutual verification closes both ways.
+func a2aCallCmd() *cobra.Command {
+	var (
+		peerURL   string
+		tokenFile string
+		skill     string
+		argsJSON  string
+		pkiDir    string
+		timeout   time.Duration
+	)
+	c := &cobra.Command{
+		Use:   "a2a-call",
+		Short: "Invoke a skill on a peer instance's A2A server (mTLS + capability token)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if peerURL == "" || skill == "" || tokenFile == "" {
+				return errors.New("a2a-call requires --peer-url, --skill, and --token-file")
+			}
+			paths := enroll.PathsUnder(pkiDir)
+			cert, err := tls.LoadX509KeyPair(paths.Cert, paths.Key)
+			if err != nil {
+				return fmt.Errorf("load node identity from %s (run `enroll` first?): %w", pkiDir, err)
+			}
+			pool, err := certPoolFromFile(paths.CAChain)
+			if err != nil {
+				return err
+			}
+			tok, err := loadCapabilityToken(tokenFile)
+			if err != nil {
+				return err
+			}
+			var argv any
+			if strings.TrimSpace(argsJSON) != "" {
+				if err := json.Unmarshal([]byte(argsJSON), &argv); err != nil {
+					return fmt.Errorf("parse --args JSON: %w", err)
+				}
+			}
+			httpClient := &http.Client{
+				Timeout:   timeout,
+				Transport: &http.Transport{TLSClientConfig: a2a.ClientTLSConfig(cert, pool)},
+			}
+			res, err := a2a.NewClient(httpClient).CallSkill(peerURL, tok, skill, argv)
+			if err != nil {
+				return fmt.Errorf("a2a call %q -> %s: %w", skill, peerURL, err)
+			}
+			fmt.Println(string(res))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&peerURL, "peer-url", "", "peer A2A base URL, e.g. https://[overlay]:7777 (required)")
+	c.Flags().StringVar(&tokenFile, "token-file", "", "JSON file with the platform-minted capability token {envelope, signature} (required)")
+	c.Flags().StringVar(&skill, "skill", "", "skill/tool name to invoke, e.g. inference.ping (required)")
+	c.Flags().StringVar(&argsJSON, "args", "", "skill arguments as a JSON object")
+	c.Flags().StringVar(&pkiDir, "pki-dir", enroll.PKIDir, "directory with this node's node.crt/node.key/ca-chain.crt")
+	c.Flags().DurationVar(&timeout, "timeout", 15*time.Second, "call timeout")
+	return c
+}
+
+// certPoolFromFile loads a PEM CA bundle into an x509 pool.
+func certPoolFromFile(path string) (*x509.CertPool, error) {
+	caPEM, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read ca chain %s: %w", path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("ca chain %s has no parseable certs", path)
+	}
+	return pool, nil
+}
+
+// loadCapabilityToken reads a platform-minted capability token file. It accepts
+// either the bare wire shape {envelope, signature} or the richer mint payload
+// (same two fields plus advisory handle/sub/aud/skill metadata) — only
+// envelope+signature travel over the wire; the callee verifies offline against
+// the advertised signing key.
+func loadCapabilityToken(path string) (*a2a.Token, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read token file %s: %w", path, err)
+	}
+	var t a2a.Token
+	if err := json.Unmarshal(b, &t); err != nil {
+		return nil, fmt.Errorf("parse token file %s: %w", path, err)
+	}
+	if t.Envelope == "" || t.Signature == "" {
+		return nil, fmt.Errorf("token file %s missing envelope/signature", path)
+	}
+	return &t, nil
 }
 
 // --- prepare-root ------------------------------------------------------------
