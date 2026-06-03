@@ -29,6 +29,9 @@ module Ai
         "system_list_instance_types_by_gpu" => "system.nodes.read",
         "system_deploy_inference_server" => "system.instances.create",
         "system_grant_instance_mcp_tools" => "system.node_instances.control",
+        "system_grant_instance_peer_skills" => "system.node_instances.control",
+        "system_discover_peers" => "system.node_instances.read",
+        "system_authorize_peer_call" => "system.node_instances.read",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -281,6 +284,28 @@ module Ai
               instance_id: { type: "string", required: true },
               tool_patterns: { type: "array", required: true },
               mode: { type: "string", required: false }
+            }
+          },
+          "system_grant_instance_peer_skills" => {
+            description: "A2A: grant an instance-agent the peer skill-name glob patterns it may invoke on OTHER instances via agent-to-agent MCP (default-deny). Patterns match a peer's offered skill name, e.g. 'embed-*' or 'summarize'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              skill_patterns: { type: "array", required: true },
+              mode: { type: "string", required: false }
+            }
+          },
+          "system_discover_peers" => {
+            description: "A2A: list the online, operator-enabled agent peers in the account and the skills they offer (capability discovery). Pass instance_id to discover from a specific caller's perspective (excludes itself). Discovery does not imply call permission — the call is still gated by system_authorize_peer_call.",
+            parameters: {
+              instance_id: { type: "string", required: false }
+            }
+          },
+          "system_authorize_peer_call" => {
+            description: "A2A: decide whether a caller instance may invoke a skill on a target instance via agent-to-agent MCP (three-gate, default-deny: caller granted + target online/enabled + target offers skill + same account). Returns { authorized, reason }. Consulted by the on-node A2A transport before relaying a call.",
+            parameters: {
+              caller_instance_id: { type: "string", required: true },
+              target_instance_id: { type: "string", required: true },
+              skill: { type: "string", required: true }
             }
           },
           "system_provision_instance" => {
@@ -819,6 +844,9 @@ module Ai
         when "system_list_instance_types_by_gpu" then list_instance_types_by_gpu(params)
         when "system_deploy_inference_server"  then deploy_inference_server(params)
         when "system_grant_instance_mcp_tools" then grant_instance_mcp_tools(params)
+        when "system_grant_instance_peer_skills" then grant_instance_peer_skills(params)
+        when "system_discover_peers"           then discover_peers(params)
+        when "system_authorize_peer_call"      then authorize_peer_call(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1111,6 +1139,50 @@ module Ai
 
         granted = peer.grant_mcp_tools!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
         success_result(instance_id: instance.id, granted_mcp_tools: granted)
+      end
+
+      # A2A: grant an instance-agent the peer skill-name glob patterns it may
+      # invoke on OTHER instances (default-deny; AI/MCP workload substrate L2.5).
+      def grant_instance_peer_skills(params)
+        instance = account_instances.find_by(id: params[:instance_id])
+        return error_result("instance not found") unless instance
+
+        peer = ::System::NodeInstancePeer.find_by(node_instance_id: instance.id)
+        return error_result("instance has not announced as an agent peer yet") unless peer
+
+        patterns = Array(params[:skill_patterns]).map(&:to_s).reject(&:blank?)
+        return error_result("skill_patterns is required") if patterns.empty?
+
+        granted = peer.grant_peer_skills!(patterns, mode: (params[:mode].to_s == "add" ? :add : :replace))
+        success_result(instance_id: instance.id, granted_peer_skills: granted)
+      end
+
+      # A2A: discover online, operator-enabled peers + the skills they offer.
+      def discover_peers(params)
+        caller_peer = nil
+        if params[:instance_id].present?
+          inst = account_instances.find_by(id: params[:instance_id])
+          caller_peer = ::System::NodeInstancePeer.find_by(node_instance_id: inst.id) if inst
+        end
+
+        peers = ::System::PeerCapabilityService.discoverable_for(account: @account, caller_peer: caller_peer)
+        success_result(peers: peers, count: peers.size)
+      end
+
+      # A2A: authorize a peer-to-peer skill call (three-gate, default-deny).
+      def authorize_peer_call(params)
+        caller_inst = account_instances.find_by(id: params[:caller_instance_id])
+        target_inst = account_instances.find_by(id: params[:target_instance_id])
+        return error_result("caller or target instance not found") unless caller_inst && target_inst
+
+        caller_peer = ::System::NodeInstancePeer.find_by(node_instance_id: caller_inst.id)
+        target_peer = ::System::NodeInstancePeer.find_by(node_instance_id: target_inst.id)
+        return error_result("caller or target has not announced as a peer") unless caller_peer && target_peer
+
+        decision = ::System::PeerCapabilityService.authorize(
+          caller_peer: caller_peer, target_peer: target_peer, skill: params[:skill].to_s
+        )
+        success_result(authorized: decision.authorized, reason: decision.reason)
       end
 
       def provision_instance(params)

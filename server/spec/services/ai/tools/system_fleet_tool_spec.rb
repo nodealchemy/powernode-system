@@ -109,6 +109,55 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "A2A peer skills + discovery + authorization (L2.5)" do
+    def announce(handle:, declared_skills: [], enabled: true, status: "active")
+      inst = create(:system_node_instance, account: account, status: "running")
+      peer = System::NodeInstancePeer.create!(
+        node_instance: inst, account: inst.node.account,
+        handle: "#{handle}-#{SecureRandom.hex(2)}", status: status, enabled: enabled,
+        trust_score: 0.5, daily_decision_budget: 10, declared_skills: declared_skills
+      )
+      [ inst, peer ]
+    end
+
+    it "system_grant_instance_peer_skills grants peer-skill patterns to an announced instance" do
+      inst, = announce(handle: "caller")
+      r = call("system_grant_instance_peer_skills", instance_id: inst.id, skill_patterns: %w[embed-* summarize])
+      expect(r[:success]).to be true
+      expect(r[:data][:granted_peer_skills]).to contain_exactly("embed-*", "summarize")
+      expect(System::NodeInstancePeer.find_by(node_instance_id: inst.id).granted_peer_skills).to include("summarize")
+    end
+
+    it "system_discover_peers lists online enabled peers + their offered skills (excluding the caller)" do
+      caller_inst, = announce(handle: "caller")
+      _target_inst, = announce(handle: "target", declared_skills: [ { "name" => "embed" } ])
+      announce(handle: "offline", status: "disconnected")
+
+      r = call("system_discover_peers", instance_id: caller_inst.id)
+      expect(r[:success]).to be true
+      handles = r[:data][:peers].map { |p| p[:handle] }
+      expect(handles.any? { |h| h.start_with?("target-") }).to be true
+      expect(handles.any? { |h| h.start_with?("caller-") }).to be false
+      target_entry = r[:data][:peers].find { |p| p[:handle].start_with?("target-") }
+      expect(target_entry[:offered_skills]).to eq(%w[embed])
+    end
+
+    it "system_authorize_peer_call authorizes a granted call and denies an ungranted one" do
+      caller_inst, caller_peer = announce(handle: "caller")
+      target_inst, = announce(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
+      caller_peer.grant_peer_skills!(%w[embed-*])
+
+      ok = call("system_authorize_peer_call", caller_instance_id: caller_inst.id,
+                                              target_instance_id: target_inst.id, skill: "embed-text")
+      expect(ok[:success]).to be true
+      expect(ok[:data][:authorized]).to be true
+
+      denied = call("system_authorize_peer_call", caller_instance_id: caller_inst.id,
+                                                  target_instance_id: target_inst.id, skill: "translate")
+      expect(denied[:data][:authorized]).to be false
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)

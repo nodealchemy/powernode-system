@@ -22,6 +22,10 @@ module System
     # authorized to invoke on the platform MCP (default-deny: empty = none).
     attribute :granted_mcp_tools, :jsonb, default: -> { [] }
 
+    # AI/MCP workload substrate L2.5 (A2A) — glob patterns this instance-agent
+    # may invoke on OTHER peers via agent-to-agent MCP (default-deny).
+    attribute :granted_peer_skills, :jsonb, default: -> { [] }
+
     validates :handle, presence: true, length: { maximum: 64 },
                        uniqueness: { scope: :account_id }
     validates :status, inclusion: { in: STATUSES }
@@ -77,6 +81,28 @@ module System
         mode.to_sym == :add ? (Array(granted_mcp_tools) | incoming) : incoming
       save!
       granted_mcp_tools
+    end
+
+    # A2A — grant (or extend) the skill-name glob patterns this instance-agent may
+    # invoke on OTHER peers via agent-to-agent MCP. mode: :replace (default)/:add.
+    def grant_peer_skills!(patterns, mode: :replace)
+      incoming = Array(patterns).map(&:to_s).reject(&:blank?).uniq
+      self.granted_peer_skills =
+        mode.to_sym == :add ? (Array(granted_peer_skills) | incoming) : incoming
+      save!
+      granted_peer_skills
+    end
+
+    # A2A — may this instance-agent invoke `skill` on a peer? Default-deny; matched
+    # against its granted_peer_skills glob patterns.
+    def may_invoke_peer_skill?(skill)
+      name = skill.to_s
+      Array(granted_peer_skills).any? { |p| ::File.fnmatch(p.to_s, name, ::File::FNM_EXTGLOB) }
+    end
+
+    # A2A — the skill names this peer OFFERS (from its announced declared_skills).
+    def offered_skill_names
+      Array(declared_skills).map { |s| s.is_a?(Hash) ? (s["name"] || s[:name]) : s }.compact.map(&:to_s)
     end
 
     private
