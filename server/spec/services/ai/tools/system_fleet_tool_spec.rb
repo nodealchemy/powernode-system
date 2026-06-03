@@ -209,6 +209,42 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "A2A capability token (L2.5)" do
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.control]) }
+    let(:cap_tool) { described_class.new(account: account, user: user) }
+
+    def cap_peer(handle:, declared_skills: [], granted: [])
+      inst = create(:system_node_instance, account: account, status: "running")
+      System::NodeInstancePeer.create!(
+        node_instance: inst, account: account, handle: "#{handle}-#{SecureRandom.hex(2)}",
+        status: "active", enabled: true, trust_score: 0.5, daily_decision_budget: 10,
+        declared_skills: declared_skills
+      ).tap { |p| p.grant_peer_skills!(granted) if granted.any? }
+      inst
+    end
+
+    it "system_mint_peer_capability_token mints a signed token when authorized" do
+      caller_inst = cap_peer(handle: "caller", granted: %w[embed-*])
+      target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
+      r = cap_tool.execute(params: { action: "system_mint_peer_capability_token",
+                                     caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
+      expect(r[:success]).to be true
+      expect(r[:data][:token][:sub]).to eq(caller_inst.id)
+      expect(r[:data][:token][:aud]).to eq(target_inst.id)
+      expect(r[:data][:token][:signature]).to be_present
+      expect(r[:data][:token][:public_key]).to be_present
+    end
+
+    it "denies minting when the caller is not granted the skill" do
+      caller_inst = cap_peer(handle: "caller") # no grant
+      target_inst = cap_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
+      r = cap_tool.execute(params: { action: "system_mint_peer_capability_token",
+                                     caller_instance_id: caller_inst.id, target_instance_id: target_inst.id, skill: "embed-text" })
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/not authorized/)
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)

@@ -34,6 +34,7 @@ module Ai
         "system_authorize_peer_call" => "system.node_instances.read",
         "system_launch_agent_fleet" => "system.node_instances.control",
         "system_agent_fleet_status" => "system.node_instances.read",
+        "system_mint_peer_capability_token" => "system.node_instances.control",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -322,6 +323,15 @@ module Ai
             description: "L3: inspect an agent-fleet mission — returns status, current_phase, and a summary of the fleet (plan, member/assignment counts, aggregated report, reaped count).",
             parameters: {
               mission_id: { type: "string", required: true }
+            }
+          },
+          "system_mint_peer_capability_token" => {
+            description: "A2A: mint an Ed25519-signed capability token proving caller_instance may invoke `skill` on target_instance via agent-to-agent MCP. GATED on the 4-gate A2A policy (PeerCapabilityService.authorize) — only issued if the call is authorized. The on-node A2A MCP server verifies the token's signature OFFLINE against the advertised public key (no per-call platform round-trip). Short-lived (default 5 min). Returns { envelope, signature, handle, public_key, expires_at, sub, aud, skill, jti }.",
+            parameters: {
+              caller_instance_id: { type: "string", required: true },
+              target_instance_id: { type: "string", required: true },
+              skill: { type: "string", required: true },
+              ttl_seconds: { type: "integer", required: false }
             }
           },
           "system_provision_instance" => {
@@ -865,6 +875,7 @@ module Ai
         when "system_authorize_peer_call"      then authorize_peer_call(params)
         when "system_launch_agent_fleet"       then launch_agent_fleet(params)
         when "system_agent_fleet_status"       then agent_fleet_status(params)
+        when "system_mint_peer_capability_token" then mint_peer_capability_token(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1259,6 +1270,33 @@ module Ai
             reaped_count: Array(fleet["reaped"]).size
           }
         )
+      end
+
+      # A2A: mint an Ed25519 capability token (caller may invoke skill on target).
+      # Gated on PeerCapabilityService.authorize via the signer.
+      def mint_peer_capability_token(params)
+        caller_inst = account_instances.find_by(id: params[:caller_instance_id])
+        target_inst = account_instances.find_by(id: params[:target_instance_id])
+        return error_result("caller or target instance not found") unless caller_inst && target_inst
+
+        ttl = params[:ttl_seconds].present? ? params[:ttl_seconds].to_i : ::System::PeerCapabilityTokenSigner::DEFAULT_TTL_SECONDS
+        token = ::System::PeerCapabilityTokenSigner.mint!(
+          caller_instance: caller_inst, target_instance: target_inst, skill: params[:skill].to_s, ttl_seconds: ttl
+        )
+        success_result(
+          token: {
+            envelope: token.envelope_json,
+            signature: token.signature_b64,
+            handle: token.handle,
+            public_key: token.public_key_b64,
+            expires_at: Time.at(token.claims["exp"]).utc.iso8601,
+            sub: token.claims["sub"], aud: token.claims["aud"], skill: token.claims["skill"], jti: token.claims["jti"]
+          }
+        )
+      rescue ::System::PeerCapabilityTokenSigner::NotAuthorizedError => e
+        error_result("not authorized: #{e.message}")
+      rescue ::System::PeerCapabilityTokenSigner::SigningError => e
+        error_result("token minting failed: #{e.message}")
       end
 
       def provision_instance(params)

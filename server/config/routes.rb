@@ -704,6 +704,11 @@ Rails.application.routes.draw do
 
         # === Node API (instance-token-authenticated running instances) ===
         namespace :node_api do
+          # AI/MCP workload substrate L2.5 (A2A) — the agent pulls the account's
+          # capability-token signing public key(s) to verify inbound peer tokens
+          # offline. Mirrors SDWAN constellation-key advertisement.
+          get "a2a/capability_keys", to: "a2a#capability_keys"
+
           # Physical-device claim polling — anonymous, used BEFORE the
           # device has a bootstrap token. Devices flashed from a generic
           # disk image poll here while waiting for an operator to bind

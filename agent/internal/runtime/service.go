@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
@@ -47,6 +48,7 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	PKIDir            string  // defaults to enroll.ResolveDefaultPKIDir()
 	StatePath         string  // defaults to mount.StatePath
+	A2AListenAddr     string  // agent-to-agent MCP server listen addr (empty = disabled)
 	OnError           func(string, error)
 }
 
@@ -113,6 +115,29 @@ func (s *Service) Run(ctx context.Context) error {
 	// without an agent restart.
 	if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
 		s.cfg.OnError("authorized_keys_initial", err)
+	}
+
+	// AI/MCP workload substrate L2.5/L3 — agent-to-agent (A2A) MCP server.
+	// Default-OFF: starts only when an operator configures a listen address.
+	// Serves peer skill calls over mTLS, gated by platform-minted capability
+	// tokens (verified offline against the advertised signing key).
+	if s.cfg.A2AListenAddr != "" {
+		reg := a2a.NewRegistry()
+		reg.RegisterPing()
+		go func() {
+			if err := a2a.Run(ctx, a2a.RunnerConfig{
+				SelfInstanceID: readCertCN(paths.Cert),
+				ListenAddr:     s.cfg.A2AListenAddr,
+				CertFile:       paths.Cert,
+				KeyFile:        paths.Key,
+				CABundleFile:   paths.CAChain,
+				Registry:       reg,
+				Fetcher:        client,
+				OnError:        func(e error) { s.cfg.OnError("a2a", e) },
+			}); err != nil {
+				s.cfg.OnError("a2a", err)
+			}
+		}()
 	}
 
 	bootID := generateBootID()
