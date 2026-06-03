@@ -112,6 +112,15 @@ module PowernodeSystem
         next unless defined?(::Security::MtlsTrust) && defined?(::System::InternalCaService)
 
         ::Security::MtlsTrust.own_ca_provider = -> { ::System::InternalCaService.ca_chain_pem }
+
+        # AI/MCP workload substrate L2 — let core MCP auth resolve an instance
+        # principal from a verified client-cert CN (= NodeInstance.id) without
+        # depending on the extension (dependency points extension → core).
+        if defined?(::Mcp::Principal)
+          ::Mcp::Principal.instance_resolver = lambda do |cn|
+            ::System::NodeInstance.where(id: cn).where.not(status: "terminated").first
+          end
+        end
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not wire MtlsTrust CA provider: #{e.message}"
       end
