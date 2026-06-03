@@ -3,6 +3,7 @@ package dockerd
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +31,13 @@ type Manager struct {
 	Paths        DaemonPaths   // on-disk layout — defaults to DefaultPaths
 	StatePath    string        // JSON state cache path; defaults to DefaultStatePath
 	OnError      func(stage string, err error)
+
+	// Isolation runtimes (substrate L0) to provision before the daemon
+	// starts. For each entry, Runtimes.Ensure installs the runtime binary
+	// (if missing) and merges its registration into daemon.json so dockerd
+	// starts with --runtime=<name> available. Empty / nil Runtimes = none.
+	RequestedRuntimes []string
+	Runtimes          RuntimeEnsurer
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
@@ -203,6 +211,10 @@ func (m *Manager) transitionRequestCert(ctx context.Context) {
 
 func (m *Manager) transitionStart(ctx context.Context) {
 	overrides, contentHash := m.fetchOverridesOrEmpty(ctx)
+	if err := m.ensureRequestedRuntimes(ctx, overrides); err != nil {
+		m.recordError("ensure_runtimes", err)
+		return
+	}
 	cfg := DaemonConfig{
 		ListenAddress: "tcp://[" + m.OverlayAddress + "]:2376",
 		TLSCAPath:     m.Paths.CAFile,
@@ -236,6 +248,10 @@ func (m *Manager) transitionStart(ctx context.Context) {
 // instead of stop+start to skip the ~3s restart window.
 func (m *Manager) transitionApplyConfigUpdate(ctx context.Context,
 	overrides map[string]any, contentHash string) {
+	if err := m.ensureRequestedRuntimes(ctx, overrides); err != nil {
+		m.recordError("ensure_runtimes", err)
+		return
+	}
 	cfg := DaemonConfig{
 		ListenAddress: "tcp://[" + m.OverlayAddress + "]:2376",
 		TLSCAPath:     m.Paths.CAFile,
@@ -342,6 +358,25 @@ func (m *Manager) transitionCleanupCert(ctx context.Context) {
 func (m *Manager) recordError(stage string, err error) {
 	m.lastError = err
 	m.OnError(stage, err)
+}
+
+// ensureRequestedRuntimes installs + registers each RequestedRuntimes entry
+// into daemonConfig (mutated in place) before the daemon starts. A failure
+// aborts the start transition so dockerd never launches with a declared-but-
+// missing runtime binary.
+func (m *Manager) ensureRequestedRuntimes(ctx context.Context, daemonConfig map[string]any) error {
+	if m.Runtimes == nil || len(m.RequestedRuntimes) == 0 {
+		return nil
+	}
+	for _, rt := range m.RequestedRuntimes {
+		if strings.TrimSpace(rt) == "" {
+			continue
+		}
+		if err := m.Runtimes.Ensure(ctx, rt, daemonConfig); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LastReconcileAt is exposed for the heartbeat status reporter — lets

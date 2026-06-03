@@ -50,6 +50,7 @@ type Config struct {
 	StatePath         string  // defaults to mount.StatePath
 	A2AListenAddr     string  // agent-to-agent MCP server listen addr (empty = disabled)
 	A2AInferenceEndpoint string // local inference runtime (ollama) for the A2A inference.* skills (empty = no inference skills)
+	IsolationRuntimes []string // isolation runtimes to provision on the docker daemon (e.g. ["gvisor"]) — substrate L0
 	OnError           func(string, error)
 }
 
@@ -175,6 +176,14 @@ func (s *Service) Run(ctx context.Context) error {
 		"", // populated by SetOverlayAddress() each tick
 		s.cfg.OnError,
 	)
+
+	// Substrate L0 — provision the requested isolation runtimes (e.g. gvisor)
+	// before the daemon starts: install runsc + register it in daemon.json so
+	// dockerd comes up with --runtime=runsc available.
+	if len(s.cfg.IsolationRuntimes) > 0 {
+		dockerMgr.RequestedRuntimes = s.cfg.IsolationRuntimes
+		dockerMgr.Runtimes = dockerd.GvisorRuntimeEnsurer{Runner: mount.ExecRunner{}}
+	}
 
 	// Phase 2 K3s reconcilers — server + agent run side-by-side. At
 	// most one of them will see its module assigned per-instance
