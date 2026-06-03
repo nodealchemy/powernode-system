@@ -54,6 +54,41 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "Inference deployment (L1)" do
+    let(:gpu_type) do
+      create(:system_provider_instance_type, account: account, gpu_count: 1, gpu_type: "Quadro RTX 4000", gpu_memory_mb: 8192)
+    end
+
+    before do
+      create(:system_node_module, account: account, name: "gpu-nvidia-runtime", variety: "subscription",
+                                  config: { "gpu_runtime" => { "container_runtime" => "nvidia" } })
+      create(:system_node_module, account: account, name: "inference-ollama", variety: "subscription",
+                                  config: { "inference" => { "api_port" => 11_434, "default_model" => "llama3.1:8b" } })
+    end
+
+    it "system_deploy_inference_server assigns modules + registers a provider on a GPU node" do
+      inst = create(:system_node_instance, account: account, status: "running", provider_instance_type: gpu_type)
+      r = call("system_deploy_inference_server", instance_id: inst.id, endpoint_override: "http://10.0.0.9:11434")
+      expect(r[:success]).to be true
+      dep = r[:data][:deployment]
+      expect(dep[:module_assignment_ids].size).to eq(2)
+      expect(dep[:endpoint]).to eq("http://10.0.0.9:11434")
+      expect(Ai::Provider.find(dep[:provider_id]).provider_type).to eq("ollama")
+    end
+
+    it "auto-selects a GPU node when no instance_id is given" do
+      inst = create(:system_node_instance, account: account, status: "running", provider_instance_type: gpu_type)
+      r = call("system_deploy_inference_server", min_gpu_memory_mb: 4000, endpoint_override: "http://10.0.0.9:11434")
+      expect(r[:success]).to be true
+      expect(r[:data][:deployment][:instance_id]).to eq(inst.id)
+    end
+
+    it "errors when no GPU-capable instance is found" do
+      r = call("system_deploy_inference_server", min_gpu_memory_mb: 4000, endpoint_override: "http://10.0.0.9:11434")
+      expect(r[:success]).to be false
+    end
+  end
+
   describe "Nodes — create / list / get" do
     it "system_create_node creates a node bound to the template" do
       r = call("system_create_node", name: "fleet-node-1", template_id: template.id)

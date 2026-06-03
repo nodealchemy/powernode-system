@@ -27,6 +27,7 @@ module Ai
         "system_get_instance"           => "system.node_instances.read",
         "system_find_node_with_gpu"     => "system.node_instances.read",
         "system_list_instance_types_by_gpu" => "system.nodes.read",
+        "system_deploy_inference_server" => "system.instances.create",
         "system_list_templates"         => "system.nodes.read",
         "system_get_template"           => "system.nodes.read",
         "system_list_modules"           => "system.modules.read",
@@ -259,6 +260,18 @@ module Ai
             parameters: {
               gpu_type: { type: "string", required: false },
               min_gpu_count: { type: "integer", required: false }
+            }
+          },
+          "system_deploy_inference_server" => {
+            description: "Deploy an inference runtime (ollama) onto a GPU node and make it consumable: assigns the gpu-nvidia-runtime + inference-ollama modules, registers an ollama Ai::Provider at the endpoint, and optionally publishes an SDWAN service offering for cross-instance consumption. Targets a node by instance_id, or auto-selects a GPU node via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
+            parameters: {
+              instance_id: { type: "string", required: false },
+              gpu_type: { type: "string", required: false },
+              min_gpu_memory_mb: { type: "integer", required: false },
+              model: { type: "string", required: false },
+              endpoint_override: { type: "string", required: false },
+              sdwan_network_id: { type: "string", required: false },
+              vip_cidr: { type: "string", required: false }
             }
           },
           "system_provision_instance" => {
@@ -795,6 +808,7 @@ module Ai
         when "system_get_instance"             then get_instance(params)
         when "system_find_node_with_gpu"       then find_node_with_gpu(params)
         when "system_list_instance_types_by_gpu" then list_instance_types_by_gpu(params)
+        when "system_deploy_inference_server"  then deploy_inference_server(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
         when "system_destroy_instance"         then destroy_instance(params)
@@ -1039,6 +1053,38 @@ module Ai
           instance_types: scope.order(:gpu_type, :gpu_count).map { |t| serialize_instance_type_gpu(t) },
           count: scope.size
         )
+      end
+
+      # Deploy an inference runtime (ollama) onto a GPU node + make it consumable
+      # (AI/MCP workload substrate L1).
+      def deploy_inference_server(params)
+        instance = resolve_inference_target(params)
+        return error_result("no GPU-capable instance found (pass instance_id, or gpu_type/min_gpu_memory_mb)") unless instance
+
+        result = ::System::InferenceDeploymentService.deploy!(
+          account: @account, instance: instance,
+          model: params[:model].presence,
+          endpoint_override: params[:endpoint_override].presence,
+          sdwan_network_id: params[:sdwan_network_id].presence,
+          vip_cidr: params[:vip_cidr].presence
+        )
+        success_result(deployment: result.to_h)
+      rescue ::System::InferenceDeploymentService::DeploymentError => e
+        error_result(e.message)
+      end
+
+      # Pick the target GPU instance: explicit instance_id, else the first live
+      # GPU-capable instance matching gpu_type / min_gpu_memory_mb.
+      def resolve_inference_target(params)
+        return account_instances.find_by(id: params[:instance_id]) if params[:instance_id].present?
+
+        type    = params[:gpu_type].presence
+        min_mem = params[:min_gpu_memory_mb].to_i
+        account_instances.where.not(status: "terminated").includes(:provider_instance_type).find do |i|
+          i.gpu? &&
+            (type.nil? || i.gpu_type.to_s.casecmp?(type)) &&
+            (min_mem.zero? || i.gpu_memory_mb.to_i >= min_mem)
+        end
       end
 
       def provision_instance(params)
