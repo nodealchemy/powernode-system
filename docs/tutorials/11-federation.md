@@ -76,14 +76,11 @@ pre-existing platforms exchange tokens manually.
   multiple hops (A → B → C), migrations applied at A propagate down the
   chain with explicit operator gates at each hop.
 
-> **MCP coverage note:** the `platform.system_sdwan_set_data_residency`
-> and `platform.system_sdwan_get_audit_log` MCP wrappers shown in this
-> tutorial are **aspirational** — they're not yet in
-> [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md). The underlying P9.x
-> backend logic exists; the MCP surface is the wrapping work. For
-> production today, use the REST endpoints at
-> `/api/v1/system/sdwan/federation_peers/:id/audit_log` and
-> `/api/v1/system/sdwan/federation_peers/:id/data_residency`.
+> **MCP coverage note:** the `platform.system_sdwan_set_data_residency` and
+> `platform.system_sdwan_get_audit_log` MCP wrappers shown in this tutorial are
+> registered actions backing the P9.x logic. The equivalent REST endpoints
+> (`/api/v1/system/sdwan/federation_peers/:id/data_residency` and
+> `/api/v1/system/sdwan/federation_peers/:id/audit_log`) remain available.
 
 **Emancipation** (managed_child → autonomous_peer): the child operator
 can revoke the parent's grant at any time, downgrading the relationship
@@ -210,21 +207,20 @@ caveat in Step 2).
 
 ## Step 4 — Apply data residency (P9.4)
 
+`system_sdwan_set_data_residency` takes a scalar `data_residency` value — a
+region / residency tag stamped on the peer:
+
 ```javascript
 platform.system_sdwan_set_data_residency({
   federation_peer_id: "...",
-  policy: {
-    resource_kinds: ["secrets", "credentials"],
-    constraint: "must_not_leave_region",
-    region: "eu-west-1"
-  }
+  data_residency: "eu-west-1"
 })
 ```
 
-**Expected outcome:** future federated MCP calls touching
-`secrets` / `credentials` resources scoped to that peer are blocked if
-they'd cause the data to leave EU. Policy is enforced at federation-aware
-controllers, audit-logged via the WORM log (P9.3).
+**Expected outcome:** the peer is tagged with the residency region; future
+federated MCP calls scoped to that peer are blocked if they'd cause data to
+leave the tagged region. Enforcement happens at federation-aware controllers,
+audit-logged via the WORM log (P9.3).
 
 ## Step 5 — Verify WORM audit (P9.3)
 
@@ -565,4 +561,4 @@ probe error.
   and `smoke_test_cluster_member_ha.rb` exercise the federation control
   plane at the platform layer.
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_

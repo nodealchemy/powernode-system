@@ -127,22 +127,20 @@ platform.system_sdwan_attach_peer({
 
 ## Step 3 — Assign `k3s-server` to tenant B's bootstrap
 
-```bash
-# ⚠️ Template + instance management are REST-only today; the
-# system_create_template / system_update_instance MCP wrappers are
-# aspirational. Use these REST endpoints:
+```javascript
+// Create the bootstrap template, assign the k3s-server module, and bind
+// the bootstrap instance to it — all via MCP.
+platform.system_create_template({ name: "tenant-b-k3s-server" })
 
-curl -X POST http://localhost:3000/api/v1/system/node_templates \
-  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-  -d '{"node_template": {"name": "tenant-b-k3s-server"}}'
+platform.system_assign_module_to_template({
+  template_id: "<tenant-b-k3s-server-template-id>",
+  module_name: "k3s-server"
+})
 
-# Then assign the k3s-server module via the MCP action that DOES exist:
-# platform.system_assign_module_to_template({ template_id, module_name: "k3s-server" })
-
-# Bind the bootstrap instance to that template via REST PATCH:
-curl -X PATCH http://localhost:3000/api/v1/system/instances/<k3s-server-b-1-instance> \
-  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-  -d '{"instance": {"node_template_id": "<tenant-b-k3s-server-template-id>"}}'
+platform.system_update_instance({
+  id: "<k3s-server-b-1-instance>",
+  node_template_id: "<tenant-b-k3s-server-template-id>"
+})
 ```
 
 **Expected outcome:** within ~60s the agent picks up the new template
@@ -160,8 +158,6 @@ platform.recent_events({ kind_prefix: "system.k3s", limit: 20 })
 platform.kubernetes_list_clusters()
 // → 2 clusters now: cluster-a-id, cluster-b-id
 
-// ⚠️ same REST-only pattern as the bootstrap template:
-//   POST /api/v1/system/node_templates  + system_assign_module_to_template + PATCH /api/v1/system/instances/<id>
 platform.system_create_template({
   name: "tenant-b-k3s-worker",
   module_assignments: [{
@@ -209,7 +205,7 @@ kubectl --kubeconfig ~/.kube/cluster-b.yaml get nodes
 But from tenant-a's k3s-server, tenant-b's apiserver is unreachable:
 
 ```bash
-# SSH (or system_execute_task) to k3s-server-a-1:
+# SSH to k3s-server-a-1:
 nc -zv fd00:abcd:2::100 6443
 # → connection timed out / network unreachable
 ```
@@ -260,7 +256,7 @@ platform.kubernetes_list_clusters()
 **Isolation between clusters:**
 
 ```bash
-# From k3s-server-a-1 (over SSH or system_execute_task):
+# From k3s-server-a-1 (over SSH):
 ping6 fd00:abcd:2::100   # apiserver B — should fail with "Destination unreachable"
 ping6 fd00:abcd:2::21    # k3s-server-b-1 — also unreachable
 ```
@@ -340,4 +336,4 @@ SDWAN network is supported — each cluster's pod CIDR is independent.
   `smoke_test_multi_vrf.rb`, `smoke_test_ovn_k8s_cni.rb` validate the
   SDWAN topology compiler that's doing the isolation work.
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_

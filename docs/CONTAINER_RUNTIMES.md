@@ -292,22 +292,10 @@ journalctl -u k3s.service -n 200             # k3s-server
 journalctl -u k3s-agent.service -n 200        # k3s-agent
 ```
 
-Or via the agent task channel (no SSH required):
-
-```javascript
-// ⚠️ aspirational (still unimplemented as of 2026-06-03 — one of the 15
-//    entries in .verify/ASPIRATIONAL_MCP.md). Today, use
-//    system_provision_instance / system_terminate_instance and
-//    platform.recent_events for task progress. A 2026-06 remediation
-//    proposal pairs implementing system_execute_task with the multi-cluster
-//    join validation guard noted above.
-platform.system_execute_task({
-  node_instance_id: "...",
-  command: ["journalctl", "-u", "k3s-agent.service", "-n", "200"]
-})
-```
-
-The output streams back through the worker API and lands in the operator dashboard task pane.
+There is no run-arbitrary-command-on-an-instance MCP action — SSH (above) is
+the primary path for ad-hoc log retrieval. To drive instance lifecycle through
+MCP instead, use `system_provision_instance` (and `system_terminate_instance`)
+and watch `platform.recent_events` for task progress.
 
 ### CNI selection (Phase O4 — shipped)
 
@@ -424,4 +412,4 @@ Symptoms: `docker pull` fails with timeout or `connection refused`.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — Container Runtimes subsystem entry
 - [`MCP_API_REFERENCE.md`](./MCP_API_REFERENCE.md) — operator-curated `system_*` / `kubernetes_*` / `docker_*` action subset (the parent platform's full machine-generated `MCP_TOOL_CATALOG.md` is gitignored — regenerate with `cd server && bundle exec rails mcp:generate_tool_catalog`)
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_

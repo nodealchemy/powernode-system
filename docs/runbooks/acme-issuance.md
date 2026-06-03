@@ -13,17 +13,15 @@ engineers, security operators.
 - [`acme-smoke.md`](./acme-smoke.md) — P2.5.7 acceptance smoke test (6 live scenarios)
 - [`vault-credential-restoration.md`](./vault-credential-restoration.md) — Vault DR for ACME credential restoration
 
-> **MCP coverage note:** one ACME MCP action ships today —
-> `platform.system_acme_provision_certificate` (see the auto-generated
-> [MCP tool catalog](../../../../docs/reference/auto/mcp-tools.md)). The
-> finer-grained `system_acme_*` wrappers shown in this runbook
-> (`create_dns_credential`, `request_certificate`, `get_certificate`,
-> `renew_certificate`, `revoke_certificate`) are **aspirational** — those
-> lifecycle steps still flow through the REST API
-> (`/api/v1/system/acme_certificates`, `/api/v1/system/acme_dns_credentials`)
-> and the operator UI. For operator scripts that need that granularity today,
-> use `curl` against the REST endpoints; the MCP examples below illustrate the
-> intended shape once the remaining wrappers ship.
+> **MCP coverage note:** the ACME lifecycle is fully MCP-addressable. Issue a
+> cert (create + issue in one call) with
+> `platform.system_acme_provision_certificate`; the finer-grained wrappers
+> `system_acme_create_dns_credential`, `system_acme_get_certificate`,
+> `system_acme_renew_certificate`, and `system_acme_revoke_certificate` are
+> registered actions (see the auto-generated
+> [MCP tool catalog](../../../../docs/reference/auto/mcp-tools.md)). The REST
+> API (`/api/v1/system/acme_certificates`, `/api/v1/system/acme_dns_credentials`)
+> and the operator UI remain available for the same operations.
 
 ## Architecture summary
 
@@ -143,7 +141,7 @@ Via MCP:
 platform.system_acme_create_dns_credential({
   name: "cloudflare-prod",
   provider: "cloudflare",
-  api_token: "dnsv-1-cf-..."
+  credentials: { api_token: "<cloudflare-api-token>" }   // provider secret — stored to Vault, never echoed back
 })
 // → { credential: { id, status: "ready", verified_at: "..." } }
 ```
@@ -161,15 +159,16 @@ pick credential → submit. Watch the status pill cycle
 Via MCP:
 
 ```javascript
-platform.system_acme_request_certificate({
+platform.system_acme_provision_certificate({
   common_name: "api.example.com",
-  dns_credential_id: "<credential-id>",
-  issuer: "letsencrypt-prod"        // or "letsencrypt-staging" for testing
+  issuer: "letsencrypt-prod",        // or "letsencrypt-staging" for testing
+  challenge_type: "dns-01",
+  dns_credential_id: "<credential-id>"
 })
 // → { certificate: { id, status: "pending", ... } }
 
 // Poll for completion
-platform.system_acme_get_certificate({ id: "<cert-id>" })
+platform.system_acme_get_certificate({ certificate_id: "<cert-id>" })
 // → { certificate: { status: "valid", expires_at: "...", ... } }
 ```
 
@@ -179,10 +178,11 @@ config updated; HTTPS endpoint serves the cert.
 ## Step 3 — Issue a multi-SAN cert
 
 ```javascript
-platform.system_acme_request_certificate({
+platform.system_acme_provision_certificate({
   common_name: "api.example.com",
-  subject_alt_names: [
-    "api.example.com",
+  issuer: "letsencrypt-prod",
+  challenge_type: "dns-01",
+  sans: [
     "api-staging.example.com",
     "metrics.example.com"
   ],
@@ -204,7 +204,7 @@ required.
 **Manual:** UI cert detail → "Renew" button, or:
 
 ```javascript
-platform.system_acme_renew_certificate({ id: "<cert-id>" })
+platform.system_acme_renew_certificate({ certificate_id: "<cert-id>" })
 ```
 
 Expected service disruption during reload: **<1 second** (Traefik file-watch
@@ -216,7 +216,7 @@ at a low-traffic window.
 
 ```javascript
 platform.system_acme_revoke_certificate({
-  id: "<cert-id>",
+  certificate_id: "<cert-id>",
   reason: "key_compromise"     // or "superseded", "cessation_of_operation"
 })
 // → { certificate: { status: "revoked", revoked_at: "..." } }
@@ -273,7 +273,6 @@ Operator workflow:
 
 ```javascript
 // Edit a federation peer's endpoints
-// ⚠️ aspirational MCP — currently edit endpoints via REST /api/v1/system/sdwan/federation_peers/<id>
 platform.system_sdwan_update_federation_peer({
   id: "<peer-id>",
   endpoints: [
@@ -283,8 +282,11 @@ platform.system_sdwan_update_federation_peer({
   ]
 })
 
-// ⚠️ aspirational MCP — endpoint prober runs on schedule (no manual trigger MCP yet)
-platform.system_sdwan_probe_federation_peer({ id: "<peer-id>" })
+// Endpoint probing is automatic — the EndpointProber re-walks each peer's
+// endpoints every `endpoint_probe_interval_seconds` (default 300s). There is
+// no manual probe trigger; observe current reachability via
+// system_sdwan_get_federation_peer (each endpoint carries last_verified_at /
+// last_failure_at) or platform.recent_events (federation. prefix).
 ```
 
 ## Step 7 — Traefik termination + dynamic config
@@ -385,9 +387,9 @@ must be in zones the same token can edit. Either:
 - Use a Cloudflare account-level token that covers all zones
 
 **`endpoints_jsonb` ignored / wrong endpoint used** — probe interval
-not yet expired. Either wait (`endpoint_probe_interval_seconds`) or force
-a probe via the aspirational `system_sdwan_probe_federation_peer` MCP
-wrapper (REST-only today; the prober otherwise runs on its own schedule).
+not yet expired. There is no manual probe trigger; wait for the next
+scheduled probe (`endpoint_probe_interval_seconds`, default 300s) or lower
+that interval on the peer so the prober re-walks the endpoints sooner.
 
 **OCSP staple stale after revoke** — OCSP propagation is hours, not
 minutes. Verify the cert is revoked in DB; OCSP responders eventually
@@ -422,4 +424,4 @@ auto-rotate on every issue).
 - `extensions/system/agent/internal/acme/issuer.go` — on-node Go ACME ceremony (`buildDNSProvider` wires all 7 providers)
 - `extensions/system/server/app/services/federation/endpoint_prober.rb` — LAN-preference probe logic
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_

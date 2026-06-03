@@ -120,8 +120,8 @@ intervention policy (default: notify-and-proceed for `high` severity).
 
 ## Step 3 — Simulate unauthorized access (drill)
 
-SSH to the NodeInstance (or use `system_execute_task` if SSH isn't
-configured):
+SSH to the NodeInstance (SSH is the primary path for running commands on an
+instance):
 
 ```bash
 # Simulate a file read
@@ -287,4 +287,4 @@ via `send_proactive_notification`.
 - **Run drills quarterly** — same logic as CVE drills (Tutorial 07):
   muscle memory is what matters.
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_

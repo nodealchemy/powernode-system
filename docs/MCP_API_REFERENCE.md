@@ -247,9 +247,19 @@ Backed by `Ai::Tools::SystemIngressTool` (wraps the `ExposeServicePublicly` / `A
 |---|---|---|
 | `system_expose_service_publicly` | Expose a service end-to-end: create/reuse an SDWAN VIP, port-map it on the hub, provision a TLS cert for the hostname, regenerate the reverse proxy | operator, agent |
 | `system_acme_provision_certificate` | Issue an ACME TLS certificate for a hostname (dns-01 / http-01 / tls-alpn-01); stored as a `System::AcmeCertificate` | operator, agent |
+| `system_acme_create_dns_credential` | Create + verify a DNS-01 provider credential (cloudflare, route53, gcloud, digitalocean, hetzner, porkbun, ovh) | operator, agent |
+| `system_acme_get_certificate` | Fetch a single `System::AcmeCertificate` (status / expiry / SANs) | operator, agent |
+| `system_acme_renew_certificate` | Re-run issuance for an existing certificate | operator, agent |
+| `system_acme_revoke_certificate` | Revoke a certificate (irreversible; reason e.g. `key_compromise`) | operator, agent |
 | `system_reverse_proxy_compose` | Regenerate the Traefik dynamic config so the platform serves an already-valid issued certificate | operator, agent |
 
 **Permissions:** `system.ingress.manage`, `system.acme.manage`
+
+> `system_acme_provision_certificate` does create + issue in one call; the
+> finer-grained `get` / `renew` / `revoke` wrappers and
+> `create_dns_credential` are backed by `Ai::Tools::SystemAcmeTool`. See
+> [`runbooks/acme-issuance.md`](./runbooks/acme-issuance.md) for the full
+> lifecycle.
 
 #### Storage ownership (chown lifecycle)
 
@@ -405,9 +415,12 @@ Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 | `system_sdwan_get_federation_peer` | Fetch a federation peer |
 | `system_sdwan_propose_federation_peer` | Account A proposes peering with Account B (out-of-band — does NOT spawn a child platform; use the children-spawn REST endpoint for that) |
 | `system_sdwan_accept_federation_peer` | Account B accepts a proposed peering (moves the row to `status: "active"`) |
+| `system_sdwan_update_federation_peer` | Update a federation peer (e.g. its priority-ordered `endpoints` list) |
 | `system_sdwan_revoke_federation_peer` | Cancel a federation relationship from either side |
 | `system_sdwan_federation_scan` | Scan for proposed-but-not-accepted peers (for operator review) |
 | `system_sdwan_federation_compose` | Stand up a federation overlay topology (hub-and-spoke OR full-mesh) across instances — creates one `Sdwan::Network`, enrolls each member as a peer (hubs `publicly_reachable`), and compiles the routing plan |
+| `system_sdwan_set_data_residency` | Stamp a peer with a scalar `data_residency` region/tag (P9.4 enforcement) |
+| `system_sdwan_get_audit_log` | Read a peer's per-peer WORM audit log (P9.3) |
 
 **Permissions:** `system.sdwan.federation_peers.{view,propose,accept,revoke}`
 
@@ -588,7 +601,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 
 A small set of `system_*` / `system_sdwan_*` action names are referenced in operator runbooks + tutorials using `platform.X(...)` syntax but are **not yet registered** in `platform_api_tool_registry.rb`. The doc-verification harness reports these as unknown actions; they are intentional placeholders documenting the *intended* MCP surface, with a REST workaround called out at the call site.
 
-The authoritative list (15 entries, re-confirmed unimplemented as of 2026-06-03 — e.g. `system_get_task`, `system_execute_task`, `system_create_template`, `system_update_module_assignment`) lives at [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). When adding a new doc reference to a not-yet-registered action, also append a row to that catalog so the harness output remains interpretable. When implementing one of the cataloged actions, remove its row + cross-link the new entry in the catalog below.
+The authoritative list (3 entries as of 2026-06-03 — `system_get_task`, `system_revert_disk_image`, `system_update_module_assignment`) lives at [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). When adding a new doc reference to a not-yet-registered action, also append a row to that catalog so the harness output remains interpretable. When implementing one of the cataloged actions, remove its row + cross-link the new entry in the catalog below.
 
 Operator runbooks under `docs/runbooks/` should reference current registry actions only; cross-validate against this doc + the aspirational catalog before adding a new runbook step.
 
@@ -606,11 +619,11 @@ Operator runbooks under `docs/runbooks/` should reference current registry actio
 
 | Prefix | Unique actions | Tool classes |
 |---|---|---|
-| `system_*` (excl. sdwan) | 122 | `SystemFleetTool` + `SystemArchitectureCatalogTool` + `SystemPackageRepositoryTool` + `DockerProvisioningTool` + `DiskImageOperatorTool` + `SystemIngressTool` + `SystemStorageOwnerTool` + topology / storage tools |
-| `system_sdwan_*` | 70 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept/compose subsections) |
+| `system_*` (excl. sdwan) | 128 | `SystemFleetTool` + `SystemArchitectureCatalogTool` + `SystemPackageRepositoryTool` + `DockerProvisioningTool` + `DiskImageOperatorTool` + `SystemIngressTool` + `SystemAcmeTool` + `SystemStorageOwnerTool` + topology / storage tools |
+| `system_sdwan_*` | 73 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept/compose subsections) |
 | `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
 | `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
-| **Total** | **249** registered actions (as of 2026-06-03); see [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) for 15 additional referenced-but-unregistered actions | |
+| **Total** | **258** registered actions (as of 2026-06-03); see [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) for 3 additional referenced-but-unregistered actions | |
 
 > Counts are code-derived from `platform_api_tool_registry.rb` on 2026-06-03. The parent platform's full machine-generated catalog (with parameter schemas) is the authoritative cross-check — regenerate it with `cd server && bundle exec rails mcp:generate_tool_catalog`.
 
@@ -621,4 +634,4 @@ Operator runbooks under `docs/runbooks/` should reference current registry actio
 - [`runbooks/`](./runbooks/) — operator runbooks (use these MCP actions in concrete workflows)
 - `server/app/services/ai/tools/platform_api_tool_registry.rb` (parent platform) — source of truth for action-to-tool mapping
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-03 (rev 2)_
