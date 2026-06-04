@@ -457,6 +457,49 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "system_get_task" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "gettask") }
+    let!(:task) do
+      System::Task.create!(
+        account: account, command: "provision_node", status: "running", progress: 42,
+        operable_type: "System::Node", operable_id: node.id
+      )
+    end
+
+    it "fetches a single task scoped to the account" do
+      r = call("system_get_task", id: task.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:task][:id]).to eq(task.id)
+      expect(r[:data][:task][:command]).to eq("provision_node")
+      expect(r[:data][:task][:status]).to eq("running")
+      expect(r[:data][:task][:progress]).to eq(42)
+    end
+
+    it "returns not-found error for an unknown id" do
+      r = call("system_get_task", id: SecureRandom.uuid)
+      expect(r[:success]).to be false
+    end
+
+    it "does not leak tasks from another account" do
+      other_task = System::Task.create!(
+        account: create(:account), command: "other_cmd", status: "pending",
+        operable_type: "System::Node", operable_id: node.id
+      )
+      r = call("system_get_task", id: other_task.id)
+      expect(r[:success]).to be false
+    end
+
+    it "denies callers without system.infra_tasks.read" do
+      denied = described_class.new(
+        account: account,
+        user: create(:user, account: account, permissions: %w[system.nodes.read])
+      )
+      r = denied.execute(params: { action: "system_get_task", id: task.id })
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("permission denied")
+    end
+  end
+
   describe "Gap remediation slice 1 — system_drain_instance" do
     let(:node)     { create(:system_node, account: account, node_template: template, name: "drain") }
     let(:instance) { create(:system_node_instance, :running, node: node) }
@@ -744,6 +787,53 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "system_update_module_assignment" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "asn") }
+    let(:mod)  { create(:system_node_module, account: account, category: category, name: "togglable", variety: "subscription") }
+    let!(:assignment) do
+      create(:system_node_module_assignment, node: node, node_module: mod, enabled: true)
+    end
+
+    it "disables an enabled assignment when enabled=false" do
+      r = call("system_update_module_assignment", assignment_id: assignment.id, enabled: false)
+      expect(r[:success]).to be true
+      expect(r[:data][:updated]).to be true
+      expect(r[:data][:assignment][:enabled]).to be false
+      expect(assignment.reload.enabled).to be false
+    end
+
+    it "enables a disabled assignment when enabled=true" do
+      assignment.update!(enabled: false)
+      r = call("system_update_module_assignment", assignment_id: assignment.id, enabled: true)
+      expect(r[:success]).to be true
+      expect(r[:data][:assignment][:enabled]).to be true
+      expect(assignment.reload.enabled).to be true
+    end
+
+    it "returns not-found error for an unknown assignment id" do
+      r = call("system_update_module_assignment", assignment_id: SecureRandom.uuid, enabled: true)
+      expect(r[:success]).to be false
+    end
+
+    it "does not touch assignments whose node belongs to another account" do
+      other_node = create(:system_node, account: create(:account))
+      other_assignment = create(:system_node_module_assignment, node: other_node, enabled: true)
+      r = call("system_update_module_assignment", assignment_id: other_assignment.id, enabled: false)
+      expect(r[:success]).to be false
+      expect(other_assignment.reload.enabled).to be true
+    end
+
+    it "denies callers without system.modules.update" do
+      denied = described_class.new(
+        account: account,
+        user: create(:user, account: account, permissions: %w[system.modules.read])
+      )
+      r = denied.execute(params: { action: "system_update_module_assignment", assignment_id: assignment.id, enabled: false })
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("permission denied")
+    end
+  end
+
   describe "Gap remediation slice 3 — pool ops + canary marking" do
     let(:provider_region) { create(:system_provider_region) }
     let(:provider_instance_type) { create(:system_provider_instance_type) }
@@ -944,6 +1034,96 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         other_platform = create(:system_node_platform, account: create(:account))
         r = call("system_set_disk_image_retention", node_platform_id: other_platform.id, retention_count: 5)
         expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_revert_disk_image" do
+      # A target publication to roll back TO (published → has a file_object
+      # via the :published trait).
+      let!(:target) do
+        create(:system_disk_image_publication, :published,
+               account: account, node_platform: platform_record_for_pubs,
+               oci_ref: "registry.example.com/test:target", git_sha: "target-sha")
+      end
+
+      it "rolls back to an explicit publication_id" do
+        r = call("system_revert_disk_image",
+                 platform_id: platform_record_for_pubs.id, publication_id: target.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:reverted]).to be true
+        expect(r[:data][:activated_publication_id]).to eq(target.id)
+
+        platform_record_for_pubs.reload
+        expect(platform_record_for_pubs.disk_image_file_object_id).to eq(target.file_object_id)
+        expect(platform_record_for_pubs.disk_image_oci_ref).to eq("registry.example.com/test:target")
+        expect(platform_record_for_pubs.disk_image_git_sha).to eq("target-sha")
+        expect(platform_record_for_pubs.disk_image_publication_status).to eq("published")
+      end
+
+      it "auto-selects the most recent retired publication when no publication_id is given" do
+        retired = create(:system_disk_image_publication, :retired,
+                         account: account, node_platform: platform_record_for_pubs,
+                         oci_ref: "registry.example.com/test:retired", git_sha: "retired-sha")
+        # retired trait does not build a file_object — give it one so the
+        # revert (which requires file_object_id) can proceed.
+        fo = create(:file_object, account: account, filename: "retired.img",
+                                  file_size: retired.size_bytes, content_type: "application/octet-stream",
+                                  checksum_sha256: retired.sha256)
+        retired.update!(file_object: fo)
+
+        r = call("system_revert_disk_image", platform_id: platform_record_for_pubs.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:activated_publication_id]).to eq(retired.id)
+        expect(platform_record_for_pubs.reload.disk_image_git_sha).to eq("retired-sha")
+      end
+
+      it "errors when no prior publication is available to auto-revert to" do
+        empty_platform = create(:system_node_platform, account: account)
+        r = call("system_revert_disk_image", platform_id: empty_platform.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("No prior publication")
+      end
+
+      it "refuses to revert to a purged publication" do
+        target.update_columns(status: "purged", file_object_id: nil)
+        r = call("system_revert_disk_image",
+                 platform_id: platform_record_for_pubs.id, publication_id: target.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("purged")
+      end
+
+      it "errors when target publication has no file_object" do
+        target.update_columns(file_object_id: nil)
+        r = call("system_revert_disk_image",
+                 platform_id: platform_record_for_pubs.id, publication_id: target.id)
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("no file_object")
+      end
+
+      it "returns not-found for an unknown platform" do
+        r = call("system_revert_disk_image", platform_id: SecureRandom.uuid)
+        expect(r[:success]).to be false
+      end
+
+      it "does not revert a publication on a platform from another account" do
+        other_account = create(:account)
+        other_platform = create(:system_node_platform, account: other_account)
+        r = call("system_revert_disk_image",
+                 platform_id: other_platform.id, publication_id: target.id)
+        expect(r[:success]).to be false
+      end
+
+      it "denies callers without system.platforms.rollback_disk_image" do
+        denied = described_class.new(
+          account: account,
+          user: create(:user, account: account, permissions: %w[system.modules.update])
+        )
+        r = denied.execute(params: {
+          action: "system_revert_disk_image",
+          platform_id: platform_record_for_pubs.id, publication_id: target.id
+        })
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("permission denied")
       end
     end
 
@@ -1335,6 +1515,12 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
     it "registers missing-features slice 6b action" do
       expect(Ai::Tools::PlatformApiToolRegistry::TOOLS["system_gitops_apply_proposal"]).to eq("Ai::Tools::SystemFleetTool")
+    end
+
+    it "registers the newly-implemented aspirational MCP wrappers" do
+      %w[system_get_task system_revert_disk_image system_update_module_assignment].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
     end
   end
 

@@ -1,23 +1,32 @@
 # Aspirational MCP Actions — Documented Backlog
 
-The `check-mcp-actions.sh` harness will report a non-zero count of
-**unknown** actions because some tutorials and runbooks demonstrate
-operator workflows using `platform.X(...)` MCP syntax for actions that
-aren't yet in the parent platform's `platform_api_tool_registry.rb`.
+This catalog tracks tutorial/runbook references that use `platform.X(...)`
+MCP syntax for actions not yet registered in the parent platform's
+`platform_api_tool_registry.rb`. The `check-mcp-actions.sh` harness reports
+such references as **unknown** actions; this file is where intentional
+aspirational references are documented so the harness's exit code can be
+triaged rather than treated as a hard error.
 
-Each of these "unknowns" is intentional: the doc shows the **intended**
-MCP shape, with a callout explaining that the wrapper is forthcoming
-and operators should use the REST endpoint today.
+**The catalog is currently empty** — every previously-aspirational wrapper
+has been implemented. A clean `check-mcp-actions.sh` run should now report
+**0 unknown** actions. If the harness reports an unknown, it is NOT an
+expected aspirational reference — see the triage heuristics below.
 
 ## Known-aspirational catalog (as of 2026-06-03)
 
 | Action | Doc | Operator workaround today |
 |--------|-----|---------------------------|
-| `system_get_task` | `runbooks/node-provisioning.md` | `system_list_tasks` (filter to single task) |
-| `system_revert_disk_image` | `DISK_IMAGE_CI.md` | `system_set_default_disk_image_publication` with the previous publication id |
-| `system_update_module_assignment` | `runbooks/module-authoring.md` | `PATCH /api/v1/system/node_module_assignments/:id` |
+| _(none — catalog empty)_ | | |
 
-Total: **3 aspirational MCP wrappers**.
+Total: **0 aspirational MCP wrappers**.
+
+> **Implemented now:** the final three entries
+> (`system_get_task`, `system_revert_disk_image`,
+> `system_update_module_assignment`) were implemented in
+> `SystemFleetTool` and registered in
+> `platform_api_tool_registry.rb`, emptying this catalog. The docs
+> referenced above now describe shipped MCP actions rather than
+> aspirational ones.
 
 > **2026-06-03 update:** twelve former entries left this catalog. Nine were
 > **implemented** and registered in `platform_api_tool_registry.rb`
@@ -41,10 +50,11 @@ Total: **3 aspirational MCP wrappers**.
   `server/app/services/ai/tools/platform_api_tool_registry.rb` (parent
   platform), implement the action method in the corresponding tool class
   (extension), then remove the row from this table
-- **Running the verification harness?** The `check-mcp-actions.sh` script
-  will report these as unknowns; this is expected. The script's exit 1
-  signals operators to check this catalog rather than treating it as a
-  hard error
+- **Running the verification harness?** With the catalog empty,
+  `check-mcp-actions.sh` should report **0 unknown** actions and exit 0.
+  If it reports any unknowns, they are not expected aspirational
+  references — work the triage heuristics below to resolve each one
+  (either implement + register the action, or fix the doc)
 
 ## Triage heuristics
 

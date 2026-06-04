@@ -43,6 +43,7 @@ module Ai
         "system_list_module_versions"   => "system.modules.read",
         "system_drift_report"           => "system.node_instances.read",
         "system_list_tasks"             => "system.infra_tasks.read",
+        "system_get_task"               => "system.infra_tasks.read",
 
         # Mutate
         "system_create_node"            => "system.nodes.create",
@@ -140,6 +141,9 @@ module Ai
         "system_create_cve"                    => "system.fleet.autonomy",
         "system_delete_cve"                    => "system.fleet.autonomy",
         "system_unassign_module_from_template" => "system.modules.update",
+        # Toggle a NodeModuleAssignment's enabled flag (mirrors the
+        # NodeModuleAssignmentsController enable/disable member actions).
+        "system_update_module_assignment"      => "system.modules.update",
 
         # === Gap remediation slice 3 — pool ops + canary marking ===
         "system_return_pooled_instance"        => "system.instances.control",
@@ -151,6 +155,9 @@ module Ai
         # use the existing CI worker permission scheme (ci_workers.create/delete).
         "system_list_disk_image_publications"        => "system.modules.read",
         "system_set_default_disk_image_publication"  => "system.modules.update",
+        # Roll a platform's disk image back to a prior publication. Mirrors
+        # DiskImagePublicationsController#rollback's dedicated permission.
+        "system_revert_disk_image"                   => "system.platforms.rollback_disk_image",
         "system_set_disk_image_retention"            => "system.modules.update",
         "system_provision_ci_worker"                 => "system.ci_workers.create",
         "system_terminate_ci_worker"                 => "system.ci_workers.delete",
@@ -439,6 +446,10 @@ module Ai
               node_id: { type: "string", required: false },
               instance_id: { type: "string", required: false }
             }
+          },
+          "system_get_task" => {
+            description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, and timestamps. Not-found errors when the id is unknown or belongs to another account.",
+            parameters: { id: { type: "string", required: true } }
           },
           "system_cancel_task" => {
             description: "Cancel a pending task",
@@ -744,6 +755,13 @@ module Ai
               module_id:   { type: "string", required: true }
             }
           },
+          "system_update_module_assignment" => {
+            description: "Enable or disable a NodeModuleAssignment (per-(node, module) toggle). enabled=true enables the assignment; enabled=false disables it. The assignment row is preserved either way — disabling drops the module from neighbor union mounts / rsync_spec generation without losing priority/config. Mirrors the NodeModuleAssignmentsController enable/disable member actions. Idempotent.",
+            parameters: {
+              assignment_id: { type: "string", required: true },
+              enabled:       { type: "boolean", required: true, description: "true → enable, false → disable" }
+            }
+          },
 
           # === Gap remediation slice 3 — pool ops + canary marking ===
           "system_return_pooled_instance" => {
@@ -777,6 +795,13 @@ module Ai
             description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state.",
             parameters: {
               publication_id: { type: "string", required: true }
+            }
+          },
+          "system_revert_disk_image" => {
+            description: "Roll a NodePlatform's disk image back to a prior publication — restores the target publication's file_object onto the platform (and un-soft-deletes it if the target was retired), then retires the previously-active publication. With publication_id, rolls back to that specific publication; without it, auto-selects the most recent prior publication (the newest retired one, else the newest published one that isn't currently active). Refuses purged publications (FileObject hard-deleted) and publications with no file_object. Wraps System::Executors::DiskImage::RollbackPublication — the same transaction the DiskImagePublicationsController#rollback :proceed path uses.",
+            parameters: {
+              platform_id:    { type: "string", required: true, description: "System::NodePlatform id to roll back" },
+              publication_id: { type: "string", required: false, description: "Target DiskImagePublication to restore. Omit to auto-select the previous publication." }
             }
           },
           "system_set_disk_image_retention" => {
@@ -923,6 +948,7 @@ module Ai
         when "system_promote_module_version"   then promote_module_version(params)
         when "system_drift_report"             then drift_report(params)
         when "system_list_tasks"               then list_tasks(params)
+        when "system_get_task"                 then get_task(params)
         when "system_cancel_task"              then cancel_task(params)
         when "system_module_diff"              then module_diff(params)
         when "system_deploy_platform"          then deploy_platform(params)
@@ -971,6 +997,7 @@ module Ai
         when "system_create_cve"                    then create_cve(params)
         when "system_delete_cve"                    then delete_cve(params)
         when "system_unassign_module_from_template" then unassign_module_from_template(params)
+        when "system_update_module_assignment"      then update_module_assignment(params)
         # Gap remediation slice 3 — pool ops + canary marking
         when "system_return_pooled_instance"        then return_pooled_instance(params)
         when "system_delete_instance_pool"          then delete_instance_pool(params)
@@ -978,6 +1005,7 @@ module Ai
         # Gap remediation slice 5 — disk image CI
         when "system_list_disk_image_publications"  then list_disk_image_publications(params)
         when "system_set_default_disk_image_publication" then set_default_disk_image_publication(params)
+        when "system_revert_disk_image"             then revert_disk_image(params)
         when "system_set_disk_image_retention"      then set_disk_image_retention(params)
         when "system_provision_ci_worker"           then provision_ci_worker(params)
         when "system_terminate_ci_worker"           then terminate_ci_worker(params)
@@ -1613,6 +1641,14 @@ module Ai
         else
           error_result("Task cannot be cancelled from #{task.status}")
         end
+      end
+
+      # Single-task fetch — mirrors list_tasks' account scoping + serializer.
+      # Not-found bubbles to the shared ActiveRecord::RecordNotFound rescue
+      # in #call, which renders the standard error_result.
+      def get_task(params)
+        task = ::System::Task.where(account: @account).find(params[:id])
+        success_result(task: serialize_task(task))
       end
 
       # === Module diff ===
@@ -2434,6 +2470,20 @@ module Ai
         }
       end
 
+      # Mirrors NodeModuleAssignmentsController#serialize_assignment.
+      def serialize_module_assignment(a)
+        {
+          id: a.id,
+          node_id: a.node_id,
+          node_module_id: a.node_module_id,
+          enabled: a.enabled,
+          priority: a.priority,
+          config: a.config,
+          created_at: a.created_at&.iso8601,
+          updated_at: a.updated_at&.iso8601
+        }
+      end
+
       # ────────────────────────────────────────────────────────────────
       # Slice 7 — instance pool action handlers
       # ────────────────────────────────────────────────────────────────
@@ -2726,6 +2776,29 @@ module Ai
         )
       end
 
+      # Enable/disable a NodeModuleAssignment — mirrors the
+      # NodeModuleAssignmentsController#enable / #disable member actions
+      # (same enabled-column toggle, same per-account scope through the
+      # owning Node). enabled=true → enable, false → disable. Idempotent.
+      def update_module_assignment(params)
+        assignment = ::System::NodeModuleAssignment
+                     .joins(:node)
+                     .where(system_nodes: { account_id: @account.id })
+                     .find(params[:assignment_id])
+
+        enabled = params[:enabled]
+        if enabled.nil?
+          return error_result("enabled is required (true to enable, false to disable)")
+        end
+
+        assignment.update!(enabled: enabled)
+
+        success_result(
+          updated: true,
+          assignment: serialize_module_assignment(assignment)
+        )
+      end
+
       def serialize_cve(cve)
         {
           id: cve.id,
@@ -2852,6 +2925,69 @@ module Ai
           oci_ref: platform.disk_image_oci_ref,
           git_sha: platform.disk_image_git_sha
         )
+      end
+
+      # Roll a platform's disk image back to a prior publication. Account
+      # scoping happens HERE (platform + target resolved within the account)
+      # before delegating to the executor, which looks up by raw id. This is
+      # the same transaction DiskImagePublicationsController#rollback runs on
+      # its :proceed path — both go through System::Executors::DiskImage::RollbackPublication.
+      def revert_disk_image(params)
+        platform = ::System::NodePlatform.where(account_id: @account.id).find(params[:platform_id])
+
+        target =
+          if params[:publication_id].present?
+            platform.disk_image_publications.find_by(id: params[:publication_id])
+          else
+            previous_disk_image_publication(platform)
+          end
+
+        unless target
+          return error_result(
+            params[:publication_id].present? ?
+              "DiskImagePublication #{params[:publication_id]} not found for this platform" :
+              "No prior publication available to revert to for platform #{platform.id}"
+          )
+        end
+
+        if target.purged?
+          return error_result(
+            "Cannot revert to a purged publication — its FileObject was hard-deleted past the grace window. Re-trigger CI to rebuild."
+          )
+        end
+
+        unless target.file_object_id.present?
+          return error_result("Target publication #{target.id} has no file_object — was it ever published?")
+        end
+
+        result = ::System::Executors::DiskImage::RollbackPublication.execute(
+          { target_publication_id: target.id, platform_id: platform.id },
+          deferred_operation: nil
+        )
+
+        success_result(
+          reverted: true,
+          node_platform_id: platform.id,
+          activated_publication_id: target.id,
+          rolled_back_to: result.dig(:data, :rolled_back_to)
+        )
+      end
+
+      # Newest "prior" publication for auto-revert: prefer the most recent
+      # retired publication; otherwise the most recent published one that
+      # isn't the currently-active image.
+      def previous_disk_image_publication(platform)
+        retired = platform.disk_image_publications
+                          .where(status: "retired")
+                          .order(created_at: :desc)
+                          .first
+        return retired if retired
+
+        platform.disk_image_publications
+                .where(status: "published")
+                .where.not(file_object_id: platform.disk_image_file_object_id)
+                .order(created_at: :desc)
+                .first
       end
 
       def set_disk_image_retention(params)
