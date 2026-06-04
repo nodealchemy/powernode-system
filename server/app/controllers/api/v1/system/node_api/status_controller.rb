@@ -123,15 +123,13 @@ module Api
           def acknowledge_task
             operation = current_instance.tasks.find(params[:id])
 
-            if operation.pending?
-              operation.update!(
-                events: (operation.events || []) << {
-                  type: "acknowledged",
-                  message: "Acknowledged by instance",
-                  timestamp: Time.current.iso8601
-                }
-              )
-            end
+            # Transition pending/scheduled -> running so the subsequent complete
+            # (which requires the running state) succeeds. The agent's task loop
+            # does acknowledge -> execute -> complete; this acknowledge IS the
+            # start signal. Previously it only appended an event and left the
+            # task pending, so every agent-executed task (a2a_call, etc.) failed
+            # to complete ("cannot be completed from pending state").
+            operation.start! if operation.may_start?
 
             render_success(
               task: serialize_task(operation),
@@ -146,21 +144,23 @@ module Api
           def complete_task
             operation = current_instance.tasks.find(params[:id])
 
-            unless operation.running? || operation.status == "acknowledged"
+            unless operation.running?
               return render_error("Operation cannot be completed from #{operation.status} state")
             end
 
             result = params[:result] || {}
             message = params[:message] || "Completed by instance"
 
+            # System::Task has no `result` column — the handler's result rides the
+            # completed event so it stays inspectable without a schema change.
             operation.update!(
               status: "complete",
               progress: 100,
               completed_at: Time.current,
-              result: result,
               events: (operation.events || []) << {
                 type: "completed",
                 message: message,
+                result: result,
                 timestamp: Time.current.iso8601
               }
             )
