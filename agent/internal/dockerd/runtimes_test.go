@@ -3,7 +3,11 @@ package dockerd
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/kata"
 )
 
 // runscPresentRunner reports runsc as runnable, so EnsureInstalled skips the
@@ -76,7 +80,7 @@ func TestReconcile_EnsuresRequestedRuntimes(t *testing.T) {
 	}
 }
 
-func TestReconcile_RuntimeEnsureFailureAbortsStart(t *testing.T) {
+func TestReconcile_RuntimeEnsureFailureSkipsButStarts(t *testing.T) {
 	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}}
 	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
 	defer fp.close()
@@ -85,10 +89,52 @@ func TestReconcile_RuntimeEnsureFailureAbortsStart(t *testing.T) {
 
 	m.Reconcile(context.Background())
 
-	if a.WriteCfgCalls != 0 {
-		t.Fatalf("expected no WriteDaemonConfig when runtime ensure fails, got %d", a.WriteCfgCalls)
+	// Resilient (substrate L0): an unavailable isolation runtime is logged +
+	// skipped, NOT fatal — the daemon still starts for every other workload.
+	if a.WriteCfgCalls == 0 {
+		t.Fatal("expected WriteDaemonConfig despite runtime ensure failure")
 	}
-	if a.StartCalls != 0 {
-		t.Fatalf("expected no StartDaemon when runtime ensure fails, got %d", a.StartCalls)
+	if a.StartCalls == 0 {
+		t.Fatal("expected StartDaemon despite runtime ensure failure")
+	}
+	// The failed runtime must not be registered.
+	if a.Config != nil {
+		if rt, _ := a.Config.ExtraConfig["runtimes"].(map[string]any); rt["runsc"] != nil {
+			t.Fatalf("failed runtime should not be registered: %v", rt)
+		}
+	}
+}
+
+func TestCompositeRuntimeEnsurer_Dispatch(t *testing.T) {
+	// KVM present so kata readiness passes (runscPresentRunner makes both
+	// runsc and kata-runtime --version succeed).
+	kvm := filepath.Join(t.TempDir(), "kvm")
+	if err := os.WriteFile(kvm, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := kata.KVMDevice
+	kata.KVMDevice = kvm
+	defer func() { kata.KVMDevice = orig }()
+
+	c := CompositeRuntimeEnsurer{
+		GvisorRuntimeEnsurer{Runner: runscPresentRunner{}},
+		KataRuntimeEnsurer{Runner: runscPresentRunner{}},
+	}
+	cfg := map[string]any{}
+	for _, rt := range []string{"gvisor", "kata", "firecracker"} {
+		if err := c.Ensure(context.Background(), rt, cfg); err != nil {
+			t.Fatalf("ensure %s: %v", rt, err)
+		}
+	}
+	rt, _ := cfg["runtimes"].(map[string]any)
+	for _, name := range []string{"runsc", "kata-runtime", "kata-fc"} {
+		if _, ok := rt[name]; !ok {
+			t.Fatalf("%s not registered by composite: %v", name, rt)
+		}
+	}
+
+	// Unknown runtime → ErrUnsupportedRuntime from every handler → composite.
+	if err := c.Ensure(context.Background(), "nope", cfg); !errors.Is(err, ErrUnsupportedRuntime) {
+		t.Fatalf("expected ErrUnsupportedRuntime for unknown runtime, got %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package dockerd
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -360,10 +361,14 @@ func (m *Manager) recordError(stage string, err error) {
 	m.OnError(stage, err)
 }
 
-// ensureRequestedRuntimes installs + registers each RequestedRuntimes entry
-// into daemonConfig (mutated in place) before the daemon starts. A failure
-// aborts the start transition so dockerd never launches with a declared-but-
-// missing runtime binary.
+// ensureRequestedRuntimes readies + registers each RequestedRuntimes entry into
+// daemonConfig (mutated in place) before the daemon starts. A runtime that can't
+// be made ready (e.g. a Kata microVM that isn't installed, or a transient gVisor
+// download failure) is logged via OnError and SKIPPED — it must NOT prevent
+// dockerd from starting for every other workload. Containers that request the
+// skipped --runtime=<name> then fail at create time with a clear docker error,
+// the right layer to surface "that isolation tier isn't available on this node".
+// Always returns nil (kept for signature symmetry with the call sites).
 func (m *Manager) ensureRequestedRuntimes(ctx context.Context, daemonConfig map[string]any) error {
 	if m.Runtimes == nil || len(m.RequestedRuntimes) == 0 {
 		return nil
@@ -373,7 +378,8 @@ func (m *Manager) ensureRequestedRuntimes(ctx context.Context, daemonConfig map[
 			continue
 		}
 		if err := m.Runtimes.Ensure(ctx, rt, daemonConfig); err != nil {
-			return err
+			m.OnError(fmt.Sprintf("isolation_runtime:%s", rt), err)
+			continue
 		}
 	}
 	return nil

@@ -185,7 +185,14 @@ func (s *Service) Run(ctx context.Context) error {
 	isoRuntimes = append(isoRuntimes, fetchIsolationRuntimes(client)...)
 	if len(isoRuntimes) > 0 {
 		dockerMgr.RequestedRuntimes = isoRuntimes
-		dockerMgr.Runtimes = dockerd.GvisorRuntimeEnsurer{Runner: mount.ExecRunner{}}
+		// Composite: gVisor (runsc) self-installs; Kata/Firecracker microVM
+		// runtimes validate their install + KVM. Each requested runtime is
+		// dispatched to the handler that owns it; an unavailable one is logged
+		// and skipped rather than blocking the daemon (substrate L0).
+		dockerMgr.Runtimes = dockerd.CompositeRuntimeEnsurer{
+			dockerd.GvisorRuntimeEnsurer{Runner: mount.ExecRunner{}},
+			dockerd.KataRuntimeEnsurer{Runner: mount.ExecRunner{}},
+		}
 	}
 
 	// Phase 2 K3s reconcilers — server + agent run side-by-side. At
