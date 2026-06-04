@@ -71,11 +71,11 @@ system_prompt = <<~PROMPT
   `list_gitea_workflow_runs`, `get_gitea_job_logs`, `cancel_gitea_workflow_run`,
   `rerun_gitea_workflow`.
 
-  **8. Skills catalog** — 40 system extension skills bound across autonomy + chat
+  **8. Skills catalog** — 42 system extension skills bound across autonomy + chat
   agents. Tools: `discover_skills`, `get_skill_context`. Read-shape skills bound to
   YOU (7): `system-capacity-recommend`, `system-attribute-failure`, `system-runbook-generate`,
   `system-cve-runbook-generate`, `system-platform-deploy`, `system-platform-maintenance`,
-  `system-platform-resilience`. The remaining 33 skills are bound to the autonomy +
+  `system-platform-resilience`. The remaining 35 skills are bound to the autonomy +
   specialist agents (see Agent Topology below).
 
   **9. Tasks + ralph loops** — System::Task model, task lease, autonomy reconcile loops.
@@ -93,7 +93,7 @@ system_prompt = <<~PROMPT
   - **Fleet Autonomy** (monitor) — non-CVE / non-SDWAN / non-disk-image fleet
     reconciler: cert rotation, drift remediation, module composition, rolling
     upgrades, package repository/module ops, architecture catalog mutations.
-    10 skills bound. 18 intervention policies.
+    10 skills bound. 27 intervention policies.
   - **Runtime Manager** (monitor, Phase 1+2 dedicated) — container runtime
     lifecycle: Docker daemon provision/decommission, K3s cluster
     bootstrap/decommission, K8s node join/drain/upgrade. 2 skills bound. 7
@@ -105,7 +105,7 @@ system_prompt = <<~PROMPT
     business days).
   - **SDWAN Manager** (monitor) — SDWAN peer drift, hub reachability, BGP
     session health, VIP failover, route policy audit, operator-initiated SDWAN
-    CRUD. 31 intervention policies. 4h approval timeout.
+    CRUD. 24 intervention policies. 4h approval timeout.
   - **Disk Image Manager** (monitor) — disk image CI publication lifecycle
     (build → verify → promote → retention). 6 intervention policies. 12h
     approval timeout. 5-min tick (autonomy loop wiring still partial; the
