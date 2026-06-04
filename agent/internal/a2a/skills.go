@@ -101,6 +101,10 @@ func (p *InferenceProxy) Register(reg *Registry) {
 			},
 			"required": []string{"model", "input"},
 		}, p.embed)
+
+	reg.Register("inference.models",
+		"List the models this node's local inference runtime (ollama) currently serves. No args.",
+		map[string]any{"type": "object"}, p.models)
 }
 
 func (p *InferenceProxy) generate(args json.RawMessage) (any, error) {
@@ -155,12 +159,51 @@ func (p *InferenceProxy) embed(args json.RawMessage) (any, error) {
 	return map[string]any{"embedding": res.Embedding, "dims": len(res.Embedding)}, nil
 }
 
-func (p *InferenceProxy) post(path string, body []byte) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodPost, p.Endpoint+path, bytes.NewReader(body))
+// models lists the models the local runtime currently serves (ollama /api/tags),
+// so a peer can discover what it can offload BEFORE calling inference.generate
+// rather than guessing a model name. No args.
+func (p *InferenceProxy) models(_ json.RawMessage) (any, error) {
+	raw, err := p.get("/api/tags")
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	var res struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, fmt.Errorf("decode models response: %w", err)
+	}
+	names := make([]string, 0, len(res.Models))
+	for _, m := range res.Models {
+		if m.Name != "" {
+			names = append(names, m.Name)
+		}
+	}
+	return map[string]any{"models": names, "count": len(names)}, nil
+}
+
+func (p *InferenceProxy) post(path string, body []byte) ([]byte, error) {
+	return p.do(http.MethodPost, path, body)
+}
+
+func (p *InferenceProxy) get(path string) ([]byte, error) {
+	return p.do(http.MethodGet, path, nil)
+}
+
+func (p *InferenceProxy) do(method, path string, body []byte) ([]byte, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, p.Endpoint+path, r)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := p.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("inference call: %w", err)

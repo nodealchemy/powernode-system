@@ -100,6 +100,39 @@ func TestInferenceEmbedSkill(t *testing.T) {
 	}
 }
 
+func TestInferenceModelsSkill(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"name":"llama3:latest"},{"name":"nomic-embed-text:latest"}]}`))
+	}))
+	defer ollama.Close()
+
+	reg := NewRegistry()
+	RegisterStandardSkills(reg, StandardSkillOptions{InferenceEndpoint: ollama.URL})
+	if !reg.Has("inference.models") {
+		t.Fatal("expected inference.models registered")
+	}
+
+	res, err := reg.Call("inference.models", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	var out struct {
+		Models []string `json:"models"`
+		Count  int      `json:"count"`
+	}
+	_ = json.Unmarshal(b, &out)
+	if out.Count != 2 || len(out.Models) != 2 || out.Models[0] != "llama3:latest" {
+		t.Fatalf("models result: %+v", out)
+	}
+}
+
 func TestInferenceErrorStatus(t *testing.T) {
 	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

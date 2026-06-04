@@ -119,10 +119,25 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.OnError("authorized_keys_initial", err)
 	}
 
+	// AI/MCP workload substrate L2.5/L3 — the agent-to-agent (A2A) MCP server is
+	// started below, after sdwanMgr is constructed, so its peer announcement can
+	// advertise the node's reachable overlay address.
+
+	bootID := generateBootID()
+	startedAt := time.Now()
+
+	// SDWAN reconciler — runs synchronously inside the heartbeat tick
+	// (PostSend hook) so the cadence stays unified with module-digest +
+	// authorized_keys propagation. Errors surface via the same OnError
+	// channel; failures don't stop the heartbeat.
+	sdwanMgr := sdwan.NewManager(client, nil, s.cfg.OnError)
+
 	// AI/MCP workload substrate L2.5/L3 — agent-to-agent (A2A) MCP server.
 	// Default-OFF: starts only when an operator configures a listen address.
 	// Serves peer skill calls over mTLS, gated by platform-minted capability
-	// tokens (verified offline against the advertised signing key).
+	// tokens (verified offline against the advertised signing key). Announces
+	// its offered skills + reachable overlay address to the platform so peer
+	// discovery (discover_peers) can surface it.
 	if s.cfg.A2AListenAddr != "" {
 		reg := a2a.NewRegistry()
 		a2a.RegisterStandardSkills(reg, a2a.StandardSkillOptions{
@@ -145,21 +160,14 @@ func (s *Service) Run(ctx context.Context) error {
 				CABundleFile:   paths.CAChain,
 				Registry:       reg,
 				Fetcher:        client,
+				Announcer:      client,
+				AdvertiseAddrs: func() []string { return a2aAdvertiseAddrs(sdwanMgr.FirstOverlayAddress(), s.cfg.A2AListenAddr) },
 				OnError:        func(e error) { s.cfg.OnError("a2a", e) },
 			}); err != nil {
 				s.cfg.OnError("a2a", err)
 			}
 		}()
 	}
-
-	bootID := generateBootID()
-	startedAt := time.Now()
-
-	// SDWAN reconciler — runs synchronously inside the heartbeat tick
-	// (PostSend hook) so the cadence stays unified with module-digest +
-	// authorized_keys propagation. Errors surface via the same OnError
-	// channel; failures don't stop the heartbeat.
-	sdwanMgr := sdwan.NewManager(client, nil, s.cfg.OnError)
 
 	// Phase B docker daemon reconciler — same shape as SDWAN. Inherits
 	// the heartbeat's cadence, mTLS auth, and OnError surface. Sourcing

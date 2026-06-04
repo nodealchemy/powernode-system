@@ -22,6 +22,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -33,6 +35,50 @@ type KeyFetcher interface {
 
 // CapabilityKeysPath is the node_api advertisement endpoint.
 const CapabilityKeysPath = "/api/v1/system/node_api/a2a/capability_keys"
+
+// PeerAnnouncePath records this instance's offered A2A skills + reachable
+// addresses on its NodeInstancePeer, so the platform's discover_peers can
+// surface it for offload (e.g. a CPU-only agent finding an inference-bearing
+// peer). Closes the discovery loop: the daemon offers skills, the platform
+// learns them — without this, declared_skills stays empty and the peer is
+// invisible to discovery.
+const PeerAnnouncePath = "/api/v1/system/node_api/peer/announce"
+
+// Announcer POSTs the peer announcement. *transport.Client satisfies this.
+type Announcer interface {
+	PostJSON(path string, body []byte) (*http.Response, error)
+}
+
+// Announce reports the offered skills + reachable addresses to the platform.
+// Best-effort; the runner logs failures and retries on the next tick.
+func Announce(announcer Announcer, skills, addresses []string) error {
+	body, _ := json.Marshal(map[string]any{
+		"capabilities": map[string]any{
+			"os": runtime.GOOS, "arch": runtime.GOARCH,
+			"a2a": true, "inference": hasInferenceSkill(skills),
+		},
+		"skills":    skills,
+		"addresses": addresses,
+	})
+	resp, err := announcer.PostJSON(PeerAnnouncePath, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("announce status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func hasInferenceSkill(skills []string) bool {
+	for _, s := range skills {
+		if strings.HasPrefix(s, "inference.") {
+			return true
+		}
+	}
+	return false
+}
 
 type advertisedKey struct {
 	Handle       string `json:"handle"`
@@ -83,7 +129,9 @@ type RunnerConfig struct {
 	CABundleFile    string // platform node-issuing CA chain (PEM) — verifies peer certs
 	Registry        *Registry
 	Fetcher         KeyFetcher
-	RefreshInterval time.Duration // default 5m
+	RefreshInterval time.Duration   // default 5m
+	Announcer       Announcer       // optional; when set, announce offered skills to the platform
+	AdvertiseAddrs  func() []string // reachable A2A addresses (overlay:port), evaluated per announce
 	OnError         func(error)
 }
 
@@ -125,7 +173,7 @@ func Run(ctx context.Context, cfg RunnerConfig) error {
 		return fmt.Errorf("a2a: listen %s: %w", cfg.ListenAddr, err)
 	}
 
-	go cfg.keyRefreshLoop(ctx, verifier)
+	go cfg.refreshLoop(ctx, verifier)
 	go func() {
 		<-ctx.Done()
 		_ = httpSrv.Close()
@@ -137,7 +185,13 @@ func Run(ctx context.Context, cfg RunnerConfig) error {
 	return nil
 }
 
-func (cfg RunnerConfig) keyRefreshLoop(ctx context.Context, verifier *Verifier) {
+// refreshLoop keeps the verifier's capability keys fresh AND re-announces this
+// instance's offered skills each tick (so declared_skills + last_announced_at
+// stay current, and a reachable overlay address that wasn't up at startup gets
+// picked up). Announces once immediately so the peer registers without waiting
+// a full interval.
+func (cfg RunnerConfig) refreshLoop(ctx context.Context, verifier *Verifier) {
+	cfg.announce()
 	ticker := time.NewTicker(cfg.RefreshInterval)
 	defer ticker.Stop()
 	for {
@@ -148,7 +202,23 @@ func (cfg RunnerConfig) keyRefreshLoop(ctx context.Context, verifier *Verifier) 
 			if _, err := RefreshKeys(verifier, cfg.Fetcher); err != nil {
 				reportErr(cfg.OnError, fmt.Errorf("a2a: refresh capability keys: %w", err))
 			}
+			cfg.announce()
 		}
+	}
+}
+
+// announce reports the live offered skills + current reachable addresses. No-op
+// when no Announcer is configured (default-OFF, like the rest of A2A).
+func (cfg RunnerConfig) announce() {
+	if cfg.Announcer == nil {
+		return
+	}
+	var addrs []string
+	if cfg.AdvertiseAddrs != nil {
+		addrs = cfg.AdvertiseAddrs()
+	}
+	if err := Announce(cfg.Announcer, cfg.Registry.Names(), addrs); err != nil {
+		reportErr(cfg.OnError, fmt.Errorf("a2a: announce: %w", err))
 	}
 }
 

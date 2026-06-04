@@ -3,8 +3,24 @@ package runtime
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 )
+
+// a2aAdvertiseAddrs combines the node's reachable overlay address with the A2A
+// listen port into a single advertised address for peer discovery. Returns nil
+// when the overlay isn't up yet (the announce still carries the offered skills;
+// the reachable address fills in on a later tick once SDWAN populates it).
+func a2aAdvertiseAddrs(overlay, listenAddr string) []string {
+	if overlay == "" {
+		return nil
+	}
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" {
+		return nil
+	}
+	return []string{net.JoinHostPort(overlay, port)}
+}
 
 // runtimesFetcher is satisfied by *transport.Client (GetJSON).
 type runtimesFetcher interface {
