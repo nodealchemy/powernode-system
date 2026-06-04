@@ -1,0 +1,67 @@
+name: Docs checks
+
+# Documentation verification harness for the powernode-system extension.
+# Wires the read-only docs/.verify/*.sh scripts into CI on doc-touching PRs.
+#
+# GATING POLICY:
+#   - check-links.sh   -> HARD gate (broken markdown links fail the job)
+#   - check-code-refs.sh   -> advisory (continue-on-error)
+#   - check-mcp-actions.sh -> advisory (continue-on-error; also self-skips
+#                             when the parent platform registry isn't around,
+#                             which it won't be in this standalone checkout)
+#
+# OPERATOR OVERRIDE:
+#   Include `[docs-skip-verify]` in the head commit message to skip every
+#   verify step (e.g. during a documented breaking doc refactor). The guard
+#   step reads the real head commit message via git and gates the rest.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '*.md'
+      - 'CLAUDE.md'
+      - 'CONTRIBUTING.md'
+      - 'README.md'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read the actual head commit message and decide whether to skip.
+      # We read it from git (not the event payload) so the marker works
+      # regardless of Gitea's pull_request payload shape.
+      - name: Check for skip marker
+        id: guard
+        run: |
+          msg="$(git log -1 --pretty=%B)"
+          if printf '%s' "$msg" | grep -qF '[docs-skip-verify]'; then
+            echo "[docs-skip-verify] found in head commit — skipping doc verification."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # HARD gate: broken markdown links fail the build.
+      - name: check-links (gate)
+        if: steps.guard.outputs.skip != 'true'
+        run: bash docs/.verify/check-links.sh
+
+      # Advisory: missing code-path references are reported but do not fail.
+      - name: check-code-refs (advisory)
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        run: bash docs/.verify/check-code-refs.sh
+
+      # Advisory: unknown MCP actions are reported but do not fail. Self-skips
+      # (exit 0) when the parent platform's tool registry isn't reachable from
+      # this standalone extension checkout.
+      - name: check-mcp-actions (advisory)
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        run: bash docs/.verify/check-mcp-actions.sh
