@@ -129,7 +129,41 @@ module System
         }
       end
       persist_fleet!("assignments", assignments)
-      { ok: true, count: assignments.size, delegation: delegation, assignments: assignments }
+      dispatched = dispatch_a2a_tasks!(assignments, plan)
+      { ok: true, count: assignments.size, delegation: delegation,
+        assignments: assignments, dispatched_tasks: dispatched }
+    end
+
+    # Turn the minted sub-delegations into on-node work: one a2a_call System::Task
+    # per (assignee -> target) edge, addressed to the assignee's NodeInstance so
+    # its agent task loop executes the A2A call (presenting the capability token)
+    # and reports via execute_result — the on-node half of the delegation. Only
+    # token-bearing edges are dispatchable. Returns the task count.
+    def dispatch_a2a_tasks!(assignments, plan)
+      payload_by_subtask = Array(plan["subtasks"]).to_h { |st| [st["id"], st["payload"]] }
+      task_ids = []
+      assignments.each do |a|
+        assignee = ::System::NodeInstance.where(account_id: account.id).find_by(id: a["assignee_instance_id"])
+        next unless assignee
+        Array(a["sub_delegation_targets"]).each do |t|
+          next unless t.is_a?(::Hash) && t["capability_token"].present?
+          task = ::System::Task.create!(
+            account: account, operable: assignee, command: "a2a_call", status: "pending",
+            options: {
+              "target_instance_id" => t["target_instance_id"],
+              "target_addresses" => t["target_addresses"],
+              "skill" => t["skill"],
+              "args" => payload_by_subtask[a["subtask_id"]] || {},
+              "capability_token" => t["capability_token"].slice("envelope", "signature"),
+              "fleet_mission_id" => mission.id,
+              "subtask_id" => a["subtask_id"]
+            }
+          )
+          task_ids << task.id
+        end
+      end
+      persist_fleet!("dispatched_task_ids", task_ids)
+      task_ids.size
     end
 
     # Phase 4 — aggregate per-subtask delegation state. delegate! mints the

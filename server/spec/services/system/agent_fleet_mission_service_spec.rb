@@ -108,10 +108,26 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       expect(tok["handle"]).to be_present
     end
 
-    it "records no sub-delegation targets in central mode" do
+    it "dispatches an on-node a2a_call task per tokenized sub-delegation (hybrid)" do
+      result = service.delegate!
+      expect(result[:dispatched_tasks]).to be_positive
+
+      a2a_tasks = System::Task.where(command: "a2a_call")
+      expect(a2a_tasks.count).to eq(result[:dispatched_tasks])
+      opt = a2a_tasks.first.options
+      expect(opt["skill"]).to eq("embed-text")
+      expect(opt["capability_token"]["envelope"]).to be_present
+      expect(opt["target_addresses"]).to be_a(Array)
+      # the task is addressed to an assignee member NodeInstance.
+      expect(a2a_tasks.first.operable_type).to eq("System::NodeInstance")
+    end
+
+    it "records no sub-delegation targets + dispatches nothing in central mode" do
       mission.update!(configuration: deep_set(mission.configuration, %w[fleet plan delegation], "central"))
       result = service.delegate!
       expect(result[:assignments].first["sub_delegation_targets"]).to eq([])
+      expect(result[:dispatched_tasks]).to eq(0)
+      expect(System::Task.where(command: "a2a_call").count).to eq(0)
     end
   end
 

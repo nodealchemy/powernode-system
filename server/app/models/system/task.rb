@@ -18,6 +18,7 @@ module System
       build_module commit_module
       ssh_command
       backup restore
+      a2a_call
       custom
     ].freeze
 
