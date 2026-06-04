@@ -192,6 +192,7 @@ module System
 
         decision = gate_result.merge(
           signal_kind: signal.kind,
+          fingerprint: signal.fingerprint, # self-improvement: the validate-step match key
           action_category: binding[:action_category],
           skill_result: skill_result
         )

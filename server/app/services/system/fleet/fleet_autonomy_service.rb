@@ -60,9 +60,21 @@ module System
         collect_project_metrics!(correlation_id: tick_correlation)
 
         signals = collect_signals
+
+        # Self-improvement Phase 0 — the validate step. Score the PREVIOUS tick's
+        # remediations against THIS fresh sense pass before deciding anew: a prior
+        # action whose triggering signal fingerprint is gone was effective; still
+        # present means it didn't stick. Closes sense -> act -> VALIDATE. Best-
+        # effort — a validator hiccup must never break the autonomy tick.
+        validator = ::System::Fleet::RemediationValidator.new(account: account, agent: agent)
+        validation = safe_validate(validator, signals)
+
         engine = DecisionEngine.new(autonomy_service: self)
         decisions = engine.decide_all(signals)
         LearningExtractor.record_tick!(account: account, decisions: decisions)
+
+        # Snapshot newly-PROCEEDED remediations so a later tick can validate them.
+        recorded = safe_record(validator, decisions, signals, tick_correlation)
 
         # After decisions land, emit fleet-side stigmergic signals so trading
         # + other subsystems can perceive the current pressure state. Best-effort.
@@ -73,7 +85,9 @@ module System
           payload: {
             signal_count: signals.size,
             decision_count: decisions.size,
-            by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size)
+            by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
+            validated: validation,
+            remediations_recorded: recorded
           },
           source: "fleet_autonomy", correlation_id: tick_correlation
         )
@@ -84,6 +98,8 @@ module System
           decision_count: decisions.size,
           by_kind: decisions.group_by { |d| d[:signal_kind] }.transform_values(&:size),
           by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
+          validated: validation,
+          remediations_recorded: recorded,
           correlation_id: tick_correlation
         }
       end
@@ -96,6 +112,22 @@ module System
           Rails.logger.error("[FleetAutonomy] sensor #{sensor_class.name} failed: #{e.message}")
         end
         signals
+      end
+
+      # Best-effort wrappers — a self-improvement validator hiccup must never
+      # break the core autonomy tick (sense + decide must always run).
+      def safe_validate(validator, signals)
+        validator.validate_due!(current_signals: signals)
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] remediation validation failed: #{e.class}: #{e.message}")
+        { effective: 0, ineffective: 0 }
+      end
+
+      def safe_record(validator, decisions, signals, correlation_id)
+        validator.record_proceeded!(decisions: decisions, signals: signals, correlation_id: correlation_id)
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] remediation recording failed: #{e.class}: #{e.message}")
+        0
       end
 
       # Pre-sensor metrics sampling. Walks active infrastructure missions
