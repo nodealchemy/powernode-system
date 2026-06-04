@@ -39,6 +39,19 @@ module System
         docker_runtime: "kata-fc", k8s_runtime_class: "kata-fc",
         strength: "microvm", overhead: "medium", requires: %w[firecracker kata-runtime]
       },
+      # Confidential compute: a Kata microVM whose guest memory is hardware-
+      # encrypted + remotely attestable (AMD SEV-SNP / Intel TDX). The strongest
+      # tier — the threat model for untrusted multi-tenant agent workloads where
+      # even the host operator shouldn't see guest memory. Runs on the same Kata
+      # runtime selecting a TEE-enabled hypervisor config; needs CPU TEE support.
+      "sev" => {
+        docker_runtime: "kata-qemu-snp", k8s_runtime_class: "kata-qemu-snp",
+        strength: "confidential-vm", overhead: "high", requires: %w[kata-runtime sev]
+      },
+      "tdx" => {
+        docker_runtime: "kata-qemu-tdx", k8s_runtime_class: "kata-qemu-tdx",
+        strength: "confidential-vm", overhead: "high", requires: %w[kata-runtime tdx]
+      },
       "vm" => {
         # Not a container runtime — a full guest VM via the NodeInstance VM
         # provisioning path. Carried here so the dimension is total.

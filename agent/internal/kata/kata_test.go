@@ -86,15 +86,34 @@ func TestMergeRuntime(t *testing.T) {
 	}
 }
 
+func TestConfidentialVariants(t *testing.T) {
+	sev, ok := VariantFor("sev", "")
+	if !ok || sev.RuntimeName != SNPRuntimeName || !sev.Confidential() || sev.TEEDevice != SEVDevice {
+		t.Fatalf("sev: %+v ok=%v", sev, ok)
+	}
+	if len(sev.RuntimeArgs) != 2 || sev.RuntimeArgs[1] != DefaultSNPConfigPath {
+		t.Fatalf("sev config arg: %v", sev.RuntimeArgs)
+	}
+	tdx, ok := VariantFor("kata-qemu-tdx", "")
+	if !ok || tdx.RuntimeName != TDXRuntimeName || tdx.TEEDevice != TDXDevice {
+		t.Fatalf("tdx: %+v ok=%v", tdx, ok)
+	}
+	// Non-confidential variants must not advertise a TEE requirement.
+	if k, _ := VariantFor("kata", ""); k.Confidential() {
+		t.Fatal("plain kata must not be confidential")
+	}
+}
+
 func TestEnsureReadyAndDetect(t *testing.T) {
 	dir := t.TempDir()
 	kvm := filepath.Join(dir, "kvm")
-	orig := KVMDevice
-	defer func() { KVMDevice = orig }()
+	origKVM, origSEV := KVMDevice, SEVDevice
+	defer func() { KVMDevice, SEVDevice = origKVM, origSEV }()
+	basic, _ := VariantFor("kata", "")
 
 	// KVM absent → error mentions the device.
 	KVMDevice = filepath.Join(dir, "absent")
-	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, ""); err == nil {
+	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, "", basic); err == nil {
 		t.Fatal("expected error when KVM is absent")
 	}
 
@@ -103,13 +122,30 @@ func TestEnsureReadyAndDetect(t *testing.T) {
 		t.Fatal(err)
 	}
 	KVMDevice = kvm
-	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, ""); err != nil {
+	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, "", basic); err != nil {
 		t.Fatalf("expected ready: %v", err)
 	}
 
 	// KVM present but binary not runnable → error.
-	if err := EnsureReady(context.Background(), fakeRunner{fail: true}, ""); err == nil {
+	if err := EnsureReady(context.Background(), fakeRunner{fail: true}, "", basic); err == nil {
 		t.Fatal("expected error when the kata runtime binary is not runnable")
+	}
+
+	// Confidential variant: KVM present but TEE device absent → error.
+	sev, _ := VariantFor("sev", "")
+	SEVDevice = filepath.Join(dir, "no-sev")
+	sev.TEEDevice = SEVDevice
+	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, "", sev); err == nil {
+		t.Fatal("expected error when the confidential TEE device is absent")
+	}
+	// TEE device present → ready.
+	tee := filepath.Join(dir, "sev")
+	if err := os.WriteFile(tee, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sev.TEEDevice = tee
+	if err := EnsureReady(context.Background(), fakeRunner{version: "kata 3.0"}, "", sev); err != nil {
+		t.Fatalf("expected confidential ready: %v", err)
 	}
 
 	// Detect reflects binary + KVM + registration; Version is first line only.

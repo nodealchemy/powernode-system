@@ -34,27 +34,50 @@ const (
 	DefaultBinaryPath = "/usr/bin/kata-runtime"
 	// DefaultFCConfigPath is the kata configuration that selects the Firecracker VMM.
 	DefaultFCConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-fc.toml"
+
+	// Confidential-compute runtimes: Kata selecting a TEE-enabled hypervisor
+	// config so guest memory is hardware-encrypted + attestable.
+	SNPRuntimeName = "kata-qemu-snp" // AMD SEV-SNP
+	TDXRuntimeName = "kata-qemu-tdx" // Intel TDX
+	DefaultSNPConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-snp.toml"
+	DefaultTDXConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu-tdx.toml"
 )
 
-// KVMDevice must exist for any microVM runtime to boot guests. A var (not const)
-// so tests can point it at a present/absent path.
-var KVMDevice = "/dev/kvm"
+// KVMDevice must exist for any microVM runtime to boot guests. SEVDevice /
+// TDXDevice are the host indicators that the CPU's trusted-execution environment
+// is available for a confidential (encrypted-memory) guest. Vars (not consts) —
+// host-kernel-dependent, so operators can tune them and tests can point them at
+// a present/absent path.
+var (
+	KVMDevice = "/dev/kvm"
+	SEVDevice = "/dev/sev"
+	TDXDevice = "/dev/tdx_guest"
+)
 
 // Variant describes how one requested isolation runtime registers with Docker.
 type Variant struct {
 	RuntimeName string   // daemon.json runtimes key, e.g. "kata-runtime" / "kata-fc"
-	RuntimeArgs []string // optional runtimeArgs (Firecracker selects its config here)
+	RuntimeArgs []string // optional runtimeArgs (FC / TEE variants select their config here)
+	TEEDevice   string   // host TEE device a confidential variant requires ("" = none)
 }
+
+// Confidential reports whether this variant needs a hardware TEE (SEV/TDX).
+func (v Variant) Confidential() bool { return v.TEEDevice != "" }
 
 // VariantFor maps a requested runtime/tier name to its Docker registration, or
 // false if this package doesn't handle that name. Accepts both the tier name
-// ("kata"/"firecracker") and the docker runtime name ("kata-runtime"/"kata-fc").
+// ("kata"/"firecracker"/"sev"/"tdx") and the docker runtime name
+// ("kata-runtime"/"kata-fc"/"kata-qemu-snp"/"kata-qemu-tdx").
 func VariantFor(name, fcConfigPath string) (Variant, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "kata", RuntimeName:
 		return Variant{RuntimeName: RuntimeName}, true
 	case "firecracker", FCRuntimeName:
 		return Variant{RuntimeName: FCRuntimeName, RuntimeArgs: []string{"--config", orDefault(fcConfigPath, DefaultFCConfigPath)}}, true
+	case "sev", SNPRuntimeName:
+		return Variant{RuntimeName: SNPRuntimeName, RuntimeArgs: []string{"--config", DefaultSNPConfigPath}, TEEDevice: SEVDevice}, true
+	case "tdx", TDXRuntimeName:
+		return Variant{RuntimeName: TDXRuntimeName, RuntimeArgs: []string{"--config", DefaultTDXConfigPath}, TEEDevice: TDXDevice}, true
 	default:
 		return Variant{}, false
 	}
@@ -118,13 +141,18 @@ func Detect(ctx context.Context, runner mount.Runner, binaryPath, runtimeName st
 	return st
 }
 
-// EnsureReady validates that Kata can run (binary + KVM) WITHOUT downloading
+// EnsureReady validates that the variant can run (KVM, plus a host TEE device
+// for confidential variants, plus a runnable runtime binary) WITHOUT downloading
 // anything. Returns an actionable error when prerequisites are missing — the
 // multi-artifact runtime must be provisioned out of band (kata-containers module
 // / host image). Unlike gVisor.EnsureInstalled there is no install path here.
-func EnsureReady(ctx context.Context, runner mount.Runner, binaryPath string) error {
-	if !kvmPresent() {
+func EnsureReady(ctx context.Context, runner mount.Runner, binaryPath string, v Variant) error {
+	if !pathPresent(KVMDevice) {
 		return fmt.Errorf("kata: %s not present — hardware virtualization (KVM) is required for microVM isolation", KVMDevice)
+	}
+	if v.Confidential() && !pathPresent(v.TEEDevice) {
+		return fmt.Errorf("kata: confidential runtime %q requires a host TEE device at %s (CPU SEV-SNP/TDX support) — not present",
+			v.RuntimeName, v.TEEDevice)
 	}
 	if _, err := runner.Output(ctx, resolveBinary(binaryPath), "--version"); err != nil {
 		return fmt.Errorf("kata: runtime not runnable at %s (provision the kata-containers module / host image first): %w",
@@ -133,8 +161,10 @@ func EnsureReady(ctx context.Context, runner mount.Runner, binaryPath string) er
 	return nil
 }
 
-func kvmPresent() bool {
-	_, err := os.Stat(KVMDevice)
+func kvmPresent() bool { return pathPresent(KVMDevice) }
+
+func pathPresent(p string) bool {
+	_, err := os.Stat(p)
 	return err == nil
 }
 

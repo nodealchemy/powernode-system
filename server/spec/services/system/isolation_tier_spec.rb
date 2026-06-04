@@ -5,8 +5,10 @@ require "rails_helper"
 # AI/MCP workload substrate L0 — isolation tier seam.
 RSpec.describe System::IsolationTier do
   describe ".names / .valid?" do
-    it "exposes the five tiers" do
-      expect(described_class.names).to contain_exactly("native", "gvisor", "kata", "firecracker", "vm")
+    it "exposes the seven tiers" do
+      expect(described_class.names).to contain_exactly(
+        "native", "gvisor", "kata", "firecracker", "sev", "tdx", "vm"
+      )
     end
 
     it "validates membership" do
@@ -43,12 +45,18 @@ RSpec.describe System::IsolationTier do
       expect(p["docker_runtime"]).to eq("kata-fc")
       expect(p["strength"]).to eq("microvm")
     end
+
+    it "maps the confidential tiers to TEE-enabled Kata runtimes" do
+      expect(described_class.docker_runtime("sev")).to eq("kata-qemu-snp")
+      expect(described_class.docker_runtime("tdx")).to eq("kata-qemu-tdx")
+      expect(described_class.profile("sev")["strength"]).to eq("confidential-vm")
+    end
   end
 
   describe ".catalog" do
     it "lists every tier with mapping, requirements, and the default flag" do
       cat = described_class.catalog
-      expect(cat.size).to eq(5)
+      expect(cat.size).to eq(7)
 
       native = cat.find { |t| t["tier"] == "native" }
       expect(native["default"]).to be true
@@ -61,10 +69,12 @@ RSpec.describe System::IsolationTier do
   end
 
   describe ".requires_runtime? / .required_runtimes_for" do
-    it "is true for gvisor/kata/firecracker, false for native/vm" do
+    it "is true for gvisor/kata/firecracker/sev/tdx, false for native/vm" do
       expect(described_class.requires_runtime?("gvisor")).to be true
       expect(described_class.requires_runtime?("kata")).to be true
       expect(described_class.requires_runtime?("firecracker")).to be true
+      expect(described_class.requires_runtime?("sev")).to be true
+      expect(described_class.requires_runtime?("tdx")).to be true
       expect(described_class.requires_runtime?("native")).to be false
       expect(described_class.requires_runtime?("vm")).to be false
     end

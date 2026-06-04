@@ -96,7 +96,7 @@ func (e KataRuntimeEnsurer) Ensure(ctx context.Context, runtimeName string, daem
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnsupportedRuntime, runtimeName)
 	}
-	if err := kata.EnsureReady(ctx, e.Runner, e.BinaryPath); err != nil {
+	if err := kata.EnsureReady(ctx, e.Runner, e.BinaryPath, variant); err != nil {
 		return err
 	}
 	if daemonConfig != nil {
