@@ -127,7 +127,7 @@ func (o Orchestrator) Default() Orchestrator {
 //  1. Resolve identity (cmdline → fwcfg → claim → cloud → local)
 //  2. Fast path: existing PKI on disk → skip enroll, jump to mount
 //  3. Otherwise: enroll via /node_api/enroll, persist PKI
-//  4. Mount composefs+overlay union at /sysroot
+//  4. Mount erofs+overlay union at /sysroot
 //  5. switch_root /sysroot /sbin/init
 func (o *Orchestrator) Boot(ctx context.Context) error {
 	if o == nil {

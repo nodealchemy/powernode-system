@@ -62,8 +62,8 @@ jobs:
           sudo apt-get install -yq \
             mmdebstrap \
             dnf \
-            composefs \
             erofs-utils \
+            fsverity \
             cosign \
             oras \
             rsync \
@@ -136,10 +136,10 @@ jobs:
             --setopt=install_weak_deps=false \
             $(echo "${{ steps.parse.outputs.package_list }}" | tr ',' ' ')
 
-      - name: Carve per-module tarballs + composefs blobs
+      - name: Carve per-module tarballs + erofs blobs
         run: |
           set -euo pipefail
-          mkdir -p /tmp/carved /tmp/composefs-store /tmp/artifacts
+          mkdir -p /tmp/carved /tmp/artifacts
           REPORT="[]"
           jq -c '.[]' /tmp/modules.filtered.json | while read -r module; do
             MODULE_ID=$(echo "$module" | jq -r '.module_id')
@@ -161,19 +161,28 @@ jobs:
               cd -
             fi
 
-            # Build composefs erofs image with content-addressed dedup store
-            sudo mkcomposefs --digest-store=/tmp/composefs-store "$CARVE_DIR" "/tmp/artifacts/$MODULE_ID.cfs" || \
-              echo "mkcomposefs failed for $MODULE_ID, continuing"
+            # Build erofs image — universal read-only lower-dir (matches build-platform-modules.yaml's
+            # Stage-2 composer). -zlz4hc = cheap decompression; --all-root = stable ownership so
+            # fs-verity hashes match across CI runs + production hosts. (composefs was retired — the
+            # erofs-only agent cannot mount .cfs; see powernode.composefs_ubuntu_kernel_gap.)
+            sudo mkfs.erofs -zlz4hc --all-root "/tmp/artifacts/$MODULE_ID.erofs" "$CARVE_DIR" || \
+              echo "mkfs.erofs failed for $MODULE_ID, continuing"
 
-            SIZE=$(stat -c%s "/tmp/artifacts/$MODULE_ID.cfs" 2>/dev/null || echo 0)
-            DIGEST=$(sha256sum "/tmp/artifacts/$MODULE_ID.cfs" 2>/dev/null | awk '{print $1}' || echo "")
+            SIZE=$(stat -c%s "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null || echo 0)
+            DIGEST=$(sha256sum "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null | awk '{print $1}' || echo "")
+            # fs-verity Merkle root — stored as NodeModuleVersion/ModuleArtifact.fsverity_root_hash
+            # so the on-node agent can tamper-verify the erofs lower at mount (parity with
+            # build-platform-modules.yaml). Distinct from the sha256 oci_digest above.
+            FSVERITY_ROOT=$(fsverity digest --hash-alg=sha256 "/tmp/artifacts/$MODULE_ID.erofs" 2>/dev/null | awk '{print $1}' || echo "")
             FILE_SPEC=$(cat /tmp/$MODULE_ID.filelist | jq -R -s -c 'split("\n") | map(select(length > 0))')
 
             REPORT=$(echo "$REPORT" | jq --arg mid "$MODULE_ID" \
                                           --arg digest "$DIGEST" \
+                                          --arg fsroot "$FSVERITY_ROOT" \
+                                          --arg media "application/vnd.powernode.module.v1" \
                                           --argjson size "$SIZE" \
                                           --argjson fs "$FILE_SPEC" \
-                                          '. + [{module_id: $mid, oci_digest: $digest, size_bytes: $size, file_spec: $fs}]')
+                                          '. + [{module_id: $mid, oci_digest: $digest, fsverity_root_hash: $fsroot, media_type: $media, size_bytes: $size, file_spec: $fs}]')
           done
           echo "$REPORT" > /tmp/build-report.json
           cat /tmp/build-report.json
@@ -190,14 +199,15 @@ jobs:
           echo "$REPORT" | jq -c '.[]' | while read -r entry; do
             MODULE_ID=$(echo "$entry" | jq -r '.module_id')
             DIGEST=$(echo "$entry" | jq -r '.oci_digest')
-            BLOB="/tmp/artifacts/$MODULE_ID.cfs"
+            BLOB="/tmp/artifacts/$MODULE_ID.erofs"
             [ ! -f "$BLOB" ] && continue
 
             OCI_REF="$REGISTRY/powernode/modules/$MODULE_ID:${{ inputs.closure_id }}-${{ inputs.architecture }}"
-            # oras push uploads the composefs blob as an OCI artifact
+            # oras push uploads the erofs blob as an OCI artifact (mediaType matches
+            # build-platform-modules.yaml so the agent's OCI puller handles both identically).
             oras push "$OCI_REF" \
-              --artifact-type "application/vnd.powernode.module.composefs.v1" \
-              "$BLOB:application/vnd.powernode.module.composefs.v1" || true
+              --artifact-type "application/vnd.powernode.module.v1" \
+              "$BLOB:application/vnd.powernode.erofs" || true
 
             # cosign sign-blob (keyless via Fulcio in CI; 30s timeout for OIDC fetch)
             BUNDLE=$(timeout 30 cosign sign-blob --yes --bundle - "$BLOB" 2>/dev/null || echo "")

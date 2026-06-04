@@ -71,7 +71,7 @@ func (o *Overlay) EnsureUpperWorkDirs(ctx context.Context) error {
 }
 
 // MountUnion assembles the overlayfs at l.SysRoot. Each Module in stack
-// is expected to already be composefs-mounted at its per-module path
+// is expected to already be erofs-mounted at its per-module path
 // (call MountModule for each first).
 func (o *Overlay) MountUnion(ctx context.Context, stack ModuleStack) error {
 	if len(stack) == 0 {

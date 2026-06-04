@@ -1,10 +1,10 @@
-// Package mount orchestrates the composefs + overlayfs union mount for
-// modules attached to a node instance. The module artifacts (composefs
-// metadata images + digest stores) are pulled via oras + verified via
+// Package mount orchestrates the erofs + overlayfs union mount for
+// modules attached to a node instance. The module artifacts (erofs
+// images + digest stores) are pulled via oras + verified via
 // cosign + fs-verity, then mounted in priority order as overlay lowers,
 // with a tmpfs upper layer and a /var bind mount onto /persist/var.
 //
-// Reference: Golden Eclipse plan M2.D + Security Architecture (composefs
+// Reference: Golden Eclipse plan M2.D + Security Architecture (erofs
 // fs-verity at file open + capability dropping); legacy ipn_functions
 // ipn_mod_attach + ipn_mod_detach (which used aufs branch ops).
 package mount

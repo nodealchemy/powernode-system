@@ -132,7 +132,7 @@ module System
         oci_ref:               entry[:oci_ref],
         oci_digest:            entry[:oci_digest],
         architecture:          arch,
-        media_type:            entry[:media_type] || "application/vnd.powernode.module.composefs.v1",
+        media_type:            entry[:media_type] || ::System::ModuleArtifact::DEFAULT_MEDIA_TYPE,
         size_bytes:            entry[:size_bytes],
         fsverity_root_hash:    entry[:fsverity_root_hash],
         cosign_bundle:         entry[:cosign_bundle],

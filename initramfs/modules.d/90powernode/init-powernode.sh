@@ -6,7 +6,7 @@
 #      where the kernel supports it).
 #   2. Hand off to `powernode-agent boot`, which orchestrates the entire first-boot
 #      flow: identity discovery → enrollment → OCI module pull → cosign verify
-#      → composefs mount → switch_root.
+#      → erofs mount → switch_root.
 #   3. If the agent cannot complete (network down, enrollment denied, etc.),
 #      drop into the dracut emergency shell with a helpful banner instead of
 #      panic'ing the kernel — the operator can recover via console.
@@ -83,4 +83,4 @@ if ! /sbin/powernode-agent boot; then
     powernode_emergency "powernode-agent boot failed (exit $?)"
 fi
 
-powernode_log "powernode-agent boot returned successfully — overlayfs/composefs prepared"
+powernode_log "powernode-agent boot returned successfully — overlayfs/erofs prepared"

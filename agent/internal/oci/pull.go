@@ -117,7 +117,7 @@ func (p *Puller) FetchManifest(moduleID string) (*ModuleArtifactRef, error) {
 }
 
 // Pull downloads the artifact at ref into the cache directory.
-// Returns the local paths to the composefs blob and the (expected)
+// Returns the local paths to the erofs blob and the (expected)
 // signature bundle. Idempotent: cached file matching ref.Digest =
 // no-op.
 //

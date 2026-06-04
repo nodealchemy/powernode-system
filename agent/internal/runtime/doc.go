@@ -9,7 +9,7 @@
 // Per-tick (default interval 30s, configurable via Config.HeartbeatInterval):
 //
 //   1. POST /node_api/status with heartbeat (uptime, version, last result)
-//   2. POST /node_api/modules → reconcile assignments → mount/composefs.Apply
+//   2. POST /node_api/modules → reconcile assignments → mount erofs + overlay union
 //   3. dockerd.Manager.Tick (if docker-engine module assigned)
 //   4. k3sd.Manager.Tick (if k3s-server / k3s-agent module assigned)
 //   5. sdwan.Manager.Tick — apply wg + nft + FRR config from platform

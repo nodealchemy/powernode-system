@@ -15,7 +15,7 @@ check() {
     return 0
 }
 
-# Need overlay + composefs for union mounts; need network for enrollment.
+# Need overlay + erofs for union mounts; need network for enrollment.
 # Prefer systemd-networkd over the legacy network module — Ubuntu 24.04 ships
 # systemd-networkd by default and dropped isc-dhcp-client (which "network-legacy"
 # depends on) from the base install. systemd-resolved gives us /etc/resolv.conf

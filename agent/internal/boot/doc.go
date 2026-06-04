@@ -11,7 +11,7 @@
 //
 //   - internal/identity — discover who-am-I (cloud / libvirt / cmdline)
 //   - internal/enroll   — CSR → mTLS cert exchange
-//   - internal/mount    — composefs + overlayfs assembly
+//   - internal/mount    — erofs + overlayfs assembly
 //   - internal/transport — HTTP client used by enroll
 //
 // # Switch-root injection

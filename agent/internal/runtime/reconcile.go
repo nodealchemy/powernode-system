@@ -39,7 +39,7 @@ type ReconcilerConfig struct {
 	// ManifestRoot is the cache root for on-disk manifest JSON files.
 	// Defaults to manifest.DefaultRoot when empty.
 	ManifestRoot string
-	// Puller pulls module artifacts (composefs blob + cosign bundle).
+	// Puller pulls module artifacts (erofs blob + cosign bundle).
 	Puller PullerAPI
 	// Verifier verifies cosign signatures against the bundle. May be
 	// verify.AlwaysOK in dev/test.

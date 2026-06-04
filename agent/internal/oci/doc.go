@@ -1,7 +1,7 @@
 // Package oci pulls module artifacts from the OCI registry (registry.example.com by
 // default) and verifies them before handoff to internal/mount.
 //
-// Each module artifact is a tar of the composefs lower layer + manifest.json.
+// Each module artifact is a tar of the erofs lower layer + manifest.json.
 // The pull flow:
 //
 //   1. Resolve the artifact reference from the platform's module manifest
@@ -9,8 +9,8 @@
 //   2. oras pull — uses the agent's mTLS cert as registry credentials
 //   3. Cosign signature verification (see internal/verify) — checks identity
 //      regexp + issuer regexp from the module's NodeModuleVersion record
-//   4. fs-verity digest verification on the unpacked composefs file
-//   5. Return path to the verified artifact for mount.Composefs.Layer to use
+//   4. fs-verity digest verification on the unpacked erofs file
+//   5. Return path to the verified artifact for mount.MountModule to loop-mount
 //
 // # Key types
 //

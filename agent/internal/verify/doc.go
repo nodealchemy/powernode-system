@@ -1,5 +1,5 @@
 // Package verify validates module artifacts before mount: cosign keyless
-// signatures (Sigstore Fulcio) + fs-verity digests of composefs lower layers.
+// signatures (Sigstore Fulcio) + fs-verity digests of erofs lower layers.
 //
 // Splits into two sub-flows:
 //
@@ -8,8 +8,8 @@
 //     Keyless verification — no long-lived signing keys; certs are ephemeral
 //     OIDC-bound.
 //
-//   - fs-verity: verifies the composefs lower layer's hash matches the
-//     digest committed at publication time (NodeModuleVersion.composefs_digest).
+//   - fs-verity: verifies the erofs lower layer's hash matches the
+//     digest committed at publication time (NodeModuleVersion.fsverity_root_hash).
 //     This is the runtime-tamper-evident layer — kernel checks every read.
 //
 // # Key functions

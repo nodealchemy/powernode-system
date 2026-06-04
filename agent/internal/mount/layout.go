@@ -83,7 +83,7 @@ func (l Layout) ModuleCachePath(digest string) string {
 }
 
 // DigestStorePath returns the shared content-addressed store directory
-// (one per node, all modules share). composefs's mount option points at
+// (one per node, all modules share). erofs's mount option points at
 // this dir for the actual file contents.
 func (l Layout) DigestStorePath() string {
 	return filepath.Join(l.ModulesCacheRoot, ".store")
