@@ -138,16 +138,26 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       service.delegate!
     end
 
-    it "reports per-subtask delegation state with token coverage" do
+    it "reports token coverage + dispatched task progress" do
       result = service.aggregate!
       report = result[:report]
       expect(report["subtasks_total"]).to eq(2)
-      # delegate! minted capability tokens for the authorized sub-delegations.
+      # delegate! minted capability tokens + dispatched a2a_call tasks.
       expect(report["delegation_tokens_minted"]).to be_positive
-      expect(report["results"].first["sub_delegations_tokenized"]).to be_positive
-      # No on-node execution reported yet in the simulated mission, so each
-      # subtask is dispatched (tokens minted) but not yet executed.
+      expect(report["tasks_dispatched"]).to be_positive
+      expect(report["tasks_complete"]).to eq(0)
+      first = report["results"].first
+      expect(first["sub_delegations_tokenized"]).to be_positive
+      expect(first["dispatched_tasks"]).to be_positive
+      # Tasks are pending (no on-node execution in the simulated mission).
       expect(report["results"].map { |r| r["status"] }).to all(eq("dispatched"))
+    end
+
+    it "flips a subtask to executed once its dispatched tasks complete" do
+      System::Task.where(command: "a2a_call").update_all(status: "complete")
+      report = service.aggregate![:report]
+      expect(report["tasks_complete"]).to be_positive
+      expect(report["results"].map { |r| r["status"] }).to all(eq("executed"))
     end
   end
 

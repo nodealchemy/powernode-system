@@ -177,30 +177,61 @@ module System
       peers_by_id = ::System::NodeInstancePeer.where(account_id: account.id)
                                               .where(id: assignments.filter_map { |a| a["assignee_peer_id"] })
                                               .index_by(&:id)
+      tasks_by_subtask = dispatched_tasks_by_subtask
       results = assignments.map do |a|
         targets = Array(a["sub_delegation_targets"])
         tokenized = targets.count { |t| t.is_a?(::Hash) && t["capability_token"].present? }
         peer = peers_by_id[a["assignee_peer_id"]]
         executions = peer&.execution_count.to_i
+        tasks = Array(tasks_by_subtask[a["subtask_id"]])
+        by_status = tasks.group_by(&:status).transform_values(&:size)
         {
           "subtask_id" => a["subtask_id"],
           "skill" => a["skill"],
           "assignee_instance_id" => a["assignee_instance_id"],
           "sub_delegations" => targets.size,
           "sub_delegations_tokenized" => tokenized,
+          "dispatched_tasks" => tasks.size,
+          "tasks_complete" => by_status["complete"].to_i,
+          "tasks_failed" => %w[failed aborted cancelled].sum { |s| by_status[s].to_i },
           "assignee_executions" => executions,
           "assignee_last_executed_at" => peer&.last_executed_at&.iso8601,
-          "status" => executions.positive? ? "executed" : "dispatched"
+          "status" => subtask_status(tasks, executions)
         }
       end
       report = {
         "subtasks_total" => assignments.size,
         "delegation_tokens_minted" => results.sum { |r| r["sub_delegations_tokenized"] },
+        "tasks_dispatched" => results.sum { |r| r["dispatched_tasks"] },
+        "tasks_complete" => results.sum { |r| r["tasks_complete"] },
         "results" => results,
         "aggregated_at" => Time.current.iso8601
       }
       persist_fleet!("report", report)
       { ok: true, report: report }
+    end
+
+    # The a2a_call tasks delegate! dispatched, grouped by the subtask they serve.
+    # Read each aggregate! so a re-run reflects current on-node progress.
+    def dispatched_tasks_by_subtask
+      ids = Array(mission.configuration.is_a?(Hash) ? mission.configuration.dig("fleet", "dispatched_task_ids") : nil)
+      return {} if ids.empty?
+
+      ::System::Task.where(account_id: account.id, id: ids)
+                    .to_a.group_by { |t| t.options.is_a?(Hash) ? t.options["subtask_id"] : nil }
+    end
+
+    # Honest subtask status from the dispatched tasks' real states (falls back to
+    # the peer execution signal when no tasks were dispatched, e.g. central mode).
+    def subtask_status(tasks, peer_executions)
+      return peer_executions.positive? ? "executed" : "dispatched" if tasks.empty?
+
+      statuses = tasks.map(&:status)
+      return "executed"  if statuses.all?("complete")
+      return "executing" if statuses.include?("running") || statuses.include?("complete")
+      return "failed"    if statuses.any? { |s| %w[failed aborted cancelled].include?(s) }
+
+      "dispatched"
     end
 
     # Phase 5 — reap ephemeral members: terminate (provision source) or return
