@@ -251,7 +251,7 @@ the throttle so legitimate module changes propagate quickly.
 
 ## Reference
 
-- Threat model: `<parent>/docs/history/audits/threat-model-2026-04.md` (lives in the parent platform tree; STRIDE analysis across the operator/worker/node API + MCP + CA + GitHub-mirror surfaces)
+- Threat model: the 2026-04 STRIDE analysis (operator/worker/node API + MCP + CA + GitHub-mirror surfaces) was archived under the parent platform's `docs/history/` tree, which has since been removed; consult the parent repo's security docs for the current threat model.
 - Module-as-Skill (parallel pattern): `extensions/system/server/app/services/system/module_skill_registrar.rb`
 
 _Last verified: 2026-06-03_

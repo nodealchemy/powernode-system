@@ -70,8 +70,8 @@ runs on every push to the system extension's `main` branch. It:
    long-lived keys; ephemeral OIDC-bound certs).
 5. Uploads non-OCI variants as Gitea release artifacts.
 6. Fires the platform's disk-image-built webhook (`POST
-   /api/v1/system/webhooks/disk_image_built`) with HMAC-validated metadata so
-   the platform creates `System::DiskImagePublication` rows.
+   /api/v1/system/webhooks/disk_image/built/<webhook_id>`) with HMAC-validated
+   metadata so the platform creates `System::DiskImagePublication` rows.
 
 ---
 
@@ -225,13 +225,19 @@ cd extensions/system/server
 bundle exec rspec spec/services/system/providers/local_qemu_provider_spec.rb
 ```
 
-For a real boot (requires libvirt + sudo):
+For a real boot (requires libvirt + sudo), run the smoke seed (there is no
+`LocalQemuProvider.smoke_test!` method — the smoke is driven by a seed script):
 
 ```bash
-cd extensions/system/server
-POWERNODE_LIBVIRT_MODE=real bundle exec rails runner \
-  'System::Providers::LocalQemuProvider.smoke_test!'
+cd server
+POWERNODE_LIBVIRT_MODE=real \
+POWERNODE_LIBVIRT_URI=qemu:///session \
+POWERNODE_IMAGE_BASE=$(realpath ../extensions/system/initramfs/build) \
+bundle exec rails runner \
+  "load Rails.root.join('../extensions/system/server/db/seeds/smoke_test_provision.rb')"
 ```
+
+See [`../docs/SMOKE_TEST.md`](../docs/SMOKE_TEST.md) Pass 1 for the full env + prerequisites.
 
 ---
 

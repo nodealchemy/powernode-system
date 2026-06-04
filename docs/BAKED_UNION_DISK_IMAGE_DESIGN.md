@@ -166,7 +166,9 @@ or the claim flow. No new identity mechanism required.
 
 ## Note
 
-`DISK_IMAGE_CI.md` still describes the module blob as "composefs" — that predates the
-erofs migration (commit `80b57be`) and should be refreshed alongside this work.
+The module blob format migrated from composefs to **erofs** (commit `80b57be`); the
+module CI's Stage 2 composer now runs `mkfs.erofs`. `DISK_IMAGE_CI.md` and
+`ARCHITECTURE.md` have been refreshed to match (earlier revisions described the blob as
+"composefs").
 
 _Last verified: 2026-06-03_

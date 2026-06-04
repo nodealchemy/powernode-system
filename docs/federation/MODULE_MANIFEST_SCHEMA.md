@@ -135,9 +135,13 @@ services:
 - Cross-service dependencies that disappear from the manifest delete the
   corresponding `ModuleServiceDependency` edge.
 
-This means: edit the manifest, re-publish, run `system.import_manifest` MCP
-action (or the equivalent operator path) — the platform's view converges on
-the new manifest without manual cleanup.
+This means: edit the manifest and re-publish — the platform's view converges on
+the new manifest without manual cleanup. Import is **not** a standalone MCP
+action: `ManifestImportService.import!` runs automatically on OCI ingest (the
+publication processor) and on the operator REST path that saves an edited
+`manifest_yaml` (`node_modules_controller`). To dry-run-validate a manifest
+payload *before* publishing, use the `system_validate_module_manifest` MCP
+action.
 
 ## On-Node Runtime
 

@@ -31,7 +31,7 @@ sequenceDiagram
     Op->>Plat: assign honeypot-canary module<br/>config: canary_files + canary_ports
     Plat-->>Agent: heartbeat picks up module
     Agent->>FS: write decoy files,<br/>start fake port daemons,<br/>start inotify watcher
-    Op->>Plat: system_node_mark_canary
+    Op->>Plat: system_module_mark_canary
     Note over FS: idle — should never be accessed
 
     Atk->>FS: cat /etc/cluster-admin-credentials.yaml
@@ -201,7 +201,10 @@ platform.governance_dashboard()
 **Sensor active:**
 
 ```javascript
-platform.agent_introspect({ agent_id: "fleet_autonomy_agent" })
+// agent_introspect resolves by UUID only — resolve "Fleet Autonomy" first:
+platform.list_agents()
+// → { agents: [{ id: "<fleet-autonomy-uuid>", name: "Fleet Autonomy", ... }, ...] }
+platform.agent_introspect({ agent_id: "<fleet-autonomy-uuid>" })
 // → recent_executions include honeypot_access_sensor ticks
 ```
 

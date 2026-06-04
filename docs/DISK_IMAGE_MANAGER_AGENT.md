@@ -166,10 +166,11 @@ sequenceDiagram
 
 ## Rollback / Revert Workflow
 
-The `system_revert_disk_image` MCP tool is aspirational — see
-[`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). Today's
-rollback uses the existing `system_set_default_disk_image_publication`
-action with the previous publication ID.
+The `system_revert_disk_image` MCP tool wraps this rollback path — it calls
+the `RollbackPublication` executor, auto-selecting the previous publication
+(or a specific one via `publication_id`). The lower-level
+`system_set_default_disk_image_publication` action remains available for an
+explicit set-default swap.
 
 ### Operator-driven (incident response)
 
@@ -202,16 +203,16 @@ to trigger it autonomously (see the autonomy-tick caveat at the top) —
 so the rollback executor is reached via operator-initiated approval, not
 a sensor tick.
 
-### Why no dedicated revert wrapper
+### The two swap mechanisms
 
-`system_set_default_disk_image_publication` already atomically swaps the
-NodePlatform's default, and the `RollbackPublication` executor handles
-the approval-gated path including artifact restore. A separate
-`system_revert_disk_image` MCP wrapper would only add server-side
-"previous default" memory for ergonomics — it has not shipped and is not
-required; both the set-default action and the rollback executor are the
-supported swap mechanisms. (`system_revert_disk_image` is still listed as
-aspirational in [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md).)
+`system_set_default_disk_image_publication` atomically swaps the
+NodePlatform's default to an explicit `published` publication. The dedicated
+`system_revert_disk_image` action wraps the `RollbackPublication` executor:
+with no `publication_id` it auto-selects the previous publication (newest
+retired, else newest published that isn't current), restores a soft-deleted
+artifact if the target was retired, and refuses purged rows or rows with no
+stored artifact. Both are supported — use revert for "go back one" ergonomics,
+set-default to pin a specific publication.
 
 ---
 

@@ -6,7 +6,7 @@ End-to-end disk image build pipeline: NodePlatform → Gitea Actions → OCI ing
 
 ## Architecture (one-paragraph summary)
 
-A `System::NodePlatform` carries a `build_script` that produces a disk image (kernel + initramfs + composefs blob). The build runs on a self-hosted Gitea Actions runner (provisioned via `provision_ci_worker`) triggered by a webhook. After build, the runner pushes the artifact as an OCI blob (Cosign-signed via the platform's keyless identity), POSTs the webhook back to platform, which ingests via `DiskImagePublicationProcessor`. Ingest verifies the **Cosign signature + SHA-256** over the pulled artifact (the CI pipeline produces composefs blobs, but the server does **not** perform a server-side composefs/fs-verity verification — see `DiskImageOciIngestService`). The resulting `DiskImagePublication` row links the OCI digest to the platform record + retention policy.
+A `System::NodePlatform` carries a `build_script` that produces a disk image (kernel + initramfs + erofs module blob). The build runs on a self-hosted Gitea Actions runner (provisioned via `provision_ci_worker`) triggered by a webhook. After build, the runner pushes the artifact as an OCI blob (Cosign-signed via the platform's keyless identity), POSTs the webhook back to platform, which ingests via `DiskImagePublicationProcessor`. Ingest verifies the **Cosign signature + SHA-256** over the pulled artifact (the CI pipeline produces erofs blobs, but the server does **not** perform a server-side erofs/fs-verity verification — see `DiskImageOciIngestService`). The resulting `DiskImagePublication` row links the OCI digest to the platform record + retention policy.
 
 ## End-to-End Flow
 
@@ -20,7 +20,7 @@ sequenceDiagram
     participant Agent as powernode-agent
 
     Op->>Runner: 1. trigger build<br/>(push tag OR dispatch_gitea_workflow)
-    Runner->>Runner: 2. run build_script:<br/>apt-mirror, kernel,<br/>composefs blob, initramfs
+    Runner->>Runner: 2. run build_script:<br/>apt-mirror, kernel,<br/>erofs blob, initramfs
     Runner->>Reg: oras push artifact<br/>cosign sign keyless
     Runner->>Plat: 3. POST webhook<br/>OCI digest + sha256<br/>HMAC-signed
     Plat->>Plat: 4. DiskImageWebhook<br/>validates signature
@@ -31,7 +31,7 @@ sequenceDiagram
     Op->>Plat: 8. provision instance from Template
     Plat->>Agent: deploy
     Agent->>Reg: fetch OCI artifact at boot
-    Reg-->>Agent: kernel + initramfs + composefs blob
+    Reg-->>Agent: kernel + initramfs + erofs blob
     Agent-->>Op: instance booted from custom image
 ```
 
@@ -228,7 +228,7 @@ Each publication serializes as (per `System::DiskImagePublicationSerializer`):
 - `purged_at` — UTC timestamp when the artifact was hard-deleted past the grace window
 - `error_message` — populated when `status = failed` (e.g. cosign verify failure detail)
 
-Fields **not** in the serialized row: `built_at` (use `published_at`), `cosign_identity` (verification result is in `error_message` on failure; the identity used is recorded elsewhere), `sbom_url`, `version`, `signed_at`, `composefs_digest` (there is **no** server-side composefs verification; the current pipeline verifies the cosign signature + SHA256 over the pulled artifact). SBOM ingest from the OCI registry is **not yet wired** — `System::Sbom::CycloneDxParser` exists but is only used by the *modules* SBOM webhook, not by disk-image publication; no SBOM package data is populated on a `DiskImagePublication` today. Doc revisions before 2026-05-19 listed several of these fields aspirationally.
+Fields **not** in the serialized row: `built_at` (use `published_at`), `cosign_identity` (verification result is in `error_message` on failure; the identity used is recorded elsewhere), `sbom_url`, `version`, `signed_at`, `erofs_digest` (there is **no** server-side erofs/fs-verity verification; the current pipeline verifies the cosign signature + SHA256 over the pulled artifact). SBOM ingest from the OCI registry is **not yet wired** — `System::Sbom::CycloneDxParser` exists but is only used by the *modules* SBOM webhook, not by disk-image publication; no SBOM package data is populated on a `DiskImagePublication` today. Doc revisions before 2026-05-19 listed several of these fields aspirationally.
 
 ### Promoting a publication
 
@@ -241,7 +241,7 @@ platform.system_set_default_disk_image_publication({
 })
 ```
 
-To roll back, pass an earlier publication's id (it must still be `published`; a `retired` row's artifact is restored during the agent-driven rollback path — see [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow)). The next NodeInstance provisioned from a Template using this Platform will fetch the newly-pointed image. There is no separate `system_revert_disk_image` wrapper — `system_set_default_disk_image_publication` is the single set-default action.
+To roll back, pass an earlier publication's id (it must still be `published`; a `retired` row's artifact is restored during the agent-driven rollback path — see [`DISK_IMAGE_MANAGER_AGENT.md`](./DISK_IMAGE_MANAGER_AGENT.md#rollback--revert-workflow)). The next NodeInstance provisioned from a Template using this Platform will fetch the newly-pointed image. There is also a dedicated `system_revert_disk_image` action — it wraps the `RollbackPublication` executor, auto-selecting the previous publication (or pass `publication_id` for a specific target); `system_set_default_disk_image_publication` remains the explicit set-default action.
 
 ## Retention Policy
 

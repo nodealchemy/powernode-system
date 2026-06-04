@@ -74,7 +74,8 @@ flowchart LR
 ### `managed_child`
 
 The parent retains **operator-scope access** to the child. At accept-time,
-the parent's `FederationApi::AcceptController` auto-issues a
+the accept chain (`System::Federation::FederationAcceptanceService`, which
+`FederationApi::AcceptController#create` drives) auto-issues a
 `FederationGrant` on the parent side recording its persistent
 read/write/admin rights on the child (resource_kind:
 `managed_child_operator`, TTL 365 days, all pessimistic-scope
@@ -361,7 +362,7 @@ parent-side grant's `remote_subject` + scope.
   (`extensions/system/server/app/services/system/spawn_platform_service.rb`)
 - Children CRUD: `Api::V1::System::Federation::ChildrenController`
 - Spawn modal + panel: `extensions/system/frontend/src/features/system/components/federation/{SpawnPlatformModal,ChildrenPanel}.tsx`
-- AcceptController auto-grant: `extensions/system/server/app/controllers/api/v1/system/federation_api/accept_controller.rb#auto_issue_managed_child_grant!`
+- Accept-chain auto-grant: `System::Federation::FederationAcceptanceService#auto_issue_managed_child_grant!` (`extensions/system/server/app/services/system/federation/federation_acceptance_service.rb`), driven by `Api::V1::System::FederationApi::AcceptController#create`
 - cluster_member PG slot: `System::ClusterMember::PgReplicaSetupService`
   (`extensions/system/server/app/services/system/cluster_member/pg_replica_setup_service.rb`)
 - Worker job: `worker/app/jobs/cluster_member_pg_replica_setup_job.rb`

@@ -68,7 +68,7 @@ double-provisioned).
 System-extension MCP actions follow these prefixes:
 
 - `system_*` — fleet ops, modules, instances, templates, tasks, container runtime provisioning, disk image CI
-- `system_sdwan_*` — SDWAN management (~70 actions)
+- `system_sdwan_*` — SDWAN management (~73 actions)
 - `kubernetes_*` — Phase 2 K8s clusters (read + decommission + kubeconfig)
 - `docker_*` — DockerHost CRUD + container/image/network/volume management (works on managed + external hosts)
 
@@ -78,7 +78,7 @@ The full action catalog regenerates via `cd server && bundle exec rails mcp:gene
 
 ### When adding a new capability
 
-1. Always check existing skill executors before writing a new orchestration. 40 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
+1. Always check existing skill executors before writing a new orchestration. 48 already cover most fleet/SDWAN/runtime/topology workflows. See `docs/SKILL_EXECUTORS.md`.
 2. New skills must have BOTH an executor at `app/services/system/ai/skills/<name>_executor.rb` AND an `Ai::Skill` record (seeded via `db/seeds/system_skills_seed.rb`).
 3. New autonomy actions must have a `system.<action>` intervention policy entry in either `fleet_autonomy_agent.rb` or `system_runtime_manager_agent.rb`.
 4. Cross-account safety: use `find_or_create_by` with `account: account` scoping. The KG seeds + skill seeds follow this pattern.

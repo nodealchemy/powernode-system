@@ -34,9 +34,9 @@ flowchart TD
     Term -->|continue| Heart
 ```
 
-## Package map — 27 internal packages
+## Package map — 28 internal packages
 
-The agent's `internal/` directory contains 27 packages. Each is a tight
+The agent's `internal/` directory contains 28 packages. Each is a tight
 domain unit with focused responsibilities; no cross-package state.
 
 ### Identity + enrollment
@@ -93,6 +93,7 @@ domain unit with focused responsibilities; no cross-package state.
 | `dockerd` | Phase 1 Docker runtime handshake. Generates Ed25519 server keypair, posts CSR via `runtime/handshake` phase=`wants_cert`, receives signed cert, writes `daemon.json` binding to SDWAN /128, starts `docker.service`. |
 | `k3sd` | Phase 2 K3s runtime handshake. Manages `k3s-server` vs `k3s-agent` mode based on assigned module; captures k3s-generated kubeconfig + tokens; posts via `bootstrap` / `join_request` phases. |
 | `gvisor` | gVisor (`runsc`) container-runtime provisioner — the first real isolation tier of the AI/MCP workload substrate (L0). Downloads + sha512-verifies the `runsc` binary for the host arch, contributes the `daemon.json` `runtimes` fragment that registers runsc with the Docker daemon (merged via the dockerd applier's `ExtraConfig` path), and detects readiness. Containers launched with `--runtime=runsc` (the mapping `System::IsolationTier` resolves for `isolation_tier=gvisor`) run inside gVisor's userspace-kernel sandbox. |
+| `kata` | Kata Containers microVM provisioner — the second real isolation tier (L0), one rung stronger than gVisor: each container runs in a lightweight hardware-virtualized VM (KVM) rather than a userspace kernel. Registers two Docker runtimes that `System::IsolationTier` maps to: `kata-runtime` (tier `kata`, default QEMU/cloud-hypervisor VMM) and `kata-fc` (tier `firecracker`, the Firecracker VMM via a kata config). Unlike the single self-installable `runsc` binary, Kata is multi-artifact (shim binary + guest kernel + guest rootfs/initrd + VMM), so this package does **not** download them — it validates the runtime is installed and KVM is available, then registers the runtime in `daemon.json`. Install is provisioned out of band (a kata-containers NodeModule or the host image). |
 
 ### Networking
 

@@ -88,7 +88,7 @@ network paths don't intersect.
 |---|---|
 | Working NodeInstance from Tutorial 01 (or a fresh one) | `platform.system_provision_instance` |
 | SDWAN peer attached to that instance | `platform.system_sdwan_attach_peer` — the daemon needs a /128 to bind to. Required; provisioning errors `MissingSdwanPeerError` if missing. |
-| `docker-engine` module promoted to `live` (or `blessed` with override) | Default catalog from Tutorial 01 includes it |
+| `docker-engine` module promoted to `live` (or `blessed` with override) | Not part of Tutorial 01's catalog — seed it separately: `bundle exec rails runner "load Rails.root.join('../extensions/system/server/db/seeds/docker_runtime_module.rb')"` (creates `docker-engine` + `docker-engine-config`) |
 | Operator permission `system.docker_provision` | Default for admin users |
 
 ## Step 1 — Confirm SDWAN attachment

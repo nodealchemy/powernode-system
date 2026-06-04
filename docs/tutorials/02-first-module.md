@@ -177,12 +177,27 @@ empty.
 
 ## Step 4 — Validate the manifest locally
 
+Validate against the platform's compatibility check (no upload) with the
+`system_validate_module_manifest` MCP action — it catches schema violations
+and `protected_spec` collisions with existing modules in your account before
+you push:
+
+```javascript
+platform.system_validate_module_manifest({
+  manifest_yaml: "<contents of manifest.yaml>",
+  category_slug: "userland"
+})
+// → { valid: true, warnings: [...], conflicts: [...] }
+```
+
+Or run the builder's offline dry-run, which reports the same schema/glob issues
+without contacting the platform:
+
 ```bash
-# Until system_validate_module_manifest ships (currently in MCP gap backlog):
 docker run --rm -v "$PWD:/work:ro" ghcr.io/powernode/module-builder:latest --dry-run
 ```
 
-**Expected outcome:** dry-run reports any schema violations, glob-spec
+**Expected outcome:** either check reports schema violations, glob-spec
 conflicts, or missing required fields without building artifacts. Fix
 warnings here — they'll fail later much more expensively.
 
@@ -367,8 +382,8 @@ non-pool NodeInstance.
   full reference: variety types, dependent module hierarchies, config
   overlays, advanced glob semantics.
 - **[`templates/example-modules/`](../../templates/example-modules/)** —
-  seven working examples (apache, chrony, nginx, security-hardening,
-  system-base, rpi4-firmware) you can study for patterns.
+  working examples (apache, chrony, nginx, rpi4-firmware,
+  security-hardening) you can study for patterns.
 - **[`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md)** —
   every manifest field explained.
 

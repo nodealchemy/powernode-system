@@ -276,11 +276,11 @@ States: `Idle → Connect → Active → OpenSent → OpenConfirm → Establishe
 **Troubleshooting unhealthy sessions:**
 
 ```javascript
-// Run the planning-only triage skill (SDWAN Manager owns the executor)
+// Run the planning-only triage skill (SDWAN Manager owns the executor).
+// execute_agent takes agent_id (ID, slug, or exact name) + an input object.
 platform.execute_agent({
-  agent: "SDWAN Manager",
-  skill: "system-sdwan-bgp-session-remediate",
-  inputs: { bgp_session_id: "<session-id>", dry_run: true }
+  agent_id: "SDWAN Manager",
+  input: { skill: "system-sdwan-bgp-session-remediate", bgp_session_id: "<session-id>", dry_run: true }
 })
 // → { state: "idle", likely_cause: "...", recommended_action: "vtysh -c 'clear ip bgp <neighbor>'" }
 ```
@@ -292,26 +292,31 @@ The skill is intentionally planning-only in v1 — operators run the recommended
 Cross-account peering. Account A proposes; Account B accepts. The full propose / accept / revoke flow is live as of slice 11; both endpoints route through `Sdwan::Executors::{ProposeFederationPeer, AcceptFederationPeer, RevokeFederationPeer}` (the model is `System::FederationPeer`, not `Sdwan::*`).
 
 ```javascript
-// Account A proposes
+// Account A proposes (this surface creates a sdwan_only peer_kind; for a
+// "platform" peer use the children-spawn flow in federation-setup.md instead).
+// Pass generate_token:true to mint the single-use acceptance token A hands to B.
 platform.system_sdwan_propose_federation_peer({
-  attributes: {
-    network_id:        "<account-a-network-id>",
-    remote_account_id: "<account-b-id>",
-    remote_network_id: "<account-b-network-id>",
-    peer_kind:         "sdwan_only"   // or "platform" for full platform-peer (uses children spawn flow instead)
-  }
+  remote_instance_url:         "https://platform-b.example.com",  // required
+  remote_account_id:           "<account-b-id>",                  // optional
+  remote_prefix_advertisement: "fd00:b::/56",                     // optional ULA prefix B claims
+  generate_token:              true,                              // mint single-use acceptance token
+  token_ttl_seconds:           604800                             // optional; default 7 days
 })
-// → { federation_peer: { id, status: "proposed", ... } }
+// → { federation_peer: { id, status: "proposed", ... }, acceptance_token: "..." (once) }
 
-// Account B reviews via UI → accepts via MCP:
-platform.system_sdwan_accept_federation_peer({ id: "<fed-peer-id>" })
-// → { federation_peer: { id, status: "active", ... } }
+// Account B reviews via UI → accepts via MCP (lands at status "accepted";
+// the first heartbeat later advances it to "active"):
+platform.system_sdwan_accept_federation_peer({
+  federation_peer_id: "<fed-peer-id>",
+  acceptance_token:   "<token from A>"
+})
+// → { federation_peer: { id, status: "accepted", ... } }
 
 // Either side can revoke:
-platform.system_sdwan_revoke_federation_peer({ id: "<fed-peer-id>" })
+platform.system_sdwan_revoke_federation_peer({ federation_peer_id: "<fed-peer-id>" })
 
 // List the cross-account peers:
-platform.system_sdwan_list_federation_peers({ network_id: "<network-id>" })
+platform.system_sdwan_list_federation_peers({})
 ```
 
 **Notes on the `peer_kind`:**
@@ -371,7 +376,7 @@ When an operator chats "set up a VPN" / "add a Tokyo edge to our SDWAN" / "kubec
 - [`runbooks/multi-cluster-k3s.md`](./multi-cluster-k3s.md) — multi-cluster K3s with slice 3 VIPs for HA
 - [`FLEET_SENSORS.md`](../FLEET_SENSORS.md) — `sdwan_reachability_sensor`, `sdwan_drift_sensor`, `sdwan_bgp_session_health_sensor`, `sdwan_vip_reachability_sensor`
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `sdwan_failover`, `sdwan_peer_remediate`, `sdwan_bgp_session_remediate`, `sdwan_vip_failover`
-- [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md) — full `system_sdwan_*` action catalog (70 actions)
+- [`MCP_API_REFERENCE.md`](../MCP_API_REFERENCE.md) — full `system_sdwan_*` action catalog (~73 actions)
 
 ---
 

@@ -60,7 +60,7 @@ Every action requires a permission grant on the calling user/agent. Permissions 
 
 ## Action catalog
 
-### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (122 actions)
+### `system_*` — Fleet, lifecycle, modules, storage, architecture, GitOps, CI workers, disk image CI, providers, topology, ingress, GPU/inference, agent-fleet, A2A (128 actions)
 
 Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented) plus the managed-Docker, package-repository, architecture-catalog, disk-image, ingress, storage-owner, and agent-fleet tool classes. The registry routing lives in the parent (`platform_api_tool_registry.rb`); the tool-class implementations live in the extension under `server/app/services/ai/tools/`.
 
@@ -362,7 +362,7 @@ See [`docs/federation/SPAWN_MODES.md`](./federation/SPAWN_MODES.md) for the spaw
 
 **Permissions:** `system.vault.rotate_transit_pepper`. See [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md) for the broader rotation workflow.
 
-### `system_sdwan_*` — SDWAN networking + OVN + IPFIX + host bridges + federation accept (70 actions)
+### `system_sdwan_*` — SDWAN networking + OVN + IPFIX + host bridges + federation accept (73 actions)
 
 Backed by `Ai::Tools::SdwanTool`. Comprehensive network management.
 
@@ -599,9 +599,7 @@ Backed by 7 tool classes: `DockerContainerTool`, `DockerServiceTool`, `DockerSta
 
 ## Aspirational backlog
 
-A small set of `system_*` / `system_sdwan_*` action names are referenced in operator runbooks + tutorials using `platform.X(...)` syntax but are **not yet registered** in `platform_api_tool_registry.rb`. The doc-verification harness reports these as unknown actions; they are intentional placeholders documenting the *intended* MCP surface, with a REST workaround called out at the call site.
-
-The authoritative list (3 entries as of 2026-06-03 — `system_get_task`, `system_revert_disk_image`, `system_update_module_assignment`) lives at [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md). When adding a new doc reference to a not-yet-registered action, also append a row to that catalog so the harness output remains interpretable. When implementing one of the cataloged actions, remove its row + cross-link the new entry in the catalog below.
+The aspirational backlog is currently **empty** — the three previously-listed wrappers (`system_get_task`, `system_revert_disk_image`, `system_update_module_assignment`) were implemented on 2026-06-04 and are now registered in `platform_api_tool_registry.rb`. If a runbook or tutorial later references an action that isn't yet registered, append a row to [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) (with a REST workaround at the call site) so the doc-verification harness output stays interpretable; remove the row when the wrapper ships.
 
 Operator runbooks under `docs/runbooks/` should reference current registry actions only; cross-validate against this doc + the aspirational catalog before adding a new runbook step.
 
@@ -623,7 +621,7 @@ Operator runbooks under `docs/runbooks/` should reference current registry actio
 | `system_sdwan_*` | 73 | `SdwanTool` (incl. OVN + IPFIX + host-bridge + federation accept/compose subsections) |
 | `kubernetes_*` | 5 | `KubernetesClusterTool` + `KubernetesProvisioningTool` |
 | `docker_*` | 52 | 7 tool classes (Container, Service, Stack, Cluster, Host, Image, NetworkVolume) |
-| **Total** | **258** registered actions (as of 2026-06-03); see [`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md) for 3 additional referenced-but-unregistered actions | |
+| **Total** | code-derived from `platform_api_tool_registry.rb` — regenerate the machine catalog (`rails mcp:generate_tool_catalog`) for the authoritative count; the aspirational backlog ([`.verify/ASPIRATIONAL_MCP.md`](./.verify/ASPIRATIONAL_MCP.md)) is now empty | |
 
 > Counts are code-derived from `platform_api_tool_registry.rb` on 2026-06-03. The parent platform's full machine-generated catalog (with parameter schemas) is the authoritative cross-check — regenerate it with `cd server && bundle exec rails mcp:generate_tool_catalog`.
 

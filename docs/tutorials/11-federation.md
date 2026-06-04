@@ -292,10 +292,12 @@ Ask the Concierge in chat ("accept the federation peer using token `<X>`,
 contract version 1"), or run the skill directly:
 
 ```javascript
+// execute_agent takes agent_id (accepts an ID, slug, or exact name) + an
+// input object; the agent runs its bound federation_acceptance skill on it.
 platform.execute_agent({
-  agent: "SDWAN Manager",
-  skill: "federation_acceptance",
-  inputs: {
+  agent_id: "SDWAN Manager",
+  input: {
+    skill: "federation_acceptance",
     acceptance_token: "<token from the proposing side>",
     contract_version: 1,
     capabilities: {},        // optional forward-compat advertisement
@@ -332,9 +334,9 @@ a federation **topology** with the `sdwan_federation_compose` skill (bound to
 
 ```javascript
 platform.execute_agent({
-  agent: "System Topology Designer",
-  skill: "sdwan_federation_compose",
-  inputs: {
+  agent_id: "System Topology Designer",   // ID, slug, or exact name
+  input: {
+    skill: "sdwan_federation_compose",
     network_name: "fed-overlay-parent-child",
     topology: "hub_and_spoke",      // or "full_mesh"
     routing_protocol: "ibgp",        // or "static"
@@ -373,9 +375,9 @@ NetworkPolicy, no CoreDNS, no VLAN.** Use the `multi_tenant_isolation` skill
 
 ```javascript
 platform.execute_agent({
-  agent: "System Topology Designer",
-  skill: "multi_tenant_isolation",
-  inputs: {
+  agent_id: "System Topology Designer",   // ID, slug, or exact name
+  input: {
+    skill: "multi_tenant_isolation",
     tenant_key: "tenant-alpha",      // slug-safe; names network, rules, switch, ACLs
     // tenant_cidr omitted ⇒ the auto-allocated /64 is used (recommended)
     nb_db_endpoint: "tcp:127.0.0.1:6641",  // required only if no OvnDeployment yet

@@ -277,9 +277,12 @@ platform.agent_introspect({ agent_id: "<sdwan-manager-uuid>" })
 `target_cluster_id`. The agent tries to join and gets a 404. Check:
 
 ```javascript
-// ⚠️ aspirational — use platform.system_get_template({ id: template_id }) and inspect module_assignments[]
-platform.system_get_template({ id: "<template-id>" })
-// Verify the k3s-agent assignment's config.target_cluster_id matches an existing cluster
+platform.system_get_template({ template_id: "<template-id>" })
+// → { template: { ..., modules: [{ id, name, variety }, ...] } }
+// Confirm k3s-agent is among the template's modules; then verify the
+// assignment's config.target_cluster_id matches an existing cluster id
+// (the per-assignment config isn't in this summary — check it where you set it
+//  in Step 5, or via the node_module_assignments REST endpoint).
 ```
 
 **`kubectl` from operator workstation hangs** — your workstation isn't on

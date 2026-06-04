@@ -18,7 +18,7 @@ This matrix exists because the platform's auto-registration plumbing is **bimoda
 | 6 | Multi-tenant container farm | `persistent` | `docker-engine` per tenant | ⚠️ Works with caveats | No host-level isolation; trust boundary is the SDWAN account |
 | 7 | Hybrid (persistent control plane + ephemeral workers) | mixed | `k3s-server` persistent, `k3s-agent` ephemeral | ✅ Works | Workers can be cycled freely; control plane is the family heirloom |
 | 8 | Cross-host Docker container networking | any | `docker-engine` | ❌ Not supported | No cross-host overlay; use K3s for orchestration |
-| 9 | Pod-to-pod traffic encrypted via SDWAN | `persistent` | `k3s-*` | ❌ Not yet | Flannel uses host primary NIC; pod plane outside SDWAN |
+| 9 | Pod-to-pod traffic encrypted via SDWAN | `persistent` | `k3s-*` | ✅ Works (opt-in) | Set `pod_subnet_prefix` on the `Sdwan::Network`; flannel host-gw over WireGuard (shipped 2026-05-19). Default (null) = plain VXLAN on host NIC |
 | 10 | Workload-image CVE coverage | any | any | ❌ Not yet | CVE response covers NodeModules only; container images invisible |
 
 ## Detailed Walkthroughs

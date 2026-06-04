@@ -1,9 +1,16 @@
 # Cloud‑VM `pivot_root` Deployment — Design
 
-> Status: design — not yet shipped. The kernel+initramfs artifact is mechanically
+> Status: partially shipped. The kernel+initramfs artifact is mechanically
 > proven (boot → systemd-in-initramfs → agent invoked; see memory
-> `powernode.pivot_root_smoke_proven_2026_05_24`); the OCI/dynamic boot compose +
-> `switch_root` path (P1 below) is the primary unimplemented work.
+> `powernode.pivot_root_smoke_proven_2026_05_24`). The agent-side OCI/dynamic boot
+> compose (P1 / Option B below) **has since landed**: `runtime.ComposeForPivot`
+> (`agent/internal/runtime/compose.go`) pulls the assigned modules from OCI,
+> composes the native union, and renders + offline-enables native units
+> (`lifecycle.AttachServicesNative`, `RootModeNative`); `boot.Orchestrator`
+> invokes it via its `Composer`/`ComposerFactory` before `switch_root`. What
+> remains is the **deployment wiring** (P2/P3): staging the kernel/initrd on PVE
+> hosts, teaching the spawn path to pass `boot_mode: "direct_kernel"`, the PVE
+> `args`/root@pam gate, and an end-to-end managed-child proof.
 
 **Status:** design (2026-05-30) · **Goal owner:** maintainer
 
@@ -95,14 +102,22 @@ PVE VM boots -kernel/-initrd (no cloudimg, SeaBIOS, no grub)
 
 ## P1 implementation design (from code read)
 
-- **`boot.Orchestrator.mountUnion` is a stub** (`internal/boot/boot.go:224‑241`,
-  returns nil) — the real mount is the separate `prepare-root` subcommand (9p).
-  The Orchestrator carries only `Resolver`/`EnrollClient`/`MountRunner`/`Layout`,
-  **not** the OCI deps. `runtime.RunOnce` (`reconcile.go:170‑402`) has the OCI
-  compose: `FetchAssignedModules` → manifest `LoadOrFetch` → `attachModule`
+> **Implemented since this design was written.** The stub described in the first
+> bullet has been replaced — `boot.Orchestrator.mountUnion` now drives
+> `Composer.ComposeForPivot` on the direct_kernel/pivot path, and a dedicated
+> native compose (`runtime.ComposeForPivot` in `internal/runtime/compose.go`)
+> exists alongside the chroot `RunOnce`. The bullet below is preserved as the
+> original design analysis that motivated Option B.
+
+- **(Historical)** `boot.Orchestrator.mountUnion` was a stub (returned nil) — the
+  real mount was the separate `prepare-root` subcommand (9p). The Orchestrator
+  carried only `Resolver`/`EnrollClient`/`MountRunner`/`Layout`, **not** the OCI
+  deps. `runtime.RunOnce` (`reconcile.go`) had the OCI compose:
+  `FetchAssignedModules` → manifest `LoadOrFetch` → `attachModule`
   (Puller.Pull → Verifier → `MountModule`) → `etcidentity`/`etcsudoers` →
   `AttachServices` (renders units with **`RootDirectory=/sysroot`** + starts them)
-  → `Overlay.MountUnion`.
+  → `Overlay.MountUnion`. (Today the Orchestrator additionally carries a
+  `Composer`/`ComposerFactory` for the native pivot path.)
 
 - **Minimal pivot only needs system-base.** The initramfs is minimal (agent +
   busybox + systemd + CA); it pulls + composes **system-base** from OCI and

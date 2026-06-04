@@ -244,10 +244,12 @@ Run it via the Concierge ("accept the federation peer using token `<X>`,
 contract version 1") or directly as the skill:
 
 ```
+# execute_agent takes agent_id (ID, slug, or exact name) + an input object;
+# the agent runs its bound federation_acceptance skill on the input.
 platform.execute_agent   # or via Concierge chat
-  agent: "SDWAN Manager"
-  skill: "federation_acceptance"
-  inputs:
+  agent_id: "SDWAN Manager"
+  input:
+    skill: "federation_acceptance"
     acceptance_token: "<token from the proposing side>"
     contract_version: 1
     # optional forward-compat fields:
@@ -284,9 +286,9 @@ to **System Topology Designer**):
 
 ```
 platform.execute_agent
-  agent: "System Topology Designer"
-  skill: "sdwan_federation_compose"
-  inputs:
+  agent_id: "System Topology Designer"   # ID, slug, or exact name
+  input:
+    skill: "sdwan_federation_compose"
     network_name: "fed-overlay-a-b"
     topology: "hub_and_spoke"      # or "full_mesh"
     routing_protocol: "ibgp"        # or "static"
@@ -326,9 +328,9 @@ NetworkPolicy or VLAN — use the `multi_tenant_isolation` skill (bound to
 
 ```
 platform.execute_agent
-  agent: "System Topology Designer"
-  skill: "multi_tenant_isolation"
-  inputs:
+  agent_id: "System Topology Designer"   # ID, slug, or exact name
+  input:
+    skill: "multi_tenant_isolation"
     tenant_key: "acme-prod"          # slug-safe; names the network, rules, switch, ACLs
     # tenant_cidr omitted ⇒ the auto-allocated /64 is used (recommended)
     # nb_db_endpoint / sb_db_endpoint required only if the account has no OvnDeployment yet:

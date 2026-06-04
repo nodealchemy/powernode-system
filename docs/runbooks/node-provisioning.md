@@ -103,7 +103,7 @@ platform.system_provision_instance({
 The platform creates a `Task` (status=`pending`), enqueues a worker job, and returns immediately. The worker runs the provider's `provision_instance!` adapter:
 
 - **AWS / GCP / Azure / OpenStack** — provider-specific API calls; takes 30 s – 5 min
-- **LocalQemuProvider** — libvirt domain creation with direct kernel boot from M3 artifacts; takes ~10-30 s in `real` mode, instant in `recorder` mode (per `project_local_qemu_provider` memory)
+- **LocalQemuProvider** — libvirt domain creation with direct kernel boot from M3 artifacts; takes ~10-30 s in `real` mode, instant in `local` mode (the `RecorderRunner`, per `project_local_qemu_provider` memory)
 
 Instance AASM transitions on the happy path: `pending → provisioning → running`
 (`mark_provisioning`, then `mark_running` on the first `phase=ready` heartbeat).
@@ -126,7 +126,7 @@ platform.system_get_instance({ id: "<instance-id>" })
 
 // To watch task progress, list current tasks for the instance and read the matching row:
 platform.system_list_tasks({ resource_type: "system_node_instance", resource_id: "<instance-id>" })
-// (system_get_task as a single-record fetch is in ASPIRATIONAL_MCP.md — use system_list_tasks filtered to the resource for now)
+// (or fetch a single row directly: platform.system_get_task({ id: "<task-id>" }))
 ```
 
 **What to watch:**
@@ -268,8 +268,8 @@ platform.list_agents({ name_contains: "Concierge" })
 // → { agents: [{ id: "<concierge-uuid>", name: "System Concierge", ... }] }
 
 platform.execute_agent({
-  agent_id: "<concierge-uuid>",
-  prompt: "Attribute the recent failure on instance <instance-id> looking back 24 hours; surface the top candidate module/version change and confidence."
+  agent_id: "<concierge-uuid>",   // execute_agent also accepts a slug or exact name
+  input: { input: "Attribute the recent failure on instance <instance-id> looking back 24 hours; surface the top candidate module/version change and confidence." }
 })
 // The Concierge calls the system-attribute-failure executor internally and returns:
 // → { candidates: [...], top_candidate: {...}, confidence: "medium", reasoning: "..." }
@@ -296,12 +296,12 @@ cd server && \
 
 The seed creates: 1 Account → 1 Node (lifecycle_class=persistent) → 1 NodeInstance via LocalQemuProvider, watches the AASM Task progression, and reports the kernel boot pipeline through to multi-user.target. Total runtime: ~15 min on cold boot (TCG without `/dev/kvm`); ~3 min with KVM.
 
-LocalQemuProvider modes:
-- `real` — actual libvirt domain creation + QEMU/KVM boot (default for smoke)
-- `recorder` — records what the libvirt adapter *would* do (fast; no VM)
-- `disabled` — skips provider entirely; useful for unit tests
+LocalQemuProvider modes (the `POWERNODE_LIBVIRT_MODE` value → runner class):
+- `real` — `LibvirtRunner`: actual libvirt domain creation + QEMU/KVM boot (default for smoke)
+- `local` — `RecorderRunner`: records what the libvirt adapter *would* do (fast; no VM). Default outside production
+- `disabled` — `DisabledRunner`: skips provider entirely; useful for unit tests
 
-Switch via `POWERNODE_LIBVIRT_MODE=real|recorder|disabled`.
+Switch via `POWERNODE_LIBVIRT_MODE=real|local|disabled` (an unrecognized value raises `Unknown POWERNODE_LIBVIRT_MODE=...`).
 
 ## How the System Concierge should use this
 

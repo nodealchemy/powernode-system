@@ -426,5 +426,3 @@ scopes.
   `POWERNODE_ACME_DISABLE_PROPAGATION_CHECK` handling.
 
 _Last verified: 2026-06-03_
-</content>
-</invoke>

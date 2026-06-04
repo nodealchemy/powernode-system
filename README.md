@@ -49,13 +49,13 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **18 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **17 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   trading pressure (cross-extension stigmergic coordination), instance state
   drift, GitOps drift, package repository drift, project SLO breaches, SDWAN
   health (peer reachability, BGP session, VIP reachability, drift, credential
   expiry), and storage assignment drift
-- **40 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+- **48 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
   package + module authoring, architecture catalog, federation, and platform
@@ -88,9 +88,9 @@ To operate this extension you need a running Powernode platform installation.
 See [the parent platform repo][platform] for installation instructions.
 
 This extension contributes:
-- Rails models, services, controllers (120 models across `system::*` (74) +
-  `sdwan::*` (46), ~274 service classes excl. 40 skill executors across 11
-  subdomains, 135 controllers across operator API + on-node API + worker API)
+- Rails models, services, controllers (~106 models across `system::*` (81) +
+  `sdwan::*` (25), ~300 service classes excl. 48 skill executors across 11
+  subdomains, 153 controllers across operator API + on-node API + worker API)
 - React/TypeScript frontend (~250 TS/TSX files including 11 page components +
   ~156 reusable components + custom hooks + API client services)
 - Worker jobs (12): `system_task_reaper`, `system_fleet_reconcile`,
@@ -134,8 +134,8 @@ extensions/system/
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 8 subsystems, threat model, state machines, API surfaces |
 | [`docs/USE_CASE_MATRIX.md`](./docs/USE_CASE_MATRIX.md) | What works / doesn't / what to expect for 10 NodeInstance container scenarios — **READ FIRST when designing a deployment** |
 | [`docs/CONTAINER_RUNTIMES.md`](./docs/CONTAINER_RUNTIMES.md) | Phase 1 Docker + Phase 2 K3s lifecycle + operator troubleshooting |
-| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (40 executors with descriptors and example I/O) |
-| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 18 fleet sensors + intervention policy reference table |
+| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (48 executors with descriptors and example I/O) |
+| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 17 fleet sensors + intervention policy reference table |
 | [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md) | Webhook + CI worker + OCI artifact pipeline |
 | [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md) | All `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions |
 
@@ -282,7 +282,7 @@ viewer in active sweep).
   permission gates)
 - **M6** — AI Skills catalog (8 executors)
 - **M7** — FleetAutonomyService (gate_action!, 8 sensors at M7 completion; now
-  expanded to 18 across the autonomy + cross-domain pressure exchange surface,
+  expanded to 17 across the autonomy + cross-domain pressure exchange surface,
   DecisionEngine, approval chains)
 - **M8** — Compound learning extraction (LearningExtractor wired into tick
   loop, auto-evolve trigger after 3 matching learnings)

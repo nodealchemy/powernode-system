@@ -271,22 +271,35 @@ sequenceDiagram
 
 Operator workflow:
 
-```javascript
-// Edit a federation peer's endpoints
-platform.system_sdwan_update_federation_peer({
-  id: "<peer-id>",
-  endpoints: [
-    { scope: "lan", url: "https://hub2.lan.example.com", priority: 1 },
-    { scope: "sdwan", url: "https://[fd00:abcd:2::100]:8443", priority: 2 },
-    { scope: "wan", url: "https://hub2.public.example.com", priority: 3 }
-  ]
-})
+A peer's `endpoints` are a **`platform`**-peer attribute (`peer_kind: "platform"`),
+managed on the **Platform Peers** REST surface — not via any `system_sdwan_*` MCP
+action (the SDWAN federation-peer surface neither permits nor serializes
+`endpoints`). They're stamped at invite time:
 
-// Endpoint probing is automatic — the EndpointProber re-walks each peer's
-// endpoints every `endpoint_probe_interval_seconds` (default 300s). There is
-// no manual probe trigger; observe current reachability via
-// system_sdwan_get_federation_peer (each endpoint carries last_verified_at /
-// last_failure_at) or platform.recent_events (federation. prefix).
+```bash
+# Set the priority-ordered endpoints when inviting the platform peer
+# (POST /api/v1/system/platform/peers, served by Platform::PeersController;
+#  requires the system.peers.invite permission). endpoints[].scope is one of
+#  lan|sdwan|wan; lower priority wins.
+curl -s -X POST \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  http://localhost:3000/api/v1/system/platform/peers \
+  -d '{
+    "remote_instance_url": "https://hub2.public.example.com",
+    "endpoints": [
+      { "scope": "lan",   "url": "https://hub2.lan.example.com",       "priority": 1 },
+      { "scope": "sdwan", "url": "https://[fd00:abcd:2::100]:8443",    "priority": 2 },
+      { "scope": "wan",   "url": "https://hub2.public.example.com",    "priority": 3 }
+    ]
+  }'
+```
+
+```text
+# Endpoint probing is automatic — the EndpointProber re-walks each peer's
+# endpoints every endpoint_probe_interval_seconds (default 300s). There is no
+# manual probe trigger; observe current reachability via the Platform Peers
+# detail (GET /api/v1/system/platform/peers/:id — its endpoints array carries
+# last_verified_at / last_failure_at) or platform.recent_events (federation. prefix).
 ```
 
 ## Step 7 — Traefik termination + dynamic config

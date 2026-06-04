@@ -233,7 +233,12 @@ If you ran the circuit-breaker drill, restore the fleet to a known state:
 in the agent's intervention policies and not blocked. Inspect:
 
 ```javascript
-platform.agent_introspect({ agent_id: "fleet_autonomy_agent" })
+// agent_introspect resolves agent_id by UUID only — a slug like
+// "fleet_autonomy_agent" silently resolves to nothing. Look up the UUID first:
+platform.list_agents()
+// → { agents: [{ id: "<fleet-autonomy-uuid>", name: "Fleet Autonomy", ... }, ...] }
+
+platform.agent_introspect({ agent_id: "<fleet-autonomy-uuid>" })
 // Look for "intervention_policies" containing system.fleet_rolling_upgrade
 ```
 

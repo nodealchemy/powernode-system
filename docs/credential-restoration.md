@@ -59,10 +59,18 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> active: generate_for(account)
-    active --> rotation_pending: rotate_for(account)<br/>(new transit version created)
-    rotation_pending --> active: background job rewraps<br/>all rows in batches of 100<br/>(decrypt vN-1 → encrypt vN)
+    active --> active: rotate_for(account)<br/>(new transit key version created;<br/>old blobs keep decrypting under<br/>their original version — no rewrap)
     active --> [*]: account destroyed<br/>(transit key remains in Vault<br/>for restore use cases)
 ```
+
+> **Rotation does not rewrap existing rows.** `rotate_for` bumps the Vault
+> transit key version; Vault keeps the prior versions valid for decrypt, so
+> rows encrypted under the old version keep working without migration (see the
+> `rotate_key` comment in `VaultTransitClient`: "previously-encrypted blobs
+> still decrypt with their original version until explicit migration"). A
+> batched background re-encrypt sweep (rewrapping every row onto the newest
+> version) is **not implemented today** — there is no `AccountReencryptionJob`.
+> The §4.2 examples below mark the not-yet-shipped surface explicitly.
 
 ---
 
@@ -101,8 +109,10 @@ Security::AccountEncryptionKeyService.decrypt(account, ciphertext)
 # Decrypts blob via Vault transit. Raises if key/blob mismatch.
 
 Security::AccountEncryptionKeyService.rotate_for(account)
-# -> { old_version: Integer, new_version: Integer, queued_rows: Integer }
-# Issues new transit key version; queues background re-encrypt job.
+# -> Vault transit key metadata hash (from VaultTransitClient#rotate_key)
+# Issues a new transit key version. Vault keeps prior versions valid for
+# decrypt, so existing rows keep working WITHOUT a rewrap. Does NOT queue a
+# background re-encrypt job (none exists yet — see §4.2).
 
 Security::AccountEncryptionKeyService.fetch_key(account)
 # -> Vault::Secret (transit key handle)
@@ -226,16 +236,23 @@ compromise of the Vault audit log (which would suggest the operator with
 audit access is suspect).
 
 ```ruby
-# Single account
-result = Security::AccountEncryptionKeyService.rotate_for(account)
-# => { old_version: 3, new_version: 4, queued_rows: 47 }
+# Single account — bumps the Vault transit key version.
+Security::AccountEncryptionKeyService.rotate_for(account)
+# => Vault transit key metadata hash. Existing rows keep decrypting under
+#    their original version; no rewrap is performed.
 
-# Watch the re-encrypt job complete
-Security::AccountReencryptionJob.status(account_id: account.id)
-
-# All accounts (cron candidate)
-Account.find_each(&:rotate_encryption_key!)
+# All accounts:
+Account.where.not(encryption_key_vault_path: nil).find_each do |account|
+  Security::AccountEncryptionKeyService.rotate_for(account)
+end
 ```
+
+> **Not yet shipped:** a background sweep that rewraps every row onto the
+> newest key version (`AccountReencryptionJob`, a `rotate_for` return carrying
+> `queued_rows`, a `.status(...)` progress query, and an
+> `Account#rotate_encryption_key!` convenience). Today rotation is version-bump
+> only; rows are rewrapped lazily on their next write, and old key versions
+> remain decryptable until an explicit migration job lands.
 
 ### 4.3 Restoration from Vault snapshot
 
@@ -330,9 +347,8 @@ Files to look at when extending this system:
 | ActiveRecord concern | `server/app/models/concerns/account_peppered_encryption.rb` |
 | Migration | `server/db/migrate/<ts>_add_encryption_key_vault_path_to_accounts.rb` |
 | Sample consumer | `extensions/system/server/app/models/system/provider_connection.rb` |
-| Backfill job | `server/app/jobs/security/account_reencryption_job.rb` |
+| Backfill / rewrap job | _not yet implemented_ — a batched `AccountReencryptionJob` is planned but absent; rotation is version-bump only today (see §4.2) |
 | Specs | `server/spec/services/security/account_encryption_key_service_spec.rb` |
-| Threat model | [`../../../docs/history/audits/threat-model-2026-04.md`](../../../docs/history/audits/threat-model-2026-04.md) (parent platform repo) |
 
 To add a new peppered attribute on an existing model:
 
@@ -366,7 +382,6 @@ To add a new model with peppered attributes:
 
 ---
 
-*For DR procedure see [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md);
-for historical sweep tracking see [`history/TASKS.md`](./history/TASKS.md).*
+*For DR procedure see [`runbooks/vault-credential-restoration.md`](./runbooks/vault-credential-restoration.md).*
 
 _Last verified: 2026-06-03_

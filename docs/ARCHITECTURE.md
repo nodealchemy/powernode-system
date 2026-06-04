@@ -25,7 +25,7 @@ advanced distributed automation systems, not to be hand-curated documentation.
 flowchart TB
     subgraph Surface["Operator + AI surface"]
         UI[UI: Template Composer<br/>Fleet Dashboard<br/>Module Detail / Autonomy]
-        MCP[MCP: 192 system_* actions<br/>122 + 70 sdwan]
+        MCP[MCP: 201 system_* actions<br/>128 + 73 sdwan]
         REST[REST: /api/v1/system/*<br/>+ /worker_api]
         AC[ActionCable: SystemChannel<br/>+ SystemFleetChannel]
     end
@@ -38,8 +38,8 @@ flowchart TB
     end
 
     subgraph Edge["Edge"]
-        CI[Gitea + Actions<br/>Module CI:<br/>buildah → mkcomposefs<br/>→ fs-verity → cosign<br/>→ push multi-arch]
-        Node["NodeInstance<br/>powernode-agent Go<br/>/sysroot overlayfs:<br/>lower=composefs modules<br/>upper=tmpfs<br/>+ bind /var → /persist/var"]
+        CI[Gitea + Actions<br/>Module CI:<br/>buildah → mkfs.erofs<br/>→ fs-verity → cosign<br/>→ push multi-arch]
+        Node["NodeInstance<br/>powernode-agent Go<br/>/sysroot overlayfs:<br/>lower=erofs modules<br/>upper=tmpfs<br/>+ bind /var → /persist/var"]
     end
 
     Surface --> Control
@@ -74,7 +74,7 @@ flowchart TD
     subgraph S2["Stage 2 — Composer"]
         S2in["Inputs:<br/>effective rsync_spec from<br/>priority-aware neighbor analysis"]
         Rsync["rsync -aH --filter=…<br/>→ /module-staging/"]
-        Comp[mkcomposefs<br/>→ /module.cfs]
+        Comp[mkfs.erofs<br/>→ /module.erofs]
         Verity[fsverity enable + digest<br/>→ root_hash.txt]
         SBOM["syft → sbom.cdx.json<br/>grype → vex.json"]
         Sign[cosign sign-blob<br/>→ module.cosign-bundle]
@@ -176,8 +176,8 @@ calls authenticate via mTLS with certificate pinning.
 - fs-verity enable + verify root_hash matches `NodeModuleVersion.fsverity_root_hash`
 
 **Mount orchestration:**
-- composefs lower stack assembled from priority-ordered modules
-- overlayfs (lower=composefs, upper=tmpfs, work=tmpfs)
+- erofs lower stack assembled from priority-ordered modules
+- overlayfs (lower=erofs, upper=tmpfs, work=tmpfs)
 - `/var` bind from `/persist/var` (LUKS-encrypted; key sealed to TPM
   where present, fallback to Vault-fetched unwrap)
 
@@ -474,10 +474,10 @@ agent-auth mTLS conversion.
 
 ### 4. MCP (`mcp__powernode__platform_system_*`)
 
-192 system tool actions exposed via the platform's MCP server, callable
+201 system tool actions exposed via the platform's MCP server, callable
 from any AI agent or Claude Code MCP client — the substrate's primary
-agent-facing surface. The catalog is split into `system_*` (122 actions)
-+ `system_sdwan_*` (70). Alongside these the extension also drives
+agent-facing surface. The catalog is split into `system_*` (128 actions)
++ `system_sdwan_*` (73). Alongside these the extension also drives
 `kubernetes_*` (5) + `docker_*` (52) container-runtime actions. The
 auto-generated tool catalog lives at
 `docs/platform/MCP_TOOL_CATALOG.md` in the **parent platform tree**
@@ -555,7 +555,7 @@ flowchart TB
 
 ### On-node runtime
 
-- **fs-verity** mandatory at file open on every composefs lower
+- **fs-verity** mandatory at file open on every erofs lower
 - **Lockdown mode** (`lockdown=integrity`) on kernel cmdline by default
 - **IMA/EVM** for additional file integrity (defense-in-depth)
 - **Per-module SELinux/AppArmor profiles** loaded by powernode-agent on attach
@@ -571,7 +571,7 @@ flowchart TB
 
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
-- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (18 seeds, 8 passes)
+- [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (28 seeds, 9 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
 - [Parent platform's CLAUDE.md](../../../CLAUDE.md) — full platform context
 - [agent/README.md](../agent/README.md) — Go agent details

@@ -96,7 +96,7 @@ dependencies:
 
 **Important — these are NOT in the manifest:** `category`, `variety`, `cosign_identity_regexp`, `cosign_issuer_regexp` live on the platform-side `NodeModule` DB row (set at registration time via the operator UI at `/app/system/modules/new`, or as the `category_id:` argument to `system_create_module_from_package`). They are not validated by the manifest schema. The `NodeModuleCategory` a module belongs to is a **platform-side DB row** selected at registration — the seeded slugs (`system-base`, `network-overlay`, `container-runtimes`, `security-hardening`, `userland`) are operator-facing taxonomy on that row, never a manifest field. `variety` accepts `subscription` (turn it on; always present once assigned — e.g. nginx, k3s-server), `config` (modifies another module's config without rebuilding it — e.g. `daemon-json-override` for slice 10), or `instance` (per-NodeInstance customisation — higher `effective_priority` than `subscription`).
 
-For the authoritative shape see `extensions/system/templates/module-repo/manifest.yaml` and `extensions/system/modules/.schema/module-manifest.schema.json`. The `MODULE_MANIFEST_COMPLETE_SCHEMA.md` doc in this directory is the operator-facing prose reference.
+For the authoritative shape see `extensions/system/templates/module-repo/manifest.yaml` and `extensions/system/modules/.schema/module-manifest.schema.json`. The [`MODULE_MANIFEST_COMPLETE_SCHEMA.md`](../MODULE_MANIFEST_COMPLETE_SCHEMA.md) doc (in the parent `docs/` directory) is the operator-facing prose reference.
 
 ## Phase 3 — Author Containerfile + rootfs ✅
 
@@ -252,7 +252,7 @@ platform.system_assign_module_to_template({
 // → { assignment: { id, template_id, module_id, priority, ... } }
 ```
 
-Priorities are determined by the module's category position + variety. To override (e.g., for a per-node config module that should win over a base subscription module), there is **no `system_update_module_assignment` MCP action** — edit the assignment over REST:
+Priorities are determined by the module's category position + variety. The `system_update_module_assignment` MCP action toggles an assignment's `enabled` state, but not its priority — to override `effective_priority` (e.g., for a per-node config module that should win over a base subscription module), edit the assignment over REST:
 
 ```bash
 # Bump effective_priority above userland (90) so a per-node config wins.
@@ -341,7 +341,7 @@ When an operator chats "I need a new module for X" / "compose a template for ngi
 ## Related docs
 
 - [`templates/module-repo/README.md`](../../templates/module-repo/README.md) — skeleton this runbook expands on
-- [`templates/example-modules/`](../../templates/example-modules/) — 7 working examples (nginx, apache, chrony, security-hardening, system-base, rpi4-firmware)
+- [`templates/example-modules/`](../../templates/example-modules/) — 5 working examples (apache, chrony, nginx, rpi4-firmware, security-hardening)
 - [`USE_CASE_MATRIX.md`](../USE_CASE_MATRIX.md) — composition use cases (long-lived edge, multi-tenant, per-tenant config)
 - [`SKILL_EXECUTORS.md`](../SKILL_EXECUTORS.md) — `module_compose` skill for AI-assisted composition
 - [`runbooks/cve-response.md`](./cve-response.md) — module updates triggered by CVE response
