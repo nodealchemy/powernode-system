@@ -24,6 +24,9 @@ module System
 
     DELEGATION_MODES = %w[central a2a hybrid].freeze
     SOURCES = %w[provision pool].freeze
+    # TTL for the capability tokens minted at delegate! time — long enough for
+    # the fleet to execute its sub-delegations, short enough to bound exposure.
+    DELEGATION_TOKEN_TTL = 3600
 
     attr_reader :mission, :account
 
@@ -129,25 +132,36 @@ module System
       { ok: true, count: assignments.size, delegation: delegation, assignments: assignments }
     end
 
-    # Phase 4 — aggregate per-subtask results. The actual A->B execution is
-    # carried by the on-node A2A transport (deferred); until it lands this
-    # records a structured result envelope per assignment so the mission
-    # produces a complete, inspectable report.
+    # Phase 4 — aggregate per-subtask delegation state. delegate! mints the
+    # capability tokens; the assignee's on-node A2A client executes the
+    # sub-delegations over the mesh and reports back via node_api/peer/execute_result
+    # (peer.record_execution!). This reads that real state: how many
+    # sub-delegations carry an actionable token (dispatched) and what the
+    # assignee peer has actually executed.
     def aggregate!
       assignments = fleet_assignments!
+      peers_by_id = ::System::NodeInstancePeer.where(account_id: account.id)
+                                              .where(id: assignments.filter_map { |a| a["assignee_peer_id"] })
+                                              .index_by(&:id)
       results = assignments.map do |a|
+        targets = Array(a["sub_delegation_targets"])
+        tokenized = targets.count { |t| t.is_a?(::Hash) && t["capability_token"].present? }
+        peer = peers_by_id[a["assignee_peer_id"]]
+        executions = peer&.execution_count.to_i
         {
           "subtask_id" => a["subtask_id"],
           "skill" => a["skill"],
           "assignee_instance_id" => a["assignee_instance_id"],
-          "status" => "completed",
-          "transport" => "deferred",
-          "note" => "result envelope recorded; on-node A2A transport pending"
+          "sub_delegations" => targets.size,
+          "sub_delegations_tokenized" => tokenized,
+          "assignee_executions" => executions,
+          "assignee_last_executed_at" => peer&.last_executed_at&.iso8601,
+          "status" => executions.positive? ? "executed" : "dispatched"
         }
       end
       report = {
         "subtasks_total" => assignments.size,
-        "completed" => results.size,
+        "delegation_tokens_minted" => results.sum { |r| r["sub_delegations_tokenized"] },
         "results" => results,
         "aggregated_at" => Time.current.iso8601
       }
@@ -294,7 +308,10 @@ module System
 
     # For each OTHER member, ask PeerCapabilityService whether the assignee may
     # invoke `skill` on it (default-deny: caller granted + target online/enabled
-    # + target offers the skill + same account). Returns the authorized targets.
+    # + target offers the skill + same account). For each authorized edge, MINT
+    # the Ed25519 capability token the assignee's on-node A2A client presents to
+    # the target — turning the authorization graph into an actionable delegation
+    # the agent can execute over the mesh without a round-trip to the platform.
     def authorized_sub_delegation_targets(assignee_peer, peers_by_instance, members, skill)
       members.filter_map do |m|
         next if m["instance_id"] == assignee_peer.node_instance_id
@@ -303,8 +320,47 @@ module System
         decision = ::System::PeerCapabilityService.authorize(
           caller_peer: assignee_peer, target_peer: target, skill: skill.to_s
         )
-        m["instance_id"] if decision.authorized
+        next unless decision.authorized
+        mint_delegation_token(assignee_peer, target, skill)
       end
+    end
+
+    # Mint the capability token authorizing assignee -> target for `skill` and
+    # package it with the target's reachable addresses into a self-contained
+    # delegation descriptor. Authorize already passed for this edge, so a mint
+    # failure here is exceptional (e.g. a missing signing key) — record the
+    # target without a token so the mission report surfaces the gap rather than
+    # silently dropping the delegation.
+    def mint_delegation_token(assignee_peer, target_peer, skill)
+      token = ::System::PeerCapabilityTokenSigner.mint!(
+        caller_instance: ::System::NodeInstance.find(assignee_peer.node_instance_id),
+        target_instance: ::System::NodeInstance.find(target_peer.node_instance_id),
+        skill: skill.to_s, ttl_seconds: DELEGATION_TOKEN_TTL
+      )
+      {
+        "target_instance_id" => target_peer.node_instance_id,
+        "target_peer_id" => target_peer.id,
+        "target_addresses" => target_peer.addresses_array,
+        "skill" => skill.to_s,
+        "capability_token" => {
+          "envelope" => token.envelope_json,
+          "signature" => token.signature_b64,
+          "handle" => token.handle,
+          "expires_at" => Time.at(token.claims["exp"]).utc.iso8601,
+          "jti" => token.claims["jti"]
+        }
+      }
+    rescue ::System::PeerCapabilityTokenSigner::SigningError,
+           ::System::PeerCapabilityTokenSigner::NotAuthorizedError => e
+      Rails.logger.warn("[AgentFleetMission #{mission.id}] delegation token mint failed " \
+                        "(#{assignee_peer.node_instance_id} -> #{target_peer.node_instance_id}/#{skill}): #{e.message}")
+      {
+        "target_instance_id" => target_peer.node_instance_id,
+        "target_peer_id" => target_peer.id,
+        "skill" => skill.to_s,
+        "capability_token" => nil,
+        "error" => e.message
+      }
     end
 
     def reap_member!(instance, plan)

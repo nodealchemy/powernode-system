@@ -89,17 +89,23 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       service.provision!
     end
 
-    it "assigns subtasks round-robin + records authorized A2A sub-delegation targets (hybrid)" do
+    it "mints actionable A2A capability tokens for each authorized sub-delegation (hybrid)" do
       result = service.delegate!
       expect(result[:count]).to eq(2)
       assignments = result[:assignments]
       expect(assignments.map { |a| a["subtask_id"] }).to eq(%w[s1 s2])
 
       # hybrid: every member offers embed-text + is granted embed-*, so each
-      # assignee may sub-delegate to the OTHER members (never to itself).
+      # assignee may sub-delegate to the OTHER members (never to itself), and
+      # each authorized edge carries a minted, self-contained capability token.
       targets = assignments.first["sub_delegation_targets"]
       expect(targets).to be_present
-      expect(targets).not_to include(assignments.first["assignee_instance_id"])
+      expect(targets.map { |t| t["target_instance_id"] }).not_to include(assignments.first["assignee_instance_id"])
+      expect(targets.first["skill"]).to eq("embed-text")
+      tok = targets.first["capability_token"]
+      expect(tok["envelope"]).to be_present
+      expect(tok["signature"]).to be_present
+      expect(tok["handle"]).to be_present
     end
 
     it "records no sub-delegation targets in central mode" do
@@ -116,12 +122,16 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       service.delegate!
     end
 
-    it "produces a complete report envelope per subtask" do
+    it "reports per-subtask delegation state with token coverage" do
       result = service.aggregate!
       report = result[:report]
       expect(report["subtasks_total"]).to eq(2)
-      expect(report["completed"]).to eq(2)
-      expect(report["results"].map { |r| r["status"] }).to all(eq("completed"))
+      # delegate! minted capability tokens for the authorized sub-delegations.
+      expect(report["delegation_tokens_minted"]).to be_positive
+      expect(report["results"].first["sub_delegations_tokenized"]).to be_positive
+      # No on-node execution reported yet in the simulated mission, so each
+      # subtask is dispatched (tokens minted) but not yet executed.
+      expect(report["results"].map { |r| r["status"] }).to all(eq("dispatched"))
     end
   end
 
@@ -174,7 +184,7 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     expect(service.plan![:ok]).to be true
     expect(service.provision![:count]).to eq(3)
     expect(service.delegate![:count]).to eq(2)
-    expect(service.aggregate![:report]["completed"]).to eq(2)
+    expect(service.aggregate![:report]["subtasks_total"]).to eq(2)
     expect(service.reap![:count]).to eq(3)
   end
 
