@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, Network as NetworkIcon, AlertTriangle, X, Server, Clock } from 'lucide-react';
+import { Globe2, Network as NetworkIcon, Server, Clock } from 'lucide-react';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   ServiceSubscription,
@@ -30,15 +31,14 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
   refreshKey = 0,
   onSelect,
 }) => {
+  const { addNotification } = useNotifications();
   const [subs, setSubs] = useState<ServiceSubscription[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<SubscriptionStatus | null>(initialStatusFilter);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const fetchSubs = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await serviceCatalogApi.listSubscriptions({
         status: statusFilter ?? undefined,
@@ -46,11 +46,14 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
       });
       setSubs(result.subscriptions);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load subscriptions');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load subscriptions',
+      });
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, peerIdFilter]);
+  }, [statusFilter, peerIdFilter, addNotification]);
 
   useEffect(() => {
     void fetchSubs();
@@ -68,9 +71,16 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
     setCancellingId(sub.id);
     try {
       await serviceCatalogApi.cancelSubscription(sub.id, reason || undefined);
+      addNotification({
+        type: 'success',
+        message: `Cancelled subscription to "${sub.service_offering_slug}"`,
+      });
       await fetchSubs();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to cancel subscription');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to cancel subscription',
+      });
     } finally {
       setCancellingId(null);
     }
@@ -89,17 +99,7 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
         <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
       </header>
 
-      {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {!loading && subs.length === 0 && !error && (
+      {!loading && subs.length === 0 && (
         <div className="p-12 text-center text-theme-secondary text-sm">
           No active subscriptions. Browse a federated peer's catalog to subscribe to their services.
         </div>

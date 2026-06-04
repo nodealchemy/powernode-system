@@ -4,6 +4,7 @@ import { packageRepositoriesApi, type SystemPackageRepository, type PackageRepos
 import { architecturesApi } from '@system/features/system/services/api/architecturesApi';
 import { platformsApi } from '@system/features/system/services/api/platformsApi';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
 import type { SystemNodeArchitecture, SystemNodePlatform } from '@system/features/system/types/system.types';
@@ -82,6 +83,7 @@ const GROUP_ORDER = FAMILY_ORDER.map(familyLabel);
 // = "shared" requires system.package_repositories.manage_shared.
 export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClose, onSaved }) => {
   const { hasPermission } = usePermissions();
+  const { addNotification } = useNotifications();
   const canManageShared = hasPermission('system.package_repositories.manage_shared');
 
   const [name, setName] = useState('');
@@ -97,7 +99,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   const [signingKey, setSigningKey] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const [catalog, setCatalog] = useState<SystemNodeArchitecture[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -171,7 +172,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       setSigningKey('');
       setEnabled(true);
     }
-    setError(null);
     setTranslationMessage(null);
   }, [repository, open]);
 
@@ -225,7 +225,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    setError(null);
     const payload: PackageRepositoryCreate = {
       name,
       description,
@@ -253,7 +252,10 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
       onClose();
     } catch (err) {
       logger.error('[PackageRepoForm] save failed', err);
-      setError(err instanceof Error ? err.message : 'Save failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Save failed',
+      });
     } finally {
       setSaving(false);
     }
@@ -268,10 +270,6 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
         <h2 className="text-lg font-semibold text-theme-primary mb-4">
           {repository ? 'Edit Package Repository' : 'Create Package Repository'}
         </h2>
-
-        {error && (
-          <div className="mb-3 p-2 bg-theme-danger/10 text-theme-danger rounded text-sm">{error}</div>
-        )}
 
         <div className="grid grid-cols-2 gap-3">
           <label className="block">

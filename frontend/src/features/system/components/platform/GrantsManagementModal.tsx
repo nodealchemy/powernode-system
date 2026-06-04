@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { peerGrantsApi } from '../../services/api/peerGrantsApi';
 import type {
   FederationGrant,
@@ -57,6 +58,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
   onClose,
   onChanged,
 }) => {
+  const { addNotification } = useNotifications();
   const [grants, setGrants] = useState<FederationGrant[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +101,14 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
     setRevokingId(grant.id);
     try {
       await peerGrantsApi.revoke(peerId, grant.id, reason || undefined);
+      addNotification({ type: 'success', message: `Grant for '${grant.remote_subject}' revoked.` });
       await fetchGrants();
       onChanged?.();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Revoke failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Revoke failed',
+      });
     } finally {
       setRevokingId(null);
     }

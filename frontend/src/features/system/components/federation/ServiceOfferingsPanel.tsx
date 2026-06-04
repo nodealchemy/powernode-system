@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, Network as NetworkIcon, Server, Trash2, PauseCircle, PlayCircle, AlertTriangle } from 'lucide-react';
+import { Globe2, Network as NetworkIcon, Server, Trash2, PauseCircle, PlayCircle } from 'lucide-react';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   ServiceOffering,
@@ -34,26 +35,28 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
   onCreateClick,
   onSelect,
 }) => {
+  const { addNotification } = useNotifications();
   const [offerings, setOfferings] = useState<ServiceOffering[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<OfferingStatus | null>(initialStatusFilter);
   const [actingOnId, setActingOnId] = useState<string | null>(null);
 
   const fetchOfferings = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await serviceCatalogApi.listOfferings(
         statusFilter ? { status: statusFilter } : undefined,
       );
       setOfferings(result.offerings);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load offerings');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load offerings',
+      });
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, addNotification]);
 
   useEffect(() => {
     void fetchOfferings();
@@ -76,9 +79,16 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
           await serviceCatalogApi.retireOffering(offering.id);
           break;
       }
+      addNotification({
+        type: 'success',
+        message: `Offering "${offering.name}" ${action}d`,
+      });
       await fetchOfferings();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : `Failed to ${action} offering`);
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : `Failed to ${action} offering`,
+      });
     } finally {
       setActingOnId(null);
     }
@@ -108,14 +118,7 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
         </div>
       </header>
 
-      {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {!loading && offerings.length === 0 && !error && (
+      {!loading && offerings.length === 0 && (
         <div className="p-12 text-center text-theme-secondary text-sm">
           No offerings yet. Publishing one makes it visible to federated peers in the
           catalog endpoint.

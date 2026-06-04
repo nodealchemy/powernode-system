@@ -9,6 +9,7 @@ import {
   Minus,
   Plus,
 } from 'lucide-react';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { platformDeploymentsApi } from '../../services/api/platformDeploymentsApi';
 import type {
   DeploymentSummary,
@@ -26,6 +27,7 @@ import type {
  * Plan reference: Decentralized Federation §G + §I + P7.3.
  */
 export const ScalingPanel: React.FC = () => {
+  const { addNotification } = useNotifications();
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,10 +75,17 @@ export const ScalingPanel: React.FC = () => {
     setError(null);
     try {
       await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
+      addNotification({
+        type: 'success',
+        message: `${deployment.name} target set to ${next} replica${next === 1 ? '' : 's'}.`,
+      });
       await fetchDeployments();
       handleCancelEdit();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Update failed',
+      });
     } finally {
       setSavingId(null);
     }
@@ -86,12 +95,18 @@ export const ScalingPanel: React.FC = () => {
     const next = Math.max(0, deployment.target_replicas + delta);
     if (next === deployment.target_replicas) return;
     setSavingId(deployment.id);
-    setError(null);
     try {
       await platformDeploymentsApi.update(deployment.id, { target_replicas: next });
+      addNotification({
+        type: 'success',
+        message: `${deployment.name} target set to ${next} replica${next === 1 ? '' : 's'}.`,
+      });
       await fetchDeployments();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Update failed',
+      });
     } finally {
       setSavingId(null);
     }

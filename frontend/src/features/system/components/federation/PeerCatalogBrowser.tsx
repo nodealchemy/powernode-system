@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, Network as NetworkIcon, AlertTriangle, X, Server, Plus } from 'lucide-react';
+import { Globe2, Network as NetworkIcon, Server, Plus } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import { SubscribeServiceModal } from './SubscribeServiceModal';
 import type {
@@ -33,26 +34,28 @@ export const PeerCatalogBrowser: React.FC<PeerCatalogBrowserProps> = ({
   refreshKey = 0,
   onSubscribed,
 }) => {
+  const { addNotification } = useNotifications();
   const [offerings, setOfferings] = useState<RemoteCatalogOffering[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [subscribingTo, setSubscribingTo] = useState<RemoteCatalogOffering | null>(null);
 
   const fetchCatalog = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await serviceCatalogApi.fetchPeerCatalog(peerId);
       setOfferings(result.offerings);
       setGeneratedAt(result.generated_at);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch peer catalog');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to fetch peer catalog',
+      });
       setOfferings([]);
     } finally {
       setLoading(false);
     }
-  }, [peerId]);
+  }, [peerId, addNotification]);
 
   useEffect(() => {
     void fetchCatalog();
@@ -94,17 +97,7 @@ export const PeerCatalogBrowser: React.FC<PeerCatalogBrowserProps> = ({
         </div>
       </header>
 
-      {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {!loading && offerings.length === 0 && !error && (
+      {!loading && offerings.length === 0 && (
         <div className="p-12 text-center text-theme-secondary text-sm">
           This peer has not published any active offerings yet.
         </div>

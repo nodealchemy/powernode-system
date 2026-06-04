@@ -5,6 +5,7 @@ import {
   type SuggestArchitecturesResult,
   type SystemPackageRepository,
 } from '@system/features/system/services/api/packageRepositoriesApi';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 
 interface Props {
@@ -29,6 +30,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
   onClose,
   onCreated,
 }) => {
+  const { addNotification } = useNotifications();
   const [preview, setPreview] = useState<ResolveDependenciesPreview | null>(null);
   const [suggestion, setSuggestion] = useState<SuggestArchitecturesResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -129,7 +131,10 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
       onClose();
     } catch (e) {
       logger.error('[CreateModuleModal] create failed', e);
-      setError(e instanceof Error ? e.message : 'Materialization failed');
+      addNotification({
+        type: 'error',
+        message: e instanceof Error ? e.message : 'Materialization failed',
+      });
     } finally {
       setSubmitting(false);
     }

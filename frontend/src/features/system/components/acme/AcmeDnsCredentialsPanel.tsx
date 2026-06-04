@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Plus,
   Trash2,
-  X,
   Check,
   Clock,
   ShieldAlert,
@@ -12,6 +11,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
 import type {
   AcmeDnsCredentialSummary,
@@ -36,10 +36,10 @@ interface AcmeDnsCredentialsPanelProps {
 export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = ({
   refreshKey = 0,
 }) => {
+  const { addNotification } = useNotifications();
   const [credentials, setCredentials] = useState<AcmeDnsCredentialSummary[]>([]);
   const [providers, setProviders] = useState<SupportedProvider[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -49,17 +49,19 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
 
   const fetchCreds = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await acmeDnsCredentialsApi.list();
       setCredentials(result.credentials);
       setProviders(result.supported_providers);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load credentials');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load credentials',
+      });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [addNotification]);
 
   useEffect(() => {
     void fetchCreds();
@@ -93,7 +95,10 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
       await acmeDnsCredentialsApi.destroy(cred.id);
       await fetchCreds();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Delete failed',
+      });
     } finally {
       setDeletingId(null);
     }
@@ -118,17 +123,7 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
           </Button>
         </header>
 
-        {error && (
-          <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {!loading && credentials.length === 0 && !error && (
+        {!loading && credentials.length === 0 && (
           <div className="p-12 text-center text-theme-secondary text-sm">
             No DNS credentials configured yet. Add one to enable automatic Let's Encrypt
             issuance via the DNS-01 challenge.

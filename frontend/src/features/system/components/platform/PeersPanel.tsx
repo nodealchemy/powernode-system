@@ -8,6 +8,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
 import { usePlatformPeers } from '../../hooks/usePlatformPeers';
 import { PeerTable, PeerUrlCell, PeerStatusCell, PeerHeartbeatCell } from './PeerTable';
@@ -27,6 +28,7 @@ import { PeerDetailDrawer } from './PeerDetailDrawer';
  * Plan reference: Decentralized Federation §I + P7.1.
  */
 export const PeersPanel: React.FC = () => {
+  const { addNotification } = useNotifications();
   const [statusFilter, setStatusFilter] = useState<PeerStatus | null>(null);
   const { peers, loading, error, setError, refetch } = usePlatformPeers(
     statusFilter ? { status: statusFilter } : undefined,
@@ -46,9 +48,13 @@ export const PeersPanel: React.FC = () => {
     setRevokingId(peer.id);
     try {
       await platformPeersApi.revoke(peer.id, reason || undefined);
+      addNotification({ type: 'success', message: `Peer '${peer.remote_instance_url}' revoked.` });
       await refetch();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke peer');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to revoke peer',
+      });
     } finally {
       setRevokingId(null);
     }

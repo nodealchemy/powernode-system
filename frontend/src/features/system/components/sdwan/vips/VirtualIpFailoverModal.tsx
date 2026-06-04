@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type { SdwanVirtualIp } from '../../../types/sdwan.types';
 
@@ -18,19 +19,18 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
   onClose,
   onFailedOver,
 }) => {
+  const { addNotification } = useNotifications();
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const nextHolder = vip.failover_holder_peer_ids[0];
 
   const handleConfirm = async () => {
     setSubmitting(true);
-    setError(null);
     try {
       const updated = await sdwanApi.failoverVirtualIp(networkId, vip.id);
       onFailedOver(updated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failover failed');
+      addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Failover failed' });
     } finally {
       setSubmitting(false);
     }
@@ -76,8 +76,6 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
             <code className="font-mono text-xs">failover_holder_peer_ids</code> first.
           </div>
         )}
-
-        {error && <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
 
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} type="button">

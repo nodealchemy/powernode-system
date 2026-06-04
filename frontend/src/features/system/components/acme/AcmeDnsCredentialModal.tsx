@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { KeyRound, AlertCircle, X, ExternalLink, ShieldCheck } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { acmeDnsCredentialsApi } from '../../services/api/acmeDnsCredentialsApi';
 import type {
   AcmeDnsCredentialDetail,
@@ -154,6 +155,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
   onCreated,
   supportedProviders,
 }) => {
+  const { addNotification } = useNotifications();
   const [name, setName] = useState('');
   const [provider, setProvider] = useState<AcmeDnsProvider>('cloudflare');
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -199,7 +201,10 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
       onCreated?.(created);
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Create failed',
+      });
     } finally {
       setSubmitting(false);
     }

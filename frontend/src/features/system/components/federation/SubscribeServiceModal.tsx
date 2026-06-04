@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Server, AlertCircle, X, ExternalLink } from 'lucide-react';
+import { Server, ExternalLink } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   RemoteCatalogOffering,
@@ -40,16 +41,15 @@ export const SubscribeServiceModal: React.FC<SubscribeServiceModalProps> = ({
   offering,
   onSubscribed,
 }) => {
+  const { addNotification } = useNotifications();
   const [localHostname, setLocalHostname] = useState('');
   const [ttlDays, setTtlDays] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setLocalHostname('');
     setTtlDays(offering ? String(offering.default_grant_ttl_days) : '30');
-    setError(null);
   }, [isOpen, offering]);
 
   const validation = useMemo(() => {
@@ -75,21 +75,27 @@ export const SubscribeServiceModal: React.FC<SubscribeServiceModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validation.ok || !offering) {
-      setError(validation.errors[0] ?? 'Form invalid');
+      addNotification({ type: 'error', message: validation.errors[0] ?? 'Form invalid' });
       return;
     }
     setSubmitting(true);
-    setError(null);
     try {
       const sub = await serviceCatalogApi.subscribeToPeer(peerId, {
         slug: offering.slug,
         local_hostname: localHostname.trim(),
         ttl_days: ttlDays.trim() === '' ? undefined : parseInt(ttlDays, 10),
       });
+      addNotification({
+        type: 'success',
+        message: `Subscribed to "${offering.name}"`,
+      });
       onSubscribed?.(sub);
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Subscribe failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Subscribe failed',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -120,16 +126,6 @@ export const SubscribeServiceModal: React.FC<SubscribeServiceModalProps> = ({
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
         <div className="bg-theme-background-secondary p-3 rounded text-sm space-y-1">
           <div className="flex items-baseline gap-2">
             <span className="text-theme-secondary text-xs uppercase tracking-wide">Service</span>

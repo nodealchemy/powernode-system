@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Server, AlertCircle, X } from 'lucide-react';
+import { Server } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   ServiceOffering,
@@ -90,16 +91,15 @@ export const ServiceOfferingEditorModal: React.FC<ServiceOfferingEditorModalProp
   editOffering,
   onSaved,
 }) => {
+  const { addNotification } = useNotifications();
   const isEdit = !!editOffering;
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Reset form state when the modal opens with a different target.
   useEffect(() => {
     if (!isOpen) return;
     setForm(editOffering ? formFromOffering(editOffering) : EMPTY_FORM);
-    setError(null);
   }, [isOpen, editOffering]);
 
   const validation = useMemo(() => validate(form, isEdit), [form, isEdit]);
@@ -108,19 +108,25 @@ export const ServiceOfferingEditorModal: React.FC<ServiceOfferingEditorModalProp
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validation.ok) {
-      setError(validation.errors[0] ?? 'Form invalid');
+      addNotification({ type: 'error', message: validation.errors[0] ?? 'Form invalid' });
       return;
     }
     setSubmitting(true);
-    setError(null);
     try {
       const saved = isEdit
         ? await serviceCatalogApi.updateOffering(editOffering!.id, buildUpdatePayload(form))
         : await serviceCatalogApi.createOffering(buildCreatePayload(form));
+      addNotification({
+        type: 'success',
+        message: `Offering "${saved.name}" ${isEdit ? 'updated' : 'created'}`,
+      });
       onSaved?.(saved);
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Save failed',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -165,16 +171,6 @@ export const ServiceOfferingEditorModal: React.FC<ServiceOfferingEditorModalProp
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
-            <AlertCircle className="w-4 h-4" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
         <FieldRow
           label="Slug"
           help={isEdit ? 'Slug is immutable; subscribers reference offerings by slug.' :

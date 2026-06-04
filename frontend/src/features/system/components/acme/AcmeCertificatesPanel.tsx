@@ -3,7 +3,6 @@ import {
   ShieldCheck,
   Plus,
   AlertTriangle,
-  X,
   Trash2,
   RefreshCw,
   Clock,
@@ -11,6 +10,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { acmeCertificatesApi } from '../../services/api/acmeCertificatesApi';
 import type {
   AcmeCertificateSummary,
@@ -34,26 +34,28 @@ interface AcmeCertificatesPanelProps {
 export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
   refreshKey = 0,
 }) => {
+  const { addNotification } = useNotifications();
   const [certs, setCerts] = useState<AcmeCertificateSummary[]>([]);
   const [issuers, setIssuers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
 
   const fetchCerts = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await acmeCertificatesApi.list();
       setCerts(result.certificates);
       setIssuers(result.issuers);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load certificates');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load certificates',
+      });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [addNotification]);
 
   useEffect(() => {
     void fetchCerts();
@@ -70,12 +72,14 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
       return;
     }
     setActingId(cert.id);
-    setError(null);
     try {
       await acmeCertificatesApi.requestIssue(cert.id);
       await fetchCerts();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Issuance failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Issuance failed',
+      });
       await fetchCerts();
     } finally {
       setActingId(null);
@@ -94,12 +98,14 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
       return;
     }
     setActingId(cert.id);
-    setError(null);
     try {
       await acmeCertificatesApi.renew(cert.id);
       await fetchCerts();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Renewal failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Renewal failed',
+      });
       await fetchCerts();
     } finally {
       setActingId(null);
@@ -118,7 +124,10 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
       await acmeCertificatesApi.revoke(cert.id, reason || undefined);
       await fetchCerts();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Revoke failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Revoke failed',
+      });
     } finally {
       setActingId(null);
     }
@@ -131,7 +140,10 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
       await acmeCertificatesApi.destroy(cert.id);
       await fetchCerts();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Delete failed',
+      });
     } finally {
       setActingId(null);
     }
@@ -156,17 +168,7 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
           </Button>
         </header>
 
-        {error && (
-          <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {!loading && certs.length === 0 && !error && (
+        {!loading && certs.length === 0 && (
           <div className="p-12 text-center text-theme-secondary text-sm">
             No certificates yet. Click "Request certificate" to issue one against Let's
             Encrypt using one of your configured DNS provider credentials.

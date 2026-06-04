@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Server, AlertCircle, X, Copy, Check, KeyRound } from 'lucide-react';
+import { Server, Copy, Check, KeyRound } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { childrenApi } from '../../services/api/childrenApi';
 import type { SpawnMode, SpawnResponse } from '../../types/spawn.types';
 
@@ -53,9 +54,9 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
   const [region, setRegion] = useState('');
   const [ttlDays, setTtlDays] = useState('7');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SpawnResponse | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
+  const { addNotification } = useNotifications();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -65,7 +66,6 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
     setTemplateId('powernode-hub');
     setRegion('');
     setTtlDays('7');
-    setError(null);
     setResponse(null);
     setTokenCopied(false);
   }, [isOpen]);
@@ -87,11 +87,10 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validation.ok) {
-      setError(validation.errors[0] ?? 'Form invalid');
+      addNotification({ type: 'error', message: validation.errors[0] ?? 'Form invalid' });
       return;
     }
     setSubmitting(true);
-    setError(null);
     try {
       const result = await childrenApi.spawn({
         spawn_mode: spawnMode,
@@ -106,7 +105,10 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
       setPhase('token');
       onSpawned?.(result);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Spawn failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Spawn failed',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -155,16 +157,6 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
     >
       {phase === 'form' ? (
         <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
-              <AlertCircle className="w-4 h-4" />
-              <span className="flex-1">{error}</span>
-              <button type="button" onClick={() => setError(null)} className="p-1">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          )}
-
           <div>
             <label className="block text-xs font-medium text-theme-secondary mb-1">Spawn Mode</label>
             <div className="space-y-2">

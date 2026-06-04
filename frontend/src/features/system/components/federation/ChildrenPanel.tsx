@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Server,
-  AlertTriangle,
-  X,
   Plus,
   Clock,
   Trash2,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { childrenApi } from '../../services/api/childrenApi';
 import type {
   ChildPeerSummary,
@@ -31,26 +30,28 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
   onSpawnClick,
   onSelect,
 }) => {
+  const { addNotification } = useNotifications();
   const [children, setChildren] = useState<ChildPeerSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<ChildPeerStatus | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const fetchChildren = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await childrenApi.listChildren(
         statusFilter ? { status: statusFilter } : undefined,
       );
       setChildren(result.children);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load children');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load children',
+      });
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, addNotification]);
 
   useEffect(() => {
     void fetchChildren();
@@ -67,9 +68,16 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
     setRevokingId(child.id);
     try {
       await childrenApi.revoke(child.id, reason || undefined);
+      addNotification({
+        type: 'success',
+        message: `Revoked child "${child.remote_instance_url}"`,
+      });
       await fetchChildren();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke child');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to revoke child',
+      });
     } finally {
       setRevokingId(null);
     }
@@ -96,17 +104,7 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
         </div>
       </header>
 
-      {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button type="button" onClick={() => setError(null)} className="p-1">
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {!loading && children.length === 0 && !error && (
+      {!loading && children.length === 0 && (
         <div className="p-12 text-center text-theme-secondary text-sm">
           No spawned children yet. Click "Spawn Platform" to provision one.
         </div>

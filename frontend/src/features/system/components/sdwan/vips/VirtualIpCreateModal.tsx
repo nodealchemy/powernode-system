@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
 
@@ -15,6 +16,7 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
   onClose,
   onCreated,
 }) => {
+  const { addNotification } = useNotifications();
   const [name, setName] = useState('');
   const [cidr, setCidr] = useState('');
   const [description, setDescription] = useState('');
@@ -26,7 +28,6 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
   const [advertisedLocalPref, setAdvertisedLocalPref] = useState<number>(100);
   const [peers, setPeers] = useState<SdwanPeer[]>([]);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     sdwanApi.getPeers(networkId).then((r) => setPeers(r.peers)).catch(() => setPeers([]));
@@ -48,7 +49,6 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
     try {
       const holders = anycast ? anycastHolderIds : primaryHolderId ? [primaryHolderId] : [];
       if (anycast && holders.length < 2) {
@@ -69,7 +69,7 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
       });
       onCreated(created);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create virtual IP');
+      addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Failed to create virtual IP' });
     } finally {
       setSubmitting(false);
     }
@@ -208,8 +208,6 @@ export const VirtualIpCreateModal: React.FC<VirtualIpCreateModalProps> = ({
             </div>
           </div>
         </details>
-
-        {error && <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose} type="button">

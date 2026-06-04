@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Database, AlertCircle } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import { volumesApi } from '../../services/api/volumesApi';
 import type { SystemProviderVolume } from '../../types/system.types';
@@ -34,6 +35,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
   defaultInstanceId,
   defaultRole,
 }) => {
+  const { addNotification } = useNotifications();
   const [instanceId, setInstanceId] = useState(defaultInstanceId ?? '');
   const [role, setRole] = useState(defaultRole ?? '');
   const [sourceId, setSourceId] = useState('');
@@ -82,10 +84,14 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
         target_volume_id: targetId,
         role: role.trim(),
       });
+      addNotification({ type: 'success', message: `Storage migration planned for '${role.trim()}'.` });
       onPlanned?.(migration);
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Plan failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Plan failed',
+      });
     } finally {
       setSubmitting(false);
     }

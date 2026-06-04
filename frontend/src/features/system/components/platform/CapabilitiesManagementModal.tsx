@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { peerCapabilitiesApi } from '../../services/api/peerCapabilitiesApi';
 import type {
   CapabilityConflictResolution,
@@ -67,6 +68,7 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
   onClose,
   onChanged,
 }) => {
+  const { addNotification } = useNotifications();
   const [capabilities, setCapabilities] = useState<FederationCapability[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -107,10 +109,14 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
     setDeletingId(cap.id);
     try {
       await peerCapabilitiesApi.destroy(peerId, cap.id);
+      addNotification({ type: 'success', message: `Capability '${cap.resource_kind}' deleted.` });
       await fetch();
       onChanged?.();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Delete failed',
+      });
     } finally {
       setDeletingId(null);
     }

@@ -9,6 +9,7 @@ import {
   Clock,
   Plus,
 } from 'lucide-react';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import type {
   StorageMigrationStatus,
@@ -31,6 +32,7 @@ import { StorageMigrationDetailDrawer } from './StorageMigrationDetailDrawer';
  * Plan reference: E8 follow-on (operator UI).
  */
 export const StorageMigrationsPanel: React.FC = () => {
+  const { addNotification } = useNotifications();
   const [migrations, setMigrations] = useState<StorageMigrationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,34 +71,40 @@ export const StorageMigrationsPanel: React.FC = () => {
   const handleApprove = useCallback(
     async (id: string) => {
       setActionPending(id);
-      setError(null);
       try {
         await storageMigrationsApi.approve(id);
+        addNotification({ type: 'success', message: 'Storage migration approved.' });
         await fetchMigrations();
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Approve failed');
+        addNotification({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Approve failed',
+        });
       } finally {
         setActionPending(null);
       }
     },
-    [fetchMigrations],
+    [fetchMigrations, addNotification],
   );
 
   const handleCancel = useCallback(
     async (id: string) => {
       const reason = window.prompt('Cancel reason (optional)') ?? undefined;
       setActionPending(id);
-      setError(null);
       try {
         await storageMigrationsApi.cancel(id, reason);
+        addNotification({ type: 'success', message: 'Storage migration cancelled.' });
         await fetchMigrations();
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Cancel failed');
+        addNotification({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Cancel failed',
+        });
       } finally {
         setActionPending(null);
       }
     },
-    [fetchMigrations],
+    [fetchMigrations, addNotification],
   );
 
   return (

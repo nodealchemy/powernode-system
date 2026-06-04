@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type {
   SdwanRoutePolicy,
@@ -28,6 +29,7 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   onClose,
   onSaved,
 }) => {
+  const { addNotification } = useNotifications();
   const isEdit = !!policy;
   const [name, setName] = useState(policy?.name ?? '');
   const [description, setDescription] = useState(policy?.description ?? '');
@@ -39,7 +41,6 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
     JSON.stringify(policy?.statements ?? DEFAULT_STATEMENTS, null, 2)
   );
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // If editing, fetch full statements (the list endpoint omits them)
   useEffect(() => {
@@ -52,7 +53,6 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
     try {
       let parsedStatements: SdwanRoutePolicyStatement[];
       try {
@@ -79,7 +79,7 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
         : await sdwanApi.createRoutePolicy(payload);
       onSaved(saved);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Save failed' });
     } finally {
       setSubmitting(false);
     }
@@ -186,8 +186,6 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
             Enabled (compiles into FRR; disable to draft a policy without applying it)
           </label>
         </div>
-
-        {error && <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose} type="button">

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type {
   SdwanPortMapping,
@@ -24,6 +25,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
   onClose,
   onSaved,
 }) => {
+  const { addNotification } = useNotifications();
   const isEdit = !!mapping;
   const [name, setName] = useState(mapping?.name ?? '');
   const [description, setDescription] = useState(mapping?.description ?? '');
@@ -40,7 +42,6 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
   const [peers, setPeers] = useState<SdwanPeer[]>([]);
   const [vips, setVips] = useState<SdwanVirtualIp[]>([]);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     sdwanApi.getPeers(networkId).then((r) => setPeers(r.peers)).catch(() => setPeers([]));
@@ -52,7 +53,6 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
     try {
       if (!hubPeerId) throw new Error('Select a hub peer (publicly reachable).');
       if (!listenPort || listenPort < 1 || listenPort > 65535) {
@@ -82,7 +82,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
         : await sdwanApi.createPortMapping(networkId, payload);
       onSaved(saved);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      addNotification({ type: 'error', message: err instanceof Error ? err.message : 'Save failed' });
     } finally {
       setSubmitting(false);
     }
@@ -256,8 +256,6 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
             Enabled (active in nft DNAT chain)
           </label>
         </div>
-
-        {error && <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose} type="button">

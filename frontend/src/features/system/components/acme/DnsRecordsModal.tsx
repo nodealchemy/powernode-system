@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { dnsRecordsApi } from '../../services/api/dnsRecordsApi';
 import type {
   CloudflareZone,
@@ -47,12 +48,12 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
   credentialName,
   onClose,
 }) => {
+  const { addNotification } = useNotifications();
   const [zones, setZones] = useState<CloudflareZone[]>([]);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [records, setRecords] = useState<DnsRecord[]>([]);
   const [loadingZones, setLoadingZones] = useState(false);
   const [loadingRecords, setLoadingRecords] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -60,7 +61,6 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
   const fetchZones = useCallback(async () => {
     if (!credentialId) return;
     setLoadingZones(true);
-    setError(null);
     try {
       const zs = await dnsRecordsApi.listZones(credentialId);
       setZones(zs);
@@ -68,25 +68,30 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
         setSelectedZoneId(zs[0].id);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load zones');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load zones',
+      });
     } finally {
       setLoadingZones(false);
     }
-  }, [credentialId, selectedZoneId]);
+  }, [credentialId, selectedZoneId, addNotification]);
 
   const fetchRecords = useCallback(async () => {
     if (!credentialId || !selectedZoneId) return;
     setLoadingRecords(true);
-    setError(null);
     try {
       const rs = await dnsRecordsApi.listRecords(credentialId, selectedZoneId);
       setRecords(rs);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load records');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load records',
+      });
     } finally {
       setLoadingRecords(false);
     }
-  }, [credentialId, selectedZoneId]);
+  }, [credentialId, selectedZoneId, addNotification]);
 
   useEffect(() => {
     if (isOpen) {
@@ -97,7 +102,6 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
       setZones([]);
       setSelectedZoneId(null);
       setRecords([]);
-      setError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, credentialId]);
@@ -113,12 +117,14 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
     );
     if (!ok) return;
     setDeletingId(record.id);
-    setError(null);
     try {
       await dnsRecordsApi.deleteRecord(credentialId, record.id, selectedZoneId);
       await fetchRecords();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Delete failed');
+      addNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Delete failed',
+      });
     } finally {
       setDeletingId(null);
     }
@@ -161,16 +167,6 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
       }
     >
       <div className="space-y-4">
-        {error && (
-          <div className="p-2 bg-theme-danger text-theme-danger text-sm rounded flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-            <span className="flex-1">{error}</span>
-            <button type="button" onClick={() => setError(null)} className="p-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 flex-1">
             <label className="text-xs font-medium text-theme-secondary">Zone</label>
