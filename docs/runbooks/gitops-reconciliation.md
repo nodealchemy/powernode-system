@@ -13,18 +13,22 @@ needing PR-based change control.
 
 **Apply maturity (v1):** parser, diff engine, reconciler, the drift sensor,
 and `ApplyService` all ship today. Approving a proposal calls
-`system_gitops_apply_proposal`, which runs `ApplyService` to make the
-change. Two carve-outs remain v1-conservative:
+`system_gitops_apply_proposal`, which runs `ApplyService` to make the change.
+**Reconciler-driven auto-apply is wired** — on an `auto_apply` repo the
+every-5-min reconciler auto-approves + applies non-destructive diffs without an
+operator step (see "Step 4 — Apply"). Two carve-outs remain v1-conservative:
 
-- **Reconciler-driven auto-apply is not wired yet.** `auto_apply: true` is
-  accepted and stored, but the every-5-min reconciler only *opens*
-  proposals — it never applies them on its own. Today every change still
-  goes through an explicit approve → `system_gitops_apply_proposal` step.
+- **Destroys never auto-apply.** A `destroy` diff ALWAYS stays
+  `pending_review` for manual approval, even on an `auto_apply` repo — and even
+  an **assignment** destroy, which `ApplyService` would otherwise allow on
+  operator approval. A stray `fleet.yaml` edit can never delete fleet resources
+  unattended.
 - **Template/module destroy via GitOps is intentionally blocked.** Removing
   a `templates:`/`modules:` entry from `fleet.yaml` returns
   `UnsupportedDiffError` (destructive ops require manual confirmation).
   Only **assignment** destroy (removing a `<node>:<module>` line) applies
-  through GitOps. Template/module create + update apply normally.
+  through GitOps, and only on explicit operator approval. Template/module
+  create + update apply normally.
 
 ## End-to-end flow
 
@@ -199,17 +203,28 @@ approve or change the source.
 
 ## Step 4 — Apply (auto vs gated)
 
-**`auto_apply: false`** (default, and the only path wired today) — every
-diff requires operator approval. Approving a proposal calls
-`system_gitops_apply_proposal` → `ApplyService`. Recommended until your
-team's PR review process is mature enough that git itself is trusted as
-the source of truth.
+**`auto_apply: false`** (default) — every diff requires operator approval.
+Approving a proposal calls `system_gitops_apply_proposal` → `ApplyService`.
+Recommended until your team's PR review process is mature enough that git
+itself is trusted as the source of truth.
 
-**`auto_apply: true`** — accepted and stored on the `GitopsRepository`,
-but the reconciler-driven apply path is **not yet wired** (v1-conservative):
-the reconciler still only opens proposals, and you must approve each one to
-apply it. Treat the flag as a forward-looking toggle. When it does land,
-restrict it to repos where:
+**`auto_apply: true`** — the reconciler auto-approves + applies each eligible
+diff with no operator step. The audit `Ai::AgentProposal` is still created
+first (so every change has a record), then auto-approved (`reviewed_by` nil,
+`impact_assessment.auto_applied = true`) and applied. A diff is auto-applied
+only when **all four** gates hold:
+
+1. `repository.auto_apply` is `true`.
+2. The diff is **non-destructive** (`create` / `update`). Destroys always stay
+   `pending_review` for manual approval.
+3. The account is **not halted** — the platform kill-switch / emergency-halt
+   (`account.ai_suspended?`) must be clear. If halted, the proposal stays
+   `pending_review` until you resume and the next tick re-applies it.
+4. The diff is within the per-tick cap.
+
+On a stale conflict or validation failure the proposal is reverted to
+`pending_review` (with the failure reason in `impact_assessment`) and the
+reconcile continues. Restrict `auto_apply: true` to repos where:
 
 - The repo's branch protection requires multi-reviewer PRs
 - All committers are trusted operators
@@ -219,7 +234,7 @@ restrict it to repos where:
 
 ```mermaid
 flowchart TD
-    Approve[Operator approves proposal<br/>→ system_gitops_apply_proposal] --> Apply[ApplyService.apply!<br/>for that proposal]
+    Approve[Operator approves proposal<br/>→ system_gitops_apply_proposal<br/>OR reconciler auto-apply<br/>on an auto_apply repo] --> Apply[ApplyService.apply!<br/>for that proposal]
     Apply --> TXN{atomic transaction<br/>per resource}
     TXN -->|success| Mark[proposal.status = implemented<br/>+ FleetEvent]
     TXN -->|stale conflict| Stale[Reject as stale<br/>operator re-syncs for a fresh proposal]
@@ -322,4 +337,4 @@ automatic topological batch). Re-sync if the names drifted.
 - [`../history/plans/missing-features.md`](../history/plans/missing-features.md) — historical M-D2-3 implementation plan (archived; some items now shipped)
 - `extensions/system/server/app/services/system/gitops/` — source code (DesiredStateParser, DiffEngine, Reconciler, RepoSyncService, ApplyService)
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-04_

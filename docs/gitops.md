@@ -2,13 +2,18 @@
 
 > Status: active
 
-The read path is fully shipped: the `gitops_drift_sensor` runs each fleet tick,
-`RepoSyncService` + `DesiredStateParser` + `DiffEngine` produce diffs, and every
-diff opens an `Ai::AgentProposal` for operator review. Two write-path gaps remain
-(see "Known limitations"): the `auto_apply` flag is parsed but its apply path is
-not yet executed, and `ApplyService` template/module **destroy** raises
-`UnsupportedDiffError` (only assignment destroy is wired). Implementation lives in
-`extensions/system/server/app/services/system/gitops/` (6 services:
+The full read + write path is shipped: the `gitops_drift_sensor` runs each fleet
+tick, `RepoSyncService` + `DesiredStateParser` + `DiffEngine` produce diffs, and
+every diff opens an `Ai::AgentProposal`. By default proposals wait for operator
+review. When `repository.auto_apply` is set, the reconciler auto-approves +
+applies **non-destructive** (create / update) diffs without operator review —
+gated by the platform kill-switch and the per-tick cap, with the audit proposal
+always created first (see "Auto-apply mode"). One conservative carve-out remains
+(see "Known limitations"): `ApplyService` template/module **destroy** raises
+`UnsupportedDiffError`, and destroys NEVER auto-apply (they always stay
+`pending_review` for manual approval — even assignment destroys, which
+`ApplyService` would otherwise allow on operator approval). Implementation lives
+in `extensions/system/server/app/services/system/gitops/` (6 services:
 `apply_service.rb`, `desired_state_parser.rb`, `desired_state_validator.rb`,
 `diff_engine.rb`, `reconciler.rb`, `repo_sync_service.rb`).
 
@@ -72,27 +77,30 @@ flowchart TD
     Recon -.records.-> Run
 ```
 
-## Proposal Flow (with planned auto-apply branch)
+## Proposal Flow (with auto-apply branch)
 
-The auto-apply branch below is the intended design; today it is **not yet
-wired** (see "Known limitations"), so every diff currently follows the
-proposal-queue path regardless of the `auto_apply` flag.
+The audit proposal is **always** created first (so every change has a record),
+then the reconciler branches on `repository.auto_apply`. Auto-apply applies a
+proposal only when it passes all four safety gates (see "Auto-apply mode"); a
+destroy, a halted account, or `auto_apply: false` all route the proposal to the
+operator review queue instead.
 
 ```mermaid
 flowchart TD
     Diff[DiffEngine output] --> Cap{per-tick<br/>proposal cap?<br/>default 25}
     Cap -->|under cap| OpenAll[Open all as<br/>Ai::AgentProposal]
     Cap -->|over cap| OpenSome[Open first 25,<br/>mark run partial]
-    OpenAll --> Mode{repository<br/>auto_apply?}
-    OpenSome --> Mode
-    Mode -->|false default| Queue[Proposal queue<br/>operator reviews]
-    Mode -->|true: planned,<br/>not yet wired| AutoApply[Reconciler applies<br/>without operator gate]
+    OpenAll --> Gate{auto_apply AND<br/>non-destructive AND<br/>not halted?}
+    OpenSome --> Gate
+    Gate -->|no| Queue[Proposal queue<br/>operator reviews]
+    Gate -->|yes| AutoApply[Reconciler auto-approves<br/>+ applies via ApplyService]
     Queue --> Op{Operator<br/>decision}
-    Op -->|approve| Apply[Reconciler applies]
+    Op -->|approve| Apply[ApplyService applies]
     Op -->|reject| Retain[Live state retained<br/>diff re-detected next tick]
     Op -->|ignore| Retain
     Apply --> Sync2[Live DB updated]
-    AutoApply -.planned.-> Sync2
+    AutoApply -->|success| Sync2
+    AutoApply -.stale conflict / validation.-> Revert[Revert to pending_review<br/>operator investigates]
     Sync2 --> Audit[Audit trail:<br/>GitopsSyncRun<br/>+ FleetEvent]
 ```
 
@@ -153,13 +161,32 @@ operator UI. Each proposal shows:
 
 Approve to apply; reject to retain live state.
 
-### 4. Auto-apply mode (flag only — not yet executed)
+### 4. Auto-apply mode
 
-`auto_apply: true` is intended to bypass the proposal queue and apply diffs
-directly, for fully-trusted repositories. The flag is accepted and persisted,
-but the unattended apply path is **not yet wired** (see "Known limitations") —
-today every diff still routes through the proposal queue for operator
-approval regardless of this flag. Default is `false`.
+`auto_apply: true` lets the reconciler apply diffs without operator approval,
+for fully-trusted repositories where git itself is the change-control gate.
+Default is `false` (every diff waits for operator review).
+
+The audit `Ai::AgentProposal` is **always created first**, then auto-approved
+(`reviewed_by` nil; `impact_assessment.auto_applied = true`,
+`approved_by = "gitops_auto_apply"`) and applied via `ApplyService`. A proposal
+is auto-applied only when **all four** safety gates hold:
+
+1. **`repository.auto_apply == true`.**
+2. **The diff is non-destructive** — `change` is `create` or `update`. A
+   `destroy` ALWAYS stays `pending_review` for manual approval, even an
+   **assignment** destroy (which `ApplyService` would otherwise allow on
+   operator approval).
+3. **The account is not halted** — the platform kill-switch / emergency-halt
+   (`account.ai_suspended?`, via `Ai::Autonomy::KillSwitchService`) must be
+   clear. If halted, auto-apply is skipped and the proposal stays
+   `pending_review`.
+4. **Only the per-tick-capped diff set is eligible** (the same `create` /
+   `update` diffs that would have become proposals this tick).
+
+If `ApplyService` fails (stale conflict, validation), the proposal is reverted
+to `pending_review` with the failure reason stashed in `impact_assessment`, and
+the reconcile continues — one failure never aborts the rest of the tick.
 
 ---
 
@@ -257,22 +284,27 @@ recent runs per repository.
 
 ## Known limitations
 
-- **Auto-apply not yet executed** — `repository.auto_apply` is parsed and
-  surfaced, but the unattended apply path (proposal → apply → mark approved)
-  is not yet wired in `reconciler.rb`. For now, every diff requires explicit
-  operator approval regardless of the flag.
+- **Auto-apply never applies destroys** — when `repository.auto_apply` is set,
+  the reconciler auto-approves + applies `create` / `update` diffs (proposal →
+  approve → `ApplyService`), but `destroy` diffs ALWAYS stay `pending_review`
+  for manual approval (even assignment destroys, which `ApplyService` would
+  otherwise allow on operator approval). This is a deliberate safety gate, not
+  a gap — a stray `fleet.yaml` edit can never delete fleet resources
+  unattended.
 - **Template / module destroy unimplemented** — `ApplyService` applies
   `create` / `update` for all kinds and `destroy` for **assignments**, but a
   `destroy` diff for a `template` or `module` raises `UnsupportedDiffError`
   (v1-conservative: destructive template/module ops require manual
-  confirmation; expected in Phase 6c). Assignment destroy works today.
+  confirmation; expected in Phase 6c). Assignment destroy works on operator
+  approval (but, per the gate above, never via auto-apply).
 - **No multi-document YAML** — `fleet.yaml` is a single document. To
   manage many concerns, use `path_prefix` with multiple repositories
   pointing at different roots.
 - **No drift back-pressure** — if you apply a diff via the operator UI
   and then revert it manually in the DB, the next reconcile will re-open
-  the same proposal. (Auto-apply will mitigate this once its apply path is
-  wired.)
+  the same proposal. On an `auto_apply` repo the reconciler re-applies the
+  non-destructive correction automatically on the next tick; a manual
+  destroy still re-opens a `pending_review` proposal for an operator.
 - **No webhook trigger** — diffs only get detected on the 5-minute cron
   or via manual `sync_now`. A future enhancement would accept Gitea /
   GitHub webhooks to trigger immediate reconciliation on push.
@@ -288,4 +320,4 @@ recent runs per repository.
 
 ---
 
-_Last verified: 2026-06-03_
+_Last verified: 2026-06-04_

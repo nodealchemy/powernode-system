@@ -7,18 +7,37 @@ module System
     # Returns a structured Result; the caller (worker_api controller) wraps
     # this into a render_success payload.
     #
-    # Auto-apply: when `repository.auto_apply` is true, accepted diffs are
-    # applied without operator approval (proposal still created for audit).
-    # Default false; per-account `gitops_auto_apply` config can set it.
+    # Auto-apply (WIRED): when `repository.auto_apply` is true the reconciler
+    # auto-approves + applies each eligible proposal via ApplyService — no
+    # operator review. The audit proposal is ALWAYS created first (so every
+    # change has a record), then transitioned to `approved` (reviewed_by nil,
+    # impact_assessment flagged auto_applied) and applied. A proposal is
+    # eligible ONLY when ALL FOUR safety gates hold:
     #
-    # Diff cap: per-account daily proposal cap prevents proposal storms when
-    # an entire fleet.yaml is rewritten in one commit. Configurable via env
-    # var POWERNODE_GITOPS_MAX_PROPOSALS_PER_TICK (default 25).
+    #   1. @repository.auto_apply == true.
+    #   2. The diff is NON-DESTRUCTIVE — change is :create or :update. A
+    #      :destroy ALWAYS stays pending_review for manual approval (even
+    #      assignment destroys, which ApplyService would otherwise allow).
+    #   3. The account is NOT halted — the platform kill-switch / emergency-halt
+    #      (Ai::Autonomy::KillSwitchService#halted?, backed by account.ai_suspended?)
+    #      must be clear. If halted, auto-apply is skipped (proposal stays
+    #      pending_review) and the skip is logged.
+    #   4. Only the per-tick-capped diff set (capped_diffs) is eligible.
     #
-    # Reference: comprehensive stabilization sweep P5.
+    # Apply failures (stale conflict, validation) are logged and skipped — the
+    # proposal stays non-implemented and the reconcile continues; one failure
+    # never aborts the loop. Applied / failed proposal IDs are surfaced on the
+    # Result.
+    #
+    # Diff cap: per-tick proposal cap prevents proposal storms when an entire
+    # fleet.yaml is rewritten in one commit. Configurable via env var
+    # POWERNODE_GITOPS_MAX_PROPOSALS_PER_TICK (default 25).
+    #
+    # Reference: comprehensive stabilization sweep P5; GitOps auto-apply.
     class Reconciler
       Result = Struct.new(:ok?, :diff_count, :proposal_ids, :synced_revision,
-                          :diff_summary, :error, keyword_init: true)
+                          :diff_summary, :error, :applied_proposal_ids,
+                          :failed_proposal_ids, keyword_init: true)
 
       MAX_PROPOSALS_PER_TICK = ENV.fetch("POWERNODE_GITOPS_MAX_PROPOSALS_PER_TICK", "25").to_i
 
@@ -60,8 +79,28 @@ module System
         capped_diffs = diffs.first(MAX_PROPOSALS_PER_TICK)
         truncated = diffs.size > MAX_PROPOSALS_PER_TICK
 
-        # Step 5: emit proposals
-        proposal_ids = capped_diffs.map { |d| open_proposal(d, repo_result.commit_sha) }.compact
+        # Step 5: emit proposals (audit record is ALWAYS created first), then
+        # auto-apply each eligible one when the repository opts in. Gate 3
+        # (kill-switch) is evaluated once per tick — a halt mid-tick is rare
+        # and the check is account-wide, so a single read is sufficient.
+        proposal_ids = []
+        applied_proposal_ids = []
+        failed_proposal_ids = []
+        auto_apply_allowed = @repository.auto_apply && !account_halted?
+
+        capped_diffs.each do |diff|
+          proposal_id = open_proposal(diff, repo_result.commit_sha)
+          next if proposal_id.nil?
+
+          proposal_ids << proposal_id
+          next unless auto_apply_allowed && auto_appliable_diff?(diff)
+
+          if auto_apply_proposal(proposal_id)
+            applied_proposal_ids << proposal_id
+          else
+            failed_proposal_ids << proposal_id
+          end
+        end
 
         @repository.update!(
           last_synced_at: Time.current,
@@ -77,7 +116,9 @@ module System
           diff_count: diffs.size,
           proposal_ids: proposal_ids,
           synced_revision: repo_result.commit_sha,
-          diff_summary: summarize(diffs)
+          diff_summary: summarize(diffs),
+          applied_proposal_ids: applied_proposal_ids,
+          failed_proposal_ids: failed_proposal_ids
         )
       rescue StandardError => e
         Rails.logger.error("[Gitops::Reconciler] #{e.class}: #{e.message}")
@@ -102,6 +143,82 @@ module System
       rescue StandardError => e
         Rails.logger.warn("[Gitops::Reconciler] Failed to open proposal for diff=#{diff.to_h.except(:current, :desired).inspect}: #{e.message}")
         nil
+      end
+
+      # Gate 3: is the account's AI activity halted (kill-switch /
+      # emergency-halt)? Backed by account.ai_suspended? — the same source of
+      # truth the kill_switch_status / emergency_halt MCP tools use.
+      def account_halted?
+        halted = ::Ai::Autonomy::KillSwitchService.new(account: @repository.account).halted?
+        if halted
+          Rails.logger.info(
+            "[Gitops::Reconciler] account #{@repository.account_id} is halted (kill-switch active) — " \
+            "skipping GitOps auto-apply; proposals left pending_review"
+          )
+        end
+        halted
+      end
+
+      # Gate 2: only non-destructive diffs are auto-appliable. Destroys ALWAYS
+      # stay pending_review for manual approval — even assignment destroys,
+      # which ApplyService would otherwise allow on operator approval.
+      def auto_appliable_diff?(diff)
+        %i[create update].include?(diff.change)
+      end
+
+      # Auto-approve (mirroring AgentProposal#approve! but with no human
+      # reviewer + audit metadata flagging the source) then apply via
+      # ApplyService. Returns true on a successful apply, false otherwise.
+      # Apply failures (stale conflict, validation) are logged and swallowed
+      # so one failure never aborts the reconcile loop.
+      def auto_apply_proposal(proposal_id)
+        proposal = ::Ai::AgentProposal.find_by(id: proposal_id)
+        return false if proposal.nil?
+
+        # Mirror the operator approval flow (proposal.approve!(user)) but
+        # record that no human reviewed it — gitops auto-apply approved it.
+        proposal.update!(
+          status: "approved",
+          reviewed_by: nil,
+          reviewed_at: Time.current,
+          impact_assessment: (proposal.impact_assessment || {}).merge(
+            "auto_applied" => true,
+            "approved_by" => "gitops_auto_apply",
+            "auto_approved_at" => Time.current.iso8601
+          )
+        )
+
+        result = ::System::Gitops::ApplyService.apply!(proposal: proposal)
+        unless result.ok?
+          Rails.logger.warn(
+            "[Gitops::Reconciler] auto-apply failed for proposal=#{proposal_id} " \
+            "stale_conflict=#{!!result.stale_conflict} error=#{result.error}"
+          )
+          # Revert to pending_review so the conflict surfaces to an operator
+          # exactly as it would on the non-auto path — never leave a stuck
+          # "approved" gitops proposal that could be re-applied or look
+          # human-reviewed. Stash the failure reason for the operator.
+          revert_failed_auto_apply(proposal, result)
+        end
+        result.ok?
+      rescue StandardError => e
+        Rails.logger.warn("[Gitops::Reconciler] auto-apply raised for proposal=#{proposal_id}: #{e.class}: #{e.message}")
+        false
+      end
+
+      def revert_failed_auto_apply(proposal, result)
+        proposal.update!(
+          status: "pending_review",
+          reviewed_at: nil,
+          impact_assessment: (proposal.impact_assessment || {}).merge(
+            "auto_apply_failed" => true,
+            "auto_apply_error" => result.error,
+            "auto_apply_stale_conflict" => !!result.stale_conflict,
+            "auto_apply_failed_at" => Time.current.iso8601
+          )
+        )
+      rescue StandardError => e
+        Rails.logger.warn("[Gitops::Reconciler] failed to revert proposal=#{proposal.id} after auto-apply failure: #{e.message}")
       end
 
       def gitops_agent_id
@@ -140,7 +257,8 @@ module System
       end
 
       def finalize(sync_run, status:, diff_count: 0, proposal_ids: [],
-                   synced_revision: nil, diff_summary: {}, error: nil)
+                   synced_revision: nil, diff_summary: {}, error: nil,
+                   applied_proposal_ids: [], failed_proposal_ids: [])
         sync_run.finalize!(
           status: status,
           diff_count: diff_count,
@@ -156,7 +274,9 @@ module System
           proposal_ids: proposal_ids,
           synced_revision: synced_revision,
           diff_summary: diff_summary,
-          error: error
+          error: error,
+          applied_proposal_ids: applied_proposal_ids,
+          failed_proposal_ids: failed_proposal_ids
         )
       end
     end

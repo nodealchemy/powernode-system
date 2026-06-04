@@ -51,7 +51,9 @@ PR review as the gating mechanism for fleet changes.
 
 The reconciler walks this and computes the delta against current
 platform state. Each delta becomes an `Ai::AgentProposal` (with
-`proposed_changes.source = "gitops"`) requiring operator approval. The
+`proposed_changes.source = "gitops"`). By default it requires operator
+approval; on an `auto_apply` repo the reconciler auto-approves + applies
+non-destructive (create / update) diffs itself (see "Auto-apply" below). The
 reconciler opens these proposals **directly** — there is no
 `system.gitops_*` intervention policy; approval flows through the
 standard proposal review queue, not a per-action autonomy policy.
@@ -65,16 +67,30 @@ standard proposal review queue, not a per-action autonomy policy.
 | Reconciler opens proposals per change | Shipped (`Reconciler`) |
 | MCP actions: register / sync / get_sync_run / get_drift_report | Shipped (gap remediation slices closed) |
 | Proposal-apply path (post-approval execution) | Shipped for `template` / `module` / `assignment` kinds via `system_gitops_apply_proposal`; **destroy + provider_config remain follow-ups** |
+| Reconciler-driven auto-apply (`repository.auto_apply`) | Shipped — auto-approves + applies non-destructive (create / update) diffs, gated by the kill-switch + per-tick cap; destroys always stay manual |
 | Drift sensor (alert when reality drifts from git) | Shipped (`GitopsDriftSensor`, registered in `FleetAutonomyService::SENSORS`; emits `gitops.drift_detected`) |
 | Operator UI for diff review + approval | Partial — generic `ApprovalRequest` UI works; GitOps-specific drill-in panel forthcoming |
 
-GitOps now applies the **create/update** path automatically for the core
-kinds (`template`, `module`, `assignment`) once a proposal is approved —
-the source-of-truth comparison drives both audit/PR review and execution.
-The **conservative v1 gap** is deliberate: resource **destroy** and
-`provider_config` changes are NOT auto-applied — review the drift and
+GitOps applies the **create/update** path for the core kinds (`template`,
+`module`, `assignment`) — either once an operator approves the proposal, or
+automatically on an `auto_apply` repo (see "Auto-apply"). The
+**conservative v1 gap** is deliberate: resource **destroy** and
+`provider_config` changes are never auto-applied — review the drift and
 remove resources manually so a stray `fleet.yaml` edit can never delete
 fleet infrastructure unattended.
+
+### Auto-apply
+
+Set `auto_apply: true` on the repository to let the reconciler apply diffs
+without an operator step. The audit `Ai::AgentProposal` is still created
+first, then auto-approved (`impact_assessment.auto_applied = true`) and
+applied via `ApplyService`. A diff auto-applies only when **all** of: the
+repo opts in, the change is non-destructive (`create` / `update` — never
+`destroy`), the account is not halted (platform kill-switch /
+`account.ai_suspended?`), and it's within the per-tick cap. On a stale
+conflict or validation failure the proposal reverts to `pending_review` for
+an operator. Restrict `auto_apply: true` to repos whose git history is the
+trusted change-control gate (multi-reviewer PRs, trusted committers).
 
 **Why GitOps:** git history is the audit trail; PR review is the change
 control; reconciler convergence catches drift. Replaces "operator runs
