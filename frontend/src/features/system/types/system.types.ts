@@ -648,3 +648,91 @@ export interface SystemRecentActivity {
   initiated_by?: string;
   timestamp: string;
 }
+
+// === GitOps reconciliation (M-D2-3) ===
+// Shapes mirror Api::V1::System::GitopsRepositoriesController#serialize_repo
+// and #serialize_run exactly. Each repository describes a desired fleet state
+// (templates, assignments, provider configs); a reconciler ticks per enabled
+// repo, diffs desired vs. live state, and opens AgentProposal rows.
+
+export interface SystemGitopsRepository {
+  id: string;
+  name: string;
+  repo_url: string;
+  branch: string;
+  path_prefix: string;
+  enabled: boolean;
+  auto_apply: boolean;
+  last_synced_at?: string | null;
+  last_synced_revision?: string | null;
+  last_diff_count: number;
+  last_status: string;
+  last_error?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SystemGitopsSyncRun {
+  id: string;
+  started_at: string;
+  completed_at?: string | null;
+  duration_seconds?: number | null;
+  diff_count: number;
+  proposal_ids: string[];
+  status: string;
+  synced_revision?: string | null;
+  error_message?: string | null;
+  diff_summary: Record<string, unknown>;
+}
+
+// POST /sync_now response payload.
+export interface SystemGitopsSyncResult {
+  sync_run: SystemGitopsSyncRun;
+  ok: boolean;
+  diff_count: number;
+  proposal_ids: string[];
+}
+
+// === CVE exposures (operator read API) ===
+// Shapes mirror Api::V1::System::CveExposuresController#serialize_exposure
+// exactly. A CveExposure binds a published CVE to a specific module version
+// (package_name@package_version inside that build), scoped to the account
+// through node_module_version → node_module. The CVE Responder agent owns
+// remediation; this surface is read-only (index/show).
+
+export type SystemCveExposureState = 'open' | 'remediating' | 'resolved' | 'wont_fix';
+
+export interface SystemCveDetail {
+  id: string;
+  cve_id: string;
+  severity: string;
+  severity_weight: number;
+  summary?: string | null;
+  reference_url?: string | null;
+  published_at?: string | null;
+  feed_source?: string | null;
+}
+
+export interface SystemCveExposure {
+  id: string;
+  state: SystemCveExposureState;
+  package_name: string;
+  package_version?: string | null;
+  detected_at?: string | null;
+  resolved_at?: string | null;
+  resolution_note?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  cve: SystemCveDetail | null;
+  node_module_version: {
+    id: string;
+    version_number: string;
+    promotion_state: string;
+  } | null;
+  node_module: {
+    id: string;
+    name: string;
+  } | null;
+}

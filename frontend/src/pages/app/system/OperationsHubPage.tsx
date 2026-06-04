@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
-import { Plus, Settings } from 'lucide-react';
+import { Plus, RefreshCw, Settings } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -9,6 +9,8 @@ import {
   TasksTab,
   CiWorkersTab,
   CiWebhooksTab,
+  GitopsTab,
+  CveTab,
 } from '@system/features/system/components/operations';
 import { SystemSettingsPanel } from '@system/features/system/components/settings/SystemSettingsPanel';
 
@@ -17,11 +19,13 @@ import { SystemSettingsPanel } from '@system/features/system/components/settings
 // into one tabbed page. Path-based tabs match the canonical
 // AdminSettingsPage pattern.
 
-type TabKey = 'fleet' | 'tasks' | 'ci-workers' | 'ci-webhooks';
+type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'ci-workers' | 'ci-webhooks';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
   { key: 'fleet', label: 'Fleet', permission: 'system.fleet.autonomy' },
   { key: 'tasks', label: 'Tasks', permission: 'system.tasks.read' },
+  { key: 'gitops', label: 'GitOps', permission: 'system.gitops.read' },
+  { key: 'cve', label: 'CVE', permission: 'system.cve.read' },
   { key: 'ci-workers', label: 'CI Workers', permission: 'system.ci_workers.read' },
   { key: 'ci-webhooks', label: 'CI Webhooks', permission: 'system.disk_image_webhooks.read' },
 ];
@@ -43,10 +47,13 @@ const OperationsHubPage: React.FC = () => {
     return (visibleTabs[0]?.key ?? 'fleet') as TabKey;
   }, [location.pathname, visibleTabs]);
 
+  const [gitopsActions, setGitopsActions] = useState<{ openCreate: () => void } | null>(null);
+  const [cveActions, setCveActions] = useState<{ refresh: () => void } | null>(null);
   const [ciWorkersActions, setCiWorkersActions] = useState<{ openCreate: () => void } | null>(null);
   const [ciWebhooksActions, setCiWebhooksActions] = useState<{ openCreate: () => void } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
+  const canCreateGitops = hasPermission('system.gitops.write');
   const canCreateCiWorkers = hasPermission('system.ci_workers.create');
   const canCreateCiWebhooks = hasPermission('system.disk_image_webhooks.create');
   const canViewSettings = hasPermission('system.infra_tasks.read');
@@ -55,7 +62,11 @@ const OperationsHubPage: React.FC = () => {
   if (canViewSettings) {
     pageActions.push({ label: 'Settings', onClick: () => setShowSettings(true), variant: 'secondary', icon: Settings });
   }
-  if (activeTabKey === 'ci-workers' && canCreateCiWorkers && ciWorkersActions) {
+  if (activeTabKey === 'gitops' && canCreateGitops && gitopsActions) {
+    pageActions.push({ label: 'New repository', onClick: gitopsActions.openCreate, variant: 'primary', icon: Plus });
+  } else if (activeTabKey === 'cve' && cveActions) {
+    pageActions.push({ label: 'Refresh', onClick: cveActions.refresh, variant: 'secondary', icon: RefreshCw });
+  } else if (activeTabKey === 'ci-workers' && canCreateCiWorkers && ciWorkersActions) {
     pageActions.push({ label: 'New CI worker', onClick: ciWorkersActions.openCreate, variant: 'primary', icon: Plus });
   } else if (activeTabKey === 'ci-webhooks' && canCreateCiWebhooks && ciWebhooksActions) {
     pageActions.push({ label: 'New webhook', onClick: ciWebhooksActions.openCreate, variant: 'primary', icon: Plus });
@@ -109,6 +120,8 @@ const OperationsHubPage: React.FC = () => {
         <Route index element={<Navigate to={defaultTabKey} replace />} />
         <Route path="fleet" element={<FleetTab />} />
         <Route path="tasks" element={<TasksTab />} />
+        <Route path="gitops" element={<GitopsTab onActionsReady={setGitopsActions} />} />
+        <Route path="cve" element={<CveTab onActionsReady={setCveActions} />} />
         <Route path="ci-workers" element={<CiWorkersTab onActionsReady={setCiWorkersActions} />} />
         <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
         <Route path="*" element={<Navigate to={defaultTabKey} replace />} />
