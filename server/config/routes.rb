@@ -506,6 +506,14 @@ Rails.application.routes.draw do
         # Plan reference: Decentralized Federation §J — Phase 2c (Ingress).
         resources :ingress_routes, only: %i[index]
 
+        # === CVE exposures (operator-facing read API) ===
+        # Surfaces the System::CveExposure rows produced by the worker-side
+        # CVE feed ingest + responder loop (worker_api/cve, worker_api/
+        # cve_responder). Read-only here — remediation flows through the
+        # CVE Responder agent's autonomy tick, not an operator write path.
+        # Account-scoped via node_module_version → node_module.
+        resources :cve_exposures, only: %i[index show]
+
         # === Worker API (token-authenticated workers) ===
         namespace :worker_api do
           # Periodic sweep endpoints — workers POST here on cron tick.
