@@ -16,16 +16,16 @@ module Api
           # Always responds 200 with the peer's current state (or 422 on
           # validation failure).
           def announce
-            return render_unauthorized("Instance authentication required") unless current_node_instance
+            return render_unauthorized("Instance authentication required") unless current_instance
 
             result = ::System::AgentPeeringService.announce!(
-              node_instance: current_node_instance,
+              node_instance: current_instance,
               capabilities: params[:capabilities] || {},
               skills: params[:skills] || [],
               addresses: params[:addresses] || []
             )
 
-            if result.success?
+            if result.ok?
               render_success(
                 peer: serialize_peer(result.peer),
                 created: result.created
@@ -40,9 +40,9 @@ module Api
           # Used by the Go agent to close the loop on a task descriptor it
           # received via the local mTLS channel.
           def execute_result
-            return render_unauthorized("Instance authentication required") unless current_node_instance
+            return render_unauthorized("Instance authentication required") unless current_instance
 
-            peer = ::System::NodeInstancePeer.find_by(node_instance: current_node_instance)
+            peer = ::System::NodeInstancePeer.find_by(node_instance: current_instance)
             return render_not_found("Peer") unless peer
 
             success = ActiveModel::Type::Boolean.new.cast(params[:success])
