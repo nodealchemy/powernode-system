@@ -385,6 +385,7 @@ func (s *Service) Run(ctx context.Context) error {
 		MountRunner:  mount.ExecRunner{},
 		Reconciler:   reconciler,
 		AgentVersion: s.cfg.AgentVersion,
+		PKIDir:       s.cfg.PKIDir,
 	})
 	taskLoop, err := tasks.NewLoop(tasks.LoopConfig{
 		Client:      tasks.NewClient(swap),

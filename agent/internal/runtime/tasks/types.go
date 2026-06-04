@@ -60,6 +60,10 @@ type Dependencies struct {
 	Reconciler RunOnceAPI
 	// AgentVersion is reported in error events for diagnostics.
 	AgentVersion string
+	// PKIDir is the agent's enrolled PKI directory (node.crt/key/ca-chain).
+	// The a2a_call handler loads this node's identity from it to present as the
+	// A2A client cert when executing a mission-delegated peer call.
+	PKIDir string
 }
 
 // RunOnceAPI is the subset of *runtime.Reconciler the sync handler

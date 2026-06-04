@@ -13,10 +13,12 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //   - config: sync, sync_modules, apply_config (drives the reconciler)
 //   - ssh: ssh_command, custom
 //   - passthrough: provision, deprovision (platform-side concepts)
+//   - a2a: a2a_call (execute a mission-delegated peer call over the A2A mesh)
 func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterLifecycle(r, deps)
 	RegisterConfig(r, deps)
 	RegisterSSH(r, deps)
 	RegisterPassthrough(r, deps)
 	RegisterStorage(r, deps)
+	RegisterA2ADelegate(r, deps)
 }
