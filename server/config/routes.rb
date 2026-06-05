@@ -167,13 +167,19 @@ Rails.application.routes.draw do
         resources :node_templates do
           member do
             get :export
-            # Returns NodeModule rows assigned via TemplateModule join,
-            # priority-ordered. TemplateDetailModal calls this on open.
-            get :modules
             # Deep-clone a template + its module assignments. Body:
             # { name?: "..." } — defaults to "<source name>-copy".
             post :clone
           end
+          # TemplateModule join surface, handled by TemplateModulesController:
+          #   GET    /node_templates/:node_template_id/modules        → index
+          #   POST   /node_templates/:node_template_id/modules        → create
+          #   DELETE /node_templates/:node_template_id/modules/:id    → destroy
+          # The member :id for destroy is the NODE_MODULE id (matches create's
+          # node_module_id and the MCP unassign action). URLs are identical to
+          # the former NodeTemplatesController member modules/assign_module
+          # routes — frontend unchanged.
+          resources :modules, only: %i[index create destroy], controller: "template_modules"
           collection do
             # The action lives on this same NodeTemplatesController. Earlier
             # versions pointed at a non-existent `templates` controller,
