@@ -36,6 +36,15 @@ module.exports = {
     '@uiw/react-md-editor': path.join(PARENT_ROOT, 'src/__mocks__/@uiw/react-md-editor.js'),
     'react-markdown': path.join(PARENT_ROOT, 'src/__mocks__/react-markdown.js'),
   },
+  // The parent's `transform` maps static assets to a fileTransform stub via a
+  // `<rootDir>`-relative path. We override `rootDir` to the extension dir, so
+  // that token would otherwise resolve to a non-existent extension-local file
+  // and fail config validation before any test runs. Re-anchor the asset
+  // transform to the parent root while keeping the parent's babel-jest entry.
+  transform: {
+    ...parent.transform,
+    '\\.(png|jpg|jpeg|gif|webp|svg|ico)$': path.join(PARENT_ROOT, 'src/__mocks__/fileTransform.js'),
+  },
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',
     '!src/**/*.d.ts',
