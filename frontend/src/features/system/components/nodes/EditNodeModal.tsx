@@ -91,14 +91,15 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
   // Form validation
   const validate = useCallback((): boolean => {
     const newErrors: FormErrors = {};
+    const trimmedName = formData.name.trim();
 
-    if (!formData.name.trim()) {
+    if (!trimmedName) {
       newErrors.name = 'Name is required';
-    } else if (formData.name.length < 3) {
+    } else if (trimmedName.length < 3) {
       newErrors.name = 'Name must be at least 3 characters';
-    } else if (formData.name.length > 100) {
+    } else if (trimmedName.length > 100) {
       newErrors.name = 'Name must be less than 100 characters';
-    } else if (!/^[a-zA-Z0-9][a-zA-Z0-9\-_.]*$/.test(formData.name)) {
+    } else if (!/^[a-zA-Z0-9][a-zA-Z0-9\-_.]*$/.test(trimmedName)) {
       newErrors.name = 'Name must start with alphanumeric and contain only letters, numbers, hyphens, underscores, and dots';
     }
 

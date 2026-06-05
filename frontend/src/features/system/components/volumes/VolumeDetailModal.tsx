@@ -386,17 +386,22 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
       {/* Snapshot Modal */}
       {showSnapshotModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setShowSnapshotModal(false)} />
+          <div className="fixed inset-0 bg-black/50" onClick={() => {
+            setShowSnapshotModal(false);
+            setSnapshotName('');
+            setSnapshotDescription('');
+          }} />
           <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
             <div className="p-4 border-b border-theme">
               <h3 className="text-lg font-semibold text-theme-primary">Create Snapshot</h3>
             </div>
             <div className="p-4 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
+                <label htmlFor="snapshot-name" className="block text-sm font-medium text-theme-primary mb-1">
                   Snapshot Name
                 </label>
                 <input
+                  id="snapshot-name"
                   type="text"
                   value={snapshotName}
                   onChange={(e) => setSnapshotName(e.target.value)}
@@ -405,10 +410,11 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-theme-primary mb-1">
+                <label htmlFor="snapshot-description" className="block text-sm font-medium text-theme-primary mb-1">
                   Description (optional)
                 </label>
                 <textarea
+                  id="snapshot-description"
                   value={snapshotDescription}
                   onChange={(e) => setSnapshotDescription(e.target.value)}
                   placeholder="Snapshot description"
@@ -418,7 +424,11 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
               </div>
             </div>
             <div className="flex justify-end gap-3 p-4 border-t border-theme">
-              <Button variant="outline" onClick={() => setShowSnapshotModal(false)}>
+              <Button variant="outline" onClick={() => {
+                setShowSnapshotModal(false);
+                setSnapshotName('');
+                setSnapshotDescription('');
+              }}>
                 Cancel
               </Button>
               <Button

@@ -63,8 +63,9 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           will flag prefix overlaps with this install's address space.
         </div>
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Remote instance URL *</label>
+          <label htmlFor="fp-remote-instance-url" className="block text-sm font-medium text-theme-primary mb-1">Remote instance URL *</label>
           <input
+            id="fp-remote-instance-url"
             type="url" value={remoteInstanceUrl} onChange={(e) => setRemoteInstanceUrl(e.target.value)}
             placeholder="https://other.powernode.example.org" required
             disabled={submitting}
@@ -72,24 +73,27 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Remote instance ID (UUID, optional)</label>
+          <label htmlFor="fp-remote-instance-id" className="block text-sm font-medium text-theme-primary mb-1">Remote instance ID (UUID, optional)</label>
           <input
+            id="fp-remote-instance-id"
             type="text" value={remoteInstanceId} onChange={(e) => setRemoteInstanceId(e.target.value)}
             placeholder="019d…" disabled={submitting}
             className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Remote account ID (UUID, optional)</label>
+          <label htmlFor="fp-remote-account-id" className="block text-sm font-medium text-theme-primary mb-1">Remote account ID (UUID, optional)</label>
           <input
+            id="fp-remote-account-id"
             type="text" value={remoteAccountId} onChange={(e) => setRemoteAccountId(e.target.value)}
             disabled={submitting}
             className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-theme-primary mb-1">Remote prefix advertisement (optional)</label>
+          <label htmlFor="fp-remote-prefix" className="block text-sm font-medium text-theme-primary mb-1">Remote prefix advertisement (optional)</label>
           <input
+            id="fp-remote-prefix"
             type="text" value={remotePrefix} onChange={(e) => setRemotePrefix(e.target.value)}
             placeholder="fdab:cdef:1234::/48" disabled={submitting}
             className="w-full p-2 bg-theme-input border border-theme rounded text-theme-primary font-mono text-sm"

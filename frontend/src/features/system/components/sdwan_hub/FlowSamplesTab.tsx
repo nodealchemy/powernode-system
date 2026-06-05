@@ -96,6 +96,9 @@ export const FlowSamplesTab: React.FC = () => {
   if (collectorsLoading) {
     return <div className="p-8 text-center text-theme-secondary">Loading collectors…</div>;
   }
+  if (error && collectors.length === 0) {
+    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+  }
   if (collectors.length === 0) {
     return (
       <div className="p-12 text-center">

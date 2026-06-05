@@ -119,7 +119,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
     } finally {
       setLoading(null);
     }
-  }, [canControl, instance.node_id, instance.id, instance.name, addNotification, onActionComplete, terminateArmed]);
+  }, [canControl, instance.node_id, instance.id, instance.name, addNotification, onActionComplete, armedAction]);
 
   if (!canControl) {
     return null;
