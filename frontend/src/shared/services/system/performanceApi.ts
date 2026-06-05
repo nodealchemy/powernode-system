@@ -366,7 +366,7 @@ export const performanceApi = {
       errors.push('Max connections must be between 10 and 1000');
     }
 
-    if (settings.query_timeout && (settings.query_timeout < 1 || settings.query_timeout > 300)) {
+    if (settings.query_timeout !== undefined && (settings.query_timeout < 1 || settings.query_timeout > 300)) {
       errors.push('Query timeout must be between 1 and 300 seconds');
     }
 
@@ -374,7 +374,7 @@ export const performanceApi = {
       errors.push('Database pool size must be between 5 and 100');
     }
 
-    if (settings.worker_processes && (settings.worker_processes < 1 || settings.worker_processes > 20)) {
+    if (settings.worker_processes !== undefined && (settings.worker_processes < 1 || settings.worker_processes > 20)) {
       errors.push('Worker processes must be between 1 and 20');
     }
 
