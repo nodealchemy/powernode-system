@@ -31,7 +31,7 @@ module System
           }
         )
 
-        binds_to "System Concierge"
+        binds_to "System Concierge", "Claude Strategic Planner"
 
         protected
 

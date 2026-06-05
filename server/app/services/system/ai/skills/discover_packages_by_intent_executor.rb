@@ -60,7 +60,7 @@ module System
           }
         )
 
-        binds_to "Fleet Autonomy", "System Concierge"
+        binds_to "Fleet Autonomy", "System Concierge", "Claude Research Analyst"
 
         protected
 
