@@ -1,7 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { History, RotateCcw, ShieldCheck, AlertTriangle, RefreshCw } from 'lucide-react';
+import {
+  History,
+  RotateCcw,
+  ShieldCheck,
+  AlertTriangle,
+  RefreshCw,
+  ChevronRight,
+  ChevronDown,
+} from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { wsManager } from '@/shared/services/WebSocketManager';
@@ -40,6 +49,16 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
   const [loading, setLoading] = useState(true);
   const [rollingBackId, setRollingBackId] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<SystemDiskImagePublication | null>(null);
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -135,44 +154,45 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
           </p>
         ) : (
           <ul className="divide-y divide-theme-border">
-            {publications.map((p) => (
-              <li key={p.id} className={`px-3 py-2.5 ${p.active ? 'bg-theme-surface-hover' : ''}`}>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 text-sm flex-wrap">
-                      <code className="text-theme-primary font-mono">{p.git_sha_short}</code>
-                      <Badge variant={statusVariant(p.status)} size="xs">{p.status}</Badge>
-                      {p.active && <Badge variant="info" size="xs">active</Badge>}
-                      <Badge variant="secondary" size="xs">{p.arch}</Badge>
-                      {p.attestation_present && (
-                        <span title="cosign attestation verified">
-                          <ShieldCheck size={12} className="text-theme-success" />
-                        </span>
-                      )}
-                      {p.firmware_ref && (
-                        <span className="text-xs text-theme-tertiary">firmware {p.firmware_ref}</span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-xs text-theme-tertiary flex items-center gap-3 flex-wrap">
-                      <code className="font-mono">sha:{p.sha256_short}…</code>
-                      <span>{formatBytes(p.size_bytes)}</span>
-                      {p.published_at && (
-                        <span>published {new Date(p.published_at).toLocaleString()}</span>
-                      )}
-                      {p.retired_at && (
-                        <span>retired {new Date(p.retired_at).toLocaleString()}</span>
-                      )}
-                      {p.attempt_count > 1 && (
-                        <span title="Retried after failure">
-                          <AlertTriangle size={12} className="inline text-theme-warning" /> {p.attempt_count} attempts
-                        </span>
-                      )}
-                    </div>
-                    {p.error_message && (
-                      <div className="mt-1 text-xs text-theme-error">
-                        Error: {p.error_message}
+            {publications.map((p) => {
+              const expanded = expandedIds.has(p.id);
+              return (
+              <li key={p.id} className={p.active ? 'bg-theme-surface-hover' : ''}>
+                <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="flex items-start gap-2 flex-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(p.id)}
+                      className="p-1 -ml-1 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 text-sm flex-wrap">
+                        <code className="text-theme-primary font-mono">{p.git_sha_short}</code>
+                        <Badge variant={statusVariant(p.status)} size="xs">{p.status}</Badge>
+                        {p.active && <Badge variant="info" size="xs">active</Badge>}
+                        <Badge variant="secondary" size="xs">{p.arch}</Badge>
+                        {p.attestation_present && (
+                          <span title="cosign attestation verified">
+                            <ShieldCheck size={12} className="text-theme-success" />
+                          </span>
+                        )}
                       </div>
-                    )}
+                      <div className="mt-1 text-xs text-theme-tertiary flex items-center gap-3 flex-wrap">
+                        <code className="font-mono">sha:{p.sha256_short}…</code>
+                        <span>{formatBytes(p.size_bytes)}</span>
+                        {p.published_at && (
+                          <span>published {new Date(p.published_at).toLocaleString()}</span>
+                        )}
+                        {p.attempt_count > 1 && (
+                          <span title="Retried after failure">
+                            <AlertTriangle size={12} className="inline text-theme-warning" /> {p.attempt_count} attempts
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1">
                     {canRollback && !p.active && p.status !== 'purged' && p.status !== 'failed' && p.status !== 'queued' && (
@@ -189,8 +209,97 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
                     )}
                   </div>
                 </div>
+
+                {expanded && (
+                  <div className="px-3 pb-3 pt-1 bg-theme-background border-t border-theme">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">SHA-256</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.sha256}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Git SHA</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.git_sha}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Architecture</label>
+                        <p className="text-theme-primary">{p.arch}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Size</label>
+                        <p className="text-theme-primary">{formatBytes(p.size_bytes)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Firmware ref</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.firmware_ref || '—'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Attestation</label>
+                        <p className="text-theme-primary flex items-center gap-1">
+                          {p.attestation_present ? (
+                            <><ShieldCheck size={14} className="text-theme-success" /> present</>
+                          ) : 'absent'}
+                          {p.cosign_bundle_present && <span className="text-theme-tertiary">· cosign bundle</span>}
+                        </p>
+                      </div>
+                      {p.oci_ref && (
+                        <div className="md:col-span-2">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">OCI ref</label>
+                          <p className="text-theme-primary font-mono text-xs break-all">{p.oci_ref}</p>
+                        </div>
+                      )}
+                      {p.webhook_label && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Webhook</label>
+                          <p className="text-theme-primary">{p.webhook_label}</p>
+                        </div>
+                      )}
+                      {p.triggered_by_worker_id && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Triggered by</label>
+                          <p className="text-theme-primary">
+                            <EntityLink
+                              type="ci_worker"
+                              id={p.triggered_by_worker_id}
+                              label={p.triggered_by_worker_id}
+                            />
+                          </p>
+                        </div>
+                      )}
+                      {p.verified_at && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Verified</label>
+                          <p className="text-theme-primary text-xs">{new Date(p.verified_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      {p.published_at && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Published</label>
+                          <p className="text-theme-primary text-xs">{new Date(p.published_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      {p.retired_at && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Retired</label>
+                          <p className="text-theme-primary text-xs">{new Date(p.retired_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                        <p className="text-theme-primary text-xs">{new Date(p.created_at).toLocaleString()}</p>
+                      </div>
+                    </div>
+                    {p.error_message && (
+                      <div className="mt-3">
+                        <label className="block text-xs font-semibold text-theme-error uppercase tracking-wide mb-1">Error</label>
+                        <p className="text-xs text-theme-error break-all">{p.error_message}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>

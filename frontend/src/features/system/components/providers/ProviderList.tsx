@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Cloud,
   Search,
@@ -10,7 +10,9 @@ import {
   MoreVertical,
   Filter,
   Server,
-  MapPin
+  MapPin,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -54,6 +56,15 @@ const providerTypeLabels: Record<string, string> = {
 
 /**
  * ProviderList - Displays a list of infrastructure providers
+ *
+ * Uses platform patterns:
+ * - Permission-based access control via usePermissions
+ * - Theme-aware styling with theme classes
+ * - Responsive design (desktop expandable table, mobile cards)
+ *
+ * Each row's own scalar/config detail expands inline (no modal round-trip);
+ * region / connection counts surface the management tabs via the existing
+ * detail modal (Eye / row "View Details" action).
  */
 export const ProviderList: React.FC<ProviderListProps> = ({
   onView,
@@ -106,6 +117,80 @@ export const ProviderList: React.FC<ProviderListProps> = ({
 
   // Distinct provider types — for the type filter dropdown.
   const providerTypes = [...new Set(providers.map(p => p.provider_type))];
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedProviderIds, setExpandedProviderIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedProviderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
+  /** Inline own-detail for a single provider — shared by desktop + mobile. */
+  const renderProviderDetail = (provider: SystemProvider) => {
+    const hasConfig = provider.config && Object.keys(provider.config).length > 0;
+    const hasCapabilities = provider.capabilities && Object.keys(provider.capabilities).length > 0;
+    return (
+      <>
+        {provider.description && (
+          <div className="col-span-full">
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+            <p className="text-theme-primary">{provider.description}</p>
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Type</label>
+          <p className="text-theme-primary">{providerTypeLabels[provider.provider_type] || provider.provider_type}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+          <p className="text-theme-primary">{provider.enabled ? 'Enabled' : 'Disabled'}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Visibility</label>
+          <p className="text-theme-primary">{provider.public ? 'Public' : 'Private'}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Regions</label>
+          <p className="text-theme-primary">{provider.region_count || 0}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Connections</label>
+          <p className="text-theme-primary">{provider.connection_count || 0}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Provider ID</label>
+          <p className="text-theme-primary font-mono text-xs truncate" title={provider.id}>{provider.id}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+          <p className="text-theme-primary text-xs">{new Date(provider.created_at).toLocaleString()}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+          <p className="text-theme-primary text-xs">{new Date(provider.updated_at).toLocaleString()}</p>
+        </div>
+        {hasConfig && (
+          <div className="col-span-full">
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Configuration</label>
+            <pre className="bg-theme-surface rounded p-3 text-xs text-theme-primary overflow-x-auto border border-theme font-mono">
+              {JSON.stringify(provider.config, null, 2)}
+            </pre>
+          </div>
+        )}
+        {hasCapabilities && (
+          <div className="col-span-full">
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Capabilities</label>
+            <pre className="bg-theme-surface rounded p-3 text-xs text-theme-primary overflow-x-auto border border-theme font-mono">
+              {JSON.stringify(provider.capabilities, null, 2)}
+            </pre>
+          </div>
+        )}
+      </>
+    );
+  };
 
   return (
     <ResponsiveListContainer
@@ -167,110 +252,262 @@ export const ProviderList: React.FC<ProviderListProps> = ({
         </div>
       </ResponsiveListContainer.Filters>
 
-      <ResponsiveListContainer.Body>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredProviders.map((provider) => (
-          <div
-            key={provider.id}
-            className="bg-theme-surface rounded-lg border border-theme p-4 hover:border-theme-info transition-colors"
-          >
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">
-                  {providerTypeIcons[provider.provider_type] || '☁️'}
-                </span>
-                <div>
-                  <h3
-                    className="font-medium text-theme-primary hover:text-theme-link cursor-pointer"
-                    onClick={() => onView?.(provider)}
+      <ResponsiveListContainer.Desktop>
+        <table className="w-full">
+          <thead>
+            <tr className="bg-theme-background border-b border-theme">
+              <th className="w-8 py-3 px-2"></th>
+              <th className="text-left py-3 px-4 font-medium text-theme-primary">Provider</th>
+              <th className="text-left py-3 px-4 font-medium text-theme-primary">Type</th>
+              <th className="text-left py-3 px-4 font-medium text-theme-primary">Regions</th>
+              <th className="text-left py-3 px-4 font-medium text-theme-primary">Connections</th>
+              <th className="text-left py-3 px-4 font-medium text-theme-primary">Status</th>
+              <th className="text-right py-3 px-4 font-medium text-theme-primary">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-theme">
+            {filteredProviders.map((provider) => {
+              const expanded = expandedProviderIds.has(provider.id);
+              return (
+                <React.Fragment key={provider.id}>
+                  <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                    <td className="py-3 px-2 align-middle">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(provider.id)}
+                        className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                        title={expanded ? 'Collapse details' : 'Expand details'}
+                      >
+                        {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                      </button>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg flex-shrink-0">
+                            {providerTypeIcons[provider.provider_type] || '☁️'}
+                          </span>
+                          <span
+                            className="font-medium text-theme-primary hover:text-theme-link cursor-pointer"
+                            onClick={() => onView?.(provider)}
+                          >
+                            {provider.name}
+                          </span>
+                        </div>
+                        {provider.description && (
+                          <p className="text-sm text-theme-secondary mt-1 truncate max-w-xs">
+                            {provider.description}
+                          </p>
+                        )}
+                      </div>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <span className="text-theme-secondary">
+                        {providerTypeLabels[provider.provider_type] || provider.provider_type}
+                      </span>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1 text-theme-primary font-medium">
+                        <MapPin className="w-4 h-4 text-theme-tertiary" />
+                        <span>{provider.region_count || 0}</span>
+                      </div>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1 text-theme-primary font-medium">
+                        <Server className="w-4 h-4 text-theme-tertiary" />
+                        <span>{provider.connection_count || 0}</span>
+                      </div>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={provider.enabled ? 'success' : 'secondary'} dot pulse={provider.enabled}>
+                          {provider.enabled ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                        <Badge variant={provider.public ? 'info' : 'secondary'}>
+                          {provider.public ? (
+                            <><Globe className="w-3 h-3 mr-1" />Public</>
+                          ) : (
+                            <><Lock className="w-3 h-3 mr-1" />Private</>
+                          )}
+                        </Badge>
+                      </div>
+                    </td>
+
+                    <td className="py-3 px-4">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onView?.(provider)}
+                          title="View Details"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+
+                        {canUpdate && onEdit && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onEdit(provider)}
+                            title="Edit Provider"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        )}
+
+                        {canDelete && onDelete && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onDelete(provider.id)}
+                            title="Delete Provider"
+                          >
+                            <Trash2 className="w-4 h-4 text-theme-error" />
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr className="bg-theme-background border-b border-theme">
+                      <td></td>
+                      <td colSpan={6} className="py-3 px-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                          {renderProviderDetail(provider)}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </ResponsiveListContainer.Desktop>
+
+      <ResponsiveListContainer.Mobile>
+        {filteredProviders.map((provider) => {
+          const expanded = expandedProviderIds.has(provider.id);
+          return (
+            <div key={provider.id} className="p-4">
+              {/* Header */}
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(provider.id)}
+                    className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
                   >
-                    {provider.name}
-                  </h3>
-                  <p className="text-sm text-theme-secondary">
-                    {providerTypeLabels[provider.provider_type] || provider.provider_type}
-                  </p>
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-lg flex-shrink-0">
+                        {providerTypeIcons[provider.provider_type] || '☁️'}
+                      </span>
+                      <span
+                        className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
+                        onClick={() => onView?.(provider)}
+                      >
+                        {provider.name}
+                      </span>
+                    </div>
+                    <p className="text-sm text-theme-secondary truncate">
+                      {providerTypeLabels[provider.provider_type] || provider.provider_type}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDropdownOpen(dropdownOpen === provider.id ? null : provider.id);
+                    }}
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </Button>
+
+                  {dropdownOpen === provider.id && (
+                    <div className="absolute right-0 mt-1 w-48 bg-theme-surface border border-theme rounded-lg shadow-lg z-10">
+                      <div className="py-1">
+                        <button
+                          onClick={() => { onView?.(provider); setDropdownOpen(null); }}
+                          className="w-full text-left px-4 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover flex items-center gap-2"
+                        >
+                          <Eye className="w-4 h-4" />
+                          View Details
+                        </button>
+                        {canUpdate && onEdit && (
+                          <button
+                            onClick={() => { onEdit(provider); setDropdownOpen(null); }}
+                            className="w-full text-left px-4 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover flex items-center gap-2"
+                          >
+                            <Edit className="w-4 h-4" />
+                            Edit Provider
+                          </button>
+                        )}
+                        {canDelete && onDelete && (
+                          <button
+                            onClick={() => { onDelete(provider.id); setDropdownOpen(null); }}
+                            className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Delete Provider
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="relative">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDropdownOpen(dropdownOpen === provider.id ? null : provider.id);
-                  }}
-                >
-                  <MoreVertical className="w-4 h-4" />
-                </Button>
-
-                {dropdownOpen === provider.id && (
-                  <div className="absolute right-0 mt-1 w-48 bg-theme-surface border border-theme rounded-lg shadow-lg z-10">
-                    <div className="py-1">
-                      <button
-                        onClick={() => { onView?.(provider); setDropdownOpen(null); }}
-                        className="w-full text-left px-4 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover flex items-center gap-2"
-                      >
-                        <Eye className="w-4 h-4" />
-                        View Details
-                      </button>
-                      {canUpdate && onEdit && (
-                        <button
-                          onClick={() => { onEdit(provider); setDropdownOpen(null); }}
-                          className="w-full text-left px-4 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover flex items-center gap-2"
-                        >
-                          <Edit className="w-4 h-4" />
-                          Edit Provider
-                        </button>
-                      )}
-                      {canDelete && onDelete && (
-                        <button
-                          onClick={() => { onDelete(provider.id); setDropdownOpen(null); }}
-                          className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          Delete Provider
-                        </button>
-                      )}
-                    </div>
+              {/* Stats */}
+              <div className="grid grid-cols-3 gap-4 mb-3">
+                <div className="text-center">
+                  <Badge variant={provider.enabled ? 'success' : 'secondary'} size="xs" dot>
+                    {provider.enabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                </div>
+                <div className="text-center">
+                  <div className="text-sm font-medium text-theme-primary">
+                    {provider.region_count || 0}
                   </div>
-                )}
+                  <div className="text-xs text-theme-secondary">Regions</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-sm font-medium text-theme-primary">
+                    {provider.connection_count || 0}
+                  </div>
+                  <div className="text-xs text-theme-secondary">Connections</div>
+                </div>
               </div>
-            </div>
 
-            {provider.description && (
-              <p className="text-sm text-theme-secondary mb-3 line-clamp-2">
-                {provider.description}
-              </p>
-            )}
-
-            <div className="flex items-center gap-4 text-sm text-theme-secondary mb-3">
-              <div className="flex items-center gap-1">
-                <MapPin className="w-4 h-4" />
-                <span>{provider.region_count || 0} regions</span>
+              {/* Visibility */}
+              <div className="flex items-center gap-2">
+                <Badge variant={provider.public ? 'info' : 'secondary'} size="xs">
+                  {provider.public ? 'Public' : 'Private'}
+                </Badge>
               </div>
-              <div className="flex items-center gap-1">
-                <Server className="w-4 h-4" />
-                <span>{provider.connection_count || 0} connections</span>
-              </div>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <Badge variant={provider.enabled ? 'success' : 'secondary'} dot pulse={provider.enabled}>
-                {provider.enabled ? 'Enabled' : 'Disabled'}
-              </Badge>
-              <Badge variant={provider.public ? 'info' : 'secondary'}>
-                {provider.public ? (
-                  <><Globe className="w-3 h-3 mr-1" />Public</>
-                ) : (
-                  <><Lock className="w-3 h-3 mr-1" />Private</>
-                )}
-              </Badge>
+              {/* Expanded body */}
+              {expanded && (
+                <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                  {renderProviderDetail(provider)}
+                </div>
+              )}
             </div>
-          </div>
-          ))}
-        </div>
-      </ResponsiveListContainer.Body>
+          );
+        })}
+      </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );
 };

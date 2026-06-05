@@ -10,6 +10,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { EntityLink } from '@/shared/components/entity';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import type {
   StorageMigrationStatus,
@@ -232,9 +233,17 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
         <span className="font-mono text-theme-primary text-xs">{migration.role}</span>
       </td>
       <td className="px-4 py-3 text-xs text-theme-secondary">
-        <span className="font-mono">{migration.source_volume_id.slice(0, 8)}</span>
+        <EntityLink
+          type="provider_volume"
+          id={migration.source_volume_id}
+          label={<span className="font-mono">{migration.source_volume_id.slice(0, 8)}</span>}
+        />
         <span className="mx-2 text-theme-tertiary">→</span>
-        <span className="font-mono">{migration.target_volume_id.slice(0, 8)}</span>
+        <EntityLink
+          type="provider_volume"
+          id={migration.target_volume_id}
+          label={<span className="font-mono">{migration.target_volume_id.slice(0, 8)}</span>}
+        />
       </td>
       <td className="px-4 py-3"><StatusPill status={migration.status} /></td>
       <td className="px-4 py-3 text-xs">

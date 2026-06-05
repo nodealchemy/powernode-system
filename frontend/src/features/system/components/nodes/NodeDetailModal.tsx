@@ -5,9 +5,11 @@ import { TabContainer, Tab } from '@/shared/components/ui/TabContainer';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { resolveOperableType } from '@system/features/system/entityRegistry';
 import {
   useSystemWebSocket,
   type OperationProgressPayload,
@@ -390,7 +392,17 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
           </div>
           <div>
             <label className="text-sm text-theme-secondary">Template</label>
-            <p className="text-theme-primary">{node?.node_template_name || '-'}</p>
+            {node?.node_template_id ? (
+              <p>
+                <EntityLink
+                  type="node_template"
+                  id={node.node_template_id}
+                  label={node.node_template_name || node.node_template_id}
+                />
+              </p>
+            ) : (
+              <p className="text-theme-primary">{node?.node_template_name || '-'}</p>
+            )}
           </div>
         </div>
 
@@ -798,10 +810,46 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public</label>
                         <p className="text-theme-primary">{module.public ? 'Yes' : 'No'}</p>
                       </div>
-                      {module.node_platform_name && (
+                      {(module.node_platform_id || module.node_platform_name) && (
                         <div>
                           <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
-                          <p className="text-theme-primary">{module.node_platform_name}</p>
+                          {module.node_platform_id ? (
+                            <EntityLink
+                              type="node_platform"
+                              id={module.node_platform_id}
+                              label={module.node_platform_name || module.node_platform_id}
+                            />
+                          ) : (
+                            <p className="text-theme-primary">{module.node_platform_name}</p>
+                          )}
+                        </div>
+                      )}
+                      {(module.category_id || module.category_name) && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Category</label>
+                          {module.category_id ? (
+                            <EntityLink
+                              type="node_module_category"
+                              id={module.category_id}
+                              label={module.category_name || module.category_id}
+                            />
+                          ) : (
+                            <p className="text-theme-primary">{module.category_name}</p>
+                          )}
+                        </div>
+                      )}
+                      {(module.parent_module_id || module.parent_module_name) && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Parent Module</label>
+                          {module.parent_module_id ? (
+                            <EntityLink
+                              type="node_module"
+                              id={module.parent_module_id}
+                              label={module.parent_module_name || module.parent_module_id}
+                            />
+                          ) : (
+                            <p className="text-theme-primary">{module.parent_module_name}</p>
+                          )}
                         </div>
                       )}
                       {module.copy_path_name && (
@@ -914,7 +962,11 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
         </div>
       ) : (
         <div className="space-y-3">
-          {operations.map(operation => (
+          {operations.map(operation => {
+            const operableType = operation.operable_type
+              ? resolveOperableType(operation.operable_type)
+              : undefined;
+            return (
             <div
               key={operation.id}
               className="bg-theme-surface-hover rounded-lg p-4 border border-theme"
@@ -955,10 +1007,26 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                       <span>Completed: {new Date(operation.completed_at).toLocaleString()}</span>
                     )}
                   </div>
+                  {operation.operable_id && operation.operable_type && (
+                    <div className="flex items-center gap-2 mt-2 text-xs text-theme-secondary">
+                      <span>Target:</span>
+                      {operableType ? (
+                        <EntityLink
+                          type={operableType}
+                          id={operation.operable_id}
+                          label={operation.operable_type}
+                          className="text-xs"
+                        />
+                      ) : (
+                        <span className="text-theme-primary">{operation.operable_type}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

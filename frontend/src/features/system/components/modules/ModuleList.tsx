@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Package,
   Search,
@@ -13,11 +14,16 @@ import {
   FolderTree,
   GitBranch,
   Power,
-  ShieldCheck
+  ShieldCheck,
+  ChevronRight,
+  ChevronDown,
+  X
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useQueryParamFilter } from '@/shared/hooks/useQueryParamFilter';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useResourceList } from '@system/features/system/hooks/useResourceList';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
@@ -28,6 +34,10 @@ interface ModuleListFilters {
   variety: 'all' | 'config' | 'instance' | 'subscription';
   enabled: 'all' | 'enabled' | 'disabled';
   categoryId: string | null;
+  /** Deep-link filter — seeded from ?parent_module_id=<id> (dependents). */
+  parentModuleId: string | null;
+  /** Deep-link filter — seeded from ?platform=<node_platform_id>. */
+  platformId: string | null;
 }
 
 interface ModuleListProps {
@@ -67,10 +77,19 @@ export const ModuleList: React.FC<ModuleListProps> = ({
   className = ''
 }) => {
   const { hasPermission } = usePermissions();
+  const navigate = useNavigate();
 
   const canCreate = hasPermission('system.modules.create');
   const canUpdate = hasPermission('system.modules.update');
   const canDelete = hasPermission('system.modules.delete');
+
+  // Deep-link: ?parent_module_id=<id> shows a module's dependents;
+  // ?platform=<id> shows modules on one platform.
+  const { seedFilters, hasActiveParamFilter, clearParamFilters } =
+    useQueryParamFilter<ModuleListFilters>({
+      parent_module_id: 'parentModuleId',
+      platform: 'platformId',
+    });
 
   // Categories load alongside modules but live as their own collection.
   // Tracked outside useResourceList because it manages a single resource.
@@ -96,7 +115,10 @@ export const ModuleList: React.FC<ModuleListProps> = ({
       setCategories(categoriesData);
       return modulesData.modules;
     },
-    initialFilters: { search: '', variety: 'all', enabled: 'all', categoryId: null },
+    initialFilters: seedFilters({
+      search: '', variety: 'all', enabled: 'all', categoryId: null,
+      parentModuleId: null, platformId: null,
+    }),
     filterFn: (mod, f) => {
       if (f.search) {
         const searchLower = f.search.toLowerCase();
@@ -116,10 +138,33 @@ export const ModuleList: React.FC<ModuleListProps> = ({
         if (f.enabled === 'disabled' && mod.enabled) return false;
       }
       if (f.categoryId && mod.category_id !== f.categoryId) return false;
+      if (f.parentModuleId && mod.parent_module_id !== f.parentModuleId) return false;
+      if (f.platformId && mod.node_platform_id !== f.platformId) return false;
       return true;
     },
     errorMessage: 'Failed to load modules',
   });
+
+  // Clearing a deep-link chip resets BOTH the URL params and the seeded
+  // filter state (useResourceList reads initialFilters only once). Both
+  // deep-link dimensions clear together since they share one chip surface.
+  const clearDeepLinkFilters = useCallback(() => {
+    setFilters((prev) => ({ ...prev, parentModuleId: null, platformId: null }));
+    clearParamFilters();
+  }, [setFilters, clearParamFilters]);
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  // Mirrors the disclosure pattern in NodeList/TemplateList; the expansion
+  // shows the module's OWN spec / lifecycle / version inline (no modal
+  // round-trip) while cross-references render as EntityLinks.
+  const [expandedModuleIds, setExpandedModuleIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedModuleIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   return (
     <div className={`flex gap-6 ${className}`}>
@@ -285,12 +330,27 @@ export const ModuleList: React.FC<ModuleListProps> = ({
             >
               <FolderTree className="w-4 h-4" />
             </Button>
+
+            {hasActiveParamFilter && (filters.parentModuleId || filters.platformId) && (
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={clearDeepLinkFilters}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+                  title="Clear deep-link filter"
+                >
+                  <span>{filters.parentModuleId ? 'Filtered to dependents' : 'Filtered by platform'}</span>
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </ResponsiveListContainer.Filters>
 
           <ResponsiveListContainer.Desktop>
             <table className="w-full">
               <thead>
                 <tr className="bg-theme-background border-b border-theme">
+                  <th className="w-8 py-3 px-2"></th>
                   <th className="text-left py-3 px-4 font-medium text-theme-primary">Module</th>
                   <th className="text-left py-3 px-4 font-medium text-theme-primary">Type</th>
                   <th className="text-left py-3 px-4 font-medium text-theme-primary">Category</th>
@@ -300,8 +360,21 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-theme">
-                {filteredModules.map((module) => (
-                  <tr key={module.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
+                {filteredModules.map((module) => {
+                  const expanded = expandedModuleIds.has(module.id);
+                  return (
+                  <React.Fragment key={module.id}>
+                  <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                    <td className="py-3 px-2 align-middle">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(module.id)}
+                        className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                        title={expanded ? 'Collapse details' : 'Expand details'}
+                      >
+                        {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                      </button>
+                    </td>
                     <td className="py-3 px-4">
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -334,7 +407,16 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                           <p className="text-xs text-theme-info mt-0.5 flex items-center gap-1">
                             <GitBranch className="w-3 h-3" />
                             dependant of{' '}
-                            <code className="text-theme-info">{module.parent_module_name ?? 'parent'}</code>
+                            {module.parent_module_id ? (
+                              <EntityLink
+                                type="node_module"
+                                id={module.parent_module_id}
+                                label={module.parent_module_name ?? 'parent'}
+                                className="text-xs"
+                              />
+                            ) : (
+                              <code className="text-theme-info">{module.parent_module_name ?? 'parent'}</code>
+                            )}
                           </p>
                         )}
                         {module.description && (
@@ -352,9 +434,18 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                     </td>
 
                     <td className="py-3 px-4">
-                      <span className="text-sm text-theme-secondary">
-                        {module.category_name || '—'}
-                      </span>
+                      {module.category_id ? (
+                        <EntityLink
+                          type="node_module_category"
+                          id={module.category_id}
+                          label={module.category_name || module.category_id}
+                          className="text-sm"
+                        />
+                      ) : (
+                        <span className="text-sm text-theme-secondary">
+                          {module.category_name || '—'}
+                        </span>
+                      )}
                     </td>
 
                     <td className="py-3 px-4">
@@ -393,16 +484,167 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                       </div>
                     </td>
                   </tr>
-                ))}
+                  {expanded && (
+                    <tr className="bg-theme-background border-b border-theme">
+                      <td></td>
+                      <td colSpan={6} className="py-3 px-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                          {module.description && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                              <p className="text-theme-primary">{module.description}</p>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Type</label>
+                            <p className="text-theme-primary">{varietyLabels[module.variety] || module.variety}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                            <p className="text-theme-primary">{module.enabled ? 'Enabled' : 'Disabled'}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Visibility</label>
+                            <p className="text-theme-primary">{module.public ? 'Public' : 'Private'}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Priority</label>
+                            <p className="text-theme-primary">P{module.priority}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Category</label>
+                            <p className="text-theme-primary">
+                              {module.category_id ? (
+                                <EntityLink type="node_module_category" id={module.category_id} label={module.category_name || module.category_id} />
+                              ) : (
+                                module.category_name || '—'
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
+                            <p className="text-theme-primary">
+                              {module.node_platform_id ? (
+                                <EntityLink type="node_platform" id={module.node_platform_id} label={module.node_platform_name || module.node_platform_id} />
+                              ) : (
+                                module.node_platform_name || '—'
+                              )}
+                            </p>
+                          </div>
+                          {module.dependant && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Dependant Of</label>
+                              <p className="text-theme-primary">
+                                {module.parent_module_id ? (
+                                  <EntityLink type="node_module" id={module.parent_module_id} label={module.parent_module_name ?? 'parent'} />
+                                ) : (
+                                  module.parent_module_name ?? '—'
+                                )}
+                              </p>
+                            </div>
+                          )}
+                          {/* Lifecycle hooks — mirror the NodeDetailModal Modules tab */}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_start</label>
+                            <code className="text-theme-primary text-xs">{module.init_start || <span className="italic text-theme-tertiary">unset</span>}</code>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_stop</label>
+                            <code className="text-theme-primary text-xs">{module.init_stop || <span className="italic text-theme-tertiary">unset</span>}</code>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_restart</label>
+                            <code className="text-theme-primary text-xs">{module.init_restart || <span className="italic text-theme-tertiary">unset</span>}</code>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Lifecycle Flags</label>
+                            <p className="text-theme-primary text-xs">
+                              {module.reboot_required ? 'reboot required on attach/detach' : 'hot-swap allowed'}
+                              {module.lock_spec ? ' · spec locked' : ''}
+                            </p>
+                          </div>
+                          {/* Spec footprint — counts of each glob spec the module owns */}
+                          <div className="col-span-full">
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Spec Footprint</label>
+                            <div className="flex flex-wrap gap-2">
+                              <Badge variant="default" size="xs">file_spec: {module.file_spec?.length ?? 0}</Badge>
+                              <Badge variant="default" size="xs">package_spec: {module.package_spec?.length ?? 0}</Badge>
+                              <Badge variant="default" size="xs">mask: {module.mask?.length ?? 0}</Badge>
+                              {module.protected_spec && module.protected_spec.length > 0 && (
+                                <Badge variant="warning" size="xs">protected_spec: {module.protected_spec.length}</Badge>
+                              )}
+                              {module.dependency_spec && module.dependency_spec.length > 0 && (
+                                <Badge variant="info" size="xs">dependency_spec: {module.dependency_spec.length}</Badge>
+                              )}
+                            </div>
+                          </div>
+                          {/* Latest version snapshot — populated once published */}
+                          {module.latest_version && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Latest Version</label>
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="text-theme-primary font-medium">{module.latest_version.version_number || '—'}</span>
+                                {module.latest_version.promotion_state && (
+                                  <Badge variant="default" size="xs">{module.latest_version.promotion_state}</Badge>
+                                )}
+                                {module.latest_version.oci_digest && (
+                                  <code className="text-theme-tertiary truncate max-w-xs" title={module.latest_version.oci_digest}>{module.latest_version.oci_digest}</code>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {(module.dependents_count ?? 0) > 0 && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Dependents</label>
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/app/system/catalog/modules?parent_module_id=${module.id}`)}
+                                className="text-theme-link hover:underline cursor-pointer text-xs"
+                                title="View modules that depend on this one"
+                              >
+                                {module.dependents_count} module{module.dependents_count !== 1 ? 's' : ''} depend on this
+                              </button>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Module ID</label>
+                            <p className="text-theme-primary font-mono text-xs truncate" title={module.id}>{module.id}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                            <p className="text-theme-primary text-xs">{module.created_at ? new Date(module.created_at).toLocaleString() : '—'}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                            <p className="text-theme-primary text-xs">{module.updated_at ? new Date(module.updated_at).toLocaleString() : '—'}</p>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </ResponsiveListContainer.Desktop>
 
           <ResponsiveListContainer.Mobile>
-            {filteredModules.map((module) => (
+            {filteredModules.map((module) => {
+              const expanded = expandedModuleIds.has(module.id);
+              return (
               <div key={module.id} className="p-4">
                 <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1 min-w-0">
+                  <div className="flex items-start gap-2 flex-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(module.id)}
+                      className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <Package className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
                       <span
@@ -424,12 +666,18 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                     {module.dependant && (
                       <p className="text-xs text-theme-info flex items-center gap-1">
                         <GitBranch className="w-3 h-3" />
-                        dependant of <code>{module.parent_module_name ?? 'parent'}</code>
+                        dependant of{' '}
+                        {module.parent_module_id ? (
+                          <EntityLink type="node_module" id={module.parent_module_id} label={module.parent_module_name ?? 'parent'} className="text-xs" />
+                        ) : (
+                          <code>{module.parent_module_name ?? 'parent'}</code>
+                        )}
                       </p>
                     )}
                     {module.description && (
                       <p className="text-sm text-theme-secondary truncate">{module.description}</p>
                     )}
+                    </div>
                   </div>
 
                   <div className="relative">
@@ -495,8 +743,91 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                     </Badge>
                   </div>
                 </div>
+
+                {/* Expanded body — module's OWN spec / lifecycle / version inline */}
+                {expanded && (
+                  <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                    {module.description && (
+                      <div className="col-span-2">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                        <p className="text-theme-primary">{module.description}</p>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Priority</label>
+                      <p className="text-theme-primary">P{module.priority}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Category</label>
+                      <p className="text-theme-primary">
+                        {module.category_id ? (
+                          <EntityLink type="node_module_category" id={module.category_id} label={module.category_name || module.category_id} />
+                        ) : (
+                          module.category_name || '—'
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
+                      <p className="text-theme-primary">
+                        {module.node_platform_id ? (
+                          <EntityLink type="node_platform" id={module.node_platform_id} label={module.node_platform_name || module.node_platform_id} />
+                        ) : (
+                          module.node_platform_name || '—'
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_start</label>
+                      <code className="text-theme-primary text-xs">{module.init_start || <span className="italic text-theme-tertiary">unset</span>}</code>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_stop</label>
+                      <code className="text-theme-primary text-xs">{module.init_stop || <span className="italic text-theme-tertiary">unset</span>}</code>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">init_restart</label>
+                      <code className="text-theme-primary text-xs">{module.init_restart || <span className="italic text-theme-tertiary">unset</span>}</code>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Spec Footprint</label>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="default" size="xs">file_spec: {module.file_spec?.length ?? 0}</Badge>
+                        <Badge variant="default" size="xs">package_spec: {module.package_spec?.length ?? 0}</Badge>
+                        <Badge variant="default" size="xs">mask: {module.mask?.length ?? 0}</Badge>
+                        {module.protected_spec && module.protected_spec.length > 0 && (
+                          <Badge variant="warning" size="xs">protected_spec: {module.protected_spec.length}</Badge>
+                        )}
+                      </div>
+                    </div>
+                    {module.latest_version && (
+                      <div className="col-span-2">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Latest Version</label>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="text-theme-primary font-medium">{module.latest_version.version_number || '—'}</span>
+                          {module.latest_version.promotion_state && (
+                            <Badge variant="default" size="xs">{module.latest_version.promotion_state}</Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Module ID</label>
+                      <p className="text-theme-primary font-mono text-xs truncate" title={module.id}>{module.id}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                      <p className="text-theme-primary text-xs">{module.created_at ? new Date(module.created_at).toLocaleString() : '—'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                      <p className="text-theme-primary text-xs">{module.updated_at ? new Date(module.updated_at).toLocaleString() : '—'}</p>
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </ResponsiveListContainer.Mobile>
         </ResponsiveListContainer>
       </div>

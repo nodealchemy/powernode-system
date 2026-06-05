@@ -1,6 +1,7 @@
 import React, { ComponentType, lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import { featureRegistry } from '@/shared/services/featureRegistry';
+import { registerSystemEntities } from './features/system/entityRegistry';
 
 // Helper: widen the lazy-loaded module's default-export type from the
 // concrete `FC<P>` it was authored as to the `ComponentType<unknown>`
@@ -149,4 +150,10 @@ export function register(): void {
       ],
     },
   ]);
+
+  // Cross-reference entity types: wires the system extension's detail modals +
+  // read APIs into the core entity registry so <EntityLink> / the global
+  // <EntityReferenceHost> can resolve a `?entity=<type>&eid=<id>` to the right
+  // detail surface. Owner-keyed under "system"; core stays ignorant of them.
+  registerSystemEntities();
 }

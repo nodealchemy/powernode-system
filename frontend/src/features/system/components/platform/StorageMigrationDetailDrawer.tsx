@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { X, Database, AlertTriangle, Clock } from 'lucide-react';
+import { EntityLink } from '@/shared/components/entity';
 import { storageMigrationsApi } from '../../services/api/storageMigrationsApi';
 import type {
   StorageMigrationDetail,
@@ -106,15 +107,17 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
             <section className="grid grid-cols-2 gap-3">
               <KeyValue label="Status" value={migration.status} mono />
               <KeyValue label="Role" value={migration.role} mono />
-              <KeyValue
+              <LinkedValue
                 label="Source Volume"
-                value={migration.source_volume_id.slice(0, 8) + '…'}
-                mono
+                type="provider_volume"
+                id={migration.source_volume_id}
+                label2={migration.source_volume_id.slice(0, 8) + '…'}
               />
-              <KeyValue
+              <LinkedValue
                 label="Target Volume"
-                value={migration.target_volume_id.slice(0, 8) + '…'}
-                mono
+                type="provider_volume"
+                id={migration.target_volume_id}
+                label2={migration.target_volume_id.slice(0, 8) + '…'}
               />
               <KeyValue label="Source Subpath" value={migration.source_subpath ?? '—'} mono />
               <KeyValue label="Target Subpath" value={migration.target_subpath ?? '—'} mono />
@@ -181,6 +184,25 @@ const KeyValue: React.FC<{ label: string; value: string; mono?: boolean }> = ({
   <div>
     <div className="text-xs text-theme-tertiary uppercase mb-0.5">{label}</div>
     <div className={`text-sm text-theme-primary ${mono ? 'font-mono' : ''}`}>{value}</div>
+  </div>
+);
+
+/**
+ * Labeled cross-reference value mirroring KeyValue's layout but rendering the
+ * value as an <EntityLink> (degrades to plain mono text when the type is
+ * unregistered, the id is missing, or the viewer lacks the read permission).
+ */
+const LinkedValue: React.FC<{ label: string; type: string; id: string; label2: string }> = ({
+  label,
+  type,
+  id,
+  label2,
+}) => (
+  <div>
+    <div className="text-xs text-theme-tertiary uppercase mb-0.5">{label}</div>
+    <div className="text-sm font-mono">
+      <EntityLink type={type} id={id} label={label2} className="text-theme-primary" />
+    </div>
   </div>
 );
 

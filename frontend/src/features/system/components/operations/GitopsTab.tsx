@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { GitBranch, RefreshCw, Trash2 } from 'lucide-react';
+import { GitBranch, RefreshCw, Trash2, ChevronRight, ChevronDown } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { gitopsApi } from '@system/features/system/services/api/gitopsApi';
-import type { SystemGitopsRepository } from '@system/features/system/types/system.types';
+import type {
+  SystemGitopsRepository,
+  SystemGitopsSyncRun,
+} from '@system/features/system/types/system.types';
 
 interface GitopsTabProps {
   onActionsReady?: (handle: { openCreate: () => void } | null) => void;
@@ -34,6 +38,36 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Per-repo sync-run history, lazily fetched on first expand.
+  const [syncRuns, setSyncRuns] = useState<Record<string, SystemGitopsSyncRun[]>>({});
+  const [runsLoadingId, setRunsLoadingId] = useState<string | null>(null);
+
+  const loadSyncRuns = useCallback(async (id: string) => {
+    setRunsLoadingId(id);
+    try {
+      const runs = await gitopsApi.syncRuns(id);
+      setSyncRuns(prev => ({ ...prev, [id]: runs }));
+    } catch {
+      addNotification({ type: 'error', message: 'Failed to load sync history' });
+    } finally {
+      setRunsLoadingId(null);
+    }
+  }, [addNotification]);
+
+  const toggleExpanded = useCallback((id: string) => {
+    const willExpand = !expandedIds.has(id);
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+    // Lazy-load sync history the first time a repo is expanded. Fired outside
+    // the state updater so it runs exactly once (updaters can re-run).
+    if (willExpand && !syncRuns[id]) void loadSyncRuns(id);
+  }, [expandedIds, syncRuns, loadSyncRuns]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -65,12 +99,20 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
           : `Reconcile of "${repo.name}" completed with errors`,
       });
       void refresh();
+      // The just-fired tick added a new sync run — invalidate cached history so
+      // an expanded row reflects it (refetch now if open, else on next expand).
+      setSyncRuns(prev => {
+        const next = { ...prev };
+        delete next[repo.id];
+        return next;
+      });
+      if (expandedIds.has(repo.id)) void loadSyncRuns(repo.id);
     } catch (e) {
       addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Sync failed' });
     } finally {
       setSyncingId(null);
     }
-  }, [addNotification, refresh]);
+  }, [addNotification, refresh, expandedIds, loadSyncRuns]);
 
   const handleDelete = useCallback(async (repo: SystemGitopsRepository) => {
     if (!window.confirm(`Delete GitOps repository "${repo.name}"? Reconciliation will stop and its sync history is removed.`)) return;
@@ -109,12 +151,28 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
             </p>
           ) : (
             <ul className="divide-y divide-theme">
-              {repositories.map((repo) => (
+              {repositories.map((repo) => {
+                const expanded = expandedIds.has(repo.id);
+                const runs = syncRuns[repo.id];
+                return (
                 <li key={repo.id} className="px-3 py-2.5">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(repo.id)}
+                      className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 text-sm">
-                        <span className="font-medium text-theme-primary">{repo.name}</span>
+                        <EntityLink
+                          type="gitops_repository"
+                          id={repo.id}
+                          label={repo.name}
+                          className="font-medium"
+                        />
                         <Badge variant={statusVariant(repo.last_status)} size="xs">
                           {repo.last_status}
                         </Badge>
@@ -140,6 +198,76 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                           <span className="text-theme-danger"> · {repo.last_error}</span>
                         ) : null}
                       </div>
+
+                      {expanded && (
+                        <div className="mt-2 pt-2 border-t border-theme space-y-3">
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last status</label>
+                              <p className="text-theme-primary">{repo.last_status}</p>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last diff count</label>
+                              <p className="text-theme-primary">{repo.last_diff_count}</p>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last synced</label>
+                              <p className="text-theme-primary text-xs">{repo.last_synced_at ? new Date(repo.last_synced_at).toLocaleString() : 'Never'}</p>
+                            </div>
+                            {repo.last_synced_revision && (
+                              <div>
+                                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last revision</label>
+                                <p className="text-theme-primary font-mono text-xs truncate" title={repo.last_synced_revision}>{repo.last_synced_revision}</p>
+                              </div>
+                            )}
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Auto-apply</label>
+                              <p className="text-theme-primary">{repo.auto_apply ? 'Enabled' : 'Disabled'}</p>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Enabled</label>
+                              <p className="text-theme-primary">{repo.enabled ? 'Yes' : 'No'}</p>
+                            </div>
+                            {repo.last_error && (
+                              <div className="col-span-full">
+                                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last error</label>
+                                <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{repo.last_error}</pre>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Sync history</label>
+                            {runsLoadingId === repo.id && !runs ? (
+                              <p className="text-xs text-theme-tertiary">Loading history…</p>
+                            ) : !runs || runs.length === 0 ? (
+                              <p className="text-xs text-theme-tertiary">No sync runs recorded yet.</p>
+                            ) : (
+                              <ul className="space-y-1">
+                                {runs.map((run) => (
+                                  <li key={run.id} className="flex items-center gap-2 text-xs flex-wrap">
+                                    <Badge variant={statusVariant(run.status)} size="xs">{run.status}</Badge>
+                                    <span className="text-theme-secondary">{new Date(run.started_at).toLocaleString()}</span>
+                                    <span className="text-theme-tertiary">· {run.diff_count} diff(s)</span>
+                                    {run.proposal_ids.length > 0 && (
+                                      <span className="text-theme-tertiary">· {run.proposal_ids.length} proposal(s)</span>
+                                    )}
+                                    {typeof run.duration_seconds === 'number' && (
+                                      <span className="text-theme-tertiary">· {run.duration_seconds}s</span>
+                                    )}
+                                    {run.synced_revision && (
+                                      <code className="text-theme-tertiary font-mono truncate max-w-[8rem]" title={run.synced_revision}>{run.synced_revision}</code>
+                                    )}
+                                    {run.error_message && (
+                                      <span className="text-theme-danger">· {run.error_message}</span>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       {canSync && (
@@ -161,7 +289,8 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                     </div>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Cpu, Cloud, Server, Zap, Loader2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type {
@@ -659,6 +660,16 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   <Loader2 className="absolute right-8 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-theme-secondary" />
                 )}
               </div>
+              {formData.node_platform_id && (
+                <div className="mt-1">
+                  <EntityLink
+                    type="node_platform"
+                    id={formData.node_platform_id}
+                    label="View platform details"
+                    className="text-xs"
+                  />
+                </div>
+              )}
               <p className="mt-1 text-xs text-theme-tertiary">
                 Determines which generic disk image to flash. RPi 4 → ubuntu-24.04-rpi4;
                 generic UEFI arm64 SBC → ubuntu-24.04-arm64-uefi.

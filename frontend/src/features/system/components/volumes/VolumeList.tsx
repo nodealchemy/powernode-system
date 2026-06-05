@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   HardDrive,
   Search,
@@ -9,14 +9,31 @@ import {
   Link,
   Unlink,
   Camera,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useInfiniteResourceList } from '@system/features/system/hooks/useResourceList';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
+
+// The volume payload may carry the holding node id + instance display name
+// alongside `node_instance_id` (the serializer exposes `instance_name`; a
+// `node_id` is required to build the `node_instance` composite EntityLink id
+// of "nodeId:instanceId"). These are optional/extension fields not yet on the
+// shared type, so widen locally rather than mutate the shared interface or use
+// `any`. When `node_id` is absent the EntityLink simply degrades to plain text.
+type VolumeWithAttachment = SystemProviderVolume & {
+  node_id?: string;
+  instance_name?: string;
+};
+
+const formatTimestamp = (value?: string): string =>
+  value ? new Date(value).toLocaleString() : '—';
 
 interface VolumeListProps {
   onView?: (volume: SystemProviderVolume) => void;
@@ -114,6 +131,37 @@ export const VolumeList: React.FC<VolumeListProps> = ({
     setFilters({ ...filters, search: searchInput });
   };
 
+  // Click-to-expand state — Set<id> so multiple rows can be open at once
+  // (mirrors NodeList/TemplateList disclosure pattern).
+  const [expandedVolumeIds, setExpandedVolumeIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedVolumeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
+  // The attached instance is a cross-reference to another object. Render it as
+  // an EntityLink only when BOTH the holding node id and the instance id are
+  // present (the `node_instance` type uses a composite "nodeId:instanceId" id);
+  // otherwise fall back to the instance/device label as plain text. EntityLink
+  // degrades to text on its own too, but guarding avoids emitting a malformed
+  // composite id.
+  const renderAttachedInstance = (volume: VolumeWithAttachment): React.ReactNode => {
+    const label = volume.instance_name || volume.device_name || 'Attached';
+    if (volume.node_id && volume.node_instance_id) {
+      return (
+        <EntityLink
+          type="node_instance"
+          id={`${volume.node_id}:${volume.node_instance_id}`}
+          label={label}
+        />
+      );
+    }
+    return <span className="text-theme-primary">{label}</span>;
+  };
+
   return (
     <ResponsiveListContainer
       loading={loading}
@@ -178,6 +226,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
         <table className="w-full">
           <thead>
             <tr className="border-b border-theme bg-theme-background">
+              <th className="w-8 px-2 py-3"></th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">Volume</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">Size</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">Type</th>
@@ -187,8 +236,22 @@ export const VolumeList: React.FC<VolumeListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-theme">
-            {filteredVolumes.map((volume) => (
-              <tr key={volume.id} className="hover:bg-theme-surface-hover transition-colors">
+            {filteredVolumes.map((volumeItem) => {
+              const volume = volumeItem as VolumeWithAttachment;
+              const expanded = expandedVolumeIds.has(volume.id);
+              return (
+              <React.Fragment key={volume.id}>
+              <tr className="hover:bg-theme-surface-hover transition-colors">
+                <td className="px-2 py-3 align-middle">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(volume.id)}
+                    className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
                     <HardDrive className="w-5 h-5 text-theme-tertiary" />
@@ -225,9 +288,9 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                 </td>
                 <td className="px-4 py-3">
                   {volume.node_instance_id ? (
-                    <div className="flex items-center gap-2">
-                      <Link className="w-4 h-4 text-theme-success" />
-                      <span className="text-sm text-theme-primary">{volume.device_name || 'Attached'}</span>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Link className="w-4 h-4 text-theme-success flex-shrink-0" />
+                      {renderAttachedInstance(volume)}
                     </div>
                   ) : (
                     <span className="text-sm text-theme-tertiary">Not attached</span>
@@ -307,19 +370,109 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                   </div>
                 </td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="bg-theme-background border-b border-theme">
+                  <td></td>
+                  <td colSpan={6} className="px-4 py-3">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      {volume.description && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                          <p className="text-theme-primary">{volume.description}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                        <p className="text-theme-primary">{volume.status}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Size</label>
+                        <p className="text-theme-primary font-mono">{formatSize(volume.size_gb)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Volume Type</label>
+                        <p className="text-theme-primary">{volumeTypeLabels[volume.volume_type] || volume.volume_type}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">IOPS</label>
+                        <p className="text-theme-primary font-mono">{volume.iops ? volume.iops.toLocaleString() : '—'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Throughput</label>
+                        <p className="text-theme-primary font-mono">{volume.throughput ? `${volume.throughput} MB/s` : '—'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Region</label>
+                        <p className="text-theme-primary">{volume.region_name || volume.provider_region_name || volume.provider_region_id || '—'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Encryption</label>
+                        <p className="text-theme-primary">{volume.encrypted ? 'Encrypted at rest' : 'Not encrypted'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Attached To</label>
+                        <p className="text-theme-primary">
+                          {volume.node_instance_id ? (
+                            renderAttachedInstance(volume)
+                          ) : (
+                            <span className="text-theme-tertiary">Not attached</span>
+                          )}
+                        </p>
+                      </div>
+                      {volume.device_name && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Device Name</label>
+                          <p className="text-theme-primary font-mono text-xs">{volume.device_name}</p>
+                        </div>
+                      )}
+                      {typeof volume.snapshot_count === 'number' && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Snapshots</label>
+                          <p className="text-theme-primary">{volume.snapshot_count}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Volume ID</label>
+                        <p className="text-theme-primary font-mono text-xs truncate" title={volume.id}>{volume.id}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                        <p className="text-theme-primary text-xs">{formatTimestamp(volume.created_at)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                        <p className="text-theme-primary text-xs">{formatTimestamp(volume.updated_at)}</p>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </ResponsiveListContainer.Desktop>
 
       <ResponsiveListContainer.Mobile>
-        {filteredVolumes.map((volume) => (
+        {filteredVolumes.map((volumeItem) => {
+          const volume = volumeItem as VolumeWithAttachment;
+          const expanded = expandedVolumeIds.has(volume.id);
+          return (
           <div key={volume.id} className="p-4">
             <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <HardDrive className="w-5 h-5 text-theme-tertiary" />
-                <div>
-                  <p className="font-medium text-theme-primary">{volume.name}</p>
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(volume.id)}
+                  className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <HardDrive className="w-5 h-5 text-theme-tertiary flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-medium text-theme-primary truncate">{volume.name}</p>
                   <p className="text-sm text-theme-secondary">{formatSize(volume.size_gb)}</p>
                 </div>
               </div>
@@ -342,8 +495,66 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                 )}
               </div>
             </div>
+
+            {expanded && (
+              <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                {volume.description && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                    <p className="text-theme-primary">{volume.description}</p>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">IOPS</label>
+                  <p className="text-theme-primary font-mono">{volume.iops ? volume.iops.toLocaleString() : '—'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Throughput</label>
+                  <p className="text-theme-primary font-mono">{volume.throughput ? `${volume.throughput} MB/s` : '—'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Region</label>
+                  <p className="text-theme-primary">{volume.region_name || volume.provider_region_name || volume.provider_region_id || '—'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Encryption</label>
+                  <p className="text-theme-primary">{volume.encrypted ? 'Encrypted at rest' : 'Not encrypted'}</p>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Attached To</label>
+                  <p className="text-theme-primary">
+                    {volume.node_instance_id ? (
+                      renderAttachedInstance(volume)
+                    ) : (
+                      <span className="text-theme-tertiary">Not attached</span>
+                    )}
+                  </p>
+                </div>
+                {volume.device_name && (
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Device Name</label>
+                    <p className="text-theme-primary font-mono text-xs">{volume.device_name}</p>
+                  </div>
+                )}
+                {typeof volume.snapshot_count === 'number' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Snapshots</label>
+                    <p className="text-theme-primary">{volume.snapshot_count}</p>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                  <p className="text-theme-primary text-xs">{formatTimestamp(volume.created_at)}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                  <p className="text-theme-primary text-xs">{formatTimestamp(volume.updated_at)}</p>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );

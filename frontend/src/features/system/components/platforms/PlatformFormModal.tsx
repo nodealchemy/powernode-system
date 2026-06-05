@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Layers, AlertCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { DiskImageHistoryTab } from './DiskImageHistoryTab';
@@ -253,6 +254,19 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                       <option key={arch.id} value={arch.id}>{arch.name}</option>
                     ))}
                   </select>
+                )}
+                {formData.node_architecture_id && (
+                  <p className="mt-1 text-xs text-theme-tertiary">
+                    Selected:{' '}
+                    <EntityLink
+                      type="node_architecture"
+                      id={formData.node_architecture_id}
+                      label={
+                        architectures.find((a) => a.id === formData.node_architecture_id)?.name ||
+                        formData.node_architecture_id
+                      }
+                    />
+                  </p>
                 )}
               </div>
 

@@ -12,10 +12,22 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
+
+// The volume payload may carry the holding node id + instance display name
+// alongside `node_instance_id`; a `node_id` is required to build the
+// `node_instance` composite EntityLink id ("nodeId:instanceId"). These are
+// optional/extension fields not yet on the shared type — widen locally rather
+// than mutate the shared interface or use `any`. When `node_id` is absent the
+// link is simply not rendered (existing text shown instead).
+type VolumeWithAttachment = SystemProviderVolume & {
+  node_id?: string;
+  instance_name?: string;
+};
 
 interface VolumeDetailModalProps {
   /** Volume ID to display */
@@ -271,8 +283,16 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                       <label className="block text-sm text-theme-secondary mb-1">Attachment</label>
                       {volume.node_instance_id ? (
                         <div className="flex items-center gap-2 text-theme-success">
-                          <Link className="w-4 h-4" />
-                          <span>Attached</span>
+                          <Link className="w-4 h-4 flex-shrink-0" />
+                          {(volume as VolumeWithAttachment).node_id ? (
+                            <EntityLink
+                              type="node_instance"
+                              id={`${(volume as VolumeWithAttachment).node_id}:${volume.node_instance_id}`}
+                              label={(volume as VolumeWithAttachment).instance_name || 'Attached'}
+                            />
+                          ) : (
+                            <span>{(volume as VolumeWithAttachment).instance_name || 'Attached'}</span>
+                          )}
                           {volume.device_name && (
                             <span className="text-theme-secondary font-mono">
                               ({volume.device_name})

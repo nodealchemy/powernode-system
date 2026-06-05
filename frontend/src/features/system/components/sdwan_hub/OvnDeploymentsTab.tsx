@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Layers, Shield } from 'lucide-react';
+import { Layers, Shield, Network as NetworkIcon } from 'lucide-react';
 import { sdwanApi } from '@system/features/system/services/api/sdwanApi';
 import type {
   SdwanOvnAcl,
@@ -7,6 +7,8 @@ import type {
   SdwanOvnDeployment,
   SdwanOvnDeploymentStatus,
   SdwanOvnLogicalSwitch,
+  SdwanOvnLogicalSwitchPort,
+  SdwanOvnPortState,
 } from '@system/features/system/types/sdwan.types';
 
 // Phase O6 — read-only operator view of the per-account OVN deployment.
@@ -127,6 +129,32 @@ const SwitchCard: React.FC<SwitchCardProps> = ({ switchData: s }) => {
         </div>
       </div>
 
+      {s.ports.length > 0 && (
+        <div className="border-t border-theme pt-3">
+          <div className="flex items-center gap-2 mb-2">
+            <NetworkIcon size={14} className="text-theme-info" />
+            <span className="text-xs uppercase tracking-wide text-theme-secondary">Logical Switch Ports</span>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="text-theme-secondary">
+              <tr>
+                <th className="text-left p-1">Name</th>
+                <th className="text-left p-1">Kind</th>
+                <th className="text-left p-1">State</th>
+                <th className="text-left p-1">MAC</th>
+                <th className="text-left p-1">Addresses</th>
+                <th className="text-left p-1">Host</th>
+              </tr>
+            </thead>
+            <tbody>
+              {s.ports.map((p) => (
+                <PortRow key={p.id} port={p} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {s.acls && s.acls.length > 0 && (
         <div className="border-t border-theme pt-3">
           <div className="flex items-center gap-2 mb-2">
@@ -154,6 +182,34 @@ const SwitchCard: React.FC<SwitchCardProps> = ({ switchData: s }) => {
     </div>
   );
 };
+
+interface PortRowProps {
+  port: SdwanOvnLogicalSwitchPort;
+}
+
+// A port's host is a cross-reference to a node_instance. The shared EntityLink
+// `node_instance` type needs a composite "nodeId:instanceId" id, but the OVN
+// port payload only carries host_node_instance_id (the parent node id is not
+// serialized — see serialize_port in ovn_deployments_controller.rb). Per the
+// linking rules we never invent the missing segment, so the host stays plain
+// text until node_id is available. When it is, wrap the host id in
+// <EntityLink type="node_instance" id={`${nodeId}:${instanceId}`} .../>.
+const PortRow: React.FC<PortRowProps> = ({ port: p }) => (
+  <tr className="border-t border-theme">
+    <td className="p-1 text-theme-primary">{p.name}</td>
+    <td className="p-1 text-theme-secondary">{p.kind}</td>
+    <td className="p-1">
+      <span className={portStateBadgeClass(p.state)}>{p.state}</span>
+    </td>
+    <td className="p-1 font-mono text-theme-secondary">{p.mac}</td>
+    <td className="p-1 font-mono text-theme-secondary truncate max-w-xs" title={p.addresses.join(', ')}>
+      {p.addresses.length > 0 ? p.addresses.join(', ') : '—'}
+    </td>
+    <td className="p-1 font-mono text-theme-secondary truncate max-w-xs" title={p.host_node_instance_id ?? undefined}>
+      {p.host_node_instance_id ?? '—'}
+    </td>
+  </tr>
+);
 
 interface AclRowProps {
   acl: SdwanOvnAcl;
@@ -197,6 +253,20 @@ function statusBadgeClass(status: SdwanOvnDeploymentStatus): string {
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     case 'degraded':
       return `${base} bg-theme-danger text-theme-danger`;
+    default:
+      return `${base} bg-theme-background-secondary text-theme-secondary`;
+  }
+}
+
+function portStateBadgeClass(state: SdwanOvnPortState): string {
+  const base = 'px-1.5 py-0.5 rounded text-xs font-medium';
+  switch (state) {
+    case 'active':
+      return `${base} bg-theme-success text-theme-success`;
+    case 'pending':
+      return `${base} bg-theme-info text-theme-info`;
+    case 'removed':
+      return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:
       return `${base} bg-theme-background-secondary text-theme-secondary`;
   }

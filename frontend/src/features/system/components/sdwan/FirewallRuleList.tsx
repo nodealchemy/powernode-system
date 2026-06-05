@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Trash2, Shield, Pencil } from 'lucide-react';
+import { Trash2, Shield, Pencil, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
-import type { SdwanFirewallRule, SdwanSelector } from '../../types/sdwan.types';
+import type { SdwanFirewallRule, SdwanSelector, SdwanPortRange } from '../../types/sdwan.types';
 
 interface FirewallRuleListProps {
   networkId: string;
@@ -15,6 +15,15 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
   const [defaultPolicy, setDefaultPolicy] = useState<string>('accept');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +69,7 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
         <table className="w-full">
           <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
             <tr>
+              <th className="w-8 p-3"></th>
               <th className="text-left p-3">Priority</th>
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Action</th>
@@ -68,8 +78,22 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
             </tr>
           </thead>
           <tbody>
-            {rules.map((r) => (
-              <tr key={r.id} className="border-b border-theme">
+            {rules.map((r) => {
+              const expanded = expandedIds.has(r.id);
+              return (
+              <React.Fragment key={r.id}>
+              <tr className="border-b border-theme">
+                <td className="p-3 align-middle">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(r.id)}
+                    className="p-1 text-theme-secondary hover:text-theme-primary"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                    aria-label={expanded ? `Collapse rule ${r.name}` : `Expand rule ${r.name}`}
+                  >
+                    {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </button>
+                </td>
                 <td className="p-3 text-theme-secondary text-sm">{r.priority}</td>
                 <td className="p-3">
                   <div className="font-medium text-theme-primary">{r.name}</div>
@@ -107,7 +131,76 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
                   )}
                 </td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="bg-theme-background border-b border-theme">
+                  <td></td>
+                  <td colSpan={5} className="p-3">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Priority</label>
+                        <p className="text-theme-primary">{r.priority}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Action</label>
+                        <p className="text-theme-primary">{r.action}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Enabled</label>
+                        <p className="text-theme-primary">{r.enabled ? 'Yes' : 'No (disabled)'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Direction</label>
+                        <p className="text-theme-primary">{r.direction}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Protocol</label>
+                        <p className="text-theme-primary">{r.protocol}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Port Range</label>
+                        <p className="text-theme-primary font-mono text-xs">{describePortRange(r.port_range)}</p>
+                      </div>
+                      <div className="col-span-2 md:col-span-3">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Source Selector</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{fullSelector(r.src_selector)}</p>
+                      </div>
+                      <div className="col-span-2 md:col-span-3">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Destination Selector</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{fullSelector(r.dst_selector)}</p>
+                      </div>
+                      {r.last_compiled_at && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Compiled</label>
+                          <p className="text-theme-primary text-xs">{new Date(r.last_compiled_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      {r.created_at && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                          <p className="text-theme-primary text-xs">{new Date(r.created_at).toLocaleString()}</p>
+                        </div>
+                      )}
+                      <div className="col-span-2 md:col-span-3">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Compiled Preview</label>
+                        {r.compiled_preview ? (
+                          <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-background-secondary rounded p-2">{r.compiled_preview}</pre>
+                        ) : (
+                          <p className="text-theme-secondary text-xs">No compiled preview available — recompile the network to generate one.</p>
+                        )}
+                      </div>
+                      {r.metadata && Object.keys(r.metadata).length > 0 && (
+                        <div className="col-span-2 md:col-span-3">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Metadata</label>
+                          <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-background-secondary rounded p-2">{JSON.stringify(r.metadata, null, 2)}</pre>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -148,4 +241,21 @@ function describeSelector(sel?: SdwanSelector): string | null {
   if ('cidr' in sel)    return (sel as { cidr: string }).cidr;
   if ('tag' in sel)     return `tag ${(sel as { tag: string }).tag} (deferred)`;
   return null;
+}
+
+// Full (untruncated) selector text for the expanded row. The peer reference is
+// a bare `peer_id` (no node id) and `sdwan_peer` is not a registered entity
+// type, so it stays plain text — never an invented link.
+function fullSelector(sel?: SdwanSelector): string {
+  if (!sel || Object.keys(sel).length === 0) return 'any (wildcard)';
+  if ('all' in sel && (sel as { all: true }).all) return 'any (wildcard)';
+  if ('peer_id' in sel) return `peer ${(sel as { peer_id: string }).peer_id}`;
+  if ('cidr' in sel)    return `cidr ${(sel as { cidr: string }).cidr}`;
+  if ('tag' in sel)     return `tag ${(sel as { tag: string }).tag} (deferred)`;
+  return 'any (wildcard)';
+}
+
+function describePortRange(port?: SdwanPortRange | null): string {
+  if (!port) return 'any port';
+  return port.from === port.to ? `port ${port.from}` : `ports ${port.from}–${port.to}`;
 }

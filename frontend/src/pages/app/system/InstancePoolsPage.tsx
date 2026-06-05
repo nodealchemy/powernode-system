@@ -7,11 +7,15 @@ import {
   Trash2,
   Search,
   Filter,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import type { PageAction } from '@/shared/components/layout/PageContainer';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { apiClient } from '@/shared/services/apiClient';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -51,6 +55,12 @@ interface InstancePoolSummary {
   errored_count: number;
   deficit: number;
   last_replenished_at: string | null;
+  /**
+   * Optional template id — when the payload hydrates it, the template cell
+   * becomes a clickable `EntityLink` to the template detail surface. Absent in
+   * the base `to_summary` payload, in which case the link degrades to text.
+   */
+  node_template_id?: string;
   /** Optional template name — only set when the detail endpoint hydrates it. */
   node_template_name?: string;
   /** Optional description — only set when the detail endpoint hydrates it. */
@@ -70,6 +80,20 @@ interface CreatePoolPayload {
   min_size: number;
   max_size: number;
   lifecycle_class: 'ephemeral' | 'spot';
+}
+
+// PATCH payload — mirrors the controller's `update_params` permit list
+// (description, sizing, status, placement). All fields optional: the edit form
+// sends only what changed. Name + template + lifecycle_class are immutable
+// post-create (not in the permit list), so they are intentionally absent.
+interface UpdatePoolPayload {
+  description?: string;
+  target_size?: number;
+  min_size?: number;
+  max_size?: number;
+  status?: InstancePoolSummary['status'];
+  provider_region_id?: string;
+  provider_instance_type_id?: string;
 }
 
 interface InstancePoolListFilters {
@@ -111,6 +135,16 @@ const instancePoolsApi = {
     const response = await apiClient.post<
       ApiEnvelope<{ pool: InstancePoolSummary }>
     >('/system/instance_pools', { pool: data });
+    return extractData(response).pool;
+  },
+
+  update: async (
+    id: string,
+    data: UpdatePoolPayload,
+  ): Promise<InstancePoolSummary> => {
+    const response = await apiClient.patch<
+      ApiEnvelope<{ pool: InstancePoolSummary }>
+    >(`/system/instance_pools/${id}`, { pool: data });
     return extractData(response).pool;
   },
 
@@ -177,6 +211,7 @@ const InstancePoolsPage: React.FC = () => {
     hasPermission('system.instances.create');
 
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editPool, setEditPool] = useState<InstancePoolSummary | null>(null);
   const [detailPool, setDetailPool] = useState<InstancePoolSummary | null>(
     null,
   );
@@ -185,6 +220,23 @@ const InstancePoolsPage: React.FC = () => {
     null,
   );
   const [deleting, setDeleting] = useState(false);
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  // Mirrors the disclosure pattern in nodes/NodeList.tsx.
+  const [expandedPoolIds, setExpandedPoolIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedPoolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const {
     items: pools,
@@ -232,6 +284,18 @@ const InstancePoolsPage: React.FC = () => {
       addNotification({
         type: 'success',
         message: `Pool "${pool.name}" created successfully`,
+      });
+    },
+    [upsertItem, addNotification],
+  );
+
+  const handleAfterEdit = useCallback(
+    (pool: InstancePoolSummary) => {
+      upsertItem(pool);
+      setEditPool(null);
+      addNotification({
+        type: 'success',
+        message: `Pool "${pool.name}" updated successfully`,
       });
     },
     [upsertItem, addNotification],
@@ -428,6 +492,7 @@ const InstancePoolsPage: React.FC = () => {
           <table className="w-full">
             <thead>
               <tr className="bg-theme-background border-b border-theme">
+                <th className="w-8 py-3 px-2" />
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">
                   Pool
                 </th>
@@ -451,12 +516,32 @@ const InstancePoolsPage: React.FC = () => {
             <tbody className="divide-y divide-theme">
               {filteredPools.map((pool) => {
                 const isActioning = actioningPoolId === pool.id;
+                const expanded = expandedPoolIds.has(pool.id);
                 return (
+                  <React.Fragment key={pool.id}>
                   <tr
-                    key={pool.id}
                     className="hover:bg-theme-surface-hover transition-colors duration-200"
                     data-testid={`pool-row-${pool.id}`}
                   >
+                    <td className="py-3 px-2 align-middle">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(pool.id)}
+                        className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                        title={expanded ? 'Collapse details' : 'Expand details'}
+                        aria-label={
+                          expanded
+                            ? `Collapse ${pool.name} details`
+                            : `Expand ${pool.name} details`
+                        }
+                      >
+                        {expanded ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                      </button>
+                    </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
                         <Boxes className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
@@ -526,6 +611,20 @@ const InstancePoolsPage: React.FC = () => {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => setEditPool(pool)}
+                            disabled={
+                              isActioning || pool.status === 'archived'
+                            }
+                            title="Edit pool"
+                            aria-label={`Edit ${pool.name}`}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                        )}
+                        {canControl && (
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleReplenish(pool)}
                             disabled={
                               isActioning || pool.status === 'archived'
@@ -573,6 +672,126 @@ const InstancePoolsPage: React.FC = () => {
                       </div>
                     </td>
                   </tr>
+                  {expanded && (
+                    <tr className="bg-theme-background border-b border-theme">
+                      <td />
+                      <td colSpan={6} className="py-3 px-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                          {pool.description && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                                Description
+                              </label>
+                              <p className="text-theme-primary">
+                                {pool.description}
+                              </p>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Status
+                            </label>
+                            <p className="text-theme-primary">{pool.status}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Lifecycle class
+                            </label>
+                            <p className="text-theme-primary">
+                              {pool.lifecycle_class}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Template
+                            </label>
+                            <p className="text-theme-primary">
+                              {pool.node_template_id ||
+                              pool.node_template_name ? (
+                                <EntityLink
+                                  type="node_template"
+                                  id={pool.node_template_id}
+                                  label={
+                                    pool.node_template_name ??
+                                    pool.node_template_id
+                                  }
+                                />
+                              ) : (
+                                '—'
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Sizing (min / target / max)
+                            </label>
+                            <p className="text-theme-primary font-mono text-xs">
+                              {pool.min_size} / {pool.target_size} /{' '}
+                              {pool.max_size}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Deficit
+                            </label>
+                            <p
+                              className={
+                                pool.deficit > 0
+                                  ? 'text-theme-warning'
+                                  : 'text-theme-primary'
+                              }
+                            >
+                              {pool.deficit}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Members (ready / warming / claimed / errored)
+                            </label>
+                            <p className="text-theme-primary font-mono text-xs">
+                              <span className="text-theme-success">
+                                {pool.ready_count}
+                              </span>{' '}
+                              / {pool.warming_count} / {pool.claimed_count} /{' '}
+                              <span
+                                className={
+                                  pool.errored_count > 0
+                                    ? 'text-theme-danger'
+                                    : undefined
+                                }
+                              >
+                                {pool.errored_count}
+                              </span>
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Last replenished
+                            </label>
+                            <p className="text-theme-primary text-xs">
+                              {pool.last_replenished_at
+                                ? new Date(
+                                    pool.last_replenished_at,
+                                  ).toLocaleString()
+                                : 'never'}
+                            </p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                              Pool ID
+                            </label>
+                            <p
+                              className="text-theme-primary font-mono text-xs truncate"
+                              title={pool.id}
+                            >
+                              {pool.id}
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -582,6 +801,7 @@ const InstancePoolsPage: React.FC = () => {
         <ResponsiveListContainer.Mobile>
           {filteredPools.map((pool) => {
             const isActioning = actioningPoolId === pool.id;
+            const expanded = expandedPoolIds.has(pool.id);
             return (
               <div
                 key={pool.id}
@@ -589,7 +809,25 @@ const InstancePoolsPage: React.FC = () => {
                 data-testid={`pool-card-${pool.id}`}
               >
                 <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1 min-w-0">
+                  <div className="flex items-start gap-2 flex-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(pool.id)}
+                      className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                      aria-label={
+                        expanded
+                          ? `Collapse ${pool.name} details`
+                          : `Expand ${pool.name} details`
+                      }
+                    >
+                      {expanded ? (
+                        <ChevronDown className="w-4 h-4" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4" />
+                      )}
+                    </button>
+                    <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <Boxes className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
                       <button
@@ -615,6 +853,7 @@ const InstancePoolsPage: React.FC = () => {
                       >
                         {pool.lifecycle_class}
                       </span>
+                    </div>
                     </div>
                   </div>
                 </div>
@@ -655,7 +894,17 @@ const InstancePoolsPage: React.FC = () => {
                 </div>
 
                 {canControl && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditPool(pool)}
+                      disabled={isActioning || pool.status === 'archived'}
+                      aria-label={`Edit ${pool.name}`}
+                    >
+                      <Pencil className="w-4 h-4 mr-1" />
+                      Edit
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -696,6 +945,98 @@ const InstancePoolsPage: React.FC = () => {
                     </Button>
                   </div>
                 )}
+
+                {expanded && (
+                  <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                    {pool.description && (
+                      <div className="col-span-2">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                          Description
+                        </label>
+                        <p className="text-theme-primary">
+                          {pool.description}
+                        </p>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Status
+                      </label>
+                      <p className="text-theme-primary">{pool.status}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Lifecycle class
+                      </label>
+                      <p className="text-theme-primary">
+                        {pool.lifecycle_class}
+                      </p>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Template
+                      </label>
+                      <p className="text-theme-primary">
+                        {pool.node_template_id || pool.node_template_name ? (
+                          <EntityLink
+                            type="node_template"
+                            id={pool.node_template_id}
+                            label={
+                              pool.node_template_name ?? pool.node_template_id
+                            }
+                          />
+                        ) : (
+                          '—'
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Sizing (min/target/max)
+                      </label>
+                      <p className="text-theme-primary font-mono text-xs">
+                        {pool.min_size} / {pool.target_size} / {pool.max_size}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Deficit
+                      </label>
+                      <p
+                        className={
+                          pool.deficit > 0
+                            ? 'text-theme-warning'
+                            : 'text-theme-primary'
+                        }
+                      >
+                        {pool.deficit}
+                      </p>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Last replenished
+                      </label>
+                      <p className="text-theme-primary text-xs">
+                        {pool.last_replenished_at
+                          ? new Date(
+                              pool.last_replenished_at,
+                            ).toLocaleString()
+                          : 'never'}
+                      </p>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                        Pool ID
+                      </label>
+                      <p
+                        className="text-theme-primary font-mono text-xs truncate"
+                        title={pool.id}
+                      >
+                        {pool.id}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -706,6 +1047,12 @@ const InstancePoolsPage: React.FC = () => {
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onCreated={handleAfterCreate}
+      />
+
+      <EditPoolModal
+        pool={editPool}
+        onClose={() => setEditPool(null)}
+        onUpdated={handleAfterEdit}
       />
 
       <PoolDetailModal
@@ -1079,6 +1426,280 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
 };
 
 // =============================================================================
+// Edit Pool modal — mirrors CreatePoolModal as the edit form. Only the fields
+// the controller's `update_params` permits are editable (description, sizing,
+// status). Name, node template, and lifecycle_class are immutable post-create
+// (not in the permit list), so they render as read-only context.
+// =============================================================================
+
+interface EditPoolModalProps {
+  pool: InstancePoolSummary | null;
+  onClose: () => void;
+  onUpdated: (pool: InstancePoolSummary) => void;
+}
+
+interface EditFormState {
+  description: string;
+  target_size: number;
+  min_size: number;
+  max_size: number;
+  status: InstancePoolSummary['status'];
+}
+
+interface EditFormErrors {
+  sizing?: string;
+}
+
+const EditPoolModal: React.FC<EditPoolModalProps> = ({
+  pool,
+  onClose,
+  onUpdated,
+}) => {
+  const { addNotification } = useNotifications();
+  const [form, setForm] = useState<EditFormState | null>(null);
+  const [errors, setErrors] = useState<EditFormErrors>({});
+  const [submitting, setSubmitting] = useState(false);
+
+  // Seed the form from the pool whenever a new pool is selected for editing.
+  useEffect(() => {
+    if (!pool) {
+      setForm(null);
+      return;
+    }
+    setErrors({});
+    setForm({
+      description: pool.description ?? '',
+      target_size: pool.target_size,
+      min_size: pool.min_size,
+      max_size: pool.max_size,
+      status: pool.status,
+    });
+  }, [pool]);
+
+  const handleChange = useCallback(
+    <K extends keyof EditFormState>(field: K, value: EditFormState[K]) => {
+      setForm((prev) => (prev ? { ...prev, [field]: value } : prev));
+    },
+    [],
+  );
+
+  const validate = useCallback((): boolean => {
+    if (!form) return false;
+    const e: EditFormErrors = {};
+    if (
+      form.min_size < 0 ||
+      form.target_size < form.min_size ||
+      form.max_size < form.target_size
+    ) {
+      e.sizing = 'Sizing must satisfy 0 ≤ min ≤ target ≤ max';
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }, [form]);
+
+  const handleSubmit = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault();
+      if (!pool || !form) return;
+      if (!validate()) return;
+      setSubmitting(true);
+      try {
+        const updated = await instancePoolsApi.update(pool.id, {
+          description: form.description.trim() || undefined,
+          target_size: form.target_size,
+          min_size: form.min_size,
+          max_size: form.max_size,
+          status: form.status,
+        });
+        onUpdated(updated);
+      } catch (err) {
+        addNotification({
+          type: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to update pool',
+        });
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [pool, form, validate, onUpdated, addNotification],
+  );
+
+  return (
+    <Modal
+      isOpen={!!pool}
+      onClose={() => (submitting ? null : onClose())}
+      title={pool ? `Edit ${pool.name}` : 'Edit instance pool'}
+      subtitle="Adjust sizing, status, and description"
+      icon={<Boxes className="w-6 h-6" />}
+      size="lg"
+      footer={
+        <div className="flex items-center justify-end gap-3">
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={submitting || !form}
+          >
+            {submitting ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </div>
+      }
+    >
+      {pool && form && (
+        <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Read-only context — name, template, and lifecycle_class are
+              immutable post-create. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-theme-primary mb-1">
+                Name
+              </label>
+              <p className="px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-secondary text-sm">
+                {pool.name}
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-theme-primary mb-1">
+                Template
+              </label>
+              <p className="px-3 py-2 rounded-lg border border-theme bg-theme-background text-sm">
+                {pool.node_template_id || pool.node_template_name ? (
+                  <EntityLink
+                    type="node_template"
+                    id={pool.node_template_id}
+                    label={pool.node_template_name ?? pool.node_template_id}
+                  />
+                ) : (
+                  <span className="text-theme-secondary">—</span>
+                )}
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-theme-primary mb-1">
+                Lifecycle class
+              </label>
+              <p className="px-3 py-2 rounded-lg border border-theme bg-theme-background text-theme-secondary text-sm">
+                {pool.lifecycle_class}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="edit-pool-description"
+              className="block text-sm font-medium text-theme-primary mb-1"
+            >
+              Description
+            </label>
+            <textarea
+              id="edit-pool-description"
+              value={form.description}
+              onChange={(e) => handleChange('description', e.target.value)}
+              placeholder="Optional — what's this pool for?"
+              rows={2}
+              disabled={submitting}
+              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary resize-none"
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label
+                htmlFor="edit-pool-min"
+                className="block text-sm font-medium text-theme-primary mb-1"
+              >
+                Min size
+              </label>
+              <input
+                id="edit-pool-min"
+                type="number"
+                min={0}
+                value={form.min_size}
+                onChange={(e) =>
+                  handleChange('min_size', Number(e.target.value))
+                }
+                disabled={submitting}
+                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="edit-pool-target"
+                className="block text-sm font-medium text-theme-primary mb-1"
+              >
+                Target size <span className="text-theme-danger">*</span>
+              </label>
+              <input
+                id="edit-pool-target"
+                type="number"
+                min={0}
+                value={form.target_size}
+                onChange={(e) =>
+                  handleChange('target_size', Number(e.target.value))
+                }
+                disabled={submitting}
+                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="edit-pool-max"
+                className="block text-sm font-medium text-theme-primary mb-1"
+              >
+                Max size
+              </label>
+              <input
+                id="edit-pool-max"
+                type="number"
+                min={0}
+                value={form.max_size}
+                onChange={(e) =>
+                  handleChange('max_size', Number(e.target.value))
+                }
+                disabled={submitting}
+                className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
+              />
+            </div>
+          </div>
+          {errors.sizing && (
+            <p className="text-sm text-theme-danger">{errors.sizing}</p>
+          )}
+
+          <div>
+            <label
+              htmlFor="edit-pool-status"
+              className="block text-sm font-medium text-theme-primary mb-1"
+            >
+              Status
+            </label>
+            <select
+              id="edit-pool-status"
+              value={form.status}
+              onChange={(e) =>
+                handleChange(
+                  'status',
+                  e.target.value as InstancePoolSummary['status'],
+                )
+              }
+              disabled={submitting}
+              className="w-full px-3 py-2 rounded-lg border border-theme bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary"
+            >
+              <option value="active">active</option>
+              <option value="paused">paused</option>
+              <option value="draining">draining</option>
+              <option value="archived">archived</option>
+            </select>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+};
+
+// =============================================================================
 // Pool Detail modal
 // =============================================================================
 
@@ -1136,6 +1757,16 @@ const PoolDetailModal: React.FC<PoolDetailModalProps> = ({
           {pool.description && (
             <p className="mt-2 text-sm text-theme-secondary">
               {pool.description}
+            </p>
+          )}
+          {(pool.node_template_id || pool.node_template_name) && (
+            <p className="mt-2 text-sm text-theme-secondary">
+              Template:{' '}
+              <EntityLink
+                type="node_template"
+                id={pool.node_template_id}
+                label={pool.node_template_name ?? pool.node_template_id}
+              />
             </p>
           )}
         </section>

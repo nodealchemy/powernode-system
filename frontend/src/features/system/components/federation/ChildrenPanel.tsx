@@ -4,12 +4,15 @@ import {
   Plus,
   Clock,
   Trash2,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { childrenApi } from '../../services/api/childrenApi';
 import type {
   ChildPeerSummary,
+  ChildPeerDetail,
   ChildPeerStatus,
   SpawnMode,
 } from '../../types/spawn.types';
@@ -35,6 +38,48 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<ChildPeerStatus | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Full-detail cache, keyed by child id. The list endpoint returns a summary
+  // shape; getChild adds endpoints, capabilities, metadata, and signed_at. We
+  // fetch lazily on first expand and reuse the cached row thereafter.
+  const [detailById, setDetailById] = useState<Record<string, ChildPeerDetail>>({});
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+
+  const fetchDetail = useCallback(
+    async (child: ChildPeerSummary) => {
+      if (detailById[child.id]) return; // already loaded
+      setDetailLoadingId(child.id);
+      try {
+        const full = await childrenApi.getChild(child.id);
+        setDetailById((prev) => ({ ...prev, [child.id]: full }));
+      } catch (err: unknown) {
+        addNotification({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to load child detail',
+        });
+      } finally {
+        setDetailLoadingId(null);
+      }
+    },
+    [detailById, addNotification],
+  );
+
+  const toggleExpanded = useCallback(
+    (child: ChildPeerSummary) => {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(child.id)) {
+          next.delete(child.id);
+        } else {
+          next.add(child.id);
+          void fetchDetail(child);
+        }
+        return next;
+      });
+    },
+    [fetchDetail],
+  );
 
   const fetchChildren = useCallback(async () => {
     setLoading(true);
@@ -114,6 +159,7 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
+              <th className="w-8 px-2 py-2"></th>
               <th className="text-left px-4 py-2 font-medium">Instance URL</th>
               <th className="text-left px-4 py-2 font-medium">Spawn Mode</th>
               <th className="text-left px-4 py-2 font-medium">Status</th>
@@ -127,9 +173,13 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
               <ChildRow
                 key={child.id}
                 child={child}
+                detail={detailById[child.id]}
                 onSelect={onSelect}
                 onRevoke={() => handleRevoke(child)}
                 isRevoking={revokingId === child.id}
+                expanded={expandedIds.has(child.id)}
+                onToggleExpand={() => toggleExpanded(child)}
+                detailLoading={detailLoadingId === child.id}
               />
             ))}
           </tbody>
@@ -141,20 +191,46 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
 
 interface ChildRowProps {
   child: ChildPeerSummary;
+  // Full-detail row from the show endpoint; undefined until lazily fetched on expand.
+  detail?: ChildPeerDetail;
   onSelect?: (child: ChildPeerSummary) => void;
   onRevoke: () => void;
   isRevoking: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  detailLoading: boolean;
 }
 
-const ChildRow: React.FC<ChildRowProps> = ({ child, onSelect, onRevoke, isRevoking }) => {
+const ChildRow: React.FC<ChildRowProps> = ({
+  child,
+  detail,
+  onSelect,
+  onRevoke,
+  isRevoking,
+  expanded,
+  onToggleExpand,
+  detailLoading,
+}) => {
   const isTerminal = child.status === 'revoked';
 
   return (
+    <>
     <tr
       className={`border-t border-theme ${onSelect ? 'cursor-pointer hover:bg-theme-surface-hover' : ''}`}
       onClick={() => onSelect?.(child)}
     >
-      <td className="px-4 py-3 text-theme-primary font-mono text-xs">{child.remote_instance_url}</td>
+      <td className="px-2 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="p-1 text-theme-secondary hover:text-theme-primary"
+          title={expanded ? 'Collapse details' : 'Expand details'}
+        >
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+      </td>
+      {/* remote_instance_url is a remote peer URL with no local entity id → text. */}
+      <td className="px-4 py-3 text-theme-primary font-mono text-xs break-all">{child.remote_instance_url}</td>
       <td className="px-4 py-3 text-theme-secondary">
         <SpawnModeBadge mode={child.spawn_mode} />
       </td>
@@ -195,6 +271,79 @@ const ChildRow: React.FC<ChildRowProps> = ({ child, onSelect, onRevoke, isRevoki
         )}
       </td>
     </tr>
+    {expanded && (
+      <tr className="bg-theme-background border-b border-theme">
+        <td></td>
+        <td colSpan={6} className="px-4 py-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Spawn Mode</label>
+              <p className="text-theme-primary">{SPAWN_MODE_LABELS[child.spawn_mode]}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+              <p className="text-theme-primary">{child.status}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Heartbeat</label>
+              <p className="text-theme-primary text-xs">
+                {child.last_heartbeat_at ? new Date(child.last_heartbeat_at).toLocaleString() : '—'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Acceptance Pending</label>
+              <p className="text-theme-primary text-xs">
+                {child.acceptance_pending
+                  ? `yes (expires ${child.acceptance_expires_at ? new Date(child.acceptance_expires_at).toLocaleString() : '—'})`
+                  : 'no'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+              <p className="text-theme-primary text-xs">{new Date(child.created_at).toLocaleString()}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Child ID</label>
+              <p className="text-theme-primary font-mono text-xs break-all">{child.id}</p>
+            </div>
+            {detail?.signed_at && (
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Signed At</label>
+                <p className="text-theme-primary text-xs">{new Date(detail.signed_at).toLocaleString()}</p>
+              </div>
+            )}
+            {detail && detail.endpoints.length > 0 && (
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Endpoints</label>
+                <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-surface border border-theme rounded p-2">
+                  {JSON.stringify(detail.endpoints, null, 2)}
+                </pre>
+              </div>
+            )}
+            {detail && Object.keys(detail.capabilities).length > 0 && (
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Capabilities</label>
+                <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-surface border border-theme rounded p-2">
+                  {JSON.stringify(detail.capabilities, null, 2)}
+                </pre>
+              </div>
+            )}
+            {detail && Object.keys(detail.metadata).length > 0 && (
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Metadata</label>
+                <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-surface border border-theme rounded p-2">
+                  {JSON.stringify(detail.metadata, null, 2)}
+                </pre>
+              </div>
+            )}
+            {detailLoading && !detail && (
+              <p className="col-span-full text-sm text-theme-secondary">Loading detail…</p>
+            )}
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   );
 };
 

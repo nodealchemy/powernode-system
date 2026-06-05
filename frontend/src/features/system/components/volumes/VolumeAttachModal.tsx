@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Link, Server, AlertCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProviderVolume, SystemNodeInstance } from '@system/features/system/types/system.types';
@@ -171,6 +172,22 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
                   ))}
                 </select>
               )}
+              {/* View the selected instance's detail surface (node_instance uses a
+                  composite "nodeId:instanceId" id; the fetched instance carries
+                  its node_id). EntityLink degrades to text if unresolved. */}
+              {(() => {
+                const selected = instances.find((i) => i.id === selectedInstanceId);
+                if (!selected || !selected.node_id) return null;
+                return (
+                  <p className="mt-1 text-xs">
+                    <EntityLink
+                      type="node_instance"
+                      id={`${selected.node_id}:${selected.id}`}
+                      label="View instance details"
+                    />
+                  </p>
+                );
+              })()}
             </div>
 
             {/* Device Name */}

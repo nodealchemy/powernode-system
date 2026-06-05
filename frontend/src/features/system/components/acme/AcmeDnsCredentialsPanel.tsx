@@ -9,6 +9,8 @@ import {
   ShieldAlert,
   ShieldCheck,
   Globe,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -46,6 +48,19 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
   const [lastTestReason, setLastTestReason] = useState<Record<string, string>>({});
   // CF-DNS.3 — DNS records modal targeted at a specific credential
   const [dnsRecordsTarget, setDnsRecordsTarget] = useState<AcmeDnsCredentialSummary | null>(null);
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const fetchCreds = useCallback(async () => {
     setLoading(true);
@@ -134,6 +149,7 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
           <table className="w-full text-sm">
             <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
               <tr>
+                <th className="w-8 px-2 py-2"></th>
                 <th className="text-left px-4 py-2 font-medium">Name</th>
                 <th className="text-left px-4 py-2 font-medium">Provider</th>
                 <th className="text-left px-4 py-2 font-medium">Status</th>
@@ -149,6 +165,8 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
                   lastReason={lastTestReason[cred.id] ?? null}
                   testing={testingId === cred.id}
                   deleting={deletingId === cred.id}
+                  expanded={expandedIds.has(cred.id)}
+                  onToggleExpanded={() => toggleExpanded(cred.id)}
                   onTest={() => handleTest(cred)}
                   onDelete={() => handleDelete(cred)}
                   onManageDns={
@@ -186,6 +204,8 @@ interface CredentialRowProps {
   lastReason: string | null;
   testing: boolean;
   deleting: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   onTest: () => void;
   onDelete: () => void;
   onManageDns?: () => void;
@@ -196,70 +216,147 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
   lastReason,
   testing,
   deleting,
+  expanded,
+  onToggleExpanded,
   onTest,
   onDelete,
   onManageDns,
 }) => (
-  <tr className="border-t border-theme">
-    <td className="px-4 py-3 text-theme-primary font-mono text-xs">{cred.name}</td>
-    <td className="px-4 py-3 text-theme-secondary">
-      <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
-        {cred.provider}
-      </span>
-    </td>
-    <td className="px-4 py-3">
-      <StatusPill status={cred.status} />
-      {lastReason && (
-        <div className="text-xs text-theme-secondary mt-1 max-w-xs italic">{lastReason}</div>
-      )}
-    </td>
-    <td className="px-4 py-3 text-xs text-theme-secondary">
-      {cred.last_validated_at ? (
-        <span className="inline-flex items-center gap-1">
-          <Clock className="w-3 h-3" />
-          {new Date(cred.last_validated_at).toLocaleString()}
-          {cred.needs_revalidation && (
-            <span className="text-theme-warning ml-1" title="Older than 24h">stale</span>
-          )}
-        </span>
-      ) : (
-        <span className="text-theme-tertiary">never</span>
-      )}
-    </td>
-    <td className="px-4 py-3 text-right">
-      <button
-        type="button"
-        onClick={onTest}
-        disabled={testing}
-        title="Verify the credential against the provider's API"
-        className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
-      >
-        {testing ? <Clock className="w-3 h-3" /> : <Check className="w-3 h-3" />}
-        {testing ? 'Testing…' : 'Test'}
-      </button>
-      {onManageDns && (
+  <React.Fragment>
+    <tr className="border-t border-theme">
+      <td className="px-2 py-3 align-middle">
         <button
           type="button"
-          onClick={onManageDns}
-          title="Manage DNS records on zones this credential can reach"
-          className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover inline-flex items-center gap-1 mr-1 transition-colors"
+          onClick={onToggleExpanded}
+          className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+          title={expanded ? 'Collapse details' : 'Expand details'}
         >
-          <Globe className="w-3 h-3" />
-          DNS Records
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>
-      )}
-      <button
-        type="button"
-        onClick={onDelete}
-        disabled={deleting}
-        title="Delete credential + Vault secret"
-        className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
-      >
-        <Trash2 className="w-3 h-3" />
-        {deleting ? 'Deleting…' : 'Delete'}
-      </button>
-    </td>
-  </tr>
+      </td>
+      <td className="px-4 py-3 text-theme-primary font-mono text-xs">{cred.name}</td>
+      <td className="px-4 py-3 text-theme-secondary">
+        <span className="px-1.5 py-0.5 bg-theme-background-secondary rounded text-xs font-mono">
+          {cred.provider}
+        </span>
+      </td>
+      <td className="px-4 py-3">
+        <StatusPill status={cred.status} />
+        {lastReason && (
+          <div className="text-xs text-theme-secondary mt-1 max-w-xs italic">{lastReason}</div>
+        )}
+      </td>
+      <td className="px-4 py-3 text-xs text-theme-secondary">
+        {cred.last_validated_at ? (
+          <span className="inline-flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {new Date(cred.last_validated_at).toLocaleString()}
+            {cred.needs_revalidation && (
+              <span className="text-theme-warning ml-1" title="Older than 24h">stale</span>
+            )}
+          </span>
+        ) : (
+          <span className="text-theme-tertiary">never</span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-right">
+        <button
+          type="button"
+          onClick={onTest}
+          disabled={testing}
+          title="Verify the credential against the provider's API"
+          className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
+        >
+          {testing ? <Clock className="w-3 h-3" /> : <Check className="w-3 h-3" />}
+          {testing ? 'Testing…' : 'Test'}
+        </button>
+        {onManageDns && (
+          <button
+            type="button"
+            onClick={onManageDns}
+            title="Manage DNS records on zones this credential can reach"
+            className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover inline-flex items-center gap-1 mr-1 transition-colors"
+          >
+            <Globe className="w-3 h-3" />
+            DNS Records
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleting}
+          title="Delete credential + Vault secret"
+          className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
+        >
+          <Trash2 className="w-3 h-3" />
+          {deleting ? 'Deleting…' : 'Delete'}
+        </button>
+      </td>
+    </tr>
+    {expanded && (
+      <tr className="bg-theme-background border-b border-theme">
+        <td></td>
+        <td colSpan={5} className="px-4 py-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Provider
+              </label>
+              <p className="text-theme-primary font-mono text-xs">{cred.provider}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Status
+              </label>
+              <p className="text-theme-primary">{cred.status}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Revalidation
+              </label>
+              <p className="text-theme-primary">
+                {cred.needs_revalidation ? 'Needed (older than 24h)' : 'Current'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Last Validated
+              </label>
+              <p className="text-theme-primary text-xs">
+                {cred.last_validated_at
+                  ? new Date(cred.last_validated_at).toLocaleString()
+                  : 'Never'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Created
+              </label>
+              <p className="text-theme-primary text-xs">
+                {new Date(cred.created_at).toLocaleString()}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Updated
+              </label>
+              <p className="text-theme-primary text-xs">
+                {new Date(cred.updated_at).toLocaleString()}
+              </p>
+            </div>
+            <div className="col-span-full">
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
+                Credential ID
+              </label>
+              <p className="text-theme-primary font-mono text-xs truncate" title={cred.id}>
+                {cred.id}
+              </p>
+            </div>
+          </div>
+        </td>
+      </tr>
+    )}
+  </React.Fragment>
 );
 
 const StatusPill: React.FC<{ status: AcmeDnsCredentialStatus }> = ({ status }) => {

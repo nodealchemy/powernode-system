@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, Network as NetworkIcon, Server, Trash2, PauseCircle, PlayCircle } from 'lucide-react';
+import {
+  Globe2,
+  Network as NetworkIcon,
+  Server,
+  Trash2,
+  PauseCircle,
+  PlayCircle,
+  ChevronRight,
+  ChevronDown,
+} from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
@@ -40,6 +49,19 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<OfferingStatus | null>(initialStatusFilter);
   const [actingOnId, setActingOnId] = useState<string | null>(null);
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const fetchOfferings = useCallback(async () => {
     setLoading(true);
@@ -129,6 +151,7 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
+              <th className="w-8 px-2 py-2"></th>
               <th className="text-left px-4 py-2 font-medium">Name / Slug</th>
               <th className="text-left px-4 py-2 font-medium">Protocol</th>
               <th className="text-left px-4 py-2 font-medium">Backend</th>
@@ -145,6 +168,8 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
                 onSelect={onSelect}
                 onTransition={(action) => handleTransition(offering, action)}
                 isActing={actingOnId === offering.id}
+                expanded={expandedIds.has(offering.id)}
+                onToggleExpand={() => toggleExpanded(offering.id)}
               />
             ))}
           </tbody>
@@ -159,17 +184,37 @@ interface OfferingRowProps {
   onSelect?: (offering: ServiceOffering) => void;
   onTransition: (action: 'activate' | 'deprecate' | 'retire') => void;
   isActing: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
 }
 
-const OfferingRow: React.FC<OfferingRowProps> = ({ offering, onSelect, onTransition, isActing }) => {
+const OfferingRow: React.FC<OfferingRowProps> = ({
+  offering,
+  onSelect,
+  onTransition,
+  isActing,
+  expanded,
+  onToggleExpand,
+}) => {
   const isRetired = offering.status === 'retired';
   const protoIcon = protocolIcon(offering.protocol);
 
   return (
+    <>
     <tr
       className={`border-t border-theme ${onSelect ? 'cursor-pointer hover:bg-theme-surface-hover' : ''}`}
       onClick={() => onSelect?.(offering)}
     >
+      <td className="px-2 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="p-1 text-theme-secondary hover:text-theme-primary"
+          title={expanded ? 'Collapse details' : 'Expand details'}
+        >
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+      </td>
       <td className="px-4 py-3">
         <div className="font-medium text-theme-primary">{offering.name}</div>
         <div className="text-xs text-theme-secondary font-mono">{offering.slug}</div>
@@ -230,6 +275,85 @@ const OfferingRow: React.FC<OfferingRowProps> = ({ offering, onSelect, onTransit
         </div>
       </td>
     </tr>
+    {expanded && (
+      <tr className="bg-theme-background border-b border-theme">
+        <td></td>
+        <td colSpan={6} className="px-4 py-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Backend</label>
+              <p className="text-theme-primary font-mono text-xs break-all">
+                {offering.backend_vip_id
+                  ? `vip:${offering.backend_vip_id}:${offering.backend_port}`
+                  : offering.backend_host
+                    ? `${offering.backend_host}:${offering.backend_port}`
+                    : `<unset>:${offering.backend_port}`}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Default Grant TTL</label>
+              <p className="text-theme-primary">{offering.default_grant_ttl_days} days</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Default Grant Scopes</label>
+              <p className="text-theme-primary">
+                {offering.default_grant_scopes.length > 0
+                  ? offering.default_grant_scopes.join(', ')
+                  : '—'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Subscribers</label>
+              <p className="text-theme-primary">
+                {offering.active_subscription_count}
+                {offering.capacity_metadata.max_subscribers !== undefined
+                  ? ` / ${offering.capacity_metadata.max_subscribers} max`
+                  : ''}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Accepting New</label>
+              <p className="text-theme-primary">{offering.accepting_new_subscriptions ? 'Yes' : 'No'}</p>
+            </div>
+            {offering.latency_metadata.region && (
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Latency Region</label>
+                <p className="text-theme-primary">{offering.latency_metadata.region}</p>
+              </div>
+            )}
+            {(offering.latency_metadata.p50_ms !== undefined ||
+              offering.latency_metadata.p95_ms !== undefined) && (
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Latency</label>
+                <p className="text-theme-primary text-xs">
+                  {offering.latency_metadata.p50_ms !== undefined ? `p50 ${offering.latency_metadata.p50_ms}ms` : ''}
+                  {offering.latency_metadata.p95_ms !== undefined ? ` p95 ${offering.latency_metadata.p95_ms}ms` : ''}
+                </p>
+              </div>
+            )}
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Offering ID</label>
+              <p className="text-theme-primary font-mono text-xs break-all">{offering.id}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+              <p className="text-theme-primary text-xs">{new Date(offering.created_at).toLocaleString()}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+              <p className="text-theme-primary text-xs">{new Date(offering.updated_at).toLocaleString()}</p>
+            </div>
+            {offering.description_markdown && (
+              <div className="col-span-full">
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                <p className="text-theme-primary whitespace-pre-wrap">{offering.description_markdown}</p>
+              </div>
+            )}
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   );
 };
 

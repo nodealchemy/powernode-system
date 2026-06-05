@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Network,
   Search,
@@ -6,10 +6,13 @@ import {
   Eye,
   Edit2,
   Trash2,
-  Globe
+  Globe,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useInfiniteResourceList } from '@system/features/system/hooks/useResourceList';
@@ -27,6 +30,32 @@ interface NetworkListFilters {
   search: string;
   statusFilter: 'all' | 'available' | 'pending' | 'error';
 }
+
+// The network payload may additionally carry foreign keys for the owning
+// provider and a host instance (surfaced opportunistically by the API / its
+// `config` blob). They are not on the shared `SystemProviderNetwork` contract,
+// so we read them through a narrow optional view rather than widening the type
+// or reaching for `any`. When present they render as `<EntityLink>`; when
+// absent the cells simply omit the link — keeping this purely additive.
+interface NetworkCrossRefs {
+  provider_id?: string;
+  provider_name?: string;
+  node_id?: string;
+  node_instance_id?: string;
+  node_instance_name?: string;
+}
+
+const crossRefs = (network: SystemProviderNetwork): NetworkCrossRefs => {
+  const direct = network as SystemProviderNetwork & NetworkCrossRefs;
+  const config = (network.config ?? {}) as NetworkCrossRefs;
+  return {
+    provider_id: direct.provider_id ?? config.provider_id,
+    provider_name: direct.provider_name ?? config.provider_name,
+    node_id: direct.node_id ?? config.node_id,
+    node_instance_id: direct.node_instance_id ?? config.node_instance_id,
+    node_instance_name: direct.node_instance_name ?? config.node_instance_name,
+  };
+};
 
 const statusVariants: Record<string, 'success' | 'warning' | 'danger' | 'secondary'> = {
   available: 'success',
@@ -83,6 +112,97 @@ export const NetworkList: React.FC<NetworkListProps> = ({
     setFilters({ ...filters, search: searchInput });
   };
 
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedNetworkIds, setExpandedNetworkIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedNetworkIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
+  // Shared inline detail grid (desktop expansion + mobile sub-section). Renders
+  // the network's OWN fields; cross-references to the owning provider / host
+  // instance become links when their ids are present, otherwise are omitted.
+  const renderDetail = (network: SystemProviderNetwork) => {
+    const refs = crossRefs(network);
+    const compositeInstanceId =
+      refs.node_id && refs.node_instance_id ? `${refs.node_id}:${refs.node_instance_id}` : undefined;
+    return (
+      <>
+        {network.description && (
+          <div className="col-span-full">
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+            <p className="text-theme-primary">{network.description}</p>
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">CIDR Block</label>
+          <p className="text-theme-primary font-mono text-xs">{network.cidr_block || '—'}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+          <p className="text-theme-primary">{network.status}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Region</label>
+          <p className="text-theme-primary">{network.region_name || network.provider_region_id || '—'}</p>
+        </div>
+        {refs.provider_id && (
+          <div>
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Provider</label>
+            <EntityLink
+              type="provider"
+              id={refs.provider_id}
+              label={refs.provider_name || refs.provider_id}
+            />
+          </div>
+        )}
+        {compositeInstanceId && (
+          <div>
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Instance</label>
+            <EntityLink
+              type="node_instance"
+              id={compositeInstanceId}
+              label={refs.node_instance_name || refs.node_instance_id}
+            />
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">DNS Resolution</label>
+          <p className="text-theme-primary">{network.dns_support ? 'Enabled' : 'Disabled'}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">DNS Hostnames</label>
+          <p className="text-theme-primary">{network.dns_hostnames ? 'Enabled' : 'Disabled'}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Default</label>
+          <p className="text-theme-primary">{network.is_default ? 'Yes' : 'No'}</p>
+        </div>
+        {network.subnet_count !== undefined && (
+          <div>
+            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Subnets</label>
+            <p className="text-theme-primary">{network.subnet_count}</p>
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Network ID</label>
+          <p className="text-theme-primary font-mono text-xs truncate" title={network.id}>{network.id}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+          <p className="text-theme-primary text-xs">{new Date(network.created_at).toLocaleString()}</p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+          <p className="text-theme-primary text-xs">{new Date(network.updated_at).toLocaleString()}</p>
+        </div>
+      </>
+    );
+  };
+
   return (
     <ResponsiveListContainer
       loading={loading}
@@ -136,6 +256,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({
         <table className="w-full">
           <thead>
             <tr className="border-b border-theme bg-theme-background">
+              <th className="w-8 px-2 py-3"></th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">Network</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">CIDR Block</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-theme-secondary">Status</th>
@@ -145,8 +266,21 @@ export const NetworkList: React.FC<NetworkListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-theme">
-            {filteredNetworks.map((network) => (
-              <tr key={network.id} className="hover:bg-theme-surface-hover transition-colors">
+            {filteredNetworks.map((network) => {
+              const expanded = expandedNetworkIds.has(network.id);
+              return (
+              <React.Fragment key={network.id}>
+              <tr className="hover:bg-theme-surface-hover transition-colors">
+                <td className="px-2 py-3 align-middle">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(network.id)}
+                    className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
                     <Network className="w-5 h-5 text-theme-tertiary" />
@@ -236,20 +370,44 @@ export const NetworkList: React.FC<NetworkListProps> = ({
                   </div>
                 </td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="bg-theme-background border-b border-theme">
+                  <td></td>
+                  <td colSpan={6} className="px-4 py-3">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      {renderDetail(network)}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </ResponsiveListContainer.Desktop>
 
       <ResponsiveListContainer.Mobile>
-        {filteredNetworks.map((network) => (
+        {filteredNetworks.map((network) => {
+          const expanded = expandedNetworkIds.has(network.id);
+          return (
           <div key={network.id} className="p-4">
             <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <Network className="w-5 h-5 text-theme-tertiary" />
-                <div>
-                  <p className="font-medium text-theme-primary">{network.name}</p>
-                  <p className="text-sm font-mono text-theme-secondary">{network.cidr_block}</p>
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(network.id)}
+                  className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <div className="flex items-center gap-3 min-w-0">
+                  <Network className="w-5 h-5 text-theme-tertiary flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="font-medium text-theme-primary truncate">{network.name}</p>
+                    <p className="text-sm font-mono text-theme-secondary">{network.cidr_block}</p>
+                  </div>
                 </div>
               </div>
               <Badge variant={statusVariants[network.status] || 'secondary'} size="sm" dot>
@@ -269,8 +427,14 @@ export const NetworkList: React.FC<NetworkListProps> = ({
                 )}
               </div>
             </div>
+            {expanded && (
+              <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                {renderDetail(network)}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );

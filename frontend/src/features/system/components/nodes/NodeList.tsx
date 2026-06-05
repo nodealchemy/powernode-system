@@ -10,11 +10,14 @@ import {
   MoreVertical,
   Filter,
   ChevronRight,
-  ChevronDown
+  ChevronDown,
+  X
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useQueryParamFilter } from '@/shared/hooks/useQueryParamFilter';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useInfiniteResourceList } from '@system/features/system/hooks/useResourceList';
 import { useSystemWebSocket } from '@system/features/system/hooks/useSystemWebSocket';
@@ -24,6 +27,8 @@ import type { SystemNode } from '@system/features/system/types/system.types';
 interface NodeListFilters {
   search: string;
   enabled: 'all' | 'enabled' | 'disabled';
+  /** Deep-link filter — seeded from ?template=<node_template_id>. */
+  templateId: string | null;
 }
 
 interface NodeListProps {
@@ -66,6 +71,12 @@ export const NodeList: React.FC<NodeListProps> = ({
   const canUpdate = hasPermission('system.nodes.update');
   const canDelete = hasPermission('system.nodes.delete');
 
+  // Deep-link: ?template=<id> pre-filters to nodes using one template
+  // (client-side — the nodes endpoint paginates but doesn't filter by
+  // template, so we match in clientFilterFn against the loaded pages).
+  const { seedFilters, hasActiveParamFilter, clearParamFilters } =
+    useQueryParamFilter<NodeListFilters>({ template: 'templateId' });
+
   const {
     items: nodes,
     filteredItems: filteredNodes,
@@ -89,12 +100,14 @@ export const NodeList: React.FC<NodeListProps> = ({
       }
       return systemApi.getNodes(params).then(d => ({ items: d.nodes, meta: d.meta }));
     },
-    initialFilters: { search: '', enabled: 'all' },
+    initialFilters: seedFilters({ search: '', enabled: 'all', templateId: null }),
     perPage: 20,
-    // `enabled` is server-side (refetch on change); `search` is client-side
-    // (no per-keystroke API churn).
+    // `enabled` is server-side (refetch on change); `search` + `templateId`
+    // are client-side (no per-keystroke API churn, and the nodes endpoint
+    // has no template filter param).
     serverFilterKey: (f) => JSON.stringify({ enabled: f.enabled }),
     clientFilterFn: (node, f) => {
+      if (f.templateId && node.node_template_id !== f.templateId) return false;
       if (!f.search) return true;
       const q = f.search.toLowerCase();
       return (
@@ -105,6 +118,13 @@ export const NodeList: React.FC<NodeListProps> = ({
     },
     errorMessage: 'Failed to load nodes',
   });
+
+  // Clearing the deep-link chip resets BOTH the URL param and the seeded
+  // filter state (the resource-list hook reads initialFilters only once).
+  const clearTemplateFilter = useCallback(() => {
+    setFilters((prev) => ({ ...prev, templateId: null }));
+    clearParamFilters();
+  }, [setFilters, clearParamFilters]);
 
   // Live updates: when the SystemChannel pushes a node update, merge it
   // into the in-memory accumulator.
@@ -196,6 +216,19 @@ export const NodeList: React.FC<NodeListProps> = ({
           </div>
         </div>
 
+        {hasActiveParamFilter && filters.templateId && (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={clearTemplateFilter}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+              title="Clear template filter"
+            >
+              <span>Filtered by template</span>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </ResponsiveListContainer.Filters>
 
       <ResponsiveListContainer.Desktop>
@@ -248,9 +281,17 @@ export const NodeList: React.FC<NodeListProps> = ({
                   </td>
 
                   <td className="py-3 px-4">
-                    <span className="text-theme-secondary">
-                      {node.node_template_name || '-'}
-                    </span>
+                    {node.node_template_id ? (
+                      <EntityLink
+                        type="node_template"
+                        id={node.node_template_id}
+                        label={node.node_template_name || node.node_template_id}
+                      />
+                    ) : (
+                      <span className="text-theme-secondary">
+                        {node.node_template_name || '-'}
+                      </span>
+                    )}
                   </td>
 
                   <td className="py-3 px-4">
@@ -354,10 +395,18 @@ export const NodeList: React.FC<NodeListProps> = ({
                             <p className="text-theme-primary font-mono text-xs">{node.public_address}</p>
                           </div>
                         )}
-                        {node.node_template_name && (
+                        {(node.node_template_id || node.node_template_name) && (
                           <div>
                             <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Template</label>
-                            <p className="text-theme-primary">{node.node_template_name}</p>
+                            {node.node_template_id ? (
+                              <EntityLink
+                                type="node_template"
+                                id={node.node_template_id}
+                                label={node.node_template_name || node.node_template_id}
+                              />
+                            ) : (
+                              <p className="text-theme-primary">{node.node_template_name}</p>
+                            )}
                           </div>
                         )}
                         {node.worker_id && (
@@ -526,8 +575,16 @@ export const NodeList: React.FC<NodeListProps> = ({
                 </div>
 
                 <div className="text-center">
-                  <div className="text-sm text-theme-secondary truncate">
-                    {node.node_template_name || '-'}
+                  <div className="text-sm truncate">
+                    {node.node_template_id ? (
+                      <EntityLink
+                        type="node_template"
+                        id={node.node_template_id}
+                        label={node.node_template_name || node.node_template_id}
+                      />
+                    ) : (
+                      <span className="text-theme-secondary">{node.node_template_name || '-'}</span>
+                    )}
                   </div>
                   <div className="text-xs text-theme-tertiary">Template</div>
                 </div>

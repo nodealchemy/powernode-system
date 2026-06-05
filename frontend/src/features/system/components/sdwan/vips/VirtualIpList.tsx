@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Globe, Pencil, Trash2, GitBranch } from 'lucide-react';
+import { Globe, Pencil, Trash2, GitBranch, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type { SdwanVirtualIp, SdwanPeer } from '../../../types/sdwan.types';
 
@@ -39,6 +39,15 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
   const [peers, setPeers] = useState<Record<string, SdwanPeer>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -91,6 +100,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
     <table className="w-full text-sm">
       <thead>
         <tr className="text-left text-theme-secondary border-b border-theme">
+          <th className="w-8 px-3 py-2"></th>
           <th className="px-3 py-2">Name</th>
           <th className="px-3 py-2">CIDR</th>
           <th className="px-3 py-2">Mode</th>
@@ -101,8 +111,22 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
         </tr>
       </thead>
       <tbody>
-        {vips.map((v) => (
-          <tr key={v.id} className="border-b border-theme hover:bg-theme-background-secondary/30">
+        {vips.map((v) => {
+          const expanded = expandedIds.has(v.id);
+          return (
+          <React.Fragment key={v.id}>
+          <tr className="border-b border-theme hover:bg-theme-background-secondary/30">
+            <td className="px-3 py-2 align-middle">
+              <button
+                type="button"
+                onClick={() => toggleExpanded(v.id)}
+                className="p-1 text-theme-secondary hover:text-theme-primary"
+                title={expanded ? 'Collapse details' : 'Expand details'}
+                aria-label={expanded ? `Collapse VIP ${v.name}` : `Expand VIP ${v.name}`}
+              >
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+            </td>
             <td className="px-3 py-2 font-medium text-theme-primary">{v.name}</td>
             <td className="px-3 py-2 font-mono text-xs text-theme-secondary">{v.cidr}</td>
             <td className="px-3 py-2">
@@ -163,8 +187,100 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
               </div>
             </td>
           </tr>
-        ))}
+          {expanded && (
+            <tr className="bg-theme-background border-b border-theme">
+              <td></td>
+              <td colSpan={7} className="px-3 py-3">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Mode</label>
+                    <p className="text-theme-primary">{v.anycast ? `Anycast (${v.holder_peer_ids.length} active holders)` : 'Active/passive'}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">State</label>
+                    <p className={`font-medium ${stateColor(v.state)}`}>{v.state}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">CIDR</label>
+                    <p className="text-theme-primary font-mono text-xs">{v.cidr}</p>
+                  </div>
+                  {v.description && (
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                      <p className="text-theme-primary">{v.description}</p>
+                    </div>
+                  )}
+                  {!v.anycast && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Primary Holder</label>
+                      <p className="text-theme-primary text-xs font-mono">{peerDetail(v.primary_holder_peer_id)}</p>
+                      {v.primary_holder_address && (
+                        <p className="text-theme-secondary text-xs font-mono mt-0.5">{v.primary_holder_address}</p>
+                      )}
+                    </div>
+                  )}
+                  {v.anycast && (
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Active Holders</label>
+                      <p className="text-theme-primary text-xs font-mono break-all">
+                        {v.holder_peer_ids.length > 0 ? v.holder_peer_ids.map(peerDetail).join(', ') : 'none'}
+                      </p>
+                    </div>
+                  )}
+                  <div className="col-span-2 md:col-span-3">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Failover Candidates</label>
+                    <p className="text-theme-primary text-xs font-mono break-all">
+                      {v.failover_holder_peer_ids.length > 0 ? v.failover_holder_peer_ids.map(peerDetail).join(', ') : 'none'}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Advertised MED</label>
+                    <p className="text-theme-primary">{v.advertised_med}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Advertised Local Pref</label>
+                    <p className="text-theme-primary">{v.advertised_local_pref}</p>
+                  </div>
+                  {v.tags.length > 0 && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Tags</label>
+                      <p className="text-theme-primary text-xs">{v.tags.join(', ')}</p>
+                    </div>
+                  )}
+                  {v.created_at && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                      <p className="text-theme-primary text-xs">{new Date(v.created_at).toLocaleString()}</p>
+                    </div>
+                  )}
+                  {v.assignments && v.assignments.length > 0 && (
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Recent Assignments</label>
+                      <ul className="text-theme-primary text-xs space-y-1">
+                        {v.assignments.slice(0, 5).map((a) => (
+                          <li key={a.id} className="font-mono break-all">
+                            {peerDetail(a.peer_id)} · {a.reason} · assumed {new Date(a.assumed_at).toLocaleString()}
+                            {a.released_at ? ` · released ${new Date(a.released_at).toLocaleString()}` : a.active ? ' · active' : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </td>
+            </tr>
+          )}
+          </React.Fragment>
+          );
+        })}
       </tbody>
     </table>
   );
+
+  function peerDetail(peerId: string | null | undefined): string {
+    if (!peerId) return '—';
+    const p = peers[peerId];
+    if (!p) return peerId;
+    return `${peerId} (${p.assigned_address}${p.publicly_reachable ? ', hub' : ''})`;
+  }
 };

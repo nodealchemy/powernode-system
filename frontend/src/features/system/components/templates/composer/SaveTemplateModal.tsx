@@ -32,11 +32,24 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
   const platformIds = Array.from(
     new Set(
       modules
-        .map((m) => (m as SystemNodeModule & { node_platform_id?: string }).node_platform_id)
+        .map((m) => m.node_platform_id)
         .filter((id): id is string => Boolean(id))
     )
   );
   const platformDisagreement = platformIds.length > 1;
+
+  // Map platform id -> human name from the already-loaded modules so the
+  // selector shows readable names instead of raw UUIDs. Falls back to the id
+  // for any platform whose modules didn't carry a name.
+  const platformNameById = React.useMemo(() => {
+    const map = new Map<string, string>();
+    modules.forEach((m) => {
+      if (m.node_platform_id && m.node_platform_name) {
+        map.set(m.node_platform_id, m.node_platform_name);
+      }
+    });
+    return map;
+  }, [modules]);
 
   React.useEffect(() => {
     // Auto-pick the platform when all modules agree (most common case).
@@ -69,12 +82,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
       // don't block the overall save — the operator can retry assignments
       // from the template detail view.
       const assignments = await Promise.allSettled(
-        modules.map((m) =>
-          (systemApi as unknown as {
-            assignModuleToTemplate?: (templateId: string, moduleId: string) => Promise<unknown>;
-          }).assignModuleToTemplate?.(template.id, m.id) ??
-          Promise.reject(new Error('assignModuleToTemplate not implemented'))
-        )
+        modules.map((m) => systemApi.assignModuleToTemplate(template.id, m.id))
       );
 
       const failed = assignments.filter((a) => a.status === 'rejected');
@@ -137,7 +145,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
               >
                 <option value="">Select platform…</option>
                 {platformIds.map((id) => (
-                  <option key={id} value={id}>{id}</option>
+                  <option key={id} value={id}>{platformNameById.get(id) || id}</option>
                 ))}
               </select>
               <p className="text-xs text-theme-warning mt-1">

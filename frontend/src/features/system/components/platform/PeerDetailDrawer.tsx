@@ -9,6 +9,7 @@ import {
   Globe2,
   GitBranch,
 } from 'lucide-react';
+import { EntityLink } from '@/shared/components/entity';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
 import type { PlatformPeerDetail, PeerEndpoint } from '../../types/peer.types';
 import { GrantsManagementModal } from './GrantsManagementModal';
@@ -118,6 +119,20 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
                   : 'never'}
               />
             </section>
+
+            {peer.parent_peer_id && (
+              <section>
+                <div className="text-xs text-theme-tertiary uppercase mb-0.5">Parent Peer</div>
+                <div className="text-sm font-mono">
+                  <EntityLink
+                    type="platform_peer"
+                    id={peer.parent_peer_id}
+                    label={peer.parent_peer_id}
+                    className="text-theme-primary break-all"
+                  />
+                </div>
+              </section>
+            )}
 
             {peer.acceptance_pending && peer.acceptance_expires_at && (
               <section className="p-3 bg-theme-warning text-theme-warning text-xs rounded">

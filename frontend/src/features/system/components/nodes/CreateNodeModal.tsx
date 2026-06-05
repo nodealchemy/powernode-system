@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Server } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeTemplate, SystemNode } from '@system/features/system/types/system.types';
@@ -256,10 +257,16 @@ export const CreateNodeModal: React.FC<CreateNodeModalProps> = ({
           {/* Template Info */}
           {selectedTemplate && (
             <div className="mt-2 p-3 bg-theme-surface-hover rounded-lg text-sm">
-              <div className="flex items-start gap-2">
+              <div className="flex items-start justify-between gap-2">
                 <div className="text-theme-secondary">
                   {selectedTemplate.description || 'No description'}
                 </div>
+                <EntityLink
+                  type="node_template"
+                  id={selectedTemplate.id}
+                  label="View template"
+                  className="text-xs whitespace-nowrap flex-shrink-0"
+                />
               </div>
               {selectedTemplate.node_platform_name && (
                 <div className="mt-1 text-theme-secondary">

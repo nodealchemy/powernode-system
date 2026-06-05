@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bot, RotateCw, Trash2, Copy, Check } from 'lucide-react';
+import { Bot, RotateCw, Trash2, Copy, Check, ChevronRight, ChevronDown } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -24,6 +24,16 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createdToken, setCreatedToken] = useState<SystemCiWorkerCreatedResponse | null>(null);
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -92,9 +102,19 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
             </p>
           ) : (
             <ul className="divide-y divide-theme">
-              {workers.map((w) => (
+              {workers.map((w) => {
+                const expanded = expandedIds.has(w.id);
+                return (
                 <li key={w.id} className="px-3 py-2.5">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(w.id)}
+                      className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 text-sm">
                         <span className="font-medium text-theme-primary">{w.name}</span>
@@ -105,6 +125,47 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
                       <div className="mt-1 text-xs text-theme-tertiary">
                         {w.last_seen_at ? <>Last seen {new Date(w.last_seen_at).toLocaleString()}</> : 'Never seen'}
                       </div>
+
+                      {expanded && (
+                        <div className="mt-2 pt-2 border-t border-theme grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                          {w.description && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                              <p className="text-theme-primary">{w.description}</p>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                            <p className="text-theme-primary">{w.status}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last seen</label>
+                            <p className="text-theme-primary text-xs">{w.last_seen_at ? new Date(w.last_seen_at).toLocaleString() : 'Never'}</p>
+                          </div>
+                          {w.roles && w.roles.length > 0 && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Roles</label>
+                              <div className="flex flex-wrap gap-1">
+                                {w.roles.map((r) => (
+                                  <Badge key={r} variant="secondary" size="xs">{r}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Worker ID</label>
+                            <p className="text-theme-primary font-mono text-xs truncate" title={w.id}>{w.id}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                            <p className="text-theme-primary text-xs">{new Date(w.created_at).toLocaleString()}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                            <p className="text-theme-primary text-xs">{new Date(w.updated_at).toLocaleString()}</p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       {canRotate && (
@@ -120,7 +181,8 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
                     </div>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

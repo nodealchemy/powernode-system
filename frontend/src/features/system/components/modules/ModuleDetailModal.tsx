@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   X,
   Package,
@@ -18,6 +19,7 @@ import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -56,6 +58,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
 }) => {
   const { addNotification } = useNotifications();
   const { hasPermission } = usePermissions();
+  const navigate = useNavigate();
 
   const canManageDependencies = hasPermission('system.modules.update');
 
@@ -226,7 +229,13 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Category</label>
-              <p className="text-theme-primary">{module.category_name || '—'}</p>
+              <p className="text-theme-primary">
+                {module.category_id ? (
+                  <EntityLink type="node_module_category" id={module.category_id} label={module.category_name || module.category_id} />
+                ) : (
+                  module.category_name || '—'
+                )}
+              </p>
             </div>
           </div>
           <div className="space-y-4">
@@ -238,7 +247,13 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Platform</label>
-              <p className="text-theme-primary">{module.node_platform_name || '—'}</p>
+              <p className="text-theme-primary">
+                {module.node_platform_id ? (
+                  <EntityLink type="node_platform" id={module.node_platform_id} label={module.node_platform_name || module.node_platform_id} />
+                ) : (
+                  module.node_platform_name || '—'
+                )}
+              </p>
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Priority</label>
@@ -478,16 +493,25 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                     <Package className="w-5 h-5 text-theme-info" />
                   </div>
                   <div>
-                    <h5 className="font-medium text-theme-primary">{dep.name}</h5>
+                    <h5 className="font-medium text-theme-primary">
+                      <EntityLink type="node_module" id={dep.id} label={dep.name} />
+                    </h5>
                     <div className="flex items-center gap-2 mt-1">
                       <Badge variant={varietyColors[dep.variety]} size="xs">
                         {varietyLabels[dep.variety] || dep.variety}
                       </Badge>
-                      {dep.node_platform_name && (
+                      {dep.node_platform_id ? (
+                        <EntityLink
+                          type="node_platform"
+                          id={dep.node_platform_id}
+                          label={dep.node_platform_name || dep.node_platform_id}
+                          className="text-xs"
+                        />
+                      ) : dep.node_platform_name ? (
                         <span className="text-xs text-theme-tertiary">
                           {dep.node_platform_name}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -526,9 +550,14 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Dependents Count (modules that depend on this one) */}
         {module.dependents_count && module.dependents_count > 0 && (
           <div className="pt-4 border-t border-theme">
-            <p className="text-sm text-theme-secondary">
+            <button
+              type="button"
+              onClick={() => { navigate(`/app/system/catalog/modules?parent_module_id=${module.id}`); onClose(); }}
+              className="text-sm text-theme-link hover:underline cursor-pointer text-left"
+              title="View modules that depend on this one"
+            >
               <strong>{module.dependents_count}</strong> other module{module.dependents_count !== 1 ? 's' : ''} depend{module.dependents_count === 1 ? 's' : ''} on this module
-            </p>
+            </button>
           </div>
         )}
       </div>

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, FileText, Server, Package, Settings, Globe, Lock, User, Calendar, Edit2 } from 'lucide-react';
+import { X, FileText, Server, Package, Settings, Globe, Lock, User, Calendar, Edit2, Trash2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { TabContainer } from '@/shared/components/ui/TabContainer';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -106,6 +107,27 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
     }
   }, [templateId]);
 
+  // Detach a module from this template, then refresh the Modules list.
+  // Gated on `canEdit` (system.templates.update) at the button level. The
+  // member id sent is the node module id, matching the DELETE route's :id.
+  const handleRemoveModule = useCallback(async (moduleId: string, moduleName: string) => {
+    if (!templateId) return;
+
+    try {
+      await systemApi.unassignModuleFromTemplate(templateId, moduleId);
+      addNotification({
+        type: 'success',
+        message: `Removed ${moduleName} from template`
+      });
+      await fetchModules();
+    } catch (error) {
+      addNotification({
+        type: 'error',
+        message: `Failed to remove ${moduleName} from template`
+      });
+    }
+  }, [templateId, addNotification, fetchModules]);
+
   // Load data when modal opens
   useEffect(() => {
     if (isOpen && templateId) {
@@ -162,7 +184,17 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
             <Settings className="w-4 h-4" />
             Platform
           </div>
-          <div className="text-theme-primary">{template?.node_platform_name || '-'}</div>
+          <div className="text-theme-primary">
+            {template?.node_platform_id ? (
+              <EntityLink
+                type="node_platform"
+                id={template.node_platform_id}
+                label={template.node_platform_name || template.node_platform_id}
+              />
+            ) : (
+              template?.node_platform_name || '-'
+            )}
+          </div>
         </div>
 
         <div className="bg-theme-background rounded-lg p-4 border border-theme">
@@ -247,7 +279,9 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
               <div className="flex items-center gap-3">
                 <Server className="w-5 h-5 text-theme-tertiary" />
                 <div>
-                  <div className="font-medium text-theme-primary">{node.name}</div>
+                  <div className="font-medium text-theme-primary">
+                    <EntityLink type="node" id={node.id} label={node.name} />
+                  </div>
                   {node.description && (
                     <div className="text-sm text-theme-secondary">{node.description}</div>
                   )}
@@ -289,10 +323,31 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
               <div className="flex items-center gap-3">
                 <Package className="w-5 h-5 text-theme-tertiary" />
                 <div>
-                  <div className="font-medium text-theme-primary">{module.name}</div>
+                  <div className="font-medium text-theme-primary">
+                    <EntityLink type="node_module" id={module.id} label={module.name} />
+                  </div>
                   {module.description && (
                     <div className="text-sm text-theme-secondary">{module.description}</div>
                   )}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-theme-secondary mt-1">
+                    {(module.node_platform_id || module.node_platform_name) && (
+                      <span>
+                        Platform:{' '}
+                        {module.node_platform_id ? (
+                          <EntityLink
+                            type="node_platform"
+                            id={module.node_platform_id}
+                            label={module.node_platform_name || module.node_platform_id}
+                          />
+                        ) : (
+                          module.node_platform_name
+                        )}
+                      </span>
+                    )}
+                    {module.category_name && (
+                      <span>Category: {module.category_name}</span>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-4">
@@ -306,6 +361,16 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
                 >
                   {module.enabled ? 'Enabled' : 'Disabled'}
                 </Badge>
+                {canEdit && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRemoveModule(module.id, module.name)}
+                    aria-label={`Remove ${module.name} from template`}
+                  >
+                    <Trash2 className="w-4 h-4 text-theme-danger" />
+                  </Button>
+                )}
               </div>
             </div>
           ))}

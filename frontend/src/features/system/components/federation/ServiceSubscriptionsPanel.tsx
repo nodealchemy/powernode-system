@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, Network as NetworkIcon, Server, Clock } from 'lucide-react';
+import {
+  Globe2,
+  Network as NetworkIcon,
+  Server,
+  Clock,
+  ChevronRight,
+  ChevronDown,
+} from 'lucide-react';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { EntityLink } from '@/shared/components/entity';
 import { serviceCatalogApi } from '../../services/api/serviceCatalogApi';
 import type {
   ServiceSubscription,
@@ -36,6 +44,49 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<SubscriptionStatus | null>(initialStatusFilter);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Full-detail cache, keyed by subscription id. The list endpoint returns a
+  // summary shape; the show endpoint (getSubscription) adds backend_vip,
+  // federation_grant_id, acme_certificate_id, and the *_at timestamps. We fetch
+  // lazily on first expand and reuse the cached row thereafter.
+  const [detailById, setDetailById] = useState<Record<string, ServiceSubscription>>({});
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+
+  const fetchDetail = useCallback(
+    async (sub: ServiceSubscription) => {
+      if (detailById[sub.id]) return; // already loaded
+      setDetailLoadingId(sub.id);
+      try {
+        const full = await serviceCatalogApi.getSubscription(sub.id);
+        setDetailById((prev) => ({ ...prev, [sub.id]: full }));
+      } catch (err: unknown) {
+        addNotification({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to load subscription detail',
+        });
+      } finally {
+        setDetailLoadingId(null);
+      }
+    },
+    [detailById, addNotification],
+  );
+
+  const toggleExpanded = useCallback(
+    (sub: ServiceSubscription) => {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(sub.id)) {
+          next.delete(sub.id);
+        } else {
+          next.add(sub.id);
+          void fetchDetail(sub);
+        }
+        return next;
+      });
+    },
+    [fetchDetail],
+  );
 
   const fetchSubs = useCallback(async () => {
     setLoading(true);
@@ -109,6 +160,7 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
         <table className="w-full text-sm">
           <thead className="bg-theme-background-secondary text-xs text-theme-secondary uppercase">
             <tr>
+              <th className="w-8 px-2 py-2"></th>
               <th className="text-left px-4 py-2 font-medium">Service / Host</th>
               <th className="text-left px-4 py-2 font-medium">Peer</th>
               <th className="text-left px-4 py-2 font-medium">Protocol</th>
@@ -122,9 +174,13 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
               <SubscriptionRow
                 key={sub.id}
                 subscription={sub}
+                detail={detailById[sub.id]}
                 onSelect={onSelect}
                 onCancel={() => handleCancel(sub)}
                 isCancelling={cancellingId === sub.id}
+                expanded={expandedIds.has(sub.id)}
+                onToggleExpand={() => toggleExpanded(sub)}
+                detailLoading={detailLoadingId === sub.id}
               />
             ))}
           </tbody>
@@ -136,33 +192,60 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
 
 interface SubscriptionRowProps {
   subscription: ServiceSubscription;
+  // Full-detail row from the show endpoint; undefined until lazily fetched on expand.
+  detail?: ServiceSubscription;
   onSelect?: (sub: ServiceSubscription) => void;
   onCancel: () => void;
   isCancelling: boolean;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  detailLoading: boolean;
 }
 
 const SubscriptionRow: React.FC<SubscriptionRowProps> = ({
   subscription,
+  detail,
   onSelect,
   onCancel,
   isCancelling,
+  expanded,
+  onToggleExpand,
+  detailLoading,
 }) => {
   const isTerminal = subscription.status === 'cancelled';
   const protoIcon = protocolIcon(subscription.protocol);
+  // Prefer the fully-hydrated row (extra fields) once it has loaded.
+  const view = detail ?? subscription;
 
   return (
+    <>
     <tr
       className={`border-t border-theme ${onSelect ? 'cursor-pointer hover:bg-theme-surface-hover' : ''}`}
       onClick={() => onSelect?.(subscription)}
     >
+      <td className="px-2 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="p-1 text-theme-secondary hover:text-theme-primary"
+          title={expanded ? 'Collapse details' : 'Expand details'}
+        >
+          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+      </td>
       <td className="px-4 py-3">
         <div className="font-medium text-theme-primary">{subscription.service_offering_slug}</div>
         <div className="text-xs text-theme-secondary font-mono">
           {subscription.site_local ? '(site-local)' : ''} {subscription.local_hostname}
         </div>
       </td>
-      <td className="px-4 py-3 text-theme-secondary text-xs font-mono">
-        {subscription.federation_peer_id.slice(0, 8)}…
+      <td className="px-4 py-3 text-theme-secondary text-xs font-mono" onClick={(e) => e.stopPropagation()}>
+        <EntityLink
+          type="platform_peer"
+          id={subscription.federation_peer_id}
+          label={`${subscription.federation_peer_id.slice(0, 8)}…`}
+          className="font-mono text-xs"
+        />
       </td>
       <td className="px-4 py-3 text-theme-secondary">
         <div className="inline-flex items-center gap-1.5">
@@ -197,6 +280,91 @@ const SubscriptionRow: React.FC<SubscriptionRowProps> = ({
         )}
       </td>
     </tr>
+    {expanded && (
+      <tr className="bg-theme-background border-b border-theme">
+        <td></td>
+        <td colSpan={6} className="px-4 py-3">
+          {detailLoading && !detail ? (
+            <p className="text-sm text-theme-secondary">Loading detail…</p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Local Hostname</label>
+                <p className="text-theme-primary font-mono text-xs break-all">{view.local_hostname}</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Backend Port</label>
+                <p className="text-theme-primary">{view.backend_port}</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Site Local</label>
+                <p className="text-theme-primary">{view.site_local ? 'Yes' : 'No'}</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Peer</label>
+                <EntityLink
+                  type="platform_peer"
+                  id={view.federation_peer_id}
+                  label={view.federation_peer_id}
+                  className="font-mono text-xs break-all"
+                />
+              </div>
+              {view.backend_vip && (
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Backend VIP</label>
+                  <p className="text-theme-primary font-mono text-xs break-all">{view.backend_vip}</p>
+                </div>
+              )}
+              {view.federation_grant_id && (
+                <div>
+                  {/* federation_grant is not a registered EntityLink type → render as text. */}
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Federation Grant</label>
+                  <p className="text-theme-primary font-mono text-xs break-all">{view.federation_grant_id}</p>
+                </div>
+              )}
+              {view.acme_certificate_id && (
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">ACME Certificate</label>
+                  <EntityLink
+                    type="acme_certificate"
+                    id={view.acme_certificate_id}
+                    label={view.acme_certificate_id}
+                    className="font-mono text-xs break-all"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Subscribed</label>
+                <p className="text-theme-primary text-xs">{new Date(view.subscribed_at).toLocaleString()}</p>
+              </div>
+              {view.activated_at && (
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Activated</label>
+                  <p className="text-theme-primary text-xs">{new Date(view.activated_at).toLocaleString()}</p>
+                </div>
+              )}
+              {view.suspended_at && (
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Suspended</label>
+                  <p className="text-theme-primary text-xs">{new Date(view.suspended_at).toLocaleString()}</p>
+                </div>
+              )}
+              {view.cancelled_at && (
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Cancelled</label>
+                  <p className="text-theme-primary text-xs">{new Date(view.cancelled_at).toLocaleString()}</p>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Subscription ID</label>
+                <p className="text-theme-primary font-mono text-xs break-all">{view.id}</p>
+              </div>
+            </div>
+          )}
+        </td>
+      </tr>
+    )}
+    </>
   );
 };
 

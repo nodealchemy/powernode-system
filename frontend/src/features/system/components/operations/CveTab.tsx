@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
+import { ShieldAlert, ChevronRight, ChevronDown } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { cveApi } from '@system/features/system/services/api/cveApi';
 import type {
@@ -58,6 +59,16 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
   const [exposures, setExposures] = useState<SystemCveExposure[]>([]);
   const [loading, setLoading] = useState(true);
   const [severityFilter, setSeverityFilter] = useState<string>('');
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -140,9 +151,19 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
             </p>
           ) : (
             <ul className="divide-y divide-theme">
-              {exposures.map((e) => (
+              {exposures.map((e) => {
+                const expanded = expandedIds.has(e.id);
+                return (
                 <li key={e.id} className="px-3 py-2.5">
                   <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(e.id)}
+                      className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 text-sm flex-wrap">
                         {e.cve && (
@@ -162,21 +183,31 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
                           {e.cve.summary}
                         </div>
                       )}
-                      <div className="mt-1 text-xs text-theme-tertiary">
+                      <div className="mt-1 text-xs text-theme-tertiary flex items-center flex-wrap gap-x-1">
                         <code className="text-xs">
                           {e.package_name}
                           {e.package_version ? `@${e.package_version}` : ''}
                         </code>
                         {e.node_module && (
                           <>
-                            <span className="mx-1">·</span>
-                            <span>{e.node_module.name}</span>
+                            <span>·</span>
+                            <EntityLink
+                              type="node_module"
+                              id={e.node_module.id}
+                              label={e.node_module.name}
+                              className="text-xs"
+                            />
                           </>
                         )}
                         {e.node_module_version && (
                           <>
-                            <span className="mx-1">·</span>
-                            <span>v{e.node_module_version.version_number}</span>
+                            <span>·</span>
+                            <EntityLink
+                              type="node_module"
+                              id={e.node_module?.id}
+                              label={`v${e.node_module_version.version_number}`}
+                              className="text-xs"
+                            />
                           </>
                         )}
                       </div>
@@ -188,6 +219,71 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
                           <> · Resolved {new Date(e.resolved_at).toLocaleString()}</>
                         )}
                       </div>
+
+                      {expanded && (
+                        <div className="mt-2 pt-2 border-t border-theme grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Remediation state</label>
+                            <p className="text-theme-primary">{STATE_LABELS[e.state] ?? e.state}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Package</label>
+                            <p className="text-theme-primary font-mono text-xs break-all">
+                              {e.package_name}{e.package_version ? `@${e.package_version}` : ''}
+                            </p>
+                          </div>
+                          {e.cve?.severity && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Severity</label>
+                              <p className="text-theme-primary capitalize">{e.cve.severity}</p>
+                            </div>
+                          )}
+                          {e.node_module && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Module</label>
+                              <EntityLink type="node_module" id={e.node_module.id} label={e.node_module.name} className="text-xs" />
+                            </div>
+                          )}
+                          {e.node_module_version && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Module version</label>
+                              <EntityLink type="node_module" id={e.node_module?.id} label={`v${e.node_module_version.version_number}`} className="text-xs" />
+                            </div>
+                          )}
+                          {e.node_module_version?.promotion_state && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Promotion state</label>
+                              <p className="text-theme-primary">{e.node_module_version.promotion_state}</p>
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Detected</label>
+                            <p className="text-theme-primary text-xs">{e.detected_at ? new Date(e.detected_at).toLocaleString() : '—'}</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resolved</label>
+                            <p className="text-theme-primary text-xs">{e.resolved_at ? new Date(e.resolved_at).toLocaleString() : '—'}</p>
+                          </div>
+                          {e.cve?.published_at && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">CVE published</label>
+                              <p className="text-theme-primary text-xs">{new Date(e.cve.published_at).toLocaleString()}</p>
+                            </div>
+                          )}
+                          {e.cve?.feed_source && (
+                            <div>
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Feed source</label>
+                              <p className="text-theme-primary text-xs">{e.cve.feed_source}</p>
+                            </div>
+                          )}
+                          {e.resolution_note && (
+                            <div className="col-span-full">
+                              <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resolution note</label>
+                              <p className="text-theme-primary">{e.resolution_note}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {e.cve?.reference_url && (
                       <a
@@ -201,7 +297,8 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
                     )}
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

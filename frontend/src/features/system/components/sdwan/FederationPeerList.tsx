@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Globe2, Trash2, Ban } from 'lucide-react';
+import { Globe2, Trash2, Ban, ChevronRight, ChevronDown, ShieldCheck, ShieldX } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -27,6 +27,20 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
 
   const [localKey, setLocalKey] = useState(0);
   const triggerLocal = useCallback(() => setLocalKey((k) => k + 1), []);
+
+  // Expansion state — Set<id> so multiple peer rows can stay open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -63,6 +77,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
+            <th className="w-8 p-3"></th>
             <th className="text-left p-3">Remote instance</th>
             <th className="text-left p-3">Prefix</th>
             <th className="text-left p-3">Status</th>
@@ -71,9 +86,24 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
           </tr>
         </thead>
         <tbody>
-          {peers.map((p) => (
-            <tr key={p.id} className="border-b border-theme">
+          {peers.map((p) => {
+            const expanded = expandedIds.has(p.id);
+            return (
+            <React.Fragment key={p.id}>
+            <tr className="border-b border-theme">
+              <td className="p-3 align-top">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(p.id)}
+                  className="p-1 text-theme-secondary hover:text-theme-primary"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                </button>
+              </td>
               <td className="p-3">
+                {/* remote_instance_id references a remote Powernode instance,
+                    which has no registered local detail surface — plain text. */}
                 <div className="font-mono text-xs text-theme-primary">{p.remote_instance_url}</div>
                 {p.remote_instance_id && (
                   <div className="text-xs text-theme-secondary font-mono">
@@ -108,7 +138,76 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
                 )}
               </td>
             </tr>
-          ))}
+            {expanded && (
+              <tr className="bg-theme-background border-b border-theme">
+                <td></td>
+                <td colSpan={5} className="p-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                    <div className="col-span-full">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Remote instance URL</label>
+                      <p className="text-theme-primary font-mono text-xs break-all">{p.remote_instance_url}</p>
+                    </div>
+                    {p.remote_instance_id && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Remote instance ID</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.remote_instance_id}</p>
+                      </div>
+                    )}
+                    {p.remote_account_id && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Remote account ID</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.remote_account_id}</p>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Prefix advertisement</label>
+                      <p className="text-theme-primary font-mono text-xs break-all">{p.remote_prefix_advertisement ?? '—'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                      <p className="text-theme-primary">{p.status}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Trust JWT</label>
+                      <p className="text-theme-primary inline-flex items-center gap-1">
+                        {p.has_trust_jwt ? (
+                          <><ShieldCheck size={14} className="text-theme-success" /> present</>
+                        ) : (
+                          <><ShieldX size={14} className="text-theme-secondary" /> none</>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Signed at</label>
+                      <p className="text-theme-primary text-xs">{p.signed_at ? new Date(p.signed_at).toLocaleString() : '—'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Expires at</label>
+                      <p className="text-theme-primary text-xs">{p.expires_at ? new Date(p.expires_at).toLocaleString() : '—'}</p>
+                    </div>
+                    {p.created_at && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                        <p className="text-theme-primary text-xs">{new Date(p.created_at).toLocaleString()}</p>
+                      </div>
+                    )}
+                    {p.v1_allowed_transitions && p.v1_allowed_transitions.length > 0 && (
+                      <div className="col-span-full">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Allowed transitions</label>
+                        <div className="flex flex-wrap gap-1">
+                          {p.v1_allowed_transitions.map((t) => (
+                            <span key={t} className="font-mono text-xs px-1.5 py-0.5 rounded bg-theme-background-secondary text-theme-secondary">{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )}
+            </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
 

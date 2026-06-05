@@ -18,6 +18,15 @@ export interface TemplateCreate {
   config?: Record<string, unknown>;
 }
 
+// TemplateModule join row returned by `assignModuleToTemplate`.
+export interface TemplateModuleAssignment {
+  id: string;
+  node_template_id: string;
+  node_module_id: string;
+  enabled: boolean;
+  priority: number;
+}
+
 // Backend `index` response wraps the collection in `node_templates`, but the
 // platform-facing key in the result is `templates` for caller convenience.
 // Inline the rename so callers stay terse.
@@ -88,6 +97,31 @@ export const templatesApi = {
       `/system/node_templates/${templateId}/modules`
     );
     return { modules: extractData(response).node_modules ?? [] };
+  },
+
+  // Attach a module to a template (creates a TemplateModule join row). Posts to
+  // the same /modules path as the GET above (routed by verb server-side).
+  // Reachable via `systemApi.assignModuleToTemplate(...)` through the aggregator
+  // spread — the Visual Template Composer's SaveTemplateModal calls it once per
+  // chosen module.
+  assignModuleToTemplate: async (
+    templateId: string,
+    moduleId: string
+  ): Promise<TemplateModuleAssignment> => {
+    const response = await apiClient.post<ApiEnvelope<{ template_module: TemplateModuleAssignment }>>(
+      `/system/node_templates/${templateId}/modules`,
+      { node_module_id: moduleId }
+    );
+    return extractData(response).template_module;
+  },
+
+  // Detach a module from a template (destroys its TemplateModule join row).
+  // The member id in the path is the NODE_MODULE id — symmetric with
+  // `assignModuleToTemplate`, which keys off the module id. Reachable via
+  // `systemApi.unassignModuleFromTemplate(...)` through the aggregator spread;
+  // the TemplateDetailModal's Modules tab calls it per-module to remove.
+  unassignModuleFromTemplate: async (templateId: string, moduleId: string): Promise<void> => {
+    await apiClient.delete(`/system/node_templates/${templateId}/modules/${moduleId}`);
   },
 
   // Visual Template Composer (M-FE-1) — preview a composition without persisting.

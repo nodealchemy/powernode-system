@@ -14,7 +14,9 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { resolveOperableType } from '@system/features/system/entityRegistry';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import type { SystemTask } from '@system/features/system/types/system.types';
@@ -179,7 +181,22 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
             </div>
             <div>
               <label className="block text-sm text-theme-secondary mb-1">Resource Type</label>
-              <p className="text-theme-primary">{operation.operable_type || '—'}</p>
+              {(() => {
+                if (!operation.operable_type) {
+                  return <p className="text-theme-primary">—</p>;
+                }
+                const t = resolveOperableType(operation.operable_type);
+                if (t && operation.operable_id) {
+                  return (
+                    <EntityLink
+                      type={t}
+                      id={operation.operable_id}
+                      label={operation.operable_type}
+                    />
+                  );
+                }
+                return <p className="text-theme-primary">{operation.operable_type}</p>;
+              })()}
             </div>
           </div>
           <div className="space-y-4">

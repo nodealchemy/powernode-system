@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Activity,
   Search,
@@ -10,11 +10,15 @@ import {
   AlertCircle,
   Pause,
   Play,
-  MoreVertical
+  MoreVertical,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { systemApi } from '@system/features/system/services/systemApi';
+import { resolveOperableType } from '@system/features/system/entityRegistry';
 import { useResourceList } from '@system/features/system/hooks/useResourceList';
 import { useSystemWebSocket } from '@system/features/system/hooks/useSystemWebSocket';
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
@@ -67,6 +71,31 @@ const StatusIcon: React.FC<{ status: string }> = ({ status }) => {
     default:
       return <AlertCircle className="w-4 h-4" />;
   }
+};
+
+/**
+ * Render a task's polymorphic `operable` as a link to the referenced object.
+ * Resolves the backend `operable_type` (e.g. "System::Node" / "node") to a
+ * registered entity type; when both the type and id resolve, an `<EntityLink>`
+ * opens that object's detail surface — otherwise it degrades to the raw type
+ * label as plain text (or "—" when absent).
+ */
+const OperableReference: React.FC<{ operation: SystemTask }> = ({ operation }) => {
+  if (!operation.operable_type) {
+    return <span className="text-sm text-theme-tertiary">—</span>;
+  }
+  const t = resolveOperableType(operation.operable_type);
+  if (t && operation.operable_id) {
+    return (
+      <EntityLink
+        type={t}
+        id={operation.operable_id}
+        label={operation.operable_type}
+        className="text-sm"
+      />
+    );
+  }
+  return <span className="text-sm text-theme-secondary">{operation.operable_type}</span>;
 };
 
 /**
@@ -139,6 +168,16 @@ export const OperationList: React.FC<OperationListProps> = ({
     return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
   };
 
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
   return (
     <ResponsiveListContainer
       loading={loading}
@@ -191,6 +230,7 @@ export const OperationList: React.FC<OperationListProps> = ({
         <table className="w-full">
           <thead>
             <tr className="bg-theme-background border-b border-theme">
+              <th className="w-8 py-3 px-2"></th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Operation</th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Resource</th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Status</th>
@@ -200,8 +240,21 @@ export const OperationList: React.FC<OperationListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-theme">
-            {filteredOperations.map((operation) => (
-              <tr key={operation.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
+            {filteredOperations.map((operation) => {
+              const expanded = expandedIds.has(operation.id);
+              return (
+              <React.Fragment key={operation.id}>
+              <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                <td className="py-3 px-2 align-middle">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(operation.id)}
+                    className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                </td>
                 <td className="py-3 px-4">
                   <div>
                     <div className="flex items-center gap-2">
@@ -222,9 +275,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                 </td>
 
                 <td className="py-3 px-4">
-                  <span className="text-sm text-theme-secondary">
-                    {operation.operable_type || '—'}
-                  </span>
+                  <OperableReference operation={operation} />
                 </td>
 
                 <td className="py-3 px-4">
@@ -266,28 +317,103 @@ export const OperationList: React.FC<OperationListProps> = ({
                   </div>
                 </td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="bg-theme-background border-b border-theme">
+                  <td></td>
+                  <td colSpan={6} className="py-3 px-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      {operation.description && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                          <p className="text-theme-primary">{operation.description}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                        <p className="text-theme-primary">{statusLabels[operation.status] || operation.status}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Progress</label>
+                        <p className="text-theme-primary">{operation.progress || 0}%</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Duration</label>
+                        <p className="text-theme-primary">{formatDuration(operation)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resource</label>
+                        <OperableReference operation={operation} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Exclusive</label>
+                        <p className="text-theme-primary">{operation.exclusive ? 'Yes' : 'No'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Initiated By</label>
+                        <p className="text-theme-primary">{operation.initiated_by_name || 'System'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Scheduled</label>
+                        <p className="text-theme-primary text-xs">{formatDateTime(operation.scheduled_at)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Started</label>
+                        <p className="text-theme-primary text-xs">{formatDateTime(operation.started_at)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Completed</label>
+                        <p className="text-theme-primary text-xs">{formatDateTime(operation.completed_at)}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Operation ID</label>
+                        <p className="text-theme-primary font-mono text-xs truncate" title={operation.id}>{operation.id}</p>
+                      </div>
+                      {operation.error_message && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Error</label>
+                          <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{operation.error_message}</pre>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </ResponsiveListContainer.Desktop>
 
       <ResponsiveListContainer.Mobile>
-        {filteredOperations.map((operation) => (
+        {filteredOperations.map((operation) => {
+          const expanded = expandedIds.has(operation.id);
+          return (
           <div key={operation.id} className="p-4">
             <div className="flex items-start justify-between mb-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <Activity className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
-                  <span
-                    className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
-                    onClick={() => onView?.(operation)}
-                  >
-                    {operation.command}
-                  </span>
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(operation.id)}
+                  className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Activity className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
+                    <span
+                      className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
+                      onClick={() => onView?.(operation)}
+                    >
+                      {operation.command}
+                    </span>
+                  </div>
+                  {operation.description && (
+                    <p className="text-sm text-theme-secondary truncate">{operation.description}</p>
+                  )}
                 </div>
-                {operation.description && (
-                  <p className="text-sm text-theme-secondary truncate">{operation.description}</p>
-                )}
               </div>
 
               <div className="relative">
@@ -341,8 +467,48 @@ export const OperationList: React.FC<OperationListProps> = ({
                 </p>
               </div>
             )}
+
+            {expanded && (
+              <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resource</label>
+                  <OperableReference operation={operation} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Duration</label>
+                  <p className="text-theme-primary">{formatDuration(operation)}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Initiated By</label>
+                  <p className="text-theme-primary">{operation.initiated_by_name || 'System'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Exclusive</label>
+                  <p className="text-theme-primary">{operation.exclusive ? 'Yes' : 'No'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Started</label>
+                  <p className="text-theme-primary text-xs">{formatDateTime(operation.started_at)}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Completed</label>
+                  <p className="text-theme-primary text-xs">{formatDateTime(operation.completed_at)}</p>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Operation ID</label>
+                  <p className="text-theme-primary font-mono text-xs truncate" title={operation.id}>{operation.id}</p>
+                </div>
+                {operation.error_message && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Error</label>
+                    <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{operation.error_message}</pre>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
       </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );

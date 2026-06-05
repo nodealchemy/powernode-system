@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Cpu,
   Search,
@@ -7,7 +8,9 @@ import {
   Trash2,
   MoreVertical,
   Filter,
-  Lock
+  Lock,
+  ChevronRight,
+  ChevronDown
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
@@ -62,8 +65,19 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
   className = ''
 }) => {
   const { hasPermission } = usePermissions();
+  const navigate = useNavigate();
 
   const canManage = hasPermission('system.architectures.manage');
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const {
     items: architectures,
@@ -178,6 +192,7 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
         <table className="w-full">
           <thead>
             <tr className="bg-theme-background border-b border-theme">
+              <th className="w-8 py-3 px-2"></th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Architecture</th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Family</th>
               <th className="text-left py-3 px-4 font-medium text-theme-primary">Description</th>
@@ -187,8 +202,21 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-theme">
-            {filteredArchitectures.map((architecture) => (
-              <tr key={architecture.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
+            {filteredArchitectures.map((architecture) => {
+              const expanded = expandedIds.has(architecture.id);
+              return (
+              <React.Fragment key={architecture.id}>
+              <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                <td className="py-3 px-2 align-top">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(architecture.id)}
+                    className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                    title={expanded ? 'Collapse details' : 'Expand details'}
+                  >
+                    {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                </td>
                 <td className="py-3 px-4">
                   <div className="flex items-start gap-2">
                     <Cpu className="w-4 h-4 text-theme-tertiary flex-shrink-0 mt-1" />
@@ -236,7 +264,20 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
 
                 <td className="py-3 px-4">
                   <div className="text-xs text-theme-secondary leading-tight">
-                    <div><span className="font-medium text-theme-primary">{platformsCountOf(architecture)}</span> platforms</div>
+                    <div>
+                      {platformsCountOf(architecture) > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/app/system/catalog/platforms?architecture=${architecture.id}`)}
+                          className="font-medium text-theme-link hover:underline cursor-pointer"
+                          title="View platforms on this architecture"
+                        >
+                          {platformsCountOf(architecture)}
+                        </button>
+                      ) : (
+                        <span className="font-medium text-theme-primary">0</span>
+                      )}{' '}platforms
+                    </div>
                     <div><span className="font-medium text-theme-primary">{architecture.usage?.package_repositories ?? 0}</span> repos</div>
                     <div><span className="font-medium text-theme-primary">{architecture.usage?.packages ?? 0}</span> packages</div>
                   </div>
@@ -268,34 +309,144 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
                   </div>
                 </td>
               </tr>
-            ))}
+              {expanded && (
+                <tr className="bg-theme-background border-b border-theme">
+                  <td></td>
+                  <td colSpan={5} className="py-3 px-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                      {architecture.description && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                          <p className="text-theme-primary">{architecture.description}</p>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Family</label>
+                        <p className="text-theme-primary">{architecture.family}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Origin</label>
+                        <p className="text-theme-primary">{architecture.is_canonical ? 'canonical' : 'operator'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                        <p className="text-theme-primary">{architecture.enabled ? 'Enabled' : 'Disabled'}</p>
+                      </div>
+                      {architecture.display_name && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Display name</label>
+                          <p className="text-theme-primary">{architecture.display_name}</p>
+                        </div>
+                      )}
+                      {(architecture.apt_name || architecture.rpm_name) && (
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Package names</label>
+                          <p className="text-theme-primary font-mono text-xs">
+                            {architecture.apt_name && <>apt: {architecture.apt_name}</>}
+                            {architecture.apt_name && architecture.rpm_name && ' · '}
+                            {architecture.rpm_name && <>rpm: {architecture.rpm_name}</>}
+                          </p>
+                        </div>
+                      )}
+                      {architecture.kernel_options && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Kernel options</label>
+                          <p className="text-theme-primary font-mono text-xs break-all">{architecture.kernel_options}</p>
+                        </div>
+                      )}
+                      {architecture.aliases && architecture.aliases.length > 0 && (
+                        <div className="col-span-full">
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Aliases</label>
+                          <div className="flex flex-wrap gap-1">
+                            {architecture.aliases.map((alias) => (
+                              <Badge key={alias} variant="secondary" size="xs">{alias}</Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="col-span-full">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Usage</label>
+                        <div className="flex flex-wrap gap-4 text-xs text-theme-secondary">
+                          <span>
+                            {platformsCountOf(architecture) > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/app/system/catalog/platforms?architecture=${architecture.id}`)}
+                                className="font-medium text-theme-link hover:underline cursor-pointer"
+                                title="View platforms on this architecture"
+                              >
+                                {platformsCountOf(architecture)}
+                              </button>
+                            ) : (
+                              <span className="font-medium text-theme-primary">0</span>
+                            )}{' '}platforms
+                          </span>
+                          <span><span className="font-medium text-theme-primary">{architecture.usage?.package_repositories ?? 0}</span> repos</span>
+                          <span><span className="font-medium text-theme-primary">{architecture.usage?.packages ?? 0}</span> packages</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Visibility</label>
+                        <p className="text-theme-primary">{architecture.public ? 'Public' : 'Private'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Architecture ID</label>
+                        <p className="text-theme-primary font-mono text-xs truncate" title={architecture.id}>{architecture.id}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                        <p className="text-theme-primary text-xs">{new Date(architecture.created_at).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                        <p className="text-theme-primary text-xs">{new Date(architecture.updated_at).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </ResponsiveListContainer.Desktop>
 
       <ResponsiveListContainer.Mobile>
-        {filteredArchitectures.map((architecture) => (
+        {filteredArchitectures.map((architecture) => {
+          const expanded = expandedIds.has(architecture.id);
+          return (
           <div key={architecture.id} className="p-4">
             <div className="flex items-start justify-between mb-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <Cpu className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
-                  <span
-                    className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
-                    onClick={() => onView?.(architecture)}
-                  >
-                    {architecture.name}
-                  </span>
-                  <Badge variant={architecture.is_canonical ? 'info' : 'secondary'} size="xs">
-                    {architecture.is_canonical ? 'canonical' : 'operator'}
-                  </Badge>
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(architecture.id)}
+                  className="p-1 -ml-1 mt-0.5 text-theme-secondary hover:text-theme-primary rounded transition-colors flex-shrink-0"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Cpu className="w-4 h-4 text-theme-tertiary flex-shrink-0" />
+                    <span
+                      className="font-medium text-theme-primary hover:text-theme-link cursor-pointer truncate"
+                      onClick={() => onView?.(architecture)}
+                    >
+                      {architecture.name}
+                    </span>
+                    <Badge variant={architecture.is_canonical ? 'info' : 'secondary'} size="xs">
+                      {architecture.is_canonical ? 'canonical' : 'operator'}
+                    </Badge>
+                  </div>
+                  {architecture.display_name && (
+                    <p className="text-sm text-theme-secondary truncate">{architecture.display_name}</p>
+                  )}
+                  {architecture.description && (
+                    <p className="text-xs text-theme-tertiary line-clamp-2 mt-1">{architecture.description}</p>
+                  )}
                 </div>
-                {architecture.display_name && (
-                  <p className="text-sm text-theme-secondary truncate">{architecture.display_name}</p>
-                )}
-                {architecture.description && (
-                  <p className="text-xs text-theme-tertiary line-clamp-2 mt-1">{architecture.description}</p>
-                )}
               </div>
 
               <div className="relative">
@@ -350,7 +501,18 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
                 <div className="text-theme-tertiary">family</div>
               </div>
               <div>
-                <div className="text-sm font-medium text-theme-primary">{platformsCountOf(architecture)}</div>
+                {platformsCountOf(architecture) > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/app/system/catalog/platforms?architecture=${architecture.id}`)}
+                    className="text-sm font-medium text-theme-link hover:underline cursor-pointer"
+                    title="View platforms on this architecture"
+                  >
+                    {platformsCountOf(architecture)}
+                  </button>
+                ) : (
+                  <div className="text-sm font-medium text-theme-primary">0</div>
+                )}
                 <div className="text-theme-tertiary">platforms</div>
               </div>
               <div>
@@ -363,8 +525,66 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
                 </Badge>
               </div>
             </div>
+
+            {expanded && (
+              <div className="mt-3 pt-3 border-t border-theme grid grid-cols-2 gap-3 text-sm">
+                {architecture.description && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                    <p className="text-theme-primary">{architecture.description}</p>
+                  </div>
+                )}
+                {(architecture.apt_name || architecture.rpm_name) && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Package names</label>
+                    <p className="text-theme-primary font-mono text-xs">
+                      {architecture.apt_name && <>apt: {architecture.apt_name}</>}
+                      {architecture.apt_name && architecture.rpm_name && ' · '}
+                      {architecture.rpm_name && <>rpm: {architecture.rpm_name}</>}
+                    </p>
+                  </div>
+                )}
+                {architecture.kernel_options && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Kernel options</label>
+                    <p className="text-theme-primary font-mono text-xs break-all">{architecture.kernel_options}</p>
+                  </div>
+                )}
+                {architecture.aliases && architecture.aliases.length > 0 && (
+                  <div className="col-span-2">
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Aliases</label>
+                    <div className="flex flex-wrap gap-1">
+                      {architecture.aliases.map((alias) => (
+                        <Badge key={alias} variant="secondary" size="xs">{alias}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Packages</label>
+                  <p className="text-theme-primary">{architecture.usage?.packages ?? 0}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Visibility</label>
+                  <p className="text-theme-primary">{architecture.public ? 'Public' : 'Private'}</p>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Architecture ID</label>
+                  <p className="text-theme-primary font-mono text-xs truncate" title={architecture.id}>{architecture.id}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                  <p className="text-theme-primary text-xs">{new Date(architecture.created_at).toLocaleString()}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                  <p className="text-theme-primary text-xs">{new Date(architecture.updated_at).toLocaleString()}</p>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
+          );
+          })}
       </ResponsiveListContainer.Mobile>
     </ResponsiveListContainer>
   );

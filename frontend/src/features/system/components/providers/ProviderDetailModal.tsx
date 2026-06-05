@@ -17,6 +17,7 @@ import {
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
+import { EntityLink } from '@/shared/components/entity';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { systemApi } from '@system/features/system/services/systemApi';
@@ -339,6 +340,17 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                   {region.region_code && (
                     <p className="text-sm text-theme-secondary">{region.region_code}</p>
                   )}
+                  {region.provider_id && (
+                    <p className="text-xs text-theme-secondary mt-1">
+                      Provider:{' '}
+                      <EntityLink
+                        type="provider"
+                        id={region.provider_id}
+                        label={region.provider_name || region.provider_id}
+                        className="text-xs"
+                      />
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-theme-secondary">
@@ -415,6 +427,17 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                   {connection.endpoint_url && (
                     <p className="text-xs text-theme-tertiary font-mono mt-1">
                       {connection.endpoint_url}
+                    </p>
+                  )}
+                  {connection.provider_id && (
+                    <p className="text-xs text-theme-secondary mt-1">
+                      Provider:{' '}
+                      <EntityLink
+                        type="provider"
+                        id={connection.provider_id}
+                        label={connection.provider_name || connection.provider_id}
+                        className="text-xs"
+                      />
                     </p>
                   )}
                 </div>

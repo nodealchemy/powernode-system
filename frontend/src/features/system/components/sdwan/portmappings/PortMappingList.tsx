@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { ArrowRightLeft, Pencil, Trash2, Power, PowerOff } from 'lucide-react';
+import { ArrowRightLeft, Pencil, Trash2, Power, PowerOff, ChevronRight, ChevronDown } from 'lucide-react';
+import { EntityLink } from '@/shared/components/entity';
 import { sdwanApi } from '../../../services/api/sdwanApi';
 import type { SdwanPortMapping, SdwanPeer } from '../../../types/sdwan.types';
 
@@ -22,6 +23,15 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
   const [peerById, setPeerById] = useState<Record<string, SdwanPeer>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +85,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
     <table className="w-full text-sm">
       <thead>
         <tr className="text-left text-theme-secondary border-b border-theme">
+          <th className="w-8 px-3 py-2"></th>
           <th className="px-3 py-2">Name</th>
           <th className="px-3 py-2">Hub</th>
           <th className="px-3 py-2">Listen</th>
@@ -85,8 +96,22 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
         </tr>
       </thead>
       <tbody>
-        {mappings.map((m) => (
-          <tr key={m.id} className="border-b border-theme hover:bg-theme-background-secondary/30">
+        {mappings.map((m) => {
+          const expanded = expandedIds.has(m.id);
+          return (
+          <React.Fragment key={m.id}>
+          <tr className="border-b border-theme hover:bg-theme-background-secondary/30">
+            <td className="px-3 py-2 align-middle">
+              <button
+                type="button"
+                onClick={() => toggleExpanded(m.id)}
+                className="p-1 text-theme-secondary hover:text-theme-primary"
+                title={expanded ? 'Collapse details' : 'Expand details'}
+                aria-label={expanded ? `Collapse mapping ${m.name}` : `Expand mapping ${m.name}`}
+              >
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+            </td>
             <td className="px-3 py-2">
               <div className="font-medium text-theme-primary">{m.name}</div>
               {m.description && <div className="text-xs text-theme-secondary">{m.description}</div>}
@@ -103,7 +128,12 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
               {m.target_virtual_ip_id ? (
                 <span>
                   <span className="text-theme-warning">VIP</span>{' '}
-                  <span className="font-mono">{m.target_virtual_ip_id.slice(0, 8)}</span>
+                  <EntityLink
+                    type="sdwan_virtual_ip"
+                    id={`${networkId}:${m.target_virtual_ip_id}`}
+                    label={m.target_virtual_ip_id.slice(0, 8)}
+                    className="font-mono"
+                  />
                 </span>
               ) : (
                 <span className="font-mono">{peerLabel(m.target_peer_id)}</span>
@@ -157,8 +187,92 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
               </div>
             </td>
           </tr>
-        ))}
+          {expanded && (
+            <tr className="bg-theme-background border-b border-theme">
+              <td></td>
+              <td colSpan={7} className="px-3 py-3">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                  {m.description && (
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                      <p className="text-theme-primary">{m.description}</p>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Protocol</label>
+                    <p className="text-theme-primary uppercase">{m.protocol}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Listen Port</label>
+                    <p className="text-theme-primary font-mono text-xs">{m.listen_port}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Enabled</label>
+                    <p className="text-theme-primary">{m.enabled ? 'Yes' : 'No (disabled)'}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Hub Peer</label>
+                    <p className="text-theme-primary font-mono text-xs break-all">{peerDetail(m.hub_peer_id)}</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Target</label>
+                    {m.target_virtual_ip_id ? (
+                      <p className="text-theme-primary text-xs">
+                        VIP{' '}
+                        <EntityLink
+                          type="sdwan_virtual_ip"
+                          id={`${networkId}:${m.target_virtual_ip_id}`}
+                          label={m.target_virtual_ip_id}
+                          className="font-mono break-all"
+                        />
+                      </p>
+                    ) : (
+                      <p className="text-theme-primary font-mono text-xs break-all">{peerDetail(m.target_peer_id)}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Effective Target Port</label>
+                    <p className="text-theme-primary font-mono text-xs">{m.effective_target_port}{m.target_port == null ? ' (defaulted to listen port)' : ''}</p>
+                  </div>
+                  {m.resolved_target_address && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Resolved Target Address</label>
+                      <p className="text-theme-primary font-mono text-xs break-all">{m.resolved_target_address}</p>
+                    </div>
+                  )}
+                  {m.last_compiled_at && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Compiled</label>
+                      <p className="text-theme-primary text-xs">{new Date(m.last_compiled_at).toLocaleString()}</p>
+                    </div>
+                  )}
+                  {m.created_at && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                      <p className="text-theme-primary text-xs">{new Date(m.created_at).toLocaleString()}</p>
+                    </div>
+                  )}
+                  {m.metadata && Object.keys(m.metadata).length > 0 && (
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Metadata</label>
+                      <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-background-secondary rounded p-2">{JSON.stringify(m.metadata, null, 2)}</pre>
+                    </div>
+                  )}
+                </div>
+              </td>
+            </tr>
+          )}
+          </React.Fragment>
+          );
+        })}
       </tbody>
     </table>
   );
+
+  function peerDetail(peerId: string | null | undefined): string {
+    if (!peerId) return '—';
+    const p = peerById[peerId];
+    if (!p) return peerId;
+    return `${peerId} (${p.assigned_address}${p.publicly_reachable ? ', hub' : ''})`;
+  }
 };

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Globe, Server, Trash2, Pencil } from 'lucide-react';
+import { Globe, Server, Trash2, Pencil, ChevronRight, ChevronDown } from 'lucide-react';
 import { sdwanApi } from '../../services/api/sdwanApi';
 import type { SdwanPeer } from '../../types/sdwan.types';
 
@@ -14,6 +14,15 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
   const [peers, setPeers] = useState<SdwanPeer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -48,6 +57,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
       <table className="w-full">
         <thead className="bg-theme-background-secondary text-theme-secondary text-sm">
           <tr>
+            <th className="w-8 p-3"></th>
             <th className="text-left p-3">Role</th>
             <th className="text-left p-3">Address</th>
             <th className="text-left p-3">Endpoint</th>
@@ -57,8 +67,22 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
           </tr>
         </thead>
         <tbody>
-          {peers.map((p) => (
-            <tr key={p.id} className="border-b border-theme">
+          {peers.map((p) => {
+            const expanded = expandedIds.has(p.id);
+            return (
+            <React.Fragment key={p.id}>
+            <tr className="border-b border-theme">
+              <td className="p-3 align-middle">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(p.id)}
+                  className="p-1 text-theme-secondary hover:text-theme-primary"
+                  title={expanded ? 'Collapse details' : 'Expand details'}
+                  aria-label={expanded ? `Collapse peer ${p.assigned_address}` : `Expand peer ${p.assigned_address}`}
+                >
+                  {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                </button>
+              </td>
               <td className="p-3">
                 <div className="flex items-center gap-2">
                   {p.publicly_reachable ? (
@@ -107,7 +131,106 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                 )}
               </td>
             </tr>
-          ))}
+            {expanded && (
+              <tr className="bg-theme-background border-b border-theme">
+                <td></td>
+                <td colSpan={6} className="p-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Role</label>
+                      <p className="text-theme-primary">{p.publicly_reachable ? 'Hub (publicly reachable)' : 'Spoke (outbound only)'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Overlay Address</label>
+                      <p className="text-theme-primary font-mono text-xs">{p.assigned_address}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                      <p className="text-theme-primary">{p.status}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last Handshake</label>
+                      <p className="text-theme-primary text-xs">{p.last_handshake_at ? new Date(p.last_handshake_at).toLocaleString() : 'never'}</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Listen Port</label>
+                      <p className="text-theme-primary font-mono text-xs">{p.listen_port}</p>
+                    </div>
+                    {p.effective_endpoint && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Effective Endpoint</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">
+                          {p.effective_endpoint}
+                          {p.effective_endpoint_family ? ` (${p.effective_endpoint_family})` : ''}
+                        </p>
+                      </div>
+                    )}
+                    {p.fallback_endpoint && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Fallback Endpoint</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.fallback_endpoint}</p>
+                      </div>
+                    )}
+                    {(p.endpoint_host_v6 || p.endpoint_host_v4) && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Endpoint Hosts</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">
+                          {p.endpoint_host_v6 ? `v6 ${p.endpoint_host_v6}` : ''}
+                          {p.endpoint_host_v6 && p.endpoint_host_v4 ? ' · ' : ''}
+                          {p.endpoint_host_v4 ? `v4 ${p.endpoint_host_v4}` : ''}
+                          {p.endpoint_port ? `:${p.endpoint_port}` : ''}
+                        </p>
+                      </div>
+                    )}
+                    {p.public_key && (
+                      <div className="col-span-2 md:col-span-3">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Public Key</label>
+                        <p className="text-theme-primary font-mono text-xs break-all">{p.public_key}</p>
+                      </div>
+                    )}
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">LAN Subnets</label>
+                      <p className="text-theme-primary font-mono text-xs break-all">
+                        {p.lan_subnets && p.lan_subnets.length > 0 ? p.lan_subnets.join(', ') : 'none advertised'}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">BGP Route Reflector Client</label>
+                      <p className="text-theme-primary">{p.bgp_route_reflector_client ? 'Yes' : 'No'}</p>
+                    </div>
+                    {p.bgp_router_id_override && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">BGP Router ID Override</label>
+                        <p className="text-theme-primary font-mono text-xs">{p.bgp_router_id_override}</p>
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Advertised Prefixes</label>
+                      <p className="text-theme-primary">{p.advertised_prefix_count ?? 0}</p>
+                    </div>
+                    <div className="col-span-2 md:col-span-3">
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Node Instance ID</label>
+                      <p className="text-theme-primary font-mono text-xs break-all" title={p.node_instance_id}>{p.node_instance_id}</p>
+                    </div>
+                    {p.capabilities && Object.keys(p.capabilities).length > 0 && (
+                      <div className="col-span-2 md:col-span-3">
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Capabilities</label>
+                        <pre className="text-theme-primary font-mono text-xs whitespace-pre-wrap break-all bg-theme-background-secondary rounded p-2">{JSON.stringify(p.capabilities, null, 2)}</pre>
+                      </div>
+                    )}
+                    {p.created_at && (
+                      <div>
+                        <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Attached</label>
+                        <p className="text-theme-primary text-xs">{new Date(p.created_at).toLocaleString()}</p>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )}
+            </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>

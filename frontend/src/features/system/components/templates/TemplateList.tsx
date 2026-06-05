@@ -1,4 +1,5 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   FileText,
   Search,
@@ -10,11 +11,16 @@ import {
   MoreVertical,
   Filter,
   Copy,
-  Download
+  Download,
+  ChevronRight,
+  ChevronDown,
+  X
 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/Badge';
 import { Button } from '@/shared/components/ui/Button';
+import { EntityLink } from '@/shared/components/entity';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useQueryParamFilter } from '@/shared/hooks/useQueryParamFilter';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { systemApi } from '@system/features/system/services/systemApi';
 import { useInfiniteResourceList } from '@system/features/system/hooks/useResourceList';
@@ -25,6 +31,8 @@ interface TemplateListFilters {
   search: string;
   visibility: 'all' | 'public' | 'private';
   enabled: 'all' | 'enabled' | 'disabled';
+  /** Deep-link filter — seeded from ?platform=<node_platform_id>. */
+  platformId: string | null;
 }
 
 interface TemplateListProps {
@@ -60,11 +68,26 @@ export const TemplateList: React.FC<TemplateListProps> = ({
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
+  const navigate = useNavigate();
+
+  // Deep-link: ?platform=<id> pre-filters to one platform's templates.
+  const { seedFilters, hasActiveParamFilter, clearParamFilters } =
+    useQueryParamFilter<TemplateListFilters>({ platform: 'platformId' });
 
   const canCreate = hasPermission('system.templates.create');
   const canUpdate = hasPermission('system.templates.update');
   const canDelete = hasPermission('system.templates.delete');
   const canExport = hasPermission('system.templates.read');
+
+  // Click-to-expand state — Set<id> so multiple rows can be open at once.
+  const [expandedTemplateIds, setExpandedTemplateIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedTemplateIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
 
   const handleExport = useCallback(async (template: SystemNodeTemplate) => {
     try {
@@ -92,7 +115,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
   } = useInfiniteResourceList<SystemNodeTemplate, TemplateListFilters>({
     fetcher: ({ page, per_page }) =>
       systemApi.getTemplates({ page, per_page }).then(d => ({ items: d.templates, meta: d.meta })),
-    initialFilters: { search: '', visibility: 'all', enabled: 'all' },
+    initialFilters: seedFilters({ search: '', visibility: 'all', enabled: 'all', platformId: null }),
     perPage: 20,
     // All filters are client-side; no server-bound subset.
     serverFilterKey: () => '',
@@ -115,10 +138,18 @@ export const TemplateList: React.FC<TemplateListProps> = ({
         if (f.enabled === 'enabled' && !template.enabled) return false;
         if (f.enabled === 'disabled' && template.enabled) return false;
       }
+      if (f.platformId && template.node_platform_id !== f.platformId) return false;
       return true;
     },
     errorMessage: 'Failed to load templates',
   });
+
+  // Clearing the deep-link chip resets BOTH the URL param and the seeded
+  // filter state (the resource-list hook reads initialFilters only once).
+  const clearPlatformFilter = useCallback(() => {
+    setFilters((prev) => ({ ...prev, platformId: null }));
+    clearParamFilters();
+  }, [setFilters, clearParamFilters]);
 
   return (
     <ResponsiveListContainer
@@ -180,12 +211,26 @@ export const TemplateList: React.FC<TemplateListProps> = ({
           </div>
         </div>
 
+        {hasActiveParamFilter && filters.platformId && (
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={clearPlatformFilter}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+              title="Clear platform filter"
+            >
+              <span>Filtered by platform</span>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </ResponsiveListContainer.Filters>
 
       <ResponsiveListContainer.Desktop>
         <table className="w-full">
             <thead>
               <tr className="bg-theme-background border-b border-theme">
+                <th className="w-8 py-3 px-2"></th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Template</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Platform</th>
                 <th className="text-left py-3 px-4 font-medium text-theme-primary">Modules</th>
@@ -196,8 +241,21 @@ export const TemplateList: React.FC<TemplateListProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-theme">
-              {filteredTemplates.map((template) => (
-                <tr key={template.id} className="hover:bg-theme-surface-hover transition-colors duration-200">
+              {filteredTemplates.map((template) => {
+                const expanded = expandedTemplateIds.has(template.id);
+                return (
+                <React.Fragment key={template.id}>
+                <tr className="hover:bg-theme-surface-hover transition-colors duration-200">
+                  <td className="py-3 px-2 align-middle">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(template.id)}
+                      className="p-1 text-theme-secondary hover:text-theme-primary rounded transition-colors"
+                      title={expanded ? 'Collapse details' : 'Expand details'}
+                    >
+                      {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                    </button>
+                  </td>
                   <td className="py-3 px-4">
                     <div>
                       <div className="flex items-center gap-2">
@@ -218,9 +276,17 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                   </td>
 
                   <td className="py-3 px-4">
-                    <span className="text-theme-secondary">
-                      {template.node_platform_name || '-'}
-                    </span>
+                    {template.node_platform_id ? (
+                      <EntityLink
+                        type="node_platform"
+                        id={template.node_platform_id}
+                        label={template.node_platform_name || template.node_platform_id}
+                      />
+                    ) : (
+                      <span className="text-theme-secondary">
+                        {template.node_platform_name || '-'}
+                      </span>
+                    )}
                   </td>
 
                   <td className="py-3 px-4">
@@ -263,9 +329,18 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                   </td>
 
                   <td className="py-3 px-4">
-                    <span className="text-theme-primary font-medium">
-                      {template.node_count || 0}
-                    </span>
+                    {(template.node_count || 0) > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/app/system/compute/nodes?template=${template.id}`)}
+                        className="text-theme-link hover:underline cursor-pointer font-medium"
+                        title="View nodes using this template"
+                      >
+                        {template.node_count}
+                      </button>
+                    ) : (
+                      <span className="text-theme-primary font-medium">0</span>
+                    )}
                   </td>
 
                   <td className="py-3 px-4">
@@ -325,7 +400,87 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                     </div>
                   </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr className="bg-theme-background border-b border-theme">
+                    <td></td>
+                    <td colSpan={7} className="py-3 px-4">
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                        {template.description && (
+                          <div className="col-span-full">
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>
+                            <p className="text-theme-primary">{template.description}</p>
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Status</label>
+                          <p className="text-theme-primary">{template.enabled ? 'Enabled' : 'Disabled'}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Visibility</label>
+                          <p className="text-theme-primary">{template.public ? 'Public' : 'Private'}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Platform</label>
+                          <p className="text-theme-primary">
+                            {template.node_platform_id ? (
+                              <EntityLink
+                                type="node_platform"
+                                id={template.node_platform_id}
+                                label={template.node_platform_name || template.node_platform_id}
+                              />
+                            ) : (
+                              template.node_platform_name || '-'
+                            )}
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Admin User</label>
+                          <p className="text-theme-primary font-mono text-xs">{template.admin_user || 'root'}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Nodes Using Template</label>
+                          {(template.node_count ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/app/system/compute/nodes?template=${template.id}`)}
+                              className="text-theme-link hover:underline cursor-pointer"
+                              title="View nodes using this template"
+                            >
+                              {template.node_count}
+                            </button>
+                          ) : (
+                            <p className="text-theme-primary">0</p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Modules</label>
+                          <p className="text-theme-primary">{template.module_count ?? template.modules?.length ?? 0}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Template ID</label>
+                          <p className="text-theme-primary font-mono text-xs truncate" title={template.id}>{template.id}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Created</label>
+                          <p className="text-theme-primary text-xs">{new Date(template.created_at).toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Updated</label>
+                          <p className="text-theme-primary text-xs">{new Date(template.updated_at).toLocaleString()}</p>
+                        </div>
+                        {template.config && Object.keys(template.config).length > 0 && (
+                          <div className="col-span-full">
+                            <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Configuration</label>
+                            <pre className="text-theme-primary bg-theme-surface rounded p-2 border border-theme overflow-auto text-xs max-h-48">{JSON.stringify(template.config, null, 2)}</pre>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
       </ResponsiveListContainer.Desktop>
@@ -453,17 +608,35 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                 </div>
 
                 <div className="text-center">
-                  <div className="text-sm font-medium text-theme-primary">
-                    {template.node_count || 0}
-                  </div>
+                  {(template.node_count || 0) > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/app/system/compute/nodes?template=${template.id}`)}
+                      className="text-sm font-medium text-theme-link hover:underline cursor-pointer"
+                      title="View nodes using this template"
+                    >
+                      {template.node_count}
+                    </button>
+                  ) : (
+                    <div className="text-sm font-medium text-theme-primary">0</div>
+                  )}
                   <div className="text-xs text-theme-secondary">Nodes</div>
                 </div>
               </div>
 
               {/* Platform */}
-              {template.node_platform_name && (
+              {(template.node_platform_name || template.node_platform_id) && (
                 <div className="text-xs text-theme-secondary">
-                  Platform: {template.node_platform_name}
+                  Platform:{' '}
+                  {template.node_platform_id ? (
+                    <EntityLink
+                      type="node_platform"
+                      id={template.node_platform_id}
+                      label={template.node_platform_name || template.node_platform_id}
+                    />
+                  ) : (
+                    template.node_platform_name
+                  )}
                 </div>
               )}
 
