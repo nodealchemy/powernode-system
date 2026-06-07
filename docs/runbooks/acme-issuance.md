@@ -252,17 +252,17 @@ sequenceDiagram
     alt LAN reachable
         LAN->>Hub2: 200 OK
         LAN-->>Prober: success
-        Prober-->>Hub1: use LAN; mark last_verified_at
+        Prober-->>Hub1: use LAN, mark last_verified_at
     else LAN unreachable
         LAN--XProber: timeout
         Prober->>SDWAN: connect with 200ms timeout
         alt SDWAN reachable
             SDWAN-->>Prober: success
-            Prober-->>Hub1: use SDWAN; mark LAN failure
+            Prober-->>Hub1: use SDWAN, mark LAN failure
         else SDWAN unreachable
             Prober->>WAN: connect (no tight timeout)
             WAN-->>Prober: success
-            Prober-->>Hub1: use WAN; mark both faster paths failed
+            Prober-->>Hub1: use WAN, mark both faster paths failed
         end
     end
 

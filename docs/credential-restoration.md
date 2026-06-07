@@ -35,7 +35,7 @@ sequenceDiagram
 
     Op->>Acct: account created
     Acct->>AEKS: generate_for(account)
-    AEKS->>Vault: create transit/encrypt/account-&lt;id&gt;
+    AEKS->>Vault: create transit/encrypt/account-<id>
     Vault-->>AEKS: keypair created
     AEKS->>Acct: persist Vault path on<br/>accounts.encryption_key_vault_path
 

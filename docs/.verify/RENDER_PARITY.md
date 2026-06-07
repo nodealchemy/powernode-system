@@ -1,10 +1,11 @@
 # Mermaid Render Parity — Gitea + GitHub
 
-The extension's doc corpus contains 52 Mermaid diagrams as of 2026-05-17.
-Both Gitea (≥ v1.17) and the GitHub mirror render Mermaid natively, but
-not always identically. This document captures which Mermaid features
-are verified to render the same on both targets, plus the procedure for
-testing new diagram types.
+The extension's doc corpus contains 62 Mermaid diagrams as of 2026-06-07
+(52 at the 2026-05-17 parity pass; the full set was re-validated on
+2026-06-07 — see "Offline batch validation" below). Both Gitea (≥ v1.17)
+and the GitHub mirror render Mermaid natively, but not always identically.
+This document captures which Mermaid features are verified to render the
+same on both targets, plus the procedure for testing new diagram types.
 
 ## Verified-parity feature matrix
 
@@ -61,6 +62,27 @@ targets before merging:
    matrix above. Update the matrix with your new finding either way
    (success → add feature row; failure → add caveat row).
 
+## Offline batch validation
+
+Before relying on the live editor, you can validate the **entire corpus**
+locally with the same Mermaid engine GitHub and Gitea run (headless Chrome
+via `@mermaid-js/mermaid-cli`). This catches hard parse errors — the
+`got 'PS'` / `got 'NEWLINE'` class in the caveats table — without a network
+round-trip. The 2026-06-07 re-validation used this method:
+
+1. `npm install @mermaid-js/mermaid-cli` in a scratch dir (pulls a
+   Chrome-for-Testing build via Puppeteer; if Puppeteer's post-install
+   can't unzip, extract `~/.cache/puppeteer/chrome/*/*-chrome-linux64.zip`
+   manually).
+2. Extract every fenced ` ```mermaid ` block from `docs/**/*.md` to its own
+   `.mmd` file, preserving provenance.
+3. Render each with `mmdc -i block.mmd -o /dev/null -p pptr.json` where
+   `pptr.json` is `{ "args": ["--no-sandbox", "--disable-gpu",
+   "--disable-dev-shm-usage"] }`. A non-zero exit + `Parse error on line N`
+   pinpoints the failing block; the caret in the full output shows the
+   exact token. Note the parser stops at the **first** error per block, so
+   re-run after each fix — one diagram can hide several offenders.
+
 ## Known caveats
 
 | Caveat | Notes |
@@ -69,6 +91,9 @@ targets before merging:
 | Mermaid theme defaults differ slightly between Gitea + GitHub | Mostly cosmetic (background contrast); both use light theme by default. Don't override theme in diagrams. |
 | GitHub mirror has stricter CSP for some embedded styling | If you need custom styling, use the `classDef` mechanism (works on both) instead of inline `style` attributes |
 | Some unicode characters render differently in node labels | Stick to ASCII + standard HTML entities for maximum portability |
+| Unquoted `(` `)` `{` `}` `[` `]` inside a **flowchart** node label | The flowchart lexer reads them as shape delimiters → hard parse error (`got 'PS'`). **Quote the whole label**: `Node["text <br/>(detail)"]`. Quoting is parity-verified and still renders `<br/>` as a line break, so the diagram looks identical. |
+| `&lt;` / `&gt;` HTML entities inside **sequence-diagram message text** | The sequence grammar is distinct from the flowchart grammar and rejects these entities → `got 'NEWLINE'` — even though flowchart labels accept `&lt;…&gt;` fine. Use **literal** `<…>` in sequence messages. (Asymmetry confirmed 2026-06-07.) |
+| `;` semicolon inside **sequence-diagram message text** | Parsed as a statement separator, splitting the message into a second malformed statement → `got 'NEWLINE'`. Use `,` or "then" instead. A literal `<` (e.g. `<500ms`) inside a `note` is fine — only `actor->>actor:` *messages* are affected. |
 
 ## Capturing the screenshots
 

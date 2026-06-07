@@ -168,7 +168,7 @@ flowchart TD
     DO -->|no| DMI{DMI SMBIOS UUID<br/>/sys/class/dmi/id/product_uuid?}
     DMI -->|yes| Done7[Use SMBIOS UUID]
     DMI -->|no| Local{Local identity.cfg<br/>at /persist/var/lib/powernode/identity.cfg?}
-    Local -->|yes| Done8[Use local UUID<br/>(persists across reboots)]
+    Local -->|yes| Done8["Use local UUID<br/>(persists across reboots)"]
     Local -->|no| Fail[Fail boot with<br/>UnresolvableIdentityError]
 ```
 

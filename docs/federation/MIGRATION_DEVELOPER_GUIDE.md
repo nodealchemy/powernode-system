@@ -45,7 +45,7 @@ flowchart TD
     OpMode -->|migrate| MigrateBranch[Each step's resource_id<br/>= source UUID<br/>payload preserves id]
     OpMode -->|duplicate| DupBranch[Each step's resource_id<br/>= fresh UUIDv7<br/>payload metadata.duplicated_from<br/>= source UUID]
 
-    MigrateBranch --> Detect[ConflictDetector.scan!<br/>(unique-index collisions)]
+    MigrateBranch --> Detect["ConflictDetector.scan!<br/>(unique-index collisions)"]
     DupBranch --> Detect
     Detect --> Decide{conflicts?}
     Decide -->|none| Apply[ApplyExecutor.apply!<br/>at destination peer]
@@ -53,9 +53,9 @@ flowchart TD
     Policy --> Apply
     Apply --> Result{success?}
     Result -->|yes| Done[Migration status: applied]
-    Result -->|migrate only| Cleanup[Source-side cleanup<br/>(delete originals after ack)]
+    Result -->|migrate only| Cleanup["Source-side cleanup<br/>(delete originals after ack)"]
     Cleanup --> Done
-    Result -->|no| Failed[Migration status: failed<br/>(transaction rolled back)]
+    Result -->|no| Failed["Migration status: failed<br/>(transaction rolled back)"]
 ```
 
 ### `migrate` — transfer ownership, **UUID is preserved**
