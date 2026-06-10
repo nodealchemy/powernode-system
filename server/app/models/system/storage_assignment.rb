@@ -151,8 +151,20 @@ module System
       @file_storage ||= ::FileManagement::Storage.find_by(id: file_storage_id)
     end
 
-    # Resolve `inherit` to the storage's per-provider default. Network types
-    # default to fscrypt, block to luks, object to client_side_aes, local to none.
+    # Resolve `inherit` to the storage's per-provider default. Block defaults to
+    # luks, object to client_side_aes, local/network to none.
+    #
+    # Network types (nfs/smb) default to "none", NOT fscrypt: kernel fscrypt is
+    # a LOCAL-filesystem feature and cannot encrypt a network mount client-side,
+    # so the previous "fscrypt" default was a silent no-op that served plaintext
+    # under an "encrypted" label (audit 2026-06-09 finding F6-02). The agent now
+    # fails closed on fscrypt over an unsupported filesystem, so defaulting
+    # network mounts to fscrypt would also break every NFS/SMB mount. Real
+    # transparent encryption for network storage needs a stacked client-side
+    # mechanism (gocryptfs) or server-side at-rest encryption on the export's
+    # local filesystem — until one ships, the honest default is "none".
+    # Operators can still set encryption_mode: "fscrypt" explicitly for a
+    # block-backed local target where the kernel actually supports it.
     def effective_encryption_mode
       return encryption_mode unless encryption_mode == "inherit"
 
@@ -160,7 +172,6 @@ module System
       return "none" unless storage
 
       case storage.provider_type
-      when "nfs", "smb"      then "fscrypt"
       when "ebs"             then "luks"
       when "s3", "gcs", "azure" then "client_side_aes"
       else "none"

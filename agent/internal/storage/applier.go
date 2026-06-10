@@ -7,24 +7,32 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
-// Apply dispatches the right per-mount-type driver based on the recipe.
-// Encryption setup runs first (when applicable) so the mount writes to
-// an already-encrypted target.
+// Apply dispatches the right per-mount-type driver based on the recipe, then
+// applies encryption. Ordering matters: fscrypt applies a policy to a
+// directory on an already-mounted, encryption-capable filesystem, so the
+// mount must succeed first. Encryption fails closed (see SetupEncryption) —
+// if it errors, the whole assignment fails rather than serving plaintext
+// under an "encrypted" label.
 func Apply(ctx context.Context, runner mount.Runner, client httpGetter, task *MountTask) error {
-	if err := SetupEncryption(ctx, runner, client, task); err != nil {
-		return fmt.Errorf("encryption setup: %w", err)
-	}
-
+	var mountErr error
 	switch task.Recipe.Type {
 	case "nfs4", "nfs":
-		return MountNFS(ctx, runner, task)
+		mountErr = MountNFS(ctx, runner, task)
 	case "cifs":
-		return MountCIFS(ctx, runner, client, task)
+		mountErr = MountCIFS(ctx, runner, client, task)
 	case "s3fs", "gcsfuse", "rclone":
-		return MountObject(ctx, runner, client, task)
+		mountErr = MountObject(ctx, runner, client, task)
 	default:
 		return fmt.Errorf("unsupported recipe type: %s", task.Recipe.Type)
 	}
+	if mountErr != nil {
+		return mountErr
+	}
+
+	if err := SetupEncryption(ctx, runner, client, task); err != nil {
+		return fmt.Errorf("encryption setup: %w", err)
+	}
+	return nil
 }
 
 // Unapply unmounts and tears down encryption for the assignment.

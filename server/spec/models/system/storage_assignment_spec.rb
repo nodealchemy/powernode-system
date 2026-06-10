@@ -95,9 +95,14 @@ RSpec.describe System::StorageAssignment, type: :model do
       expect(assignment.effective_encryption_mode).to eq("none")
     end
 
-    it "resolves 'inherit' to fscrypt for NFS" do
+    # Audit 2026-06-09 F6-02: NFS/SMB no longer default to fscrypt. Kernel
+    # fscrypt can't encrypt a network mount client-side, so the old default was
+    # a silent-plaintext no-op. The honest default is "none" until a real
+    # network-storage mechanism (client-side gocryptfs / server-side at-rest)
+    # ships; operators set fscrypt explicitly for block-backed local targets.
+    it "resolves 'inherit' to none for NFS (client-side fscrypt is inapplicable)" do
       assignment.encryption_mode = "inherit"
-      expect(assignment.effective_encryption_mode).to eq("fscrypt")
+      expect(assignment.effective_encryption_mode).to eq("none")
     end
 
     it "resolves 'inherit' to client_side_aes for S3" do
