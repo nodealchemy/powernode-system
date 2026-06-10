@@ -14,6 +14,12 @@ module Api
           before_action :authenticate_request
 
           def show
+            # Topology aggregates SDWAN networks + federation peers + bridges,
+            # so gate on the same read permission the sibling SDWAN endpoints
+            # use. Without this, any authenticated account user (even a bare
+            # member) could read the full network topology. Audit 2026-06-09 F8-08.
+            require_permission("sdwan.networks.read")
+
             result = ::System::TopologyBuilder.build(account: current_account)
             render_success(
               data: {

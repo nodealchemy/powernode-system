@@ -228,8 +228,25 @@ RSpec.describe System::NodeInstance, type: :model do
         expect(instance.may_terminate?).to be true
       end
 
-      it 'is false for pending instances' do
+      # Audit 2026-06-09 finding F4-02: terminate must be reachable from ANY
+      # non-terminal state. Once the provider destroys the cloud resource the
+      # DB row must always reach :terminated — previously a pending/starting
+      # instance whose resource was destroyed was stranded in a non-terminal
+      # status forever while the MCP tool reported terminated:true.
+      it 'is true for pending instances' do
         instance.status = 'pending'
+        expect(instance.may_terminate?).to be true
+      end
+
+      it 'is true for provisioning and starting instances' do
+        instance.status = 'provisioning'
+        expect(instance.may_terminate?).to be true
+        instance.status = 'starting'
+        expect(instance.may_terminate?).to be true
+      end
+
+      it 'is false only for already-terminated instances' do
+        instance.status = 'terminated'
         expect(instance.may_terminate?).to be false
       end
     end

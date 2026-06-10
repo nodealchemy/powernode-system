@@ -16,10 +16,11 @@ module Api
         # or hands it a single-use bootstrap token to enroll with.
         #
         # No authentication — there's no credential at this point in the
-        # device's lifecycle. Rate-limited per IP+MAC at the middleware
-        # layer (TODO: wire Rack::Attack rule). Returns 200 in all
-        # success/pending/expired branches; non-2xx only on malformed
-        # request bodies (per the platform's webhook receiver rules).
+        # device's lifecycle. Rate-limited per IP by the Rack::Attack
+        # "system_node_claim_by_ip" throttle (config/initializers/rack_attack.rb),
+        # which deliberately excludes this path from the node_api safelist.
+        # Returns 200 in all success/pending/expired branches; non-2xx only on
+        # malformed request bodies (per the platform's webhook receiver rules).
         #
         # Reference: docs/plans/wondrous-yawning-anchor.md §5.
         class ClaimController < ApplicationController

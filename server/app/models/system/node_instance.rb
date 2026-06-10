@@ -117,8 +117,13 @@ module System
         transitions from: :running, to: :rebooting
       end
 
+      # Terminate must be reachable from ANY non-terminal state: once the
+      # provider destroys the cloud resource, the DB row must always reach
+      # :terminated. Restricting `from` to running/stopped/error left
+      # instances destroyed while :pending/:provisioning/:starting stranded
+      # in a non-terminal status forever. See audit 2026-06-09 finding F4-02.
       event :terminate do
-        transitions from: [ :stopped, :running, :error ], to: :terminated
+        transitions from: [ :pending, :provisioning, :starting, :running, :stopping, :stopped, :rebooting, :error ], to: :terminated
       end
 
       # Worker runtime finalizers

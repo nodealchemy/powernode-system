@@ -150,11 +150,16 @@ module System
 
       Rails.logger.info("[IpManagementService] Allocating IP in region #{region.name}")
 
-      # Get provider adapter through the registry
+      # Region-scoped adapter lookup. Mirrors VolumeManagementService —
+      # resolve the provider connection from (region, account) rather than a
+      # node. The previous `for_node(nil, region:)` workaround dereferenced
+      # nil.account and raised NoMethodError on every call. See audit
+      # 2026-06-09 finding F4-03.
       provider_adapter = begin
-        # TODO(unscheduled): extend Providers::Registry to support a
-        # region-only lookup path; passing nil node here is a workaround.
-        Providers::Registry.for_node(nil, region: region)
+        connection = Providers::Registry.find_connection_for_region(region, account)
+        raise Providers::Registry::UnknownProviderError, "No provider connection available for region #{region.id}" unless connection
+
+        Providers::Registry.for(connection, region: region)
       rescue Providers::Registry::UnknownProviderError => e
         return { success: false, error: e.message }
       end
@@ -182,9 +187,12 @@ module System
 
       Rails.logger.info("[IpManagementService] Releasing IP #{allocation_id}")
 
-      # Get provider adapter through the registry
+      # Region-scoped adapter lookup (see allocate_ip / finding F4-03).
       provider_adapter = begin
-        Providers::Registry.for_node(nil, region: region)
+        connection = Providers::Registry.find_connection_for_region(region, account)
+        raise Providers::Registry::UnknownProviderError, "No provider connection available for region #{region.id}" unless connection
+
+        Providers::Registry.for(connection, region: region)
       rescue Providers::Registry::UnknownProviderError => e
         return { success: false, error: e.message }
       end

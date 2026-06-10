@@ -32,7 +32,7 @@ module System
 
       return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.cloud_volume_id.present?
       return Runtime::Result.err(error: "Instance has no cloud instance ID") unless instance.cloud_instance_id.present?
-      return Runtime::Result.err(error: "Volume is already attached") if volume.provider_volume_members.any?
+      return Runtime::Result.err(error: "Volume is already attached") if volume.attached?
 
       Rails.logger.info("[VolumeManagementService] Attaching volume #{volume.name} to #{instance.name}")
 
@@ -48,13 +48,9 @@ module System
       if result[:success]
         attached_device = result[:device] || device
 
-        ::System::ProviderVolumeMember.create!(
-          provider_volume: volume,
-          node_instance: instance,
-          device: attached_device
-        )
-
-        volume.update!(status: "attached")
+        unless volume.attach_to!(instance, attached_device)
+          return Runtime::Result.err(error: "Volume cannot be attached (status=#{volume.status}, attached=#{volume.attached?})")
+        end
 
         Runtime::Result.ok(data: { device: attached_device })
       else
@@ -75,8 +71,7 @@ module System
 
       return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.cloud_volume_id.present?
 
-      member = volume.provider_volume_members.first
-      return Runtime::Result.ok(data: { message: "Volume is not attached" }) unless member
+      return Runtime::Result.ok(data: { message: "Volume is not attached" }) unless volume.attached?
 
       Rails.logger.info("[VolumeManagementService] Detaching volume #{volume.name}")
 
@@ -89,8 +84,7 @@ module System
       result = provider_adapter.detach_volume(volume.cloud_volume_id, force: force)
 
       if result[:success]
-        member.destroy!
-        volume.update!(status: "available")
+        volume.detach!
         Runtime::Result.ok
       else
         Runtime::Result.err(error: result[:error])
@@ -166,7 +160,7 @@ module System
         return Runtime::Result.ok
       end
 
-      return Runtime::Result.err(error: "Volume is attached, detach first") if volume.provider_volume_members.any?
+      return Runtime::Result.err(error: "Volume is attached, detach first") if volume.attached?
 
       Rails.logger.info("[VolumeManagementService] Deleting volume #{volume.name}")
 
@@ -246,7 +240,7 @@ module System
     end
 
     def next_available_device(instance)
-      existing = ::System::ProviderVolumeMember.where(node_instance: instance).pluck(:device)
+      existing = ::System::ProviderVolume.where(node_instance: instance).pluck(:device_name)
 
       ("b".."z").each do |letter|
         device = "/dev/sd#{letter}"
