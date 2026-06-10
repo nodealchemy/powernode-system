@@ -40,28 +40,12 @@ POWERNODE_PLATFORM_CATEGORY_NAME = "Powernode Platform"
 # extensions/system/modules/<name>/manifest.yaml. The M1 supply chain
 # (build-platform-modules.yaml workflow) and this seed read from the
 # same files — a single source of truth. Editing a manifest requires
-# editing exactly one file.
-POWERNODE_PLATFORM_MODULES_DISK_ROOT = ::Rails.root.join(
-  "..", "extensions", "system", "modules"
-).to_s.freeze
+# editing exactly one file. Discovery lives in
+# System::PlatformModuleManifestLoader, which skips untracked dirs
+# (F7-03 resurrection-debris guard) when git info is available.
+POWERNODE_PLATFORM_MODULES_DISK_ROOT = ::System::PlatformModuleManifestLoader::DEFAULT_ROOT
 
-def load_platform_module_manifests_from_disk
-  unless ::Dir.exist?(POWERNODE_PLATFORM_MODULES_DISK_ROOT)
-    raise "Platform modules disk root missing: #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}. " \
-          "Create extensions/system/modules/<name>/manifest.yaml for each platform module."
-  end
-  manifests = {}
-  ::Dir.entries(POWERNODE_PLATFORM_MODULES_DISK_ROOT).sort.each do |entry|
-    next if entry.start_with?(".")
-    mfpath = ::File.join(POWERNODE_PLATFORM_MODULES_DISK_ROOT, entry, "manifest.yaml")
-    next unless ::File.file?(mfpath)
-    manifests[entry] = ::File.read(mfpath)
-  end
-  raise "No platform module manifests found under #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}" if manifests.empty?
-  manifests
-end
-
-PLATFORM_MODULE_MANIFESTS_TO_SEED = load_platform_module_manifests_from_disk
+PLATFORM_MODULE_MANIFESTS_TO_SEED = ::System::PlatformModuleManifestLoader.load_from_disk
 puts "  Loaded #{PLATFORM_MODULE_MANIFESTS_TO_SEED.size} platform module manifests from #{POWERNODE_PLATFORM_MODULES_DISK_ROOT}"
 
 puts "\n  Seeding Powernode Platform modules (#{PLATFORM_MODULE_MANIFESTS_TO_SEED.size} modules)..."
