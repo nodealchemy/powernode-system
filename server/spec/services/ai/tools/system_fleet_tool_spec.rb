@@ -402,6 +402,32 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # F4-05: without operation_id passthrough, ProvisioningService's retry-
+  # idempotency guard is unreachable from the agent surface — a retried MCP
+  # call provisions a duplicate billable VM.
+  describe "system_provision_instance idempotency passthrough" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "prov") }
+
+    it "declares operation_id in the action schema" do
+      params = described_class.action_definitions["system_provision_instance"][:parameters]
+      expect(params).to have_key(:operation_id)
+    end
+
+    it "forwards operation_id to ProvisioningService" do
+      instance = create(:system_node_instance, node: node)
+      expect(::System::ProvisioningService).to receive(:provision_instance)
+        .with(hash_including(operation_id: "op-agent-1"))
+        .and_return(::System::Runtime::Result.ok(data: { instance: instance, cloud_instance_id: "i-1" }))
+
+      r = call("system_provision_instance", node_id: node.id,
+               provider_region_id: SecureRandom.uuid,
+               provider_instance_type_id: SecureRandom.uuid,
+               operation_id: "op-agent-1")
+
+      expect(r[:success]).to be true
+    end
+  end
+
   describe "Drift report" do
     let(:node) { create(:system_node, account: account, node_template: template, name: "drft") }
     let(:instance) { create(:system_node_instance, :running, node: node) }

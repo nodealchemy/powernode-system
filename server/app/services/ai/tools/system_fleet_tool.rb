@@ -374,11 +374,15 @@ module Ai
             parameters: {}
           },
           "system_provision_instance" => {
-            description: "Provision a new cloud instance for a node (asynchronous; returns task_id)",
+            description: "Provision a new cloud instance for a node (asynchronous; returns task_id). " \
+                         "Agents SHOULD send a stable operation_id per logical request — retries carrying " \
+                         "the same operation_id reuse the in-flight instance instead of provisioning a duplicate.",
             parameters: {
               node_id: { type: "string", required: true },
               provider_region_id: { type: "string", required: true },
               provider_instance_type_id: { type: "string", required: true },
+              operation_id: { type: "string", required: false,
+                              description: "Stable idempotency key per logical provision request" },
               options: { type: "object", required: false }
             }
           },
@@ -1412,6 +1416,7 @@ module Ai
           node: node,
           provider_region_id: params[:provider_region_id],
           provider_instance_type_id: params[:provider_instance_type_id],
+          operation_id: params[:operation_id],
           options: params[:options] || {}
         )
         return error_result(result.error || "provisioning failed") unless result.success?
