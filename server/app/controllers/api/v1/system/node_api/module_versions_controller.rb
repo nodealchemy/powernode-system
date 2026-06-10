@@ -49,7 +49,9 @@ module Api
           private
 
           def set_module
-            @module = node_modules.find(params[:id])
+            # Nested route (modules/:module_id/versions) — the module id
+            # arrives as :module_id, never :id.
+            @module = node_modules.find(params[:module_id])
           rescue ActiveRecord::RecordNotFound
             render_record_not_found("NodeModule")
           end
