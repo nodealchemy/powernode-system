@@ -83,6 +83,64 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     end
   end
 
+  # F1-06: provision! must be retry-safe for pool-source fleets — a retry
+  # must resume from the persisted member list and reuse already-claimed
+  # pool members instead of draining fresh ones while the first claims
+  # leak in pool_state "claimed", invisible to reap!.
+  describe "#provision! retry safety" do
+    let(:fleet_spec) do
+      {
+        "size" => 2,
+        "source" => "pool",
+        "pool_name" => "workers",
+        "grant_mcp_tools" => %w[platform.health],
+        "grant_peer_skills" => %w[embed-*],
+        "member_skills" => %w[embed-text],
+        "subtasks" => [ { "id" => "s1", "skill" => "embed-text" } ],
+        "delegation" => "central",
+        "reap" => true
+      }
+    end
+
+    let(:claimed_instances) { [] }
+
+    before do
+      service.plan!
+      allow(::System::InstancePoolService).to receive(:acquire!) do
+        inst = create(:system_node_instance, :running, node: node)
+        claimed_instances << inst
+        inst
+      end
+    end
+
+    it "persists claims before enrollment and reuses them on retry instead of leaking" do
+      announce_calls = 0
+      allow(::System::AgentPeeringService).to receive(:announce!).and_wrap_original do |original, **kwargs|
+        announce_calls += 1
+        raise StandardError, "enrollment exploded" if announce_calls == 2
+
+        original.call(**kwargs)
+      end
+
+      expect { service.provision! }.to raise_error(StandardError, /enrollment exploded/)
+
+      # The acquired-but-unenrolled slot-1 instance must already be on the
+      # mission record (reapable trail), alongside the completed slot 0.
+      members_after_failure = mission.reload.configuration.dig("fleet", "members")
+      expect(members_after_failure.map { |m| m["instance_id"] })
+        .to match_array(claimed_instances.map(&:id))
+
+      result = service.provision!
+
+      expect(result[:count]).to eq(2)
+      members = mission.reload.configuration.dig("fleet", "members")
+      expect(members.map { |m| m["instance_id"] }).to match_array(claimed_instances.map(&:id))
+      expect(members.map { |m| m["peer_id"] }).to all(be_present)
+      # No fresh pool drains on retry — both claims were reused.
+      expect(claimed_instances.size).to eq(2)
+    end
+  end
+
   describe "#delegate!" do
     before do
       service.plan!

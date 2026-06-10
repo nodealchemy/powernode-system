@@ -88,12 +88,24 @@ module System
     # reapable trail (no untracked orphans).
     def provision!
       plan = fleet_plan!
-      members = []
+      # Seed from the persisted list so a retry resumes instead of
+      # rebuilding — rebuilding from [] overwrote earlier slots and
+      # orphaned their already-claimed instances (F1-06).
+      members = persisted_members
       plan["size"].times do |slot|
+        existing = members.find { |m| m["slot"] == slot }
+        next if existing && existing["peer_id"].present?
+
         instance = acquire_member(plan, slot)
         record_isolation_on_instance!(instance, plan["isolation"])
+        # Persist the claim BEFORE enrollment — an instance whose
+        # enrollment fails must still be on the mission record so
+        # reap! can find it.
+        members = upsert_member(members, partial_member_record(slot, instance, plan["isolation"]))
+        persist_fleet!("members", members)
+
         peer = enroll_member!(instance, plan)
-        members << member_record(slot, instance, peer, plan["isolation"])
+        members = upsert_member(members, member_record(slot, instance, peer, plan["isolation"]))
         persist_fleet!("members", members)
       end
       { ok: true, count: members.size, members: members }
@@ -305,9 +317,22 @@ module System
 
     def acquire_member(plan, slot)
       if plan["source"] == "pool"
-        ::System::InstancePoolService.acquire!(
+        # Idempotency parity with the provision branch: stamp the claim so a
+        # retry reuses the member instead of draining a fresh one from the
+        # pool while the first leaks in pool_state "claimed" (F1-06).
+        claim_key = "fleet-#{mission.id}-#{slot}"
+        existing = ::System::NodeInstance
+                     .where(account_id: account.id)
+                     .where("config->>'fleet_operation_id' = ?", claim_key)
+                     .where.not(status: %w[terminated error])
+                     .first
+        return existing if existing
+
+        instance = ::System::InstancePoolService.acquire!(
           account: account, pool_name: plan["pool_name"], pool_id: plan["pool_id"]
         )
+        instance.update!(config: (instance.config || {}).merge("fleet_operation_id" => claim_key))
+        instance
       else
         node = ::System::Node.where(account_id: account.id).find(plan["node_id"])
         result = ::System::ProvisioningService.provision_instance(
@@ -352,6 +377,29 @@ module System
         "offered_skills" => peer.offered_skill_names,
         "isolation" => isolation
       }
+    end
+
+    # Claim-only record persisted before enrollment so the instance is
+    # reapable even when enroll_member! raises (F1-06).
+    def partial_member_record(slot, instance, isolation = nil)
+      {
+        "slot" => slot,
+        "instance_id" => instance.id,
+        "peer_id" => nil,
+        "isolation" => isolation
+      }
+    end
+
+    def persisted_members
+      list = fleet_node["members"]
+      list.is_a?(Array) ? list.map { |m| m.deep_dup } : []
+    end
+
+    def upsert_member(members, record)
+      idx = members.index { |m| m["slot"] == record["slot"] }
+      return members + [record] unless idx
+
+      members[0...idx] + [record] + members[(idx + 1)..]
     end
 
     # Record the resolved isolation profile on the member's NodeInstance.config
