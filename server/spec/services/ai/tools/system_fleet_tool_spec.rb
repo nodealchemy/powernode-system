@@ -159,7 +159,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   end
 
   describe "Agent fleet missions (L3)" do
-    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.control system.node_instances.read]) }
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage system.node_instances.read]) }
     let(:fleet_tool) { described_class.new(account: account, user: user) }
     let(:node) { create(:system_node, account: account) }
     let!(:fleet_template) do
@@ -210,7 +210,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   end
 
   describe "A2A capability token (L2.5)" do
-    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.control]) }
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage]) }
     let(:cap_tool) { described_class.new(account: account, user: user) }
 
     def cap_peer(handle:, declared_skills: [], granted: [])
@@ -399,6 +399,22 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "system_update_instance returns an error for an unknown instance id" do
       r = call("system_update_instance", instance_id: SecureRandom.uuid, name: "nope")
       expect(r[:success]).to be false
+    end
+  end
+
+  # F8-02: every ACTION_PERMISSIONS slug must be grantable — the audit found
+  # mission-core actions mapped to "system.node_instances.control", which has
+  # no Permission record anywhere, permanently denying all non-super-admins.
+  describe "delegation-action permission slugs" do
+    let(:operator) { create(:user, account: account, permissions: %w[system.node_instances.manage]) }
+    let(:operator_tool) { described_class.new(account: account, user: operator) }
+
+    %w[system_grant_instance_mcp_tools system_grant_instance_peer_skills
+       system_launch_agent_fleet system_mint_peer_capability_token
+       system_refresh_instance_modules].each do |action|
+      it "permits #{action} for a holder of system.node_instances.manage" do
+        expect(operator_tool.send(:action_permitted?, action)).to be true
+      end
     end
   end
 

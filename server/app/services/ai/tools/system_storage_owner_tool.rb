@@ -19,10 +19,10 @@ module Ai
       REQUIRED_PERMISSION = "system.storage.read"
 
       ACTION_PERMISSIONS = {
-        "system_assign_storage_owner"               => "system.storage.update",
+        "system_assign_storage_owner"               => "system.storage.assignments.update",
         "system_list_storage_assignments_by_owner"  => "system.storage.read",
         "system_storage_chown_status"               => "system.storage.read",
-        "system_storage_chown_retry"                => "system.storage.update"
+        "system_storage_chown_retry"                => "system.storage.assignments.update"
       }.freeze
 
       def self.definition
