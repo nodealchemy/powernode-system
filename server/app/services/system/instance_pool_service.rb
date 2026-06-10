@@ -66,7 +66,11 @@ module System
     #   3. Any active pool with matching lifecycle_class + ready members
     def acquire!(pool_name: nil, pool_id: nil, lifecycle_class: nil)
       pool = resolve_pool!(pool_name: pool_name, pool_id: pool_id, lifecycle_class: lifecycle_class)
-      raise PoolNotActiveError, "pool '#{pool.name}' is #{pool.status}" unless pool.active? || pool.draining?
+      # F2-02 — draining pools never hand out members. drain! terminates
+      # all ready inventory immediately, so anything still acquirable in a
+      # draining pool is either mid-drain (racing termination) or a warming
+      # member that ripened post-drain and escaped the wind-down.
+      raise PoolNotActiveError, "pool '#{pool.name}' is #{pool.status}" unless pool.active?
 
       ::ActiveRecord::Base.transaction do
         member = pool.node_instances
@@ -141,8 +145,16 @@ module System
         pool.update!(status: "draining")
 
         terminated = []
-        pool.ready_members.find_each do |member|
-          member.update!(pool_state: "draining")
+        # F2-02 — re-select under row lock so drain never races acquire!:
+        # SKIP LOCKED skips members a concurrent acquire transaction holds,
+        # and the conditional UPDATE skips members claimed since the
+        # snapshot — only rows still 'ready' are drained + terminated.
+        pool.ready_members.lock("FOR UPDATE SKIP LOCKED").find_each do |member|
+          still_ready = pool.node_instances
+                            .where(id: member.id, pool_state: "ready")
+                            .update_all(pool_state: "draining", updated_at: Time.current)
+          next if still_ready.zero?
+
           # Audit plan P2.5 gap #2 — actually call the cloud-provider
           # terminate. Prior implementation only flipped pool_state.
           begin
@@ -184,12 +196,20 @@ module System
       counts = { warming_to_errored: 0, ready_to_draining: 0 }
 
       ::ActiveRecord::Base.transaction do
-        stale_warming.find_each do |m|
-          m.mark_pool_errored!
-          counts[:warming_to_errored] += 1
+        # F2-02 — same locking discipline as drain!: SKIP LOCKED skips
+        # members a concurrent acquire holds, and the conditional UPDATE
+        # skips members claimed since the snapshot. The reaper runs this
+        # every 60s, so an unguarded update here terminated instances out
+        # from under agents that had just acquired them.
+        stale_warming.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
+          counts[:warming_to_errored] += 1 if m.mark_pool_errored!
         end
-        stale_ready.find_each do |m|
-          m.update!(pool_state: "draining")
+        stale_ready.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
+          still_ready = pool.node_instances
+                            .where(id: m.id, pool_state: "ready")
+                            .update_all(pool_state: "draining", updated_at: Time.current)
+          next if still_ready.zero?
+
           # Audit plan P2.5 gap #3 — TTL-aware reaping must actually
           # terminate the cloud VM. Prior implementation only flipped
           # pool_state; the underlying VM ran past ready_ttl indefinitely.

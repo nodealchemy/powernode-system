@@ -91,6 +91,20 @@ RSpec.describe System::InstancePoolService, type: :service do
       end
     end
 
+    context "when pool is draining (F2-02)" do
+      # drain! terminates all ready members immediately, so any member
+      # still acquirable from a draining pool only exists via the
+      # drain/acquire race or a warming member that ripened post-drain —
+      # both of which must not be handed to an agent.
+      before { pool.update!(status: "draining"); seed_pool_member(state: "ready") }
+
+      it "raises PoolNotActiveError instead of handing out a member being drained" do
+        expect {
+          described_class.acquire!(account: account, pool_name: "test-pool")
+        }.to raise_error(System::InstancePoolService::PoolNotActiveError)
+      end
+    end
+
     context "fallback by lifecycle_class" do
       let!(:other_pool) do
         System::InstancePool.create!(
@@ -194,6 +208,32 @@ RSpec.describe System::InstancePoolService, type: :service do
       described_class.drain!(pool: pool)
       expect(claimed.reload.pool_state).to eq("claimed")
     end
+
+    # F2-02 — drain! must not clobber a member a concurrent acquire!
+    # claimed after drain's ready snapshot was taken. Deterministic
+    # interleaving: the terminate_instance stub fires mid-iteration and
+    # claims the OTHER ready member, simulating an agent acquiring it
+    # between drain's member list and drain reaching that member.
+    context "racing a concurrent acquire (F2-02)" do
+      before do
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+          other = [ ready_a, ready_b ].find { |m| m.id != instance.id }
+          if other && other.reload.pool_state == "ready"
+            other.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+          end
+          true
+        end
+      end
+
+      it "does not clobber or terminate the member claimed mid-drain" do
+        result = described_class.drain!(pool: pool)
+
+        states = [ ready_a.reload.pool_state, ready_b.reload.pool_state ].sort
+        expect(states).to eq(%w[claimed draining])
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(result[:drained]).to eq(1)
+      end
+    end
   end
 
   describe ".recycle_stale_members!" do
@@ -222,6 +262,33 @@ RSpec.describe System::InstancePoolService, type: :service do
       m = seed_pool_member(state: "warming", warming_started_at: 2.minutes.ago)
       described_class.recycle_stale_members!(pool: pool)
       expect(m.reload.pool_state).to eq("errored")
+    end
+
+    # F2-02 — same race as drain!: the reaper runs this every 60s, so a
+    # stale-but-ready member acquired mid-tick must not be recycled out
+    # from under the agent that just claimed it.
+    context "racing a concurrent acquire (F2-02)" do
+      let!(:stale_a) { seed_pool_member(state: "ready", warming_started_at: 5.hours.ago) }
+      let!(:stale_b) { seed_pool_member(state: "ready", warming_started_at: 6.hours.ago) }
+
+      before do
+        allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+          other = [ stale_a, stale_b ].find { |m| m.id != instance.id }
+          if other && other.reload.pool_state == "ready"
+            other.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+          end
+          true
+        end
+      end
+
+      it "does not recycle the member claimed mid-tick" do
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        states = [ stale_a.reload.pool_state, stale_b.reload.pool_state ].sort
+        expect(states).to eq(%w[claimed draining])
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).once
+        expect(result[:ready_to_draining]).to eq(1)
+      end
     end
   end
 end
