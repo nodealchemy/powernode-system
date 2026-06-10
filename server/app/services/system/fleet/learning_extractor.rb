@@ -38,13 +38,27 @@ module System
       end
 
       def submit_learning(learning_tool, account, signal_kind, gate, decision, group)
-        title = "Fleet #{signal_kind} → #{gate || decision}"
+        title = "Fleet #{signal_kind} → #{gate || decision}".truncate(120)
         content = build_content(signal_kind, gate, decision, group)
         category = decision == :pending ? "pattern" : "discovery"
 
+        # Idempotent reinforcement. These decision-pattern learnings recur on
+        # every 60s reconcile tick with a deterministic title; creating a fresh
+        # row each time floods the knowledge base (the 2026-06-09 audit found
+        # 5,249 duplicates — 30% of the KB, finding F3-12). Reinforce the
+        # existing pattern instead — that IS the intended "compound" behavior —
+        # and only create the row on first occurrence.
+        if defined?(::Ai::CompoundLearning)
+          existing = ::Ai::CompoundLearning.where(account_id: account.id, title: title).first
+          if existing
+            existing.record_access!
+            return
+          end
+        end
+
         learning_tool.execute(params: {
           action: "create_learning",
-          title: title.truncate(120),
+          title: title,
           content: content.truncate(2000),
           category: category,
           tags: [ "fleet", "autonomy", signal_kind ].compact

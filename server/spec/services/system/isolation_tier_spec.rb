@@ -43,13 +43,39 @@ RSpec.describe System::IsolationTier do
       p = described_class.profile("firecracker")
       expect(p["tier"]).to eq("firecracker")
       expect(p["docker_runtime"]).to eq("kata-fc")
-      expect(p["strength"]).to eq("microvm")
+      # tier_strength is the capability if enforced; strength is the honest claim.
+      expect(p["tier_strength"]).to eq("microvm")
     end
 
     it "maps the confidential tiers to TEE-enabled Kata runtimes" do
       expect(described_class.docker_runtime("sev")).to eq("kata-qemu-snp")
       expect(described_class.docker_runtime("tdx")).to eq("kata-qemu-tdx")
-      expect(described_class.profile("sev")["strength"]).to eq("confidential-vm")
+      expect(described_class.profile("sev")["tier_strength"]).to eq("confidential-vm")
+    end
+
+    # Audit 2026-06-09 F2-01: recording a tier is a REQUEST, not proof of
+    # enforcement. Until a workload-level mechanism applies the runtime and
+    # (for confidential tiers) attestation verifies it, the reported strength
+    # must be degraded so nothing trusts unproven isolation.
+    describe "honest enforcement reporting" do
+      it "degrades unenforced non-native tiers to a 'requested, unverified' strength" do
+        p = described_class.profile("sev")
+        expect(p["enforced"]).to be(false)
+        expect(p["strength"]).to eq("confidential-vm (requested, unverified)")
+        expect(p["tier_strength"]).to eq("confidential-vm")
+      end
+
+      it "reports the full strength only when enforcement is confirmed" do
+        p = described_class.profile("sev", enforced: true)
+        expect(p["enforced"]).to be(true)
+        expect(p["strength"]).to eq("confidential-vm")
+      end
+
+      it "never over-promises for the native tier (genuine process isolation)" do
+        p = described_class.profile("native")
+        expect(p["strength"]).to eq("process")
+        expect(p["enforced"]).to be(false)
+      end
     end
   end
 

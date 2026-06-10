@@ -92,15 +92,35 @@ module System
 
     # Resolved, string-keyed isolation profile to record on a deployment/member
     # so the on-node agent can select the container runtime at deploy time.
-    def profile(tier)
+    #
+    # `enforced:` MUST reflect reality — true only when a workload-level
+    # mechanism has actually applied the runtime (Docker HostConfig.Runtime /
+    # K8s runtimeClassName) AND, for confidential tiers, an attestation
+    # roundtrip has verified it. Until then the default (false) degrades the
+    # reported `strength` so agents/operators never trust unproven isolation.
+    # Recording a tier is a REQUEST, not proof. Audit 2026-06-09 finding F2-01.
+    def profile(tier, enforced: false)
       t = normalize(tier)
       d = TIERS.fetch(t)
       {
         "tier" => t,
         "docker_runtime" => d[:docker_runtime],
         "k8s_runtime_class" => d[:k8s_runtime_class],
-        "strength" => d[:strength]
+        # tier_strength = the capability IF enforced; strength = what we
+        # actually claim right now (honest, possibly degraded).
+        "tier_strength" => d[:strength],
+        "enforced" => enforced ? true : false,
+        "strength" => reported_strength(t, d[:strength], enforced)
       }
+    end
+
+    # Honest strength label. `native` is genuinely just process isolation, so
+    # it never over-promises. Every stronger tier that has NOT been verifiably
+    # enforced is reported as "<strength> (requested, unverified)" so no
+    # caller mistakes a recorded request for an enforced guarantee.
+    def reported_strength(tier, strength, enforced)
+      return strength if enforced || tier == DEFAULT
+      "#{strength} (requested, unverified)"
     end
 
     # Discovery payload: every tier + its mapping + host requirements.
