@@ -86,6 +86,24 @@ RSpec.describe System::ProvisioningService do
       result = provision(operation_id: "op-xyz")
       expect(result.data[:instance].config["operation_id"]).to eq("op-xyz")
     end
+
+    # F1-07: an errored instance keeps its operation_id; reusing it on retry
+    # returns a dead instance (no cloud VM) that poisons fleet enrollment.
+    it "does not reuse an errored instance — a retry provisions fresh" do
+      allow(adapter).to receive(:create_instance)
+        .and_return({ success: false, error: "quota exceeded" },
+                    { success: true, cloud_instance_id: "i-456", status: "running" })
+
+      first = provision(operation_id: "op-retry-1")
+      expect(first.success?).to be(false)
+      expect(first.data[:instance].status).to eq("error")
+
+      second = provision(operation_id: "op-retry-1")
+
+      expect(second.success?).to be(true)
+      expect(second.data[:instance].id).not_to eq(first.data[:instance].id)
+      expect(second.data[:instance].status).not_to eq("error")
+    end
   end
 
   describe "fleet-event observability" do

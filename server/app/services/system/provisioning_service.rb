@@ -47,16 +47,17 @@ module System
       Rails.logger.info("[ProvisioningService] Provisioning instance for node #{node.name} in #{region.name} using #{provider_adapter.provider_type}")
 
       # Idempotency — a retried call carrying the same operation_id must not
-      # spin up a second instance. Reuse a prior non-terminated instance
-      # tagged with this operation_id (dedups sequential client retries on
-      # transient errors). A unique index on config->>'operation_id' would
+      # spin up a second instance. Reuse a prior instance tagged with this
+      # operation_id unless it ended in a terminal state (terminated/error) —
+      # a retry after a hard failure must provision fresh, not return the
+      # dead row. A unique index on config->>'operation_id' would
       # harden this against concurrent racers; the check-then-create here
       # covers the common sequential-retry case.
       if operation_id.present?
         existing = ::System::NodeInstance
                      .where(node_id: node.id)
                      .where("config->>'operation_id' = ?", operation_id.to_s)
-                     .where.not(status: "terminated")
+                     .where.not(status: %w[terminated error])
                      .first
         if existing
           Rails.logger.info("[ProvisioningService] Reusing instance #{existing.name} for operation #{operation_id}")
