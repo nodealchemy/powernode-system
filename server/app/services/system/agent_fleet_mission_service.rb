@@ -249,11 +249,13 @@ module System
     # Phase 5 — reap ephemeral members: terminate (provision source) or return
     # to the pool (pool source), and disable their peer records. Honors
     # plan["reap"] == false (leave the fleet running for inspection).
-    def reap!
+    # force: reap even when the plan disabled it — the lifecycle lever for
+    # failed/stuck fleets (system_reap_agent_fleet MCP action).
+    def reap!(force: false)
       plan = fleet_plan!
       members = fleet_members!
 
-      unless plan["reap"]
+      unless plan["reap"] || force
         result = { ok: true, count: 0, skipped: true, reaped: [] }
         persist_fleet!("reaped", [])
         return result
@@ -266,7 +268,17 @@ module System
         { "instance_id" => m["instance_id"], "action" => action }
       end
       persist_fleet!("reaped", reaped)
-      { ok: true, count: reaped.size, reaped: reaped }
+
+      # A terminate_failed member is a leaked, still-running instance — the
+      # phase stays best-effort (no stuck missions) but the failure must be
+      # visible, not counted as a clean reap (F1-08).
+      failed = reaped.count { |r| r["action"] == "terminate_failed" }
+      if failed.positive?
+        mission.update_columns(error_message: "reap incomplete: #{failed} member(s) failed to terminate")
+        { ok: false, count: reaped.size, reaped: reaped, reap_incomplete: true, failed_count: failed }
+      else
+        { ok: true, count: reaped.size, reaped: reaped }
+      end
     end
 
     private

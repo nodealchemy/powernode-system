@@ -141,6 +141,49 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     end
   end
 
+  # F1-08: reap failures must be visible — terminate_failed members are
+  # leaked instances, not reaped ones — and a stuck fleet needs a force
+  # lever even when its plan disabled reaping.
+  describe "#reap! failure visibility" do
+    before do
+      service.plan!
+      service.provision!
+    end
+
+    it "reports ok:false with reap_incomplete when a member fails to terminate" do
+      failed_once = false
+      allow(::System::ProvisioningService).to receive(:terminate_instance) do |instance:|
+        if failed_once
+          double(success?: true, error: nil)
+        else
+          failed_once = true
+          double(success?: false, error: "provider timeout")
+        end
+      end
+
+      result = service.reap!
+
+      expect(result[:ok]).to be false
+      expect(result[:reap_incomplete]).to be true
+      expect(result[:failed_count]).to eq(1)
+      expect(result[:reaped].map { |r| r["action"] }).to include("terminate_failed")
+      expect(mission.reload.error_message).to match(/reap incomplete/i)
+    end
+
+    it "force-reaps a fleet whose plan disabled reaping" do
+      cfg = mission.reload.configuration
+      cfg["fleet"]["plan"]["reap"] = false
+      mission.update_columns(configuration: cfg)
+
+      expect(service.reap![:skipped]).to be true
+
+      forced = service.reap!(force: true)
+      expect(forced[:ok]).to be true
+      expect(forced[:count]).to eq(3)
+      expect(forced[:reaped].map { |r| r["action"] }).to all(eq("terminated"))
+    end
+  end
+
   describe "#delegate!" do
     before do
       service.plan!

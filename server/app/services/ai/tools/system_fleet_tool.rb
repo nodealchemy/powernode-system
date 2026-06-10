@@ -34,6 +34,7 @@ module Ai
         "system_authorize_peer_call" => "system.node_instances.read",
         "system_launch_agent_fleet" => "system.node_instances.manage",
         "system_agent_fleet_status" => "system.node_instances.read",
+        "system_reap_agent_fleet" => "system.node_instances.manage",
         "system_mint_peer_capability_token" => "system.node_instances.manage",
         "system_list_isolation_tiers" => "system.node_instances.read",
         "system_list_templates"         => "system.nodes.read",
@@ -355,9 +356,16 @@ module Ai
             }
           },
           "system_agent_fleet_status" => {
-            description: "L3: inspect an agent-fleet mission — returns status, current_phase, and a summary of the fleet (plan, member/assignment counts, aggregated report, reaped count).",
+            description: "L3: inspect an agent-fleet mission — returns status, current_phase, error_message, and a summary of the fleet (plan, member/assignment counts, aggregated report, per-member reap actions, reap_incomplete flag).",
             parameters: {
               mission_id: { type: "string", required: true }
+            }
+          },
+          "system_reap_agent_fleet" => {
+            description: "L3: re-run reap for a failed/stuck agent-fleet mission — returns pool members, terminates provisioned members, disables their peers. Safe to retry; reports per-member actions and a reap_incomplete flag when any member fails to terminate. Pass force:true to reap a fleet whose plan disabled reaping.",
+            parameters: {
+              mission_id: { type: "string", required: true },
+              force: { type: "boolean", required: false, description: "Reap even when the fleet plan set reap:false" }
             }
           },
           "system_mint_peer_capability_token" => {
@@ -938,6 +946,7 @@ module Ai
         when "system_authorize_peer_call"      then authorize_peer_call(params)
         when "system_launch_agent_fleet"       then launch_agent_fleet(params)
         when "system_agent_fleet_status"       then agent_fleet_status(params)
+        when "system_reap_agent_fleet"         then reap_agent_fleet(params)
         when "system_mint_peer_capability_token" then mint_peer_capability_token(params)
         when "system_list_isolation_tiers"     then list_isolation_tiers(params)
         when "system_provision_instance"       then provision_instance(params)
@@ -1364,18 +1373,37 @@ module Ai
         return error_result("agent_fleet mission not found") unless mission
 
         fleet = (mission.configuration.is_a?(Hash) ? mission.configuration["fleet"] : nil) || {}
+        reaped = Array(fleet["reaped"])
         success_result(
           mission_id: mission.id,
           status: mission.status,
           current_phase: mission.current_phase,
+          error_message: mission.error_message,
           fleet: {
             plan: fleet["plan"],
             member_count: Array(fleet["members"]).size,
             assignment_count: Array(fleet["assignments"]).size,
             report: fleet["report"],
-            reaped_count: Array(fleet["reaped"]).size
+            reaped_count: reaped.size,
+            # Per-member reap actions — a terminate_failed entry is a leaked,
+            # still-running instance, not a reaped one (F1-08).
+            reaped: fleet["reaped"],
+            reap_incomplete: reaped.any? { |r| r.is_a?(Hash) && r["action"] == "terminate_failed" }
           }
         )
+      end
+
+      # L3 lifecycle lever: re-run reap for a failed/stuck fleet (F1-08).
+      def reap_agent_fleet(params)
+        mission = ::Ai::Mission.where(account_id: @account.id, mission_type: "agent_fleet")
+                               .find_by(id: params[:mission_id])
+        return error_result("agent_fleet mission not found") unless mission
+
+        result = ::System::AgentFleetMissionService.new(mission: mission)
+                                                   .reap!(force: ActiveModel::Type::Boolean.new.cast(params[:force]))
+        success_result(mission_id: mission.id, reap: result)
+      rescue ::System::AgentFleetMissionService::FleetError => e
+        error_result(e.message)
       end
 
       # A2A: mint an Ed25519 capability token (caller may invoke skill on target).

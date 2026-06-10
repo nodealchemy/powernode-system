@@ -207,6 +207,42 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:data][:fleet][:member_count]).to eq(2)
       expect(r[:data][:fleet][:report]["completed"]).to eq(2)
     end
+
+    # F1-08: a leaked member (terminate_failed) must be distinguishable from
+    # a clean reap, and agents need a lifecycle lever to clean up stuck fleets.
+    it "system_agent_fleet_status surfaces per-member reap actions and incompleteness" do
+      mission = create(:ai_mission, account: account, mission_type: "agent_fleet",
+                                    mission_template: fleet_template,
+                                    error_message: "reap incomplete: 1 member(s) failed to terminate",
+                                    configuration: { "fleet" => {
+                                      "members" => [ { "slot" => 0 } ],
+                                      "reaped" => [ { "instance_id" => "i-1", "action" => "terminate_failed" } ]
+                                    } })
+
+      r = fleet_tool.execute(params: { action: "system_agent_fleet_status", mission_id: mission.id })
+
+      expect(r[:data][:fleet][:reaped]).to eq([ { "instance_id" => "i-1", "action" => "terminate_failed" } ])
+      expect(r[:data][:fleet][:reap_incomplete]).to be true
+      expect(r[:data][:error_message]).to match(/reap incomplete/)
+    end
+
+    it "system_reap_agent_fleet re-runs reap for a stuck fleet" do
+      instance = create(:system_node_instance, :running, node: node)
+      mission = create(:ai_mission, account: account, mission_type: "agent_fleet",
+                                    mission_template: fleet_template,
+                                    configuration: { "fleet" => {
+                                      "plan" => { "size" => 1, "source" => "provision", "reap" => true },
+                                      "members" => [ { "slot" => 0, "instance_id" => instance.id, "peer_id" => nil } ]
+                                    } })
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(double(success?: true, error: nil))
+
+      r = fleet_tool.execute(params: { action: "system_reap_agent_fleet", mission_id: mission.id })
+
+      expect(r[:success]).to be true
+      expect(r[:data][:reap][:ok]).to be true
+      expect(r[:data][:reap][:reaped].first["action"]).to eq("terminated")
+    end
   end
 
   describe "A2A capability token (L2.5)" do
