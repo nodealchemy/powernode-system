@@ -184,7 +184,11 @@ module Ai
         # to drop to rails runner to inspect/edit provider rows.
         "system_list_providers"        => "system.providers.read",
         "system_get_provider"          => "system.providers.read",
-        "system_update_provider"       => "system.providers.update"
+        "system_update_provider"       => "system.providers.update",
+        # F8-03 — REST had full provider CRUD but MCP stopped at update, so
+        # fleet-expansion missions could not onboard/decommission providers.
+        "system_create_provider"       => "system.providers.create",
+        "system_delete_provider"       => "system.providers.delete"
       }.freeze
 
       def self.definition
@@ -910,6 +914,22 @@ module Ai
               enabled: { type: "boolean", required: false },
               config: { type: "object", required: false, description: "Hash of config keys to merge. nil values delete the corresponding key." }
             }
+          },
+          "system_create_provider" => {
+            description: "Create a substrate provider record (e.g. onboard a new local_qemu/libvirt host). Credentials are NOT accepted here — attach them afterwards via the Vault-backed provider credential flow (provider connections + BYOC credential test); secret material must never transit tool calls.",
+            parameters: {
+              name: { type: "string", required: true, description: "Unique provider name within the account" },
+              provider_type: { type: "string", required: true, description: "Provider type slug (e.g. local_qemu, proxmox, aws, pro_cloud)" },
+              description: { type: "string", required: false },
+              enabled: { type: "boolean", required: false, description: "Defaults to true" },
+              config: { type: "object", required: false, description: "Non-secret wiring config (e.g. host_node_instance_id, bridge_name)" }
+            }
+          },
+          "system_delete_provider" => {
+            description: "Delete a provider record. CASCADES: the provider's regions, connections, instance types, volume types and networks are destroyed with it — decommission instances first.",
+            parameters: {
+              id: { type: "string", required: true, description: "System::Provider id" }
+            }
           }
         }
       end
@@ -1037,6 +1057,8 @@ module Ai
         when "system_list_providers"                then list_providers(params)
         when "system_get_provider"                  then get_provider(params)
         when "system_update_provider"               then update_provider(params)
+        when "system_create_provider"               then create_provider(params)
+        when "system_delete_provider"               then delete_provider(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -3302,6 +3324,40 @@ module Ai
 
         provider.update!(attrs)
         success_result(provider: serialize_provider(provider.reload))
+      end
+
+      # F8-03 — mirrors REST ProvidersController#create. Credentials are
+      # deliberately NOT accepted: secret material must never transit tool
+      # calls — attach credentials afterwards via the Vault-backed provider
+      # credential flow.
+      def create_provider(params)
+        provider = ::System::Provider.new(
+          account_id: @account.id,
+          name: params[:name],
+          description: params[:description],
+          provider_type: params[:provider_type],
+          enabled: params[:enabled].nil? ? true : params[:enabled],
+          config: params[:config].is_a?(Hash) ? params[:config].transform_keys(&:to_s) : {}
+        )
+
+        if provider.save
+          success_result(provider: serialize_provider(provider))
+        else
+          error_result("Validation failed: #{provider.errors.full_messages.join(', ')}")
+        end
+      end
+
+      # Destroy cascades to the provider's regions/connections/instance
+      # types/volume types/networks (model-level dependent: :destroy) —
+      # the definition warns agents to decommission instances first.
+      def delete_provider(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:id])
+
+        if provider.destroy
+          success_result(deleted: true, id: provider.id)
+        else
+          error_result("Failed to delete provider: #{provider.errors.full_messages.join(', ')}")
+        end
       end
 
       def serialize_provider(p)

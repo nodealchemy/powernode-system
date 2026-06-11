@@ -1708,4 +1708,48 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:data][:error]).to include("not yet implemented")
     end
   end
+
+  # Audit F8-03 — the provider MCP surface was list/get/update only while
+  # REST had full CRUD: an agent on a fleet-expansion mission could not
+  # onboard or decommission a substrate provider via MCP.
+  describe "provider CRUD (audit F8-03)" do
+    it "system_create_provider creates a provider for the account" do
+      r = call("system_create_provider", name: "qemu-host-2", provider_type: "local_qemu",
+               description: "second libvirt host", config: { "bridge_name" => "br0" })
+
+      expect(r[:success]).to be true
+      provider = System::Provider.find(r[:data][:provider][:id])
+      expect(provider.account_id).to eq(account.id)
+      expect(provider.provider_type).to eq("local_qemu")
+      expect(provider.config["bridge_name"]).to eq("br0")
+      expect(provider.enabled).to be true
+    end
+
+    it "system_create_provider accepts no credential parameters (Vault-backed flow only)" do
+      params = described_class.action_definitions.fetch("system_create_provider")[:parameters].keys.map(&:to_s)
+      expect(params).not_to include("credentials", "api_key", "secret_key", "api_secret", "token")
+    end
+
+    it "system_create_provider surfaces validation errors structurally" do
+      r = call("system_create_provider", name: "", provider_type: "local_qemu")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/blank|validation/i)
+    end
+
+    it "system_delete_provider deletes the provider" do
+      provider = create(:system_provider, account: account)
+      r = call("system_delete_provider", id: provider.id)
+
+      expect(r[:success]).to be true
+      expect(System::Provider.find_by(id: provider.id)).to be_nil
+    end
+
+    it "system_delete_provider scopes to the current account" do
+      other = create(:system_provider) # different account
+      r = call("system_delete_provider", id: other.id)
+
+      expect(r[:success]).to be false
+      expect(System::Provider.find_by(id: other.id)).to be_present
+    end
+  end
 end
