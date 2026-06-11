@@ -107,7 +107,10 @@ module Api
             return render_error("Daily decision budget exhausted", status: :too_many_requests)
           end
 
-          task = params.permit(:skill, :input, capabilities: {}).to_h
+          # :input is permitted both as scalar and as nested hash — real
+          # dispatch forwards it as the a2a_call args, so hash payloads must
+          # survive strong params (the old placeholder ignored input entirely).
+          task = params.permit(:skill, :input, input: {}, capabilities: {}).to_h
           unless task["skill"].present?
             return render_error("skill is required", status: :unprocessable_content)
           end
@@ -118,12 +121,48 @@ module Api
                                 status: :unprocessable_content)
           end
 
-          # Synchronous dispatch placeholder — production path would dispatch
-          # over the mTLS channel and wait for the agent to call back via
-          # /node_api/peer/execute_result. For v1, we record the dispatch
-          # intent and return 202 Accepted; the agent fulfills out-of-band.
+          # Real dispatch (F6-05; previously a placeholder that 202'd without
+          # creating anything). Same recipe as AgentFleetMissionService#delegate!:
+          # mint a capability token for the edge, then enqueue an a2a_call
+          # System::Task addressed to the peer's instance — its agent task loop
+          # performs the call (presenting the token) and reports back via
+          # /node_api/peer/execute_result. Operator delegation is a self-edge
+          # (the peer executes its own offered skill), so the token's
+          # caller == target; PeerCapabilityService policy still applies and a
+          # denial surfaces here as an honest 403 instead of a false success.
+          instance = @peer.node_instance
+          begin
+            token = ::System::PeerCapabilityTokenSigner.mint!(
+              caller_instance: instance, target_instance: instance,
+              skill: task["skill"]
+            )
+          rescue ::System::PeerCapabilityTokenSigner::NotAuthorizedError,
+                 ::System::PeerCapabilityTokenSigner::SigningError => e
+            return render_error("Cannot mint capability token for delegation: #{e.message}",
+                                status: :forbidden)
+          end
+
+          dispatch = ::System::Task.create!(
+            account: @account, operable: instance, command: "a2a_call", status: "pending",
+            options: {
+              "target_instance_id" => instance.id,
+              "target_addresses" => @peer.addresses_array,
+              "skill" => task["skill"],
+              "args" => task["input"] || {},
+              "capability_token" => {
+                "envelope" => token.envelope_json,
+                "signature" => token.signature_b64,
+                "handle" => token.handle,
+                "expires_at" => Time.at(token.claims["exp"]).utc.iso8601,
+                "jti" => token.claims["jti"]
+              },
+              "delegated_by_user_id" => current_user&.id
+            }
+          )
+
           render_accepted(
             peer: serialize_peer(@peer.reload),
+            task_id: dispatch.id,
             dispatched_task: task,
             message: "Task dispatched; result will arrive via /node_api/peer/execute_result"
           )
