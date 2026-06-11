@@ -23,6 +23,7 @@ module Api
         # Internal::Ai::ProvisioningController.
         class AgentFleetController < BaseController
           before_action :load_mission
+          before_action :halt_unless_mission_active, except: [ :reap ]
 
           # POST /api/v1/system/worker_api/agent_fleet/missions/:mission_id/plan_fleet
           def plan_fleet
@@ -61,8 +62,25 @@ module Api
           end
 
           # POST .../reap
+          # Reap runs as a normal phase on active missions. On a cancelled or
+          # failed mission it still RUNS — releasing instances is the safe
+          # direction, and the cancel path dispatches it as cleanup — but a
+          # terminal mission is never advanced. Anything else (paused, draft,
+          # completed) skips entirely.
           def reap
-            run_phase!("reap") { fleet_service.reap! }
+            case @mission.status
+            when "active"
+              run_phase!("reap") { fleet_service.reap! }
+            when "cancelled", "failed"
+              result = fleet_service.reap!
+              render_success(result.merge(cleanup: true, mission_id: @mission.id, phase: @mission.current_phase))
+            else
+              render_success({ skipped: true, reason: "mission #{@mission.status}",
+                               mission_id: @mission.id, phase: @mission.current_phase })
+            end
+          rescue StandardError => e
+            Rails.logger.error("[WorkerApi::AgentFleet#reap] #{e.class}: #{e.message}")
+            render_error("reap failed: #{e.message}", status: :unprocessable_content)
           end
 
           private
@@ -97,6 +115,18 @@ module Api
             @mission = ::Ai::Mission.find_by(id: params[:mission_id])
             return render_not_found("Mission") unless @mission
             return render_error("Not an agent_fleet mission", status: :unprocessable_content) unless @mission.mission_type == "agent_fleet"
+          end
+
+          # An in-flight Sidekiq phase job arriving after cancel/pause/failure
+          # must not run phase work, advance the mission, or dispatch follow-on
+          # jobs. (reap is exempt: terminal missions still release their fleet
+          # — see #reap.)
+          def halt_unless_mission_active
+            return if @mission.status == "active"
+
+            Rails.logger.info("[WorkerApi::AgentFleet] Skipping #{action_name} — mission #{@mission.id} is #{@mission.status}")
+            render_success({ skipped: true, reason: "mission #{@mission.status}",
+                             mission_id: @mission.id, phase: @mission.current_phase })
           end
         end
       end

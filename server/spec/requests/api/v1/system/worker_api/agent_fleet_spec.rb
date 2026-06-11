@@ -158,4 +158,75 @@ RSpec.describe "Api::V1::System::WorkerApi::AgentFleet", type: :request do
       expect(m.configuration.dig("fleet", "report", "execution_outcome")).to eq("timeout")
     end
   end
+
+  describe "inactive mission guard (cancel/pause mid-flight)" do
+    before do
+      allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_kw|
+        inst = create(:system_node_instance, :running, node: node)
+        double(success?: true, error: nil, data: { instance: inst, cloud_instance_id: "ci-#{inst.id}" })
+      end
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(double(success?: true, error: nil))
+    end
+
+    it "skips phase work and does not advance a cancelled mission" do
+      m = fleet_mission(phase: "provision_fleet")
+      ::System::AgentFleetMissionService.new(mission: m).plan!
+      m.update!(status: "cancelled")
+
+      post path(m, "provision_fleet"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "skipped")).to be true
+      expect(m.reload.current_phase).to eq("provision_fleet")
+      expect(::System::ProvisioningService).not_to have_received(:provision_instance)
+    end
+
+    it "skips phase work on a paused mission" do
+      m = fleet_mission(phase: "delegate")
+      svc = ::System::AgentFleetMissionService.new(mission: m)
+      svc.plan!
+      svc.provision!
+      m.update!(status: "paused")
+
+      post path(m, "delegate"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "skipped")).to be true
+      expect(m.reload.current_phase).to eq("delegate")
+      expect(System::Task.where(command: "a2a_call")).to be_empty
+    end
+
+    it "reap on a cancelled mission releases members without advancing" do
+      m = fleet_mission(phase: "delegate")
+      svc = ::System::AgentFleetMissionService.new(mission: m)
+      svc.plan!
+      svc.provision!
+      m.update!(status: "cancelled")
+
+      post path(m, "reap"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)["data"]
+      expect(body["cleanup"]).to be true
+      expect(body["count"]).to eq(2)
+      expect(::System::ProvisioningService).to have_received(:terminate_instance).twice
+      m.reload
+      expect(m.current_phase).to eq("delegate")
+      expect(m.status).to eq("cancelled")
+    end
+
+    it "does not reap a paused mission" do
+      m = fleet_mission(phase: "reap")
+      svc = ::System::AgentFleetMissionService.new(mission: m)
+      svc.plan!
+      svc.provision!
+      m.update!(status: "paused")
+
+      post path(m, "reap"), headers: headers
+
+      expect(JSON.parse(response.body).dig("data", "skipped")).to be true
+      expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+    end
+  end
 end
