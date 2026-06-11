@@ -8,12 +8,11 @@ module System
 
         def perform
           pool = ::System::InstancePool.find(params[:pool_id])
-          if pool.respond_to?(:replenish!)
-            count = pool.replenish!
-            { pool_id: pool.id, replenished: count }
-          else
-            { pool_id: pool.id, replenished: 0 }
-          end
+          # replenish! is an InstancePoolService class method (pool: kwarg),
+          # not a model method — the previous respond_to?(:replenish!) guard
+          # was always false, so this executor silently no-opped.
+          result = ::System::InstancePoolService.replenish!(pool: pool)
+          { pool_id: pool.id, replenished: result[:provisioned] }
         end
 
         def summarize = "Replenish instance pool #{params[:pool_id]} to target size"

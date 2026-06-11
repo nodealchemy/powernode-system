@@ -8,12 +8,11 @@ module System
 
         def perform
           pool = ::System::InstancePool.find(params[:pool_id])
-          if pool.respond_to?(:drain!)
-            count = pool.drain!
-            { pool_id: pool.id, drained: count }
-          else
-            { pool_id: pool.id, drained: 0 }
-          end
+          # drain! is an InstancePoolService class method (pool: kwarg), not a
+          # model method — the previous respond_to?(:drain!) guard was always
+          # false, so this executor silently no-opped.
+          result = ::System::InstancePoolService.drain!(pool: pool)
+          { pool_id: pool.id, drained: result[:drained] }
         end
 
         def summarize = "Drain instance pool #{params[:pool_id]}"
