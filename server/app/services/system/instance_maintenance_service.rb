@@ -35,7 +35,14 @@ module System
 
       tasks.each do |task|
         Rails.logger.info("[InstanceMaintenanceService] Task: #{task}")
-        result = send("task_#{task}", instance, options)
+        result = begin
+          send("task_#{task}", instance, options)
+        rescue StandardError => e
+          # One task blowing up must not abort the remaining tasks or skip
+          # the maintenance record — record it as a failed task instead.
+          Rails.logger.error("[InstanceMaintenanceService] Task #{task} raised: #{e.class}: #{e.message}")
+          { success: false, error: "#{e.class}: #{e.message}" }
+        end
         results[task] = result
         all_success = false unless result[:success]
       end
@@ -254,7 +261,11 @@ module System
 
       node = instance.node
       if node
-        node.node_module_assignments.includes(node_module: :node_module_copy_paths).each do |assignment|
+        # Only file_spec is read here; the old nested includes referenced a
+        # phantom :node_module_copy_paths association (the real association
+        # is the singular copy_path) and raised AssociationNotFoundError
+        # whenever the node had any module assignment.
+        node.node_module_assignments.includes(:node_module).each do |assignment|
           mod = assignment.node_module
           if mod.file_spec.is_a?(Hash) && mod.file_spec["services"]
             services_to_check += mod.file_spec["services"]

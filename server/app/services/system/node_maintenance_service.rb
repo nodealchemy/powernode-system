@@ -49,7 +49,14 @@ module System
 
       tasks.each do |task|
         Rails.logger.info("[NodeMaintenanceService] Task: #{task}")
-        result = send("task_#{task}", node, options)
+        result = begin
+          send("task_#{task}", node, options)
+        rescue StandardError => e
+          # One task blowing up must not abort the remaining tasks or skip
+          # the maintenance record — record it as a failed task instead.
+          Rails.logger.error("[NodeMaintenanceService] Task #{task} raised: #{e.class}: #{e.message}")
+          { success: false, error: "#{e.class}: #{e.message}" }
+        end
         results[task] = result
         all_success = false unless result[:success]
       end

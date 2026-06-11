@@ -205,6 +205,26 @@ RSpec.describe System::IpManagementService do
         expect(result[:error]).to eq("association busy")
         expect(instance.reload.public_ip_address).to eq("203.0.113.7")
       end
+
+      # Audit F5-08 — release failures are deliberately non-fatal: the IP
+      # is already disassociated, so clearing the local allocation state
+      # must proceed (the warn log is the operator's signal to chase the
+      # billable orphan with the provider). The release must fire exactly
+      # once — a retry loop here could double-release a reallocated IP.
+      it "clears the allocation even when the provider release errors mid-way" do
+        allow(adapter).to receive(:disassociate_ip).with("assoc-7").and_return({ success: true })
+        allow(adapter).to receive(:release_ip).with("eip-7")
+          .and_return({ success: false, error: "still attached upstream" })
+
+        result = described_class.disassociate_public_ip(instance: instance, release: true)
+
+        expect(result[:success]).to be(true)
+        expect(adapter).to have_received(:release_ip).exactly(:once)
+        instance.reload
+        expect(instance.public_ip_address).to be_nil
+        expect(instance.config).not_to have_key("ip_allocation_id")
+        expect(instance.config).not_to have_key("ip_association_id")
+      end
     end
   end
 end
