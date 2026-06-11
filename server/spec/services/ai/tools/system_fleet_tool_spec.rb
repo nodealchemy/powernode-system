@@ -46,6 +46,54 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit F4-13 — the explicit instance_id path skipped the liveness + GPU
+  # gating the discovery path applies, so deploys landed on terminated or
+  # GPU-less instances and registered dead inference endpoints.
+  describe "deploy_inference_server target validation (F4-13)" do
+    let(:gpu_type) do
+      create(:system_provider_instance_type, account: account, gpu_count: 1,
+             gpu_type: "H100", gpu_memory_mb: 81_920)
+    end
+    let(:cpu_type) { create(:system_provider_instance_type, account: account, gpu_count: 0) }
+
+    before do
+      allow(::System::InferenceDeploymentService).to receive(:deploy!)
+        .and_return(::System::InferenceDeploymentService::Result.new(instance_id: "x"))
+    end
+
+    it "rejects an explicit terminated instance" do
+      dead = create(:system_node_instance, account: account, status: "terminated",
+                    provider_instance_type: gpu_type)
+
+      r = call("system_deploy_inference_server", instance_id: dead.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("terminated")
+      expect(::System::InferenceDeploymentService).not_to have_received(:deploy!)
+    end
+
+    it "rejects an explicit GPU-less instance" do
+      cpu = create(:system_node_instance, account: account, status: "running",
+                   provider_instance_type: cpu_type)
+
+      r = call("system_deploy_inference_server", instance_id: cpu.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/GPU/i)
+      expect(::System::InferenceDeploymentService).not_to have_received(:deploy!)
+    end
+
+    it "force: true bypasses the gating for intentional deploys" do
+      cpu = create(:system_node_instance, account: account, status: "running",
+                   provider_instance_type: cpu_type)
+
+      r = call("system_deploy_inference_server", instance_id: cpu.id, force: true)
+
+      expect(r[:success]).to be true
+      expect(::System::InferenceDeploymentService).to have_received(:deploy!)
+    end
+  end
+
   # Audit F4-11 — system_create_volume silently bound every volume to the
   # account's OLDEST provider/region (order(:created_at).first) with no way
   # to choose; on multi-provider accounts volumes landed on an arbitrary

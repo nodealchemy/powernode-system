@@ -1,26 +1,33 @@
 # frozen_string_literal: true
 
+require "net/http"
+
 module System
   # Deploys an inference runtime (ollama) onto a GPU node and makes it consumable
   # (AI/MCP workload substrate L1 — see docs/design/ai-mcp-workload-substrate.md):
   #
-  #   1. assign the gpu-nvidia-runtime + inference-ollama modules to the node
+  #   1. assign the gpu-<accelerator>-runtime + inference-ollama modules to the node
   #   2. resolve the inference endpoint (explicit override > SDWAN VIP > instance addr)
   #   3. register/point an ollama Ai::Provider at that endpoint (platform-agent use)
   #   4. (optional, best-effort) publish the endpoint as an SDWAN ServiceOffering so
   #      other node instances consume it cross-cluster
   #
   # Idempotent: re-deploying to the same node/endpoint reuses assignments + provider.
+  # F4-13: the provider only goes is_active when the endpoint answers a health
+  # probe — modules are applied asynchronously by the on-node agent, so a
+  # re-deploy after the runtime comes up is the activation path.
   class InferenceDeploymentService
-    GPU_MODULE       = "gpu-nvidia-runtime"
+    GPU_MODULE_TEMPLATE = "gpu-%s-runtime" # F4-13: accelerator-parameterized
+    DEFAULT_ACCELERATOR = "nvidia"
     INFERENCE_MODULE = "inference-ollama"
     DEFAULT_PORT     = 11_434
+    PROBE_TIMEOUT_SECONDS = 2
 
     class DeploymentError < StandardError; end
 
     Result = ::Struct.new(
       :instance_id, :node_id, :module_assignment_ids, :provider_id,
-      :endpoint, :model, :offering_id, keyword_init: true
+      :endpoint, :model, :offering_id, :provider_active, keyword_init: true
     )
 
     def self.deploy!(account:, **kwargs)
@@ -36,13 +43,13 @@ module System
     # @param endpoint_override [String, nil] explicit URL (e.g. an existing ollama for smoke)
     # @param sdwan_network_id / vip_cidr [String, nil] optional SDWAN publication
     # @param creator [User, nil] provider owner (defaults to an account user)
-    def deploy!(instance:, model: nil, endpoint_override: nil, sdwan_network_id: nil, vip_cidr: nil)
+    def deploy!(instance:, model: nil, endpoint_override: nil, sdwan_network_id: nil, vip_cidr: nil, accelerator: nil)
       raise DeploymentError, "instance is required" unless instance.is_a?(::System::NodeInstance)
 
       node = instance.node
       raise DeploymentError, "instance #{instance.id} has no node" unless node
 
-      gpu = find_module!(GPU_MODULE)
+      gpu = find_module!(gpu_module_name(accelerator))
       inf = find_module!(INFERENCE_MODULE)
       assignments = [ gpu, inf ].map { |m| assign_module!(node, m) }
 
@@ -67,7 +74,8 @@ module System
       Result.new(
         instance_id: instance.id, node_id: node.id,
         module_assignment_ids: assignments.map(&:id), provider_id: provider.id,
-        endpoint: endpoint, model: model, offering_id: offering_id
+        endpoint: endpoint, model: model, offering_id: offering_id,
+        provider_active: provider.is_active
       )
     end
 
@@ -78,6 +86,14 @@ module System
     def find_module!(name)
       ::System::NodeModule.find_by(account: account, name: name) ||
         raise(DeploymentError, "module '#{name}' not in catalog — run its seed first")
+    end
+
+    # F4-13: accelerator-parameterized runtime module (gpu-nvidia-runtime,
+    # gpu-amd-runtime, ...). Unknown accelerators surface naturally as a
+    # missing-module DeploymentError from find_module!.
+    def gpu_module_name(accelerator)
+      acc = accelerator.to_s.strip.downcase.presence || DEFAULT_ACCELERATOR
+      format(GPU_MODULE_TEMPLATE, acc)
     end
 
     def assign_module!(node, mod)
@@ -116,13 +132,18 @@ module System
 
     # Register (or repoint) an ollama Ai::Provider at the deployed endpoint, keyed
     # by (provider_type, api_endpoint) so re-deploys are idempotent.
+    #
+    # F4-13: is_active is gated on a live probe — registering an active
+    # provider at an endpoint that isn't serving yet routed platform agents
+    # to nothing. Re-deploys re-probe, so the idempotent path doubles as the
+    # activation (and honest deactivation) mechanism.
     def upsert_provider!(endpoint:, model:)
       model ||= "llama3.1:8b"
       provider = account.ai_providers.find_or_initialize_by(provider_type: "ollama", api_endpoint: endpoint)
       provider.name           = provider.name.presence || "Ollama @ #{endpoint}"
       provider.slug           = provider.slug.presence || provider_slug(endpoint)
       provider.api_base_url   = endpoint
-      provider.is_active      = true
+      provider.is_active      = endpoint_healthy?(endpoint)
       provider.priority_order = provider.priority_order.to_i.positive? ? provider.priority_order : 10
       provider.capabilities       = provider.capabilities.presence       || %w[text_generation chat]
       provider.supported_models   = provider.supported_models.presence   || [ { "id" => model, "name" => model } ]
@@ -133,6 +154,19 @@ module System
 
     def provider_slug(endpoint)
       "ollama-#{endpoint.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/(^-|-$)/, '')}"[0, 50]
+    end
+
+    # Short-timeout ollama health probe (GET /api/tags). Any failure —
+    # refused, timeout, non-2xx — means "not serving yet", never an error.
+    def endpoint_healthy?(endpoint)
+      uri = ::URI.parse("#{endpoint.to_s.chomp('/')}/api/tags")
+      res = ::Net::HTTP.start(uri.host, uri.port,
+                              open_timeout: PROBE_TIMEOUT_SECONDS,
+                              read_timeout: PROBE_TIMEOUT_SECONDS) { |http| http.get(uri.request_uri) }
+      res.is_a?(::Net::HTTPSuccess)
+    rescue StandardError => e
+      ::Rails.logger.info("[InferenceDeploymentService] endpoint probe failed (#{endpoint}): #{e.class}: #{e.message}")
+      false
     end
   end
 end

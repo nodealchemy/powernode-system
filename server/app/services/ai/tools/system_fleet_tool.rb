@@ -315,7 +315,7 @@ module Ai
             }
           },
           "system_deploy_inference_server" => {
-            description: "Deploy an inference runtime (ollama) onto a GPU node and make it consumable: assigns the gpu-nvidia-runtime + inference-ollama modules, registers an ollama Ai::Provider at the endpoint, and optionally publishes an SDWAN service offering for cross-instance consumption. Targets a node by instance_id, or auto-selects a GPU node via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
+            description: "Deploy an inference runtime (ollama) onto a GPU node and make it consumable: assigns the gpu-<accelerator>-runtime + inference-ollama modules, registers an ollama Ai::Provider at the endpoint (active only once the endpoint answers a health probe — modules apply asynchronously, so re-deploy after the runtime is up to activate), and optionally publishes an SDWAN service offering. Targets a node by instance_id (must be live + GPU-capable unless force), or auto-selects via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
             parameters: {
               instance_id: { type: "string", required: false },
               gpu_type: { type: "string", required: false },
@@ -323,7 +323,9 @@ module Ai
               model: { type: "string", required: false },
               endpoint_override: { type: "string", required: false },
               sdwan_network_id: { type: "string", required: false },
-              vip_cidr: { type: "string", required: false }
+              vip_cidr: { type: "string", required: false },
+              accelerator: { type: "string", required: false, description: "Runtime accelerator family — selects the gpu-<accelerator>-runtime module (default nvidia)" },
+              force: { type: "boolean", required: false, description: "Bypass the terminated/GPU gating on an explicit instance_id" }
             }
           },
           "system_grant_instance_mcp_tools" => {
@@ -1341,6 +1343,7 @@ module Ai
       # (AI/MCP workload substrate L1).
       def deploy_inference_server(params)
         instance = resolve_inference_target(params)
+        return instance if instance.is_a?(Hash) # F4-13 explicit-target validation error
         return error_result("no GPU-capable instance found (pass instance_id, or gpu_type/min_gpu_memory_mb)") unless instance
 
         result = ::System::InferenceDeploymentService.deploy!(
@@ -1348,7 +1351,8 @@ module Ai
           model: params[:model].presence,
           endpoint_override: params[:endpoint_override].presence,
           sdwan_network_id: params[:sdwan_network_id].presence,
-          vip_cidr: params[:vip_cidr].presence
+          vip_cidr: params[:vip_cidr].presence,
+          accelerator: params[:accelerator].presence
         )
         success_result(deployment: result.to_h)
       rescue ::System::InferenceDeploymentService::DeploymentError => e
@@ -1358,7 +1362,23 @@ module Ai
       # Pick the target GPU instance: explicit instance_id, else the first live
       # GPU-capable instance matching gpu_type / min_gpu_memory_mb.
       def resolve_inference_target(params)
-        return account_instances.find_by(id: params[:instance_id]) if params[:instance_id].present?
+        if params[:instance_id].present?
+          instance = account_instances.find_by(id: params[:instance_id])
+          return nil unless instance
+          return instance if ::ActiveModel::Type::Boolean.new.cast(params[:force])
+
+          # F4-13 — explicit targets get the same gating as discovery:
+          # deploying to a terminated or GPU-less instance registers a dead
+          # inference endpoint. force: true overrides for intentional cases.
+          if instance.status == "terminated"
+            return error_result("instance #{instance.id} is terminated — pass force: true to deploy anyway")
+          end
+          unless instance.gpu?
+            return error_result("instance #{instance.id} has no GPU — pass force: true to deploy anyway")
+          end
+
+          return instance
+        end
 
         type    = params[:gpu_type].presence
         min_mem = params[:min_gpu_memory_mb].to_i
