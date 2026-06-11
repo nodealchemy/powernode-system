@@ -7,7 +7,7 @@
 # Flow:
 #   1. Operation is created with status: "pending"
 #   2. Operation#after_commit enqueues this job
-#   3. This job POSTs to /api/v1/system/worker_api/operations/:id/execute
+#   3. This job POSTs to /api/v1/system/worker_api/tasks/:id/execute
 #   4. Server-side ExecutionDispatcher claims the op (start!), runs the
 #      matching runtime service, and transitions to complete/failed before
 #      returning the response.
@@ -27,7 +27,7 @@ class SystemExecuteTaskJob < BaseJob
     log_info("[SystemExecute] Starting", operation_id: operation_id)
 
     response = api_client.post(
-      "/api/v1/system/worker_api/operations/#{operation_id}/execute"
+      "/api/v1/system/worker_api/tasks/#{operation_id}/execute"
     )
 
     task_status = response.dig("data", "task", "status")

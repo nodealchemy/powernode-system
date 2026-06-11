@@ -9,7 +9,7 @@ module Api
         class TasksController < BaseController
           before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :events, :execute ]
 
-          # GET /api/v1/system/worker_api/operations
+          # GET /api/v1/system/worker_api/tasks
           # List operations for resources managed by this worker
           def index
             authorize_worker_permission!("system.tasks.read")
@@ -24,7 +24,7 @@ module Api
             )
           end
 
-          # GET /api/v1/system/worker_api/operations/pending
+          # GET /api/v1/system/worker_api/tasks/pending
           # Get pending operations that need to be processed
           def pending
             authorize_worker_permission!("system.tasks.read")
@@ -39,13 +39,13 @@ module Api
             )
           end
 
-          # GET /api/v1/system/worker_api/operations/:id
+          # GET /api/v1/system/worker_api/tasks/:id
           def show
             authorize_worker_permission!("system.tasks.read")
             render_success(task: serialize_operation_full(@operation))
           end
 
-          # POST /api/v1/system/worker_api/operations
+          # POST /api/v1/system/worker_api/tasks
           # Create new operation
           def create
             authorize_worker_permission!("system.tasks.create")
@@ -63,7 +63,7 @@ module Api
             end
           end
 
-          # POST /api/v1/system/worker_api/operations/:id/start
+          # POST /api/v1/system/worker_api/tasks/:id/start
           # Mark operation as started
           def start
             authorize_worker_permission!("system.tasks.manage")
@@ -82,7 +82,7 @@ module Api
             end
           end
 
-          # PUT /api/v1/system/worker_api/operations/:id/progress
+          # PUT /api/v1/system/worker_api/tasks/:id/progress
           # Update operation progress
           def progress
             authorize_worker_permission!("system.tasks.manage")
@@ -103,7 +103,7 @@ module Api
             )
           end
 
-          # POST /api/v1/system/worker_api/operations/:id/complete
+          # POST /api/v1/system/worker_api/tasks/:id/complete
           # Mark operation as completed
           def complete
             authorize_worker_permission!("system.tasks.manage")
@@ -129,7 +129,7 @@ module Api
             render_success(task: serialize_task(@operation))
           end
 
-          # POST /api/v1/system/worker_api/operations/:id/fail
+          # POST /api/v1/system/worker_api/tasks/:id/fail
           # Mark operation as failed
           def fail
             authorize_worker_permission!("system.tasks.manage")
@@ -150,7 +150,7 @@ module Api
             render_success(task: serialize_task(@operation))
           end
 
-          # POST /api/v1/system/worker_api/operations/:id/execute
+          # POST /api/v1/system/worker_api/tasks/:id/execute
           #
           # Atomically claims the operation, runs the matching runtime service,
           # and transitions to complete/failed before responding. Holds the HTTP
@@ -177,7 +177,7 @@ module Api
             end
           end
 
-          # POST /api/v1/system/worker_api/operations/:id/events
+          # POST /api/v1/system/worker_api/tasks/:id/events
           # Add event to operation log.
           # F5-02: action was named add_event while the route declares
           # `post :events` → action :events — the endpoint raised
