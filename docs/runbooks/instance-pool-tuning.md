@@ -193,7 +193,7 @@ for any claimed members to finish their normal terminate, then delete.
 
 The reaper does **not** emit dedicated `pool.*` FleetEvent signals — its
 replenish / recycle / drain decisions go to the worker log
-(`[InstancePoolService] ...`, `[InstancePoolReaperService] ...`). To
+(`[InstancePoolService] ...`, `[InstancePoolReplenisherJob] ...`). To
 observe a pool:
 
 - **Live counts** — `system_get_instance_pool` returns `ready_count`,
