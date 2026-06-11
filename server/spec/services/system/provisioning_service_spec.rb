@@ -10,7 +10,7 @@ RSpec.describe System::ProvisioningService do
   let(:node)          { create(:system_node, account: account) }
   let(:region)        { create(:system_provider_region) }
   let(:instance_type) { create(:system_provider_instance_type) }
-  let(:adapter)       { instance_double("System::Providers::BaseProvider", provider_type: "mock") }
+  let(:adapter)       { instance_double("System::Providers::BaseProvider", provider_type: "mock", supports?: true) }
 
   before do
     allow(System::Providers::Registry).to receive(:for_node).and_return(adapter)
@@ -23,6 +23,20 @@ RSpec.describe System::ProvisioningService do
       provider_instance_type_id: instance_type.id,
       operation_id: operation_id
     )
+  end
+
+  # Audit F4-06 — capability gate: refuse before creating the NodeInstance
+  # row when the adapter has no instance surface.
+  describe "capability gate" do
+    it "returns a structured error without creating an instance row when unsupported" do
+      allow(adapter).to receive(:supports?).with(:instances).and_return(false)
+
+      result = nil
+      expect { result = provision }.not_to change(System::NodeInstance, :count)
+
+      expect(result.success?).to be(false)
+      expect(result.error).to match(/does not support instance/i)
+    end
   end
 
   describe "failure recovery — no orphaned :pending instances" do

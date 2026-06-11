@@ -164,6 +164,11 @@ module System
         return { success: false, error: e.message }
       end
 
+      # Capability gate (F4-06) — local_qemu/proxmox have no IP surface.
+      unless provider_adapter.supports?(:ips)
+        return { success: false, error: "Provider #{provider_adapter.provider_type} does not support IP operations" }
+      end
+
       begin
         result = provider_adapter.allocate_ip
 
@@ -195,6 +200,11 @@ module System
         Providers::Registry.for(connection, region: region)
       rescue Providers::Registry::UnknownProviderError => e
         return { success: false, error: e.message }
+      end
+
+      # Capability gate (F4-06) — same surface check as allocate_ip.
+      unless provider_adapter.supports?(:ips)
+        return { success: false, error: "Provider #{provider_adapter.provider_type} does not support IP operations" }
       end
 
       begin

@@ -21,6 +21,12 @@ module System
         "local_qemu"
       end
 
+      # No volume/IP/image surface — libvirt domains get their disks from
+      # template image artifacts and addresses from the bridge (F4-06).
+      def capabilities
+        %i[instances sync]
+      end
+
       # Provision a domain from a NodeInstance + Template's image artifacts.
       # Returns the BaseProvider-shape instance hash so ProvisioningService
       # can normalize transitions just like cloud paths.

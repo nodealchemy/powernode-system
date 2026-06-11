@@ -65,6 +65,22 @@ module System
         instance
       end
 
+      # Capability discovery (audit F4-06). Services check
+      # `adapter.supports?(:volumes)` etc. BEFORE creating DB rows or
+      # dispatching provider calls, so an unsupported operation fails as a
+      # structured Result instead of a NotImplementedError mid-mission.
+      # The full set is the default; providers with a narrower surface
+      # override #capabilities.
+      CAPABILITIES = %i[instances volumes ips images sync].freeze
+
+      def capabilities
+        CAPABILITIES
+      end
+
+      def supports?(capability)
+        capabilities.include?(capability.to_sym)
+      end
+
       # Cheap, side-effect-free authentication probe. Returns true when
       # credentials are valid; false when they're rejected. On failure,
       # populates `#last_authentication_error` with a human-readable

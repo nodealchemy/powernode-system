@@ -44,6 +44,11 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
+      # Capability gate (F4-06) — refuse before creating the instance row.
+      unless provider_adapter.supports?(:instances)
+        return Runtime::Result.err(error: "Provider #{provider_adapter.provider_type} does not support instance provisioning")
+      end
+
       Rails.logger.info("[ProvisioningService] Provisioning instance for node #{node.name} in #{region.name} using #{provider_adapter.provider_type}")
 
       # Idempotency — a retried call carrying the same operation_id must not

@@ -99,6 +99,13 @@ module System
         "proxmox"
       end
 
+      # No IP surface — the IP operations below decline structurally
+      # (DHCP / ipconfig0 on the instance instead). Declared here so
+      # services can discover it up front (F4-06).
+      def capabilities
+        %i[instances volumes images sync]
+      end
+
       # ----------------------------------------------------------------
       # Connection / health
       # ----------------------------------------------------------------

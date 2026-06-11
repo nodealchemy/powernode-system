@@ -106,6 +106,11 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
+      # Capability gate (F4-06) — pro_cloud has no region-wide listing.
+      unless provider_adapter.supports?(:sync)
+        return Runtime::Result.err(error: "Provider #{provider_adapter.provider_type} does not support instance sync (list_instances)")
+      end
+
       cloud_result = provider_adapter.list_instances
       return Runtime::Result.err(error: cloud_result[:error]) unless cloud_result[:success]
 

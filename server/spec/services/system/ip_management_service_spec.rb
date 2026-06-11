@@ -18,6 +18,7 @@ RSpec.describe System::IpManagementService do
       .with(region, account).and_return(connection)
     allow(System::Providers::Registry).to receive(:for)
       .with(connection, region: region).and_return(adapter)
+    allow(adapter).to receive(:supports?).and_return(true)
   end
 
   describe ".allocate_ip" do
@@ -30,6 +31,20 @@ RSpec.describe System::IpManagementService do
       expect(result[:success]).to be(true)
       expect(result[:allocation_id]).to eq("eip-1")
       expect(result[:public_ip]).to eq("203.0.113.9")
+    end
+
+    # Audit F4-06 — local_qemu has no IP surface; the capability gate must
+    # refuse structurally instead of letting NotImplementedError propagate.
+    it "returns a structured error when the provider lacks IP support" do
+      allow(adapter).to receive(:supports?).with(:ips).and_return(false)
+      allow(adapter).to receive(:provider_type).and_return("local_qemu")
+      allow(adapter).to receive(:allocate_ip)
+
+      result = described_class.allocate_ip(region: region, account: account)
+
+      expect(result[:success]).to be(false)
+      expect(result[:error]).to match(/does not support IP/i)
+      expect(adapter).not_to have_received(:allocate_ip)
     end
 
     it "returns an error result when no provider connection covers the region" do

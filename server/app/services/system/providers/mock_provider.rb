@@ -15,6 +15,12 @@ module System
         "mock"
       end
 
+      # Mock credentials are always valid — without this the BYOC credential
+      # test path returned BaseProvider's NotImplementedError message (F4-06).
+      def authenticate?
+        true
+      end
+
       # ===========================================
       # Instance Lifecycle Operations
       # ===========================================

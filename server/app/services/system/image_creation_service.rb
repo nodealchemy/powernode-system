@@ -61,6 +61,11 @@ module System
       Rails.logger.info("[ImageCreationService] Creating image from instance #{instance.name}")
 
       Providers::Registry.with_adapter(instance: instance) do |adapter|
+        # Capability gate (F4-06) — local_qemu has no image surface.
+        unless adapter.supports?(:images)
+          return Runtime::Result.err(error: "Provider #{adapter.provider_type} does not support images")
+        end
+
         cloud_result = adapter.create_image(instance.cloud_instance_id, name: name, description: description)
 
         if cloud_result[:success]
@@ -84,6 +89,10 @@ module System
       validate_instance!(instance)
 
       Providers::Registry.with_adapter(instance: instance) do |adapter|
+        unless adapter.supports?(:images)
+          return Runtime::Result.err(error: "Provider #{adapter.provider_type} does not support images")
+        end
+
         result = adapter.get_image(image_id)
         if result[:success]
           Runtime::Result.ok(data: result.except(:success))
@@ -99,6 +108,10 @@ module System
       validate_instance!(instance)
 
       Providers::Registry.with_adapter(instance: instance) do |adapter|
+        unless adapter.supports?(:images)
+          return Runtime::Result.err(error: "Provider #{adapter.provider_type} does not support images")
+        end
+
         result = adapter.delete_image(image_id)
         if result[:success]
           forget_cloud_image(instance, image_id)

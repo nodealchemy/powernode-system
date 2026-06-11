@@ -113,6 +113,12 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
+      # Capability gate (F4-06) — refuse BEFORE creating the volume row;
+      # an unsupported adapter used to strand the row in "creating".
+      unless provider_adapter.supports?(:volumes)
+        return Runtime::Result.err(error: "Provider #{provider_adapter.provider_type} does not support volumes")
+      end
+
       volume = ::System::ProviderVolume.create!(
         name: options[:name] || "volume-#{Time.current.strftime('%Y%m%d%H%M%S')}",
         account: account,

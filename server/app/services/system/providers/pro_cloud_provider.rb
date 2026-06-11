@@ -51,6 +51,32 @@ module System
         "pro_cloud"
       end
 
+      # Platform-pool brokering covers instance lifecycle only (F4-06):
+      # no volume/IP/image surface, and no region-wide listing — the
+      # platform DB is the source of truth for brokered instances.
+      def capabilities
+        %i[instances]
+      end
+
+      # BYOC/credential probe — delegate to the Vultr connection test
+      # instead of inheriting BaseProvider's raise (F4-06).
+      def authenticate?
+        result = test_connection
+        result.is_a?(Hash) && result[:success] == true
+      end
+
+      # Structurally declined: the platform's single pool key would list
+      # every customer's brokered instance — per-account instances are
+      # tracked in the platform DB instead (F4-06).
+      def list_instances(_filters = {})
+        {
+          success: false,
+          error: "Pro Cloud (platform pool) does not support region-wide instance listing; " \
+                 "brokered instances are tracked per-account in the platform database",
+          instances: []
+        }
+      end
+
       # ===========================================
       # Instance Lifecycle
       # ===========================================
