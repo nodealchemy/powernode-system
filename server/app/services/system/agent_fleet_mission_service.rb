@@ -582,7 +582,11 @@ module System
           return "already_returned"
         end
 
-        instance.update!(pool_state: "ready", pool_acquired_at: nil)
+        # F2-05: restart the ready-TTL anchor (recycle_stale_members! keys
+        # stale_ready off pool_warming_started_at) so the returned member is
+        # reused instead of stale-recycled on the next reaper tick.
+        instance.update!(pool_state: "ready", pool_acquired_at: nil,
+                         pool_warming_started_at: Time.current)
         "returned"
       else
         result = ::System::ProvisioningService.terminate_instance(instance: instance)

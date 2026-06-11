@@ -441,6 +441,17 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
         expect(result[:reaped].first["action"]).to eq("already_returned")
         expect(pool_instance.reload.pool_state).to eq("ready")
       end
+
+      # Audit F2-05 — same omission as system_return_pooled_instance: leaving
+      # pool_warming_started_at at provision time meant recycle_stale_members!
+      # stale-recycled the member on the first reaper tick after reap-return.
+      it "resets the ready-TTL anchor on reap-return" do
+        pool_instance.update_columns(pool_warming_started_at: 5.hours.ago)
+
+        pool_service.reap!
+
+        expect(pool_instance.reload.pool_warming_started_at).to be > 1.minute.ago
+      end
     end
   end
 

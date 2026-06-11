@@ -950,6 +950,29 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         expect(claimed_instance.pool_acquired_at).to be_nil
       end
 
+      # Audit F2-05 — return left pool_warming_started_at at the original
+      # provision timestamp; recycle_stale_members! anchors stale_ready on
+      # that column, so a returned member older than ready_ttl was terminated
+      # on the next 60s reaper tick instead of being reused.
+      it "resets the ready-TTL anchor so a returned member is not immediately stale-recycled" do
+        old_member = create(:system_node_instance, :running, node: pool_node,
+                            instance_pool_id: pool.id,
+                            pool_state: "claimed",
+                            pool_acquired_at: 2.minutes.ago,
+                            pool_warming_started_at: 5.hours.ago,
+                            provider_region: provider_region,
+                            provider_instance_type: provider_instance_type)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        r = call("system_return_pooled_instance", instance_id: old_member.id)
+        expect(r[:success]).to be true
+        expect(old_member.reload.pool_warming_started_at).to be > 1.minute.ago
+
+        ::System::InstancePoolService.recycle_stale_members!(pool: pool)
+        expect(old_member.reload.pool_state).to eq("ready")
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+      end
+
       it "errors when instance was never in a pool" do
         unrelated_node = create(:system_node, account: account, node_template: template, name: "unrelated")
         free_instance = create(:system_node_instance, :running, node: unrelated_node)

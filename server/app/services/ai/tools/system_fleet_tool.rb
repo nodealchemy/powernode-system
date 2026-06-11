@@ -2889,7 +2889,12 @@ module Ai
 
         pool = ::System::InstancePool.for_account(@account).find(instance.instance_pool_id)
 
-        instance.update!(pool_state: "ready", pool_acquired_at: nil)
+        # pool_warming_started_at doubles as the ready-TTL anchor in
+        # InstancePoolService#recycle_stale_members! — without restarting it
+        # here, a member older than ready_ttl is stale-recycled on the next
+        # reaper tick instead of being reused.
+        instance.update!(pool_state: "ready", pool_acquired_at: nil,
+                         pool_warming_started_at: Time.current)
 
         success_result(
           returned: true,
