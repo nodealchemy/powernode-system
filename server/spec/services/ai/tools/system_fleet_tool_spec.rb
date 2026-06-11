@@ -46,6 +46,54 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit F4-08 — agents could provision, terminate, and drain but not
+  # start/stop/reboot, even though InstanceControlService and the AASM fully
+  # support these operations. For GPU-cost-sensitive missions stop/start is
+  # the single biggest missing cost-control lever on the MCP surface.
+  describe "instance control actions (F4-08)" do
+    let(:control_node) { create(:system_node, account: account, node_template: template) }
+    let(:instance) { create(:system_node_instance, :running, node: control_node) }
+
+    it "documents the three control action contracts" do
+      defs = described_class.action_definitions
+      %w[system_start_instance system_stop_instance system_reboot_instance].each do |action|
+        d = defs.fetch(action)
+        expect(d[:parameters][:instance_id][:required]).to be true
+        expect(d[:parameters].keys).to include(:operation_id, :force)
+      end
+    end
+
+    it "maps the three actions to system.instances.control" do
+      %w[system_start_instance system_stop_instance system_reboot_instance].each do |action|
+        expect(described_class::ACTION_PERMISSIONS.fetch(action)).to eq("system.instances.control")
+      end
+    end
+
+    %w[start stop reboot].each do |op|
+      it "dispatches system_#{op}_instance through InstanceControlService" do
+        expect(::System::InstanceControlService).to receive(:execute)
+          .with(instance: instance, action: op, operation_id: "op-1", force: true)
+          .and_return(::System::Runtime::Result.ok(data: { status: "ok" }))
+
+        r = call("system_#{op}_instance", instance_id: instance.id, operation_id: "op-1", force: true)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:instance]).to be_present
+        expect(r[:data][:action]).to eq(op)
+      end
+    end
+
+    it "surfaces control failures as error results" do
+      allow(::System::InstanceControlService).to receive(:execute)
+        .and_return(::System::Runtime::Result.err(error: "Cannot stop instance in pending status"))
+
+      r = call("system_stop_instance", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("Cannot stop")
+    end
+  end
+
   describe "GPU discovery (audit P6)" do
     let(:gpu_type) { create(:system_provider_instance_type, account: account, gpu_count: 8, gpu_type: "H100", gpu_memory_mb: 81_920) }
     let(:cpu_type) { create(:system_provider_instance_type, account: account, gpu_count: 0) }

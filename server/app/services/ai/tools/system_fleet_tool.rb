@@ -59,6 +59,11 @@ module Ai
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
         "system_destroy_instance"       => "system.instances.control",
+        # F4-08 — lifecycle control (start/stop/reboot): same level as
+        # terminate, wraps InstanceControlService.
+        "system_start_instance"         => "system.instances.control",
+        "system_stop_instance"          => "system.instances.control",
+        "system_reboot_instance"        => "system.instances.control",
 
         # Promotion (state-changing across the fleet — same level as module update)
         "system_promote_module_version" => "system.modules.update",
@@ -401,6 +406,32 @@ module Ai
           "system_terminate_instance" => {
             description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated). Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
             parameters: { instance_id: { type: "string", required: true } }
+          },
+          # F4-08 — lifecycle control. Cloud + physical (SSH/IPMI) paths via
+          # InstanceControlService; AASM start/stop/reboot events.
+          "system_start_instance" => {
+            description: "Start a stopped instance (cloud adapter or physical SSH/IPMI path). The restart counterpart to system_stop_instance.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
+              force: { type: "boolean", required: false }
+            }
+          },
+          "system_stop_instance" => {
+            description: "Stop a running instance WITHOUT terminating it — disk and registry row are retained, compute billing stops on most cloud providers. The cost-control lever for idle GPU instances; restart with system_start_instance.",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
+              force: { type: "boolean", required: false }
+            }
+          },
+          "system_reboot_instance" => {
+            description: "Reboot a hung or misbehaving instance in place (no reprovision, addresses retained).",
+            parameters: {
+              instance_id: { type: "string", required: true },
+              operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
+              force: { type: "boolean", required: false }
+            }
           },
           "system_destroy_instance" => {
             description: "Hard-destroy a NodeInstance registry row, walking known FK dependents " \
@@ -1013,6 +1044,9 @@ module Ai
         when "system_list_isolation_tiers"     then list_isolation_tiers(params)
         when "system_provision_instance"       then provision_instance(params)
         when "system_terminate_instance"       then terminate_instance(params)
+        when "system_start_instance"           then control_instance(params, "start")
+        when "system_stop_instance"            then control_instance(params, "stop")
+        when "system_reboot_instance"          then control_instance(params, "reboot")
         when "system_destroy_instance"         then destroy_instance(params)
         when "system_list_templates"           then list_templates
         when "system_get_template"             then get_template(params)
@@ -1530,6 +1564,22 @@ module Ai
         return error_result(result.error || "termination failed") unless result.success?
 
         success_result(terminated: true, instance: serialize_instance(instance.reload))
+      end
+
+      # F4-08 — start/stop/reboot via InstanceControlService: the
+      # cost-control lever agents lacked (provision/terminate/drain existed,
+      # but not "stop the idle GPU instance overnight").
+      def control_instance(params, action)
+        instance = account_instances.find(params[:instance_id])
+        result = ::System::InstanceControlService.execute(
+          instance: instance,
+          action: action,
+          operation_id: params[:operation_id],
+          force: ::ActiveModel::Type::Boolean.new.cast(params[:force]) || false
+        )
+        return error_result(result.error || "#{action} failed") unless result.success?
+
+        success_result(action: action, instance: serialize_instance(instance.reload))
       end
 
       # Direct FK dependents of system_node_instances that have NO dependent:destroy
