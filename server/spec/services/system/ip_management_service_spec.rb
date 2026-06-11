@@ -87,4 +87,124 @@ RSpec.describe System::IpManagementService do
       expect(result[:error]).to match(/No provider connection/)
     end
   end
+
+  # F4-09 — the instance-side pair (associate/disassociate) had no coverage;
+  # only the region-side pair (allocate/release) was pinned by F4-03. These
+  # resolve their adapter from the INSTANCE (Registry.for_instance), a
+  # different lookup path than allocate/release.
+  describe "instance-side association (F4-09)" do
+    let(:platform) { create(:system_node_platform, account: account) }
+    let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+    let(:node)     { create(:system_node, account: account, node_template: template) }
+    let(:instance) do
+      create(:system_node_instance, node: node, status: "running",
+             cloud_instance_id: "vm-9", public_ip_address: nil)
+    end
+
+    before do
+      allow(System::Providers::Registry).to receive(:for_instance)
+        .with(instance).and_return(adapter)
+    end
+
+    describe ".associate_public_ip" do
+      it "associates and persists the IP + allocation ids onto the instance" do
+        allow(adapter).to receive(:associate_ip)
+          .with("vm-9", allocation_id: nil)
+          .and_return({ success: true, public_ip: "203.0.113.7",
+                        allocation_id: "eip-7", association_id: "assoc-7" })
+
+        result = described_class.associate_public_ip(instance: instance)
+
+        expect(result[:success]).to be(true)
+        instance.reload
+        expect(instance.public_ip_address).to eq("203.0.113.7")
+        expect(instance.config["ip_allocation_id"]).to eq("eip-7")
+        expect(instance.config["ip_association_id"]).to eq("assoc-7")
+      end
+
+      it "short-circuits when the instance already has a public IP" do
+        instance.update!(public_ip_address: "198.51.100.1")
+        allow(adapter).to receive(:associate_ip)
+
+        result = described_class.associate_public_ip(instance: instance)
+
+        expect(result[:success]).to be(true)
+        expect(result[:message]).to match(/already associated/i)
+        expect(adapter).not_to have_received(:associate_ip)
+      end
+
+      it "errors when the instance has no cloud instance ID" do
+        bare = create(:system_node_instance, node: node, status: "running")
+
+        result = described_class.associate_public_ip(instance: bare)
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to match(/no cloud instance ID/i)
+      end
+
+      it "propagates a provider failure without mutating the instance" do
+        allow(adapter).to receive(:associate_ip)
+          .and_return({ success: false, error: "address limit exceeded" })
+
+        result = described_class.associate_public_ip(instance: instance)
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to eq("address limit exceeded")
+        expect(instance.reload.public_ip_address).to be_nil
+      end
+    end
+
+    describe ".disassociate_public_ip" do
+      before do
+        instance.update!(
+          public_ip_address: "203.0.113.7",
+          config: instance.config.merge("ip_allocation_id" => "eip-7",
+                                        "ip_association_id" => "assoc-7")
+        )
+      end
+
+      it "disassociates, releases, and clears the instance's IP state" do
+        allow(adapter).to receive(:disassociate_ip).with("assoc-7").and_return({ success: true })
+        allow(adapter).to receive(:release_ip).with("eip-7").and_return({ success: true })
+
+        result = described_class.disassociate_public_ip(instance: instance)
+
+        expect(result[:success]).to be(true)
+        instance.reload
+        expect(instance.public_ip_address).to be_nil
+        expect(instance.config).not_to have_key("ip_allocation_id")
+        expect(instance.config).not_to have_key("ip_association_id")
+      end
+
+      it "skips the release when release: false" do
+        allow(adapter).to receive(:disassociate_ip).and_return({ success: true })
+        allow(adapter).to receive(:release_ip)
+
+        result = described_class.disassociate_public_ip(instance: instance, release: false)
+
+        expect(result[:success]).to be(true)
+        expect(adapter).not_to have_received(:release_ip)
+      end
+
+      it "returns ok when there is no public IP to disassociate" do
+        bare = create(:system_node_instance, node: node, status: "running")
+
+        result = described_class.disassociate_public_ip(instance: bare)
+
+        expect(result[:success]).to be(true)
+        expect(result[:message]).to match(/no public ip/i)
+      end
+
+      it "propagates a disassociate failure and leaves the IP state intact" do
+        allow(adapter).to receive(:disassociate_ip)
+          .and_return({ success: false, error: "association busy" })
+
+        result = described_class.disassociate_public_ip(instance: instance)
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to eq("association busy")
+        expect(instance.reload.public_ip_address).to eq("203.0.113.7")
+      end
+    end
+  end
 end

@@ -189,8 +189,10 @@ FactoryBot.define do
     status { "available" }
 
     trait :attached do
-      status { "attached" }
-      cloud_volume_id { "vol-#{SecureRandom.hex(8)}" }
+      # F4-09: the provider-side id column is external_id; "attached" is not a
+      # model status — attachment is node_instance_id presence + "in-use".
+      status { "in-use" }
+      external_id { "vol-#{SecureRandom.hex(8)}" }
     end
 
     trait :raid0 do

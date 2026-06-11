@@ -30,7 +30,7 @@ module System
       validate_volume!(volume)
       validate_instance!(instance)
 
-      return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.cloud_volume_id.present?
+      return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.external_id.present?
       return Runtime::Result.err(error: "Instance has no cloud instance ID") unless instance.cloud_instance_id.present?
       return Runtime::Result.err(error: "Volume is already attached") if volume.attached?
 
@@ -43,7 +43,7 @@ module System
       end
 
       device ||= next_available_device(instance)
-      result = provider_adapter.attach_volume(volume.cloud_volume_id, instance.cloud_instance_id, device: device)
+      result = provider_adapter.attach_volume(volume.external_id, instance.cloud_instance_id, device: device)
 
       if result[:success]
         attached_device = result[:device] || device
@@ -69,7 +69,7 @@ module System
     def detach(volume:, force: false)
       validate_volume!(volume)
 
-      return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.cloud_volume_id.present?
+      return Runtime::Result.err(error: "Volume has no cloud volume ID") unless volume.external_id.present?
 
       return Runtime::Result.ok(data: { message: "Volume is not attached" }) unless volume.attached?
 
@@ -81,7 +81,7 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
-      result = provider_adapter.detach_volume(volume.cloud_volume_id, force: force)
+      result = provider_adapter.detach_volume(volume.external_id, force: force)
 
       if result[:success]
         volume.detach!
@@ -123,7 +123,7 @@ module System
         name: options[:name] || "volume-#{Time.current.strftime('%Y%m%d%H%M%S')}",
         account: account,
         provider_region: region,
-        provider_volume_type: volume_type,
+        volume_type: volume_type,
         size_gb: size_gb,
         status: "creating"
       )
@@ -142,10 +142,12 @@ module System
       result = provider_adapter.create_volume(provider_params)
 
       if result[:success]
-        volume.update!(cloud_volume_id: result[:volume_id], status: "available")
+        volume.update!(external_id: result[:volume_id], status: "available")
         Runtime::Result.ok(data: { volume: volume })
       else
-        volume.update!(status: "failed")
+        # "failed" is not in ProviderVolume::STATUSES — writing it raised
+        # RecordInvalid and stranded the row in "creating" (F4-09).
+        volume.update!(status: "error")
         Runtime::Result.err(error: result[:error], data: { volume: volume })
       end
     rescue Providers::BaseProvider::ProviderError => e
@@ -161,7 +163,7 @@ module System
     def delete(volume:)
       validate_volume!(volume)
 
-      unless volume.cloud_volume_id.present?
+      unless volume.external_id.present?
         volume.destroy!
         return Runtime::Result.ok
       end
@@ -176,7 +178,7 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
-      result = provider_adapter.delete_volume(volume.cloud_volume_id)
+      result = provider_adapter.delete_volume(volume.external_id)
 
       if result[:success]
         volume.destroy!
@@ -194,7 +196,7 @@ module System
     def check(volume:)
       validate_volume!(volume)
 
-      unless volume.cloud_volume_id.present?
+      unless volume.external_id.present?
         return Runtime::Result.ok(data: { status: volume.status, health: "unknown", message: "No cloud volume" })
       end
 
@@ -206,7 +208,7 @@ module System
         return Runtime::Result.err(error: e.message)
       end
 
-      result = provider_adapter.get_volume(volume.cloud_volume_id)
+      result = provider_adapter.get_volume(volume.external_id)
 
       if result[:success]
         volume.update!(status: result[:status]) if result[:status] != volume.status

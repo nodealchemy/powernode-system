@@ -214,5 +214,23 @@ RSpec.describe System::ProvisioningService do
       expect(result.success?).to be(false)
       expect(instance.reload.status).to eq("starting")
     end
+
+    # F4-09 — codify the F4-02 fix across the full status matrix: terminate
+    # must drive ANY non-terminal status to "terminated", not only the
+    # steady-state ones. Pre-fix, a not-yet-up instance (pending/starting)
+    # destroyed the cloud resource but left the row wedged.
+    %w[running stopped error pending].each do |from_status|
+      it "terminates an instance from :#{from_status}" do
+        from = create(:system_node_instance, node: node, status: from_status,
+                      config: { "cloud_instance_id" => "i-#{from_status}" })
+        allow(adapter).to receive(:terminate_instance)
+          .with("i-#{from_status}").and_return({ success: true })
+
+        result = described_class.terminate_instance(instance: from)
+
+        expect(result.success?).to be(true)
+        expect(from.reload.status).to eq("terminated")
+      end
+    end
   end
 end
