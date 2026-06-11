@@ -287,8 +287,14 @@ module System
       def dedup_key_for(action_category, metadata)
         case action_category
         when "system.instance_reprovision", "system.instance_reboot",
-             "system.instance_terminate", "system.cert_rotate", "system.cert_revoke"
+             "system.cert_rotate", "system.cert_revoke"
           key_value(metadata, "instance_id")
+        # Honeypot quarantine (F3-08): the access signal may carry no
+        # instance when nothing currently hosts the canary module — fall
+        # back to per-module dedup so repeated canary probes update one
+        # approval instead of minting one per access event.
+        when "system.instance_terminate"
+          key_value(metadata, "instance_id") || key_value(metadata, "module_id")
         when "system.module_promote_to_live", "system.module_assign"
           key_value(metadata, "module_id") || key_value(metadata, "module_version_id")
         # Platform ACME cert rotation — per-cert dedup so the expiry sensor

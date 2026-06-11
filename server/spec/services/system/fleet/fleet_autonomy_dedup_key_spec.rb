@@ -33,4 +33,16 @@ RSpec.describe System::Fleet::FleetAutonomyService, "#dedup_key_for" do
   it "returns nil for an unknown action (action-level cooldown only)" do
     expect(dedup("system.totally_unknown_action", { "x" => "y" })).to be_nil
   end
+
+  # F3-08: honeypot quarantine signals may arrive without an instance target
+  # when nothing currently hosts the canary module.
+  it "scopes system.instance_terminate dedup to the instance when present" do
+    expect(dedup("system.instance_terminate", { "instance_id" => "i-1", "module_id" => "m-1" }))
+      .to eq([ "instance_id", "i-1" ])
+  end
+
+  it "falls back to module_id for system.instance_terminate when instance_id is absent" do
+    expect(dedup("system.instance_terminate", { "module_id" => "m-1" }))
+      .to eq([ "module_id", "m-1" ])
+  end
 end
