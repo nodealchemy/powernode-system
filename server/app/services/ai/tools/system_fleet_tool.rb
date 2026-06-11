@@ -48,6 +48,7 @@ module Ai
 
         # Mutate
         "system_create_node"            => "system.nodes.create",
+        "system_update_node"            => "system.nodes.update",
         "system_delete_node"            => "system.nodes.delete",
         "system_create_template"        => "system.templates.create",
         "system_delete_template"        => "system.nodes.delete",
@@ -123,6 +124,9 @@ module Ai
         "system_list_instance_pools"    => "system.node_instances.read",
         "system_get_instance_pool"      => "system.node_instances.read",
         "system_create_instance_pool"   => "system.instances.create",
+        # F8-07 — REST update parity (mirrors instance_pools_controller
+        # authorize_write! = system.instances.create/.control).
+        "system_update_instance_pool"   => "system.instances.create",
         "system_drain_instance_pool"    => "system.instances.control",
         "system_acquire_pooled_instance" => "system.instances.create",
         "system_replenish_instance_pool" => "system.instances.create",
@@ -234,6 +238,24 @@ module Ai
             parameters: {
               name: { type: "string", required: true },
               template_id: { type: "string", required: true }
+            }
+          },
+          # F8-07 — REST update parity. Mirrors nodes_controller node_params
+          # MINUS ssh_key/ssh_host_key — key material never flows through an
+          # MCP tool argument (crypto-safety); rotate keys via the REST/Vault
+          # path instead.
+          "system_update_node" => {
+            description: "Update a node's mutable attributes (rename, enable/disable, retarget template/worker, public-address config). Does NOT accept SSH key material — manage keys via the REST/Vault path.",
+            parameters: {
+              node_id: { type: "string", required: true },
+              name: { type: "string", required: false },
+              description: { type: "string", required: false },
+              enabled: { type: "boolean", required: false },
+              node_template_id: { type: "string", required: false },
+              worker_id: { type: "string", required: false },
+              public_address: { type: "string", required: false },
+              allocate_public_ip: { type: "boolean", required: false },
+              config: { type: "object", required: false }
             }
           },
           "system_delete_node" => {
@@ -773,6 +795,24 @@ module Ai
               provider_instance_type_id: { type: "string", required: false }
             }
           },
+          # F8-07 — REST update parity (instance_pools_controller update_params).
+          # The runbook's pool-tuning operation: adjust min/max/target size,
+          # status, region/type, metadata. node_template is NOT mutable on
+          # update (create-only), matching the REST controller.
+          "system_update_instance_pool" => {
+            description: "Tune an existing instance pool: min_size/max_size/target_size, status, provider region/type, metadata. The reaper reconciles to the new sizes on its next tick. (Template is fixed at create time.)",
+            parameters: {
+              id: { type: "string", required: true },
+              description: { type: "string", required: false },
+              target_size: { type: "integer", required: false },
+              min_size: { type: "integer", required: false },
+              max_size: { type: "integer", required: false },
+              status: { type: "string", required: false, description: "active | paused | archived" },
+              provider_region_id: { type: "string", required: false },
+              provider_instance_type_id: { type: "string", required: false },
+              metadata: { type: "object", required: false }
+            }
+          },
           "system_drain_instance_pool" => {
             description: "Mark a pool draining: terminate ready members, halt replenishment. Claimed members keep running.",
             parameters: { id: { type: "string", required: true } }
@@ -1025,6 +1065,7 @@ module Ai
         when "system_list_nodes"               then list_nodes(params)
         when "system_get_node"                 then get_node(params)
         when "system_create_node"              then create_node(params)
+        when "system_update_node"              then update_node(params)
         when "system_delete_node"              then delete_node(params)
         when "system_create_template"          then create_template(params)
         when "system_delete_template"          then delete_template(params)
@@ -1096,6 +1137,7 @@ module Ai
         when "system_list_instance_pools"      then list_instance_pools(params)
         when "system_get_instance_pool"        then get_instance_pool(params)
         when "system_create_instance_pool"     then create_instance_pool(params)
+        when "system_update_instance_pool"     then update_instance_pool(params)
         when "system_drain_instance_pool"      then drain_instance_pool(params)
         when "system_acquire_pooled_instance"  then acquire_pooled_instance(params)
         when "system_replenish_instance_pool"  then replenish_instance_pool(params)
@@ -1190,6 +1232,22 @@ module Ai
           name: params[:name]
         )
         success_result(node: serialize_node_full(node))
+      end
+
+      # F8-07 — REST update parity (nodes_controller node_params MINUS
+      # ssh_key/ssh_host_key, which never flow through an MCP tool argument).
+      def update_node(params)
+        node = account_nodes.find(params[:node_id])
+        attrs = params.slice(
+          :name, :description, :enabled, :node_template_id, :worker_id,
+          :public_address, :allocate_public_ip, :config
+        ).to_h.compact
+        return error_result("no mutable fields supplied") if attrs.empty?
+
+        node.update!(attrs)
+        success_result(node: serialize_node_full(node.reload))
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("node validation failed: #{e.record.errors.full_messages.join('; ')}")
       end
 
       def delete_node(params)
@@ -2743,6 +2801,22 @@ module Ai
           provider_instance_type_id: params[:provider_instance_type_id]
         )
         success_result(data: { pool: pool.to_summary })
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("instance pool validation failed: #{e.message}")
+      end
+
+      # F8-07 — REST update parity (instance_pools_controller update_params).
+      # Template is create-only, so it's intentionally not updatable here.
+      def update_instance_pool(params)
+        pool = ::System::InstancePool.for_account(@account).find(params[:id])
+        attrs = params.slice(
+          :description, :target_size, :min_size, :max_size, :status,
+          :provider_region_id, :provider_instance_type_id, :metadata
+        ).to_h.compact
+        return error_result("no mutable fields supplied") if attrs.empty?
+
+        pool.update!(attrs)
+        success_result(data: { pool: pool.reload.to_summary })
       rescue ActiveRecord::RecordInvalid => e
         error_result("instance pool validation failed: #{e.message}")
       end

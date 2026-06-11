@@ -94,6 +94,83 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit F8-07 — MCP/REST update-parity gaps: pools and nodes had no
+  # update action (an agent couldn't tune pool min/max or rename/disable a
+  # node), despite both having REST update endpoints.
+  describe "update parity (F8-07)" do
+    let(:node_template) { create(:system_node_template, account: account) }
+
+    describe "system_update_instance_pool" do
+      let(:pool) do
+        ::System::InstancePool.create!(
+          account: account, node_template: node_template, name: "tune-me",
+          target_size: 2, min_size: 1, max_size: 5, lifecycle_class: "ephemeral",
+          status: "active", provider_region: create(:system_provider_region),
+          provider_instance_type: create(:system_provider_instance_type)
+        )
+      end
+
+      it "tunes min/max/target size" do
+        r = call("system_update_instance_pool", id: pool.id, min_size: 0, max_size: 8, target_size: 4)
+        expect(r[:success]).to be true
+        pool.reload
+        expect([ pool.min_size, pool.max_size, pool.target_size ]).to eq([ 0, 8, 4 ])
+      end
+
+      it "surfaces a validation error without raising" do
+        r = call("system_update_instance_pool", id: pool.id, min_size: 10, max_size: 2)
+        expect(r[:success]).to be false
+        expect(r[:error]).to be_present
+      end
+
+      it "does not touch a pool from another account" do
+        other = create(:account)
+        foreign = ::System::InstancePool.create!(
+          account: other, node_template: create(:system_node_template, account: other),
+          name: "foreign", target_size: 1, min_size: 0, max_size: 3, lifecycle_class: "ephemeral",
+          status: "active", provider_region: create(:system_provider_region),
+          provider_instance_type: create(:system_provider_instance_type)
+        )
+        r = call("system_update_instance_pool", id: foreign.id, target_size: 9)
+        expect(r[:success]).to be false
+        expect(foreign.reload.target_size).to eq(1)
+      end
+
+      it "maps to system.instances.create" do
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_update_instance_pool")).to eq("system.instances.create")
+      end
+    end
+
+    describe "system_update_node" do
+      let(:node) { create(:system_node, account: account, node_template: node_template, name: "old-name") }
+
+      it "renames and disables the node" do
+        r = call("system_update_node", node_id: node.id, name: "new-name", enabled: false, description: "tuned")
+        expect(r[:success]).to be true
+        node.reload
+        expect(node.name).to eq("new-name")
+        expect(node.enabled).to be false
+        expect(node.description).to eq("tuned")
+      end
+
+      it "does not touch a node from another account" do
+        foreign = create(:system_node, account: create(:account), name: "theirs")
+        r = call("system_update_node", node_id: foreign.id, name: "hijacked")
+        expect(r[:success]).to be false
+        expect(foreign.reload.name).to eq("theirs")
+      end
+
+      it "maps to system.nodes.update" do
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_update_node")).to eq("system.nodes.update")
+      end
+
+      it "does NOT accept ssh key material as a tool parameter (crypto-safety)" do
+        params = described_class.action_definitions.fetch("system_update_node")[:parameters].keys
+        expect(params).not_to include(:ssh_key, :ssh_host_key)
+      end
+    end
+  end
+
   # Audit F4-11 — system_create_volume silently bound every volume to the
   # account's OLDEST provider/region (order(:created_at).first) with no way
   # to choose; on multi-provider accounts volumes landed on an arbitrary
