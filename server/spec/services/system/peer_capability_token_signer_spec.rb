@@ -43,6 +43,56 @@ RSpec.describe System::PeerCapabilityTokenSigner, type: :service do
       expect(System::PeerCapabilitySigningKey.where(account_id: account.id).count).to eq(1)
     end
 
+    # Audit F2-06 — a broken active key (private half gone) raised a terminal
+    # MissingKeyError forever: mint! only created a fresh key when NO active
+    # key existed, so all A2A minting for the account was permanently bricked
+    # despite the model's unused revoke!/rotated_from rotation machinery.
+    context "signing-key self-heal (F2-06)" do
+      def break_active_key!
+        described_class.mint!(caller_instance: caller_inst, target_instance: target_inst, skill: "embed-text")
+        key = System::PeerCapabilitySigningKey.active.find_by(account_id: account.id)
+        key.update_columns(encrypted_credentials: nil) # private half lost (DB-fallback storage in test)
+        key
+      end
+
+      it "auto-rotates when the private half is permanently lost" do
+        broken = break_active_key!
+
+        token = described_class.mint!(caller_instance: caller_inst, target_instance: target_inst, skill: "embed-text")
+
+        expect(broken.reload).to be_revoked
+        fresh = System::PeerCapabilitySigningKey.active.find_by(account_id: account.id)
+        expect(fresh.id).not_to eq(broken.id)
+        expect(fresh.rotated_from_id).to eq(broken.id)
+        expect(token.claims["iss"]).to eq(fresh.handle)
+
+        handles = described_class.advertised_keys_for(account).map { |k| k["handle"] }
+        expect(handles).to contain_exactly(fresh.handle)
+      end
+
+      it "emits a fleet event so operators know rotation happened" do
+        break_active_key!
+
+        described_class.mint!(caller_instance: caller_inst, target_instance: target_inst, skill: "embed-text")
+
+        events = System::FleetEvent.where(account: account, kind: "system.a2a_signing_key_rotated")
+        expect(events.count).to eq(1)
+        expect(events.first.payload).to include("reason" => "private_key_material_lost")
+      end
+
+      it "does not rotate on a transient Vault outage" do
+        broken = break_active_key!
+        allow_any_instance_of(System::PeerCapabilitySigningKey)
+          .to receive(:stored_in_vault?).and_return(true)
+        allow(Security::VaultClient).to receive(:healthy?).and_return(false)
+
+        expect do
+          described_class.mint!(caller_instance: caller_inst, target_instance: target_inst, skill: "embed-text")
+        end.to raise_error(described_class::MissingKeyError, /not rotating/)
+        expect(broken.reload).not_to be_revoked
+      end
+    end
+
     # Audit F2-04 — ttl_seconds flowed into exp unclamped, so a caller could
     # mint an effectively-permanent token while the only revocation lever
     # (rotating the account signing key) kills ALL tokens.

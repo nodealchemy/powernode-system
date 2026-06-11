@@ -129,19 +129,72 @@ module System
     # private key is generated in-process via the ed25519 gem and immediately
     # handed to the VaultCredential plumbing (Vault when available, encrypted DB
     # fallback); it never appears in a log line. Mirrors the SDWAN MC signer.
+    #
+    # F2-06 — self-heal: a broken active key (private half gone) used to raise
+    # a terminal MissingKeyError forever, bricking all A2A minting for the
+    # account. Confirmed loss now revokes the broken key and rotates to a
+    # fresh one (re-advertised via capability_keys); a transient Vault outage
+    # still raises, because the material may come back.
     def signing_key_material!
-      handle = handle_for(@account)
-      holder = ::System::PeerCapabilitySigningKey.active.find_by(account_id: @account.id, handle: handle)
+      holder = ::System::PeerCapabilitySigningKey.active
+                 .where(account_id: @account.id)
+                 .order(created_at: :desc).first
 
       if holder
         priv = holder.private_key_b64
-        raise MissingKeyError, "capability signing key #{holder.id} present but private key unavailable" if priv.blank?
-        return { handle: handle, private_key_b64: priv, public_key_b64: holder.public_key_b64 }
+        return { handle: holder.handle, private_key_b64: priv, public_key_b64: holder.public_key_b64 } if priv.present?
+
+        unless private_key_permanently_lost?(holder)
+          raise MissingKeyError,
+                "capability signing key #{holder.id} present but private key unavailable " \
+                "(Vault unreachable — not rotating)"
+        end
+
+        rotate_broken_key!(holder)
+        return mint_fresh_key!(handle: rotated_handle_for, rotated_from: holder)
       end
 
+      mint_fresh_key!(handle: handle_for(@account))
+    end
+
+    # Confirmed loss vs transient outage: when the record was migrated to
+    # Vault, the truth lives there — only declare loss while Vault is healthy
+    # and still answers blank. A record on the encrypted-DB fallback has
+    # nowhere the material could come back from.
+    def private_key_permanently_lost?(holder)
+      return true unless holder.stored_in_vault?
+
+      ::Security::VaultClient.healthy?
+    rescue StandardError
+      false # can't confirm the loss — treat as transient, do not rotate
+    end
+
+    def rotate_broken_key!(holder)
+      holder.revoke!(reason: "private key material lost — auto-rotated (F2-06)")
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: @account,
+        kind: "system.a2a_signing_key_rotated",
+        severity: :high,
+        payload: {
+          revoked_key_id: holder.id,
+          revoked_handle: holder.handle,
+          reason: "private_key_material_lost"
+        },
+        source: "peer_capability_token_signer"
+      )
+    end
+
+    # Rotated keys need a distinct handle — (account_id, handle) is unique
+    # across revoked rows too.
+    def rotated_handle_for
+      "#{handle_for(@account)}-r#{::SecureRandom.hex(2)}"
+    end
+
+    def mint_fresh_key!(handle:, rotated_from: nil)
       keypair = generate_signing_keypair
       holder = ::System::PeerCapabilitySigningKey.create!(
         account: @account, handle: handle, public_key_b64: keypair[:public_key_b64],
+        rotated_from: rotated_from,
         metadata: { "algorithm" => "ED25519", "generated_at" => Time.current.iso8601 }
       )
       holder.store_in_vault(
