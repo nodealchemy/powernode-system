@@ -141,6 +141,53 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     end
   end
 
+  # F1-13: the pool-source retry above proves no member loss for pooled
+  # fleets; the provision source resumes differently (persisted members +
+  # ProvisioningService operation_id idempotency). Without coverage, an enroll
+  # failure mid-provision could orphan an already-provisioned instance on a
+  # Sidekiq retry — the exact partial-failure seam F1-13 flagged as untested.
+  describe "#provision! retry safety (provision source)" do
+    # operation_id => instance — models the provider-side idempotency that
+    # makes provision_instance return the same instance for a repeated slot.
+    let(:provisioned) { {} }
+
+    before do
+      service.plan!
+      allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, operation_id:, **_kw|
+        inst = provisioned[operation_id] ||=
+          create(:system_node_instance, :running, node: node,
+                 config: { "fleet_operation_id" => operation_id })
+        double(success?: true, error: nil, data: { instance: inst, cloud_instance_id: "ci-#{inst.id}" })
+      end
+    end
+
+    it "resumes from persisted members on retry and reuses instances instead of orphaning them" do
+      announce_calls = 0
+      allow(::System::AgentPeeringService).to receive(:announce!).and_wrap_original do |original, **kwargs|
+        announce_calls += 1
+        raise StandardError, "enrollment exploded" if announce_calls == 2
+
+        original.call(**kwargs)
+      end
+
+      expect { service.provision! }.to raise_error(StandardError, /enrollment exploded/)
+
+      # Both touched slots are on the mission record (reapable trail): slot 0
+      # enrolled, slot 1 acquired-but-unenrolled — no untracked orphan.
+      members_after_failure = mission.reload.configuration.dig("fleet", "members")
+      expect(members_after_failure.map { |m| m["instance_id"] })
+        .to match_array(provisioned.values.map(&:id))
+
+      result = service.provision!
+
+      expect(result[:count]).to eq(3)
+      members = mission.reload.configuration.dig("fleet", "members")
+      expect(members.map { |m| m["peer_id"] }).to all(be_present)
+      # No fresh provisions on retry — operation_id idempotency reused slot 1.
+      expect(provisioned.size).to eq(3)
+    end
+  end
+
   # F1-08: reap failures must be visible — terminate_failed members are
   # leaked instances, not reaped ones — and a stuck fleet needs a force
   # lever even when its plan disabled reaping.

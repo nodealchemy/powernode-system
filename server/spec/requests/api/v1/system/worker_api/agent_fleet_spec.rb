@@ -229,4 +229,80 @@ RSpec.describe "Api::V1::System::WorkerApi::AgentFleet", type: :request do
       expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
     end
   end
+
+  # F1-13: the happy-path examples above POST individual phase callbacks but
+  # never drive the mission through the review_fleet APPROVAL gate, and none
+  # asserts the terminal reap -> completed transition. Those untested seams
+  # (core Orchestrator#handle_approval! + mission completion) are precisely
+  # where F1-01 (gate bypass) and F1-02 (reap never completed) shipped.
+  describe "full phase walk through the review_fleet gate to completion (F1-13)" do
+    let(:operator) { create(:user, account: account) }
+
+    before do
+      allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_kw|
+        inst = create(:system_node_instance, :running, node: node)
+        double(success?: true, error: nil, data: { instance: inst, cloud_instance_id: "ci-#{inst.id}" })
+      end
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .and_return(double(success?: true, error: nil))
+    end
+
+    it "plan -> approve(review_fleet) -> provision -> delegate -> aggregate -> reap -> completed" do
+      m = fleet_mission(phase: "plan_fleet")
+
+      # plan_fleet halts at the Bulk-Operation-Safety gate (no auto-dispatch).
+      post path(m, "plan_fleet"), headers: headers
+      expect(m.reload.current_phase).to eq("review_fleet")
+      expect(m.awaiting_approval?).to be true
+
+      # The operator clears the gate via the CORE approval path the worker_api
+      # callbacks never exercise — this is the F1-01-catching seam.
+      ::Ai::Missions::OrchestratorService.new(mission: m)
+        .handle_approval!(gate: "review_fleet", user: operator, decision: "approved")
+      expect(m.reload.current_phase).to eq("provision_fleet")
+
+      post path(m, "provision_fleet"), headers: headers
+      expect(m.reload.current_phase).to eq("delegate")
+
+      post path(m, "delegate"), headers: headers
+      expect(m.reload.current_phase).to eq("aggregate")
+
+      # Settle execution so aggregate advances to reap instead of re-checking.
+      System::Task.where(command: "a2a_call").update_all(status: "complete")
+      post path(m, "aggregate"), headers: headers
+      expect(m.reload.current_phase).to eq("reap")
+
+      # reap advances past the final phase -> mission completed (F1-02 seam).
+      post path(m, "reap"), headers: headers
+      expect(response).to have_http_status(:ok)
+      m.reload
+      expect(m.current_phase).to eq("completed")
+      expect(m.status).to eq("completed")
+    end
+  end
+
+  # F1-13: a worker phase job that fails reports back via
+  # AiAgentFleetPhaseExecution#report_failure — a PATCH to the core mission
+  # endpoint with the payload NESTED under :mission. mission_params un-nests
+  # it; the worker never sends a flat payload. Asserting the nested shape is
+  # what would have caught F1-04 (the report_failure contract bug).
+  describe "worker fleet-phase report_failure contract (F1-13)" do
+    let(:operator) { user_with_permissions("ai.missions.manage") }
+
+    it "marks the mission failed from the worker-shaped nested PATCH payload" do
+      m = create(:ai_mission, account: operator.account, mission_type: "agent_fleet",
+                 mission_template: template, status: "active", current_phase: "provision_fleet",
+                 configuration: { "fleet_spec" => fleet_spec })
+
+      patch "/api/v1/ai/missions/#{m.id}",
+            params: { mission: { status: "failed",
+                                 error_message: "provision_fleet failed: boom" } }.to_json,
+            headers: auth_headers_for(operator).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:ok)
+      m.reload
+      expect(m.status).to eq("failed")
+      expect(m.error_message).to eq("provision_fleet failed: boom")
+    end
+  end
 end
