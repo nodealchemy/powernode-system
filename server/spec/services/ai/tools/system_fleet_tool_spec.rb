@@ -2074,4 +2074,100 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(System::Provider.find_by(id: other.id)).to be_present
     end
   end
+
+  # Audit F4-07 — F8-03 closed the Provider half, but the provisionable chain
+  # needs FOUR records (provider + connected connection + region + instance
+  # type) and the other three had no MCP create at all: an agent could not
+  # self-serve onboard a substrate end-to-end. Credential safety: the
+  # connection action accepts NO key material — the adapter layer resolves
+  # credentials from the BYOC System::ProviderCredential store at use time.
+  describe "provider chain creates (audit F4-07)" do
+    let(:provider) { create(:system_provider, account: account) }
+
+    describe "system_create_provider_connection" do
+      it "creates a credential-less connection for the account's provider" do
+        r = call("system_create_provider_connection",
+                 provider_id: provider.id, name: "main-conn",
+                 endpoint_url: "https://api.cloud.example", config: { "zone" => "z1" })
+
+        expect(r[:success]).to be true
+        conn = System::ProviderConnection.find(r[:data][:provider_connection][:id])
+        expect(conn.account_id).to eq(account.id)
+        expect(conn.provider_id).to eq(provider.id)
+        expect(conn.status).to eq("pending")
+      end
+
+      it "accepts no raw credential parameters (BYOC ProviderCredential flow only)" do
+        params = described_class.action_definitions
+                                .fetch("system_create_provider_connection")[:parameters].keys.map(&:to_s)
+        expect(params).not_to include("access_key", "secret_key", "tenant", "credentials",
+                                      "api_key", "api_secret", "token")
+      end
+
+      it "optionally runs the live credential test after create" do
+        allow_any_instance_of(System::ProviderConnection).to receive(:test_connection!) do |conn|
+          conn.mark_connected!("ok")
+          { success: true, message: "ok" }
+        end
+
+        r = call("system_create_provider_connection",
+                 provider_id: provider.id, name: "tested-conn", test_connection: true)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:test_result][:success]).to be true
+        conn = System::ProviderConnection.find(r[:data][:provider_connection][:id])
+        expect(conn.status).to eq("connected")
+      end
+
+      it "scopes the provider lookup to the current account" do
+        foreign = create(:system_provider) # different account
+        r = call("system_create_provider_connection", provider_id: foreign.id, name: "x")
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_create_provider_region" do
+      it "creates a region under the provider" do
+        r = call("system_create_provider_region",
+                 provider_id: provider.id, name: "Lab Rack 1", region_code: "lab-1",
+                 capabilities: { "gpu" => true })
+
+        expect(r[:success]).to be true
+        region = System::ProviderRegion.find(r[:data][:region][:id])
+        expect(region.provider_id).to eq(provider.id)
+        expect(region.account_id).to eq(account.id)
+        expect(region.region_code).to eq("lab-1")
+      end
+
+      it "surfaces validation errors structurally" do
+        r = call("system_create_provider_region", provider_id: provider.id, name: "")
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/blank|validation/i)
+      end
+    end
+
+    describe "system_create_provider_instance_type" do
+      it "creates an instance type under the provider" do
+        r = call("system_create_provider_instance_type",
+                 provider_id: provider.id, name: "Small", instance_type_code: "small-1",
+                 vcpus: 2, memory_mb: 2048, storage_gb: 20)
+
+        expect(r[:success]).to be true
+        itype = System::ProviderInstanceType.find(r[:data][:instance_type][:id])
+        expect(itype.provider_id).to eq(provider.id)
+        expect(itype.account_id).to eq(account.id)
+        expect(itype.vcpus).to eq(2)
+      end
+
+      it "mirrors the REST permission gates" do
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_create_provider_connection"))
+          .to eq("system.connections.create")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_create_provider_region"))
+          .to eq("system.regions.create")
+        # The instance-types REST controller gates create on system.providers.create.
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_create_provider_instance_type"))
+          .to eq("system.providers.create")
+      end
+    end
+  end
 end

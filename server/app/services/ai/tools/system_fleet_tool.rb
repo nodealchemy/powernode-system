@@ -197,7 +197,15 @@ module Ai
         # F8-03 — REST had full provider CRUD but MCP stopped at update, so
         # fleet-expansion missions could not onboard/decommission providers.
         "system_create_provider"       => "system.providers.create",
-        "system_delete_provider"       => "system.providers.delete"
+        "system_delete_provider"       => "system.providers.delete",
+        # F4-07 — the provisionable chain needs provider + connected
+        # connection + region + instance type; only the provider half had
+        # MCP creates. Permission names mirror the REST controllers
+        # (provider_connections/provider_regions gate their own families;
+        # the instance-types controller gates create on providers.create).
+        "system_create_provider_connection"    => "system.connections.create",
+        "system_create_provider_region"        => "system.regions.create",
+        "system_create_provider_instance_type" => "system.providers.create"
       }.freeze
 
       def self.definition
@@ -1047,6 +1055,48 @@ module Ai
             parameters: {
               id: { type: "string", required: true, description: "System::Provider id" }
             }
+          },
+          "system_create_provider_connection" => {
+            description: "Create a ProviderConnection for a provider (status starts 'pending'). NO credential parameters are accepted — the adapter layer resolves keys from the Vault-encrypted BYOC ProviderCredential store (saved via the provider Credentials UI/REST) at use time. Set test_connection=true to immediately run the live credential test: on success the connection flips to 'connected' (required before Registry will use it for provisioning).",
+            parameters: {
+              provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
+              name: { type: "string", required: true },
+              description: { type: "string", required: false },
+              endpoint_url: { type: "string", required: false },
+              enabled: { type: "boolean", required: false, description: "Defaults to true" },
+              config: { type: "object", required: false, description: "Non-secret wiring config only — never key material" },
+              test_connection: { type: "boolean", required: false, description: "Run the live credential test after create (uses BYOC credentials)" }
+            }
+          },
+          "system_create_provider_region" => {
+            description: "Create a ProviderRegion under a provider — the placement target referenced by nodes/instances (provider_region_id).",
+            parameters: {
+              provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
+              name: { type: "string", required: true },
+              region_code: { type: "string", required: false, description: "Provider-native region identifier (e.g. us-east-1, lab-1)" },
+              description: { type: "string", required: false },
+              endpoint_url: { type: "string", required: false },
+              enabled: { type: "boolean", required: false, description: "Defaults to true" },
+              kernel_image: { type: "string", required: false },
+              machine_image: { type: "string", required: false },
+              ramdisk_image: { type: "string", required: false },
+              capabilities: { type: "object", required: false }
+            }
+          },
+          "system_create_provider_instance_type" => {
+            description: "Create a ProviderInstanceType (SKU) under a provider — the sizing record referenced at provisioning (provider_instance_type_id).",
+            parameters: {
+              provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
+              name: { type: "string", required: true },
+              instance_type_code: { type: "string", required: false, description: "Provider-native SKU code (e.g. t3.small)" },
+              description: { type: "string", required: false },
+              vcpus: { type: "integer", required: false },
+              memory_mb: { type: "integer", required: false },
+              storage_gb: { type: "integer", required: false },
+              hourly_price: { type: "number", required: false },
+              enabled: { type: "boolean", required: false, description: "Defaults to true" },
+              specs: { type: "object", required: false, description: "Extended sizing specs (gpu, accelerators, ...)" }
+            }
           }
         }
       end
@@ -1181,6 +1231,9 @@ module Ai
         when "system_update_provider"               then update_provider(params)
         when "system_create_provider"               then create_provider(params)
         when "system_delete_provider"               then delete_provider(params)
+        when "system_create_provider_connection"    then create_provider_connection(params)
+        when "system_create_provider_region"        then create_provider_region(params)
+        when "system_create_provider_instance_type" then create_provider_instance_type(params)
         else error_result("Unknown action: #{params[:action]}")
         end
       rescue ActiveRecord::RecordNotFound => e
@@ -3607,6 +3660,117 @@ module Ai
           config: p.config,
           created_at: p.created_at&.iso8601,
           updated_at: p.updated_at&.iso8601
+        }
+      end
+
+      # === F4-07 — provider chain creates =================================
+      # The provisionable chain is provider + connected connection + region +
+      # instance type. F8-03 added the provider half; these complete it so an
+      # agent can self-serve onboard a substrate end-to-end. Crypto-safety:
+      # create_provider_connection accepts NO key material — the adapter layer
+      # (BaseProvider) resolves credentials from the Vault-encrypted BYOC
+      # System::ProviderCredential store at use time.
+
+      def create_provider_connection(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:provider_id])
+
+        connection = ::System::ProviderConnection.new(
+          account_id: @account.id,
+          provider_id: provider.id,
+          name: params[:name],
+          description: params[:description],
+          endpoint_url: params[:endpoint_url],
+          enabled: params[:enabled].nil? ? true : params[:enabled],
+          config: params[:config].is_a?(Hash) ? params[:config].transform_keys(&:to_s) : {}
+        )
+
+        unless connection.save
+          return error_result("Validation failed: #{connection.errors.full_messages.join(', ')}")
+        end
+
+        payload = { provider_connection: ::System::ProviderConnectionSerializer.new(connection).as_json }
+        # Optional immediate credential test (same call as REST POST .../test):
+        # resolves keys via the BYOC fallback and flips status to 'connected'
+        # on success — the state Registry requires before provisioning.
+        payload[:test_result] = connection.test_connection! if params[:test_connection]
+        payload[:provider_connection] = ::System::ProviderConnectionSerializer.new(connection.reload).as_json
+
+        success_result(payload)
+      end
+
+      def create_provider_region(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:provider_id])
+
+        region = provider.provider_regions.new(
+          account_id: @account.id,
+          name: params[:name],
+          description: params[:description],
+          region_code: params[:region_code],
+          endpoint_url: params[:endpoint_url],
+          enabled: params[:enabled].nil? ? true : params[:enabled],
+          kernel_image: params[:kernel_image],
+          machine_image: params[:machine_image],
+          ramdisk_image: params[:ramdisk_image],
+          capabilities: params[:capabilities].is_a?(Hash) ? params[:capabilities].transform_keys(&:to_s) : {}
+        )
+
+        if region.save
+          success_result(region: serialize_region(region))
+        else
+          error_result("Validation failed: #{region.errors.full_messages.join(', ')}")
+        end
+      end
+
+      def create_provider_instance_type(params)
+        provider = ::System::Provider.where(account_id: @account.id).find(params[:provider_id])
+
+        instance_type = provider.provider_instance_types.new(
+          account_id: @account.id,
+          name: params[:name],
+          description: params[:description],
+          instance_type_code: params[:instance_type_code],
+          vcpus: params[:vcpus],
+          memory_mb: params[:memory_mb],
+          storage_gb: params[:storage_gb],
+          hourly_price: params[:hourly_price],
+          enabled: params[:enabled].nil? ? true : params[:enabled],
+          specs: params[:specs].is_a?(Hash) ? params[:specs].transform_keys(&:to_s) : {}
+        )
+
+        if instance_type.save
+          success_result(instance_type: serialize_instance_type_record(instance_type))
+        else
+          error_result("Validation failed: #{instance_type.errors.full_messages.join(', ')}")
+        end
+      end
+
+      def serialize_region(r)
+        {
+          id: r.id,
+          provider_id: r.provider_id,
+          account_id: r.account_id,
+          name: r.name,
+          region_code: r.region_code,
+          enabled: r.enabled,
+          capabilities: r.capabilities,
+          created_at: r.created_at&.iso8601
+        }
+      end
+
+      def serialize_instance_type_record(t)
+        {
+          id: t.id,
+          provider_id: t.provider_id,
+          account_id: t.account_id,
+          name: t.name,
+          instance_type_code: t.instance_type_code,
+          vcpus: t.vcpus,
+          memory_mb: t.memory_mb,
+          storage_gb: t.storage_gb,
+          hourly_price: t.hourly_price,
+          enabled: t.enabled,
+          specs: t.specs,
+          created_at: t.created_at&.iso8601
         }
       end
     end
