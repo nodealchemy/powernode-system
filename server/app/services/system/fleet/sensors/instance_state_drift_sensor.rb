@@ -14,10 +14,11 @@ module System
       # stop. Both signals are useful diagnostics for the autonomy
       # DecisionEngine to route to the right remediation.
       #
-      # Emits `system.instance_state_drifted` signals which the autonomy
-      # framework binds (via fleet_autonomy_agent.rb seed) to a
-      # `system.restart_drifted_instance` action — gating it through the
-      # same approval pipeline as every other fleet action.
+      # Emits `system.instance_state_drifted` signals which the
+      # DecisionEngine routes to the `system.instance_reboot` action
+      # category (notify_and_proceed in the fleet_autonomy_agent.rb seed)
+      # — gating it through the same approval pipeline as every other
+      # fleet action.
       class InstanceStateDriftSensor < BaseSensor
         # Cap how many instances we poll per tick. Each sync_status call
         # is one virsh subprocess (~50ms for local_qemu), so a tick of

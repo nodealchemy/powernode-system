@@ -68,6 +68,27 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F3-05: InstanceStateDriftSensor's signal kind had no
+    # SIGNAL_BINDINGS entry, so every provider-state drift it detected was
+    # discarded as decision :skipped.
+    context "with a system.instance_state_drifted signal (provider-state drift)" do
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.instance_reboot",
+                                       policy: "notify_and_proceed", is_active: true)
+      end
+
+      it "routes to the system.instance_reboot gate instead of skipping" do
+        d = engine.decide(kind: "system.instance_state_drifted", severity: :high,
+                          payload: { instance_id: "inst-1", expected_status: "running",
+                                     actual_status: "stopped" },
+                          fingerprint: "instance_state_drifted:inst-1:stopped")
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:gate]).to eq("notify_and_proceed")
+        expect(d[:action_category]).to eq("system.instance_reboot")
+      end
+    end
+
     # Audit finding F3-04: invoke_skill's class-name case statement silently
     # dropped the four SDWAN executors bound in SIGNAL_BINDINGS (fell through
     # to `else nil`), so peer key rotation and BGP session remediation never

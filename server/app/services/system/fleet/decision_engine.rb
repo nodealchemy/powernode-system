@@ -67,6 +67,17 @@ module System
           action_category: "system.module_assign",
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
+        # Provider-state drift (InstanceStateDriftSensor): the VM itself is
+        # stopped/terminated while the model says running — distinct from
+        # instance_silent (heartbeat staleness). Routes to the
+        # instance_reboot gate (notify_and_proceed in the fleet seed) so the
+        # drift is notified, deduped per instance_id, and visible to
+        # operators instead of discarded as decision :skipped. No skill —
+        # no reboot executor exists yet.
+        "system.instance_state_drifted" => {
+          skill: nil,
+          action_category: "system.instance_reboot"
+        },
         "system.cert_expiring" => {
           skill: nil, # cert rotation is handled directly via NodeCertificate#rotate
           action_category: "system.cert_rotate"
