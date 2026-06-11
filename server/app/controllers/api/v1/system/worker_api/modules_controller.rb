@@ -198,9 +198,12 @@ module Api
           end
 
           def module_download_url(mod)
-            # Generate a signed URL for file download
-            # This is a placeholder - actual implementation depends on storage backend
-            "/api/v1/system/worker_api/files/modules/#{mod.id}/#{mod.data_file_name}"
+            # F6-06: point at the real node_api binary-file route
+            # (files#module_file) — the worker_api/files/* path this used to
+            # build was never routed, so the download URL always 404'd. The
+            # worker presents the same mTLS instance identity node_api auth
+            # expects, so it can fetch from this endpoint directly.
+            "/api/v1/system/node_api/files/modules/#{mod.id}/#{mod.data_file_name}"
           end
 
           def serialize_module(mod)
