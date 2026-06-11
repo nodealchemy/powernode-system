@@ -177,18 +177,26 @@ module System
 
       result = provider_adapter.terminate_instance(instance.cloud_instance_id)
 
+      # Idempotent terminate (F4-02): a provider-side NotFound means the
+      # resource is already gone (e.g. a prior terminate destroyed it while
+      # the row stayed non-terminal) — finalize the row instead of erroring.
+      # Mirrors BaseProvider#sync_status's NotFound→terminated mapping.
+      if not_found_result?(result)
+        Rails.logger.warn("[ProvisioningService] Terminate: provider resource #{instance.cloud_instance_id} already gone — finalizing #{instance.name}")
+        finalize_termination!(instance)
+        return Runtime::Result.ok
+      end
+
       if result[:success]
-        # Move directly to :terminated via AASM. `:terminating` was used
-        # historically but isn't a valid NodeInstance status — the AASM
-        # transition is single-step (running/stopped/error → terminated).
-        instance.terminate! if instance.may_terminate?
-        # M1 Self-Serve Hardening — meter the terminate event so the rollup
-        # job can close out accrued hours for this instance.
-        record_meter_event(instance, "terminated")
+        finalize_termination!(instance)
         Runtime::Result.ok
       else
         Runtime::Result.err(error: result[:error])
       end
+    rescue Providers::BaseProvider::ResourceNotFoundError => e
+      Rails.logger.warn("[ProvisioningService] Terminate: resource already gone (#{e.message}) — finalizing #{instance.name}")
+      finalize_termination!(instance)
+      Runtime::Result.ok
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[ProvisioningService] Terminate error: #{e.message}")
       Runtime::Result.err(error: e.message)
@@ -197,6 +205,30 @@ module System
     end
 
     private
+
+    # The terminate AASM event covers every non-terminal status, so a false
+    # may_terminate? only means the row is already terminated — warn (don't
+    # silently pretend a transition happened) and skip re-metering so an
+    # idempotent retry can't double-close the instance's accrued hours.
+    def finalize_termination!(instance)
+      unless instance.may_terminate?
+        Rails.logger.warn("[ProvisioningService] Instance #{instance.name} already #{instance.status} — skipping terminate transition and meter event")
+        return
+      end
+
+      instance.terminate!
+      # M1 Self-Serve Hardening — meter the terminate event so the rollup
+      # job can close out accrued hours for this instance.
+      record_meter_event(instance, "terminated")
+    end
+
+    # Same NotFound detection as BaseProvider#sync_status: an error hash with
+    # error_code "NotFound" (aws/gcp) or a "not found" message.
+    def not_found_result?(result)
+      return false unless result.is_a?(Hash) && !result[:success]
+
+      result[:error_code].to_s.casecmp?("NotFound") || result[:error].to_s.match?(/not found/i)
+    end
 
     def validate_node!(node)
       raise ArgumentError, "Node required" unless node

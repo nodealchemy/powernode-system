@@ -132,4 +132,73 @@ RSpec.describe System::ProvisioningService do
       expect(ev.payload["error"]).to eq("boom")
     end
   end
+
+  # Audit finding F4-02: terminating a not-yet-up instance destroyed the
+  # cloud resource but left the row wedged in a non-terminal status, and a
+  # provider-side NotFound made retries error instead of finalizing.
+  describe "#terminate_instance" do
+    let(:instance) do
+      create(:system_node_instance, node: node, status: "starting",
+             config: { "cloud_instance_id" => "i-123" })
+    end
+
+    before do
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter)
+    end
+
+    def terminate
+      described_class.terminate_instance(instance: instance)
+    end
+
+    it "terminates an instance still in :starting" do
+      allow(adapter).to receive(:terminate_instance).with("i-123").and_return({ success: true })
+
+      result = terminate
+
+      expect(result.success?).to be(true)
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    it "treats a provider NotFound result as already-terminated (idempotent retry)" do
+      allow(adapter).to receive(:terminate_instance)
+        .and_return({ success: false, error_code: "NotFound", error: "Instance not found" })
+
+      result = terminate
+
+      expect(result.success?).to be(true)
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    it "treats a raised ResourceNotFoundError as already-terminated (idempotent retry)" do
+      allow(adapter).to receive(:terminate_instance)
+        .and_raise(System::Providers::BaseProvider::ResourceNotFoundError, "no such instance")
+
+      result = terminate
+
+      expect(result.success?).to be(true)
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    it "warns and skips re-metering when the row is already terminated" do
+      instance.update_columns(status: "terminated")
+      allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+      allow(Rails.logger).to receive(:warn)
+      expect_any_instance_of(described_class).not_to receive(:record_meter_event)
+
+      result = terminate
+
+      expect(result.success?).to be(true)
+      expect(Rails.logger).to have_received(:warn).with(/already|cannot transition/i)
+    end
+
+    it "returns an error and leaves the status unchanged on non-NotFound provider failures" do
+      allow(adapter).to receive(:terminate_instance)
+        .and_return({ success: false, error: "rate limited" })
+
+      result = terminate
+
+      expect(result.success?).to be(false)
+      expect(instance.reload.status).to eq("starting")
+    end
+  end
 end
