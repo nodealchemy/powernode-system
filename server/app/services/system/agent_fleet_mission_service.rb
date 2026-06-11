@@ -668,12 +668,17 @@ module System
           return "already_returned"
         end
 
-        # F2-05: restart the ready-TTL anchor (recycle_stale_members! keys
-        # stale_ready off pool_warming_started_at) so the returned member is
-        # reused instead of stale-recycled on the next reaper tick.
-        instance.update!(pool_state: "ready", pool_acquired_at: nil,
-                         pool_warming_started_at: Time.current)
-        "returned"
+        # F2-03: release through the pool service — the default recycles
+        # (draining + terminate, fresh member via replenish!) so the next
+        # mission never inherits this fleet's disk state / credentials /
+        # agent memory; reuse (claimed → ready, F2-05 TTL-anchor reset) is
+        # per-pool opt-in via metadata["reuse_without_reset"].
+        disposition = ::System::InstancePoolService.release!(
+          instance: instance, pool: instance.instance_pool
+        )
+        # "returned" is the established persisted action label for the reuse
+        # path (F1-11 memo continuity); recycle is its own terminal label.
+        disposition == "reused" ? "returned" : disposition
       else
         result = ::System::ProvisioningService.terminate_instance(instance: instance)
         result.respond_to?(:success?) && result.success? ? "terminated" : "terminate_failed"

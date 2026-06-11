@@ -521,6 +521,8 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
     # Audit F1-11 — the pool return was unguarded: reap re-runs (Sidekiq
     # retries, cancel-cleanup) flipped members back to "ready" regardless of
     # state, stomping a claim another consumer had since taken.
+    # (F2-03: these guards exercise the reuse path, which is now per-pool
+    # opt-in via reuse_without_reset — the guard semantics are unchanged.)
     context "pool-return guard (F1-11)" do
       let(:template) { create(:system_node_template, account: account) }
       let(:pool) do
@@ -528,6 +530,7 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
           account: account, node_template: template,
           name: "f1-11-pool", target_size: 1, min_size: 0, max_size: 3,
           lifecycle_class: "ephemeral", status: "active",
+          metadata: { "reuse_without_reset" => true },
           provider_region: create(:system_provider_region),
           provider_instance_type: create(:system_provider_instance_type)
         )
@@ -585,6 +588,51 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
         pool_service.reap!
 
         expect(pool_instance.reload.pool_warming_started_at).to be > 1.minute.ago
+      end
+    end
+
+    # Audit F2-03 — reap-return flipped claimed→ready with no reset, handing
+    # the prior mission's on-disk state, mounted credentials, and agent
+    # working memory to whichever mission acquired the member next. A pool
+    # WITHOUT the reuse_without_reset opt-in must recycle on return:
+    # draining + terminate, so replenish! provisions a fresh member instead.
+    context "pool-return recycle default (F2-03)" do
+      let(:template) { create(:system_node_template, account: account) }
+      let(:pool) do
+        ::System::InstancePool.create!(
+          account: account, node_template: template,
+          name: "f2-03-pool", target_size: 1, min_size: 0, max_size: 3,
+          lifecycle_class: "ephemeral", status: "active",
+          provider_region: create(:system_provider_region),
+          provider_instance_type: create(:system_provider_instance_type)
+        )
+      end
+
+      let(:pool_instance) do
+        create(:system_node_instance, :running, node: node,
+               instance_pool_id: pool.id, pool_state: "claimed",
+               pool_acquired_at: 1.minute.ago)
+      end
+
+      let(:pool_mission) do
+        create(:ai_mission, account: account, mission_type: "agent_fleet",
+               configuration: { "fleet" => {
+                 "plan" => { "source" => "pool", "reap" => true },
+                 "members" => [ { "instance_id" => pool_instance.id, "peer_id" => nil } ]
+               } })
+      end
+
+      let(:pool_service) { described_class.new(mission: pool_mission) }
+
+      it "recycles the member (draining + terminate) instead of re-marking it ready" do
+        result = pool_service.reap!
+
+        expect(result[:reaped].first["action"]).to eq("recycled")
+        pool_instance.reload
+        expect(pool_instance.pool_state).to eq("draining")
+        expect(pool_instance.pool_acquired_at).to be_nil
+        expect(::System::ProvisioningService).to have_received(:terminate_instance)
+          .with(instance: pool_instance)
       end
     end
   end

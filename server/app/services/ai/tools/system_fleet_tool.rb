@@ -898,7 +898,7 @@ module Ai
 
           # === Gap remediation slice 3 — pool ops + canary marking ===
           "system_return_pooled_instance" => {
-            description: "Return a claimed instance back to its pool (rare — only safe for stateless workloads). Pool reaper picks the instance back up as a 'ready' member; pool member_count increments by 1.",
+            description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition).",
             parameters: {
               instance_id: { type: "string", required: true }
             }
@@ -3106,10 +3106,13 @@ module Ai
 
       # === Gap remediation slice 3 — pool ops + canary marking ===
 
-      # Returns a claimed pool instance back to its origin pool. The instance's
-      # pool_state flips from 'claimed' → 'ready'; the next acquire! call can
-      # claim it again. Only safe for stateless workloads — most operators
-      # prefer system_terminate_instance to release.
+      # Returns a claimed pool instance back to its origin pool. F2-03: the
+      # default disposition is "recycled" — pool_state flips to 'draining' and
+      # the VM is terminated so replenish! provisions a FRESH member, never
+      # re-serving the prior consumer's on-disk state / credentials / agent
+      # memory to the next mission. Pools whose consumers share one trust
+      # domain may opt into reuse via metadata["reuse_without_reset"], which
+      # restores the claimed → 'ready' flip ("reused" disposition).
       def return_pooled_instance(params)
         instance = account_instances.find(params[:instance_id])
 
@@ -3122,16 +3125,11 @@ module Ai
         end
 
         pool = ::System::InstancePool.for_account(@account).find(instance.instance_pool_id)
-
-        # pool_warming_started_at doubles as the ready-TTL anchor in
-        # InstancePoolService#recycle_stale_members! — without restarting it
-        # here, a member older than ready_ttl is stale-recycled on the next
-        # reaper tick instead of being reused.
-        instance.update!(pool_state: "ready", pool_acquired_at: nil,
-                         pool_warming_started_at: Time.current)
+        disposition = ::System::InstancePoolService.release!(instance: instance, pool: pool)
 
         success_result(
           returned: true,
+          disposition: disposition,
           instance: serialize_instance(instance.reload),
           pool: pool.reload.to_summary
         )

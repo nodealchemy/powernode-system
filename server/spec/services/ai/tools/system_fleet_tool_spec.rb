@@ -1204,37 +1204,72 @@ RSpec.describe Ai::Tools::SystemFleetTool do
                provider_instance_type: provider_instance_type)
       end
 
-      it "transitions claimed → ready and clears pool_acquired_at" do
+      # Audit F2-03 — return flipped claimed→ready with no reset, re-serving
+      # an instance that still carried the prior mission's on-disk state,
+      # credentials, and agent memory to the NEXT mission. The default now
+      # recycles (draining + terminate → replenish provisions a fresh member);
+      # reuse-without-reset is per-pool opt-in for same-trust-domain workloads.
+      it "recycles a returned member by default — no cross-mission reuse without opt-in" do
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+          .and_return(double(success?: true, error: nil))
+
         r = call("system_return_pooled_instance", instance_id: claimed_instance.id)
         expect(r[:success]).to be true
         expect(r[:data][:returned]).to be true
+        expect(r[:data][:disposition]).to eq("recycled")
 
         claimed_instance.reload
-        expect(claimed_instance.pool_state).to eq("ready")
+        expect(claimed_instance.pool_state).to eq("draining")
         expect(claimed_instance.pool_acquired_at).to be_nil
+        expect(::System::ProvisioningService).to have_received(:terminate_instance)
+          .with(instance: claimed_instance)
       end
 
-      # Audit F2-05 — return left pool_warming_started_at at the original
-      # provision timestamp; recycle_stale_members! anchors stale_ready on
-      # that column, so a returned member older than ready_ttl was terminated
-      # on the next 60s reaper tick instead of being reused.
-      it "resets the ready-TTL anchor so a returned member is not immediately stale-recycled" do
-        old_member = create(:system_node_instance, :running, node: pool_node,
-                            instance_pool_id: pool.id,
-                            pool_state: "claimed",
-                            pool_acquired_at: 2.minutes.ago,
-                            pool_warming_started_at: 5.hours.ago,
-                            provider_region: provider_region,
-                            provider_instance_type: provider_instance_type)
-        allow(::System::ProvisioningService).to receive(:terminate_instance)
+      context "with a reuse_without_reset opt-in pool (same trust domain)" do
+        let(:pool) do
+          ::System::InstancePool.create!(
+            account: account, node_template: template,
+            name: "slice3-reuse-pool", target_size: 2, min_size: 0, max_size: 5,
+            lifecycle_class: "ephemeral", status: "active",
+            metadata: { "reuse_without_reset" => true },
+            provider_region: provider_region,
+            provider_instance_type: provider_instance_type
+          )
+        end
 
-        r = call("system_return_pooled_instance", instance_id: old_member.id)
-        expect(r[:success]).to be true
-        expect(old_member.reload.pool_warming_started_at).to be > 1.minute.ago
+        it "transitions claimed → ready and clears pool_acquired_at" do
+          r = call("system_return_pooled_instance", instance_id: claimed_instance.id)
+          expect(r[:success]).to be true
+          expect(r[:data][:returned]).to be true
+          expect(r[:data][:disposition]).to eq("reused")
 
-        ::System::InstancePoolService.recycle_stale_members!(pool: pool)
-        expect(old_member.reload.pool_state).to eq("ready")
-        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+          claimed_instance.reload
+          expect(claimed_instance.pool_state).to eq("ready")
+          expect(claimed_instance.pool_acquired_at).to be_nil
+        end
+
+        # Audit F2-05 — return left pool_warming_started_at at the original
+        # provision timestamp; recycle_stale_members! anchors stale_ready on
+        # that column, so a returned member older than ready_ttl was terminated
+        # on the next 60s reaper tick instead of being reused.
+        it "resets the ready-TTL anchor so a returned member is not immediately stale-recycled" do
+          old_member = create(:system_node_instance, :running, node: pool_node,
+                              instance_pool_id: pool.id,
+                              pool_state: "claimed",
+                              pool_acquired_at: 2.minutes.ago,
+                              pool_warming_started_at: 5.hours.ago,
+                              provider_region: provider_region,
+                              provider_instance_type: provider_instance_type)
+          allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+          r = call("system_return_pooled_instance", instance_id: old_member.id)
+          expect(r[:success]).to be true
+          expect(old_member.reload.pool_warming_started_at).to be > 1.minute.ago
+
+          ::System::InstancePoolService.recycle_stale_members!(pool: pool)
+          expect(old_member.reload.pool_state).to eq("ready")
+          expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+        end
       end
 
       it "errors when instance was never in a pool" do

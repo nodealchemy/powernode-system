@@ -49,6 +49,10 @@ module System
       )
     end
 
+    def self.release!(instance:, pool:)
+      new(account: pool.account).release!(instance: instance, pool: pool)
+    end
+
     def self.replenish!(pool:)
       new(account: pool.account).replenish!(pool: pool)
     end
@@ -103,6 +107,43 @@ module System
         )
 
         member
+      end
+    end
+
+    # Release — give a claimed member back to its pool. F2-03: the default
+    # is RECYCLE (pool_state="draining" + best-effort VM terminate, mirroring
+    # the stale-ready recycle path) so replenish! backfills a freshly
+    # provisioned member instead of re-serving an instance that still carries
+    # the prior consumer's on-disk state, mounted credentials, and agent
+    # working memory. Reuse-without-reset is per-pool opt-in via
+    # metadata["reuse_without_reset"] — appropriate only when every consumer
+    # of the pool is in the same trust domain.
+    #
+    # Returns "reused" (opt-in path: member back to ready, TTL anchor reset)
+    # or "recycled" (default path). Callers own the claimed-state guard.
+    def release!(instance:, pool:)
+      if pool&.metadata.is_a?(Hash) && pool.metadata["reuse_without_reset"]
+        # pool_warming_started_at doubles as the ready-TTL anchor in
+        # recycle_stale_members! (F2-05) — without restarting it, a member
+        # older than ready_ttl is stale-recycled on the next reaper tick
+        # instead of being reused.
+        instance.update!(pool_state: "ready", pool_acquired_at: nil,
+                         pool_warming_started_at: Time.current)
+        "reused"
+      else
+        instance.update!(pool_state: "draining", pool_acquired_at: nil)
+        # Same best-effort terminate as the stale-ready recycle: a failure
+        # is logged, not raised — the member is already out of circulation
+        # (draining is never acquirable) and the reaper retries cleanup.
+        begin
+          ::System::ProvisioningService.terminate_instance(instance: instance)
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstancePoolService] terminate failed during release-recycle " \
+            "(instance=#{instance.id} pool='#{pool&.name}'): #{e.class}: #{e.message}"
+          )
+        end
+        "recycled"
       end
     end
 
