@@ -134,15 +134,94 @@ RSpec.describe System::Fleet::DecisionEngine do
                       fingerprint: "bgp:bgp-1")
       end
 
-      it "invokes SdwanVipFailoverExecutor with the virtual_ip_id" do
+      it "invokes SdwanVipFailoverExecutor plan-only by default (approval-gated, side-effectful)" do
         executor = instance_double(System::Ai::Skills::SdwanVipFailoverExecutor)
         allow(System::Ai::Skills::SdwanVipFailoverExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(virtual_ip_id: "vip-1")
+        # No intervention policy row → resolves to the require_approval
+        # default, so the side-effectful failover runs as a dry_run plan.
+        expect(executor).to receive(:execute).with(virtual_ip_id: "vip-1", dry_run: true)
                                              .and_return({ success: true, data: {} })
 
         engine.decide(kind: "system.sdwan_vip_unreachable", severity: :critical,
                       payload: { virtual_ip_id: "vip-1" },
                       fingerprint: "vip:vip-1")
+      end
+    end
+
+    # Audit finding F3-06: side-effectful executors ran BEFORE the policy
+    # gate, so flipping a policy to require_approval/block did not stop the
+    # action — it only changed how the already-performed action was recorded.
+    context "policy gating of side-effectful executors" do
+      it "does not invoke PlatformMaintenanceExecutor when acme cert rotation requires approval" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.acme_cert_rotate",
+                                       policy: "require_approval", is_active: true)
+        expect(System::Ai::Skills::PlatformMaintenanceExecutor).not_to receive(:new)
+
+        d = engine.decide(kind: "system.acme_cert_expiring", severity: :medium,
+                          payload: { certificate_id: "cert-1" },
+                          fingerprint: "acme:cert-1")
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:skill_result]).to be_nil
+      end
+
+      it "does not invoke PlatformMaintenanceExecutor when the policy is block" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.acme_cert_rotate",
+                                       policy: "block", is_active: true)
+        expect(System::Ai::Skills::PlatformMaintenanceExecutor).not_to receive(:new)
+
+        d = engine.decide(kind: "system.acme_cert_expiring", severity: :medium,
+                          payload: { certificate_id: "cert-1" },
+                          fingerprint: "acme:cert-1-block")
+        expect(d[:decision]).to eq(:blocked)
+        expect(d[:skill_result]).to be_nil
+      end
+
+      it "still invokes PlatformMaintenanceExecutor for real on notify_and_proceed" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.acme_cert_rotate",
+                                       policy: "notify_and_proceed", is_active: true)
+        executor = instance_double(System::Ai::Skills::PlatformMaintenanceExecutor)
+        allow(System::Ai::Skills::PlatformMaintenanceExecutor).to receive(:new).and_return(executor)
+        expect(executor).to receive(:execute).with(action: "cert_rotate", certificate_id: "cert-1")
+                                             .and_return({ success: true, data: {} })
+
+        d = engine.decide(kind: "system.acme_cert_expiring", severity: :medium,
+                          payload: { certificate_id: "cert-1" },
+                          fingerprint: "acme:cert-1-auto")
+        expect(d[:decision]).to eq(:proceed)
+      end
+
+      it "runs FederationPeerRemediateExecutor plan-only (dry_run) when approval is required" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.federation_peer_remediate",
+                                       policy: "require_approval", is_active: true)
+        executor = instance_double(System::Ai::Skills::FederationPeerRemediateExecutor)
+        allow(System::Ai::Skills::FederationPeerRemediateExecutor).to receive(:new).and_return(executor)
+        expect(executor).to receive(:execute)
+          .with(federation_peer_id: "fp-1", reason: "heartbeat_stale", dry_run: true)
+          .and_return({ success: true, data: { plan: "degrade" } })
+
+        d = engine.decide(kind: "system.federation_peer_liveness", severity: :high,
+                          payload: { federation_peer_id: "fp-1", reason: "heartbeat_stale" },
+                          fingerprint: "fed:fp-1")
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:skill_result]).to eq({ success: true, data: { plan: "degrade" } })
+      end
+
+      it "runs SdwanPeerRemediateExecutor plan-only (dry_run) when approval is required" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.sdwan_peer_remediate",
+                                       policy: "require_approval", is_active: true)
+        executor = instance_double(System::Ai::Skills::SdwanPeerRemediateExecutor)
+        allow(System::Ai::Skills::SdwanPeerRemediateExecutor).to receive(:new).and_return(executor)
+        expect(executor).to receive(:execute).with(peer_id: "peer-9", dry_run: true)
+                                             .and_return({ success: true, data: {} })
+
+        engine.decide(kind: "system.sdwan_peer_drift", severity: :high,
+                      payload: { peer_id: "peer-9" },
+                      fingerprint: "sdwan_peer_drift:peer-9")
       end
     end
   end
@@ -151,6 +230,12 @@ RSpec.describe System::Fleet::DecisionEngine do
     it "declares a callable input_mapper for every binding with a skill" do
       missing = described_class::SIGNAL_BINDINGS
                   .select { |_kind, b| b[:skill] && !b[:input_mapper].respond_to?(:call) }
+      expect(missing.keys).to eq([])
+    end
+
+    it "declares side_effectful for every binding with a skill" do
+      missing = described_class::SIGNAL_BINDINGS
+                  .select { |_kind, b| b[:skill] && ![ true, false ].include?(b[:side_effectful]) }
       expect(missing.keys).to eq([])
     end
   end

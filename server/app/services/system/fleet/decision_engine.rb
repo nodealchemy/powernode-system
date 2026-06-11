@@ -51,20 +51,30 @@ module System
 
       # signal.kind → {skill: <System::Ai::Skills class>, action_category: "system...."}
       #
-      # Every binding with a skill MUST also declare an input_mapper lambda
-      # (signal → executor kwargs, or nil to skip invocation). invoke_skill
-      # dispatches exclusively through the mapper — a skill without one
-      # raises instead of silently never running (audit F3-04: a class-name
-      # case statement previously left all four SDWAN executors unreachable).
+      # Every binding with a skill MUST also declare:
+      #   - input_mapper: lambda (signal → executor kwargs, or nil to skip).
+      #     invoke_skill dispatches exclusively through the mapper — a skill
+      #     without one raises instead of silently never running (audit
+      #     F3-04: a class-name case statement previously left all four
+      #     SDWAN executors unreachable).
+      #   - side_effectful: true/false. Side-effectful executors only run
+      #     for real when the resolved policy auto-executes (auto_approve /
+      #     notify_and_proceed); under require_approval they run plan-only
+      #     (dry_run: true, requires dry_run_supported: true) so the plan
+      #     lands in the ApprovalRequest, and under block/silent they are
+      #     skipped (audit F3-06: they previously ran BEFORE the gate,
+      #     making operator policy overrides decorative).
       SIGNAL_BINDINGS = {
         "system.instance_silent" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
           action_category: "system.instance_reprovision",
+          side_effectful: false, # drift report + remediation plan only
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         "system.module_drift" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
           action_category: "system.module_assign",
+          side_effectful: false, # drift report + remediation plan only
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         # Provider-state drift (InstanceStateDriftSensor): the VM itself is
@@ -90,6 +100,9 @@ module System
         "system.acme_cert_expiring" => {
           skill: ::System::Ai::Skills::PlatformMaintenanceExecutor,
           action_category: "system.acme_cert_rotate",
+          # Queues the real renewal sweep and has no dry_run mode — when the
+          # policy doesn't auto-execute, the executor is skipped entirely.
+          side_effectful: true,
           input_mapper: ->(signal) {
             { action: "cert_rotate", certificate_id: signal.dig(:payload, "certificate_id") }
           }
@@ -101,6 +114,7 @@ module System
         "system.config_drift" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
           action_category: "system.module_assign",
+          side_effectful: false, # drift report + remediation plan only
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         "system.slo_violation" => {
@@ -126,6 +140,8 @@ module System
         "system.sdwan_peer_drift" => {
           skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
           action_category: "system.sdwan_peer_remediate",
+          side_effectful: true, # rotates the peer keypair
+          dry_run_supported: true,
           input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
         },
         "system.sdwan_hub_unreachable" => {
@@ -133,6 +149,7 @@ module System
           action_category: "system.sdwan_failover",
           # Executor defaults to dry_run: true — returns the candidate-spoke
           # plan for the approval request; the operator promotes.
+          side_effectful: false,
           input_mapper: ->(signal) { { network_id: signal.dig(:payload, "network_id") } }
         },
         # Slice 9f — iBGP session remediation, VIP failover, route-policy
@@ -142,6 +159,7 @@ module System
         "system.sdwan_bgp_session_unhealthy" => {
           skill: ::System::Ai::Skills::SdwanBgpSessionRemediateExecutor,
           action_category: "system.sdwan_bgp_session_remediate",
+          side_effectful: false, # executor defaults to dry_run: true (plan only)
           input_mapper: ->(signal) {
             { bgp_session_id: signal.dig(:payload, "bgp_session_id"),
               peer_id: signal.dig(:payload, "peer_id"),
@@ -156,6 +174,8 @@ module System
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
           action_category: "system.sdwan_vip_failover",
+          side_effectful: true, # promotes a failover holder
+          dry_run_supported: true,
           input_mapper: ->(signal) { { virtual_ip_id: signal.dig(:payload, "virtual_ip_id") } }
         },
         # M2 of the AI-driven provisioning conversation — adaptive evolution.
@@ -188,11 +208,13 @@ module System
         "system.cve_critical_published" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
           action_category: "system.cve_remediate",
+          side_effectful: false, # side-effect-free triage planner
           input_mapper: CVE_RESPONSE_INPUTS
         },
         "system.module_critical_upgrade_ready" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
           action_category: "system.module_critical_upgrade_ready",
+          side_effectful: false, # side-effect-free triage planner
           input_mapper: CVE_RESPONSE_INPUTS
         },
         # Phase 3c — federation peer liveness. The FederationPeerLivenessSensor
@@ -205,6 +227,8 @@ module System
         "system.federation_peer_liveness" => {
           skill: ::System::Ai::Skills::FederationPeerRemediateExecutor,
           action_category: "system.federation_peer_remediate",
+          side_effectful: true, # re-handshakes/degrades the peer
+          dry_run_supported: true,
           input_mapper: ->(signal) {
             { federation_peer_id: signal.dig(:payload, "federation_peer_id"),
               reason: signal.dig(:payload, "reason") }
@@ -307,17 +331,35 @@ module System
         "fleet:decided:#{account.id}:#{signal.kind}:#{signal.fingerprint}"
       end
 
+      # Policies under which a side-effectful executor may perform its real
+      # action pre-gate (the gate will resolve to the same policy and proceed).
+      AUTO_EXECUTE_POLICIES = %w[auto_approve notify_and_proceed].freeze
+
       # Executor inputs come exclusively from the binding's input_mapper
       # (signal → kwargs, or nil to skip invocation). `fetch` raises on a
-      # binding that declares a skill without a mapper, so a mis-declared
-      # binding surfaces as an error in the decision record instead of an
-      # executor that silently never runs.
+      # binding that declares a skill without a mapper or without a
+      # side_effectful tag, so a mis-declared binding surfaces as an error
+      # in the decision record instead of an executor that silently never
+      # runs (F3-04) or one that acts before the gate (F3-06).
       def invoke_skill(binding, signal)
         skill_class = binding[:skill]
         return nil unless skill_class
 
         inputs = binding.fetch(:input_mapper).call(signal)
         return nil if inputs.nil?
+
+        # F3-06: resolve the policy BEFORE invoking so require_approval and
+        # block actually prevent the action instead of merely re-labelling
+        # an action that already happened.
+        if binding.fetch(:side_effectful)
+          policy = autonomy_service.policy_for(binding[:action_category])&.dig(:policy)
+          unless AUTO_EXECUTE_POLICIES.include?(policy)
+            # Plan-only fallback: produce the dry_run plan for the approval
+            # request when the executor supports it; otherwise skip.
+            return nil unless policy == "require_approval" && binding[:dry_run_supported]
+            inputs = inputs.merge(dry_run: true)
+          end
+        end
 
         executor = skill_class.new(account: account, agent: autonomy_service.agent, user: nil)
         executor.execute(**inputs)
