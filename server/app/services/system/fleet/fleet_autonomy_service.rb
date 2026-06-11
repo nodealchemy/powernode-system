@@ -77,6 +77,12 @@ module System
         validation = safe_validate(validator, signals, failed_sensors)
 
         engine = DecisionEngine.new(autonomy_service: self)
+
+        # F3-01: consume the approved lane BEFORE deciding anew — an operator
+        # approval from a prior tick executes here (pull model), so the
+        # require_approval gate is no longer a dead end.
+        approved_executed = execute_approved_actions!(engine)
+
         decisions = engine.decide_all(signals)
         LearningExtractor.record_tick!(account: account, decisions: decisions)
 
@@ -94,7 +100,8 @@ module System
             decision_count: decisions.size,
             by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
             validated: validation,
-            remediations_recorded: recorded
+            remediations_recorded: recorded,
+            approved_executed: approved_executed.size
           },
           source: "fleet_autonomy", correlation_id: tick_correlation
         )
@@ -107,6 +114,7 @@ module System
           by_decision: decisions.group_by { |d| d[:decision] }.transform_values(&:size),
           validated: validation,
           remediations_recorded: recorded,
+          approved_executed: approved_executed.size,
           correlation_id: tick_correlation
         }
       end
@@ -231,6 +239,32 @@ module System
       # overrides the resolved policy (e.g. forcing "require_approval" after N
       # consecutive ineffective outcomes) — mirroring the consent-budget
       # precedent where a feedback signal outranks the configured policy.
+      # F3-01 — the act arm of the require_approval lane. Polls approved
+      # system_fleet requests that have not been executed yet (no
+      # request_data["execution"] stamp), replays each through the engine
+      # (execute_approved!), and stamps the result so a request executes
+      # exactly once. Per-request rescue: one failure never starves the
+      # rest, and a failed execution is stamped (not retried forever).
+      def execute_approved_actions!(engine)
+        return [] unless defined?(::Ai::ApprovalRequest)
+
+        executed = []
+        ::Ai::ApprovalRequest
+          .approved
+          .where(account: @account, source_type: SOURCE_TYPE)
+          .where("request_data->'execution' IS NULL")
+          .find_each do |request|
+            result = engine.execute_approved!(request)
+            stamp_execution!(request, result)
+            executed << { request_id: request.id, applied: result[:applied] == true }
+          rescue StandardError => e
+            Rails.logger.error("[FleetAutonomy] approved execution failed for ApprovalRequest #{request.id}: #{e.class}: #{e.message}")
+            stamp_execution!(request, { applied: false, error: "#{e.class}: #{e.message}" })
+            executed << { request_id: request.id, applied: false, error: e.message }
+          end
+        executed
+      end
+
       def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {}, force_policy: nil)
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
@@ -464,6 +498,13 @@ module System
           rescue StandardError => e
             Rails.logger.error("[FleetAutonomy] expiry sweep failed for ApprovalRequest #{request.id}: #{e.message}")
           end
+      end
+
+      def stamp_execution!(request, result)
+        stamp = result.deep_stringify_keys.merge("executed_at" => Time.current.iso8601)
+        request.update!(request_data: request.request_data.merge("execution" => stamp))
+      rescue StandardError => e
+        Rails.logger.error("[FleetAutonomy] could not stamp execution on ApprovalRequest #{request.id}: #{e.message}")
       end
 
       def recently_rejected_approval?(action_category, match_conditions)

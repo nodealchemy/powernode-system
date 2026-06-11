@@ -387,6 +387,49 @@ module System
         Array(signals).map { |s| decide(s) }
       end
 
+      # F3-01: the act arm of the require_approval lane. Reconstructs the
+      # original signal from the approved request's stamped identity
+      # (skill_metadata_payload) and replays it through the SAME execution
+      # machinery as the proceed lane: side-effectful skills re-run in
+      # execute mode (the human approval IS the policy decision, so no
+      # dry_run downgrade), then apply_remediation! routes through
+      # REMEDIATION_APPLIERS. Always returns a result hash — never raises —
+      # so the caller can stamp request_data even for unexecutable requests.
+      def execute_approved!(request)
+        data = request.request_data.is_a?(Hash) ? request.request_data : {}
+        payload = data["payload"].is_a?(Hash) ? data["payload"] : {}
+        kind = payload["signal_kind"]
+        if kind.blank?
+          return { applied: false,
+                   reason: "request_data missing signal_kind — pre-F3-01 request, cannot replay" }
+        end
+
+        signal = ::System::Fleet::Signal.from_hash(
+          "kind" => kind,
+          "severity" => payload["signal_severity"].presence || "medium",
+          "payload" => payload.except("signal_kind", "signal_severity", "signal_fingerprint", "skill_plan"),
+          # Signal requires a fingerprint; replays of requests stamped before
+          # the fingerprint landed in skill_metadata_payload synthesize one
+          # from the request identity (only used for logging/dedup display).
+          "fingerprint" => payload["signal_fingerprint"].presence || "approved:#{request.id}"
+        )
+
+        binding = SIGNAL_BINDINGS[signal.kind]
+        skill_result = nil
+        if binding && binding[:skill] && binding[:side_effectful]
+          inputs = binding.fetch(:input_mapper).call(signal)
+          if inputs
+            executor = binding[:skill].new(account: account, agent: autonomy_service.agent, user: nil)
+            skill_result = executor.execute(**inputs)
+          end
+        end
+
+        apply_remediation!(signal, skill_result)
+      rescue StandardError => e
+        Rails.logger.error("[FleetDecisionEngine] approved execution failed for ApprovalRequest #{request.id}: #{e.class}: #{e.message}")
+        { applied: false, reason: "#{e.class}: #{e.message}" }
+      end
+
       private
 
       def recently_decided?(signal)
@@ -569,7 +612,11 @@ module System
       REMEDIATION_APPLIERS = {
         "system.module_drift" => { command: "sync_modules" },
         "system.config_drift" => { command: "apply_config" },
-        "system.storage_assignment_drift" => { method: :reconcile_storage_assignment }
+        "system.storage_assignment_drift" => { method: :reconcile_storage_assignment },
+        # F3-01: the instance_reprovision executor. A silent instance's agent
+        # is unreachable, so on-node task commands cannot apply — the
+        # remediation is a provider-side reboot via InstanceControlService.
+        "system.instance_silent" => { method: :reboot_silent_instance }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -590,6 +637,23 @@ module System
 
       # F3-07: re-run reconciliation for an assignment the sensor flagged as
       # stale — the sensor itself is read-side and must not mutate.
+      # F3-01 — provider-side reboot for an approved instance_reprovision.
+      # Account-scoped lookup; returns the same applied/reason shape as the
+      # other appliers so the decision/event/stamp paths stay uniform.
+      def reboot_silent_instance(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+
+        result = ::System::InstanceControlService.execute(instance: instance, action: "reboot")
+        if result.respond_to?(:success?)
+          { applied: result.success?, action: "reboot", instance_id: instance.id,
+            reason: (result.respond_to?(:error) ? result.error : nil) }.compact
+        else
+          { applied: true, action: "reboot", instance_id: instance.id }
+        end
+      end
+
       def reconcile_storage_assignment(signal, _skill_result)
         id = signal.payload.is_a?(Hash) ? signal.payload["storage_assignment_id"] : nil
         assignment = ::System::StorageAssignment.where(account_id: account.id).find_by(id: id)
@@ -632,6 +696,14 @@ module System
 
       def skill_metadata_payload(signal, skill_result)
         base = signal.payload.is_a?(Hash) ? signal.payload.deep_stringify_keys : {}
+        # F3-01: stamp the signal identity so an approved request can be
+        # replayed later (execute_approved!) — request_data only stores the
+        # action_category otherwise, and the applier table is signal-kind keyed.
+        base = base.merge(
+          "signal_kind" => signal.kind,
+          "signal_severity" => signal.severity.to_s,
+          "signal_fingerprint" => signal.fingerprint
+        ).compact
         if skill_result.is_a?(Hash) && skill_result[:data].is_a?(Hash)
           base.merge("skill_plan" => skill_result[:data])
         else
