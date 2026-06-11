@@ -218,7 +218,7 @@ module System
           "tasks_failed" => %w[failed aborted cancelled].sum { |s| by_status[s].to_i },
           "assignee_executions" => executions,
           "assignee_last_executed_at" => peer&.last_executed_at&.iso8601,
-          "status" => subtask_status(tasks, executions)
+          "status" => subtask_status(tasks, executions, tokenized)
         }
       end
       report = {
@@ -237,7 +237,10 @@ module System
       if execution_settled?(results) || timed_out
         report["execution_outcome"] = execution_outcome(results, report, timed_out)
         persist_fleet!("report", report)
-        { ok: true, report: report, waiting: false, execution_outcome: report["execution_outcome"] }
+        # F1-09: ok only when every subtask actually executed — a mission
+        # that delivered nothing (or only part) must not aggregate as ok.
+        { ok: report["execution_outcome"] == "complete",
+          report: report, waiting: false, execution_outcome: report["execution_outcome"] }
       else
         persist_fleet!("report", report)
         { ok: true, report: report, waiting: true,
@@ -273,13 +276,20 @@ module System
 
     # Honest subtask status from the dispatched tasks' real states (falls back to
     # the peer execution signal when no tasks were dispatched, e.g. central mode).
-    def subtask_status(tasks, peer_executions)
-      return peer_executions.positive? ? "executed" : "dispatched" if tasks.empty?
+    # Terminal-first ordering (F1-09): a mixed complete+failed set is FAILED, not
+    # forever-"executing"; zero tasks with zero minted tokens is "not_dispatched"
+    # (nothing will ever execute), not "dispatched".
+    def subtask_status(tasks, peer_executions, tokenized = 0)
+      if tasks.empty?
+        return "executed" if peer_executions.positive?
+        return tokenized.positive? ? "dispatched" : "not_dispatched"
+      end
 
       statuses = tasks.map(&:status)
       return "executed"  if statuses.all?("complete")
-      return "executing" if statuses.include?("running") || statuses.include?("complete")
+      return "executing" if statuses.include?("running")
       return "failed"    if statuses.any? { |s| %w[failed aborted cancelled].include?(s) }
+      return "executing" if statuses.include?("complete") # some done, rest pending
 
       "dispatched"
     end
@@ -350,10 +360,10 @@ module System
       Time.current.tap { |now| persist_fleet!("aggregate_started_at", now.iso8601) }
     end
 
-    # Settled when every subtask is terminal (executed or failed) — nothing
-    # left for the on-node agents to deliver.
+    # Settled when every subtask is terminal (executed, failed, or never
+    # dispatched) — nothing left for the on-node agents to deliver.
     def execution_settled?(results)
-      results.all? { |r| %w[executed failed].include?(r["status"]) }
+      results.all? { |r| %w[executed failed not_dispatched].include?(r["status"]) }
     end
 
     def execution_outcome(results, report, timed_out)

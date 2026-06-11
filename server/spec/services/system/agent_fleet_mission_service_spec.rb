@@ -295,6 +295,53 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       expect(result[:execution_outcome]).to eq("timeout")
       expect(mission.reload.configuration.dig("fleet", "report", "execution_outcome")).to eq("timeout")
     end
+
+    # Audit F1-09 — subtask_status mislabeled terminal outcomes: a mixed
+    # complete+failed task set returned "executing" forever, zero-dispatch
+    # subtasks claimed "dispatched", and aggregate! reported ok:true with
+    # nothing delivered.
+    context "terminal status labelling (F1-09)" do
+      it "marks a subtask failed (terminal) when its tasks split complete/failed" do
+        tasks = System::Task.where(command: "a2a_call").to_a
+        s1, s2 = tasks.partition { |t| t.options["subtask_id"] == "s1" }
+        # s1: one complete, the rest failed (mixed terminal); s2: all complete.
+        System::Task.where(id: s1.first.id).update_all(status: "complete")
+        System::Task.where(id: s1.drop(1).map(&:id)).update_all(status: "failed")
+        System::Task.where(id: s2.map(&:id)).update_all(status: "complete")
+
+        result = service.aggregate!
+        by_id = result[:report]["results"].index_by { |r| r["subtask_id"] }
+
+        expect(by_id["s1"]["status"]).to eq("failed")
+        expect(by_id["s2"]["status"]).to eq("executed")
+        expect(result[:waiting]).to be false
+        expect(result[:execution_outcome]).to eq("partial")
+        expect(result[:ok]).to be false
+      end
+
+      it "labels an undispatched subtask not_dispatched and settles instead of polling forever" do
+        System::Task.where(command: "a2a_call").delete_all
+        cfg = mission.reload.configuration.deep_dup
+        cfg["fleet"]["dispatched_task_ids"] = []
+        cfg["fleet"]["assignments"].each { |a| a["sub_delegation_targets"] = [] }
+        mission.update!(configuration: cfg)
+
+        result = service.aggregate!
+
+        expect(result[:report]["results"].map { |r| r["status"] }).to all(eq("not_dispatched"))
+        expect(result[:waiting]).to be false
+        expect(result[:ok]).to be false
+      end
+
+      it "reports ok:true only when every subtask executed" do
+        System::Task.where(command: "a2a_call").update_all(status: "complete")
+
+        result = service.aggregate!
+
+        expect(result[:execution_outcome]).to eq("complete")
+        expect(result[:ok]).to be true
+      end
+    end
   end
 
   describe "#reserve_aggregate_recheck!" do
