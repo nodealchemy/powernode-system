@@ -137,16 +137,41 @@ module System
       # not in the current seed's definitions. Idempotent — destroy_all
       # returns 0 rows after the first run.
       #
+      # F3-10: an agent may be SHARED between seed files (Fleet Autonomy
+      # also carries project.* and system.instance_pool_* policies from
+      # sibling seeds). Pass owned_prefixes/excluded_prefixes so a seed
+      # only cleans the namespace it owns — otherwise a targeted re-run
+      # destroys the sibling seeds' policies.
+      #
       # @param account [Account]
       # @param agent [Ai::Agent]
       # @param keep_keys [Array<String>] action_category values to retain
+      # @param owned_prefixes [Array<String>, nil] restrict cleanup to
+      #   categories starting with one of these prefixes (nil = whole agent)
+      # @param excluded_prefixes [Array<String>] never destroy categories
+      #   starting with one of these prefixes (carve-outs inside owned)
       # @return [Integer] number of rows destroyed
-      def clean_stale_policies!(account:, agent:, keep_keys:)
+      def clean_stale_policies!(account:, agent:, keep_keys:, owned_prefixes: nil, excluded_prefixes: [])
         return 0 unless agent
 
         stale = ::Ai::InterventionPolicy
           .where(account: account, ai_agent_id: agent.id, scope: "agent")
           .where.not(action_category: keep_keys)
+
+        if owned_prefixes.present?
+          owned = Array(owned_prefixes)
+          stale = stale.where(
+            owned.map { "action_category LIKE ?" }.join(" OR "),
+            *owned.map { |p| "#{::Ai::InterventionPolicy.sanitize_sql_like(p)}%" }
+          )
+        end
+
+        Array(excluded_prefixes).each do |prefix|
+          stale = stale.where.not(
+            "action_category LIKE ?", "#{::Ai::InterventionPolicy.sanitize_sql_like(prefix)}%"
+          )
+        end
+
         count = stale.count
         stale.destroy_all if count.positive?
         count

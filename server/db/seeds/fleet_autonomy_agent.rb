@@ -150,7 +150,13 @@ count = System::Seeds::AgentSetupHelpers.upsert_policies!(
 )
 System::Seeds::AgentSetupHelpers.clean_stale_policies!(
   account: admin_account, agent: fleet_agent,
-  keep_keys: fleet_policies.keys
+  keep_keys: fleet_policies.keys,
+  # F3-10: Fleet Autonomy is a shared agent — sibling seeds attach project.*
+  # (system_provisioning_intervention_policies.rb) and system.instance_pool_*
+  # (system_instance_pool_policies.rb) policies to it. Clean only the
+  # namespace this seed owns so a targeted re-run can't destroy theirs.
+  owned_prefixes: [ "system." ],
+  excluded_prefixes: [ "system.instance_pool_" ]
 )
 puts "  ✅ Fleet Autonomy policies: #{count} changed (#{fleet_policies.size} total)"
 
