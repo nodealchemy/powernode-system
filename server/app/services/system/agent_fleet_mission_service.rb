@@ -27,6 +27,12 @@ module System
     # TTL for the capability tokens minted at delegate! time — long enough for
     # the fleet to execute its sub-delegations, short enough to bound exposure.
     DELEGATION_TOKEN_TTL = 3600
+    # F1-12: when aggregate! re-runs (the F1-03 wait/monitor loop polls past
+    # the original delegation), any sub-delegation token within this window of
+    # expiry is re-minted. We re-mint rather than extend: PeerCapabilityTokenSigner
+    # hard-caps TTL at MAX_TTL_SECONDS (3600, the F2-04 clamp), so a long mission
+    # gets a fresh ≤3600s token each cycle instead of one unbounded token.
+    TOKEN_REFRESH_WINDOW_SECONDS = 300
     # Execution wait between delegate and reap: aggregate! keeps reporting
     # waiting (and the worker_api controller re-enqueues a delayed re-check)
     # until every dispatched task is terminal or the timeout elapses. Both
@@ -195,10 +201,21 @@ module System
     # sub-delegations carry an actionable token (dispatched) and what the
     # assignee peer has actually executed.
     def aggregate!
+      # F1-12: re-mint near-expiry delegation tokens before reading state, so a
+      # mission whose execution outlives the 3600s token TTL keeps presenting
+      # valid tokens on subsequent wait/monitor re-checks.
+      refresh_expiring_delegation_tokens!
+
       assignments = fleet_assignments!
       peers_by_id = ::System::NodeInstancePeer.where(account_id: account.id)
                                               .where(id: assignments.filter_map { |a| a["assignee_peer_id"] })
                                               .index_by(&:id)
+      # F1-12: assignee liveness — a member whose instance died mid-mission
+      # (error/terminated) loses any non-terminal subtask to "member_lost".
+      instances_by_id = ::System::NodeInstance
+                          .where(account_id: account.id)
+                          .where(id: assignments.filter_map { |a| a["assignee_instance_id"] })
+                          .index_by(&:id)
       tasks_by_subtask = dispatched_tasks_by_subtask
       results = assignments.map do |a|
         targets = Array(a["sub_delegation_targets"])
@@ -207,6 +224,12 @@ module System
         executions = peer&.execution_count.to_i
         tasks = Array(tasks_by_subtask[a["subtask_id"]])
         by_status = tasks.group_by(&:status).transform_values(&:size)
+        status = subtask_status(tasks, executions, tokenized)
+        # A dead member only loses work that hasn't already executed — tasks
+        # that completed before the member died still count as delivered.
+        if status != "executed" && member_lost?(instances_by_id[a["assignee_instance_id"]])
+          status = "member_lost"
+        end
         {
           "subtask_id" => a["subtask_id"],
           "skill" => a["skill"],
@@ -218,7 +241,7 @@ module System
           "tasks_failed" => %w[failed aborted cancelled].sum { |s| by_status[s].to_i },
           "assignee_executions" => executions,
           "assignee_last_executed_at" => peer&.last_executed_at&.iso8601,
-          "status" => subtask_status(tasks, executions, tokenized)
+          "status" => status
         }
       end
       report = {
@@ -369,10 +392,24 @@ module System
       Time.current.tap { |now| persist_fleet!("aggregate_started_at", now.iso8601) }
     end
 
-    # Settled when every subtask is terminal (executed, failed, or never
-    # dispatched) — nothing left for the on-node agents to deliver.
+    # Settled when every subtask is terminal (executed, failed, never
+    # dispatched, or lost with its member) — nothing left for the on-node
+    # agents to deliver. F1-12: member_lost is terminal — a dead member will
+    # not resume, so the mission must settle instead of polling to timeout.
     def execution_settled?(results)
-      results.all? { |r| %w[executed failed not_dispatched].include?(r["status"]) }
+      results.all? { |r| %w[executed failed not_dispatched member_lost].include?(r["status"]) }
+    end
+
+    # F1-12: a member is lost when its NodeInstance is gone or in a terminal
+    # bad state. Keyed on status (not heartbeat staleness): the on-node agent
+    # is the only heartbeat source, and a simulated/just-launched fleet has no
+    # heartbeat yet — so status is the reliable liveness signal. The
+    # DecisionEngine's presumed-dead fail-safe is what transitions a genuinely
+    # silent instance to error; this reads that verdict.
+    def member_lost?(instance)
+      return true if instance.nil?
+
+      %w[error terminated].include?(instance.status)
     end
 
     def execution_outcome(results, report, timed_out)
@@ -571,6 +608,55 @@ module System
         "capability_token" => nil,
         "error" => e.message
       }
+    end
+
+    # F1-12: re-mint any persisted sub-delegation token sitting within
+    # TOKEN_REFRESH_WINDOW_SECONDS of expiry. mint_delegation_token already
+    # caps each token at the signer's MAX_TTL, so a long-running mission gets a
+    # rolling sequence of fresh ≤3600s tokens rather than one extended past the
+    # F2-04 security ceiling. Only token-bearing edges with a resolvable
+    # assignee+target peer are refreshed; everything else is left verbatim.
+    # Persists (and returns true) only when something actually changed.
+    def refresh_expiring_delegation_tokens!
+      assignments = fleet_node["assignments"]
+      return false unless assignments.is_a?(::Array) && assignments.any?
+
+      peer_ids = assignments.flat_map do |a|
+        [ a["assignee_peer_id"] ] + Array(a["sub_delegation_targets"]).map { |t| t.is_a?(::Hash) ? t["target_peer_id"] : nil }
+      end.compact.uniq
+      peers_by_id = ::System::NodeInstancePeer.where(account_id: account.id, id: peer_ids).index_by(&:id)
+
+      changed = false
+      refreshed = assignments.map do |a|
+        assignee_peer = peers_by_id[a["assignee_peer_id"]]
+        targets = Array(a["sub_delegation_targets"]).map do |t|
+          next t unless assignee_peer && t.is_a?(::Hash)
+          token = t["capability_token"]
+          next t unless token.is_a?(::Hash) && token_near_expiry?(token["expires_at"])
+          target_peer = peers_by_id[t["target_peer_id"]]
+          next t unless target_peer
+
+          minted = mint_delegation_token(assignee_peer, target_peer, t["skill"])
+          # Keep the old descriptor if the re-mint failed (no token) so we don't
+          # drop a still-usable edge — the next cycle retries.
+          next t if minted["capability_token"].nil?
+
+          changed = true
+          minted
+        end
+        a.merge("sub_delegation_targets" => targets)
+      end
+
+      persist_fleet!("assignments", refreshed) if changed
+      changed
+    end
+
+    def token_near_expiry?(expires_at)
+      return true if expires_at.blank? # missing expiry — treat as needing a fresh token
+
+      Time.zone.parse(expires_at.to_s) <= Time.current + TOKEN_REFRESH_WINDOW_SECONDS
+    rescue ArgumentError, TypeError
+      true
     end
 
     def reap_member!(instance, plan)

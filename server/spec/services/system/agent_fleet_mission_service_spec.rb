@@ -342,6 +342,93 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
         expect(result[:ok]).to be true
       end
     end
+
+    # Audit finding F1-12 — a member that dies mid-mission (its NodeInstance
+    # transitions to error/terminated, e.g. reaped by the DecisionEngine's
+    # presumed-dead fail-safe) left its subtask labelled "dispatched"/
+    # "executing" forever, so aggregate! polled until the execution timeout
+    # instead of recognizing the work as lost. aggregate! now reads assignee
+    # liveness and labels such subtasks "member_lost" (terminal).
+    context "lost member detection (F1-12)" do
+      it "labels a subtask member_lost when its assignee instance is dead" do
+        assignments = mission.reload.configuration.dig("fleet", "assignments")
+        lost = assignments.first
+        System::NodeInstance.where(id: lost["assignee_instance_id"]).update_all(status: "error")
+
+        result = service.aggregate!
+        by_id = result[:report]["results"].index_by { |r| r["subtask_id"] }
+
+        expect(by_id[lost["subtask_id"]]["status"]).to eq("member_lost")
+      end
+
+      it "treats member_lost as terminal so the mission settles instead of polling forever" do
+        assignments = mission.reload.configuration.dig("fleet", "assignments")
+        System::NodeInstance
+          .where(id: assignments.map { |a| a["assignee_instance_id"] })
+          .update_all(status: "terminated")
+
+        result = service.aggregate!
+
+        expect(result[:report]["results"].map { |r| r["status"] }).to all(eq("member_lost"))
+        expect(result[:waiting]).to be false
+        expect(result[:ok]).to be false
+      end
+
+      it "does not override a subtask that already executed before its member died" do
+        assignments = mission.reload.configuration.dig("fleet", "assignments")
+        target = assignments.first
+        System::Task.where(command: "a2a_call").to_a
+                    .select { |t| t.options["subtask_id"] == target["subtask_id"] }
+                    .each { |t| t.update!(status: "complete") }
+        System::NodeInstance.where(id: target["assignee_instance_id"]).update_all(status: "error")
+
+        result = service.aggregate!
+        by_id = result[:report]["results"].index_by { |r| r["subtask_id"] }
+
+        expect(by_id[target["subtask_id"]]["status"]).to eq("executed")
+      end
+    end
+
+    # Audit finding F1-12 — delegation tokens were minted once at delegate!
+    # with a fixed 3600s TTL (the F2-04 MAX_TTL clamp). A mission whose
+    # execution outlives that window (the F1-03 wait/monitor loop re-running
+    # aggregate! past an hour) presented expired tokens for late
+    # sub-delegations. aggregate! now re-mints (never extends past the 3600s
+    # security ceiling) any token sitting inside the refresh window.
+    context "delegation token refresh on re-aggregation (F1-12)" do
+      it "re-mints a sub-delegation token nearing expiry when aggregate! re-runs" do
+        cfg = mission.reload.configuration.deep_dup
+        target = cfg["fleet"]["assignments"]
+                   .flat_map { |a| Array(a["sub_delegation_targets"]) }
+                   .find { |t| t["capability_token"].is_a?(Hash) }
+        old_jti = target["capability_token"]["jti"]
+        target["capability_token"]["expires_at"] = 30.seconds.from_now.utc.iso8601
+        mission.update!(configuration: cfg)
+
+        service.aggregate!
+
+        tokens = mission.reload.configuration["fleet"]["assignments"]
+                        .flat_map { |a| Array(a["sub_delegation_targets"]) }
+                        .filter_map { |t| t["capability_token"] }
+        # The near-expiry token was re-minted (its jti is gone)...
+        expect(tokens.map { |t| t["jti"] }).not_to include(old_jti)
+        # ...and no token is left sitting inside the refresh window.
+        expect(tokens.map { |t| Time.zone.parse(t["expires_at"]) }).to all(be > 5.minutes.from_now)
+      end
+
+      it "leaves freshly-minted tokens with ample TTL untouched (no needless churn)" do
+        before_jtis = mission.reload.configuration["fleet"]["assignments"]
+                              .flat_map { |a| Array(a["sub_delegation_targets"]) }
+                              .filter_map { |t| t.dig("capability_token", "jti") }
+
+        service.aggregate!
+
+        after_jtis = mission.reload.configuration["fleet"]["assignments"]
+                            .flat_map { |a| Array(a["sub_delegation_targets"]) }
+                            .filter_map { |t| t.dig("capability_token", "jti") }
+        expect(after_jtis).to match_array(before_jtis)
+      end
+    end
   end
 
   describe "#reserve_aggregate_recheck!" do

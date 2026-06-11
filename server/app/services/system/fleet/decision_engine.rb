@@ -279,6 +279,21 @@ module System
       # instance lasts more than 60s).
       DEDUP_TTL_SECONDS = (ENV["FLEET_DEDUP_TTL_SECONDS"] || 600).to_i
 
+      # F1-12: a member silent past this threshold is presumed dead. The
+      # InstanceStatusSensor re-emits system.instance_silent every tick for as
+      # long as the instance stays running/starting with a stale heartbeat —
+      # and because the signal routes to system.instance_reprovision
+      # (require_approval), the gate never auto-proceeds, so the loop never
+      # closes and each tick bleeds an instance_silent FleetEvent (plus a
+      # decision event) forever. Once silence is this sustained we stop fighting
+      # the gate: a *running* instance is transitioned to error (a
+      # non-destructive status correction — NOT the reprovision) and a single
+      # escalation event is emitted. After that the sensor's running/starting
+      # scan no longer matches the instance, so the per-tick stream stops at the
+      # source. 30 min matches InstanceStatusSensor#severity_for's :critical
+      # tier (cutoff - 30.minutes).
+      PRESUMED_DEAD_SILENCE_SECONDS = (ENV["FLEET_PRESUMED_DEAD_SECONDS"] || 30 * 60).to_i
+
       attr_reader :autonomy_service, :account
 
       def initialize(autonomy_service:)
@@ -290,6 +305,15 @@ module System
       # Returns a decision hash with :gate, :decision, optional :skill_result.
       def decide(signal)
         signal = ::System::Fleet::Signal.from_hash(signal) unless signal.is_a?(::System::Fleet::Signal)
+
+        # F1-12: terminal sustained-silence fail-safe. Runs BEFORE the raw
+        # signal event below so the reaping tick emits the single
+        # presumed-dead escalation INSTEAD of yet another instance_silent
+        # event. Returns a decision (short-circuiting the gate) only when it
+        # actually reaps; otherwise nil and the normal flow continues.
+        if (reaped = reap_presumed_dead!(signal))
+          return reaped
+        end
 
         # Observability: emit the signal as an event before any routing
         # logic runs. This way dashboards see the raw signal volume even
@@ -366,6 +390,60 @@ module System
 
       def dedup_key(signal)
         "fleet:decided:#{account.id}:#{signal.kind}:#{signal.fingerprint}"
+      end
+
+      # F1-12: reap a running instance whose heartbeat has been silent past
+      # PRESUMED_DEAD_SILENCE_SECONDS. Re-reads the LIVE instance (not the
+      # signal's stale snapshot — it may have recovered between sense and
+      # decide) and acts only on a currently-running instance with a present,
+      # genuinely-old heartbeat:
+      #   - a nil heartbeat (never enrolled) is left to the bootstrap/approval
+      #     path — we don't presume-dead an instance that never reported.
+      #   - a starting/stopping/etc. instance is mid-lifecycle, not running, so
+      #     it is out of scope (acceptance is specifically running -> error).
+      # Returns the decision hash on reap (caller short-circuits the gate), or
+      # nil to let the normal sense -> decide -> act flow run.
+      def reap_presumed_dead!(signal)
+        return nil unless signal.kind == "system.instance_silent"
+
+        instance_id = signal.payload.is_a?(Hash) ? signal.payload["instance_id"] : nil
+        return nil if instance_id.blank?
+
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
+        return nil unless instance && instance.status == "running"
+
+        heartbeat = instance.last_heartbeat_at
+        return nil if heartbeat.nil?
+        return nil if heartbeat > Time.current - PRESUMED_DEAD_SILENCE_SECONDS
+
+        previous_status = instance.status
+        silent_seconds = (Time.current - heartbeat).round
+        instance.update!(status: "error")
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "system.instance_presumed_dead",
+          severity: :critical,
+          payload: {
+            "instance_id" => instance.id,
+            "node_id" => instance.node_id,
+            "previous_status" => previous_status,
+            "last_heartbeat_at" => heartbeat.iso8601,
+            "silent_seconds" => silent_seconds,
+            "threshold_seconds" => PRESUMED_DEAD_SILENCE_SECONDS
+          },
+          source: "decision_engine.presumed_dead"
+        )
+
+        {
+          decision: :presumed_dead,
+          reason: "instance #{instance.id} silent #{silent_seconds}s " \
+                  "(>= #{PRESUMED_DEAD_SILENCE_SECONDS}s) — marked error, escalation emitted",
+          signal_kind: signal.kind,
+          action_category: "system.instance_presumed_dead",
+          instance_id: instance.id,
+          applied: true
+        }
       end
 
       # Policies under which a side-effectful executor may perform its real

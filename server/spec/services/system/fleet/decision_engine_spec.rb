@@ -68,6 +68,80 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F1-12: a member silent past the presumed-dead threshold
+    # was re-detected every 60s tick forever — each tick re-emitted a
+    # system.instance_silent FleetEvent (and a decision event) because the
+    # instance never left the sensor's running/starting scan window. The
+    # DecisionEngine now reaps a sustained-silent *running* instance: it
+    # transitions status -> error (a non-destructive status correction, NOT
+    # the gated reprovision) and emits ONE escalation event, after which the
+    # sensor stops matching it and the per-tick stream stops at the source.
+    context "sustained instance_silent reaping (F1-12)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+
+      def silent_signal(instance, severity: :critical)
+        { kind: "system.instance_silent", severity: severity,
+          payload: { "instance_id" => instance.id },
+          fingerprint: "instance_silent:#{instance.id}" }
+      end
+
+      it "marks a sustained-silent running instance error and emits one escalation" do
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 45.minutes.ago)
+
+        expect { @decision = engine.decide(silent_signal(instance)) }
+          .to change { System::FleetEvent.where(kind: "system.instance_presumed_dead").count }.by(1)
+
+        expect(@decision[:decision]).to eq(:presumed_dead)
+        expect(@decision[:instance_id]).to eq(instance.id)
+        expect(instance.reload.status).to eq("error")
+      end
+
+      it "emits the escalation INSTEAD of the per-tick raw signal event" do
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 45.minutes.ago)
+
+        expect { engine.decide(silent_signal(instance)) }
+          .not_to change { System::FleetEvent.where(kind: "system.instance_silent").count }
+      end
+
+      it "is idempotent — an already-error instance is not re-escalated" do
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 45.minutes.ago)
+        engine.decide(silent_signal(instance))
+
+        expect { engine.decide(silent_signal(instance)) }
+          .not_to change { System::FleetEvent.where(kind: "system.instance_presumed_dead").count }
+      end
+
+      it "leaves a recently-silent instance on the approval path (does not reap early)" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.instance_reprovision",
+                                       policy: "require_approval", is_active: true)
+        instance = create(:system_node_instance, :running, node: node,
+                          last_heartbeat_at: 5.minutes.ago)
+
+        d = engine.decide(silent_signal(instance, severity: :medium))
+
+        expect(d[:decision]).to eq(:pending)
+        expect(instance.reload.status).to eq("running")
+      end
+
+      it "does not reap an instance whose heartbeat was never recorded (nil)" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.instance_reprovision",
+                                       policy: "require_approval", is_active: true)
+        instance = create(:system_node_instance, :running, node: node, last_heartbeat_at: nil)
+
+        d = engine.decide(silent_signal(instance, severity: :high))
+
+        expect(d[:decision]).not_to eq(:presumed_dead)
+        expect(instance.reload.status).to eq("running")
+      end
+    end
+
     # Audit finding F3-05: InstanceStateDriftSensor's signal kind had no
     # SIGNAL_BINDINGS entry, so every provider-state drift it detected was
     # discarded as decision :skipped.
