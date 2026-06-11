@@ -561,6 +561,8 @@ module Ai
               nfs_server: { type: "string", required: false, description: "Required for transport=nfs — hostname or IP" },
               nfs_export_path: { type: "string", required: false, description: "Required for transport=nfs — path on the server" },
               nfs_version: { type: "string", required: false, description: "Optional — 3 | 4.0 | 4.1 | 4.2 (default 4.1)" },
+              provider_id: { type: "string", required: false, description: "Which provider to bind the volume to. REQUIRED when the account has more than one provider — the platform refuses to guess and returns the candidate list" },
+              provider_region_id: { type: "string", required: false, description: "Bind to a specific region (implies the provider; takes precedence over provider_id)" },
               description: { type: "string", required: false }
             }
           },
@@ -1885,9 +1887,10 @@ module Ai
           return error_result("Invalid transport (allowed: nfs, iscsi, smb, block)")
         end
 
-        provider = ::System::Provider.where(account: @account).order(:created_at).first
-        region = ::System::ProviderRegion.where(provider: provider).order(:created_at).first
-        return error_result("No provider/region available for account") unless provider && region
+        region = resolve_volume_region(params)
+        return region if region.is_a?(Hash) # error_result passthrough
+
+        provider = region.provider
 
         volume_type = resolve_or_create_volume_type(params, provider, transport)
         return error_result("Could not resolve volume_type") unless volume_type
@@ -2278,6 +2281,48 @@ module Ai
           delete_on_termination: v.delete_on_termination,
           config: v.config, created_at: v.created_at.iso8601
         )
+      end
+
+      # F4-11 — never guess the provider on multi-provider accounts: the old
+      # order(:created_at).first bound volumes to an arbitrary provider,
+      # corrupting Registry.for_volume adapter resolution. Returns a
+      # ProviderRegion, or an error_result Hash for the caller to pass
+      # through.
+      def resolve_volume_region(params)
+        if params[:provider_region_id].present?
+          region = ::System::ProviderRegion.where(account: @account).find_by(id: params[:provider_region_id])
+          return error_result("provider_region_id not found in account") unless region
+          if params[:provider_id].present? && region.provider_id != params[:provider_id]
+            return error_result("provider_region_id does not belong to provider_id")
+          end
+
+          return region
+        end
+
+        if params[:provider_id].present?
+          provider = ::System::Provider.where(account: @account).find_by(id: params[:provider_id])
+          return error_result("provider_id not found in account") unless provider
+
+          region = ::System::ProviderRegion.where(provider: provider).order(:created_at).first
+          return error_result("provider #{provider.name} has no regions") unless region
+
+          return region
+        end
+
+        providers = ::System::Provider.where(account: @account).order(:created_at).to_a
+        case providers.size
+        when 0
+          error_result("No provider/region available for account")
+        when 1
+          region = ::System::ProviderRegion.where(provider: providers.first).order(:created_at).first
+          region || error_result("No provider/region available for account")
+        else
+          candidates = providers.map { |p| "#{p.id} (#{p.name})" }.join(", ")
+          error_result(
+            "Account has #{providers.size} providers — pass provider_id or provider_region_id " \
+            "instead of letting the platform guess. Candidates: #{candidates}"
+          )
+        end
       end
 
       def resolve_or_create_volume_type(params, provider, transport)

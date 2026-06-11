@@ -46,6 +46,75 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit F4-11 — system_create_volume silently bound every volume to the
+  # account's OLDEST provider/region (order(:created_at).first) with no way
+  # to choose; on multi-provider accounts volumes landed on an arbitrary
+  # provider, corrupting Registry.for_volume adapter resolution.
+  describe "system_create_volume provider binding (F4-11)" do
+    def create_nfs_volume(name, **rest)
+      call("system_create_volume", name: name, size_gb: 10, transport: "nfs",
+           nfs_server: "nas.local", nfs_export_path: "/exports/#{name}", **rest)
+    end
+
+    # NOTE: AccountBootstrapService gives every account a default provider
+    # + region on creation, so adding two more yields a 3-provider account.
+    context "with multiple providers" do
+      let!(:provider_a) { create(:system_provider, account: account, name: "pve") }
+      let!(:region_a)   { create(:system_provider_region, account: account, provider: provider_a) }
+      let!(:provider_b) { create(:system_provider, account: account, name: "qemu") }
+      let!(:region_b)   { create(:system_provider_region, account: account, provider: provider_b) }
+
+      it "errors with the candidate list instead of guessing" do
+        r = create_nfs_volume("vol-ambiguous")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("provider_id")
+        expect(r[:error]).to include(provider_a.id)
+        expect(r[:error]).to include(provider_b.id)
+        expect(System::ProviderVolume.where(account: account).count).to eq(0)
+      end
+
+      it "binds to an explicit provider_region_id" do
+        r = create_nfs_volume("vol-region", provider_region_id: region_b.id)
+
+        expect(r[:success]).to be true
+        v = System::ProviderVolume.find(r[:data][:volume][:id])
+        expect(v.provider_region_id).to eq(region_b.id)
+      end
+
+      it "binds to an explicit provider_id via its region" do
+        r = create_nfs_volume("vol-provider", provider_id: provider_b.id)
+
+        expect(r[:success]).to be true
+        v = System::ProviderVolume.find(r[:data][:volume][:id])
+        expect(v.provider_region_id).to eq(region_b.id)
+      end
+
+      it "rejects a provider_id outside the account" do
+        foreign = create(:system_provider)
+
+        r = create_nfs_volume("vol-foreign", provider_id: foreign.id)
+
+        expect(r[:success]).to be false
+        expect(System::ProviderVolume.where(account: account).count).to eq(0)
+      end
+    end
+
+    context "with only the bootstrap default provider" do
+      it "keeps the implicit binding" do
+        bootstrap_provider = System::Provider.where(account: account).order(:created_at).first
+        bootstrap_region = System::ProviderRegion.where(provider: bootstrap_provider).order(:created_at).first
+        expect(bootstrap_region).to be_present # AccountBootstrapService default
+
+        r = create_nfs_volume("vol-implicit")
+
+        expect(r[:success]).to be true
+        v = System::ProviderVolume.find(r[:data][:volume][:id])
+        expect(v.provider_region_id).to eq(bootstrap_region.id)
+      end
+    end
+  end
+
   # Audit F4-08 — agents could provision, terminate, and drain but not
   # start/stop/reboot, even though InstanceControlService and the AASM fully
   # support these operations. For GPU-cost-sensitive missions stop/start is
