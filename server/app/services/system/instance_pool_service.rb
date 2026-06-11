@@ -33,6 +33,14 @@ module System
     # released, etc). Configurable per-pool via metadata.
     DEFAULT_READY_TTL_SECONDS = 4 * 3600 # 4 hours
 
+    # F1-10 — maximum claim age (seconds) before the reaper flags a
+    # "claimed" member for operator review. Generous: claims normally
+    # last minutes-to-hours; anything past a day is most likely a
+    # consumer that crashed after acquire! and leaked the member (each
+    # leak occupies max_size headroom forever, shrinking the pool).
+    # Configurable per-pool via metadata["claimed_ttl_seconds"].
+    DEFAULT_CLAIMED_TTL_SECONDS = 24 * 3600 # 24 hours
+
     def self.acquire!(account:, pool_name: nil, pool_id: nil, lifecycle_class: nil)
       new(account: account).acquire!(
         pool_name: pool_name,
@@ -180,6 +188,9 @@ module System
     # Recycle stale members — called by the reaper between replenishes.
     #   - warming members past warming_timeout → errored (provisioning got stuck)
     #   - ready members past ready_ttl → draining (stale, recycle for fresh state)
+    #   - claimed members past claimed_ttl → flagged + FleetEvent (F1-10;
+    #     never auto-terminated — a long claim may be a live workload, so
+    #     reclamation is an operator decision)
     #   - errored members → terminated (cleanup)
     def recycle_stale_members!(pool:)
       now = Time.current
@@ -187,13 +198,17 @@ module System
                         DEFAULT_WARMING_TIMEOUT_SECONDS
       ready_ttl = pool.metadata["ready_ttl_seconds"]&.to_i ||
                   DEFAULT_READY_TTL_SECONDS
+      claimed_ttl = pool.metadata["claimed_ttl_seconds"]&.to_i ||
+                    DEFAULT_CLAIMED_TTL_SECONDS
 
       stale_warming = pool.warming_members
                           .where("pool_warming_started_at < ?", now - warming_timeout)
       stale_ready = pool.ready_members
                         .where("pool_warming_started_at < ?", now - ready_ttl)
+      stale_claimed = pool.claimed_members
+                          .where("pool_acquired_at < ?", now - claimed_ttl)
 
-      counts = { warming_to_errored: 0, ready_to_draining: 0 }
+      counts = { warming_to_errored: 0, ready_to_draining: 0, claimed_flagged: 0 }
 
       ::ActiveRecord::Base.transaction do
         # F2-02 — same locking discipline as drain!: SKIP LOCKED skips
@@ -222,6 +237,39 @@ module System
             )
           end
           counts[:ready_to_draining] += 1
+        end
+
+        # F1-10 — flag, never terminate: the claim may still back a live
+        # workload. The config flag + FleetEvent surface the leak to the
+        # operator; without them a consumer crash after acquire! leaked
+        # the member forever while replenish! counted it against
+        # max_size headroom. The flag is per-claim-cycle: a flag stamped
+        # before the current pool_acquired_at belongs to an earlier
+        # claim and is re-raised.
+        stale_claimed.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
+          flagged_at = begin
+            raw = m.config&.dig("pool_claimed_stale_flagged_at")
+            raw.present? ? Time.zone.parse(raw) : nil
+          rescue ArgumentError
+            nil
+          end
+          next if flagged_at && flagged_at >= m.pool_acquired_at
+
+          m.update!(config: (m.config || {}).merge("pool_claimed_stale_flagged_at" => now.iso8601))
+          ::System::Fleet::EventBroadcaster.emit!(
+            account: pool.account,
+            kind: "system.pool.claimed_stale",
+            severity: :medium,
+            payload: {
+              pool_id: pool.id,
+              pool_name: pool.name,
+              claimed_ttl_seconds: claimed_ttl,
+              pool_acquired_at: m.pool_acquired_at&.iso8601
+            },
+            source: "instance_pool_service",
+            node_instance_id: m.id
+          )
+          counts[:claimed_flagged] += 1
         end
       end
 

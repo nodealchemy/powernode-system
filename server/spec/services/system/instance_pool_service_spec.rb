@@ -25,7 +25,7 @@ RSpec.describe System::InstancePoolService, type: :service do
 
   # Helper — seed a fully-warm pool member at a given state, bypassing
   # the standard provisioning flow (which would dispatch worker jobs).
-  def seed_pool_member(state:, warming_started_at: 1.minute.ago)
+  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil)
     node = create(:system_node, account: account, node_template: node_template,
                                  lifecycle_class: "ephemeral")
     create(:system_node_instance,
@@ -37,7 +37,8 @@ RSpec.describe System::InstancePoolService, type: :service do
            provider_instance_type: provider_instance_type,
            instance_pool_id: pool.id,
            pool_state: state,
-           pool_warming_started_at: warming_started_at)
+           pool_warming_started_at: warming_started_at,
+           pool_acquired_at: acquired_at)
   end
 
   describe ".acquire!" do
@@ -262,6 +263,62 @@ RSpec.describe System::InstancePoolService, type: :service do
       m = seed_pool_member(state: "warming", warming_started_at: 2.minutes.ago)
       described_class.recycle_stale_members!(pool: pool)
       expect(m.reload.pool_state).to eq("errored")
+    end
+
+    # Audit F1-10 — claimed members had no TTL: a consumer that crashed
+    # after acquire! leaked the member forever, and because replenish!
+    # counts claimed members against max_size headroom, each leak
+    # permanently shrank the pool's effective capacity.
+    context "stale claimed members (F1-10)" do
+      it "flags a claimed member past claimed_ttl and emits a fleet event, without terminating it" do
+        m = seed_pool_member(state: "claimed", warming_started_at: 25.hours.ago,
+                             acquired_at: 25.hours.ago)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:claimed_flagged]).to eq(1)
+        m.reload
+        expect(m.pool_state).to eq("claimed") # operator decision, not auto-terminate
+        expect(m.config["pool_claimed_stale_flagged_at"]).to be_present
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+
+        event = System::FleetEvent.where(account: account, kind: "system.pool.claimed_stale").last
+        expect(event).to be_present
+        expect(event.node_instance_id).to eq(m.id)
+      end
+
+      it "does not flag claimed members within claimed_ttl" do
+        m = seed_pool_member(state: "claimed", warming_started_at: 1.hour.ago,
+                             acquired_at: 1.hour.ago)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:claimed_flagged]).to eq(0)
+        expect(m.reload.config["pool_claimed_stale_flagged_at"]).to be_nil
+      end
+
+      it "does not re-emit for a claim already flagged this cycle" do
+        seed_pool_member(state: "claimed", warming_started_at: 25.hours.ago,
+                         acquired_at: 25.hours.ago)
+        described_class.recycle_stale_members!(pool: pool)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:claimed_flagged]).to eq(0)
+        expect(System::FleetEvent.where(account: account, kind: "system.pool.claimed_stale").count).to eq(1)
+      end
+
+      it "respects per-pool claimed_ttl_seconds metadata override" do
+        pool.update!(metadata: { "claimed_ttl_seconds" => 60 })
+        m = seed_pool_member(state: "claimed", warming_started_at: 5.minutes.ago,
+                             acquired_at: 5.minutes.ago)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(result[:claimed_flagged]).to eq(1)
+        expect(m.reload.pool_state).to eq("claimed")
+      end
     end
 
     # F2-02 — same race as drain!: the reaper runs this every 60s, so a
