@@ -7,7 +7,7 @@ module Api
         # Operation tracking and management for infrastructure workers
         # Handles operation lifecycle: create, start, progress, complete, fail
         class TasksController < BaseController
-          before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :add_event, :execute ]
+          before_action :set_operation, only: [ :show, :start, :progress, :complete, :fail, :events, :execute ]
 
           # GET /api/v1/system/worker_api/operations
           # List operations for resources managed by this worker
@@ -114,11 +114,15 @@ module Api
 
             result = params[:result] || {}
 
+            # F5-02: System::Task has no `result` column — the runtime result
+            # lives in the `options` JSONB blob (serialize_operation_full
+            # reads it back from there). Writing result: directly raised
+            # UnknownAttributeError → 500 on every completion.
             @operation.update!(
               status: "complete",
               progress: 100,
               completed_at: Time.current,
-              result: result
+              options: @operation.options.to_h.merge("result" => result)
             )
             add_operation_event("completed", params[:message] || "Operation completed successfully")
 
@@ -174,8 +178,11 @@ module Api
           end
 
           # POST /api/v1/system/worker_api/operations/:id/events
-          # Add event to operation log
-          def add_event
+          # Add event to operation log.
+          # F5-02: action was named add_event while the route declares
+          # `post :events` → action :events — the endpoint raised
+          # ActionNotFound (500) on every call. Renamed to match the route.
+          def events
             authorize_worker_permission!("system.tasks.manage")
 
             event_type = params[:event_type] || "info"
@@ -274,7 +281,8 @@ module Api
           # base TaskSerializer already includes events, options, duration,
           # so we only add `result` here.
           def serialize_operation_full(operation)
-            serialize_task(operation).merge(result: operation.result)
+            # F5-02: result is stored in the options JSONB blob (no column).
+            serialize_task(operation).merge(result: operation.options.to_h["result"])
           end
         end
       end
