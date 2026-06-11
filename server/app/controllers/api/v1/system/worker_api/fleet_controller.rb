@@ -61,11 +61,25 @@ module Api
               .where(severity: %w[high critical])
               .delete_all
 
+            # F3-11(b): system_fleet_remediation_outcomes had no retention and
+            # grew unbounded. Trim validated outcomes past the routine cutoff
+            # (recent ones feed the stuck-streak consumer) plus stale pending
+            # rows that were never validated (their sensors are long gone).
+            deleted_outcomes = ::System::Fleet::RemediationOutcome
+              .where.not(status: "pending")
+              .where("validated_at < ?", routine_cutoff)
+              .delete_all
+            deleted_outcomes += ::System::Fleet::RemediationOutcome
+              .where(status: "pending")
+              .where("acted_at < ?", routine_cutoff)
+              .delete_all
+
             render_success(
               retention_days: retention_days,
               retention_critical_days: critical_days,
               deleted_routine: deleted_routine,
               deleted_critical: deleted_critical,
+              deleted_remediation_outcomes: deleted_outcomes,
               deleted_total: deleted_routine + deleted_critical
             )
           end

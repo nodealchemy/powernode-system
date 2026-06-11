@@ -70,6 +70,35 @@ RSpec.describe "POST /api/v1/system/worker_api/fleet/retention_sweep", type: :re
       end
     end
 
+    # Audit F3-11(b) — no retention covered system_fleet_remediation_outcomes;
+    # the (then all-ineffective) table grew unbounded. The sweep now trims
+    # validated outcomes past the routine cutoff and stale never-validated
+    # pending rows, keeping recent rows that the stuck-streak consumer reads.
+    it "deletes old remediation outcomes (validated past cutoff + stale pending)" do
+      old_validated = System::Fleet::RemediationOutcome.create!(
+        account: account, signal_kind: "system.module_drift", fingerprint: "fp-old",
+        status: "ineffective", acted_at: 100.days.ago, settle_until: 100.days.ago,
+        validated_at: 100.days.ago
+      )
+      stale_pending = System::Fleet::RemediationOutcome.create!(
+        account: account, signal_kind: "system.module_drift", fingerprint: "fp-stale",
+        status: "pending", acted_at: 100.days.ago, settle_until: 100.days.ago
+      )
+      fresh = System::Fleet::RemediationOutcome.create!(
+        account: account, signal_kind: "system.module_drift", fingerprint: "fp-fresh",
+        status: "ineffective", acted_at: 2.days.ago, settle_until: 2.days.ago,
+        validated_at: 2.days.ago
+      )
+
+      post "/api/v1/system/worker_api/fleet/retention_sweep", headers: headers
+
+      body = JSON.parse(response.body)
+      expect(body.dig("data", "deleted_remediation_outcomes")).to be >= 2
+      expect(System::Fleet::RemediationOutcome.where(id: old_validated.id)).not_to exist
+      expect(System::Fleet::RemediationOutcome.where(id: stale_pending.id)).not_to exist
+      expect(System::Fleet::RemediationOutcome.where(id: fresh.id)).to exist
+    end
+
     it "is account-isolated when the worker is account-scoped" do
       other_account = create(:account)
       other_old = System::FleetEvent.create!(

@@ -54,7 +54,13 @@ module System
             status: "pending",
             acted_at: now,
             settle_until: now + SETTLE_WINDOW,
-            metadata: { "gate" => decision[:gate].to_s.presence }.compact
+            metadata: {
+              "gate" => decision[:gate].to_s.presence,
+              # F3-11(a): provenance for the sensor-failure guard — absence of
+              # this fingerprint only counts as "effective" on ticks where
+              # this sensor actually ran.
+              "sensor" => sensor_for(signals[i])
+            }.compact
           )
           recorded += 1
         end
@@ -64,15 +70,32 @@ module System
       # Score every due pending outcome against the current sense pass. A due
       # outcome's fingerprint still present in the live signals => INEFFECTIVE;
       # absent => EFFECTIVE (the triggering condition cleared).
-      def validate_due!(current_signals:)
+      #
+      # F3-11(a): absence is only evidence when the outcome's OWNING sensor ran
+      # this tick — collect_signals rescues per-sensor failures, so a crashed
+      # sensor's fingerprints vanish from the pass and every one of its pending
+      # outcomes was falsely scored effective. Outcomes whose sensor is in
+      # `failed_sensors` (or carries no provenance while anything failed) stay
+      # pending and re-validate on the next clean tick. A LIVE fingerprint is
+      # positive evidence and still scores ineffective regardless.
+      def validate_due!(current_signals:, failed_sensors: [])
         return { effective: 0, ineffective: 0 } if @account.nil?
 
         active = Array(current_signals).map(&:fingerprint).to_set
+        failed = Array(failed_sensors).map(&:to_s).to_set
         result = { effective: 0, ineffective: 0 }
         RemediationOutcome.where(account_id: @account.id).due.find_each do |outcome|
-          status = active.include?(outcome.fingerprint) ? "ineffective" : "effective"
-          outcome.update!(status: status, validated_at: Time.current)
-          result[status.to_sym] += 1
+          if active.include?(outcome.fingerprint)
+            outcome.update!(status: "ineffective", validated_at: Time.current)
+            result[:ineffective] += 1
+            next
+          end
+
+          sensor = outcome.metadata.is_a?(Hash) ? outcome.metadata["sensor"].presence : nil
+          next if failed.any? && (sensor.nil? || failed.include?(sensor))
+
+          outcome.update!(status: "effective", validated_at: Time.current)
+          result[:effective] += 1
         end
         result
       end
@@ -88,6 +111,12 @@ module System
 
         p = signal.payload
         (p["instance_id"] || p["peer_id"] || p["mission_id"] || p["resource_id"])&.to_s
+      end
+
+      def sensor_for(signal)
+        return nil unless signal.respond_to?(:payload) && signal.payload.is_a?(Hash)
+
+        signal.payload["_sensor"].presence
       end
     end
   end

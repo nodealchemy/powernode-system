@@ -64,15 +64,17 @@ module System
         # breaking the entire tick.
         collect_project_metrics!(correlation_id: tick_correlation)
 
-        signals = collect_signals
+        signals, failed_sensors = collect_signals
 
         # Self-improvement Phase 0 — the validate step. Score the PREVIOUS tick's
         # remediations against THIS fresh sense pass before deciding anew: a prior
         # action whose triggering signal fingerprint is gone was effective; still
         # present means it didn't stick. Closes sense -> act -> VALIDATE. Best-
         # effort — a validator hiccup must never break the autonomy tick.
+        # F3-11(a): failed sensors are passed through so the validator never
+        # scores a crashed sensor's missing fingerprints as "effective".
         validator = ::System::Fleet::RemediationValidator.new(account: account, agent: agent)
-        validation = safe_validate(validator, signals)
+        validation = safe_validate(validator, signals, failed_sensors)
 
         engine = DecisionEngine.new(autonomy_service: self)
         decisions = engine.decide_all(signals)
@@ -109,20 +111,26 @@ module System
         }
       end
 
+      # Returns [signals, failed_sensor_names]. F3-11(a): the per-sensor rescue
+      # keeps one bad sensor from breaking the tick, but it also removes that
+      # sensor's fingerprints from the pass — so the failures must be REPORTED,
+      # not just logged, or the validator scores the absence as "effective".
       def collect_signals
         signals = []
+        failed = []
         SENSORS.each do |sensor_class|
           signals.concat(sensor_class.new(account: account).sense)
         rescue StandardError => e
+          failed << sensor_class.name.demodulize
           Rails.logger.error("[FleetAutonomy] sensor #{sensor_class.name} failed: #{e.message}")
         end
-        signals
+        [signals, failed]
       end
 
       # Best-effort wrappers — a self-improvement validator hiccup must never
       # break the core autonomy tick (sense + decide must always run).
-      def safe_validate(validator, signals)
-        validator.validate_due!(current_signals: signals)
+      def safe_validate(validator, signals, failed_sensors = [])
+        validator.validate_due!(current_signals: signals, failed_sensors: failed_sensors)
       rescue StandardError => e
         Rails.logger.error("[FleetAutonomy] remediation validation failed: #{e.class}: #{e.message}")
         { effective: 0, ineffective: 0 }
@@ -219,7 +227,11 @@ module System
           .pluck(:action_category)
       end
 
-      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {})
+      # force_policy (F3-11): the DecisionEngine's stuck-remediation consumer
+      # overrides the resolved policy (e.g. forcing "require_approval" after N
+      # consecutive ineffective outcomes) — mirroring the consent-budget
+      # precedent where a feedback signal outranks the configured policy.
+      def gate_action!(action_category, metadata: {}, reasoning: {}, temporal_context: {}, force_policy: nil)
         unless permitted_actions.include?(action_category)
           Rails.logger.warn("[FleetAutonomy] Action '#{action_category}' not in agent '#{agent.name}' policies — blocked")
           return { decision: :blocked, reason: "not_permitted" }
@@ -245,7 +257,11 @@ module System
                    decision_record: request, budget_reason: consent.reason }
         end
 
-        result = @policy_service.resolve(action_category: action_category, agent: @agent)
+        result = if force_policy
+          { policy: force_policy, source: "decision_engine_override" }
+        else
+          @policy_service.resolve(action_category: action_category, agent: @agent)
+        end
 
         case result[:policy]
         when "auto_approve"

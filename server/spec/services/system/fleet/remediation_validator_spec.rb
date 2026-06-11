@@ -68,5 +68,61 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
       validator.validate_due!(current_signals: [])
       expect(outcome.reload.status).to eq("pending")
     end
+
+    # Audit F3-11(a) — absence-as-effective was fooled by sensor crashes:
+    # collect_signals rescues per-sensor failures, so a sensor that crashed on
+    # the validation tick removed all its signals from the pass and every one
+    # of its pending outcomes was falsely scored "effective". Scoring absence
+    # as evidence now requires the OWNING sensor to have run this tick.
+    context "sensor-failure guard (F3-11)" do
+      before { outcome.update!(metadata: { "sensor" => "CertExpirySensor" }) }
+
+      it "leaves an outcome pending when its owning sensor failed this tick" do
+        result = validator.validate_due!(current_signals: [],
+                                         failed_sensors: %w[CertExpirySensor])
+        expect(result[:effective]).to eq(0)
+        expect(outcome.reload.status).to eq("pending")
+      end
+
+      it "scores effective when other sensors failed but the owning sensor ran" do
+        result = validator.validate_due!(current_signals: [],
+                                         failed_sensors: %w[ModuleDriftSensor])
+        expect(result[:effective]).to eq(1)
+        expect(outcome.reload.status).to eq("effective")
+      end
+
+      it "is conservative for legacy outcomes with no sensor tag when any sensor failed" do
+        outcome.update!(metadata: {})
+        validator.validate_due!(current_signals: [], failed_sensors: %w[ModuleDriftSensor])
+        expect(outcome.reload.status).to eq("pending")
+      end
+
+      it "still scores ineffective from a live fingerprint regardless of failures" do
+        result = validator.validate_due!(current_signals: [sig("fp-1")],
+                                         failed_sensors: %w[ModuleDriftSensor])
+        expect(result[:ineffective]).to eq(1)
+        expect(outcome.reload.status).to eq("ineffective")
+      end
+    end
+  end
+
+  # F3-11(a) — the sensor-failure guard needs to know which sensor owns each
+  # outcome. BaseSensor#signal tags every signal payload with its producing
+  # sensor; record_proceeded! persists that tag onto the outcome.
+  describe "sensor provenance" do
+    it "BaseSensor#signal tags the payload with the producing sensor" do
+      sensor = System::Fleet::Sensors::InstanceStatusSensor.new(account: account)
+      s = sensor.send(:signal, kind: "system.instance_silent", severity: :high,
+                      payload: { "instance_id" => "i-1" }, fingerprint: "x:1")
+      expect(s.payload["_sensor"]).to eq("InstanceStatusSensor")
+    end
+
+    it "record_proceeded! persists the sensor tag onto the outcome" do
+      tagged = sig("fp-9", payload: { "instance_id" => "i-1", "_sensor" => "CertExpirySensor" })
+      validator.record_proceeded!(decisions: [proceeded("fp-9")], signals: [tagged])
+
+      o = System::Fleet::RemediationOutcome.pending.find_by(fingerprint: "fp-9")
+      expect(o.metadata["sensor"]).to eq("CertExpirySensor")
+    end
   end
 end

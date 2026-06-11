@@ -37,6 +37,21 @@ module System
         when "ineffective" then 0.0
         end
       end
+
+      # F3-11 — consecutive ineffective count for a fingerprint, newest first,
+      # stopping at the first effective outcome. This is the feedback signal
+      # the DecisionEngine's stuck-escalation consumer reads: N validated
+      # remediations in a row that did NOT clear the signal mean re-proceeding
+      # is futile and the action needs an operator.
+      def self.ineffective_streak(account:, fingerprint:, limit: 10)
+        where(account: account, fingerprint: fingerprint)
+          .where(status: %w[effective ineffective])
+          .order(validated_at: :desc)
+          .limit(limit)
+          .pluck(:status)
+          .take_while { |s| s == "ineffective" }
+          .size
+      end
     end
   end
 end

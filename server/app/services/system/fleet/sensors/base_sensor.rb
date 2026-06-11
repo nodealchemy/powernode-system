@@ -28,11 +28,16 @@ module System
 
         attr_reader :account
 
+        # F3-11(a): every signal carries its producing sensor ("_sensor") so
+        # the RemediationValidator can require the OWNING sensor to have run
+        # before scoring a fingerprint's absence as "effective" — a sensor
+        # that crashed mid-tick removes its signals from the sense pass, and
+        # absence-without-provenance falsely validated every pending outcome.
         def signal(kind:, severity:, payload:, fingerprint:)
           ::System::Fleet::Signal.new(
             kind: kind,
             severity: severity,
-            payload: payload,
+            payload: (payload || {}).merge("_sensor" => self.class.name.demodulize),
             fingerprint: fingerprint
           )
         end

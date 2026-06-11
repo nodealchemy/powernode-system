@@ -68,6 +68,74 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F3-11: the validate arc never fed back — all 10k+
+    # RemediationOutcome rows scored ineffective yet nothing consumed the
+    # score, so the same futile remediation re-proceeded every dedup-TTL
+    # forever. decide() now checks the fingerprint's recent ineffective
+    # streak: at the threshold it emits ONE fleet.remediation_stuck event and
+    # forces the gate to require_approval (operator intervention) instead of
+    # repeating the proven-ineffective auto-proceed.
+    context "stuck remediation escalation (F3-11)" do
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.cert_rotate",
+                                       policy: "auto_approve", is_active: true)
+      end
+
+      def record_ineffective!(fingerprint, count, kind: "system.cert_expiring")
+        count.times do |i|
+          System::Fleet::RemediationOutcome.create!(
+            account: account, signal_kind: kind, fingerprint: fingerprint,
+            action_category: "system.cert_rotate", status: "ineffective",
+            acted_at: (count - i + 1).hours.ago, settle_until: (count - i).hours.ago,
+            validated_at: (count - i).hours.ago
+          )
+        end
+      end
+
+      it "forces require_approval + emits one remediation_stuck event at the streak threshold" do
+        record_ineffective!("cert_expiring:c-9", described_class::STUCK_STREAK_THRESHOLD)
+
+        expect {
+          @decision = engine.decide(kind: "system.cert_expiring", severity: :medium,
+                                    payload: { certificate_id: "c-9" },
+                                    fingerprint: "cert_expiring:c-9")
+        }.to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+
+        expect(@decision[:decision]).to eq(:pending)
+        expect(@decision[:remediation_stuck]).to be true
+        expect(@decision[:ineffective_streak]).to be >= described_class::STUCK_STREAK_THRESHOLD
+      end
+
+      it "proceeds normally below the threshold" do
+        record_ineffective!("cert_expiring:c-9", described_class::STUCK_STREAK_THRESHOLD - 1)
+
+        d = engine.decide(kind: "system.cert_expiring", severity: :medium,
+                          payload: { certificate_id: "c-9" },
+                          fingerprint: "cert_expiring:c-9")
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:remediation_stuck]).to be_nil
+        expect(System::FleetEvent.where(kind: "fleet.remediation_stuck")).to be_empty
+      end
+
+      it "an effective outcome breaks the streak (only consecutive failures count)" do
+        record_ineffective!("cert_expiring:c-9", described_class::STUCK_STREAK_THRESHOLD)
+        System::Fleet::RemediationOutcome.create!(
+          account: account, signal_kind: "system.cert_expiring",
+          fingerprint: "cert_expiring:c-9", action_category: "system.cert_rotate",
+          status: "effective", acted_at: 10.minutes.ago,
+          settle_until: 8.minutes.ago, validated_at: 5.minutes.ago
+        )
+
+        d = engine.decide(kind: "system.cert_expiring", severity: :medium,
+                          payload: { certificate_id: "c-9" },
+                          fingerprint: "cert_expiring:c-9")
+
+        expect(d[:decision]).to eq(:proceed)
+      end
+    end
+
     # Audit finding F1-12: a member silent past the presumed-dead threshold
     # was re-detected every 60s tick forever — each tick re-emitted a
     # system.instance_silent FleetEvent (and a decision event) because the

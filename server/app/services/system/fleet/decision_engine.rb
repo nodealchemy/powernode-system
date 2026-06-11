@@ -294,6 +294,15 @@ module System
       # tier (cutoff - 30.minutes).
       PRESUMED_DEAD_SILENCE_SECONDS = (ENV["FLEET_PRESUMED_DEAD_SECONDS"] || 30 * 60).to_i
 
+      # F3-11: consecutive ineffective RemediationOutcomes for a fingerprint
+      # before the engine stops re-proceeding the same futile remediation and
+      # escalates to an operator instead. The validate arc's score finally has
+      # a consumer: at the threshold, decide() emits a fleet.remediation_stuck
+      # event and forces the gate to require_approval regardless of the
+      # configured policy (auto_approve / notify_and_proceed would otherwise
+      # re-run the proven-ineffective action every dedup-TTL forever).
+      STUCK_STREAK_THRESHOLD = (ENV["FLEET_REMEDIATION_STUCK_STREAK"] || 3).to_i
+
       attr_reader :autonomy_service, :account
 
       def initialize(autonomy_service:)
@@ -335,6 +344,19 @@ module System
             reason: "fingerprint #{signal.fingerprint} decided within last #{DEDUP_TTL_SECONDS}s",
             signal_kind: signal.kind
           }
+          ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
+          return decision
+        end
+
+        # F3-11: consume the validate arc's score. A fingerprint whose last N
+        # validated remediations were ALL ineffective stops auto-proceeding —
+        # re-running the same futile action is noise, not remediation. Skip
+        # the (equally futile) skill re-plan, surface ONE remediation_stuck
+        # event, and force the gate to require_approval so an operator
+        # decides. ApprovalRequest dedup keeps this to one open approval.
+        streak = ineffective_streak(signal)
+        if streak >= STUCK_STREAK_THRESHOLD
+          decision = escalate_stuck_remediation!(signal, binding, streak)
           ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
           return decision
         end
@@ -444,6 +466,59 @@ module System
           instance_id: instance.id,
           applied: true
         }
+      end
+
+      # F3-11: best-effort streak read — a feedback-loop hiccup must never
+      # break the decide path (it would take ALL remediation down with it).
+      def ineffective_streak(signal)
+        ::System::Fleet::RemediationOutcome.ineffective_streak(
+          account: account, fingerprint: signal.fingerprint
+        )
+      rescue StandardError => e
+        Rails.logger.warn("[FleetDecisionEngine] ineffective-streak read failed: #{e.message}")
+        0
+      end
+
+      # F3-11: the escalation lane. Emits the fleet.remediation_stuck event
+      # (the operator-facing alert; bounded to once per DEDUP_TTL by the
+      # engine's fingerprint dedup) and gates with a forced require_approval —
+      # the resolved policy already proved itself ineffective N times.
+      def escalate_stuck_remediation!(signal, binding, streak)
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: "fleet.remediation_stuck",
+          severity: :high,
+          payload: {
+            "fingerprint" => signal.fingerprint,
+            "signal_kind" => signal.kind,
+            "action_category" => binding[:action_category],
+            "ineffective_streak" => streak,
+            "threshold" => STUCK_STREAK_THRESHOLD
+          }.merge(signal.payload.is_a?(Hash) ? signal.payload.slice("instance_id", "node_id") : {}),
+          source: "decision_engine.stuck_escalation",
+          correlation_id: signal.fingerprint
+        )
+
+        gate_result = autonomy_service.gate_action!(
+          binding[:action_category],
+          metadata: skill_metadata_payload(signal, nil)
+                      .merge("remediation_stuck_streak" => streak),
+          reasoning: {
+            summary: "Remediation stuck: #{signal.kind} (#{signal.fingerprint}) — " \
+                     "#{streak} consecutive ineffective outcomes; operator decision required"
+          },
+          force_policy: "require_approval"
+        )
+
+        record_decision!(signal)
+
+        gate_result.merge(
+          signal_kind: signal.kind,
+          fingerprint: signal.fingerprint,
+          action_category: binding[:action_category],
+          remediation_stuck: true,
+          ineffective_streak: streak
+        )
       end
 
       # Policies under which a side-effectful executor may perform its real
