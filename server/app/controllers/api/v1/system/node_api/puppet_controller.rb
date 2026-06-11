@@ -74,6 +74,9 @@ module Api
             ::System::PuppetModule.where(id: puppet_module_ids)
           end
 
+          # F5-03: ensure_state/order were phantom attributes (PuppetResource
+          # has neither column) — serializing any resource raised NoMethodError.
+          # The ensure value lives inside the parameters JSONB.
           def serialize_resource(resource)
             {
               id: resource.id,
@@ -81,8 +84,7 @@ module Api
               resource_type: resource.resource_type,
               title: resource.title,
               parameters: resource.parameters,
-              ensure_state: resource.ensure_state,
-              order: resource.order
+              ensure_state: resource.parameters&.dig("ensure")
             }
           end
 
@@ -97,7 +99,8 @@ module Api
 
           def serialize_puppet_module_full(mod)
             serialize_puppet_module(mod).merge(
-              source: mod.source,
+              # F5-03: `source` was phantom — the column is source_url.
+              source: mod.source_url,
               author: mod.author,
               description: mod.description,
               config: mod.config,
@@ -117,8 +120,10 @@ module Api
             end
             lines << ""
 
-            # Add resources
-            resources.sort_by(&:order).each do |resource|
+            # Add resources. F5-03: PuppetResource has no `order` column —
+            # sort_by(&:order) raised NoMethodError on every manifest with
+            # resources. Name gives a stable, deterministic ordering.
+            resources.sort_by { |r| r.name.to_s }.each do |resource|
               lines << generate_resource_block(resource)
               lines << ""
             end
@@ -127,8 +132,9 @@ module Api
           end
 
           def generate_resource_block(resource)
+            # F5-03: ensure_state was phantom; the ensure value (when set)
+            # already lives inside parameters and renders with the rest.
             params = resource.parameters || {}
-            params["ensure"] = resource.ensure_state if resource.ensure_state.present?
 
             block = "#{resource.resource_type} { '#{resource.title}':\n"
             params.each do |key, value|

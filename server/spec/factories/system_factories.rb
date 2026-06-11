@@ -365,6 +365,11 @@ FactoryBot.define do
   factory :system_puppet_resource, class: "System::PuppetResource" do
     association :puppet_module, factory: :system_puppet_module
     sequence(:name) { |n| "resource-#{n}" }
+    # F5-03: resource_type is NOT NULL + validated — the factory could never
+    # create a valid record without it.
+    resource_type { "file" }
+    sequence(:title) { |n| "/tmp/managed-#{n}" }
+    parameters { { "ensure" => "present" } }
     path { "/etc/puppet/modules" }
     data { "file { '/tmp/test': ensure => present }" }
     enabled { true }

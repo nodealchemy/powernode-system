@@ -43,17 +43,23 @@ module Api
             render_error("OCI blob fetch failed: #{e.message}", :bad_gateway)
           end
 
-          # GET /api/v1/system/node_api/files/scripts/:script_id
-          # Download script file
+          # GET /api/v1/system/node_api/files/scripts/:id
+          # Download script file. F5-03: the route param is :id but this read
+          # params[:script_id] (find(nil) → always 404 — the same wrong-key
+          # drift module_file's note warns about), and it served
+          # script.content / script.interpreter — attributes NodeScript does
+          # not have. The body column is `data`; the interpreter is inferred
+          # from its shebang line for the filename extension.
           def script_file
-            script = node_scripts.find(params[:script_id])
+            script = node_scripts.find(params[:id] || params[:script_id])
+            body = script.data.to_s
 
             render_success(
               file: {
                 id: script.id,
-                name: "#{script.name}.#{script_extension(script.interpreter)}",
-                content: script.content,
-                checksum: Digest::SHA256.hexdigest(script.content || ""),
+                name: "#{script.name}.#{script_extension(body.lines.first)}",
+                content: body,
+                checksum: Digest::SHA256.hexdigest(body),
                 content_type: "text/plain"
               }
             )

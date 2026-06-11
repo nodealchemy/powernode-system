@@ -35,15 +35,23 @@ module Api
             end
 
             result = derive_passphrase(label)
-            audit = ::System::AuditLog.create!(
+            # F5-03: this previously called ::System::AuditLog.create! — a
+            # model that does not exist anywhere — and the rescue nil
+            # swallowed the NameError, so the SECURITY MODEL's promised audit
+            # entry was NEVER written. FleetEvent is the extension's durable
+            # audit record (best-effort by design; emit! returns nil on
+            # failure). The passphrase itself must never enter the payload.
+            audit = ::System::Fleet::EventBroadcaster.emit!(
               account: current_account,
-              actor_type: "instance",
-              actor_id: current_instance.id,
-              action: "luks_passphrase_issue",
-              resource_type: "system/node_instance",
-              resource_id: current_instance.id,
-              metadata: { partition_label: label, derivation: result[:derivation] }
-            ) rescue nil
+              kind: "system.luks_passphrase_issued",
+              severity: :low,
+              payload: {
+                "partition_label" => label,
+                "derivation" => result[:derivation],
+                "instance_id" => current_instance.id
+              },
+              source: "node_api.luks"
+            )
 
             render_success(
               partition_label: label,

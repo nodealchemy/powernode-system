@@ -27,6 +27,10 @@ module System
     # == Scopes
     scope :enabled, -> { where(enabled: true) }
     scope :disabled, -> { where(enabled: false) }
+    # F5-03: the node_api puppet controller orders module lists with
+    # `.enabled.ordered`; the scope never existed, so every manifest/modules
+    # request raised NoMethodError (500) — the surface had never worked.
+    scope :ordered, -> { order(:name) }
     scope :public_modules, -> { where(public: true) }
     scope :private_modules, -> { where(public: false) }
     scope :by_author, ->(author) { where(author: author) }
