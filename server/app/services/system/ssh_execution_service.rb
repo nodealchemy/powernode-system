@@ -8,6 +8,14 @@ module System
   class SshExecutionService
     class SshError < StandardError; end
 
+    # F5-01 — argv safety: the ssh/scp destination is built as
+    # "#{user}@#{host}"; a value with a leading '-' would be parsed by
+    # ssh/scp as an OPTION (e.g. -oProxyCommand=... → command execution).
+    # admin_user is operator-settable JSONB config, so both are validated
+    # before any argv is built.
+    SSH_USER_FORMAT = /\A[a-zA-Z0-9_][a-zA-Z0-9_.\-]*\z/
+    SSH_HOST_FORMAT = /\A[a-zA-Z0-9][a-zA-Z0-9_.:\-]*\z/
+
     def self.execute(instance:, command:, sudo: true, operation_id: nil)
       new.execute(instance: instance, command: command, sudo: sudo, operation_id: operation_id)
     end
@@ -42,6 +50,9 @@ module System
 
       return Runtime::Result.err(error: "No SSH IP address available", data: { exit_code: -1 }) unless ssh_ip.present?
       return Runtime::Result.err(error: "No SSH key available", data: { exit_code: -1 }) unless ssh_key.present?
+      if (endpoint_err = endpoint_error(admin_user, ssh_ip))
+        return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
+      end
 
       full_command = sudo ? "sudo #{command}" : command
 
@@ -85,6 +96,9 @@ module System
 
       return Runtime::Result.err(error: "No SSH IP address available", data: { exit_code: -1 }) unless ssh_ip.present?
       return Runtime::Result.err(error: "No SSH key available", data: { exit_code: -1 }) unless ssh_key.present?
+      if (endpoint_err = endpoint_error(admin_user, ssh_ip))
+        return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
+      end
 
       Rails.logger.info("[SshExecutionService] SCP #{local_path} -> #{admin_user}@#{ssh_ip}:#{remote_path}")
 
@@ -125,6 +139,14 @@ module System
     def validate_instance!(instance)
       raise ArgumentError, "Instance required" unless instance
       raise ArgumentError, "Instance must be a System::NodeInstance" unless instance.is_a?(::System::NodeInstance)
+    end
+
+    # F5-01 argv-injection guard — returns an error message or nil.
+    def endpoint_error(user, host)
+      return "SSH user #{user.inspect} is not a valid username" unless user.to_s.match?(SSH_USER_FORMAT)
+      return "SSH host #{host.inspect} is not a valid host" unless host.to_s.match?(SSH_HOST_FORMAT)
+
+      nil
     end
 
     def get_ssh_key(instance)

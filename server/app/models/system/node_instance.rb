@@ -87,6 +87,18 @@ module System
     # accessor declarations.
     store_accessor :config, :cloud_instance_id, :admin_user
 
+    # SSH target address for the platform→node control channel
+    # (SshExecutionService + internal serializer). Preference: SDWAN overlay
+    # (reachable across sites) > private LAN > public.
+    #
+    # F5-01: callers invoked this method since the SSH substrate was written
+    # but it was never defined — every real SSH execution raised
+    # NoMethodError, silently swallowed into Runtime::Result.err (all caller
+    # specs stubbed the service, so nothing caught it).
+    def ssh_ip_address
+      vpn_ip_address.presence || private_ip_address.presence || public_ip_address.presence
+    end
+
     # === State machine (AASM — platform standard) ===
     # Two-phase transitions: control actions ("start", "stop", "reboot",
     # "terminate") move into a transitional state; the worker runtime
