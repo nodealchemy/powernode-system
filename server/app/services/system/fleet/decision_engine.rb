@@ -295,6 +295,7 @@ module System
           action_category: binding[:action_category],
           skill_result: skill_result
         )
+        decision[:remediation] = apply_remediation!(signal, skill_result) if gate_result[:decision] == :proceed
         ::System::Fleet::EventBroadcaster.emit_decision!(account: account, decision: decision, signal: signal)
         decision
       end
@@ -366,6 +367,59 @@ module System
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] skill invocation failed: #{e.class}: #{e.message}")
         { success: false, error: e.message }
+      end
+
+      # F3-03: the act arm of sense → decide → act. A :proceed gate decision
+      # must actually apply the remediation — before this existed, the
+      # notify_and_proceed / auto_approve lanes only produced plans nothing
+      # consumed, and every RemediationOutcome scored ineffective. Kinds
+      # without an applier record applied: false on the decision (and the
+      # decision event) so a proceed lane is never a SILENT no-op.
+      # The reconcile task is the canonical apply path: ExecutionDispatcher
+      # routes sync_modules / apply_config to the on-node runtime.
+      REMEDIATION_APPLIERS = {
+        "system.module_drift" => { command: "sync_modules" },
+        "system.config_drift" => { command: "apply_config" }
+      }.freeze
+
+      OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
+
+      def apply_remediation!(signal, skill_result)
+        applier = REMEDIATION_APPLIERS[signal.kind]
+        return { applied: false, reason: "no applier for #{signal.kind}" } unless applier
+
+        dispatch_reconcile_task(signal, skill_result, command: applier[:command])
+      rescue StandardError => e
+        Rails.logger.error("[FleetDecisionEngine] remediation apply failed: #{e.class}: #{e.message}")
+        { applied: false, reason: e.message }
+      end
+
+      def dispatch_reconcile_task(signal, skill_result, command:)
+        plan = skill_result.is_a?(Hash) ? skill_result[:data] : nil
+        plan = plan.respond_to?(:with_indifferent_access) ? plan.with_indifferent_access : {}
+        # The executor's disruption budget still gates auto-apply even when
+        # the policy proceeds — a >max_disruption_pct plan needs an operator.
+        return { applied: false, reason: "plan disruption exceeds auto-apply budget" } if plan[:requires_approval]
+
+        instance = ::System::NodeInstance.where(account_id: account.id)
+                                         .find_by(id: signal.payload.is_a?(Hash) ? signal.payload["instance_id"] : nil)
+        return { applied: false, reason: "instance not found" } unless instance
+
+        if ::System::Task.where(account: account, operable: instance,
+                                command: command, status: OPEN_TASK_STATUSES).exists?
+          return { applied: false, reason: "reconcile task already in flight" }
+        end
+
+        task = ::System::Task.create!(
+          account: account, operable: instance, command: command, status: "pending",
+          options: {
+            "source" => "fleet_autonomy",
+            "signal_kind" => signal.kind,
+            "signal_fingerprint" => signal.fingerprint,
+            "planned_actions" => plan[:planned_actions]
+          }
+        )
+        { applied: true, task_id: task.id, command: command }
       end
 
       def skill_metadata_payload(signal, skill_result)

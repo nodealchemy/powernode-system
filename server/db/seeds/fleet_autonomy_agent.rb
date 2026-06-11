@@ -51,8 +51,12 @@ puts "  ✅ Fleet Autonomy agent: #{fleet_agent.previously_new_record? ? 'create
 # ── Default action policies (mirrors plan M7 vocabulary) ────────────────
 
 fleet_policies = {
-  # Routine + reversible (auto)
-  "system.cert_rotate"             => "auto_approve",
+  # Node-cert rotation has NO server-side actuator: NodeEnrollmentService
+  # refresh requires the on-node agent's CSR (private keys never leave the
+  # node), so the platform cannot rotate autonomously. require_approval
+  # keeps each expiring cert visible as an operator work item instead of a
+  # proceed lane that silently does nothing (audit F3-03).
+  "system.cert_rotate"             => "require_approval",
 
   # Platform ACME cert renewal (CertExpirySensor → platform_maintenance
   # cert_rotate). notify_and_proceed: renewal is reversible/low-blast-radius

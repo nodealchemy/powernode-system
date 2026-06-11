@@ -89,6 +89,88 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F3-03: a :proceed gate decision produced a plan nothing
+    # ever applied — the act arm of sense → decide → act did not exist, so
+    # drift persisted forever and every RemediationOutcome scored ineffective.
+    context "remediation apply on proceed (F3-03)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+      let!(:instance) { create(:system_node_instance, :running, node: node) }
+
+      let(:drift_plan) do
+        { success: true,
+          data: { resolved: true, requires_approval: false, disruption_pct: 5,
+                  planned_actions: { attach: [ "mod-1" ], detach: [], update: [] } } }
+      end
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.module_assign",
+                                       policy: "notify_and_proceed", is_active: true)
+        allow_any_instance_of(::System::Ai::Skills::DriftRemediateExecutor)
+          .to receive(:execute).and_return(drift_plan)
+      end
+
+      def decide_drift(kind)
+        engine.decide(kind: kind, severity: :medium,
+                      payload: { "instance_id" => instance.id },
+                      fingerprint: "#{kind.split('.').last}:#{instance.id}")
+      end
+
+      it "dispatches a sync_modules task when module drift proceeds" do
+        d = decide_drift("system.module_drift")
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:remediation]).to include(applied: true, command: "sync_modules")
+        task = System::Task.find_by(account: account, command: "sync_modules")
+        expect(task).to be_present
+        expect(task.operable).to eq(instance)
+        expect(task.options["source"]).to eq("fleet_autonomy")
+        expect(task.options["planned_actions"]).to be_present
+      end
+
+      it "dispatches an apply_config task when config drift proceeds" do
+        d = decide_drift("system.config_drift")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+        expect(System::Task.find_by(account: account, command: "apply_config", operable: instance)).to be_present
+      end
+
+      it "does not duplicate an in-flight reconcile task" do
+        System::Task.create!(account: account, operable: instance, command: "sync_modules", status: "pending")
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation][:applied]).to be false
+        expect(d[:remediation][:reason]).to match(/in flight/)
+        expect(System::Task.where(account: account, command: "sync_modules").count).to eq(1)
+      end
+
+      it "withholds apply when the plan exceeds the disruption budget" do
+        drift_plan[:data][:requires_approval] = true
+
+        d = decide_drift("system.module_drift")
+
+        expect(d[:remediation][:applied]).to be false
+        expect(System::Task.where(account: account, command: "sync_modules")).to be_empty
+      end
+
+      it "records an unapplied proceed when no applier exists for the kind" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.instance_reboot",
+                                       policy: "notify_and_proceed", is_active: true)
+
+        d = engine.decide(kind: "system.instance_state_drifted", severity: :high,
+                          payload: { instance_id: instance.id },
+                          fingerprint: "instance_state_drifted:#{instance.id}")
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:remediation]).to include(applied: false)
+        expect(d[:remediation][:reason]).to match(/no applier/)
+      end
+    end
+
     # Audit finding F3-04: invoke_skill's class-name case statement silently
     # dropped the four SDWAN executors bound in SIGNAL_BINDINGS (fell through
     # to `else nil`), so peer key rotation and BGP session remediation never
