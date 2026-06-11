@@ -73,7 +73,15 @@ template.assign_attributes(
   default_configuration: {
     "brief" => {},
     "plan" => {},
-    "slo_targets" => { "availability_pct" => 99.5, "p99_latency_ms" => 250 },
+    # F6-04: p99_latency_ms is intentionally NOT a default target — no
+    # component emits metric.latency_ms FleetEvents (TelemetryAdapter's
+    # transport), so a latency target here would imply violations are
+    # detected when they cannot be. Wire a real producer (SDWAN edge
+    # probe / agent heartbeat) before re-adding it.
+    "slo_targets" => { "availability_pct" => 99.5 },
+    "unsupported_slo_targets" => {
+      "p99_latency_ms" => "no metric.latency_ms producer wired — latency violations are NOT detected (F6-04)"
+    },
     "watch_policies" => { "enabled" => true, "sample_interval_seconds" => 60,
                           "auto_scale_max_replicas" => 5 },
     "provisioned_resources" => {}
