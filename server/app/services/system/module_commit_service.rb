@@ -54,20 +54,22 @@ module System
         end
 
         record_commit(node_module, instance, commit_id, results)
-        cleanup_staging(staging_dir)
 
         Runtime::Result.ok(data: {
           commit_id: commit_id,
           duration: calculate_duration(results),
           stages: results
         })
-      rescue ArgumentError
-        cleanup_staging(staging_dir)
-        raise
       rescue StandardError => e
+        raise if e.is_a?(ArgumentError)
+
         Rails.logger.error("[ModuleCommitService] Commit failed: #{e.message}")
-        cleanup_staging(staging_dir)
         Runtime::Result.err(error: e.message)
+      ensure
+        # F5-04: the stage-failure return path never cleaned up — every
+        # failed commit orphaned tmp/commits/<id>. ensure covers all four
+        # exits (success, stage-failure return, ArgumentError, rescue).
+        cleanup_staging(staging_dir)
       end
     end
 
@@ -152,7 +154,7 @@ module System
 
       start_time = Time.current
 
-      copy_paths = node_module.node_module_copy_paths.to_a
+      copy_paths = copy_paths_for(node_module)
       Rails.logger.info("[ModuleCommitService] Processing #{copy_paths.count} copy paths")
 
       scripts = generate_install_scripts(node_module, staging_dir)
@@ -238,7 +240,7 @@ module System
 
       start_time = Time.current
 
-      node_module.node_module_copy_paths.each do |copy_path|
+      copy_paths_for(node_module).each do |copy_path|
         copy_result = execute_copy_path(instance, copy_path)
         unless copy_result.success?
           return { success: false, error: "Failed to copy #{copy_path.source_path}: #{copy_result.error}" }
@@ -337,7 +339,7 @@ module System
           SshExecutionService.execute(instance: instance, command: "systemctl stop #{service}", sudo: true)
         end
       when "install"
-        node_module.node_module_copy_paths.each do |copy_path|
+        copy_paths_for(node_module).each do |copy_path|
           SshExecutionService.execute(
             instance: instance,
             command: "rm -rf #{copy_path.destination_path}",
@@ -347,6 +349,19 @@ module System
       end
     rescue StandardError => e
       Rails.logger.error("[ModuleCommitService] Rollback failed for #{stage}: #{e.message}")
+    end
+
+    # F5-04: the service iterated node_module.node_module_copy_paths — an
+    # association that has never existed (NodeModule belongs_to :copy_path,
+    # singular + optional; CopyPath has_many node_modules). The NoMethodError
+    # was rescued into Result.err on stage_prepare, so EVERY commit failed.
+    #
+    # Semantics: a copy path stages the module file onto temporary
+    # high-speed storage (e.g. tmpfs) BEFORE mounting, to improve
+    # performance — it is a staging hint, not generic config deployment.
+    # Install copies the staged file there; rollback removes the staged copy.
+    def copy_paths_for(node_module)
+      Array(node_module.copy_path)
     end
 
     def execute_copy_path(instance, copy_path)
