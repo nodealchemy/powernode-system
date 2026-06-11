@@ -86,17 +86,21 @@ module Api
             instance = find_accessible_instance(instance_id)
             return unless instance
 
-            service = ::System::VolumeManagementService.new(@volume)
-            result = service.attach(instance, device_name: device_name)
+            # F4-04: the service moved to a class-method interface returning
+            # System::Runtime::Result — the old instance-style calls raised
+            # ArgumentError on every request (these routed endpoints 500'd).
+            result = ::System::VolumeManagementService.attach(
+              volume: @volume, instance: instance, device: device_name
+            )
 
-            if result[:success]
+            if result.success?
               render_success(
                 volume: serialize_volume(@volume.reload),
                 attached_to: instance_id,
-                device_name: result[:device_name]
+                device_name: result.data[:device]
               )
             else
-              render_error(result[:error] || "Failed to attach volume")
+              render_error(result.error || "Failed to attach volume")
             end
           end
 
@@ -105,16 +109,15 @@ module Api
           def detach
             authorize_worker_permission!("system.volumes.manage")
 
-            service = ::System::VolumeManagementService.new(@volume)
-            result = service.detach
+            result = ::System::VolumeManagementService.detach(volume: @volume)
 
-            if result[:success]
+            if result.success?
               render_success(
                 volume: serialize_volume(@volume.reload),
                 detached: true
               )
             else
-              render_error(result[:error] || "Failed to detach volume")
+              render_error(result.error || "Failed to detach volume")
             end
           end
 
@@ -123,17 +126,15 @@ module Api
           def check
             authorize_worker_permission!("system.volumes.manage")
 
-            service = ::System::VolumeManagementService.new(@volume)
-            result = service.check_status
+            result = ::System::VolumeManagementService.check(volume: @volume)
 
-            if result[:success]
+            if result.success?
               render_success(
                 volume: serialize_volume(@volume.reload),
-                cloud_status: result[:cloud_status],
-                synced: result[:synced]
+                cloud_status: result.data
               )
             else
-              render_error(result[:error] || "Failed to check volume status")
+              render_error(result.error || "Failed to check volume status")
             end
           end
 
@@ -185,18 +186,21 @@ module Api
             nil
           end
 
+          # F4-04: ProviderVolume's provider-side id column is external_id —
+          # the cloud_volume_id name here was drift from the same service
+          # refactor that broke attach/detach/check.
           def volume_params
             params.require(:volume).permit(
               :name, :size_gb, :status,
               :provider_region_id, :volume_type_id, :account_id,
-              :cloud_volume_id, :availability_zone_id,
+              :external_id, :availability_zone_id,
               config: {}
             )
           end
 
           def volume_update_params
             params.require(:volume).permit(
-              :status, :cloud_volume_id,
+              :status, :external_id,
               config: {}
             )
           end
@@ -214,7 +218,7 @@ module Api
               name: volume.name,
               size_gb: volume.size_gb,
               status: volume.status,
-              cloud_volume_id: volume.cloud_volume_id,
+              external_id: volume.external_id,
               provider_region_id: volume.provider_region_id,
               volume_type_id: volume.volume_type_id,
               account_id: volume.account_id,
