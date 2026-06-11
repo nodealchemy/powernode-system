@@ -589,6 +589,48 @@ module Ai
               role: { type: "string", required: true }
             }
           },
+          # F8-05 — lifecycle of a StorageMigration created by
+          # system_migrate_storage_component: operator approves, the on-node
+          # agent reports progress/phase transitions, operator may cancel
+          # before sync starts.
+          "system_list_storage_migrations" => {
+            description: "List storage migrations for the account (newest first, capped at 100). Filterable by status, node_instance_id, or active_only.",
+            parameters: {
+              status: { type: "string", required: false, description: "Filter by migration status" },
+              node_instance_id: { type: "string", required: false },
+              active_only: { type: "boolean", required: false, description: "Only non-terminal migrations" }
+            }
+          },
+          "system_get_storage_migration" => {
+            description: "Fetch one storage migration with full details (plan, progress bytes, status history).",
+            parameters: {
+              id: { type: "string", required: true }
+            }
+          },
+          "system_approve_storage_migration" => {
+            description: "Approve a planned storage migration so the on-node agent may begin the sync. Errors unless the migration can transition to 'approved'.",
+            parameters: {
+              id: { type: "string", required: true }
+            }
+          },
+          "system_cancel_storage_migration" => {
+            description: "Cancel a storage migration before sync starts (allowed in planned/approved/preparing; errors once the sync is in progress or the migration is terminal).",
+            parameters: {
+              id: { type: "string", required: true },
+              reason: { type: "string", required: false }
+            }
+          },
+          "system_report_storage_migration_progress" => {
+            description: "Report sync progress for a storage migration (called by the on-node agent). Optionally advances status; records bytes copied/total/verified and a note.",
+            parameters: {
+              id: { type: "string", required: true },
+              status: { type: "string", required: false, description: "Optional phase transition (must be legal from the current status)" },
+              bytes_copied: { type: "integer", required: false },
+              bytes_total: { type: "integer", required: false },
+              bytes_verified: { type: "integer", required: false },
+              note: { type: "string", required: false }
+            }
+          },
 
           # === Lifecycle skill wrappers (MCP.2) ===
           "system_platform_maintenance" => {

@@ -22,6 +22,28 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(keys.size).to be >= 17
       expect(keys).to all(start_with("system_"))
     end
+
+    # Audit F8-05 — the 5 storage-migration lifecycle actions were dispatched
+    # and permission-mapped but had no action_definitions entries, so the
+    # registry fell back to the generic 14-param union schema and their real
+    # contracts (id/status/active_only/reason/bytes_*) were undiscoverable.
+    it "documents the 5 storage-migration lifecycle action contracts (F8-05)" do
+      defs = described_class.action_definitions
+
+      list = defs.fetch("system_list_storage_migrations")
+      expect(list[:parameters].keys).to include(:status, :node_instance_id, :active_only)
+
+      expect(defs.fetch("system_get_storage_migration")[:parameters][:id][:required]).to be true
+      expect(defs.fetch("system_approve_storage_migration")[:parameters][:id][:required]).to be true
+
+      cancel = defs.fetch("system_cancel_storage_migration")
+      expect(cancel[:parameters][:id][:required]).to be true
+      expect(cancel[:parameters].keys).to include(:reason)
+
+      progress = defs.fetch("system_report_storage_migration_progress")
+      expect(progress[:parameters][:id][:required]).to be true
+      expect(progress[:parameters].keys).to include(:status, :bytes_copied, :bytes_total, :bytes_verified, :note)
+    end
   end
 
   describe "GPU discovery (audit P6)" do
