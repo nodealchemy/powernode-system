@@ -189,10 +189,15 @@ func (s *Service) Run(ctx context.Context) error {
 	// gvisor) before the daemon starts: install runsc + register it in
 	// daemon.json. Sources: static Config + the platform's per-node isolation
 	// config (node_api/isolation/runtimes), derived from the instance's tier.
+	isoCfg := fetchIsolationConfig(client)
 	isoRuntimes := append([]string(nil), s.cfg.IsolationRuntimes...)
-	isoRuntimes = append(isoRuntimes, fetchIsolationRuntimes(client)...)
+	isoRuntimes = append(isoRuntimes, isoCfg.Runtimes...)
 	if len(isoRuntimes) > 0 {
 		dockerMgr.RequestedRuntimes = isoRuntimes
+		// F2-01 — the tier's OCI runtime becomes this daemon's default so
+		// workload containers actually run under the recorded tier. Applied
+		// by the manager only after the runtime registers successfully.
+		dockerMgr.DefaultRuntime = isoCfg.DefaultRuntime
 		// Composite: gVisor (runsc) self-installs; Kata/Firecracker microVM
 		// runtimes validate their install + KVM. Each requested runtime is
 		// dispatched to the handler that owns it; an unavailable one is logged

@@ -138,3 +138,44 @@ func TestCompositeRuntimeEnsurer_Dispatch(t *testing.T) {
 		t.Fatalf("expected ErrUnsupportedRuntime for unknown runtime, got %v", err)
 	}
 }
+
+// F2-01 — fleet-path enforcement: the instance's tier OCI runtime becomes the
+// daemon default so every workload container actually runs under it.
+func TestReconcile_SetsDefaultRuntimeWhenRegistered(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Runtimes = &fakeEnsurer{}
+	m.RequestedRuntimes = []string{"gvisor"}
+	m.DefaultRuntime = "runsc"
+
+	m.Reconcile(context.Background())
+
+	if a.Config == nil {
+		t.Fatal("no daemon config written")
+	}
+	if got, _ := a.Config.ExtraConfig["default-runtime"].(string); got != "runsc" {
+		t.Fatalf("expected default-runtime runsc, got %v", a.Config.ExtraConfig["default-runtime"])
+	}
+}
+
+// A default runtime whose ensure failed must NOT become the daemon default —
+// dockerd refuses to start with an unknown default-runtime, which would take
+// down every other workload on the node.
+func TestReconcile_SkipsDefaultRuntimeWhenEnsureFailed(t *testing.T) {
+	a := &stubApplier{Cert: &CertMaterial{ServerCertPEM: "exists"}}
+	m, fp, _ := newTestManager(t, []string{"docker-engine"}, a)
+	defer fp.close()
+	m.Runtimes = &fakeEnsurer{err: errors.New("install failed")}
+	m.RequestedRuntimes = []string{"gvisor"}
+	m.DefaultRuntime = "runsc"
+
+	m.Reconcile(context.Background())
+
+	if a.Config == nil {
+		t.Fatal("no daemon config written")
+	}
+	if _, ok := a.Config.ExtraConfig["default-runtime"]; ok {
+		t.Fatalf("default-runtime must not be set when the runtime was never registered: %v", a.Config.ExtraConfig)
+	}
+}

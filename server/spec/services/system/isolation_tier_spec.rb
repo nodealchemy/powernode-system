@@ -116,4 +116,42 @@ RSpec.describe System::IsolationTier do
       expect(described_class.required_runtimes_for(bare_inst)).to eq([])
     end
   end
+
+  # F2-01 enforcement (operator decision 2026-06-11: fleet path only) — the
+  # instance's tier OCI runtime becomes the daemon default on its own
+  # dedicated docker daemon, so every workload container actually runs under
+  # the tier runtime.
+  describe ".default_runtime_for" do
+    it "returns the tier's OCI runtime name for runtime-requiring tiers" do
+      kata_inst = double(config: { "isolation" => { "tier" => "kata" } })
+      expect(described_class.default_runtime_for(kata_inst)).to eq("kata-runtime")
+
+      gvisor_inst = double(config: { "isolation" => { "tier" => "gvisor" } })
+      expect(described_class.default_runtime_for(gvisor_inst)).to eq("runsc")
+    end
+
+    it "returns nil for native, vm, unset, and malformed configs" do
+      expect(described_class.default_runtime_for(double(config: { "isolation" => { "tier" => "native" } }))).to be_nil
+      expect(described_class.default_runtime_for(double(config: { "isolation" => { "tier" => "vm" } }))).to be_nil
+      expect(described_class.default_runtime_for(double(config: {}))).to be_nil
+      expect(described_class.default_runtime_for(nil)).to be_nil
+    end
+  end
+
+  # Used by core container-create paths (soft-referenced via defined?) to
+  # reject half-enforced tier requests outside the fleet path.
+  describe ".isolation_runtime?" do
+    it "recognizes every non-native tier's OCI runtime name" do
+      %w[runsc kata-runtime kata-fc kata-qemu-snp kata-qemu-tdx].each do |rt|
+        expect(described_class.isolation_runtime?(rt)).to be(true), "expected #{rt} to be an isolation runtime"
+      end
+    end
+
+    it "is false for runc, blank, and unknown runtimes" do
+      expect(described_class.isolation_runtime?("runc")).to be false
+      expect(described_class.isolation_runtime?("")).to be false
+      expect(described_class.isolation_runtime?(nil)).to be false
+      expect(described_class.isolation_runtime?("containerd")).to be false
+    end
+  end
 end

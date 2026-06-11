@@ -39,6 +39,12 @@ type Manager struct {
 	// starts with --runtime=<name> available. Empty / nil Runtimes = none.
 	RequestedRuntimes []string
 	Runtimes          RuntimeEnsurer
+	// DefaultRuntime (F2-01, fleet-path isolation enforcement): the OCI
+	// runtime name daemon.json should default to, from the platform's
+	// isolation config (the instance's recorded tier). Applied only when the
+	// runtime actually registered — an unregistered default-runtime would
+	// stop dockerd from starting at all. Empty = leave the daemon default.
+	DefaultRuntime string
 
 	mu              sync.Mutex
 	lastReconcileAt time.Time
@@ -370,19 +376,39 @@ func (m *Manager) recordError(stage string, err error) {
 // the right layer to surface "that isolation tier isn't available on this node".
 // Always returns nil (kept for signature symmetry with the call sites).
 func (m *Manager) ensureRequestedRuntimes(ctx context.Context, daemonConfig map[string]any) error {
-	if m.Runtimes == nil || len(m.RequestedRuntimes) == 0 {
-		return nil
-	}
-	for _, rt := range m.RequestedRuntimes {
-		if strings.TrimSpace(rt) == "" {
-			continue
+	if m.Runtimes != nil && len(m.RequestedRuntimes) > 0 {
+		for _, rt := range m.RequestedRuntimes {
+			if strings.TrimSpace(rt) == "" {
+				continue
+			}
+			if err := m.Runtimes.Ensure(ctx, rt, daemonConfig); err != nil {
+				m.OnError(fmt.Sprintf("isolation_runtime:%s", rt), err)
+				continue
+			}
 		}
-		if err := m.Runtimes.Ensure(ctx, rt, daemonConfig); err != nil {
-			m.OnError(fmt.Sprintf("isolation_runtime:%s", rt), err)
-			continue
-		}
 	}
+	m.applyDefaultRuntime(daemonConfig)
 	return nil
+}
+
+// applyDefaultRuntime (F2-01) sets daemon.json's default-runtime to the
+// instance's tier runtime — the fleet-path enforcement point: every container
+// on this instance's own daemon then runs under the tier runtime without
+// callers having to pass --runtime. Fail-safe: only applied when the runtime
+// is actually registered in daemonConfig["runtimes"]; dockerd refuses to start
+// with an unknown default-runtime, which would take down every workload.
+func (m *Manager) applyDefaultRuntime(daemonConfig map[string]any) {
+	def := strings.TrimSpace(m.DefaultRuntime)
+	if def == "" || daemonConfig == nil {
+		return
+	}
+	registered, _ := daemonConfig["runtimes"].(map[string]any)
+	if _, ok := registered[def]; !ok {
+		m.OnError(fmt.Sprintf("default_runtime:%s", def),
+			fmt.Errorf("default runtime %q not registered — leaving daemon default (runc)", def))
+		return
+	}
+	daemonConfig["default-runtime"] = def
 }
 
 // LastReconcileAt is exposed for the heartbeat status reporter — lets

@@ -28,11 +28,20 @@ RSpec.describe "Api::V1::System::NodeApi::Isolation#runtimes", type: :request do
       expect(JSON.parse(response.body).dig("data", "runtimes")).to eq(%w[gvisor])
     end
 
+    # F2-01 — the agent sets this as daemon.json default-runtime on the
+    # instance's own daemon, making the tier actually enforced fleet-side.
+    it "advertises the tier's OCI runtime as the daemon default" do
+      get "/api/v1/system/node_api/isolation/runtimes", headers: headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "default_runtime")).to eq("runsc")
+    end
+
     it "returns [] for a native (or unset) tier" do
       instance.update!(config: { "isolation" => { "tier" => "native" } })
       get "/api/v1/system/node_api/isolation/runtimes", headers: headers
       expect(response).to have_http_status(:ok)
       expect(JSON.parse(response.body).dig("data", "runtimes")).to eq([])
+      expect(JSON.parse(response.body).dig("data", "default_runtime")).to be_nil
     end
 
     it "401 without an instance cert" do

@@ -31,27 +31,37 @@ type runtimesFetcher interface {
 // runtimes this node must provision (substrate L0).
 const isolationRuntimesPath = "/api/v1/system/node_api/isolation/runtimes"
 
-// fetchIsolationRuntimes asks the platform which isolation runtimes this node
-// should provision on its Docker daemon (e.g. ["gvisor"]). Best-effort: any
-// error yields an empty slice (the node simply provisions nothing extra).
-func fetchIsolationRuntimes(f runtimesFetcher) []string {
+// isolationConfig is the platform's per-node isolation contract: the runtimes
+// to provision plus (F2-01) the OCI runtime the daemon should default to so
+// the instance's recorded tier is actually enforced at container-create.
+type isolationConfig struct {
+	Runtimes       []string
+	DefaultRuntime string
+}
+
+// fetchIsolationConfig asks the platform which isolation runtimes this node
+// should provision on its Docker daemon (e.g. ["gvisor"]) and which runtime
+// is the daemon default. Best-effort: any error yields the zero value (the
+// node simply provisions nothing extra and keeps the runc default).
+func fetchIsolationConfig(f runtimesFetcher) isolationConfig {
 	resp, err := f.GetJSON(isolationRuntimesPath)
 	if err != nil {
-		return nil
+		return isolationConfig{}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return isolationConfig{}
 	}
 	raw, _ := io.ReadAll(resp.Body)
 
 	var body struct {
 		Data struct {
-			Runtimes []string `json:"runtimes"`
+			Runtimes       []string `json:"runtimes"`
+			DefaultRuntime string   `json:"default_runtime"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
-		return nil
+		return isolationConfig{}
 	}
-	return body.Data.Runtimes
+	return isolationConfig{Runtimes: body.Data.Runtimes, DefaultRuntime: body.Data.DefaultRuntime}
 }

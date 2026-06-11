@@ -157,5 +157,29 @@ module System
       tier = iso.is_a?(Hash) ? iso["tier"].to_s : ""
       requires_runtime?(tier) ? [tier] : []
     end
+
+    # F2-01 enforcement (fleet path only): the OCI runtime name the instance's
+    # OWN docker daemon should default to, so every workload container actually
+    # runs under the tier runtime. nil for native (runc is already the daemon
+    # default), vm (no container runtime), unset, or malformed configs.
+    def default_runtime_for(instance)
+      cfg = instance.respond_to?(:config) ? instance.config : nil
+      iso = cfg.is_a?(Hash) ? cfg["isolation"] : nil
+      tier = iso.is_a?(Hash) ? iso["tier"].to_s : ""
+      return nil unless requires_runtime?(tier)
+
+      TIERS.fetch(tier)[:docker_runtime]
+    end
+
+    # Is this OCI runtime name one of the non-native isolation runtimes?
+    # Core container-create paths (Swarm / devops) soft-reference this via
+    # defined?(::System::IsolationTier) to reject half-enforced tier requests
+    # outside the fleet path (F2-01).
+    def isolation_runtime?(runtime_name)
+      name = runtime_name.to_s.strip
+      return false if name.empty?
+
+      TIERS.any? { |tier, d| tier != DEFAULT && d[:docker_runtime] == name }
+    end
   end
 end
