@@ -47,6 +47,11 @@ module System
       end
 
       def tick!
+        # Sweep BEFORE sensing: expired pending approvals must transition
+        # (timeout_action) so the rejected-cooldown — not a fresh duplicate
+        # request — absorbs any still-firing signal in this same tick.
+        expire_stale_approvals!
+
         tick_correlation = "tick:#{SecureRandom.hex(8)}"
         ::System::Fleet::EventBroadcaster.emit!(
           account: account, kind: "fleet.tick_started", severity: :low,
@@ -399,10 +404,32 @@ module System
       end
 
       def pending_fleet_approvals
+        # Deliberately no expires_at filter: an expired-but-still-pending
+        # request must keep dedup-matching until the tick-start sweep
+        # transitions it, otherwise each persisting signal re-mints a
+        # duplicate request per TTL window.
         ::Ai::ApprovalRequest
           .pending
           .where(account: @account, source_type: SOURCE_TYPE)
-          .where("expires_at IS NULL OR expires_at > ?", Time.current)
+      end
+
+      # Expired pending requests don't transition on their own —
+      # ApprovalRequest#check_expiration! only acts when invoked. Sweeping at
+      # tick start fires the chain's timeout_action (typically reject), whose
+      # rejected-cooldown then suppresses re-mints of the same signal.
+      # Best-effort per row: one bad record must not break the autonomy tick.
+      def expire_stale_approvals!
+        return unless defined?(::Ai::ApprovalRequest)
+
+        ::Ai::ApprovalRequest
+          .pending
+          .where(account: @account, source_type: SOURCE_TYPE)
+          .where("expires_at < ?", Time.current)
+          .find_each do |request|
+            request.check_expiration!
+          rescue StandardError => e
+            Rails.logger.error("[FleetAutonomy] expiry sweep failed for ApprovalRequest #{request.id}: #{e.message}")
+          end
       end
 
       def recently_rejected_approval?(action_category, match_conditions)

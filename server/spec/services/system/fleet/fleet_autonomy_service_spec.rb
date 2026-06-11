@@ -137,4 +137,64 @@ RSpec.describe System::Fleet::FleetAutonomyService do
       )
     end
   end
+
+  # Audit finding F3-02: expired-but-still-pending fleet requests accumulated
+  # forever (check_expiration! had no callers) and escaped the dedup match
+  # (which filtered expires_at > now), so each persisting signal re-minted a
+  # duplicate request every TTL window.
+  describe "expired pending approval handling" do
+    let!(:chain) do
+      # Factory defaults: timeout_hours 24, timeout_action "reject".
+      create(:ai_approval_chain, account: account,
+             trigger_type: "autonomy_action", name: "Fleet Autonomy Actions")
+    end
+
+    before do
+      Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                     action_category: "system.instance_reprovision",
+                                     policy: "require_approval", is_active: true)
+    end
+
+    def mint_expired_pending_request
+      service.gate_action!("system.instance_reprovision",
+                           metadata: { instance_id: "inst-1" },
+                           reasoning: { summary: "instance silent" })
+      Ai::ApprovalRequest.last.tap { |r| r.update_columns(expires_at: 2.hours.ago) }
+    end
+
+    describe "#tick! expiry sweep" do
+      it "fires the chain's timeout_action on expired pending fleet requests" do
+        request = mint_expired_pending_request
+
+        service.tick!
+
+        expect(request.reload.status).to eq("rejected")
+      end
+
+      it "does not re-mint a request for the same signal after the sweep rejects it" do
+        mint_expired_pending_request
+        service.tick!
+
+        expect {
+          service.gate_action!("system.instance_reprovision",
+                               metadata: { instance_id: "inst-1" },
+                               reasoning: { summary: "still silent" })
+        }.not_to change(Ai::ApprovalRequest, :count)
+      end
+    end
+
+    describe "dedup against expired pending requests" do
+      it "matches an expired-but-pending request instead of minting a duplicate" do
+        mint_expired_pending_request
+
+        expect {
+          service.gate_action!("system.instance_reprovision",
+                               metadata: { instance_id: "inst-1" },
+                               reasoning: { summary: "still silent" })
+        }.not_to change(Ai::ApprovalRequest, :count)
+
+        expect(Ai::ApprovalRequest.last.description).to eq("still silent")
+      end
+    end
+  end
 end
