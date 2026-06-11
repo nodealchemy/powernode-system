@@ -31,10 +31,48 @@ module System
           # (proceed/pending/blocked). Skipped decisions (no binding) carry
           # no operational value yet.
           next if decision == :skipped
+          # F3-12 — zero-information buckets: deduped decisions (29k/day
+          # live) and bare not_permitted blocks teach nothing; recording
+          # them buried the real patterns (30% of the KB was these rows).
+          # Policy blocks (decision :blocked with a gate) ARE still learned.
+          next if decision == :deduped
+          next if decision == :blocked && group.all? { |d| d[:reason].to_s == "not_permitted" }
 
           submit_learning(learning_tool, account, signal_kind, gate, decision, group)
           maybe_auto_evolve!(account, signal_kind)
         end
+      end
+
+      # F3-12 one-time cleanup for rows created before the skip/reinforce
+      # logic existed: deletes zero-information buckets outright and
+      # collapses duplicate titles onto the OLDEST row, folding the
+      # duplicate count into its access_count so reinforcement history
+      # isn't lost. Invoked via `rails system:fleet:consolidate_learnings`.
+      def consolidate_legacy_rows!
+        return { deleted_zero_info: 0, deleted_duplicates: 0 } unless defined?(::Ai::CompoundLearning)
+
+        zero_info = ::Ai::CompoundLearning
+                    .where("title LIKE ? OR title LIKE ?", "Fleet % → deduped", "Fleet % → blocked")
+        deleted_zero_info = zero_info.delete_all
+
+        deleted_duplicates = 0
+        ::Ai::CompoundLearning
+          .where("title LIKE ?", "Fleet %")
+          .group(:account_id, :title)
+          .having("COUNT(*) > 1")
+          .count
+          .each_key do |(account_id, title)|
+            rows = ::Ai::CompoundLearning.where(account_id: account_id, title: title).order(:created_at)
+            keeper = rows.first
+            extras = rows.where.not(id: keeper.id)
+            n = extras.delete_all
+            next if n.zero?
+
+            keeper.update_columns(access_count: keeper.access_count.to_i + n)
+            deleted_duplicates += n
+          end
+
+        { deleted_zero_info: deleted_zero_info, deleted_duplicates: deleted_duplicates }
       end
 
       def submit_learning(learning_tool, account, signal_kind, gate, decision, group)
