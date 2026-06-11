@@ -37,6 +37,11 @@ module System
                 node_id: asgn.node_id,
                 module_id: asgn.node_module_id,
                 assignment_id: asgn.id,
+                # F3-09: the decision engine resolves the remediation target
+                # (DriftRemediateExecutor + apply_config reconcile task) from
+                # the payload's instance ids — without them every invocation
+                # ran with instance_id: nil.
+                instance_ids: ::System::NodeInstance.running.where(node_id: asgn.node_id).pluck(:id),
                 changed_at: asgn.updated_at.iso8601,
                 last_apply_at: last_apply&.iso8601
               },

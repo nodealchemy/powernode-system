@@ -300,6 +300,64 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F3-09: ConfigDriftSensor emits node_id/module_id/
+    # assignment_id (never instance_id), but the config_drift binding mapped
+    # instance_id straight out of the payload — every executor invocation ran
+    # with instance_id: nil, and the act arm's reconcile dispatch resolved no
+    # instance, so the highest-volume live signal never produced a plan or a
+    # task.
+    context "with the real config_drift sensor payload shape (F3-09)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+      let!(:instance) { create(:system_node_instance, :running, node: node) }
+
+      let(:sensor_payload) do
+        { "node_id" => node.id, "module_id" => "mod-1", "assignment_id" => "asgn-1",
+          "instance_ids" => [ instance.id ] }
+      end
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.module_assign",
+                                       policy: "notify_and_proceed", is_active: true)
+      end
+
+      it "invokes DriftRemediateExecutor with the instance resolved from instance_ids" do
+        executor = instance_double(System::Ai::Skills::DriftRemediateExecutor)
+        allow(System::Ai::Skills::DriftRemediateExecutor).to receive(:new).and_return(executor)
+        expect(executor).to receive(:execute).with(instance_id: instance.id)
+                                             .and_return({ success: true, data: { resolved: true } })
+
+        engine.decide(kind: "system.config_drift", severity: :medium,
+                      payload: sensor_payload, fingerprint: "config_drift:asgn-1")
+      end
+
+      it "dispatches the apply_config reconcile task against the resolved instance" do
+        allow_any_instance_of(::System::Ai::Skills::DriftRemediateExecutor)
+          .to receive(:execute)
+          .and_return({ success: true,
+                        data: { resolved: true, requires_approval: false, disruption_pct: 5,
+                                planned_actions: { attach: [ "mod-1" ], detach: [], update: [] } } })
+
+        d = engine.decide(kind: "system.config_drift", severity: :medium,
+                          payload: sensor_payload, fingerprint: "config_drift:asgn-1b")
+
+        expect(d[:remediation]).to include(applied: true, command: "apply_config")
+        expect(System::Task.find_by(account: account, command: "apply_config", operable: instance)).to be_present
+      end
+
+      it "skips the executor instead of invoking it with a nil instance when no instances are running" do
+        executor = instance_double(System::Ai::Skills::DriftRemediateExecutor)
+        allow(System::Ai::Skills::DriftRemediateExecutor).to receive(:new).and_return(executor)
+        expect(executor).not_to receive(:execute)
+
+        engine.decide(kind: "system.config_drift", severity: :medium,
+                      payload: sensor_payload.merge("instance_ids" => []),
+                      fingerprint: "config_drift:asgn-2")
+      end
+    end
+
     # Audit finding F3-06: side-effectful executors ran BEFORE the policy
     # gate, so flipping a policy to require_approval/block did not stop the
     # action — it only changed how the already-performed action was recorded.

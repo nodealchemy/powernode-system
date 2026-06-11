@@ -115,7 +115,15 @@ module System
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
           action_category: "system.module_assign",
           side_effectful: false, # drift report + remediation plan only
-          input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
+          # F3-09: ConfigDriftSensor emits per-assignment signals carrying
+          # the node's running instance_ids (never a bare instance_id) —
+          # resolve the first as the remediation target, or skip the
+          # executor cleanly when the node has no running instances.
+          input_mapper: ->(signal) {
+            instance_id = signal.dig(:payload, "instance_id") ||
+                          Array(signal.dig(:payload, "instance_ids")).first
+            instance_id ? { instance_id: instance_id } : nil
+          }
         },
         "system.slo_violation" => {
           skill: nil, # SLO violations route to rolling_upgrade *plan* via the executor; engine doesn't need to invoke it inline
@@ -445,8 +453,11 @@ module System
         # the policy proceeds — a >max_disruption_pct plan needs an operator.
         return { applied: false, reason: "plan disruption exceeds auto-apply budget" } if plan[:requires_approval]
 
-        instance = ::System::NodeInstance.where(account_id: account.id)
-                                         .find_by(id: signal.payload.is_a?(Hash) ? signal.payload["instance_id"] : nil)
+        # F3-09: config_drift payloads carry instance_ids (per-node running
+        # set) rather than a single instance_id — accept either shape.
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        target_id = payload["instance_id"] || Array(payload["instance_ids"]).first
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: target_id)
         return { applied: false, reason: "instance not found" } unless instance
 
         if ::System::Task.where(account: account, operable: instance,
