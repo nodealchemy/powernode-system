@@ -13,15 +13,59 @@ module System
     # for v0; the trading service has additional flow control we don't yet
     # need (concurrency caps, role-based dispatch).
     class DecisionEngine
+      # Maps a CVE signal payload to CveResponseExecutor inputs — a
+      # side-effect-free triage whose plan lands in approval request
+      # metadata for operator review. The CveResponderService handles the
+      # actual dispatch separately at gate-time so invocation stays pure
+      # (in line with the "DecisionEngine.invoke_skill produces a plan,
+      # doesn't act" contract).
+      #
+      # Handles two signal payload shapes:
+      #   - cve_critical_published: payload.cve_id (singular)
+      #   - module_critical_upgrade_ready: payload.cve_ids (plural — same
+      #     module may carry multiple open exposures; triage the first as
+      #     a representative plan for the approval/notification).
+      #
+      # Returns nil (skip invocation) when there is nothing actionable.
+      CVE_RESPONSE_INPUTS = lambda do |signal|
+        payload = signal.payload || {}
+        cve_id = payload["cve_id"].presence || Array(payload["cve_ids"]).first
+        next nil if cve_id.blank?
+
+        # Pull affected_packages from the signal payload (CvePublishedSensor
+        # includes them) or fall back to the persisted Cve row.
+        affected = Array(payload["affected_packages"]).map { |n| { name: n.to_s } }
+        if affected.empty? && defined?(::System::Cve)
+          cve = ::System::Cve.find_by(cve_id: cve_id)
+          affected = cve&.normalized_affected_packages.to_a
+        end
+        next nil if affected.empty?
+
+        {
+          cve_id: cve_id,
+          severity: payload["cve_severity"] || signal.severity.to_s,
+          affected_packages: affected,
+          summary: payload["cve_summary"]
+        }
+      end
+
       # signal.kind → {skill: <System::Ai::Skills class>, action_category: "system...."}
+      #
+      # Every binding with a skill MUST also declare an input_mapper lambda
+      # (signal → executor kwargs, or nil to skip invocation). invoke_skill
+      # dispatches exclusively through the mapper — a skill without one
+      # raises instead of silently never running (audit F3-04: a class-name
+      # case statement previously left all four SDWAN executors unreachable).
       SIGNAL_BINDINGS = {
         "system.instance_silent" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
-          action_category: "system.instance_reprovision"
+          action_category: "system.instance_reprovision",
+          input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         "system.module_drift" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
-          action_category: "system.module_assign"
+          action_category: "system.module_assign",
+          input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         "system.cert_expiring" => {
           skill: nil, # cert rotation is handled directly via NodeCertificate#rotate
@@ -34,7 +78,10 @@ module System
         # executor.
         "system.acme_cert_expiring" => {
           skill: ::System::Ai::Skills::PlatformMaintenanceExecutor,
-          action_category: "system.acme_cert_rotate"
+          action_category: "system.acme_cert_rotate",
+          input_mapper: ->(signal) {
+            { action: "cert_rotate", certificate_id: signal.dig(:payload, "certificate_id") }
+          }
         },
         "system.module_promotion_ready" => {
           skill: nil, # ModulePromotionService is invoked directly
@@ -42,7 +89,8 @@ module System
         },
         "system.config_drift" => {
           skill: ::System::Ai::Skills::DriftRemediateExecutor,
-          action_category: "system.module_assign"
+          action_category: "system.module_assign",
+          input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         "system.slo_violation" => {
           skill: nil, # SLO violations route to rolling_upgrade *plan* via the executor; engine doesn't need to invoke it inline
@@ -66,11 +114,15 @@ module System
         # SdwanFailoverExecutor returns candidate spokes; operator promotes).
         "system.sdwan_peer_drift" => {
           skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
-          action_category: "system.sdwan_peer_remediate"
+          action_category: "system.sdwan_peer_remediate",
+          input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
         },
         "system.sdwan_hub_unreachable" => {
           skill: ::System::Ai::Skills::SdwanFailoverExecutor,
-          action_category: "system.sdwan_failover"
+          action_category: "system.sdwan_failover",
+          # Executor defaults to dry_run: true — returns the candidate-spoke
+          # plan for the approval request; the operator promotes.
+          input_mapper: ->(signal) { { network_id: signal.dig(:payload, "network_id") } }
         },
         # Slice 9f — iBGP session remediation, VIP failover, route-policy
         # audit. Session remediation auto-fires (notify_and_proceed) since
@@ -78,7 +130,12 @@ module System
         # is approval-gated by default (it's a holder-promotion, visible).
         "system.sdwan_bgp_session_unhealthy" => {
           skill: ::System::Ai::Skills::SdwanBgpSessionRemediateExecutor,
-          action_category: "system.sdwan_bgp_session_remediate"
+          action_category: "system.sdwan_bgp_session_remediate",
+          input_mapper: ->(signal) {
+            { bgp_session_id: signal.dig(:payload, "bgp_session_id"),
+              peer_id: signal.dig(:payload, "peer_id"),
+              neighbor_address: signal.dig(:payload, "neighbor_address") }
+          }
         },
         "system.sdwan_bgp_session_stale" => {
           # Stale = no observation. Notification only; no auto-action.
@@ -87,7 +144,8 @@ module System
         },
         "system.sdwan_vip_unreachable" => {
           skill: ::System::Ai::Skills::SdwanVipFailoverExecutor,
-          action_category: "system.sdwan_vip_failover"
+          action_category: "system.sdwan_vip_failover",
+          input_mapper: ->(signal) { { virtual_ip_id: signal.dig(:payload, "virtual_ip_id") } }
         },
         # M2 of the AI-driven provisioning conversation — adaptive evolution.
         # Skills are intentionally `nil` because adaptation is multi-step:
@@ -118,11 +176,13 @@ module System
         # notify_and_proceed, keeping invoke_skill side-effect-free.
         "system.cve_critical_published" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
-          action_category: "system.cve_remediate"
+          action_category: "system.cve_remediate",
+          input_mapper: CVE_RESPONSE_INPUTS
         },
         "system.module_critical_upgrade_ready" => {
           skill: ::System::Ai::Skills::CveResponseExecutor,
-          action_category: "system.module_critical_upgrade_ready"
+          action_category: "system.module_critical_upgrade_ready",
+          input_mapper: CVE_RESPONSE_INPUTS
         },
         # Phase 3c — federation peer liveness. The FederationPeerLivenessSensor
         # emits one kind for both failure classes (stale heartbeat + cert
@@ -133,7 +193,11 @@ module System
         # how the SDWAN peer-remediate binding auto-fires its executor).
         "system.federation_peer_liveness" => {
           skill: ::System::Ai::Skills::FederationPeerRemediateExecutor,
-          action_category: "system.federation_peer_remediate"
+          action_category: "system.federation_peer_remediate",
+          input_mapper: ->(signal) {
+            { federation_peer_id: signal.dig(:payload, "federation_peer_id"),
+              reason: signal.dig(:payload, "reason") }
+          }
         }
       }.freeze
 
@@ -180,7 +244,7 @@ module System
           return decision
         end
 
-        skill_result = invoke_skill(binding[:skill], signal) if binding[:skill]
+        skill_result = invoke_skill(binding, signal) if binding[:skill]
 
         gate_result = autonomy_service.gate_action!(
           binding[:action_category],
@@ -232,69 +296,23 @@ module System
         "fleet:decided:#{account.id}:#{signal.kind}:#{signal.fingerprint}"
       end
 
-      def invoke_skill(skill_class, signal)
+      # Executor inputs come exclusively from the binding's input_mapper
+      # (signal → kwargs, or nil to skip invocation). `fetch` raises on a
+      # binding that declares a skill without a mapper, so a mis-declared
+      # binding surfaces as an error in the decision record instead of an
+      # executor that silently never runs.
+      def invoke_skill(binding, signal)
+        skill_class = binding[:skill]
         return nil unless skill_class
 
+        inputs = binding.fetch(:input_mapper).call(signal)
+        return nil if inputs.nil?
+
         executor = skill_class.new(account: account, agent: autonomy_service.agent, user: nil)
-        case skill_class.name
-        when "System::Ai::Skills::DriftRemediateExecutor"
-          executor.execute(instance_id: signal.dig(:payload, "instance_id"))
-        when "System::Ai::Skills::CveResponseExecutor"
-          invoke_cve_response(executor, signal)
-        when "System::Ai::Skills::PlatformMaintenanceExecutor"
-          # Fire-and-forget cert rotation: queues the async renewal sweep for
-          # the expiring cert. Scoped to the single cert the sensor flagged.
-          executor.execute(
-            action: "cert_rotate",
-            certificate_id: signal.dig(:payload, "certificate_id")
-          )
-        when "System::Ai::Skills::FederationPeerRemediateExecutor"
-          # Federation liveness remediation: re-handshake/degrade a stale peer
-          # or alert on an expiring cert. The executor branches on `reason`;
-          # both fields come straight off the sensor payload.
-          executor.execute(
-            federation_peer_id: signal.dig(:payload, "federation_peer_id"),
-            reason: signal.dig(:payload, "reason")
-          )
-        else
-          nil
-        end
+        executor.execute(**inputs)
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] skill invocation failed: #{e.class}: #{e.message}")
         { success: false, error: e.message }
-      end
-
-      # Side-effect-free triage so the resulting plan lands in approval
-      # request metadata for operator review. The CveResponderService
-      # handles the actual dispatch separately at gate-time so this
-      # method stays pure (in line with the "DecisionEngine.invoke_skill
-      # produces a plan, doesn't act" contract).
-      #
-      # Handles two signal payload shapes:
-      #   - cve_critical_published: payload.cve_id (singular)
-      #   - module_critical_upgrade_ready: payload.cve_ids (plural — same
-      #     module may carry multiple open exposures; triage the first as
-      #     a representative plan for the approval/notification).
-      def invoke_cve_response(executor, signal)
-        payload = signal.payload || {}
-        cve_id = payload["cve_id"].presence || Array(payload["cve_ids"]).first
-        return nil if cve_id.blank?
-
-        # Pull affected_packages from the signal payload (CvePublishedSensor
-        # includes them) or fall back to the persisted Cve row.
-        affected = Array(payload["affected_packages"]).map { |n| { name: n.to_s } }
-        if affected.empty? && defined?(::System::Cve)
-          cve = ::System::Cve.find_by(cve_id: cve_id)
-          affected = cve&.normalized_affected_packages.to_a
-        end
-        return nil if affected.empty?
-
-        executor.execute(
-          cve_id: cve_id,
-          severity: payload["cve_severity"] || signal.severity.to_s,
-          affected_packages: affected,
-          summary: payload["cve_summary"]
-        )
       end
 
       def skill_metadata_payload(signal, skill_result)
