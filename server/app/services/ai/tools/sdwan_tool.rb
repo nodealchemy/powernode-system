@@ -100,7 +100,12 @@ module Ai
         "system_sdwan_list_ovn_acls"               => "sdwan.ovn.read",
         "system_sdwan_delete_ovn_acl"              => "sdwan.ovn.manage",
         "system_sdwan_delete_ovn_logical_switch"   => "sdwan.ovn.manage",
-        "system_sdwan_delete_ovn_deployment"       => "sdwan.ovn.manage"
+        "system_sdwan_delete_ovn_deployment"       => "sdwan.ovn.manage",
+        # F8-06 — read/prune symmetry for the OVN topology surface.
+        "system_sdwan_list_ovn_deployments"        => "sdwan.ovn.read",
+        "system_sdwan_get_ovn_deployment"          => "sdwan.ovn.read",
+        "system_sdwan_list_ovn_logical_switches"   => "sdwan.ovn.read",
+        "system_sdwan_delete_ovn_logical_switch_port" => "sdwan.ovn.manage"
       }.freeze
 
       def self.definition
@@ -667,6 +672,25 @@ module Ai
             description: "Decommission an OVN deployment. Cascades logical switches, ports, and ACLs under it. Irreversible.",
             parameters: { deployment_id: { type: "string", required: true, description: "Sdwan::OvnDeployment id" } }
           },
+          # F8-06 — read/prune symmetry: rediscover deployment ids after a
+          # session restart, and prune a single logical-switch port without
+          # tearing down the whole switch.
+          "system_sdwan_list_ovn_deployments" => {
+            description: "List the account's OVN deployments (id, endpoints, status). Use to rediscover a deployment id when the create response was lost or a session restarted.",
+            parameters: { status: { type: "string", required: false, description: "Optional status filter (pending | active | degraded | ...)" } }
+          },
+          "system_sdwan_get_ovn_deployment" => {
+            description: "Fetch one OVN deployment with its logical switches (each switch includes its ports), so an agent can rediscover the full topology and the ids it needs for compile/delete.",
+            parameters: { deployment_id: { type: "string", required: true, description: "Sdwan::OvnDeployment id" } }
+          },
+          "system_sdwan_list_ovn_logical_switches" => {
+            description: "List OVN logical switches (optionally scoped to a deployment), each with its ports so port ids are discoverable for system_sdwan_delete_ovn_logical_switch_port.",
+            parameters: { deployment_id: { type: "string", required: false, description: "Restrict to switches under this Sdwan::OvnDeployment" } }
+          },
+          "system_sdwan_delete_ovn_logical_switch_port" => {
+            description: "Delete a single OVN logical switch port (prune). Removes the port row + excludes it from the next OVN compile, leaving the switch and its other ports intact.",
+            parameters: { port_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitchPort id" } }
+          },
           "system_sdwan_delete_ipfix_collector" => {
             description: "Delete an IPFIX collector. Next topology compile drops the ipfix: block from per-host payloads.",
             parameters: { collector_id: { type: "string", required: true, description: "Sdwan::IpfixCollector id" } }
@@ -767,6 +791,10 @@ module Ai
         when "system_sdwan_delete_ovn_acl"                 then delete_ovn_acl(params)
         when "system_sdwan_delete_ovn_logical_switch"      then delete_ovn_logical_switch(params)
         when "system_sdwan_delete_ovn_deployment"          then delete_ovn_deployment(params)
+        when "system_sdwan_list_ovn_deployments"           then list_ovn_deployments(params)
+        when "system_sdwan_get_ovn_deployment"             then get_ovn_deployment(params)
+        when "system_sdwan_list_ovn_logical_switches"      then list_ovn_logical_switches(params)
+        when "system_sdwan_delete_ovn_logical_switch_port" then delete_ovn_logical_switch_port(params)
         when "system_sdwan_delete_ipfix_collector"         then delete_ipfix_collector(params)
         when "system_sdwan_create_ipfix_collector"         then create_ipfix_collector(params)
         when "system_sdwan_list_ipfix_collectors"          then list_ipfix_collectors(params)
@@ -1981,12 +2009,51 @@ module Ai
         success_result(plan: plan)
       end
 
+      # F8-06 — read/prune symmetry.
+      def list_ovn_deployments(params)
+        scope = account_ovn_deployments
+        scope = scope.where(status: params[:status]) if params[:status].present?
+        success_result(ovn_deployments: scope.order(:created_at).map { |d| serialize_ovn_deployment(d) })
+      end
+
+      def get_ovn_deployment(params)
+        deployment = account_ovn_deployments.find(params[:deployment_id])
+        success_result(
+          ovn_deployment: serialize_ovn_deployment(deployment).merge(
+            logical_switches: deployment.logical_switches.includes(:ports).order(:created_at).map { |s| serialize_ovn_logical_switch_with_ports(s) }
+          )
+        )
+      end
+
+      def list_ovn_logical_switches(params)
+        scope = account_ovn_logical_switches
+        scope = scope.where(sdwan_ovn_deployment_id: params[:deployment_id]) if params[:deployment_id].present?
+        success_result(
+          ovn_logical_switches: scope.includes(:ports).order(:created_at).map { |s| serialize_ovn_logical_switch_with_ports(s) }
+        )
+      end
+
+      def delete_ovn_logical_switch_port(params)
+        port = ::Sdwan::OvnLogicalSwitchPort.where(account_id: @account.id).find(params[:port_id])
+        name = port.name
+        port.destroy!
+        success_result(deleted: true, port_id: params[:port_id], name: name)
+      rescue ActiveRecord::InvalidForeignKey => e
+        error_result("FK blocks destroy: #{e.message}")
+      end
+
       def account_ovn_deployments
         ::Sdwan::OvnDeployment.where(account_id: @account.id)
       end
 
       def account_ovn_logical_switches
         ::Sdwan::OvnLogicalSwitch.where(account_id: @account.id)
+      end
+
+      def serialize_ovn_logical_switch_with_ports(s)
+        serialize_ovn_logical_switch(s).merge(
+          ports: s.ports.map { |p| serialize_ovn_logical_switch_port(p) }
+        )
       end
 
       def serialize_ovn_deployment(d)

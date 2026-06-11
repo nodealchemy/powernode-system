@@ -472,6 +472,114 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # ─── Audit F8-06 — OVN read/prune symmetry ──────────────────────────
+  # create/delete existed for deployments + switches, and create-only for
+  # ports, with no way to REDISCOVER a deployment id after a session
+  # restart or PRUNE a single port. These four close the gaps.
+  describe "OVN read + port-prune symmetry (F8-06)" do
+    let!(:deployment) do
+      ::Sdwan::OvnDeployment.create!(
+        account: account,
+        nb_db_endpoint: "tcp:nb.example:6641",
+        sb_db_endpoint: "tcp:sb.example:6642"
+      )
+    end
+    let!(:switch) { deployment.logical_switches.create!(account: account, name: "sw-1") }
+    let!(:port) do
+      switch.ports.create!(account: account, name: "port-1", kind: "vm", addresses: [ "10.42.0.7" ])
+    end
+
+    describe "system_sdwan_list_ovn_deployments" do
+      it "lists the account's deployments for rediscovery" do
+        r = call("system_sdwan_list_ovn_deployments")
+        expect(r[:success]).to be true
+        expect(r[:data][:ovn_deployments].map { |d| d[:id] }).to include(deployment.id)
+      end
+
+      it "does not leak other accounts' deployments" do
+        other = create(:account)
+        ::Sdwan::OvnDeployment.create!(account: other, nb_db_endpoint: "tcp:nb.o:6641", sb_db_endpoint: "tcp:sb.o:6642")
+        r = call("system_sdwan_list_ovn_deployments")
+        expect(r[:data][:ovn_deployments].map { |d| d[:account_id] }.uniq).to eq([ account.id ])
+      end
+    end
+
+    describe "system_sdwan_get_ovn_deployment" do
+      it "returns the deployment with its logical switches" do
+        r = call("system_sdwan_get_ovn_deployment", deployment_id: deployment.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:ovn_deployment][:id]).to eq(deployment.id)
+        expect(r[:data][:ovn_deployment][:logical_switches].map { |s| s[:id] }).to include(switch.id)
+      end
+
+      it "rejects a deployment from another account" do
+        other = create(:account)
+        foreign = ::Sdwan::OvnDeployment.create!(account: other, nb_db_endpoint: "tcp:nb.o:6641", sb_db_endpoint: "tcp:sb.o:6642")
+        r = call("system_sdwan_get_ovn_deployment", deployment_id: foreign.id)
+        expect(r[:success]).to be false
+      end
+    end
+
+    describe "system_sdwan_list_ovn_logical_switches" do
+      it "lists switches and surfaces their ports so port ids are discoverable" do
+        r = call("system_sdwan_list_ovn_logical_switches")
+        expect(r[:success]).to be true
+        sw = r[:data][:ovn_logical_switches].find { |s| s[:id] == switch.id }
+        expect(sw).to be_present
+        expect(sw[:ports].map { |p| p[:id] }).to include(port.id)
+      end
+
+      it "filters by deployment_id" do
+        # OvnDeployment is one-per-account, so exercise the filter with a
+        # second switch under the same deployment + a non-matching id.
+        switch2 = deployment.logical_switches.create!(account: account, name: "sw-2")
+
+        matched = call("system_sdwan_list_ovn_logical_switches", deployment_id: deployment.id)
+        expect(matched[:data][:ovn_logical_switches].map { |s| s[:id] }).to contain_exactly(switch.id, switch2.id)
+
+        none = call("system_sdwan_list_ovn_logical_switches", deployment_id: SecureRandom.uuid)
+        expect(none[:data][:ovn_logical_switches]).to be_empty
+      end
+    end
+
+    describe "system_sdwan_delete_ovn_logical_switch_port" do
+      it "prunes a single port without touching the switch" do
+        r = call("system_sdwan_delete_ovn_logical_switch_port", port_id: port.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:deleted]).to be true
+        expect(Sdwan::OvnLogicalSwitchPort.exists?(port.id)).to be false
+        expect(Sdwan::OvnLogicalSwitch.exists?(switch.id)).to be true
+      end
+
+      it "rejects a port from another account" do
+        other = create(:account)
+        od = ::Sdwan::OvnDeployment.create!(account: other, nb_db_endpoint: "tcp:nb.o:6641", sb_db_endpoint: "tcp:sb.o:6642")
+        os = od.logical_switches.create!(account: other, name: "sw-o")
+        op = os.ports.create!(account: other, name: "port-o", kind: "vm", addresses: [ "10.9.0.1" ])
+        r = call("system_sdwan_delete_ovn_logical_switch_port", port_id: op.id)
+        expect(r[:success]).to be false
+        expect(Sdwan::OvnLogicalSwitchPort.exists?(op.id)).to be true
+      end
+    end
+
+    describe "permission + registration" do
+      it "maps read actions to sdwan.ovn.read and delete to sdwan.ovn.manage" do
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_deployments")).to eq("sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_get_ovn_deployment")).to eq("sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_logical_switches")).to eq("sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_delete_ovn_logical_switch_port")).to eq("sdwan.ovn.manage")
+      end
+
+      it "documents all four in action_definitions" do
+        defs = described_class.action_definitions
+        %w[system_sdwan_list_ovn_deployments system_sdwan_get_ovn_deployment
+           system_sdwan_list_ovn_logical_switches system_sdwan_delete_ovn_logical_switch_port].each do |a|
+          expect(defs).to have_key(a)
+        end
+      end
+    end
+  end
+
   # ─── Phase O6 — IPFIX collectors (O5) ────────────────────────────────
 
   describe "system_sdwan_create_ipfix_collector" do
