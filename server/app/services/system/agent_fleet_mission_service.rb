@@ -309,7 +309,16 @@ module System
         return result
       end
 
+      # Idempotency memo (F1-11): reap re-runs are the norm (Sidekiq retries,
+      # cancel-cleanup). A member with a recorded terminal action keeps it —
+      # re-running must never touch a pool slot a later consumer re-claimed.
+      # terminate_failed is NOT terminal: a re-run retries the termination.
+      prior = Array(fleet_node["reaped"]).index_by { |r| r["instance_id"] }
+
       reaped = members.map do |m|
+        done = prior[m["instance_id"]]
+        next done if done && done["action"] != "terminate_failed"
+
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: m["instance_id"])
         action = instance ? reap_member!(instance, plan) : "absent"
         disable_peer!(m["peer_id"])
@@ -566,6 +575,13 @@ module System
 
     def reap_member!(instance, plan)
       if plan["source"] == "pool"
+        # Guarded return (F1-11): only a live claim is returnable — mirrors
+        # the canonical system_return_pooled_instance guard. Anything else
+        # (already returned, never pool-tracked) is reported, not re-flipped.
+        unless instance.pool_state == "claimed" && instance.pool_acquired_at.present?
+          return "already_returned"
+        end
+
         instance.update!(pool_state: "ready", pool_acquired_at: nil)
         "returned"
       else

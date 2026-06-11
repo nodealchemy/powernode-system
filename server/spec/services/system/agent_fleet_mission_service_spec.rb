@@ -383,6 +383,65 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       expect(result[:skipped]).to be true
       expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
     end
+
+    # Audit F1-11 — the pool return was unguarded: reap re-runs (Sidekiq
+    # retries, cancel-cleanup) flipped members back to "ready" regardless of
+    # state, stomping a claim another consumer had since taken.
+    context "pool-return guard (F1-11)" do
+      let(:template) { create(:system_node_template, account: account) }
+      let(:pool) do
+        ::System::InstancePool.create!(
+          account: account, node_template: template,
+          name: "f1-11-pool", target_size: 1, min_size: 0, max_size: 3,
+          lifecycle_class: "ephemeral", status: "active",
+          provider_region: create(:system_provider_region),
+          provider_instance_type: create(:system_provider_instance_type)
+        )
+      end
+
+      let(:pool_instance) do
+        create(:system_node_instance, :running, node: node,
+               instance_pool_id: pool.id, pool_state: "claimed",
+               pool_acquired_at: 1.minute.ago)
+      end
+
+      let(:pool_mission) do
+        create(:ai_mission, account: account, mission_type: "agent_fleet",
+               configuration: { "fleet" => {
+                 "plan" => { "source" => "pool", "reap" => true },
+                 "members" => [ { "instance_id" => pool_instance.id, "peer_id" => nil } ]
+               } })
+      end
+
+      let(:pool_service) { described_class.new(mission: pool_mission) }
+
+      it "returns a claimed member to the pool" do
+        result = pool_service.reap!
+
+        expect(result[:reaped].first["action"]).to eq("returned")
+        expect(pool_instance.reload.pool_state).to eq("ready")
+        expect(pool_instance.pool_acquired_at).to be_nil
+      end
+
+      it "does not stomp a member re-claimed by another consumer on a reap re-run" do
+        pool_service.reap!
+        pool_instance.update_columns(pool_state: "claimed", pool_acquired_at: Time.current) # consumer B
+
+        result = pool_service.reap!
+
+        expect(pool_instance.reload.pool_state).to eq("claimed")
+        expect(result[:reaped].first["action"]).to eq("returned") # memoized from the first run
+      end
+
+      it "reports already_returned instead of re-flipping an unclaimed member" do
+        pool_instance.update_columns(pool_state: "ready", pool_acquired_at: nil)
+
+        result = pool_service.reap!
+
+        expect(result[:reaped].first["action"]).to eq("already_returned")
+        expect(pool_instance.reload.pool_state).to eq("ready")
+      end
+    end
   end
 
   describe "isolation tier (L0)" do
