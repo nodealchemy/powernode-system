@@ -107,6 +107,12 @@ fleet_policies = {
   # entering the approval pipeline.
   "system.observation"             => "auto_approve",
 
+  # Stale storage assignment re-reconciliation (StorageAssignmentDriftSensor,
+  # audit F3-07). notify_and_proceed: it re-runs the same reconciliation the
+  # assignment's own after_commit would — reversible and low blast radius —
+  # but the operator should see that the safety net is firing.
+  "system.storage_assignment_reconcile" => "notify_and_proceed",
+
   # Package repository ingestion. Sync is routine + reversible (just
   # refreshes cached metadata); module creation is supply-chain critical
   # (operator audits each new package entering the fleet); refresh requires

@@ -171,6 +171,76 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # Audit finding F3-07: three sensors existed but were never registered,
+    # and their signal kinds had no bindings — even if invoked they would
+    # have been discarded as decision :skipped.
+    context "F3-07 sensor signal bindings" do
+      def policy!(action_category, policy)
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: action_category,
+                                       policy: policy, is_active: true)
+      end
+
+      it "routes sdwan_credential_expiring to the key-rotate gate and invokes the peer remediate executor" do
+        policy!("system.sdwan_key_rotate", "auto_approve")
+        allow_any_instance_of(::System::Ai::Skills::SdwanPeerRemediateExecutor)
+          .to receive(:execute).and_return({ success: true, data: { rotated: true } })
+
+        d = engine.decide(kind: "system.sdwan_credential_expiring", severity: :high,
+                          payload: { "membership_credential_id" => "mc-1", "peer_id" => "peer-1" },
+                          fingerprint: "sdwan_credential_expiring:mc-1")
+
+        expect(d[:action_category]).to eq("system.sdwan_key_rotate")
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:skill_result]).to include(success: true)
+      end
+
+      it "routes sdwan_credential_refresh_stalled to observation instead of skipping" do
+        policy!("system.observation", "auto_approve")
+
+        d = engine.decide(kind: "system.sdwan_credential_refresh_stalled", severity: :high,
+                          payload: { "peer_id" => "peer-1", "network_id" => "net-1" },
+                          fingerprint: "sdwan_credential_refresh_stalled:peer-1:net-1")
+
+        expect(d[:action_category]).to eq("system.observation")
+        expect(d[:decision]).to eq(:proceed)
+      end
+
+      it "routes package_drift_pressure to the package repository sync gate" do
+        policy!("system.package_repository.sync", "auto_approve")
+
+        d = engine.decide(kind: "system.package_drift_pressure", severity: :medium,
+                          payload: { "package_module_link_id" => "lnk-1", "package_repository_id" => "repo-1" },
+                          fingerprint: "pkg_drift:lnk-1:2.0")
+
+        expect(d[:action_category]).to eq("system.package_repository.sync")
+        expect(d[:decision]).to eq(:proceed)
+      end
+
+      it "reconciles a stale storage assignment when storage_assignment_drift proceeds" do
+        policy!("system.storage_assignment_reconcile", "notify_and_proceed")
+        platform = create(:system_node_platform, account: account)
+        template = create(:system_node_template, account: account, node_platform: platform)
+        node = create(:system_node, account: account, node_template: template)
+        inst = create(:system_node_instance, :running, node: node)
+        file_storage = create(:file_storage, :nfs, :node_mountable, account: account)
+        assignment = create(:system_storage_assignment, account: account, node_instance: inst,
+                            file_storage_id: file_storage.id)
+        assignment.update_columns(status: "degraded", last_status_at: 10.minutes.ago)
+        allow(::System::Storage::AssignmentReconciliationService).to receive(:reconcile_assignment!)
+
+        d = engine.decide(kind: "system.storage_assignment_drift", severity: :medium,
+                          payload: { "storage_assignment_id" => assignment.id },
+                          fingerprint: "storage_assignment_drift:#{assignment.id}")
+
+        expect(d[:action_category]).to eq("system.storage_assignment_reconcile")
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:remediation]).to include(applied: true)
+        expect(::System::Storage::AssignmentReconciliationService)
+          .to have_received(:reconcile_assignment!).with(assignment)
+      end
+    end
+
     # Audit finding F3-04: invoke_skill's class-name case statement silently
     # dropped the four SDWAN executors bound in SIGNAL_BINDINGS (fell through
     # to `else nil`), so peer key rotation and BGP session remediation never

@@ -46,6 +46,8 @@ module System
             severity: severity,
             payload: {
               package_module_link_id: link.id,
+              # Dedup key for the system.package_repository.sync gate
+              package_repository_id:  link.package_repository_id,
               node_module_id:         link.node_module_id,
               package_name:           link.package_name,
               current_version:        link.package_version,

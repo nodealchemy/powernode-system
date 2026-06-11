@@ -193,7 +193,16 @@ module System
         ::System::Fleet::Sensors::ProjectSloSensor,
         # Phase 3c — federation peer liveness (stale heartbeat + cert expiry).
         # Emits system.federation_peer_liveness → federation_peer_remediate.
-        ::System::Fleet::Sensors::FederationPeerLivenessSensor
+        ::System::Fleet::Sensors::FederationPeerLivenessSensor,
+        # Audit F3-07 — written but never registered until now:
+        # upstream package version drift → package_repository.sync gate.
+        ::System::Fleet::Sensors::PackageDriftSensor,
+        # SDWAN membership-credential expiry + stalled-refresh watch
+        # → sdwan_key_rotate gate / observation.
+        ::System::Fleet::Sensors::SdwanCredentialExpirySensor,
+        # Storage assignments stuck pending/degraded/failed
+        # → storage_assignment_reconcile gate.
+        ::System::Fleet::Sensors::StorageAssignmentDriftSensor
       ].freeze
 
       def permitted_actions
@@ -347,6 +356,9 @@ module System
           repo.present? && pkg.present? ? [ "package_create_key", "#{repo}:#{pkg}" ] : nil
         when "system.package_module.refresh"
           key_value(metadata, "package_module_link_id")
+        # Storage assignment re-reconciliation — per-assignment dedup.
+        when "system.storage_assignment_reconcile"
+          key_value(metadata, "storage_assignment_id")
         end
       end
 

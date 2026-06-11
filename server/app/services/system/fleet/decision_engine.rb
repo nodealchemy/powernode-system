@@ -233,6 +233,34 @@ module System
             { federation_peer_id: signal.dig(:payload, "federation_peer_id"),
               reason: signal.dig(:payload, "reason") }
           }
+        },
+        # Audit F3-07 — kinds for the previously-unregistered sensors.
+        # Expiring SDWAN membership credential → rotate the peer keypair
+        # (same executor + auto-execute shape as sdwan_peer_drift).
+        "system.sdwan_credential_expiring" => {
+          skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
+          action_category: "system.sdwan_key_rotate",
+          side_effectful: true, # rotates the peer keypair
+          dry_run_supported: true,
+          input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
+        },
+        # A stalled refresh means the automated rotation path already
+        # failed upstream — surface to operators, don't retry blindly.
+        "system.sdwan_credential_refresh_stalled" => {
+          skill: nil,
+          action_category: "system.observation"
+        },
+        # Upstream package version drift → repository sync gate
+        # (auto_approve in the fleet seed; dedup per package_repository_id).
+        "system.package_drift_pressure" => {
+          skill: nil,
+          action_category: "system.package_repository.sync"
+        },
+        # Stale storage assignment → re-run reconciliation via the
+        # remediation applier (REMEDIATION_APPLIERS) once the gate proceeds.
+        "system.storage_assignment_drift" => {
+          skill: nil,
+          action_category: "system.storage_assignment_reconcile"
         }
       }.freeze
 
@@ -379,7 +407,8 @@ module System
       # routes sync_modules / apply_config to the on-node runtime.
       REMEDIATION_APPLIERS = {
         "system.module_drift" => { command: "sync_modules" },
-        "system.config_drift" => { command: "apply_config" }
+        "system.config_drift" => { command: "apply_config" },
+        "system.storage_assignment_drift" => { method: :reconcile_storage_assignment }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -388,10 +417,25 @@ module System
         applier = REMEDIATION_APPLIERS[signal.kind]
         return { applied: false, reason: "no applier for #{signal.kind}" } unless applier
 
-        dispatch_reconcile_task(signal, skill_result, command: applier[:command])
+        if applier[:method]
+          send(applier[:method], signal, skill_result)
+        else
+          dispatch_reconcile_task(signal, skill_result, command: applier[:command])
+        end
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] remediation apply failed: #{e.class}: #{e.message}")
         { applied: false, reason: e.message }
+      end
+
+      # F3-07: re-run reconciliation for an assignment the sensor flagged as
+      # stale — the sensor itself is read-side and must not mutate.
+      def reconcile_storage_assignment(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? signal.payload["storage_assignment_id"] : nil
+        assignment = ::System::StorageAssignment.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "storage assignment not found" } unless assignment
+
+        ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
+        { applied: true, storage_assignment_id: assignment.id }
       end
 
       def dispatch_reconcile_task(signal, skill_result, command:)
