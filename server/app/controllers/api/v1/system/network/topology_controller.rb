@@ -34,8 +34,10 @@ module Api
 
           private
 
+          # F8-08: no params[:account_id] fallback — the topology must only
+          # ever resolve from the authenticated user's own account.
           def current_account
-            current_user&.account || Account.find(params[:account_id])
+            current_user&.account
           end
         end
       end
