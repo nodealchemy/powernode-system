@@ -73,4 +73,42 @@ RSpec.describe "Api::V1::System::NodeApi::ModuleVersions#create", type: :request
     expect(body["success"]).to be false
     expect(body["error"]).to match(/sha256 mismatch/)
   end
+
+  # F6-07 — the remaining two acceptance cases the F6-01 spec didn't cover.
+  it "returns 422 on a size mismatch and persists no version" do
+    expect do
+      post "/api/v1/system/node_api/modules/#{node_module.id}/versions",
+           params: { tar_b64: tar_b64, sha256: sha256, size_bytes: tar_bytes.bytesize + 99 },
+           headers: headers, as: :json
+    end.not_to change(System::NodeModuleVersion, :count)
+
+    expect(response).to have_http_status(:unprocessable_content)
+    body = JSON.parse(response.body)
+    expect(body["success"]).to be false
+    expect(body["error"]).to match(/size mismatch/)
+  end
+
+  context "when the module is locked" do
+    let(:locked_module) do
+      create(:system_node_module,
+             account: account, node_platform: platform, category: category,
+             name: "locked-module", lock_spec: true)
+    end
+    let!(:locked_assignment) do
+      System::NodeModuleAssignment.create!(node: node, node_module: locked_module, enabled: true, priority: 0)
+    end
+
+    it "rejects the commit with 422 and creates no version" do
+      expect do
+        post "/api/v1/system/node_api/modules/#{locked_module.id}/versions",
+             params: { tar_b64: tar_b64, sha256: sha256, size_bytes: tar_bytes.bytesize },
+             headers: headers, as: :json
+      end.not_to change(System::NodeModuleVersion, :count)
+
+      expect(response).to have_http_status(:unprocessable_content)
+      body = JSON.parse(response.body)
+      expect(body["success"]).to be false
+      expect(body["error"]).to match(/locked/)
+    end
+  end
 end
