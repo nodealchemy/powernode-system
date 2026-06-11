@@ -6,9 +6,9 @@
 # the local_qemu provider, waits for the on-node agent to enroll +
 # heartbeat, then exercises each module's expected service surface:
 #
-#   1. powernode-base-ruby     — FS-only, verified by hub-backend's existence
-#   2. powernode-postgres      — TCP probe on :5432
-#   3. powernode-redis         — TCP probe on :6379
+#   1. runtime-ruby     — FS-only, verified by hub-backend's existence
+#   2. postgres-primary      — TCP probe on :5432
+#   3. redis         — TCP probe on :6379
 #   4. reverse-proxy-traefik — Traefik /ping endpoint on :8082
 #   5. powernode-hub-backend   — Rails /up endpoint via proxy on :443
 #   6. powernode-hub-worker    — sidekiq process via agent_introspect
@@ -202,13 +202,13 @@ if libvirt_mode == "local"
   # `powernode-<module-id>-<service-name>.service`. We resolve module
   # ids from the seeded NodeModule rows on this account.
   modules_by_name = ::System::NodeModule.where(account: account, name: %w[
-    powernode-postgres powernode-redis reverse-proxy-traefik
+    postgres-primary redis reverse-proxy-traefik
     powernode-hub-backend powernode-hub-worker
   ]).index_by(&:name)
 
   expected_units = {
-    "powernode-postgres"      => "postgres",
-    "powernode-redis"         => "redis",
+    "postgres-primary"      => "postgres",
+    "redis"         => "redis",
     "reverse-proxy-traefik" => "traefik",
     "powernode-hub-backend"   => "rails",
     "powernode-hub-worker"    => "sidekiq"
@@ -232,7 +232,7 @@ if libvirt_mode == "local"
 
   # Also assert FS-only modules + frontend + extension-system are
   # seeded (they have no services to start).
-  %w[powernode-base-ruby powernode-hub-frontend powernode-extension-system powernode-pg-replica].each do |module_name|
+  %w[runtime-ruby powernode-hub-frontend powernode-extension-system postgres-replica].each do |module_name|
     results.check("module #{module_name} seeded") do
       raise "missing" unless ::System::NodeModule.find_by(account: account, name: module_name)
     end
@@ -243,8 +243,8 @@ if libvirt_mode == "local"
   # and not in the all-in-one template).
   results.check("powernode-hub template includes 8 platform modules") do
     expected = %w[
-      reverse-proxy-traefik powernode-base-ruby powernode-postgres
-      powernode-redis powernode-hub-backend powernode-hub-worker
+      reverse-proxy-traefik runtime-ruby postgres-primary
+      redis powernode-hub-backend powernode-hub-worker
       powernode-hub-frontend powernode-extension-system
     ]
     tmpl_modules = template.template_modules.includes(:node_module).map { |tm| tm.node_module.name }

@@ -98,8 +98,8 @@ results.check("cluster-member template ships the canonical 6-module set (no loca
   # loaded into hub-backend so it ships too. Redis + frontend are
   # served from the parent via SDWAN VIP — NOT local to the member.
   expected = %w[
-    reverse-proxy-traefik powernode-base-ruby
-    powernode-pg-replica powernode-hub-backend powernode-hub-worker
+    reverse-proxy-traefik runtime-ruby
+    postgres-replica powernode-hub-backend powernode-hub-worker
     powernode-extension-system
   ]
   tmpl_modules = cluster_template.template_modules.includes(:node_module).map { |tm| tm.node_module.name }
@@ -108,7 +108,7 @@ results.check("cluster-member template ships the canonical 6-module set (no loca
 end
 
 results.check("cluster-member template does NOT include postgres / redis / frontend (shared from parent)") do
-  forbidden = %w[powernode-postgres powernode-redis powernode-hub-frontend]
+  forbidden = %w[postgres-primary redis powernode-hub-frontend]
   present_forbidden = cluster_template.template_modules.includes(:node_module)
                                        .map { |tm| tm.node_module.name } & forbidden
   raise "cluster member shouldn't ship: #{present_forbidden.inspect}" if present_forbidden.any?
