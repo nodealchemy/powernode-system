@@ -10,7 +10,7 @@ import (
 
 // LocalIdentityStrategy reads identity from a sourced shell-style config
 // file. This is the legacy fallback path
-// (~/Drive/Projects/powernode-bootstrap/scripts/ipn_init_identity), retained
+// (powernode-bootstrap/scripts/ipn_init_identity), retained
 // for bare-metal nodes whose boot device carries an /etc/identity.cfg.
 //
 // File format:

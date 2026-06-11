@@ -10,7 +10,7 @@
 # config/instance dependant children above their subscription parent in the
 # union mount.
 #
-# Reference: ~/Drive/Projects/powernode-server/app/models/node_module.rb#node_module_category
+# Reference: powernode-server/app/models/node_module.rb#node_module_category
 # (lines 165-182 — orig_node_module_category fallthrough to parent_module.category.config_category).
 class AddVarietyAndSiblingsToNodeModuleCategories < ActiveRecord::Migration[8.0]
   def change

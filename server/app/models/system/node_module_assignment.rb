@@ -115,7 +115,7 @@ module System
 
     # Spawn a dependant child module overriding the assigned subscription parent
     # for this (node, optional instance) pair. Legacy parity:
-    # ~/Drive/Projects/powernode-server/app/models/node_module_subscription.rb:11-17.
+    # powernode-server/app/models/node_module_subscription.rb:11-17.
     #
     # - With node_instance == nil: creates a config-variety child bound to the node
     # - With node_instance set:    creates an instance-variety child bound to (node, instance)

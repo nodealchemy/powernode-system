@@ -50,8 +50,8 @@ Hand the new token off again. If you're scripting accepts, generate the token th
 
 1. **Check the job is registered and the class exists:**
    ```bash
-   grep -A3 "federation_heartbeat:" /home/rett/Drive/Projects/powernode-platform/worker/config/sidekiq.yml
-   ls /home/rett/Drive/Projects/powernode-platform/worker/app/jobs/federation_heartbeat_job.rb
+   grep -A3 "federation_heartbeat:" /opt/powernode/worker/config/sidekiq.yml
+   ls /opt/powernode/worker/app/jobs/federation_heartbeat_job.rb
    ```
    Both should exist. If the job class is missing, the scheduler logs `NameError: uninitialized constant FederationHeartbeatJob` every 60s.
 

@@ -84,7 +84,7 @@ module System
     end
 
     # === Default Script Delegation ===
-    # Legacy parity (`~/Drive/Projects/powernode-server/app/models/node.rb:32-35`):
+    # Legacy parity (`powernode-server/app/models/node.rb:32-35`):
     # Node delegates default build/init/sync scripts to its platform (via template).
     # The platform stores these inline as TEXT (System::NodePlatform#build_script,
     # init_script, sync_script). Per-Node override of sync_script (legacy

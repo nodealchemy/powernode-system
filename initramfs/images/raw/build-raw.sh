@@ -7,7 +7,7 @@
 #   p3 — persist (ext4, ~remainder) — /persist/var bind target, LUKS-ready
 #
 # Modernization vs legacy: the legacy `ipn_volume_setup` function in
-# ~/Drive/Projects/powernode-bootstrap/scripts/ipn_functions used a
+# powernode-bootstrap/scripts/ipn_functions used a
 # two-partition layout (boot ext2 + extlinux, store ext4). This script
 # evolves that to UEFI-only with a separate persist partition, plus an
 # explicit boot partition for kernel fallbacks during upgrades.

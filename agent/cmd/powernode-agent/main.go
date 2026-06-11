@@ -1,6 +1,6 @@
 // Package main is the entry point for powernode-agent, the on-node runtime for
 // Powernode-managed instances. Replaces the legacy bash `ipn` script
-// (~/Drive/Projects/powernode-bootstrap/scripts/ipn).
+// (powernode-bootstrap/scripts/ipn).
 //
 // Subcommand surface mirrors the legacy ipn flags + adds boot/service for
 // the initramfs handoff path:

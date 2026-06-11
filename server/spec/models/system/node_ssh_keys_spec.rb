@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # Golden Eclipse M0.H — Node SSH keypair auto-generation + authorized_keys aggregation.
-# Reference: ~/Drive/Projects/powernode-server/app/models/node.rb:50-58, 134-145.
+# Reference: powernode-server/app/models/node.rb:50-58, 134-145.
 RSpec.describe System::Node, type: :model do
   let(:account) { create(:account) }
 

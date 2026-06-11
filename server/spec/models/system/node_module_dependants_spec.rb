@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # Golden Eclipse M0.J — dependant module restoration.
-# Reference: ~/Drive/Projects/powernode-server/app/models/node_module.rb (parent_module
+# Reference: powernode-server/app/models/node_module.rb (parent_module
 # pattern, lines 11-14, 154-162) and node_module_subscription.rb:11-17 (create_dependant_module!).
 RSpec.describe System::NodeModule, "dependant modules", type: :model do
   let(:account)  { create(:account) }

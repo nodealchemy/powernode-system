@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # Golden Eclipse M0.C/D/E/F/G — port legacy NodeModule spec methods.
-# Reference: ~/Drive/Projects/powernode-server/app/models/node_module.rb
+# Reference: powernode-server/app/models/node_module.rb
 # - encode_spec / decode_spec      (304-321)
 # - *_text accessors               (248-283)
 # - effective_priority             (110-112)

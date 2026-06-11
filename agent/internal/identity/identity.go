@@ -4,7 +4,7 @@
 // first one that yields a non-empty result wins.
 //
 // Reference: Golden Eclipse plan M2 capabilities — multi-cloud metadata
-// discovery; legacy ~/Drive/Projects/powernode-bootstrap/scripts/ipn_initialize
+// discovery; legacy powernode-bootstrap/scripts/ipn_initialize
 // (ipn_init_discover + ipn_init_identity steps).
 package identity
 

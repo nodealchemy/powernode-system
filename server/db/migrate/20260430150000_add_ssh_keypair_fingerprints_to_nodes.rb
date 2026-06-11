@@ -2,7 +2,7 @@
 
 # Adds SSH-key fingerprint columns and a key-type discriminator to system_nodes.
 # Required by Golden Eclipse M0.H — Node SSH keypair auto-generation port from
-# legacy ~/Drive/Projects/powernode-server/app/models/node.rb (initialize_ssh_keys + fingerprints).
+# legacy powernode-server/app/models/node.rb (initialize_ssh_keys + fingerprints).
 # Default ssh_key_type is 'ed25519' (modern); 'rsa' is supported via NodeTemplate.config['legacy_rsa_keys'].
 class AddSshKeypairFingerprintsToNodes < ActiveRecord::Migration[8.0]
   def change

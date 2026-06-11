@@ -58,7 +58,7 @@ module System
 
     # Dependant-module scoping (Golden Eclipse M0.J — restores legacy
     # parent_module / config-variety / instance-variety hierarchy from
-    # ~/Drive/Projects/powernode-server/app/models/node_module.rb).
+    # powernode-server/app/models/node_module.rb).
     #
     # - parent_module: the subscription-variety base whose deployment this child overrides
     # - node: the node this child is bound to (config + instance varieties both)
@@ -246,7 +246,7 @@ module System
     end
 
     # Display name with legacy parent-aware rendering for dependant children.
-    # Legacy: ~/Drive/Projects/powernode-server/app/models/node_module.rb:154-162
+    # Legacy: powernode-server/app/models/node_module.rb:154-162
     # - config-variety dependant: "<parent.name> for <node.name>"
     # - instance-variety dependant: "<parent.name> for <instance.name>"
     # - everything else: the module's own name
@@ -273,7 +273,7 @@ module System
     # Effective priority used for union-mount ordering and `effective_mask`
     # neighbor analysis. Higher = mounted "later" (closer to root, takes
     # precedence in overlay).
-    # Legacy: ~/Drive/Projects/powernode-server/app/models/node_module.rb:110-112
+    # Legacy: powernode-server/app/models/node_module.rb:110-112
     def effective_priority
       cat_position = category&.position.to_i
       (cat_position * PRIORITY_CATEGORY_MULTIPLIER) + priority.to_i
@@ -333,7 +333,7 @@ module System
     # flows in both directions. New modules should declare sensitive
     # paths via protected_spec, not mask.
     #
-    # Legacy reference: ~/Drive/Projects/powernode-server/app/models/node_module.rb:252-266.
+    # Legacy reference: powernode-server/app/models/node_module.rb:252-266.
     # protected_spec direction added 2026-05-02.
     #
     # `target` is the deployment context — a Node or NodeInstance whose union
