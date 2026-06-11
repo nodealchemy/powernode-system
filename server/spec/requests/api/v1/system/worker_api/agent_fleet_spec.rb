@@ -102,4 +102,60 @@ RSpec.describe "Api::V1::System::WorkerApi::AgentFleet", type: :request do
       expect(System::NodeInstancePeer.where(account_id: account.id).count).to eq(2)
     end
   end
+
+  describe "aggregate (execution wait before reap)" do
+    before do
+      allow(::System::ProvisioningService).to receive(:provision_instance) do |node:, **_kw|
+        inst = create(:system_node_instance, :running, node: node)
+        double(success?: true, error: nil, data: { instance: inst, cloud_instance_id: "ci-#{inst.id}" })
+      end
+    end
+
+    # Mission with real delegated state: plan + members + assignments +
+    # dispatched (pending) a2a_call tasks — exactly what the on-node agents
+    # would still be executing when aggregate first runs.
+    def delegated_mission
+      m = fleet_mission(phase: "aggregate")
+      svc = ::System::AgentFleetMissionService.new(mission: m)
+      svc.plan!
+      svc.provision!
+      svc.delegate!
+      m.reload
+    end
+
+    it "does not advance while dispatched tasks are pending and re-enqueues a delayed re-check" do
+      m = delegated_mission
+      post path(m, "aggregate"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "waiting")).to be true
+      expect(m.reload.current_phase).to eq("aggregate")
+      expect(WorkerJobService).to have_received(:enqueue_job)
+        .with("AiAgentFleetAggregateJob", hash_including(delay: kind_of(Numeric)))
+    end
+
+    it "advances to reap with a complete outcome once dispatched tasks finish" do
+      m = delegated_mission
+      System::Task.where(command: "a2a_call").update_all(status: "complete")
+
+      post path(m, "aggregate"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(m.reload.current_phase).to eq("reap")
+      expect(m.configuration.dig("fleet", "report", "execution_outcome")).to eq("complete")
+    end
+
+    it "advances with a timeout outcome when the execution window elapses" do
+      m = delegated_mission
+      cfg = m.configuration.deep_dup
+      cfg["fleet"]["aggregate_started_at"] = 2.hours.ago.iso8601
+      m.update!(configuration: cfg)
+
+      post path(m, "aggregate"), headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(m.reload.current_phase).to eq("reap")
+      expect(m.configuration.dig("fleet", "report", "execution_outcome")).to eq("timeout")
+    end
+  end
 end

@@ -27,6 +27,14 @@ module System
     # TTL for the capability tokens minted at delegate! time — long enough for
     # the fleet to execute its sub-delegations, short enough to bound exposure.
     DELEGATION_TOKEN_TTL = 3600
+    # Execution wait between delegate and reap: aggregate! keeps reporting
+    # waiting (and the worker_api controller re-enqueues a delayed re-check)
+    # until every dispatched task is terminal or the timeout elapses. Both
+    # knobs are overridable per fleet_spec. The poll floor must exceed the
+    # on-node agent's 20s task-lease interval or the fleet gets reaped before
+    # a member could ever lease its work.
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS = 600
+    DEFAULT_AGGREGATE_POLL_SECONDS = 30
 
     attr_reader :mission, :account
 
@@ -75,7 +83,9 @@ module System
         "inference" => spec["inference"], # carried for L1 wiring (deferred per-member)
         "isolation_tier" => isolation_tier,
         "isolation" => ::System::IsolationTier.profile(isolation_tier),
-        "reap" => spec.fetch("reap", true) ? true : false
+        "reap" => spec.fetch("reap", true) ? true : false,
+        "execution_timeout_seconds" => positive_int(spec["execution_timeout_seconds"], DEFAULT_EXECUTION_TIMEOUT_SECONDS),
+        "aggregate_poll_seconds" => positive_int(spec["aggregate_poll_seconds"], DEFAULT_AGGREGATE_POLL_SECONDS)
       }
       persist_fleet!("plan", plan)
       { ok: true, plan: plan }
@@ -219,8 +229,36 @@ module System
         "results" => results,
         "aggregated_at" => Time.current.iso8601
       }
-      persist_fleet!("report", report)
-      { ok: true, report: report }
+
+      started_at = aggregate_started_at!
+      timeout_seconds = positive_int(fleet_plan!["execution_timeout_seconds"], DEFAULT_EXECUTION_TIMEOUT_SECONDS)
+      timed_out = Time.current - started_at >= timeout_seconds
+
+      if execution_settled?(results) || timed_out
+        report["execution_outcome"] = execution_outcome(results, report, timed_out)
+        persist_fleet!("report", report)
+        { ok: true, report: report, waiting: false, execution_outcome: report["execution_outcome"] }
+      else
+        persist_fleet!("report", report)
+        { ok: true, report: report, waiting: true,
+          waited_seconds: (Time.current - started_at).round, timeout_seconds: timeout_seconds }
+      end
+    end
+
+    # Reserve the next aggregate re-check slot. Returns the delay in seconds
+    # when the caller should enqueue a delayed re-check, or nil when one is
+    # already pending — a stale Sidekiq retry hitting aggregate again must not
+    # multiply the re-check chain.
+    def reserve_aggregate_recheck!
+      pending = fleet_node["aggregate_next_check_at"]
+      if pending.present?
+        remaining = Time.zone.parse(pending) - Time.current
+        return nil if remaining.positive?
+      end
+
+      poll = positive_int(fleet_plan!["aggregate_poll_seconds"], DEFAULT_AGGREGATE_POLL_SECONDS)
+      persist_fleet!("aggregate_next_check_at", (Time.current + poll).iso8601)
+      poll
     end
 
     # The a2a_call tasks delegate! dispatched, grouped by the subtask they serve.
@@ -296,6 +334,34 @@ module System
 
     def fleet_node
       (mission.configuration.is_a?(Hash) ? mission.configuration["fleet"] : nil) || {}
+    end
+
+    def positive_int(value, default)
+      v = value.to_i
+      v.positive? ? v : default
+    end
+
+    # First aggregate! run stamps the execution-wait window start; re-checks
+    # reuse it so the timeout measures total wait, not per-check wait.
+    def aggregate_started_at!
+      existing = fleet_node["aggregate_started_at"]
+      return Time.zone.parse(existing) if existing.present?
+
+      Time.current.tap { |now| persist_fleet!("aggregate_started_at", now.iso8601) }
+    end
+
+    # Settled when every subtask is terminal (executed or failed) — nothing
+    # left for the on-node agents to deliver.
+    def execution_settled?(results)
+      results.all? { |r| %w[executed failed].include?(r["status"]) }
+    end
+
+    def execution_outcome(results, report, timed_out)
+      statuses = results.map { |r| r["status"] }
+      return "complete" if statuses.all?("executed")
+      return "partial"  if report["tasks_complete"].to_i.positive? || statuses.include?("executed")
+
+      timed_out ? "timeout" : "failed"
     end
 
     def fleet_plan!

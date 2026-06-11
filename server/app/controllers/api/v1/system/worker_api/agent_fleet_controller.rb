@@ -40,8 +40,24 @@ module Api
           end
 
           # POST .../aggregate
+          # Execution wait: while dispatched subtask work is still running on
+          # the fleet, do NOT advance — re-enqueue a delayed aggregate re-check
+          # instead. Reap is only reached once execution settled or the
+          # configurable timeout elapsed (outcome recorded on the report).
           def aggregate
-            run_phase!("aggregate") { fleet_service.aggregate! }
+            result = fleet_service.aggregate!
+            return run_phase!("aggregate") { result } unless result[:waiting]
+
+            if (delay = fleet_service.reserve_aggregate_recheck!)
+              WorkerJobService.enqueue_job("AiAgentFleetAggregateJob", args: [{
+                "mission_id" => @mission.id,
+                "account_id" => @mission.account_id
+              }], queue: "ai_execution", delay: delay)
+            end
+            render_success(result.merge(mission_id: @mission.id, phase: @mission.current_phase))
+          rescue StandardError => e
+            Rails.logger.error("[WorkerApi::AgentFleet#aggregate] #{e.class}: #{e.message}")
+            render_error("aggregate failed: #{e.message}", status: :unprocessable_content)
           end
 
           # POST .../reap
@@ -74,7 +90,7 @@ module Api
           # duplicate them into the phase exit record.
           def phase_summary(result)
             return result unless result.is_a?(Hash)
-            result.slice(:ok, :count, :delegation, :skipped).compact
+            result.slice(:ok, :count, :delegation, :skipped, :execution_outcome).compact
           end
 
           def load_mission

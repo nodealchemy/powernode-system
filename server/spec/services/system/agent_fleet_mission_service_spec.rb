@@ -260,6 +260,60 @@ RSpec.describe System::AgentFleetMissionService, type: :service do
       expect(report["tasks_complete"]).to be_positive
       expect(report["results"].map { |r| r["status"] }).to all(eq("executed"))
     end
+
+    it "reports waiting while dispatched tasks are not terminal" do
+      result = service.aggregate!
+      expect(result[:waiting]).to be true
+      expect(result[:execution_outcome]).to be_nil
+      expect(mission.reload.configuration.dig("fleet", "report", "execution_outcome")).to be_nil
+    end
+
+    it "settles with a complete outcome once every dispatched task finishes" do
+      System::Task.where(command: "a2a_call").update_all(status: "complete")
+      result = service.aggregate!
+      expect(result[:waiting]).to be false
+      expect(result[:execution_outcome]).to eq("complete")
+      expect(mission.reload.configuration.dig("fleet", "report", "execution_outcome")).to eq("complete")
+    end
+
+    it "settles with a partial outcome when subtasks split between executed and failed" do
+      tasks = System::Task.where(command: "a2a_call").to_a
+      s1, rest = tasks.partition { |t| t.options["subtask_id"] == "s1" }
+      System::Task.where(id: s1.map(&:id)).update_all(status: "complete")
+      System::Task.where(id: rest.map(&:id)).update_all(status: "failed")
+
+      result = service.aggregate!
+      expect(result[:waiting]).to be false
+      expect(result[:execution_outcome]).to eq("partial")
+    end
+
+    it "times out with a timeout outcome when execution never starts" do
+      mission.update!(configuration: deep_set(mission.reload.configuration,
+                                              %w[fleet aggregate_started_at], 2.hours.ago.iso8601))
+      result = service.aggregate!
+      expect(result[:waiting]).to be false
+      expect(result[:execution_outcome]).to eq("timeout")
+      expect(mission.reload.configuration.dig("fleet", "report", "execution_outcome")).to eq("timeout")
+    end
+  end
+
+  describe "#reserve_aggregate_recheck!" do
+    before do
+      service.plan!
+      service.provision!
+      service.delegate!
+    end
+
+    it "reserves a poll slot and returns the delay" do
+      delay = service.reserve_aggregate_recheck!
+      expect(delay).to eq(described_class::DEFAULT_AGGREGATE_POLL_SECONDS)
+      expect(mission.reload.configuration.dig("fleet", "aggregate_next_check_at")).to be_present
+    end
+
+    it "returns nil while a re-check is already pending (stale retries must not multiply)" do
+      service.reserve_aggregate_recheck!
+      expect(service.reserve_aggregate_recheck!).to be_nil
+    end
   end
 
   describe "#reap!" do
