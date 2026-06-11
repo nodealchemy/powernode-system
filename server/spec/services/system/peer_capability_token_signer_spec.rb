@@ -42,6 +42,19 @@ RSpec.describe System::PeerCapabilityTokenSigner, type: :service do
       described_class.mint!(caller_instance: caller_inst, target_instance: target_inst, skill: "embed-text")
       expect(System::PeerCapabilitySigningKey.where(account_id: account.id).count).to eq(1)
     end
+
+    # Audit F2-04 — ttl_seconds flowed into exp unclamped, so a caller could
+    # mint an effectively-permanent token while the only revocation lever
+    # (rotating the account signing key) kills ALL tokens.
+    it "clamps ttl_seconds to MAX_TTL_SECONDS" do
+      token = described_class.mint!(
+        caller_instance: caller_inst, target_instance: target_inst,
+        skill: "embed-text", ttl_seconds: 999_999_999
+      )
+
+      ttl = token.claims["exp"] - token.claims["iat"]
+      expect(ttl).to be <= described_class::MAX_TTL_SECONDS
+    end
   end
 
   describe "authorization gate" do

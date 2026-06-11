@@ -102,7 +102,11 @@ func RefreshKeys(verifier *Verifier, fetcher KeyFetcher) (int, error) {
 
 	var body struct {
 		Data struct {
-			Keys []advertisedKey `json:"keys"`
+			Keys        []advertisedKey `json:"keys"`
+			Revocations struct {
+				Subs []string `json:"subs"`
+				Jtis []string `json:"jtis"`
+			} `json:"revocations"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -117,6 +121,10 @@ func RefreshKeys(verifier *Verifier, fetcher KeyFetcher) (int, error) {
 			n++
 		}
 	}
+	// F2-04 — revocations ride the same pull; replacing the sets each
+	// refresh is the expiry mechanism (the server stops advertising rows
+	// once every token they could cover has itself expired).
+	verifier.SetRevocations(body.Data.Revocations.Subs, body.Data.Revocations.Jtis)
 	return n, nil
 }
 

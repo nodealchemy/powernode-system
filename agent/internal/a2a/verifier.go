@@ -55,14 +55,45 @@ type Verifier struct {
 	mu        sync.RWMutex
 	pubKeys   map[string]ed25519.PublicKey
 	clockSkew time.Duration
+
+	// F2-04 — revocations advertised alongside capability_keys. Offline
+	// verification means a revoked grant / disabled peer can't reach us any
+	// other way; tokens whose sub or jti is listed are rejected even with a
+	// valid signature and unexpired window.
+	revokedSubs map[string]struct{}
+	revokedJtis map[string]struct{}
 }
 
 // NewVerifier — defaults: 60s clock-skew tolerance (matches mc_verifier).
 func NewVerifier() *Verifier {
 	return &Verifier{
-		pubKeys:   make(map[string]ed25519.PublicKey),
-		clockSkew: 60 * time.Second,
+		pubKeys:     make(map[string]ed25519.PublicKey),
+		clockSkew:   60 * time.Second,
+		revokedSubs: make(map[string]struct{}),
+		revokedJtis: make(map[string]struct{}),
 	}
+}
+
+// SetRevocations REPLACES the revoked sub/jti sets with the server's current
+// advertisement (the server stops advertising entries once every token they
+// could cover has expired, so replacement is the expiry mechanism).
+func (v *Verifier) SetRevocations(subs, jtis []string) {
+	nextSubs := make(map[string]struct{}, len(subs))
+	for _, s := range subs {
+		if s = strings.TrimSpace(s); s != "" {
+			nextSubs[s] = struct{}{}
+		}
+	}
+	nextJtis := make(map[string]struct{}, len(jtis))
+	for _, j := range jtis {
+		if j = strings.TrimSpace(j); j != "" {
+			nextJtis[j] = struct{}{}
+		}
+	}
+	v.mu.Lock()
+	v.revokedSubs = nextSubs
+	v.revokedJtis = nextJtis
+	v.mu.Unlock()
 }
 
 // TrustKey registers a public key the verifier accepts for tokens whose `iss`
@@ -129,6 +160,20 @@ func (v *Verifier) Verify(tok *Token, selfInstanceID, callerCN, skill string, no
 	}
 	if !ed25519.Verify(pub, []byte(tok.Envelope), sig) {
 		return nil, errors.New("Ed25519 signature mismatch")
+	}
+
+	// F2-04 — revocation check: the platform publishes revoked subs/jtis
+	// alongside capability_keys when a peer is disabled or its grants
+	// change; without this, those tokens stayed valid offline until exp.
+	v.mu.RLock()
+	_, subRevoked := v.revokedSubs[claims.Subject]
+	_, jtiRevoked := v.revokedJtis[claims.JTI]
+	v.mu.RUnlock()
+	if subRevoked {
+		return nil, fmt.Errorf("capability revoked for sub %q", claims.Subject)
+	}
+	if jtiRevoked {
+		return nil, fmt.Errorf("capability token %q revoked", claims.JTI)
 	}
 
 	// Signature is valid — claims are now trusted. Enforce the capability.

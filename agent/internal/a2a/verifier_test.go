@@ -112,3 +112,35 @@ func TestVerify_SkillMismatch(t *testing.T) {
 		t.Fatal("expected skill mismatch")
 	}
 }
+
+// Audit F2-04 — tokens are verified offline, so revocations advertised via
+// the capability_keys pull must be enforced here: a revoked sub (peer
+// disabled / grants changed) or jti fails even with a valid signature and
+// an unexpired window.
+func TestVerify_RevokedSub(t *testing.T) {
+	v, priv := newTrustedVerifier(t, "a2a-cap-acct-test")
+	v.SetRevocations([]string{"instA"}, nil)
+	tok := signTok(t, priv, mkClaims("instA", "instB", "embed-text", 990, 2000))
+	if _, err := v.Verify(tok, "instB", "instA", "embed-text", time.Unix(1000, 0)); err == nil {
+		t.Fatal("expected revoked-sub error")
+	}
+}
+
+func TestVerify_RevokedJti(t *testing.T) {
+	v, priv := newTrustedVerifier(t, "a2a-cap-acct-test")
+	v.SetRevocations(nil, []string{"jti-1"})
+	tok := signTok(t, priv, mkClaims("instA", "instB", "embed-text", 990, 2000))
+	if _, err := v.Verify(tok, "instB", "instA", "embed-text", time.Unix(1000, 0)); err == nil {
+		t.Fatal("expected revoked-jti error")
+	}
+}
+
+func TestVerify_RevocationsReplacedOnRefresh(t *testing.T) {
+	v, priv := newTrustedVerifier(t, "a2a-cap-acct-test")
+	v.SetRevocations([]string{"instA"}, nil)
+	v.SetRevocations(nil, nil) // server stopped advertising it (expired)
+	tok := signTok(t, priv, mkClaims("instA", "instB", "embed-text", 990, 2000))
+	if _, err := v.Verify(tok, "instB", "instA", "embed-text", time.Unix(1000, 0)); err != nil {
+		t.Fatalf("expected valid after revocation expiry, got %v", err)
+	}
+}

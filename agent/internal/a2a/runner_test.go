@@ -53,3 +53,43 @@ func TestRefreshKeys_BadStatus(t *testing.T) {
 		t.Fatal("expected error on non-200")
 	}
 }
+
+// Audit F2-04 — revocations advertised alongside capability_keys must reach
+// the verifier on refresh, and disappear once the server stops advertising.
+func TestRefreshKeys_AppliesRevocations(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	payload := `{"data":{"keys":[{"handle":"a2a-cap-acct-x","public_key_b64":"` + pubB64 + `","algorithm":"ED25519"}],` +
+		`"revocations":{"subs":["inst-revoked"],"jtis":["jti-revoked"]}}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	v := NewVerifier()
+	if _, err := RefreshKeys(v, fakeFetcher{base: srv.URL}); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	v.mu.RLock()
+	_, subOK := v.revokedSubs["inst-revoked"]
+	_, jtiOK := v.revokedJtis["jti-revoked"]
+	v.mu.RUnlock()
+	if !subOK || !jtiOK {
+		t.Fatalf("expected revocations applied (sub=%v jti=%v)", subOK, jtiOK)
+	}
+
+	// Next refresh without revocations clears the sets (server-side expiry).
+	payload = `{"data":{"keys":[]}}`
+	if _, err := RefreshKeys(v, fakeFetcher{base: srv.URL}); err != nil {
+		t.Fatalf("refresh 2: %v", err)
+	}
+	v.mu.RLock()
+	remaining := len(v.revokedSubs) + len(v.revokedJtis)
+	v.mu.RUnlock()
+	if remaining != 0 {
+		t.Fatalf("expected revocations cleared, %d remain", remaining)
+	}
+}

@@ -48,5 +48,49 @@ RSpec.describe "Api::V1::System::NodeApi::A2a#capability_keys", type: :request d
       get "/api/v1/system/node_api/a2a/capability_keys"
       expect(response).to have_http_status(:unauthorized)
     end
+
+    # Audit F2-04 — the agent verifies tokens OFFLINE, so grant revocation /
+    # peer-disable was silently ineffective: outstanding tokens stayed valid
+    # until exp. The keys pull now carries the account's active revocations.
+    context "revocation advertisement (F2-04)" do
+      it "advertises revoked subs after a peer is disabled" do
+        revoked = create(:system_node_instance, account: account, status: "running")
+        peer = peer_for(revoked, handle: "rv", granted: %w[embed-*])
+
+        peer.update!(enabled: false)
+
+        get "/api/v1/system/node_api/a2a/capability_keys", headers: headers
+
+        expect(response).to have_http_status(:ok)
+        revocations = JSON.parse(response.body).dig("data", "revocations")
+        expect(revocations).to be_a(Hash)
+        expect(revocations["subs"]).to include(revoked.id)
+      end
+
+      it "advertises revoked subs after a peer's grants change" do
+        regrant = create(:system_node_instance, account: account, status: "running")
+        peer = peer_for(regrant, handle: "rg", granted: %w[embed-* summarize-*])
+
+        peer.grant_peer_skills!(%w[embed-*]) # narrowed — outstanding tokens may exceed it
+
+        get "/api/v1/system/node_api/a2a/capability_keys", headers: headers
+
+        revocations = JSON.parse(response.body).dig("data", "revocations")
+        expect(revocations["subs"]).to include(regrant.id)
+      end
+
+      it "does not advertise expired revocations" do
+        revoked = create(:system_node_instance, account: account, status: "running")
+        peer = peer_for(revoked, handle: "ex", granted: %w[embed-*])
+        peer.update!(enabled: false)
+        System::PeerCapabilityRevocation.where(account: account)
+                                        .update_all(expires_at: 1.minute.ago)
+
+        get "/api/v1/system/node_api/a2a/capability_keys", headers: headers
+
+        revocations = JSON.parse(response.body).dig("data", "revocations")
+        expect(revocations["subs"]).not_to include(revoked.id)
+      end
+    end
   end
 end

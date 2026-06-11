@@ -39,6 +39,13 @@ module System
     scope :online,     -> { where(status: %w[active degraded]) }
     scope :for_handle, ->(handle) { where(handle: handle) }
 
+    # F2-04 — capability tokens are verified OFFLINE by agents, so disabling
+    # this peer or changing its grants must publish a revocation or the
+    # outstanding tokens stay valid until exp. Runs in-transaction with no
+    # rescue: if the revocation can't be published, the disable/grant change
+    # rolls back rather than silently leaving tokens live (fail-closed).
+    after_update :publish_capability_revocation!, if: :capability_revoking_change?
+
     # Atomically increment execution counters and last_executed_at.
     def record_execution!(success:)
       self.class.where(id: id).update_all([
@@ -106,6 +113,15 @@ module System
     end
 
     private
+
+    def capability_revoking_change?
+      (saved_change_to_enabled? && !enabled) || saved_change_to_granted_peer_skills?
+    end
+
+    def publish_capability_revocation!
+      reason = saved_change_to_enabled? && !enabled ? "peer_disabled" : "peer_grants_changed"
+      ::System::PeerCapabilityRevocation.publish_for_peer!(self, reason: reason)
+    end
 
     def rollover_window
       return if daily_decision_window_start.present? &&

@@ -12,11 +12,18 @@ module Api
         #
         # GET /api/v1/system/node_api/a2a/capability_keys
         #   Auth: instance (BaseController). Only public keys are returned.
-        #   Response: { keys: [{ handle, public_key_b64, algorithm }] }
+        #   Response: { keys: [{ handle, public_key_b64, algorithm }],
+        #               revocations: { subs: [...], jtis: [...] } }
+        #
+        # F2-04 — `revocations` rides the same pull the agent already makes:
+        # tokens are verified offline, so revoked grants / disabled peers
+        # must reach the verifier this way or outstanding tokens stay valid
+        # until exp.
         class A2aController < BaseController
           def capability_keys
             keys = ::System::PeerCapabilityTokenSigner.advertised_keys_for(current_account)
-            render_success(keys: keys)
+            revocations = ::System::PeerCapabilityRevocation.advertised_for(current_account)
+            render_success(keys: keys, revocations: revocations)
           rescue StandardError => e
             Rails.logger.error("[NodeApi::A2a#capability_keys] #{e.class}: #{e.message}")
             render_error("capability key advertisement failed: #{e.message}", status: :internal_server_error)

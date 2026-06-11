@@ -378,7 +378,7 @@ module Ai
               caller_instance_id: { type: "string", required: true },
               target_instance_id: { type: "string", required: true },
               skill: { type: "string", required: true },
-              ttl_seconds: { type: "integer", required: false }
+              ttl_seconds: { type: "integer", required: false, description: "Default 300; clamped to 1..3600 (MAX_TTL_SECONDS) — revocation propagates via the agents' capability_keys pull, so token lifetime is hard-capped" }
             }
           },
           "system_list_isolation_tiers" => {
@@ -1477,7 +1477,10 @@ module Ai
         target_inst = account_instances.find_by(id: params[:target_instance_id])
         return error_result("caller or target instance not found") unless caller_inst && target_inst
 
+        # F2-04 — clamp to MAX_TTL here as well as in the signer: the MCP
+        # surface must never accept an effectively-permanent token request.
         ttl = params[:ttl_seconds].present? ? params[:ttl_seconds].to_i : ::System::PeerCapabilityTokenSigner::DEFAULT_TTL_SECONDS
+        ttl = ttl.clamp(1, ::System::PeerCapabilityTokenSigner::MAX_TTL_SECONDS)
         token = ::System::PeerCapabilityTokenSigner.mint!(
           caller_instance: caller_inst, target_instance: target_inst, skill: params[:skill].to_s, ttl_seconds: ttl
         )

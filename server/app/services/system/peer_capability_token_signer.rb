@@ -22,6 +22,12 @@ module System
     class NotAuthorizedError < SigningError; end
 
     DEFAULT_TTL_SECONDS = 300 # 5 min — short blast radius for a leaked token
+
+    # F2-04 — hard ceiling on minted token lifetime. Revocation propagates to
+    # offline verifiers via the capability_keys pull (PeerCapabilityRevocation),
+    # so the ceiling bounds how long a token can outlive its revocation window.
+    MAX_TTL_SECONDS = 3600 # 1 hour
+
     TOKEN_VERSION = 1
 
     Token = ::Struct.new(:envelope_json, :signature_b64, :handle, :public_key_b64, :claims, keyword_init: true)
@@ -50,6 +56,10 @@ module System
 
       now = Time.current
       material = signing_key_material!
+      # F2-04 — clamp to MAX_TTL: an unbounded ttl_seconds minted an
+      # effectively-permanent token whose only revocation was rotating the
+      # account signing key (killing ALL tokens).
+      ttl = ttl_seconds.to_i.clamp(1, MAX_TTL_SECONDS)
       claims = {
         "v"       => TOKEN_VERSION,
         "iss"     => material[:handle],
@@ -59,7 +69,7 @@ module System
         "skill"   => skill,
         "iat"     => now.to_i,
         "nbf"     => now.to_i,
-        "exp"     => (now + ttl_seconds.to_i.seconds).to_i,
+        "exp"     => (now + ttl.seconds).to_i,
         "jti"     => ::SecureRandom.uuid
       }
       envelope_json = canonicalize(claims)
