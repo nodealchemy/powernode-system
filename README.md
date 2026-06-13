@@ -1,5 +1,12 @@
 # Powernode System Extension
 
+This is the substrate layer that sets Powernode apart: PXE-to-production bare
+metal, a signed module supply chain, SDWAN, and fleet autonomy — the full path
+from a powered-off machine to a governed node in a running fleet. The
+[Powernode platform][platform] is the control plane; this extension is what it
+stands on. See the platform repo for the end-to-end demo and how the two fit
+together.
+
 A self-contained extension for the [Powernode platform][platform] that provides
 node lifecycle management, declarative module composition, on-node
 runtime, and a self-improving fleet autonomy layer.
@@ -32,16 +39,16 @@ it via the standard extension contract.
 - **Go agent (`powernode-agent`)** — single static binary, ~20MB, replaces legacy
   bash scripts. Multi-cloud identity discovery (AWS/GCP/Azure/DigitalOcean/
   libvirt fw-cfg), mTLS enrollment, OCI module pull, fs-verity verification,
-  composefs+overlayfs union mount, heartbeat, task lease, cert rotation
+  erofs+overlayfs union mount, heartbeat, task lease, cert rotation
 - **Multi-arch initramfs builder** — produces six artifact families per arch
   (kernel+initramfs bundle, raw disk image, ISO, iPXE chainload, qcow2,
   bootc-compatible OCI) for both amd64 and arm64 in one CI run
 
 ### Module supply chain
 
-- **Two-stage CI pipeline** (Containerfile builder + composefs composer) that
+- **Two-stage CI pipeline** (Containerfile builder + erofs composer) that
   preserves the legacy rsync-glob composition layer while modernizing
-  multistrap → mmdebstrap and mksquashfs → mkcomposefs
+  multistrap → mmdebstrap and mksquashfs → mkfs.erofs
 - **Cosign-signed OCI artifacts** with Sigstore Fulcio (no long-lived signing
   keys; ephemeral OIDC-bound certs)
 - **Per-module trust policy** (`cosign_identity_regexp` + `cosign_issuer_regexp`)
@@ -51,10 +58,10 @@ it via the standard extension contract.
 
 - **17 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
-  trading pressure (cross-extension stigmergic coordination), instance state
-  drift, GitOps drift, package repository drift, project SLO breaches, SDWAN
-  health (peer reachability, BGP session, VIP reachability, drift, credential
-  expiry), and storage assignment drift
+  external workload pressure (cross-extension stigmergic coordination), instance
+  state drift, GitOps drift, package repository drift, project SLO breaches,
+  SDWAN health (peer reachability, BGP session, VIP reachability, drift,
+  credential expiry), and storage assignment drift
 - **48 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
@@ -63,11 +70,12 @@ it via the standard extension contract.
   the catalog with descriptors and example I/O.
 - **FleetAutonomyService** — gates every autonomous action through
   intervention policy + approval chain (auto_approve / notify_and_proceed /
-  require_approval / blocked); same UI as trading-overseer's approval queue
+  require_approval / blocked); the same operator approval queue every other
+  extension's autonomy decisions flow through
 - **Learning loop** — every confirmed/rejected operator decision feeds back
   into compound learnings that boost or downweight similar candidates next time
 - **Cross-domain stigmergic coordination** — bidirectional pressure exchange
-  with trading and other extensions via the platform's signal bus
+  with sibling extensions via the platform's signal bus
 - **Per-module consent budget** — operators set a daily ceiling on autonomous
   decisions per module; exhausted budget forces require_approval regardless
   of policy
@@ -301,5 +309,5 @@ phase tracking see [`docs/history/TASKS.md`](./docs/history/TASKS.md).
 
 - [Powernode platform][platform] — the parent platform that mounts this extension
 - [Cosign](https://github.com/sigstore/cosign) — module signing
-- [composefs](https://github.com/containers/composefs) — verified-mount lower layer
+- [erofs](https://docs.kernel.org/filesystems/erofs.html) — verified-mount lower layer (fs-verity-checked)
 - [oras](https://github.com/oras-project/oras) — OCI artifact tooling

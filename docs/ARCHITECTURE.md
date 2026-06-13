@@ -242,7 +242,7 @@ Seventeen sensors are registered in the live tick loop via `FleetAutonomyService
 - `InstanceStateDriftSensor` — DB-recorded status disagrees with provider truth → `system.instance_state_drift`
 - `FederationPeerLivenessSensor` — stale peer heartbeat or cert expiry → `system.federation_peer_liveness`
 - `SdwanReachabilitySensor`, `SdwanDriftSensor`, `SdwanBgpSessionHealthSensor`, `SdwanVipReachabilitySensor` — SDWAN-side reachability, drift, BGP session health, VIP reachability
-- `TradingPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions (originally trading-specific; broader cross-domain refactor pending)
+- `TradingPressureSensor` — cross-domain consumer of pressure signals emitted by sibling extensions (the class name predates the cross-domain generalization; a rename to a neutral `ExternalPressureSensor` is pending)
 
 The three on-disk fleet sensors run outside the tick array via their own paths:
 
@@ -311,7 +311,7 @@ bus.
 - `system.region_busy:<region_id>` — per-region instance saturation
 
 **Fleet consumes:**
-- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `TradingPressureSensor` aggregates → `TradingAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0 (naming preserved from initial trading integration; cross-domain refactor would unify these names)
+- External pressure signals (any extension's `*.high_load`, `*.workload_pressure`, `*.resource_busy:<key>`) → `TradingPressureSensor` aggregates → `TradingAwareThrottle` defers non-critical fleet actions when aggregate pressure ≥ 1.0 (the `Trading*` class names predate the cross-domain generalization; a rename to neutral `External*` names is pending)
 
 **Sibling extension consumes** (when integrated):
 - `system.capacity_pressure` → consumer-side pressure perceiver returns

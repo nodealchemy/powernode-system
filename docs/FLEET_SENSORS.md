@@ -157,10 +157,10 @@ flowchart LR
 
 **Source:** `trading_pressure_sensor.rb` (class `TradingPressureSensor`)
 **Watches:** Stigmergic pressure signals emitted by sibling extensions on the platform-wide signal bus
-**Threshold:** Trading-aggregate pressure ≥1.0 → fleet defers non-critical actions
-**Signals:** `fleet.trading_pressure_high`, `fleet.trading_pressure_normal`
-**Recommended remediation:** Internal — no executor; the `TradingAwareThrottle` consults this signal to defer Fleet Autonomy actions when trading is under load.
-**Naming:** The sensor + throttle consume trading-domain signals specifically. A broader cross-domain refactor (renaming to `ExternalPressureSensor` / `ExternalAwareThrottle` and accepting any sibling extension's pressure feed) is contemplated but not in scope today.
+**Threshold:** Aggregate external pressure ≥1.0 → fleet defers non-critical actions
+**Signals:** `fleet.trading_pressure_high`, `fleet.trading_pressure_normal` (signal-type constants; the `trading_` prefix predates the cross-domain generalization)
+**Recommended remediation:** Internal — no executor; the `TradingAwareThrottle` consults this signal to defer Fleet Autonomy actions when a sibling extension is under load.
+**Naming:** The `Trading*` class + signal names predate the cross-domain generalization — the sensor and throttle already consume any sibling extension's pressure feed. A rename to neutral `ExternalPressureSensor` / `ExternalAwareThrottle` names is contemplated but not in scope today.
 
 ### `instance_state_drift_sensor` — DB↔provider truth divergence
 
