@@ -21,7 +21,7 @@ the per-service Docker images.
 
 | Legacy (docker-compose.prod.yml) | New (P8 module-based) |
 |---|---|
-| `postgres` image container | `postgres-primary` module — composefs blob + systemd unit |
+| `postgres` image container | `postgres-primary` module — erofs blob + systemd unit |
 | `redis` image container | `redis` module |
 | `backend` Docker build | `powernode-hub-backend` module — Rails 8 API + ActionCable |
 | `worker` Docker build | `powernode-hub-worker` module — Sidekiq |
@@ -34,7 +34,7 @@ the per-service Docker images.
 
 The six service modules above (postgres-primary, redis,
 powernode-hub-backend, powernode-hub-worker, powernode-hub-frontend,
-reverse-proxy-traefik) ship as composefs blobs from the M1 supply-chain
+reverse-proxy-traefik) ship as erofs blobs from the M1 supply-chain
 pipeline (`.gitea/workflows/build-platform-modules.yaml`) and are
 attached to a `powernode-hub` NodeInstance via the on-node Go agent
 (internal/lifecycle/AttachServices). The remaining rows are
@@ -54,7 +54,7 @@ not modules.
       without errors (N = the directory count on disk — the seed is the
       source of truth, so don't hardcode it).
 - [ ] **Local QEMU provider configured** (for the cutover target host)
-      OR a Linux host with composefs + fs-verity kernel support.
+      OR a Linux host with erofs + fs-verity kernel support.
 - [ ] **A reachable Postgres** containing the data you're migrating.
       Either the docker-compose Postgres still up, or an external dump
       file.

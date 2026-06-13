@@ -59,7 +59,7 @@ domain unit with focused responsibilities; no cross-package state.
 | Package | Responsibility |
 |---------|----------------|
 | `fsutil` | Low-level filesystem operations (overlayfs mount calls, tmpfs setup, bind mount helpers). |
-| `mount` | High-level mount orchestration. Composes priority-ordered composefs lowers into an overlayfs union mount. Upper layer is `tmpfs` (ephemeral) or `/persist/var` bind (persistent). |
+| `mount` | High-level mount orchestration. Composes priority-ordered erofs lowers into an overlayfs union mount. Upper layer is `tmpfs` (ephemeral) or `/persist/var` bind (persistent). |
 | `oci` | OCI artifact fetch via `github.com/oras-project/oras-go/v2`. Manifest resolution + per-arch blob pull + local digest-store cache. |
 | `storage` | LUKS keyslot management, TPM2 unsealing, /persist partition orchestration. Falls back to Vault-fetched unwrap when TPM absent. |
 
@@ -212,7 +212,7 @@ sequenceDiagram
     Plat-->>Agent: heartbeat reply: new desired module
     Agent->>OCI: pull <registry>/<account>/<module>:<version>
     OCI->>OCI: resolve manifest<br/>fetch arch-specific blobs<br/>cache to digest-store
-    OCI-->>Agent: local composefs blob
+    OCI-->>Agent: local erofs blob
     Agent->>Verify: cosign verify (identity + issuer regex)
     Verify-->>Agent: signature OK
     Agent->>Sysfs: fs-verity enable

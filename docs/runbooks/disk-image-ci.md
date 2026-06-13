@@ -21,7 +21,7 @@ Push to platform's image-build repo (or trigger via webhook)
        ▼
 .gitea/workflows/build.yaml runs:
   - Stage 1: Containerfile builder (mmdebstrap → Debian rootfs)
-  - Stage 2: composefs composer (mkcomposefs → composefs blob)
+  - Stage 2: erofs composer (mkfs.erofs → erofs blob)
   - Stage 3: emit 6 artifact families (kernel, initramfs, raw, qcow2, ISO, iPXE) × amd64 + arm64
        │
        ▼
@@ -37,7 +37,7 @@ DiskImageWebhook fires (POST /api/v1/system/webhooks/disk_image/built/<webhook_i
 DiskImagePublicationProcessor:
   - Verify Cosign signature against NodePlatform's cosign_identity_regexp
   - Verify SHA-256 of the pulled artifact against publication.sha256
-    (no server-side composefs/fs-verity verification — the composefs blob
+    (no server-side erofs/fs-verity verification — the erofs blob
      is produced in CI but the server trusts the cosign+sha256 envelope)
   - Create DiskImagePublication row (status=published)
        │

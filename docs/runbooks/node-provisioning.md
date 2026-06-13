@@ -37,7 +37,7 @@ window *within* the `provisioning` state, not a separate AASM state.
   │ provisioning │  Provider creates VM; netboot fetches kernel + initramfs
   └──────┬───────┘
          │  (agent boot window: enroll CSR → mTLS,
-         │   modules pulled, fs-verity verified, composefs mounted)
+         │   modules pulled, fs-verity verified, erofs mounted)
          │                                   ╲  provider error / boot failure
          │ first phase=ready heartbeat        ╲  → mark_errored
          ▼                                     ▼
@@ -141,7 +141,7 @@ The provider VM POSTs to `runtime/handshake` once the kernel boots:
 1. **Identity discovery** — agent reads from `cmdline` / `virtio-fw-cfg` / cloud metadata; selects the appropriate `IdentityStrategy`
 2. **Enrollment** — agent generates Ed25519 keypair, POSTs CSR to `/api/v1/system/node_api/enroll` with bootstrap token; receives signed mTLS cert
 3. **Module pull** — agent fetches OCI artifacts for assigned modules from `registry.example.com` registry; verifies `cosign` signatures + fs-verity digests
-4. **Mount union root** — composefs lower layer + tmpfs (or `/persist`) overlay; `pivot_root` into composed userspace
+4. **Mount union root** — erofs lower layer + tmpfs (or `/persist`) overlay; `pivot_root` into composed userspace
 5. **Service start** — `systemctl start powernode-agent.service`; agent posts `phase=ready` heartbeat
 
 The platform marks the instance `status=running` after the first `phase=ready` POST.

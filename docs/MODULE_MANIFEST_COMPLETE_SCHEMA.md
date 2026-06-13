@@ -89,7 +89,7 @@ build:
 
 ### Content specs
 
-The five spec fields (`mask`, `file_spec`, `protected_spec`, `dependency_spec`, `package_spec`) are **rsync-style glob lines**. Their interaction is the heart of composefs+overlayfs union semantics — read carefully.
+The five spec fields (`mask`, `file_spec`, `protected_spec`, `dependency_spec`, `package_spec`) are **rsync-style glob lines**. Their interaction is the heart of erofs+overlayfs union semantics — read carefully.
 
 #### `mask`
 Paths to **exclude** from this module's blob at build time (rsync filter, local to this module). Does NOT affect neighbor modules' blobs.

@@ -503,19 +503,19 @@ and the design reference [`docs/credential-restoration.md`](./credential-restora
 ## Overlay-union root composition
 
 The booted VM in Pass 1 / Pass 4 doesn't ship a monolithic root filesystem —
-it composes one from priority-ordered, per-module composefs layers, each
-backed by erofs+dm-verity for tamper detection.
+it composes one from priority-ordered, per-module erofs layers, each
+fs-verity-checked for tamper detection.
 
 ```mermaid
 flowchart TD
-    subgraph Modules["Lower stack: priority-ordered composefs layers"]
-        SB[system-base composefs]
-        SH[security-hardening composefs]
-        CH[chrony composefs]
-        NG[nginx composefs]
+    subgraph Modules["Lower stack: priority-ordered erofs layers"]
+        SB[system-base erofs]
+        SH[security-hardening erofs]
+        CH[chrony erofs]
+        NG[nginx erofs]
     end
     subgraph Integrity["Per-module integrity layer"]
-        EV[erofs squash + dm-verity]
+        EV[erofs read-only image]
         FV[fs-verity root hash]
     end
     subgraph Upper["Overlay upper layer"]
@@ -539,12 +539,11 @@ flowchart TD
     Union --> Root
 ```
 
-- **composefs** is the lower-layer file-tree assembler; each module supplies
-  a content-addressed blob set + a metadata-only "compose" file that
-  references blobs by hash.
-- **erofs + dm-verity** wrap each module's content blobs in a read-only,
-  cryptographically-verified mount. Tampering with a module's bytes after
-  publication is detected at file-open time.
+- **erofs** is the lower-layer format; each module is published as a single
+  content-addressed, read-only erofs image.
+- **fs-verity** wraps each module's erofs image in a cryptographically-verified
+  mount. Tampering with a module's bytes after publication is detected at
+  file-open time.
 - **overlayfs** composes the priority-ordered lowers into a unified rootfs.
   The upper layer is `tmpfs` for ephemeral instances or a bind-mount of
   `/persist/var` for persistent instances.

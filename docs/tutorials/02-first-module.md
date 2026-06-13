@@ -23,7 +23,7 @@ flowchart LR
     end
     subgraph CI["Gitea Actions"]
         Build[Stage 1<br/>Containerfile build]
-        Compose[Stage 2<br/>composefs encode]
+        Compose[Stage 2<br/>erofs encode]
         Sign[cosign sign<br/>keyless via Fulcio]
     end
     Reg[(OCI registry<br/>registry.example.com)]
@@ -56,7 +56,7 @@ Each module ships:
 - **`Containerfile`** — Stage 1 of CI; installs packages + copies rootfs
 
 The platform composes a NodeInstance's root filesystem from priority-ordered
-module composefs layers (see [Tutorial 01](./01-first-boot.md) overlay-union
+module erofs layers (see [Tutorial 01](./01-first-boot.md) overlay-union
 diagram). Each layer is content-addressed, fs-verity-hashed, cosign-signed —
 tamper-detected at file-open time.
 
@@ -171,8 +171,8 @@ dir /var/lib/redis
 ```
 
 **Expected outcome:** Files under `rootfs/` will be copied verbatim into the
-module's composefs layer at build time. `.gitkeep` is the convention for
-empty directories — composefs needs the dir to exist in the artifact, even
+module's erofs layer at build time. `.gitkeep` is the convention for
+empty directories — erofs needs the dir to exist in the artifact, even
 empty.
 
 ## Step 4 — Validate the manifest locally
@@ -244,8 +244,8 @@ The workflow runs:
 
 1. **Stage 1 (Containerfile build)** — pulls the Ubuntu 24.04 base at the
    pinned digest, installs `package_spec`, copies `rootfs/` to `/work/`
-2. **Stage 2 (composefs encode)** — converts `/work/` to a content-addressed
-   composefs blob set with fs-verity root hash
+2. **Stage 2 (erofs encode)** — converts `/work/` to a content-addressed
+   erofs blob with fs-verity root hash
 3. **syft + grype** — generates SBOM + VEX; the SBOM is ingested by the
    platform's CVE pipeline
 4. **cosign keyless sign** — Sigstore Fulcio issues an ephemeral cert bound

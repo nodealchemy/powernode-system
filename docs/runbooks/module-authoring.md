@@ -20,7 +20,7 @@ Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`
 | **protected_spec** | Files this module owns — overrides from higher-priority modules are forbidden | YAML field |
 | **dependency_spec** | Other modules this one requires (resolved by `DependencyResolutionService`) | YAML field |
 | **Containerfile** | Dockerfile-style recipe for the module's builder image (used by Gitea Actions to produce the rootfs) | Dockerfile syntax |
-| **composefs digest** | fs-verity hash committed to the OCI artifact; agent verifies before mounting | sha256 |
+| **erofs digest** | fs-verity hash committed to the OCI artifact; agent verifies before mounting | sha256 |
 
 ## Phase 1 — Set up the module repo ✅
 
@@ -115,12 +115,12 @@ COPY rootfs/ ./rootfs/
 # The base image's entrypoint reads manifest.yaml and:
 #   1. Runs mmdebstrap with package_spec → /work/build/rootfs/
 #   2. rsync-copies your rootfs/ tree on top per file_spec rules
-#   3. mksquashfs → composefs digest
+#   3. mkfs.erofs → erofs digest
 #   4. Emits the artifact at /work/dist/module.tar
 ENTRYPOINT ["/usr/local/bin/build-module"]
 ```
 
-The base image `ghcr.io/powernode/module-builder` provides a hermetic build environment with mmdebstrap, mksquashfs, mkcomposefs, and `cosign`. Don't deviate from it unless you need a custom debian release.
+The base image `ghcr.io/powernode/module-builder` provides a hermetic build environment with mmdebstrap, mkfs.erofs (erofs-utils), and `cosign`. Don't deviate from it unless you need a custom debian release.
 
 **rootfs/ tree:**
 
@@ -181,12 +181,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build module artifact
         run: |
-          # Canonical workflow uses buildah + mkcomposefs, not docker build.
+          # Canonical workflow uses buildah + mkfs.erofs, not docker build.
           # See templates/module-repo/.gitea/workflows/build.yaml for the
           # authoritative two-stage pipeline (buildah bud → rsync filter →
-          # mkcomposefs → fs-verity → syft + grype → cosign sign → oras push).
+          # mkfs.erofs → fs-verity → syft + grype → cosign sign → oras push).
           buildah bud --layers --tag module-builder:${{ github.sha }} .
-          # ... composer stage runs mkcomposefs + emits the artifact bundle ...
+          # ... composer stage runs mkfs.erofs + emits the artifact bundle ...
 
       - name: Push to OCI registry
         run: |
@@ -205,8 +205,8 @@ jobs:
 **What happens behind the scenes:**
 
 1. **Builder stage**: mmdebstrap installs packages from `package_spec` into a clean Debian rootfs
-2. **Composer stage**: rsync applies your `rootfs/` tree per `file_spec` rules; mkcomposefs computes the fs-verity digest
-3. **Artifact emission**: tar of the composefs lower layer + manifest.json (parsed) + composefs digest
+2. **Composer stage**: rsync applies your `rootfs/` tree per `file_spec` rules; mkfs.erofs computes the fs-verity digest
+3. **Artifact emission**: tar of the erofs lower layer + manifest.json (parsed) + erofs digest
 4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
 5. **Cosign signing**: keyless signing via Sigstore Fulcio (no long-lived signing keys; ephemeral OIDC-bound certs tied to the Gitea Actions OIDC issuer)
 
@@ -278,7 +278,7 @@ schema_version: 1
 name: nginx-tokyo-config
 display_name: "nginx Tokyo overrides"
 
-# This module *only* contributes file_spec — no packages, no composefs lower.
+# This module *only* contributes file_spec — no packages, no erofs lower.
 file_spec:
   - "/etc/nginx/conf.d/99-tokyo.conf"
 ```

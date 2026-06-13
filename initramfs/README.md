@@ -97,7 +97,7 @@ firmware → bootloader (GRUB / U-Boot / iPXE)
        → linux kernel (signed, lockdown=integrity, IMA/EVM enabled)
        → initramfs (dracut + 90powernode module)
             ├── claim node identity (cloud metadata / fw-cfg / local UUID)
-            ├── mount composefs lower (verified via fs-verity)
+            ├── mount erofs lower (verified via fs-verity)
             ├── stack overlay/bind for module union
             ├── pivot to real root
             └── launch powernode-agent
@@ -124,7 +124,7 @@ Two builds of the same source MUST produce byte-identical artifacts (matching
   changes when Canonical rebuilds)
 - **Debian / Ubuntu snapshot URLs**: `snapshot.ubuntu.com/ubuntu/<timestamp>/`
   — locks package versions to a moment in time
-- **composefs-tools version**: pinned in CI env (currently `1.0.x`)
+- **erofs-utils version**: pinned in CI env
 - **Kernel package**: explicit `linux-image-X.Y.Z-N-generic` pin
 - **Dracut version**: from the same Ubuntu snapshot
 - **mmdebstrap** (replaces multistrap): pinned
@@ -138,7 +138,7 @@ Verifiable via the build manifest emitted into each artifact directory
 
 Three files in `dracut.conf.d/` get copy-merged into the initramfs build:
 
-- `powernode.conf` — common modules (composefs, overlayfs, virtio drivers,
+- `powernode.conf` — common modules (erofs, overlayfs, virtio drivers,
   90powernode), kernel cmdline defaults
 - `powernode-amd64.conf` — x86 firmware drivers (intel-microcode, amd-microcode,
   i915, amdgpu)
@@ -147,7 +147,7 @@ Three files in `dracut.conf.d/` get copy-merged into the initramfs build:
 
 Modules forced into the initramfs include:
 
-- `composefs` — verified-mount lower layer
+- `erofs` — verified-mount lower layer
 - `overlayfs` — module union mount
 - `virtio_pci` / `virtio_blk` / `virtio_net` — hypervisor I/O
 - `9p` (kernel) + `9p_virtio` — virtio-fw-cfg seed transport (used by
@@ -162,8 +162,8 @@ during `pre-mount` and `mount` stages. Responsibilities:
 
 1. **Identity claim**: try in order — cloud metadata IMDS, virtio fw-cfg,
    local UUID file at `/etc/powernode/local-id`. First success wins.
-2. **Composefs lower mount**: compute fs-verity Merkle root, mount the
-   verified composefs image as the lower layer.
+2. **Erofs lower mount**: compute fs-verity Merkle root, mount the
+   verified erofs image as the lower layer.
 3. **Overlay stacking**: assemble per-module overlay layers ordered by
    `effective_priority` (computed server-side from the union of `node_module`
    `priority` and category sibling positions).

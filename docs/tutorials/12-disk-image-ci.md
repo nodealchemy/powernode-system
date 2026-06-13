@@ -3,7 +3,7 @@
 > Status: active
 
 > **What you'll learn:** Set up a continuous build pipeline that produces
-> kernel + initramfs + composefs disk images for your custom NodePlatform,
+> kernel + initramfs + erofs disk images for your custom NodePlatform,
 > signs them with cosign, publishes as OCI artifacts, and propagates
 > through retention. The same pattern Powernode uses to build its own
 > shipped initramfs.
@@ -34,7 +34,7 @@ sequenceDiagram
     Op->>Repo: configure webhook URL in CI YAML
     Op->>Repo: git push (or dispatch_gitea_workflow)
     Repo->>Runner: workflow triggers
-    Runner->>Runner: run build_script:<br/>apt-mirror, kernel,<br/>composefs blob,<br/>initramfs
+    Runner->>Runner: run build_script:<br/>apt-mirror, kernel,<br/>erofs blob,<br/>initramfs
     Runner->>Runner: cosign sign (keyless)
     Runner->>Reg: oras push artifact
     Runner->>Plat: POST webhook<br/>HMAC-signed
@@ -53,9 +53,9 @@ images and a NodePlatform pointing at your custom artifact.
 
 **Why disk image CI separate from module CI?**
 
-- **Module CI** (Tutorial 02) produces composefs blobs assembled into
+- **Module CI** (Tutorial 02) produces erofs blobs assembled into
   layered rootfs at boot time. Per-module, lifecycle-tracked.
-- **Disk image CI** produces the kernel + initramfs + base composefs
+- **Disk image CI** produces the kernel + initramfs + base erofs
   blob — the unchangeable foundation a NodeInstance boots into.
   Per-platform, retention-managed.
 
@@ -156,7 +156,7 @@ Webhooks are **per-pipeline** (the URL embeds the webhook UUID), not per-NodePla
 The runner's repo (`<account>/disk-images` from Step 1) needs a
 `.gitea/workflows/build-disk-image.yml` that:
 
-1. Runs your `build_script` (apt-mirror + kernel pull + composefs encode + initramfs build)
+1. Runs your `build_script` (apt-mirror + kernel pull + erofs encode + initramfs build)
 2. Cosign signs the OCI manifest
 3. POSTs the webhook with the OCI digest + SBOM
 
@@ -184,7 +184,7 @@ jobs:
         run: |
           bash build.sh \
             --arch amd64 \
-            --variants kernel-initrd-composefs-oci
+            --variants kernel-initrd,oci
 
       - name: Cosign sign + push OCI
         env:
