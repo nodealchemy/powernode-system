@@ -22,7 +22,7 @@ jobs:
     name: Ruby syntax
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3.2.8
@@ -38,7 +38,7 @@ jobs:
     name: Rubocop
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3.2.8
@@ -53,8 +53,8 @@ jobs:
     name: Go agent
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.22'
           cache-dependency-path: agent/go.sum
@@ -75,8 +75,8 @@ jobs:
     name: Frontend structure check
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
       - name: Lint imports + check no console.log
@@ -97,7 +97,7 @@ jobs:
     name: Shell scripts (initramfs builders)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: shellcheck
         run: |
           sudo apt-get update -qq
@@ -112,8 +112,8 @@ jobs:
     name: YAML lint (workflows + dracut configs)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: |
