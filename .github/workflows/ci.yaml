@@ -87,8 +87,14 @@ jobs:
             echo "::error::console.log found in frontend code; use logger instead"
             fail=1
           fi
-          # No `any` type
-          if grep -rn ": any" frontend/src/ --include='*.ts' --include='*.tsx' 2>/dev/null | grep -v "^.*://"; then
+          # No explicit `any` type annotations. The `\b` word boundary avoids matching
+          # identifiers like `anycast`, and comment lines (// or *) are skipped so prose
+          # such as "Fallback: any button" doesn't trip the check.
+          any_hits=$(grep -rnE ':[[:space:]]*any\b' frontend/src/ --include='*.ts' --include='*.tsx' 2>/dev/null \
+            | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' \
+            | grep -v '://' || true)
+          if [ -n "$any_hits" ]; then
+            echo "$any_hits"
             echo "::warning::': any' types found — prefer proper TypeScript types"
           fi
           exit $fail
