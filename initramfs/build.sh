@@ -23,7 +23,8 @@
 # identical SHA-256 digests.
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 readonly DEFAULT_VARIANTS="kernel-initrd,raw,iso,ipxe,qcow2,oci,disk-image-rpi4,disk-image-arm64-uefi,disk-image-amd64-uefi"
 # Sentinel: build.sh fails loudly if a real digest isn't supplied (via
 # BASE_IMAGE_DIGEST env, --base-image arg, or CI workflow input). Per M3

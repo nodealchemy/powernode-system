@@ -40,6 +40,7 @@ install() {
     # Used in production-mode boot (real disk → switch_root flow); a no-op
     # for direct-kernel-boot smoke tests because dracut never enters
     # pre-mount when there is no `root=` kernel arg.
+    # shellcheck disable=SC2154  # moddir is provided by dracut
     inst_hook pre-mount 90 "${moddir}/init-powernode.sh"
 
     # Systemd unit for the long-lived agent loop. Active when dracut hands
@@ -49,6 +50,7 @@ install() {
     # powernode-agent.service takes over from there.
     inst_simple "${moddir}/powernode-agent.service" \
         /etc/systemd/system/powernode-agent.service
+    # shellcheck disable=SC2154  # initdir is provided by dracut
     mkdir -p "${initdir}/etc/systemd/system/multi-user.target.wants"
     ln -sf ../powernode-agent.service \
         "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-agent.service"

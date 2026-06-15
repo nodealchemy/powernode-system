@@ -27,7 +27,7 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 # Build directory laid out as the future ISO contents.
 WORK="$(mktemp -d -t powernode-iso-XXXXXX)"
-trap "rm -rf $WORK" EXIT
+trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/boot/grub" "$WORK/EFI/BOOT" "$WORK/powernode"
 
