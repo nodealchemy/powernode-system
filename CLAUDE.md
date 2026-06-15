@@ -136,7 +136,6 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `disk-image-ci.md` — disk image CI operator workflow
 - `federation-setup.md` — multi-region/multi-account federation peering
 - `federation-troubleshooting.md` — diagnostic procedures for federation failures
-- `docker-compose-cutover.md` — legacy compose → Powernode migration
 - `vault-credential-restoration.md` — DR runbook for credential restoration
 
 ### Tutorials (`docs/tutorials/`) — preferred entry point for learning

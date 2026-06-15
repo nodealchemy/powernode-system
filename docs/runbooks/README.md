@@ -14,7 +14,6 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [acme-smoke.md](./acme-smoke.md) | SREs validating ACME, release gate operators | Cloudflare token, test domain, `powernode-hub` ready | ~30 min |
 | [cve-response.md](./cve-response.md) | Security operators, on-call SREs | Fleet with SBOM-ingested modules, `system.cve_remediate` approval | ~1–4 hours per CVE |
 | [disk-image-ci.md](./disk-image-ci.md) | Platform engineers, CI maintainers | Gitea runner, Vault credentials for OCI registry | ~30 min setup + per-build runtime |
-| [docker-compose-cutover.md](./docker-compose-cutover.md) | Platform operators migrating from legacy compose stacks | Existing compose deployment, SDWAN network defined | ~1–3 days (planned downtime) |
 | [expose-service.md](./expose-service.md) | SREs publishing public services, network operators | SDWAN network + publicly-reachable hub peer, free VIP CIDR, Cloudflare ACME DNS credential (https) | ~10–20 min per service |
 | [federation-setup.md](./federation-setup.md) | Multi-region / multi-account operators | Two reachable platforms, partner trust agreement | ~30 min per pairing |
 | [federation-troubleshooting.md](./federation-troubleshooting.md) | Operators triaging federation failures | Established federation peer in degraded state | ~5–60 min depending on cause |

@@ -165,7 +165,6 @@ See [`docs/runbooks/README.md`](./docs/runbooks/README.md) for the full index wi
 | [`docs/runbooks/disk-image-ci.md`](./docs/runbooks/disk-image-ci.md) | Disk image build + signing + publication operator workflow |
 | [`docs/runbooks/federation-setup.md`](./docs/runbooks/federation-setup.md) | Multi-region / multi-account federation peering |
 | [`docs/runbooks/federation-troubleshooting.md`](./docs/runbooks/federation-troubleshooting.md) | Diagnosing federation peering failures |
-| [`docs/runbooks/docker-compose-cutover.md`](./docs/runbooks/docker-compose-cutover.md) | Migrating legacy compose deployments to Powernode |
 | [`docs/runbooks/vault-credential-restoration.md`](./docs/runbooks/vault-credential-restoration.md) | DR runbook for credential restoration |
 
 ### Tutorials
