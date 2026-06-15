@@ -173,7 +173,7 @@ RSpec.describe System::ModuleCommitService do
 
       summary = service.send(:apply_mask_configuration, node_module, instance)
 
-      expect(summary[:masked]).to eq(["/etc/app.conf"])
+      expect(summary[:masked]).to eq([ "/etc/app.conf" ])
       expect(summary[:errors]).to be_empty
       expect(captured).to start_with("sed -i")
       expect(captured).to include("/etc/app.conf")

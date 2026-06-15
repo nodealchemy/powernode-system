@@ -155,7 +155,7 @@ module System
       cfg = instance&.config
       iso = cfg.is_a?(Hash) ? cfg["isolation"] : nil
       tier = iso.is_a?(Hash) ? iso["tier"].to_s : ""
-      requires_runtime?(tier) ? [tier] : []
+      requires_runtime?(tier) ? [ tier ] : []
     end
 
     # F2-01 enforcement (fleet path only): the OCI runtime name the instance's

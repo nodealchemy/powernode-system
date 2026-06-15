@@ -45,7 +45,7 @@ RSpec.describe System::InternalCaService do
     it "adds a subjectAltName extension (DNS + IP) when sans are supplied" do
       result = described_class.issue_certificate(
         csr_pem: csr_pem, ttl_seconds: 3600, common_name: "localhost",
-        sans: ["localhost", "127.0.0.1"]
+        sans: [ "localhost", "127.0.0.1" ]
       )
       cert = OpenSSL::X509::Certificate.new(result[:cert_pem])
       san  = cert.extensions.find { |e| e.oid == "subjectAltName" }

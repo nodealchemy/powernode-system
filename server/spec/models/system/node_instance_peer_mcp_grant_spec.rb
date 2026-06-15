@@ -34,7 +34,7 @@ RSpec.describe System::NodeInstancePeer, type: :model do
     end
 
     it "strips blanks and dedups" do
-      peer.grant_mcp_tools!(["platform.health", "", "platform.health", " "])
+      peer.grant_mcp_tools!([ "platform.health", "", "platform.health", " " ])
       expect(peer.reload.granted_mcp_tools).to eq(%w[platform.health])
     end
   end

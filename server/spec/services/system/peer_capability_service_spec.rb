@@ -20,7 +20,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
   describe ".discoverable_for" do
     it "lists online, enabled peers with their offered skills (excluding the caller)" do
       caller = build_peer(handle: "caller", granted: %w[embed])
-      target = build_peer(handle: "target", declared_skills: [{ "name" => "embed" }])
+      target = build_peer(handle: "target", declared_skills: [ { "name" => "embed" } ])
       build_peer(handle: "offline", status: "disconnected")
       build_peer(handle: "disabled", enabled: false)
 
@@ -46,7 +46,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
   describe ".authorize" do
     it "authorizes when caller is granted, target is online/enabled, and offers the skill" do
       caller = build_peer(handle: "caller", granted: %w[embed-*])
-      target = build_peer(handle: "target", declared_skills: [{ "name" => "embed-text" }])
+      target = build_peer(handle: "target", declared_skills: [ { "name" => "embed-text" } ])
 
       decision = described_class.authorize(caller_peer: caller, target_peer: target, skill: "embed-text")
       expect(decision.authorized).to be(true)
@@ -55,7 +55,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
 
     it "denies when the caller has no matching grant (default-deny)" do
       caller = build_peer(handle: "caller", granted: %w[summarize])
-      target = build_peer(handle: "target", declared_skills: [{ "name" => "embed" }])
+      target = build_peer(handle: "target", declared_skills: [ { "name" => "embed" } ])
 
       decision = described_class.authorize(caller_peer: caller, target_peer: target, skill: "embed")
       expect(decision.authorized).to be(false)
@@ -64,7 +64,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
 
     it "denies when the target is not online" do
       caller = build_peer(handle: "caller", granted: %w[embed])
-      target = build_peer(handle: "target", status: "disconnected", declared_skills: [{ "name" => "embed" }])
+      target = build_peer(handle: "target", status: "disconnected", declared_skills: [ { "name" => "embed" } ])
 
       decision = described_class.authorize(caller_peer: caller, target_peer: target, skill: "embed")
       expect(decision.authorized).to be(false)
@@ -73,7 +73,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
 
     it "denies when the target does not offer the skill" do
       caller = build_peer(handle: "caller", granted: %w[embed])
-      target = build_peer(handle: "target", declared_skills: [{ "name" => "summarize" }])
+      target = build_peer(handle: "target", declared_skills: [ { "name" => "summarize" } ])
 
       decision = described_class.authorize(caller_peer: caller, target_peer: target, skill: "embed")
       expect(decision.authorized).to be(false)
@@ -83,7 +83,7 @@ RSpec.describe System::PeerCapabilityService, type: :service do
     it "denies cross-account A2A even if every other gate passes" do
       other = create(:account)
       caller = build_peer(handle: "caller", granted: %w[embed])
-      target = build_peer(handle: "target", account: other, declared_skills: [{ "name" => "embed" }])
+      target = build_peer(handle: "target", account: other, declared_skills: [ { "name" => "embed" } ])
 
       decision = described_class.authorize(caller_peer: caller, target_peer: target, skill: "embed")
       expect(decision.authorized).to be(false)

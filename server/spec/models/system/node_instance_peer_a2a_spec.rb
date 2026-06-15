@@ -36,7 +36,7 @@ RSpec.describe System::NodeInstancePeer, type: :model do
     end
 
     it "strips blanks and dedups" do
-      peer.grant_peer_skills!(["embed", "", "embed", " "])
+      peer.grant_peer_skills!([ "embed", "", "embed", " " ])
       expect(peer.reload.granted_peer_skills).to eq(%w[embed])
     end
   end
@@ -52,7 +52,7 @@ RSpec.describe System::NodeInstancePeer, type: :model do
 
   describe "#offered_skill_names" do
     it "extracts names from hash-shaped declared_skills" do
-      peer.update!(declared_skills: [{ "name" => "embed" }, { "name" => "summarize" }])
+      peer.update!(declared_skills: [ { "name" => "embed" }, { "name" => "summarize" } ])
       expect(peer.offered_skill_names).to contain_exactly("embed", "summarize")
     end
 

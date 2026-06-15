@@ -132,7 +132,7 @@ module System
           failed << sensor_class.name.demodulize
           Rails.logger.error("[FleetAutonomy] sensor #{sensor_class.name} failed: #{e.message}")
         end
-        [signals, failed]
+        [ signals, failed ]
       end
 
       # Best-effort wrappers — a self-improvement validator hiccup must never

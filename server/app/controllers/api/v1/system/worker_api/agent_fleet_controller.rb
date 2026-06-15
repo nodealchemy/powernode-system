@@ -50,10 +50,10 @@ module Api
             return run_phase!("aggregate") { result } unless result[:waiting]
 
             if (delay = fleet_service.reserve_aggregate_recheck!)
-              WorkerJobService.enqueue_job("AiAgentFleetAggregateJob", args: [{
+              WorkerJobService.enqueue_job("AiAgentFleetAggregateJob", args: [ {
                 "mission_id" => @mission.id,
                 "account_id" => @mission.account_id
-              }], queue: "ai_execution", delay: delay)
+              } ], queue: "ai_execution", delay: delay)
             end
             render_success(result.merge(mission_id: @mission.id, phase: @mission.current_phase))
           rescue StandardError => e
@@ -114,7 +114,7 @@ module Api
           def load_mission
             @mission = ::Ai::Mission.find_by(id: params[:mission_id])
             return render_not_found("Mission") unless @mission
-            return render_error("Not an agent_fleet mission", status: :unprocessable_content) unless @mission.mission_type == "agent_fleet"
+            render_error("Not an agent_fleet mission", status: :unprocessable_content) unless @mission.mission_type == "agent_fleet"
           end
 
           # An in-flight Sidekiq phase job arriving after cancel/pause/failure

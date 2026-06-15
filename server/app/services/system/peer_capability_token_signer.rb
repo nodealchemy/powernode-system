@@ -227,7 +227,7 @@ module System
 
     def deep_sort(obj)
       case obj
-      when Hash then obj.sort.to_h { |k, v| [k, deep_sort(v)] }
+      when Hash then obj.sort.to_h { |k, v| [ k, deep_sort(v) ] }
       when Array then obj.map { |e| deep_sort(e) }
       else obj
       end

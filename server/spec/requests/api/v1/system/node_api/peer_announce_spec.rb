@@ -31,7 +31,7 @@ RSpec.describe "Api::V1::System::NodeApi::Peer#announce", type: :request do
     it "records the announced skills + addresses on the instance's peer" do
       announce(capabilities: { "os" => "linux", "inference" => true },
                skills: %w[ping inference.generate inference.models],
-               addresses: ["[fd00::2]:7777"])
+               addresses: [ "[fd00::2]:7777" ])
 
       expect(response).to have_http_status(:ok)
       peer = System::NodeInstancePeer.find_by(node_instance: instance)

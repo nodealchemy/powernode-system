@@ -19,8 +19,8 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
 
   describe "#record_proceeded!" do
     it "records one pending outcome per PROCEEDED decision (not pending/blocked), keyed by fingerprint" do
-      signals = [sig("fp-1"), sig("fp-2")]
-      decisions = [proceeded("fp-1"), { decision: :pending, signal_kind: "x", fingerprint: "fp-2" }]
+      signals = [ sig("fp-1"), sig("fp-2") ]
+      decisions = [ proceeded("fp-1"), { decision: :pending, signal_kind: "x", fingerprint: "fp-2" } ]
 
       expect { validator.record_proceeded!(decisions: decisions, signals: signals) }
         .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
@@ -34,8 +34,8 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
     end
 
     it "does not duplicate a pending outcome for the same fingerprint (same unresolved problem)" do
-      validator.record_proceeded!(decisions: [proceeded("fp-1")], signals: [sig("fp-1")])
-      expect { validator.record_proceeded!(decisions: [proceeded("fp-1")], signals: [sig("fp-1")]) }
+      validator.record_proceeded!(decisions: [ proceeded("fp-1") ], signals: [ sig("fp-1") ])
+      expect { validator.record_proceeded!(decisions: [ proceeded("fp-1") ], signals: [ sig("fp-1") ]) }
         .not_to change { System::Fleet::RemediationOutcome.pending.count }
     end
   end
@@ -49,7 +49,7 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
     end
 
     it "marks EFFECTIVE when the fingerprint cleared from the live signals" do
-      result = validator.validate_due!(current_signals: [sig("fp-OTHER")])
+      result = validator.validate_due!(current_signals: [ sig("fp-OTHER") ])
       expect(result[:effective]).to eq(1)
       expect(outcome.reload.status).to eq("effective")
       expect(outcome.effectiveness_score).to eq(1.0)
@@ -57,7 +57,7 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
     end
 
     it "marks INEFFECTIVE when the fingerprint still fires (remediation didn't stick)" do
-      result = validator.validate_due!(current_signals: [sig("fp-1")])
+      result = validator.validate_due!(current_signals: [ sig("fp-1") ])
       expect(result[:ineffective]).to eq(1)
       expect(outcome.reload.status).to eq("ineffective")
       expect(outcome.effectiveness_score).to eq(0.0)
@@ -98,7 +98,7 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
       end
 
       it "still scores ineffective from a live fingerprint regardless of failures" do
-        result = validator.validate_due!(current_signals: [sig("fp-1")],
+        result = validator.validate_due!(current_signals: [ sig("fp-1") ],
                                          failed_sensors: %w[ModuleDriftSensor])
         expect(result[:ineffective]).to eq(1)
         expect(outcome.reload.status).to eq("ineffective")
@@ -119,7 +119,7 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
 
     it "record_proceeded! persists the sensor tag onto the outcome" do
       tagged = sig("fp-9", payload: { "instance_id" => "i-1", "_sensor" => "CertExpirySensor" })
-      validator.record_proceeded!(decisions: [proceeded("fp-9")], signals: [tagged])
+      validator.record_proceeded!(decisions: [ proceeded("fp-9") ], signals: [ tagged ])
 
       o = System::Fleet::RemediationOutcome.pending.find_by(fingerprint: "fp-9")
       expect(o.metadata["sensor"]).to eq("CertExpirySensor")

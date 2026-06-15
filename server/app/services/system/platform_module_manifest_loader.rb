@@ -43,7 +43,7 @@ module System
     # Directory names under modules/ that git knows about, or nil when git
     # tracking info is unavailable (no git binary, not a work tree).
     def git_tracked_dirs(root)
-      out = ::IO.popen(["git", "-C", root.to_s, "ls-files", "-z", "--", "."], err: ::File::NULL, &:read)
+      out = ::IO.popen([ "git", "-C", root.to_s, "ls-files", "-z", "--", "." ], err: ::File::NULL, &:read)
       return nil unless $?.success? && !out.empty?
 
       out.split("\0").filter_map { |path| path.split("/", 2).first if path.include?("/") }.to_set

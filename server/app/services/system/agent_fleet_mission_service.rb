@@ -168,7 +168,7 @@ module System
     # and reports via execute_result — the on-node half of the delegation. Only
     # token-bearing edges are dispatchable. Returns the task count.
     def dispatch_a2a_tasks!(assignments, plan)
-      payload_by_subtask = Array(plan["subtasks"]).to_h { |st| [st["id"], st["payload"]] }
+      payload_by_subtask = Array(plan["subtasks"]).to_h { |st| [ st["id"], st["payload"] ] }
       task_ids = []
       assignments.each do |a|
         assignee = ::System::NodeInstance.where(account_id: account.id).find_by(id: a["assignee_instance_id"])
@@ -531,9 +531,9 @@ module System
 
     def upsert_member(members, record)
       idx = members.index { |m| m["slot"] == record["slot"] }
-      return members + [record] unless idx
+      return members + [ record ] unless idx
 
-      members[0...idx] + [record] + members[(idx + 1)..]
+      members[0...idx] + [ record ] + members[(idx + 1)..]
     end
 
     # Record the resolved isolation profile on the member's NodeInstance.config
