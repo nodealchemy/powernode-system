@@ -50,8 +50,8 @@ jobs:
       # The verify-base-image-digest-is-pinned step fails the run if neither
       # is set or if the value doesn't match the expected sha256 shape.
       BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest || vars.POWERNODE_UBUNTU_BASE_DIGEST }}
-      APT_SNAPSHOT:      ${{ inputs.apt_snapshot || '20260430T000000Z' }}
-      REGISTRY:          ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
+      APT_SNAPSHOT: ${{ inputs.apt_snapshot || '20260430T000000Z' }}
+      REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
 
     steps:
       - name: Verify BASE_IMAGE_DIGEST is pinned
@@ -178,7 +178,7 @@ jobs:
         arch: [amd64]
     env:
       BASE_IMAGE_DIGEST: ${{ inputs.base_image_digest }}
-      APT_SNAPSHOT:      ${{ inputs.apt_snapshot }}
+      APT_SNAPSHOT: ${{ inputs.apt_snapshot }}
       POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
     steps:
       - name: Verify BASE_IMAGE_DIGEST is pinned
