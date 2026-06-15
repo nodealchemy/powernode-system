@@ -66,7 +66,8 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
                         node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
-                        mtls_subject: nil, agent_version: nil)
+                        mtls_subject: nil, agent_version: nil,
+                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil)
       end
       let(:fake_result) do
         ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-abc" })
@@ -95,7 +96,8 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
                         node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
-                        mtls_subject: nil, agent_version: nil)
+                        mtls_subject: nil, agent_version: nil,
+                        gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil)
       end
       let(:ok_result)  { ::System::Runtime::Result.ok(data: { instance: fake_instance, cloud_instance_id: "ci-1" }) }
       let(:bad_result) { ::System::Runtime::Result.err(error: "region unavailable") }
