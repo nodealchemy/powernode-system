@@ -512,6 +512,14 @@ Rails.application.routes.draw do
         # Plan reference: Decentralized Federation §J — Phase 2c (Ingress).
         resources :ingress_routes, only: %i[index]
 
+        # === Ingress forward-auth (Traefik forwardAuth for local service exposure) ===
+        # Sdwan::Service local plane: Traefik calls this to authenticate a caller
+        # for a /svc/<slug> exposure (authenticated/scoped modes). 200 + identity
+        # headers → allow; 401/403/404 → deny. `public` services skip the middleware.
+        namespace :ingress do
+          get :forward_auth, to: "forward_auth#show"
+        end
+
         # === CVE exposures (operator-facing read API) ===
         # Surfaces the System::CveExposure rows produced by the worker-side
         # CVE feed ingest + responder loop (worker_api/cve, worker_api/
