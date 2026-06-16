@@ -58,33 +58,33 @@ module Ai
             parameters: {
               family:        { type: "string",  required: false, description: "Filter by family (x86, arm, power, z, risc-v, mips, other)" },
               is_canonical:  { type: "boolean", required: false, description: "Filter by canonical vs operator-created custom rows" },
-              enabled:       { type: "boolean", required: false }
+              enabled:       { type: "boolean", required: false, description: "Filter by enabled (true) vs disabled (false) architectures" }
             }
           },
           "system_get_architecture" => {
             description: "Fetch a single architecture by id with full catalog metadata + usage counts",
             parameters: {
-              architecture_id: { type: "string", required: true }
+              architecture_id: { type: "string", required: true, description: "UUID of the architecture to fetch" }
             }
           },
           "system_create_architecture" => {
             description: "Create a custom (non-canonical) architecture. Requires system.architectures.manage. Use system_propose_architecture if you only have system.architectures.propose.",
             parameters: {
-              name:         { type: "string",  required: true },
+              name:         { type: "string",  required: true, description: "Canonical architecture name (e.g. amd64, arm64)" },
               family:       { type: "string",  required: true, description: "One of: x86, arm, power, z, risc-v, mips, other" },
-              apt_name:     { type: "string",  required: false },
-              rpm_name:     { type: "string",  required: false },
-              display_name: { type: "string",  required: false },
-              description:  { type: "string",  required: false },
-              kernel_options: { type: "string", required: false },
-              enabled:      { type: "boolean", required: false },
-              public:       { type: "boolean", required: false }
+              apt_name:     { type: "string",  required: false, description: "Debian/APT arch label for this architecture (e.g. amd64)" },
+              rpm_name:     { type: "string",  required: false, description: "RPM/DNF arch label for this architecture (e.g. x86_64)" },
+              display_name: { type: "string",  required: false, description: "Human-friendly display label for the catalog UI" },
+              description:  { type: "string",  required: false, description: "Optional free-text description of the architecture" },
+              kernel_options: { type: "string", required: false, description: "Default kernel boot options associated with this architecture" },
+              enabled:      { type: "boolean", required: false, description: "Whether the architecture is enabled for use (default true)" },
+              public:       { type: "boolean", required: false, description: "Whether the architecture is publicly visible (default true)" }
             }
           },
           "system_update_architecture" => {
             description: "Update a non-canonical custom architecture. Rejects canonical rows with 403-equivalent error.",
             parameters: {
-              architecture_id: { type: "string", required: true },
+              architecture_id: { type: "string", required: true, description: "UUID of the custom architecture to update" },
               attributes:      { type: "object", required: true,
                                   description: "Allowed: name, family, apt_name, rpm_name, display_name, description, kernel_options, enabled, public" }
             }
@@ -92,18 +92,18 @@ module Ai
           "system_delete_architecture" => {
             description: "Delete a non-canonical custom architecture. Rejects canonical rows. Will fail if any NodePlatform references it.",
             parameters: {
-              architecture_id: { type: "string", required: true }
+              architecture_id: { type: "string", required: true, description: "UUID of the custom architecture to delete" }
             }
           },
           "system_propose_architecture" => {
             description: "Propose a new architecture for human review. Creates an Ai::AgentProposal row — no architecture is materialized until the human approver clicks 'Approve & Apply' in the proposals UI. Use this when the calling agent only has system.architectures.propose.",
             parameters: {
-              name:         { type: "string",  required: true },
-              family:       { type: "string",  required: true },
-              apt_name:     { type: "string",  required: false },
-              rpm_name:     { type: "string",  required: false },
-              display_name: { type: "string",  required: false },
-              description:  { type: "string",  required: false },
+              name:         { type: "string",  required: true, description: "Canonical architecture name to propose (e.g. loongarch64)" },
+              family:       { type: "string",  required: true, description: "Architecture family: x86, arm, power, z, risc-v, mips, other" },
+              apt_name:     { type: "string",  required: false, description: "Debian/APT arch label for the proposed architecture" },
+              rpm_name:     { type: "string",  required: false, description: "RPM/DNF arch label for the proposed architecture" },
+              display_name: { type: "string",  required: false, description: "Human-friendly display label for the catalog UI" },
+              description:  { type: "string",  required: false, description: "Optional free-text description of the proposed architecture" },
               justification: { type: "string", required: false, description: "Why this architecture should be added — surfaces in the approval UI" }
             }
           }

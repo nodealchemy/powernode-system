@@ -65,18 +65,21 @@ module Ai
           "system_acme_get_certificate" => {
             description: "Fetch a single ACME certificate's non-secret detail (status, issuer, expiry, vault_paths_present). " \
                          "NEVER returns PEMs, private keys, or Vault secret values.",
-            parameters: { certificate_id: { type: "string", required: true } }
+            parameters: { certificate_id: { type: "string", required: true,
+                                            description: "UUID of the ACME certificate to fetch" } }
           },
           "system_acme_renew_certificate" => {
             description: "Renew an ACME certificate currently in status=valid. Drives valid → renewing → valid via " \
                          "Acme::CertificateManager.renew!. Returns the reloaded non-secret cert detail on success.",
-            parameters: { certificate_id: { type: "string", required: true } }
+            parameters: { certificate_id: { type: "string", required: true,
+                                            description: "UUID of the ACME certificate to renew (must be in status=valid)" } }
           },
           "system_acme_revoke_certificate" => {
             description: "Revoke a non-terminal ACME certificate via Acme::CertificateManager.revoke!. Drives any " \
                          "non-terminal status → revoked. Optionally records a revocation reason.",
             parameters: {
-              certificate_id: { type: "string", required: true },
+              certificate_id: { type: "string", required: true,
+                                description: "UUID of the non-terminal ACME certificate to revoke" },
               reason: { type: "string", required: false, description: "Optional ACME revocation reason" }
             }
           },
@@ -85,10 +88,10 @@ module Ai
                          "token in `credentials` is handed straight to Vault — NEVER stored on the model, logged, or " \
                          "returned. The result serializes only the public index (name, provider, status).",
             parameters: {
-              name: { type: "string", required: true },
+              name: { type: "string", required: true, description: "Human-readable name for the DNS-01 credential record" },
               provider: { type: "string", required: true, description: "DNS provider slug (cloudflare|route53|gcloud|digitalocean|hetzner|porkbun|ovh)" },
               credentials: { type: "object", required: true, description: "Provider-specific secret token fields (SENSITIVE — stored in Vault only)" },
-              metadata: { type: "object", required: false }
+              metadata: { type: "object", required: false, description: "Optional non-secret metadata stored on the credential record" }
             }
           }
         }

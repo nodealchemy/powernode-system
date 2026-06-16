@@ -58,7 +58,8 @@ module Ai
               consuming services.
             DESC
             parameters: {
-              storage_assignment_id:  { type: "string", required: true },
+              storage_assignment_id:  { type: "string", required: true,
+                                         description: "UUID of the StorageAssignment whose owner is being set" },
               owner_kind:             { type: "string", required: true,
                                          description: "service_user | operator | nobody | root" },
               service_user_username:  { type: "string", required: false,
@@ -76,9 +77,12 @@ module Ai
               failed across the fleet".
             DESC
             parameters: {
-              owner_kind:            { type: "string", required: false },
-              service_user_username: { type: "string", required: false },
-              node_instance_id:      { type: "string", required: false },
+              owner_kind:            { type: "string", required: false,
+                                        description: "Filter by owner kind: service_user | operator | nobody | root" },
+              service_user_username: { type: "string", required: false,
+                                        description: "Filter by the owning ServiceUser's username" },
+              node_instance_id:      { type: "string", required: false,
+                                        description: "Filter by the storage provider NodeInstance UUID" },
               chown_state:           { type: "string", required: false,
                                         description: "complete | pending | running | failed | manual_required" }
             }
@@ -86,7 +90,8 @@ module Ai
           "system_storage_chown_status" => {
             description: "Inspect chown state of a StorageAssignment — current state, previous_uid/gid (if in flight), task id, start/complete timestamps, recorded error.",
             parameters: {
-              storage_assignment_id: { type: "string", required: true }
+              storage_assignment_id: { type: "string", required: true,
+                                        description: "UUID of the StorageAssignment whose chown status to inspect" }
             }
           },
           "system_storage_chown_retry" => {
@@ -100,8 +105,10 @@ module Ai
               assignment to complete without re-running.
             DESC
             parameters: {
-              storage_assignment_id: { type: "string", required: true },
-              force_complete:        { type: "boolean", required: false, default: false }
+              storage_assignment_id: { type: "string", required: true,
+                                        description: "UUID of the StorageAssignment whose failed/manual_required chown to re-dispatch" },
+              force_complete:        { type: "boolean", required: false, default: false,
+                                        description: "Escape hatch: flip the assignment to complete without re-running (use after a manual chown)" }
             }
           }
         }

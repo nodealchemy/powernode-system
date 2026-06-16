@@ -66,129 +66,129 @@ module Ai
           "system_list_package_repositories" => {
             description: "List accessible apt/rpm package repositories (account-scoped + shared). Filter by platform via node_platform_ids — repos linked to any of the supplied platforms are returned.",
             parameters: {
-              kind: { type: "string", required: false },
+              kind: { type: "string", required: false, description: "Filter by repository kind: apt, rpm, or dnf" },
               node_platform_ids: { type: "array", required: false, description: "Array of NodePlatform UUIDs; repos linked to ANY are returned" }
             }
           },
           "system_get_package_repository" => {
             description: "Fetch one package repository with sync status",
-            parameters: { repository_id: { type: "string", required: true } }
+            parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to fetch" } }
           },
           "system_create_package_repository" => {
             description: "Register a new apt/rpm package repository. Set visibility='shared' for system-wide (requires manage_shared permission). Optionally pre-link NodePlatforms via node_platform_ids.",
             parameters: {
-              name: { type: "string", required: true },
-              kind: { type: "string", required: true },           # apt|rpm|dnf
-              base_url: { type: "string", required: true },
-              visibility: { type: "string", required: false },     # account|shared
-              architectures: { type: "array", required: false },
-              apt_config: { type: "object", required: false },    # { suite, components: [] }
-              rpm_config: { type: "object", required: false },    # { releasever, gpgcheck, metalink }
-              signing_key_armor: { type: "string", required: false },
+              name: { type: "string", required: true, description: "Human-readable repository name" },
+              kind: { type: "string", required: true, description: "Repository kind: apt, rpm, or dnf" },           # apt|rpm|dnf
+              base_url: { type: "string", required: true, description: "Upstream repository base URL to sync from" },
+              visibility: { type: "string", required: false, description: "'account' (default, account-scoped) or 'shared' (system-wide; requires manage_shared)" },     # account|shared
+              architectures: { type: "array", required: false, description: "Canonical arch names this repo serves (defaults to ['amd64'])" },
+              apt_config: { type: "object", required: false, description: "APT-specific config: { suite, components: [] }" },    # { suite, components: [] }
+              rpm_config: { type: "object", required: false, description: "RPM/DNF-specific config: { releasever, gpgcheck, metalink }" },    # { releasever, gpgcheck, metalink }
+              signing_key_armor: { type: "string", required: false, description: "ASCII-armored GPG public key used to verify the repository signature" },
               node_platform_ids: { type: "array", required: false, description: "NodePlatform UUIDs to link on create" },
-              description: { type: "string", required: false }
+              description: { type: "string", required: false, description: "Optional free-text description of the repository" }
             }
           },
           "system_update_package_repository" => {
             description: "Update an apt/rpm package repository's configuration",
             parameters: {
-              repository_id: { type: "string", required: true },
-              attributes:    { type: "object", required: true }
+              repository_id: { type: "string", required: true, description: "UUID of the package repository to update" },
+              attributes:    { type: "object", required: true, description: "Fields to update: name, description, base_url, architectures, apt_config, rpm_config, signing_key_armor, priority, enabled, node_platform_ids" }
             }
           },
           "system_delete_package_repository" => {
             description: "Delete a package repository (soft-delete linked Package metadata)",
-            parameters: { repository_id: { type: "string", required: true } }
+            parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to delete" } }
           },
           "system_sync_package_repository" => {
             description: "Trigger an immediate sync of the upstream apt/rpm index for this repository",
-            parameters: { repository_id: { type: "string", required: true } }
+            parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to sync" } }
           },
           "system_link_repository_platform" => {
             description: "Link a NodePlatform to a PackageRepository. Cross-account validated — account-scoped repos can only link platforms in the same account; shared repos can link any platform.",
             parameters: {
-              repository_id:    { type: "string", required: true },
-              node_platform_id: { type: "string", required: true }
+              repository_id:    { type: "string", required: true, description: "UUID of the package repository to link" },
+              node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform to link to the repository" }
             }
           },
           "system_unlink_repository_platform" => {
             description: "Remove a NodePlatform ↔ PackageRepository link. Idempotent — returns linked:false whether or not the link existed.",
             parameters: {
-              repository_id:    { type: "string", required: true },
-              node_platform_id: { type: "string", required: true }
+              repository_id:    { type: "string", required: true, description: "UUID of the package repository to unlink" },
+              node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform to unlink from the repository" }
             }
           },
           "system_search_packages" => {
             description: "Search the synced apt/rpm package catalog. Supports name+description trigram + semantic embedding ranking (mode: lexical|semantic|hybrid, default hybrid). Filters: kind (apt/rpm/dnf), repository_ids[], architectures[] (canonical, cross-kind expanded), sections[], license, provides (capability lookup).",
             parameters: {
-              q:              { type: "string",  required: false },
+              q:              { type: "string",  required: false, description: "Search query matched against package name + description" },
               mode:           { type: "string",  required: false, description: "lexical | semantic | hybrid (default hybrid; blank q forces lexical)" },
               sort:           { type: "string",  required: false, description: "relevance | name | updated (default relevance)" },
               repository_id:  { type: "string",  required: false, description: "Back-compat: singular form of repository_ids" },
-              repository_ids: { type: "array",   required: false },
+              repository_ids: { type: "array",   required: false, description: "Restrict search to these PackageRepository UUIDs" },
               kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
               architecture:   { type: "string",  required: false, description: "Back-compat: singular form of architectures" },
               architectures:  { type: "array",   required: false, description: "Canonical arch names (amd64, arm64) — cross-kind expanded" },
               section:        { type: "string",  required: false, description: "Back-compat: singular form of sections" },
-              sections:       { type: "array",   required: false },
-              license:        { type: "string",  required: false },
+              sections:       { type: "array",   required: false, description: "Filter by package section/group names" },
+              license:        { type: "string",  required: false, description: "Filter by package license identifier" },
               provides:       { type: "string",  required: false, description: "Capability name — finds packages whose name=capability OR provides @> [{name: capability}]" },
-              page:           { type: "integer", required: false },
-              per_page:       { type: "integer", required: false }
+              page:           { type: "integer", required: false, description: "1-based page number for paginated results" },
+              per_page:       { type: "integer", required: false, description: "Number of results per page" }
             }
           },
           "system_discover_packages" => {
             description: "Intent-based package discovery — describe a capability ('reverse proxy', 'distributed cache') and get ranked packages from accessible repositories. Pure semantic ranking via pgvector cosine distance. Use system_search_packages instead when you already know the package name.",
             parameters: {
               intent:         { type: "string",  required: true,  description: "Free-text capability description — what the package should do" },
-              repository_ids: { type: "array",   required: false },
+              repository_ids: { type: "array",   required: false, description: "Restrict discovery to these PackageRepository UUIDs" },
               kind:           { type: "string",  required: false, description: "apt | rpm | dnf" },
               architectures:  { type: "array",   required: false, description: "Canonical arch names — cross-kind expanded" },
-              license:        { type: "string",  required: false },
+              license:        { type: "string",  required: false, description: "Filter by package license identifier" },
               top_k:          { type: "integer", required: false, description: "Max results (1-50, default 10)" }
             }
           },
           "system_get_package" => {
             description: "Fetch package metadata including depends/recommends/provides",
-            parameters: { package_id: { type: "string", required: true } }
+            parameters: { package_id: { type: "string", required: true, description: "UUID of the package to fetch" } }
           },
           "system_resolve_package_dependencies" => {
             description: "Preview the dependency closure of a package WITHOUT writes. Returns required closure + recommends candidates the operator can opt into.",
             parameters: {
-              repository_id: { type: "string", required: true },
-              package_name:  { type: "string", required: true },
-              architecture:  { type: "string", required: true }
+              repository_id: { type: "string", required: true, description: "UUID of the package repository to resolve against" },
+              package_name:  { type: "string", required: true, description: "Name of the root package whose dependency closure to preview" },
+              architecture:  { type: "string", required: true, description: "Canonical architecture to resolve dependencies for (e.g. amd64)" }
             }
           },
           "system_create_module_from_package" => {
             description: "Materialize a package + transitive deps as NodeModule rows, link them via ModuleDependency edges, and dispatch a CI build. Operator picks recommends_selected from the resolve_dependencies preview.",
             parameters: {
-              repository_id:       { type: "string", required: true },
-              package_name:        { type: "string", required: true },
-              architectures:       { type: "array",  required: true },
-              recommends_selected: { type: "array",  required: false },
-              category_id:         { type: "string", required: false },
-              dispatch_build:      { type: "boolean", required: false }
+              repository_id:       { type: "string", required: true, description: "UUID of the source package repository" },
+              package_name:        { type: "string", required: true, description: "Name of the package to materialize into a NodeModule" },
+              architectures:       { type: "array",  required: true, description: "Canonical arch names to build the module for" },
+              recommends_selected: { type: "array",  required: false, description: "Recommended package names (from resolve_dependencies preview) to opt into" },
+              category_id:         { type: "string", required: false, description: "UUID of the NodeModuleCategory to assign the new module to" },
+              dispatch_build:      { type: "boolean", required: false, description: "Whether to dispatch a CI build after materialization (default true)" }
             }
           },
           "system_list_package_module_links" => {
             description: "List which NodeModules were materialized from which packages (auditable provenance)",
             parameters: {
-              repository_id: { type: "string", required: false },
-              auto_generated: { type: "boolean", required: false }
+              repository_id: { type: "string", required: false, description: "Filter links by source PackageRepository UUID" },
+              auto_generated: { type: "boolean", required: false, description: "Filter by whether the link was auto-generated (true) or operator-created (false)" }
             }
           },
           "system_refresh_package_module" => {
             description: "Re-materialize a NodeModule from its source package when upstream drifts. Replays persisted recommends_chosen for deterministic refreshes.",
             parameters: {
-              package_module_link_id: { type: "string", required: true },
-              force: { type: "boolean", required: false }
+              package_module_link_id: { type: "string", required: true, description: "UUID of the PackageModuleLink to refresh" },
+              force: { type: "boolean", required: false, description: "Force re-materialization even when no upstream drift is detected" }
             }
           },
           "system_suggest_architectures_for_fleet" => {
             description: "Suggest which canonical architectures to materialize a package for, based on the fleet's NodePlatform coverage and the repository's served archs. Returns suggested arches + per-arch rationale + confidence label. Frontend uses this to pre-populate the CreateModuleFromPackageModal multi-select.",
             parameters: {
-              repository_id:   { type: "string",  required: true },
+              repository_id:   { type: "string",  required: true, description: "UUID of the package repository whose served archs constrain suggestions" },
               max_suggestions: { type: "integer", required: false, description: "1-7 (default 4)" }
             }
           }

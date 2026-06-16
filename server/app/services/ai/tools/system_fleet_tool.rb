@@ -235,17 +235,17 @@ module Ai
           # === Nodes ===
           "system_list_nodes" => {
             description: "List all nodes for the current account",
-            parameters: { template_id: { type: "string", required: false } }
+            parameters: { template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to filter nodes by their bound template" } }
           },
           "system_get_node" => {
             description: "Fetch a node by id",
-            parameters: { node_id: { type: "string", required: true } }
+            parameters: { node_id: { type: "string", required: true, description: "UUID of the node to fetch (account-scoped)" } }
           },
           "system_create_node" => {
             description: "Create a new node bound to a template",
             parameters: {
-              name: { type: "string", required: true },
-              template_id: { type: "string", required: true }
+              name: { type: "string", required: true, description: "Display name for the new node" },
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the node to" }
             }
           },
           # F8-07 — REST update parity. Mirrors nodes_controller node_params
@@ -255,105 +255,105 @@ module Ai
           "system_update_node" => {
             description: "Update a node's mutable attributes (rename, enable/disable, retarget template/worker, public-address config). Does NOT accept SSH key material — manage keys via the REST/Vault path.",
             parameters: {
-              node_id: { type: "string", required: true },
-              name: { type: "string", required: false },
-              description: { type: "string", required: false },
-              enabled: { type: "boolean", required: false },
-              node_template_id: { type: "string", required: false },
-              worker_id: { type: "string", required: false },
-              public_address: { type: "string", required: false },
-              allocate_public_ip: { type: "boolean", required: false },
-              config: { type: "object", required: false }
+              node_id: { type: "string", required: true, description: "UUID of the node to update (account-scoped)" },
+              name: { type: "string", required: false, description: "New display name for the node" },
+              description: { type: "string", required: false, description: "New free-text description for the node" },
+              enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the node" },
+              node_template_id: { type: "string", required: false, description: "UUID of a NodeTemplate to retarget the node to" },
+              worker_id: { type: "string", required: false, description: "UUID of the Worker that services this node's tasks" },
+              public_address: { type: "string", required: false, description: "Public hostname or IP to reach the node at" },
+              allocate_public_ip: { type: "boolean", required: false, description: "When true, request a public IP allocation for the node" },
+              config: { type: "object", required: false, description: "Arbitrary node config hash (merged into the node record)" }
             }
           },
           "system_delete_node" => {
             description: "Hard-destroy a Node. Cascades node_instances, node_module_assignments, and tasks via dependent:destroy. " \
                          "FK-blocked if instances have unhandled SDWAN/bootstrap_token references — use system_destroy_instance first per instance, then this.",
-            parameters: { node_id: { type: "string", required: true } }
+            parameters: { node_id: { type: "string", required: true, description: "UUID of the node to hard-destroy (account-scoped)" } }
           },
           "system_delete_template" => {
             description: "Delete a NodeTemplate. Restricted: errors if any Node uses this template (System::NodeTemplate has dependent::restrict_with_error on nodes).",
-            parameters: { template_id: { type: "string", required: true } }
+            parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to delete (account-scoped)" } }
           },
           "system_create_template" => {
             description: "Create a new NodeTemplate for the current account. Binds to a NodePlatform via node_platform_id (required by the model). Lets the model validate (name presence + per-account uniqueness).",
             parameters: {
-              name: { type: "string", required: true },
-              description: { type: "string", required: false },
-              enabled: { type: "boolean", required: false },
-              public: { type: "boolean", required: false },
-              node_platform_id: { type: "string", required: false },
-              admin_user: { type: "string", required: false },
-              config: { type: "object", required: false }
+              name: { type: "string", required: true, description: "Display name for the new template (must be unique within the account)" },
+              description: { type: "string", required: false, description: "Free-text description for the template" },
+              enabled: { type: "boolean", required: false, description: "Whether the template is enabled (selectable for new nodes)" },
+              public: { type: "boolean", required: false, description: "Whether the template is shared/public rather than account-private" },
+              node_platform_id: { type: "string", required: false, description: "UUID of the NodePlatform the template binds to" },
+              admin_user: { type: "string", required: false, description: "Default admin username provisioned on instances built from this template" },
+              config: { type: "object", required: false, description: "Arbitrary template config hash" }
             }
           },
           "system_update_template" => {
             description: "Update mutable NodeTemplate fields: name, description.",
             parameters: {
-              template_id: { type: "string", required: true },
-              name: { type: "string", required: false },
-              description: { type: "string", required: false }
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to update (account-scoped)" },
+              name: { type: "string", required: false, description: "New display name for the template" },
+              description: { type: "string", required: false, description: "New free-text description for the template" }
             }
           },
           "system_delete_module" => {
             description: "Delete a NodeModule. Cascades child_modules, versions, node_module_assignments, template_modules, module_puppet_assignments, module_dependencies.",
-            parameters: { module_id: { type: "string", required: true } }
+            parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to delete (account-scoped)" } }
           },
           "system_refresh_instance_modules" => {
             description: "Force re-apply all assigned modules to an instance — queues a reconcile task. Useful when instance has drifted from desired template state.",
-            parameters: { instance_id: { type: "string", required: true } }
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose modules to re-apply" } }
           },
 
           # === Instances ===
           "system_list_instances" => {
             description: "List instances (filterable by node_id or template_id)",
             parameters: {
-              node_id: { type: "string", required: false },
-              template_id: { type: "string", required: false }
+              node_id: { type: "string", required: false, description: "Optional node UUID to list only that node's instances" },
+              template_id: { type: "string", required: false, description: "Optional NodeTemplate UUID to list instances of nodes on that template" }
             }
           },
           "system_get_instance" => {
             description: "Fetch a node instance with its current status + metrics",
-            parameters: { instance_id: { type: "string", required: true } }
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to fetch (account-scoped)" } }
           },
           "system_update_instance" => {
             description: "Update mutable NodeInstance metadata: name, description, config, and the IP address fields. " \
                          "Deliberately does NOT expose status/variety/key — status is governed by the AASM lifecycle (use the lifecycle actions), and key is encrypted signing material.",
             parameters: {
-              instance_id: { type: "string", required: true },
-              name: { type: "string", required: false },
-              description: { type: "string", required: false },
-              config: { type: "object", required: false },
-              private_ip_address: { type: "string", required: false },
-              public_ip_address: { type: "string", required: false },
-              vpn_ip_address: { type: "string", required: false }
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to update (account-scoped)" },
+              name: { type: "string", required: false, description: "New display name for the instance" },
+              description: { type: "string", required: false, description: "New free-text description for the instance" },
+              config: { type: "object", required: false, description: "Instance config hash (replaces the stored config)" },
+              private_ip_address: { type: "string", required: false, description: "Private/internal IP address of the instance" },
+              public_ip_address: { type: "string", required: false, description: "Public IP address of the instance" },
+              vpn_ip_address: { type: "string", required: false, description: "SDWAN/VPN overlay IP address of the instance" }
             }
           },
           "system_find_node_with_gpu" => {
             description: "Find live node instances that expose a GPU/accelerator, optionally filtered by gpu_type, a minimum per-GPU VRAM (min_gpu_memory_mb), and a minimum GPU count. GPU is resolved from the instance's provider_instance_type SKU or its agent-reported config[\"gpu\"] hint.",
             parameters: {
-              gpu_type: { type: "string", required: false },
-              min_gpu_memory_mb: { type: "integer", required: false },
-              min_gpu_count: { type: "integer", required: false }
+              gpu_type: { type: "string", required: false, description: "Filter to a specific GPU/accelerator type (case-insensitive, e.g. 'A100')" },
+              min_gpu_memory_mb: { type: "integer", required: false, description: "Minimum per-GPU VRAM in megabytes the instance must have" },
+              min_gpu_count: { type: "integer", required: false, description: "Minimum number of GPUs the instance must expose (defaults to 1)" }
             }
           },
           "system_list_instance_types_by_gpu" => {
             description: "List provider instance-type catalog SKUs that carry a GPU, optionally filtered by gpu_type and a minimum GPU count. Use to pick a GPU SKU for provisioning.",
             parameters: {
-              gpu_type: { type: "string", required: false },
-              min_gpu_count: { type: "integer", required: false }
+              gpu_type: { type: "string", required: false, description: "Filter SKUs to a specific GPU/accelerator type" },
+              min_gpu_count: { type: "integer", required: false, description: "Minimum number of GPUs the SKU must carry (defaults to 1)" }
             }
           },
           "system_deploy_inference_server" => {
             description: "Deploy an inference runtime (ollama) onto a GPU node and make it consumable: assigns the gpu-<accelerator>-runtime + inference-ollama modules, registers an ollama Ai::Provider at the endpoint (active only once the endpoint answers a health probe — modules apply asynchronously, so re-deploy after the runtime is up to activate), and optionally publishes an SDWAN service offering. Targets a node by instance_id (must be live + GPU-capable unless force), or auto-selects via gpu_type/min_gpu_memory_mb. Pass endpoint_override to point at an existing ollama (e.g. for smoke).",
             parameters: {
-              instance_id: { type: "string", required: false },
-              gpu_type: { type: "string", required: false },
-              min_gpu_memory_mb: { type: "integer", required: false },
-              model: { type: "string", required: false },
-              endpoint_override: { type: "string", required: false },
-              sdwan_network_id: { type: "string", required: false },
-              vip_cidr: { type: "string", required: false },
+              instance_id: { type: "string", required: false, description: "UUID of the target GPU NodeInstance; omit to auto-select via gpu_type/min_gpu_memory_mb" },
+              gpu_type: { type: "string", required: false, description: "GPU/accelerator type to match when auto-selecting a target instance" },
+              min_gpu_memory_mb: { type: "integer", required: false, description: "Minimum per-GPU VRAM (MB) when auto-selecting a target instance" },
+              model: { type: "string", required: false, description: "Inference model tag to pull/serve on the ollama runtime" },
+              endpoint_override: { type: "string", required: false, description: "Point the registered ollama provider at an existing endpoint URL instead of deploying (e.g. for smoke tests)" },
+              sdwan_network_id: { type: "string", required: false, description: "UUID of an SDWAN network to publish the inference service offering on" },
+              vip_cidr: { type: "string", required: false, description: "CIDR for the SDWAN virtual IP to front the published inference service" },
               accelerator: { type: "string", required: false, description: "Runtime accelerator family — selects the gpu-<accelerator>-runtime module (default nvidia)" },
               force: { type: "boolean", required: false, description: "Bypass the terminated/GPU gating on an explicit instance_id" }
             }
@@ -361,60 +361,60 @@ module Ai
           "system_grant_instance_mcp_tools" => {
             description: "Grant an instance-agent the MCP tool-name glob patterns it may invoke on the platform MCP (default-deny: an instance can call nothing until granted). Patterns match the 'platform.<tool>' name, e.g. 'platform.system_*_read' or 'platform.health'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
             parameters: {
-              instance_id: { type: "string", required: true },
-              tool_patterns: { type: "array", required: true },
-              mode: { type: "string", required: false }
+              instance_id: { type: "string", required: true, description: "UUID of the instance (announced peer) to grant MCP tool access to" },
+              tool_patterns: { type: "array", required: true, description: "Glob patterns matching 'platform.<tool>' names the instance may invoke (e.g. ['platform.system_*_read'])" },
+              mode: { type: "string", required: false, description: "'replace' (default) to overwrite the grant list, or 'add' to append" }
             }
           },
           "system_grant_instance_peer_skills" => {
             description: "A2A: grant an instance-agent the peer skill-name glob patterns it may invoke on OTHER instances via agent-to-agent MCP (default-deny). Patterns match a peer's offered skill name, e.g. 'embed-*' or 'summarize'. mode: 'replace' (default) or 'add'. The instance must have announced as a peer.",
             parameters: {
-              instance_id: { type: "string", required: true },
-              skill_patterns: { type: "array", required: true },
-              mode: { type: "string", required: false }
+              instance_id: { type: "string", required: true, description: "UUID of the instance (announced peer) to grant peer-skill call access to" },
+              skill_patterns: { type: "array", required: true, description: "Glob patterns matching peer-offered skill names the instance may invoke via A2A (e.g. ['embed-*', 'summarize'])" },
+              mode: { type: "string", required: false, description: "'replace' (default) to overwrite the grant list, or 'add' to append" }
             }
           },
           "system_discover_peers" => {
             description: "A2A: list the online, operator-enabled agent peers in the account and the skills they offer (capability discovery). Pass instance_id to discover from a specific caller's perspective (excludes itself). Discovery does not imply call permission — the call is still gated by system_authorize_peer_call.",
             parameters: {
-              instance_id: { type: "string", required: false }
+              instance_id: { type: "string", required: false, description: "Optional caller instance UUID to discover from its perspective (excludes itself)" }
             }
           },
           "system_authorize_peer_call" => {
             description: "A2A: decide whether a caller instance may invoke a skill on a target instance via agent-to-agent MCP (three-gate, default-deny: caller granted + target online/enabled + target offers skill + same account). Returns { authorized, reason }. Consulted by the on-node A2A transport before relaying a call.",
             parameters: {
-              caller_instance_id: { type: "string", required: true },
-              target_instance_id: { type: "string", required: true },
-              skill: { type: "string", required: true }
+              caller_instance_id: { type: "string", required: true, description: "UUID of the instance attempting the A2A call" },
+              target_instance_id: { type: "string", required: true, description: "UUID of the instance the skill would be invoked on" },
+              skill: { type: "string", required: true, description: "Name of the peer skill the caller wants to invoke on the target" }
             }
           },
           "system_launch_agent_fleet" => {
             description: "L3: launch an agent-fleet orchestration mission — dynamically provision a fleet of agent-instances, grant them L2 (platform-MCP) + L2.5 (A2A) capabilities, delegate subtasks (hybrid coordinator + peer sub-delegation), aggregate, and reap. Creates an approval-gated Ai::Mission (mission_type: agent_fleet) bound to the system_agent_fleet template and starts it; the operator approves the review_fleet gate before any instances are provisioned. fleet_spec: { size, source('provision'|'pool'), node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[{id,skill}], delegation('central'|'a2a'|'hybrid'), reap }.",
             parameters: {
-              fleet_spec: { type: "object", required: true },
-              name: { type: "string", required: false },
-              objective: { type: "string", required: false }
+              fleet_spec: { type: "object", required: true, description: "Fleet orchestration spec: { size, source, node_id, provider_region_id, provider_instance_type_id, pool_name, grant_mcp_tools[], grant_peer_skills[], member_skills[], subtasks[], delegation, reap }" },
+              name: { type: "string", required: false, description: "Display name for the agent-fleet mission" },
+              objective: { type: "string", required: false, description: "Free-text objective/goal for the fleet mission" }
             }
           },
           "system_agent_fleet_status" => {
             description: "L3: inspect an agent-fleet mission — returns status, current_phase, error_message, and a summary of the fleet (plan, member/assignment counts, aggregated report, per-member reap actions, reap_incomplete flag).",
             parameters: {
-              mission_id: { type: "string", required: true }
+              mission_id: { type: "string", required: true, description: "UUID of the agent-fleet Ai::Mission to inspect" }
             }
           },
           "system_reap_agent_fleet" => {
             description: "L3: re-run reap for a failed/stuck agent-fleet mission — returns pool members, terminates provisioned members, disables their peers. Safe to retry; reports per-member actions and a reap_incomplete flag when any member fails to terminate. Pass force:true to reap a fleet whose plan disabled reaping.",
             parameters: {
-              mission_id: { type: "string", required: true },
+              mission_id: { type: "string", required: true, description: "UUID of the agent-fleet Ai::Mission to re-reap" },
               force: { type: "boolean", required: false, description: "Reap even when the fleet plan set reap:false" }
             }
           },
           "system_mint_peer_capability_token" => {
             description: "A2A: mint an Ed25519-signed capability token proving caller_instance may invoke `skill` on target_instance via agent-to-agent MCP. GATED on the 4-gate A2A policy (PeerCapabilityService.authorize) — only issued if the call is authorized. The on-node A2A MCP server verifies the token's signature OFFLINE against the advertised public key (no per-call platform round-trip). Short-lived (default 5 min). Returns { envelope, signature, handle, public_key, expires_at, sub, aud, skill, jti }.",
             parameters: {
-              caller_instance_id: { type: "string", required: true },
-              target_instance_id: { type: "string", required: true },
-              skill: { type: "string", required: true },
+              caller_instance_id: { type: "string", required: true, description: "UUID of the instance the token authorizes to make the call (token subject)" },
+              target_instance_id: { type: "string", required: true, description: "UUID of the instance the token authorizes the call against (token audience)" },
+              skill: { type: "string", required: true, description: "Name of the peer skill the minted token authorizes" },
               ttl_seconds: { type: "integer", required: false, description: "Default 300; clamped to 1..3600 (MAX_TTL_SECONDS) — revocation propagates via the agents' capability_keys pull, so token lifetime is hard-capped" }
             }
           },
@@ -427,42 +427,42 @@ module Ai
                          "Agents SHOULD send a stable operation_id per logical request — retries carrying " \
                          "the same operation_id reuse the in-flight instance instead of provisioning a duplicate.",
             parameters: {
-              node_id: { type: "string", required: true },
-              provider_region_id: { type: "string", required: true },
-              provider_instance_type_id: { type: "string", required: true },
+              node_id: { type: "string", required: true, description: "UUID of the node to provision a cloud instance for" },
+              provider_region_id: { type: "string", required: true, description: "UUID of the ProviderRegion to place the instance in" },
+              provider_instance_type_id: { type: "string", required: true, description: "UUID of the ProviderInstanceType (SKU) to provision" },
               operation_id: { type: "string", required: false,
                               description: "Stable idempotency key per logical provision request" },
-              options: { type: "object", required: false }
+              options: { type: "object", required: false, description: "Per-provider provisioning options passed through to the adapter" }
             }
           },
           "system_terminate_instance" => {
             description: "Terminate an instance (cleanly destroys cloud resource + transitions to :terminated). Use system_destroy_instance to fully remove a registry row that has no live cloud resource.",
-            parameters: { instance_id: { type: "string", required: true } }
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to terminate (destroys the cloud resource)" } }
           },
           # F4-08 — lifecycle control. Cloud + physical (SSH/IPMI) paths via
           # InstanceControlService; AASM start/stop/reboot events.
           "system_start_instance" => {
             description: "Start a stopped instance (cloud adapter or physical SSH/IPMI path). The restart counterpart to system_stop_instance.",
             parameters: {
-              instance_id: { type: "string", required: true },
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to start" },
               operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
-              force: { type: "boolean", required: false }
+              force: { type: "boolean", required: false, description: "Force the start even if the instance is not in a cleanly stopped state" }
             }
           },
           "system_stop_instance" => {
             description: "Stop a running instance WITHOUT terminating it — disk and registry row are retained, compute billing stops on most cloud providers. The cost-control lever for idle GPU instances; restart with system_start_instance.",
             parameters: {
-              instance_id: { type: "string", required: true },
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to stop" },
               operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
-              force: { type: "boolean", required: false }
+              force: { type: "boolean", required: false, description: "Force-stop the instance (hard power-off) instead of a graceful shutdown" }
             }
           },
           "system_reboot_instance" => {
             description: "Reboot a hung or misbehaving instance in place (no reprovision, addresses retained).",
             parameters: {
-              instance_id: { type: "string", required: true },
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to reboot" },
               operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
-              force: { type: "boolean", required: false }
+              force: { type: "boolean", required: false, description: "Force a hard reset instead of a graceful reboot" }
             }
           },
           "system_destroy_instance" => {
@@ -471,7 +471,7 @@ module Ai
                          "system_node_modules, system_storage_assignments, billing_provisioning_usage_records, etc.). " \
                          "Use ONLY for ghost rows: cloud_instance_id is null OR the provider resource is already gone. " \
                          "Irreversible. Does NOT call the provider to destroy a live VM — pair with system_terminate_instance for that.",
-            parameters: { instance_id: { type: "string", required: true } }
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance registry row to hard-destroy (ghost rows only)" } }
           },
 
           # === Templates ===
@@ -481,66 +481,66 @@ module Ai
           },
           "system_get_template" => {
             description: "Fetch a template with its assigned modules",
-            parameters: { template_id: { type: "string", required: true } }
+            parameters: { template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to fetch (account-scoped)" } }
           },
           "system_assign_module_to_template" => {
             description: "Bind a NodeModule to a NodeTemplate (creates a TemplateModule join)",
             parameters: {
-              template_id: { type: "string", required: true },
-              module_id: { type: "string", required: true }
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to bind the module to" },
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign to the template" }
             }
           },
 
           # === Modules + Versions ===
           "system_list_modules" => {
             description: "List node modules (filterable by variety)",
-            parameters: { options: { type: "object", required: false } }
+            parameters: { options: { type: "object", required: false, description: "Filter options hash — supports { variety: '<variety>' } to filter modules by variety" } }
           },
           "system_get_module" => {
             description: "Fetch a module with its current_version + assignments",
-            parameters: { module_id: { type: "string", required: true } }
+            parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule to fetch (account-scoped)" } }
           },
           "system_list_module_versions" => {
             description: "List versions of a module (newest first)",
-            parameters: { module_id: { type: "string", required: true } }
+            parameters: { module_id: { type: "string", required: true, description: "UUID of the NodeModule whose versions to list" } }
           },
           "system_promote_module_version" => {
             description: "Promote a NodeModuleVersion through its lifecycle (staging|blessed|live|retired)",
             parameters: {
-              module_version_id: { type: "string", required: true },
-              target_state: { type: "string", required: true }
+              module_version_id: { type: "string", required: true, description: "UUID of the NodeModuleVersion to promote" },
+              target_state: { type: "string", required: true, description: "Target promotion state: staging | blessed | live | retired" }
             }
           },
 
           # === Reconcile / Drift ===
           "system_drift_report" => {
             description: "Compare a node instance's running modules vs assigned",
-            parameters: { instance_id: { type: "string", required: true } }
+            parameters: { instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to compute module drift for" } }
           },
 
           # === Tasks ===
           "system_list_tasks" => {
             description: "List recent tasks (filterable by node_id or instance_id)",
             parameters: {
-              node_id: { type: "string", required: false },
-              instance_id: { type: "string", required: false }
+              node_id: { type: "string", required: false, description: "Optional node UUID to list only tasks operating on that node" },
+              instance_id: { type: "string", required: false, description: "Optional instance UUID to list only tasks operating on that instance" }
             }
           },
           "system_get_task" => {
             description: "Fetch a single System::Task by id (account-scoped). Returns the task's command, status, progress, operable handle, and timestamps. Not-found errors when the id is unknown or belongs to another account.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the System::Task to fetch (account-scoped)" } }
           },
           "system_cancel_task" => {
             description: "Cancel a pending task",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" } }
           },
 
           # === Module diff preview (Track F-11) ===
           "system_module_diff" => {
             description: "Compare two NodeModuleVersions and return added/removed files + package changes — preview before applying assignment changes",
             parameters: {
-              version_a_id: { type: "string", required: true },
-              version_b_id: { type: "string", required: true }
+              version_a_id: { type: "string", required: true, description: "UUID of the first NodeModuleVersion (baseline) to compare" },
+              version_b_id: { type: "string", required: true, description: "UUID of the second NodeModuleVersion (candidate) to compare" }
             }
           },
 
@@ -561,11 +561,11 @@ module Ai
                             description: "Required for federated mode — reachable URL of THIS platform." },
               spawn_mode: { type: "string", required: false,
                             description: "Required for federated mode — one of managed_child, autonomous_peer, cluster_member." },
-              region: { type: "string", required: false },
-              instance_size: { type: "string", required: false },
-              service_role: { type: "string", required: false },
-              public_dns_hostname: { type: "string", required: false },
-              token_ttl_seconds: { type: "integer", required: false }
+              region: { type: "string", required: false, description: "Provider region to deploy the new platform into" },
+              instance_size: { type: "string", required: false, description: "Instance size/SKU hint for the deployment's compute" },
+              service_role: { type: "string", required: false, description: "Service role for the deployment (selects the workload profile)" },
+              public_dns_hostname: { type: "string", required: false, description: "Public DNS hostname to assign to the new platform" },
+              token_ttl_seconds: { type: "integer", required: false, description: "TTL (seconds) for the single-use federated acceptance_token" }
             }
           },
 
@@ -573,21 +573,21 @@ module Ai
           "system_list_volumes" => {
             description: "List storage volumes for the current account. Filter by status (available/in-use/etc), transport (nfs/iscsi/block), or attached node_instance_id.",
             parameters: {
-              status: { type: "string", required: false },
-              transport: { type: "string", required: false },
-              node_instance_id: { type: "string", required: false },
-              unattached_only: { type: "boolean", required: false }
+              status: { type: "string", required: false, description: "Filter volumes by status (e.g. available, in-use)" },
+              transport: { type: "string", required: false, description: "Filter volumes by transport (nfs | iscsi | smb | block)" },
+              node_instance_id: { type: "string", required: false, description: "Filter to volumes attached to this NodeInstance UUID" },
+              unattached_only: { type: "boolean", required: false, description: "When true, return only volumes not attached to any instance" }
             }
           },
           "system_get_volume" => {
             description: "Get full detail on a single storage volume — backing config (NFS server + export path / block device id), attachment state, ACL, capacity.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolume to fetch (account-scoped)" } }
           },
           "system_create_volume" => {
             description: "Register a new ProviderVolume. For NFS, pass transport=nfs + nfs_server + nfs_export_path. For block, pass volume_type_id. The platform records the row; on-node mounting happens at attach time.",
             parameters: {
-              name: { type: "string", required: true },
-              size_gb: { type: "integer", required: true },
+              name: { type: "string", required: true, description: "Display name for the new ProviderVolume" },
+              size_gb: { type: "integer", required: true, description: "Volume capacity in gigabytes" },
               volume_type_id: { type: "string", required: false, description: "ProviderVolumeType id (skip if transport given — we'll find/create the matching type)" },
               transport: { type: "string", required: false, description: "nfs | iscsi | smb | block (default: block)" },
               nfs_server: { type: "string", required: false, description: "Required for transport=nfs — hostname or IP" },
@@ -595,28 +595,28 @@ module Ai
               nfs_version: { type: "string", required: false, description: "Optional — 3 | 4.0 | 4.1 | 4.2 (default 4.1)" },
               provider_id: { type: "string", required: false, description: "Which provider to bind the volume to. REQUIRED when the account has more than one provider — the platform refuses to guess and returns the candidate list" },
               provider_region_id: { type: "string", required: false, description: "Bind to a specific region (implies the provider; takes precedence over provider_id)" },
-              description: { type: "string", required: false }
+              description: { type: "string", required: false, description: "Free-text description for the volume" }
             }
           },
           "system_update_volume" => {
             description: "Update a ProviderVolume's mutable fields: name, description, size_gb, status.",
             parameters: {
-              id: { type: "string", required: true },
-              name: { type: "string", required: false },
-              description: { type: "string", required: false },
-              size_gb: { type: "integer", required: false },
-              status: { type: "string", required: false }
+              id: { type: "string", required: true, description: "UUID of the ProviderVolume to update (account-scoped)" },
+              name: { type: "string", required: false, description: "New display name for the volume" },
+              description: { type: "string", required: false, description: "New free-text description for the volume" },
+              size_gb: { type: "integer", required: false, description: "New volume capacity in gigabytes" },
+              status: { type: "string", required: false, description: "New volume status" }
             }
           },
           "system_delete_volume" => {
             description: "Delete a ProviderVolume row. Refuses to delete if currently attached.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the ProviderVolume to delete (must be detached)" } }
           },
           "system_attach_volume" => {
             description: "Attach a ProviderVolume to a NodeInstance. For block: assigns next free /dev/vdX. For NFS pools: records the per-deployment binding without flipping pool status.",
             parameters: {
-              volume_id: { type: "string", required: true },
-              node_instance_id: { type: "string", required: true },
+              volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to attach" },
+              node_instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to attach the volume to" },
               deployment_name: { type: "string", required: false, description: "Used for the NFS subpath isolation when applicable" },
               role: { type: "string", required: false, description: "Service role (postgres / redis / etc.) — used for mount point + subpath" }
             }
@@ -624,14 +624,14 @@ module Ai
           "system_detach_volume" => {
             description: "Detach a ProviderVolume. For block volumes: clears node_instance_id + sets status=available. For NFS: clears the per-deployment binding only (pool remains available to other consumers).",
             parameters: {
-              volume_id: { type: "string", required: true },
+              volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to detach" },
               node_instance_id: { type: "string", required: false, description: "Required for NFS volumes to identify which consumer binding to clear" }
             }
           },
           "system_test_nfs_export" => {
             description: "Probe an NFS server + export to verify reachability before recording a ProviderVolume. Runs DNS lookup + TCP probe on 111/2049 + showmount -e. Does NOT actually mount — that's safer when called from chat.",
             parameters: {
-              server: { type: "string", required: true },
+              server: { type: "string", required: true, description: "NFS server hostname or IP to probe" },
               export_path: { type: "string", required: false, description: "Optional — when omitted, returns the list of all advertised exports" }
             }
           },
@@ -642,16 +642,16 @@ module Ai
           "system_update_storage_recommendations" => {
             description: "Update the platform-memory storage recommendations. Partial merge — only supplied keys override defaults. Example: { recommended_size_gb_by_role: { postgres: 200 } } leaves redis/etc untouched.",
             parameters: {
-              recommendations: { type: "object", required: true }
+              recommendations: { type: "object", required: true, description: "Partial recommendations hash to merge — only supplied keys override defaults (e.g. { recommended_size_gb_by_role: { postgres: 200 } })" }
             }
           },
           "system_migrate_storage_component" => {
             description: "Records intent to migrate a stateful component's data from one ProviderVolume to another. Returns a migration plan (source subpath, target subpath, estimated bytes, recommended rsync command). v1 returns the plan only — actual rsync execution is a follow-up runbook.",
             parameters: {
-              node_instance_id: { type: "string", required: true },
-              source_volume_id: { type: "string", required: true },
-              target_volume_id: { type: "string", required: true },
-              role: { type: "string", required: true }
+              node_instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose stateful component is being migrated" },
+              source_volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume currently holding the data" },
+              target_volume_id: { type: "string", required: true, description: "UUID of the ProviderVolume to migrate the data to (must differ from source)" },
+              role: { type: "string", required: true, description: "Stateful component role being migrated (e.g. postgres, redis) — determines source/target subpaths" }
             }
           },
           # F8-05 — lifecycle of a StorageMigration created by
@@ -662,38 +662,38 @@ module Ai
             description: "List storage migrations for the account (newest first, capped at 100). Filterable by status, node_instance_id, or active_only.",
             parameters: {
               status: { type: "string", required: false, description: "Filter by migration status" },
-              node_instance_id: { type: "string", required: false },
+              node_instance_id: { type: "string", required: false, description: "Filter to migrations for this NodeInstance UUID" },
               active_only: { type: "boolean", required: false, description: "Only non-terminal migrations" }
             }
           },
           "system_get_storage_migration" => {
             description: "Fetch one storage migration with full details (plan, progress bytes, status history).",
             parameters: {
-              id: { type: "string", required: true }
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to fetch (account-scoped)" }
             }
           },
           "system_approve_storage_migration" => {
             description: "Approve a planned storage migration so the on-node agent may begin the sync. Errors unless the migration can transition to 'approved'.",
             parameters: {
-              id: { type: "string", required: true }
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to approve" }
             }
           },
           "system_cancel_storage_migration" => {
             description: "Cancel a storage migration before sync starts (allowed in planned/approved/preparing; errors once the sync is in progress or the migration is terminal).",
             parameters: {
-              id: { type: "string", required: true },
-              reason: { type: "string", required: false }
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to cancel" },
+              reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" }
             }
           },
           "system_report_storage_migration_progress" => {
             description: "Report sync progress for a storage migration (called by the on-node agent). Optionally advances status; records bytes copied/total/verified and a note.",
             parameters: {
-              id: { type: "string", required: true },
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to report progress for" },
               status: { type: "string", required: false, description: "Optional phase transition (must be legal from the current status)" },
-              bytes_copied: { type: "integer", required: false },
-              bytes_total: { type: "integer", required: false },
-              bytes_verified: { type: "integer", required: false },
-              note: { type: "string", required: false }
+              bytes_copied: { type: "integer", required: false, description: "Bytes copied so far" },
+              bytes_total: { type: "integer", required: false, description: "Total bytes to copy" },
+              bytes_verified: { type: "integer", required: false, description: "Bytes verified after copy" },
+              note: { type: "string", required: false, description: "Free-text progress note recorded in the audit log" }
             }
           },
 
@@ -702,20 +702,20 @@ module Ai
             description: "Wraps the platform_maintenance skill executor — op-discriminated: cert_status, cert_rotate, drift_check, health_check. Use `op:` for the sub-action; the MCP dispatcher already owns `action:`.",
             parameters: {
               op: { type: "string", required: true, description: "cert_status | cert_rotate | drift_check | health_check" },
-              certificate_id: { type: "string", required: false },
-              deployment_id: { type: "string", required: false },
-              renewal_window_days: { type: "integer", required: false }
+              certificate_id: { type: "string", required: false, description: "UUID of the certificate to act on (for cert_status/cert_rotate)" },
+              deployment_id: { type: "string", required: false, description: "UUID of the deployment to scope the maintenance op to" },
+              renewal_window_days: { type: "integer", required: false, description: "Days-before-expiry window that flags a cert for rotation" }
             }
           },
           "system_platform_resilience" => {
             description: "Wraps the platform_resilience skill executor — op-discriminated: drain_instance, scale, failover_check.",
             parameters: {
               op: { type: "string", required: true, description: "drain_instance | scale | failover_check" },
-              instance_id: { type: "string", required: false },
-              deployment_id: { type: "string", required: false },
+              instance_id: { type: "string", required: false, description: "UUID of the instance to drain (for op=drain_instance)" },
+              deployment_id: { type: "string", required: false, description: "UUID of the deployment to scale or check failover for" },
               direction: { type: "string", required: false, description: "set | increment | decrement (for op=scale)" },
-              target_replicas: { type: "integer", required: false },
-              timeout_seconds: { type: "integer", required: false }
+              target_replicas: { type: "integer", required: false, description: "Replica count for op=scale (used when direction=set)" },
+              timeout_seconds: { type: "integer", required: false, description: "Timeout in seconds for the resilience operation" }
             }
           },
 
@@ -729,8 +729,8 @@ module Ai
           "system_runbook_generate" => {
             description: "Generate an operational markdown runbook for a NodeTemplate — boot order, modules, common failure modes, recovery procedures",
             parameters: {
-              template_id: { type: "string", required: true },
-              persist_as_page: { type: "boolean", required: false }
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to generate an operational runbook for" },
+              persist_as_page: { type: "boolean", required: false, description: "When true, persist the generated runbook as a content Page" }
             }
           },
 
@@ -738,8 +738,8 @@ module Ai
           "system_cve_runbook_generate" => {
             description: "Generate a markdown remediation runbook for a CVE — exposed modules, recommended steps, verification commands. Reads System::CveExposure for the current account.",
             parameters: {
-              cve_id: { type: "string", required: true },
-              persist_as_page: { type: "boolean", required: false }
+              cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to generate a remediation runbook for" },
+              persist_as_page: { type: "boolean", required: false, description: "When true, persist the generated runbook as a content Page" }
             }
           },
 
@@ -747,9 +747,9 @@ module Ai
           "system_cve_triage" => {
             description: "Triage a CVE entry against the fleet — risk-scored exposure list and remediation plan. Reads from System::CveExposure when persisted.",
             parameters: {
-              cve_id: { type: "string", required: true },
-              severity: { type: "string", required: true },
-              affected_packages: { type: "array", required: true },
+              cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to triage against the fleet" },
+              severity: { type: "string", required: true, description: "CVE severity: critical | high | medium | low | unknown" },
+              affected_packages: { type: "array", required: true, description: "Affected package list, e.g. [{name: 'openssl', version: '<3.1.4'}, ...]" },
               persist: { type: "boolean", required: false, description: "Persist a System::Cve row + exposures" }
             }
           },
@@ -758,9 +758,9 @@ module Ai
           "system_recent_signals" => {
             description: "Recent fleet observability events for this account (signals, decisions, ticks). Live feed available via SystemFleetChannel.",
             parameters: {
-              limit: { type: "integer", required: false },
+              limit: { type: "integer", required: false, description: "Max number of events to return (clamped to 1..200, default 50)" },
               kind: { type: "string", required: false, description: "Filter by event kind (e.g. 'system.module_drift')" },
-              correlation_id: { type: "string", required: false }
+              correlation_id: { type: "string", required: false, description: "Filter to events sharing this correlation id (takes precedence over kind)" }
             }
           },
 
@@ -768,8 +768,8 @@ module Ai
           "system_attribute_failure" => {
             description: "Given a NodeInstance, rank recent module changes + promotions by likelihood of being the cause of a failure",
             parameters: {
-              instance_id: { type: "string", required: true },
-              lookback_hours: { type: "integer", required: false }
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose failure to attribute" },
+              lookback_hours: { type: "integer", required: false, description: "How many hours back to consider module changes/promotions (default 24)" }
             }
           },
 
@@ -777,7 +777,7 @@ module Ai
           "system_inspect_correlation" => {
             description: "Walk every FleetEvent sharing a correlation_id — forensic deterministic replay of one tick or one decision flow",
             parameters: {
-              correlation_id: { type: "string", required: true }
+              correlation_id: { type: "string", required: true, description: "Correlation id whose FleetEvent chain to walk in emission order" }
             }
           },
 
@@ -788,19 +788,19 @@ module Ai
           },
           "system_get_instance_pool" => {
             description: "Fetch a single instance pool with full member roster + counts",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to fetch (account-scoped)" } }
           },
           "system_create_instance_pool" => {
             description: "Create a new pre-warmed instance pool. Reaper will provision target_size warming members on next tick.",
             parameters: {
-              name: { type: "string", required: true },
-              template_id: { type: "string", required: true },
+              name: { type: "string", required: true, description: "Display name for the new instance pool" },
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate pool members are provisioned from (fixed at create time)" },
               target_size: { type: "integer", required: true, description: "Target number of warm+ready members" },
               min_size: { type: "integer", required: false, description: "Lower bound (default 0)" },
               max_size: { type: "integer", required: false, description: "Upper bound (default target+10)" },
               lifecycle_class: { type: "string", required: false, description: "ephemeral|spot (default ephemeral)" },
-              provider_region_id: { type: "string", required: false },
-              provider_instance_type_id: { type: "string", required: false }
+              provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion pool members are provisioned in" },
+              provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) pool members are provisioned as" }
             }
           },
           # F8-07 — REST update parity (instance_pools_controller update_params).
@@ -810,20 +810,20 @@ module Ai
           "system_update_instance_pool" => {
             description: "Tune an existing instance pool: min_size/max_size/target_size, status, provider region/type, metadata. The reaper reconciles to the new sizes on its next tick. (Template is fixed at create time.)",
             parameters: {
-              id: { type: "string", required: true },
-              description: { type: "string", required: false },
-              target_size: { type: "integer", required: false },
-              min_size: { type: "integer", required: false },
-              max_size: { type: "integer", required: false },
+              id: { type: "string", required: true, description: "UUID of the InstancePool to update (account-scoped)" },
+              description: { type: "string", required: false, description: "New free-text description for the pool" },
+              target_size: { type: "integer", required: false, description: "New target number of warm+ready members" },
+              min_size: { type: "integer", required: false, description: "New lower bound on pool size" },
+              max_size: { type: "integer", required: false, description: "New upper bound on pool size" },
               status: { type: "string", required: false, description: "active | paused | archived" },
-              provider_region_id: { type: "string", required: false },
-              provider_instance_type_id: { type: "string", required: false },
-              metadata: { type: "object", required: false }
+              provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion to provision future members in" },
+              provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) for future members" },
+              metadata: { type: "object", required: false, description: "Pool metadata hash (e.g. reuse_without_reset)" }
             }
           },
           "system_drain_instance_pool" => {
             description: "Mark a pool draining: terminate ready members, halt replenishment. Claimed members keep running.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to drain (account-scoped)" } }
           },
           "system_acquire_pooled_instance" => {
             description: "Atomically claim the oldest ready member from a pool. Returns the NodeInstance immediately (no provision wait).",
@@ -835,18 +835,18 @@ module Ai
           },
           "system_replenish_instance_pool" => {
             description: "Manually trigger replenishment of a pool — provisions warming members up to target_size. Normally the reaper does this every 60s; this is for impatient operators.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to replenish (account-scoped)" } }
           },
           "system_recycle_pool" => {
             description: "Recycle stale members of a pool: warming members past warming_timeout_seconds become errored, ready members past ready_ttl_seconds become draining. Returns counts of transitions made. Normally the reaper does this every 60s before replenish; this is for impatient operators or for unwedging a pool that's stuck with zombie warming members blocking the deficit calculation.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the InstancePool to recycle stale members for (account-scoped)" } }
           },
 
           # === Gap remediation slice 1 (Phase 4) ===
           "system_drain_instance" => {
             description: "Initiate graceful drain on a NodeInstance: records drain intent + emits FleetEvent so observability tooling (and future autonomy reconcilers) can act. Workloads remain running; operator should call system_terminate_instance after relocation completes. Idempotent — calling twice updates drain_initiated_at.",
             parameters: {
-              instance_id: { type: "string", required: true },
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to mark for graceful drain" },
               timeout_seconds: { type: "integer", required: false, description: "Suggested workload-relocation window (default 600 = 10 min). Stored in metadata for observability; does not auto-terminate." }
             }
           },
@@ -871,35 +871,35 @@ module Ai
           },
           "system_get_cve_exposure" => {
             description: "Fetch the exposure breakdown for a CVE — exposed modules + per-module assignment counts, account-scoped via CveExposure → NodeModuleVersion → NodeModule.",
-            parameters: { cve_id: { type: "string", required: true } }
+            parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) to compute account exposure for" } }
           },
           "system_create_cve" => {
             description: "Manually inject a Cve row (typically for embargoed CVEs not yet in NVD, or for drill-mode runbooks). Idempotent via cve_id uniqueness — re-running updates fields. NOTE: Cve table is GLOBAL (not account-scoped) — created CVEs are visible to all accounts. Requires elevated system.fleet.autonomy permission.",
             parameters: {
               cve_id:            { type: "string", required: true,  description: "Canonical CVE id, format CVE-YYYY-NNNN (4+ digits). Drills should use high-numeric ids like CVE-2026-99001." },
               severity:          { type: "string", required: true,  description: "critical|high|medium|low|unknown" },
-              summary:           { type: "string", required: false },
+              summary:           { type: "string", required: false, description: "Short human-readable summary of the CVE" },
               affected_packages: { type: "array",  required: false, description: "[{name: 'openssl', version: '<3.1.4'}, ...]" },
               published_at:      { type: "string", required: false, description: "ISO8601; defaults to now" },
-              reference_url:     { type: "string", required: false },
+              reference_url:     { type: "string", required: false, description: "URL to the CVE advisory / reference" },
               feed_source:       { type: "string", required: false, description: "nvd|ghsa|manual (default manual)" }
             }
           },
           "system_delete_cve" => {
             description: "Destroy a Cve row + cascade-delete its CveExposures. Used for drill cleanup. Cves are global; deletion affects all accounts. Requires elevated system.fleet.autonomy permission.",
-            parameters: { cve_id: { type: "string", required: true } }
+            parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) of the global Cve row to delete" } }
           },
           "system_unassign_module_from_template" => {
             description: "Remove a NodeModule from a NodeTemplate (destroys the TemplateModule join). Inverse of system_assign_module_to_template. Idempotent — returns success even when the join doesn't exist.",
             parameters: {
-              template_id: { type: "string", required: true },
-              module_id:   { type: "string", required: true }
+              template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to remove the module from" },
+              module_id:   { type: "string", required: true, description: "UUID of the NodeModule to unassign from the template" }
             }
           },
           "system_update_module_assignment" => {
             description: "Enable or disable a NodeModuleAssignment (per-(node, module) toggle). enabled=true enables the assignment; enabled=false disables it. The assignment row is preserved either way — disabling drops the module from neighbor union mounts / rsync_spec generation without losing priority/config. Mirrors the NodeModuleAssignmentsController enable/disable member actions. Idempotent.",
             parameters: {
-              assignment_id: { type: "string", required: true },
+              assignment_id: { type: "string", required: true, description: "UUID of the NodeModuleAssignment to enable/disable (account-scoped via its Node)" },
               enabled:       { type: "boolean", required: true, description: "true → enable, false → disable" }
             }
           },
@@ -908,17 +908,17 @@ module Ai
           "system_return_pooled_instance" => {
             description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition).",
             parameters: {
-              instance_id: { type: "string", required: true }
+              instance_id: { type: "string", required: true, description: "UUID of the claimed pool NodeInstance to return to its pool" }
             }
           },
           "system_delete_instance_pool" => {
             description: "Destroy an empty InstancePool row. Errors when pool still has members — drain first via system_drain_instance_pool, then delete.",
-            parameters: { id: { type: "string", required: true } }
+            parameters: { id: { type: "string", required: true, description: "UUID of the empty InstancePool to delete (account-scoped)" } }
           },
           "system_module_mark_canary" => {
             description: "Mark a NodeModule as a honeypot canary (config['honeypot']['canary'] = true). Canary modules are decoys — any access triggers a high-severity FleetEvent via honeypot_access_sensor. Idempotent — re-marking is a no-op.",
             parameters: {
-              module_id: { type: "string", required: true },
+              module_id: { type: "string", required: true, description: "UUID of the NodeModule to mark as a honeypot canary" },
               lure_kind: { type: "string", required: false, description: "Display label for the canary (default 'credential_store')" }
             }
           },
@@ -927,7 +927,7 @@ module Ai
           "system_list_disk_image_publications" => {
             description: "List DiskImagePublications for the account, optionally filtered by node_platform_id and/or status. Returns oldest-first by default.",
             parameters: {
-              node_platform_id: { type: "string", required: false },
+              node_platform_id: { type: "string", required: false, description: "Filter publications to this NodePlatform UUID" },
               status: { type: "string", required: false, description: "queued|verifying|published|failed|retired" },
               limit: { type: "integer", required: false, description: "Default 50" }
             }
@@ -935,7 +935,7 @@ module Ai
           "system_set_default_disk_image_publication" => {
             description: "Promote a published DiskImagePublication as the platform's active disk image — copies its OCI ref + git SHA onto the parent NodePlatform so new instances boot from it. Errors if the publication is not in 'published' state.",
             parameters: {
-              publication_id: { type: "string", required: true }
+              publication_id: { type: "string", required: true, description: "UUID of the published DiskImagePublication to set as the platform default" }
             }
           },
           "system_revert_disk_image" => {
@@ -948,20 +948,20 @@ module Ai
           "system_set_disk_image_retention" => {
             description: "Update the per-NodePlatform retention count (number of historical publications kept before the reaper purges).",
             parameters: {
-              node_platform_id: { type: "string", required: true },
+              node_platform_id: { type: "string", required: true, description: "UUID of the NodePlatform whose disk-image retention count to set" },
               retention_count: { type: "integer", required: true, description: "Number of historical publications to retain (must be ≥1)" }
             }
           },
           "system_provision_ci_worker" => {
             description: "Provision a CI worker (a Worker with the 'ci_worker' role). Returns the worker plus a one-time-shown plaintext token. Token is NOT recoverable — operator must store immediately.",
             parameters: {
-              name: { type: "string", required: true }
+              name: { type: "string", required: true, description: "Display name for the new CI worker" }
             }
           },
           "system_terminate_ci_worker" => {
             description: "Revoke a CI worker — destroys credentials + marks the worker as revoked. Operator can then unregister the corresponding Gitea Actions runner.",
             parameters: {
-              worker_id: { type: "string", required: true }
+              worker_id: { type: "string", required: true, description: "UUID of the CI Worker to revoke (account-scoped)" }
             }
           },
           "system_list_ci_workers" => {
@@ -994,7 +994,7 @@ module Ai
           "system_gitops_get_sync_run" => {
             description: "Fetch the result of a sync run — diff_count, proposal_ids, status, error_message, diff_summary.",
             parameters: {
-              sync_run_id: { type: "string", required: true }
+              sync_run_id: { type: "string", required: true, description: "UUID of the GitopsSyncRun to fetch the result of (account-scoped)" }
             }
           },
           "system_gitops_get_drift_report" => {
@@ -1035,8 +1035,8 @@ module Ai
             description: "Update a provider — supports name + enabled + config. Config is merge-updated (existing keys preserved unless explicitly nilled). Use this to set host_node_instance_id on a routed-mode QEMU provider, swap the bridge_name, etc.",
             parameters: {
               id: { type: "string", required: true, description: "System::Provider id" },
-              name: { type: "string", required: false },
-              enabled: { type: "boolean", required: false },
+              name: { type: "string", required: false, description: "New display name for the provider" },
+              enabled: { type: "boolean", required: false, description: "Enable (true) or disable (false) the provider" },
               config: { type: "object", required: false, description: "Hash of config keys to merge. nil values delete the corresponding key." }
             }
           },
@@ -1045,7 +1045,7 @@ module Ai
             parameters: {
               name: { type: "string", required: true, description: "Unique provider name within the account" },
               provider_type: { type: "string", required: true, description: "Provider type slug (e.g. local_qemu, proxmox, aws, pro_cloud)" },
-              description: { type: "string", required: false },
+              description: { type: "string", required: false, description: "Free-text description for the provider" },
               enabled: { type: "boolean", required: false, description: "Defaults to true" },
               config: { type: "object", required: false, description: "Non-secret wiring config (e.g. host_node_instance_id, bridge_name)" }
             }
@@ -1060,9 +1060,9 @@ module Ai
             description: "Create a ProviderConnection for a provider (status starts 'pending'). NO credential parameters are accepted — the adapter layer resolves keys from the Vault-encrypted BYOC ProviderCredential store (saved via the provider Credentials UI/REST) at use time. Set test_connection=true to immediately run the live credential test: on success the connection flips to 'connected' (required before Registry will use it for provisioning).",
             parameters: {
               provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
-              name: { type: "string", required: true },
-              description: { type: "string", required: false },
-              endpoint_url: { type: "string", required: false },
+              name: { type: "string", required: true, description: "Display name for the provider connection" },
+              description: { type: "string", required: false, description: "Free-text description for the connection" },
+              endpoint_url: { type: "string", required: false, description: "Provider API endpoint URL for this connection" },
               enabled: { type: "boolean", required: false, description: "Defaults to true" },
               config: { type: "object", required: false, description: "Non-secret wiring config only — never key material" },
               test_connection: { type: "boolean", required: false, description: "Run the live credential test after create (uses BYOC credentials)" }
@@ -1072,28 +1072,28 @@ module Ai
             description: "Create a ProviderRegion under a provider — the placement target referenced by nodes/instances (provider_region_id).",
             parameters: {
               provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
-              name: { type: "string", required: true },
+              name: { type: "string", required: true, description: "Display name for the provider region" },
               region_code: { type: "string", required: false, description: "Provider-native region identifier (e.g. us-east-1, lab-1)" },
-              description: { type: "string", required: false },
-              endpoint_url: { type: "string", required: false },
+              description: { type: "string", required: false, description: "Free-text description for the region" },
+              endpoint_url: { type: "string", required: false, description: "Region-specific provider API endpoint URL" },
               enabled: { type: "boolean", required: false, description: "Defaults to true" },
-              kernel_image: { type: "string", required: false },
-              machine_image: { type: "string", required: false },
-              ramdisk_image: { type: "string", required: false },
-              capabilities: { type: "object", required: false }
+              kernel_image: { type: "string", required: false, description: "Default kernel image reference for instances in this region" },
+              machine_image: { type: "string", required: false, description: "Default machine (root disk) image reference for this region" },
+              ramdisk_image: { type: "string", required: false, description: "Default ramdisk/initrd image reference for this region" },
+              capabilities: { type: "object", required: false, description: "Region capability flags hash" }
             }
           },
           "system_create_provider_instance_type" => {
             description: "Create a ProviderInstanceType (SKU) under a provider — the sizing record referenced at provisioning (provider_instance_type_id).",
             parameters: {
               provider_id: { type: "string", required: true, description: "System::Provider id (account-scoped)" },
-              name: { type: "string", required: true },
+              name: { type: "string", required: true, description: "Display name for the instance type (SKU)" },
               instance_type_code: { type: "string", required: false, description: "Provider-native SKU code (e.g. t3.small)" },
-              description: { type: "string", required: false },
-              vcpus: { type: "integer", required: false },
-              memory_mb: { type: "integer", required: false },
-              storage_gb: { type: "integer", required: false },
-              hourly_price: { type: "number", required: false },
+              description: { type: "string", required: false, description: "Free-text description for the instance type" },
+              vcpus: { type: "integer", required: false, description: "Number of virtual CPUs the SKU provides" },
+              memory_mb: { type: "integer", required: false, description: "RAM in megabytes the SKU provides" },
+              storage_gb: { type: "integer", required: false, description: "Root storage in gigabytes the SKU provides" },
+              hourly_price: { type: "number", required: false, description: "Hourly price for the SKU in account currency" },
               enabled: { type: "boolean", required: false, description: "Defaults to true" },
               specs: { type: "object", required: false, description: "Extended sizing specs (gpu, accelerators, ...)" }
             }
