@@ -129,9 +129,11 @@ module Api
             render_error("Forbidden", status: :forbidden)
           end
 
+          # The offering's backend is owned by its Sdwan::Service (Phase 2) —
+          # callers reference an existing service via `service_id` rather than
+          # supplying backend host/port/protocol here.
           def create_params
-            params.permit(:slug, :name, :description_markdown, :protocol,
-                          :backend_vip_id, :backend_host, :backend_port,
+            params.permit(:slug, :name, :description_markdown, :service_id,
                           :subscription_terms_markdown, :default_grant_ttl_days,
                           default_grant_scopes: [],
                           capacity_metadata: {}, latency_metadata: {}, metadata: {})
@@ -140,9 +142,9 @@ module Api
           def update_params
             # Updates can change everything except slug (slug is the
             # stable identifier subscribers reference; renaming it
-            # would orphan their subscriptions).
-            params.permit(:name, :description_markdown, :protocol,
-                          :backend_vip_id, :backend_host, :backend_port,
+            # would orphan their subscriptions). `service_id` may be repointed
+            # to swap the backend the offering exposes.
+            params.permit(:name, :description_markdown, :service_id,
                           :subscription_terms_markdown, :default_grant_ttl_days,
                           default_grant_scopes: [],
                           capacity_metadata: {}, latency_metadata: {}, metadata: {})

@@ -56,13 +56,15 @@ RSpec.describe "Api::V1::System::Federation::ServiceOfferings", type: :request d
   end
 
   describe "POST /service_offerings" do
+    let!(:backing_service) do
+      create(:sdwan_service, account: account, slug: "managed-pg-svc",
+                             protocol: "tcp", backend_host: "pg-backend.example.com", backend_port: 5432)
+    end
     let(:create_payload) do
       {
         slug: "managed-pg",
         name: "Managed Postgres",
-        protocol: "tcp",
-        backend_host: "pg-backend.example.com",
-        backend_port: 5432,
+        service_id: backing_service.id,
         default_grant_ttl_days: 30,
         default_grant_scopes: %w[read write]
       }

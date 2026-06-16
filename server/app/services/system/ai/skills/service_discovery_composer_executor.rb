@@ -139,28 +139,26 @@ module System
             end
           end
 
-          # ── Offering: delete if created, else detach the VIP ──────────
-          if offering_id.present?
+          # ── Offering: delete only if WE created it (a reused offering
+          #    survives; its backing service is detached from the VIP below). ──
+          if offering_id.present? && created_offering
             offering = ::System::Federation::ServiceOffering
                          .where(account_id: @account.id).find_by(id: offering_id)
-            if offering
-              begin
-                if created_offering
-                  offering.destroy!
-                elsif offering.backend_vip_id == vip_id
-                  # We only repointed an existing offering — null the VIP back
-                  # out so the offering survives but no longer references a
-                  # VIP we're about to delete.
-                  offering.update!(backend_vip_id: nil)
-                end
-              rescue StandardError => e
-                errors << { resource: "service_offering", id: offering_id, error: e.message }
-              end
+            begin
+              offering&.destroy!
+            rescue StandardError => e
+              errors << { resource: "service_offering", id: offering_id, error: e.message }
             end
           end
 
           # ── VIP (if we created it) ────────────────────────────────────
           if created_vip && vip_id.present?
+            # Clear the VIP off any service that fronts it first, or its FK
+            # blocks the delete. A VIP-only service (created for this discovery)
+            # is destroyed; one with a static host fallback is just detached so
+            # a surviving (reused) offering keeps a valid backend.
+            detach_vip_from_services!(vip_id, errors)
+
             vip = ::Sdwan::VirtualIp.where(account_id: @account.id).find_by(id: vip_id)
             if vip
               begin
@@ -333,40 +331,69 @@ module System
         # (the catalog resolves backend_address via the VIP).
         def ensure_offering(slug:, name:, protocol:, backend_port:, vip:,
                             grant_scopes:, grant_ttl_days:)
-          scopes = normalize_scopes(grant_scopes)
-          ttl    = normalize_ttl(grant_ttl_days)
+          scopes  = normalize_scopes(grant_scopes)
+          ttl     = normalize_ttl(grant_ttl_days)
 
-          existing = ::System::Federation::ServiceOffering
-                       .find_by(account_id: @account.id, slug: slug)
-          if existing
-            attrs = {
-              name: name,
-              protocol: protocol,
-              backend_port: backend_port,
-              backend_vip_id: vip.id,
-              default_grant_scopes: scopes
-            }
-            attrs[:default_grant_ttl_days] = ttl if ttl
-            existing.update!(attrs)
-            return { success: true, offering: existing, created: false, step: "reuse_offering" }
+          # The backend now lives on a first-class Sdwan::Service; the offering
+          # is its federated facet (Phase 2). Ensure the VIP-backed service and
+          # the offering ATOMICALLY — if the offering fails, the service (which
+          # references the VIP) must roll back too, otherwise its FK would block
+          # the caller's VIP rollback.
+          ::ActiveRecord::Base.transaction do
+            service = ensure_backing_service(slug: slug, name: name, protocol: protocol,
+                                             backend_port: backend_port, vip: vip)
+
+            existing = ::System::Federation::ServiceOffering
+                         .find_by(account_id: @account.id, slug: slug)
+            if existing
+              attrs = { name: name, service: service, default_grant_scopes: scopes }
+              attrs[:default_grant_ttl_days] = ttl if ttl
+              existing.update!(attrs)
+              { success: true, offering: existing, created: false, step: "reuse_offering" }
+            else
+              attrs = {
+                account: @account, slug: slug, name: name, service: service,
+                status: "active", default_grant_scopes: scopes
+              }
+              attrs[:default_grant_ttl_days] = ttl if ttl
+              offering = ::System::Federation::ServiceOffering.create!(**attrs)
+              { success: true, offering: offering, created: true, step: "create_offering" }
+            end
           end
-
-          attrs = {
-            account: @account,
-            slug: slug,
-            name: name,
-            protocol: protocol,
-            backend_port: backend_port,
-            backend_vip_id: vip.id,
-            status: "active",
-            default_grant_scopes: scopes
-          }
-          attrs[:default_grant_ttl_days] = ttl if ttl
-
-          offering = ::System::Federation::ServiceOffering.create!(**attrs)
-          { success: true, offering: offering, created: true, step: "create_offering" }
         rescue ActiveRecord::RecordInvalid => e
           failure(e.message)
+        end
+
+        # The VIP-backed Sdwan::Service the offering exposes federally. Reuses an
+        # existing same-slug service in the account (repointing it at this VIP)
+        # or creates one.
+        def ensure_backing_service(slug:, name:, protocol:, backend_port:, vip:)
+          service = ::Sdwan::Service.find_or_initialize_by(account_id: @account.id, slug: slug)
+          # Repoint the backend at the VIP but KEEP any existing static host as a
+          # fallback (a reused service that had a host stays valid if the VIP is
+          # later detached during rollback).
+          service.assign_attributes(
+            name: name, protocol: protocol, backend_port: backend_port,
+            backend_vip_id: vip.id, status: "active"
+          )
+          service.save!
+          service
+        end
+
+        # Clear a VIP off the services that front it so it can be deleted during
+        # rollback. A VIP-only service (created for this discovery, no static
+        # host) is destroyed; one with a host fallback is detached so a surviving
+        # reused offering keeps a valid backend.
+        def detach_vip_from_services!(vip_id, errors)
+          ::Sdwan::Service.where(account_id: @account.id, backend_vip_id: vip_id).find_each do |svc|
+            if svc.backend_host.present?
+              svc.update!(backend_vip_id: nil)
+            else
+              svc.destroy!
+            end
+          rescue StandardError => e
+            errors << { resource: "sdwan_service", id: svc.id, error: e.message }
+          end
         end
 
         # ── Step 3 helper: regenerate the subscriber-side Traefik config ──

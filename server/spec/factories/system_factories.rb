@@ -997,19 +997,39 @@ FactoryBot.define do
     end
   end
 
-  factory :system_federation_service_offering, class: "System::Federation::ServiceOffering" do
+  factory :sdwan_service, class: "Sdwan::Service" do
     association :account
     sequence(:slug) { |n| "service-#{n}" }
     sequence(:name) { |n| "Service ##{n}" }
     protocol { "https" }
-    backend_host { "backend.example.com" }
-    backend_port { 443 }
+    backend_host { "10.20.0.5" }
+    backend_port { 3000 }
+    status { "active" }
+
+    trait :local_exposed do
+      local_enabled { true }
+      local_auth_mode { "authenticated" }
+    end
+  end
+
+  factory :system_federation_service_offering, class: "System::Federation::ServiceOffering" do
+    association :account
+    sequence(:slug) { |n| "service-#{n}" }
+    sequence(:name) { |n| "Service ##{n}" }
     status { "draft" }
     default_grant_ttl_days { 30 }
     default_grant_scopes { %w[read] }
     capacity_metadata { {} }
     latency_metadata { {} }
     metadata { {} }
+
+    # Phase 2 (Step C): the offering's backend lives on a required Sdwan::Service.
+    # The default backing service mirrors the legacy column defaults (https/443)
+    # so specs reading offering.protocol / .backend_port are unchanged.
+    service do
+      association(:sdwan_service, account: account, protocol: "https",
+                                  backend_host: "backend.example.com", backend_port: 443)
+    end
 
     trait :active do
       status { "active" }
@@ -1026,8 +1046,10 @@ FactoryBot.define do
     end
 
     trait :tcp do
-      protocol { "tcp" }
-      backend_port { 5432 }
+      service do
+        association(:sdwan_service, account: account, protocol: "tcp",
+                                    backend_host: "pg.example.com", backend_port: 5432)
+      end
     end
 
     trait :capped do

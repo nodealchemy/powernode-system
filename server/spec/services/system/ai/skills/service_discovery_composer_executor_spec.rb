@@ -192,11 +192,13 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
       expect(Array(existing.reload.holder_peer_ids).first).to eq(backend.id)
     end
 
-    it "reuses an existing offering by slug and repoints its backend_vip_id" do
+    it "reuses an existing offering by slug and repoints its backing service" do
+      existing_service = create(:sdwan_service, account: account, slug: "orders-api",
+                                                backend_host: "old.example.com", backend_port: 80,
+                                                backend_vip_id: nil)
       existing = create(:system_federation_service_offering, :active, account: account,
                                                                       slug: "orders-api",
-                                                                      backend_host: "old.example.com",
-                                                                      backend_vip_id: nil)
+                                                                      service: existing_service)
 
       r = exec.execute(service_name: "Orders v2", service_slug: "orders-api",
                        sdwan_network_id: network.id, backend_peer_id: backend.id,
@@ -207,7 +209,7 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
       expect(r[:data][:steps_completed]).to include("reuse_offering")
 
       existing.reload
-      expect(existing.backend_vip_id).to eq(r[:data][:vip_id])
+      expect(existing.backend_vip_id).to eq(r[:data][:vip_id])  # delegates to service
       expect(existing.name).to eq("Orders v2")
       expect(existing.backend_port).to eq(9090)
     end
@@ -387,9 +389,10 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
       vip = create(:sdwan_virtual_ip, network: network, account: account,
                                       name: "discovery-orders-api", cidr: vip_cidr,
                                       holder_peer_ids: [ backend.id ])
+      service = create(:sdwan_service, account: account, slug: "orders-api",
+                                       backend_vip_id: vip.id, backend_host: "backend.example.com")
       offering = create(:system_federation_service_offering, :active, account: account,
-                                                                      slug: "orders-api",
-                                                                      backend_vip_id: vip.id)
+                                                                      slug: "orders-api", service: service)
       credential = create(:system_acme_dns_credential, account: account, provider: "cloudflare")
 
       fake = instance_double("Acme::Cloudflare::DnsClient")
@@ -411,9 +414,10 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
 
     it "detaches (not deletes) a reused offering's VIP and preserves the offering" do
       vip = create(:sdwan_virtual_ip, network: network, account: account, cidr: vip_cidr)
+      service = create(:sdwan_service, account: account, slug: "orders-api",
+                                       backend_vip_id: vip.id, backend_host: "backend.example.com")
       offering = create(:system_federation_service_offering, :active, account: account,
-                                                                      slug: "orders-api",
-                                                                      backend_vip_id: vip.id)
+                                                                      slug: "orders-api", service: service)
 
       r = exec.rollback_service_discovery_composer(
         vip_id: vip.id, offering_id: offering.id,
@@ -421,7 +425,7 @@ RSpec.describe System::Ai::Skills::ServiceDiscoveryComposerExecutor do
       )
 
       expect(r[:success]).to be true
-      # Offering survives; its VIP is detached so the VIP can be removed.
+      # Offering survives; its backing service's VIP is detached so the VIP can be removed.
       expect(offering.reload.backend_vip_id).to be_nil
       expect(::Sdwan::VirtualIp.where(id: vip.id)).to be_empty
     end

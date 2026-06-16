@@ -35,13 +35,23 @@ module System
       MIN_GRANT_TTL_DAYS = 7
 
       belongs_to :account
-      belongs_to :backend_vip, class_name: "::Sdwan::VirtualIp",
-                                foreign_key: :backend_vip_id, optional: true
+      # Phase 2 (Step C): the offering is a *federated facet* of a first-class
+      # Sdwan::Service — the service is the authoritative backend (vip/host/port/
+      # protocol). The offering keeps only its federated identity + availability
+      # config (slug/name/status/capacity/grant defaults). The backend_* columns
+      # are gone; the readers below delegate to the (now required) service.
+      belongs_to :service, class_name: "::Sdwan::Service", foreign_key: :service_id
       has_many :service_subscriptions,
                class_name: "System::Federation::ServiceSubscription",
                foreign_key: :service_offering_id,
                primary_key: :id,
                dependent: :restrict_with_error
+
+      # Backend reads resolve through the attached service. `allow_nil` keeps
+      # validation/serialization from raising on a half-built record before the
+      # `service` presence validation fires.
+      delegate :protocol, :backend_port, :backend_host, :backend_vip_id, :backend_vip,
+               to: :service, allow_nil: true
 
       attribute :capacity_metadata,     :jsonb, default: -> { {} }
       attribute :latency_metadata,      :jsonb, default: -> { {} }
@@ -53,22 +63,19 @@ module System
                                  message: "must be lowercase alphanumeric with hyphens" }
       validates :slug, uniqueness: { scope: :account_id }
       validates :name, presence: true, length: { maximum: 255 }
-      validates :protocol, inclusion: { in: PROTOCOLS }
       validates :status, inclusion: { in: STATUSES }
-      validates :backend_port, presence: true,
-                               numericality: { only_integer: true, in: 1..65_535 }
       validates :default_grant_ttl_days, numericality: {
         only_integer: true, greater_than_or_equal_to: MIN_GRANT_TTL_DAYS
       }
 
-      validate :backend_address_present
       validate :default_grant_scopes_valid
 
       scope :active_offerings,     -> { where(status: "active") }
       scope :catalog_listed,       -> { where(status: %w[active deprecated]) }
       scope :accepting_new_subscriptions, -> { where(status: "active") }
       scope :terminal,             -> { where(status: TERMINAL_STATUSES) }
-      scope :by_protocol,          ->(p) { where(protocol: p) }
+      # Backend protocol now lives on the service — join through it.
+      scope :by_protocol,          ->(p) { joins(:service).where(sdwan_services: { protocol: p }) }
 
       def can_transition_to?(new_status)
         TRANSITIONS.fetch(status, []).include?(new_status.to_s)
@@ -118,13 +125,6 @@ module System
       end
 
       private
-
-      # Either backend_vip_id (preferred — VIP failover) or backend_host
-      # (static fallback) must be set. Both nil = invalid offering.
-      def backend_address_present
-        return if backend_vip_id.present? || backend_host.present?
-        errors.add(:backend_host, "must be set when backend_vip_id is absent")
-      end
 
       # default_grant_scopes must be an array of valid scope strings.
       # The set of recognized scopes mirrors FederationGrant permission_scopes.

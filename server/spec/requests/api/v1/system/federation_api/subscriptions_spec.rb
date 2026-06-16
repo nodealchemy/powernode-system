@@ -12,11 +12,13 @@ RSpec.describe "Api::V1::System::FederationApi::Subscriptions", type: :request d
   let(:path) { "/api/v1/system/federation_api/subscriptions" }
 
   describe "POST /subscriptions (happy path)" do
+    let!(:backing_service) do
+      create(:sdwan_service, account: operator_account, slug: "gitea-svc",
+                             protocol: "https", backend_host: "backend.example.com", backend_port: 443)
+    end
     let!(:offering) do
       create(:system_federation_service_offering, :active,
-              account: operator_account, slug: "gitea",
-              backend_host: "backend.example.com", backend_port: 443,
-              protocol: "https",
+              account: operator_account, slug: "gitea", service: backing_service,
               default_grant_ttl_days: 30)
     end
 

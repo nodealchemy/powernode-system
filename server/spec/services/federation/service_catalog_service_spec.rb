@@ -68,6 +68,24 @@ RSpec.describe Federation::ServiceCatalogService, type: :service do
         expect(result.connection[:ttl_seconds]).to be > 0
       end
 
+      # Phase 2: a service-backed offering sources its backend from the
+      # attached Sdwan::Service, not its own (now-dropped) columns.
+      it "sources connection backend from the attached service" do
+        service = ::Sdwan::Service.create!(account: operator_account, slug: "svc-metrics",
+                                           name: "Metrics", protocol: "http",
+                                           backend_host: "10.5.5.5", backend_port: 9090)
+        create(:system_federation_service_offering, :active, account: operator_account,
+                                                            slug: "metrics", service: service)
+        result = described_class.issue_subscription!(
+          account: operator_account, offering_slug: "metrics",
+          requesting_peer: peer, local_hostname: "metrics.alice.tld"
+        )
+        expect(result.ok?).to be true
+        expect(result.connection[:protocol]).to eq("http")
+        expect(result.connection[:backend_host]).to eq("10.5.5.5")
+        expect(result.connection[:backend_port]).to eq(9090)
+      end
+
       it "honors the offering's default_grant_ttl_days" do
         result = described_class.issue_subscription!(
           account: operator_account, offering_slug: "gitea",

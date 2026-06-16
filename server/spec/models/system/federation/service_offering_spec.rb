@@ -6,12 +6,12 @@ RSpec.describe System::Federation::ServiceOffering, type: :model do
   let(:account) { create(:account) }
 
   describe "validations" do
-    it "requires slug, name, protocol, status, backend_port" do
+    it "requires slug, name, and a backing service" do
       offering = described_class.new(account: account)
       expect(offering).not_to be_valid
       expect(offering.errors[:slug]).to be_present
       expect(offering.errors[:name]).to be_present
-      expect(offering.errors[:backend_port]).to be_present
+      expect(offering.errors[:service]).to be_present
     end
 
     it "rejects slug containing uppercase or whitespace" do
@@ -28,16 +28,8 @@ RSpec.describe System::Federation::ServiceOffering, type: :model do
       end
     end
 
-    it "rejects unknown protocol" do
-      offering = build(:system_federation_service_offering, account: account, protocol: "smoke-signal")
-      expect(offering).not_to be_valid
-      expect(offering.errors[:protocol]).to be_present
-    end
-
-    it "rejects backend_port out of TCP range" do
-      offering = build(:system_federation_service_offering, account: account, backend_port: 70_000)
-      expect(offering).not_to be_valid
-    end
+    # protocol / backend_port / backend-address validity now live on
+    # Sdwan::Service (see sdwan/service_spec) — the offering only references it.
 
     it "enforces unique slug within account" do
       create(:system_federation_service_offering, account: account, slug: "primary")
@@ -55,14 +47,6 @@ RSpec.describe System::Federation::ServiceOffering, type: :model do
     it "rejects default_grant_ttl_days below MIN_GRANT_TTL_DAYS" do
       offering = build(:system_federation_service_offering, account: account, default_grant_ttl_days: 3)
       expect(offering).not_to be_valid
-    end
-
-    it "rejects offering with neither backend_vip nor backend_host set" do
-      offering = build(:system_federation_service_offering, account: account,
-                                                             backend_vip_id: nil,
-                                                             backend_host: nil)
-      expect(offering).not_to be_valid
-      expect(offering.errors[:backend_host]).to include(/must be set/)
     end
 
     it "rejects unknown scope names in default_grant_scopes" do
@@ -144,6 +128,37 @@ RSpec.describe System::Federation::ServiceOffering, type: :model do
 
     it ".terminal returns only retired" do
       expect(described_class.terminal.pluck(:id)).to eq([ retired.id ])
+    end
+  end
+
+  # Phase 2 (Step C): the offering is a federated facet of a required Sdwan::Service;
+  # backend reads delegate to it.
+  describe "backend delegation to #service" do
+    let(:service) do
+      ::Sdwan::Service.create!(account: account, slug: "svc-backend", name: "Svc Backend",
+                               protocol: "http", backend_host: "10.9.9.9", backend_port: 9090)
+    end
+
+    it "requires a backing service" do
+      offering = build(:system_federation_service_offering, account: account, service: nil)
+      expect(offering).not_to be_valid
+      expect(offering.errors[:service]).to be_present
+    end
+
+    it "delegates backend reads to the service" do
+      offering = create(:system_federation_service_offering, account: account, service: service)
+      expect(offering.protocol).to eq("http")
+      expect(offering.backend_host).to eq("10.9.9.9")
+      expect(offering.backend_port).to eq(9090)
+      expect(offering.backend_vip_id).to be_nil
+    end
+
+    it ".by_protocol filters through the joined service" do
+      https_svc = ::Sdwan::Service.create!(account: account, slug: "svc-https", name: "H",
+                                           protocol: "https", backend_host: "h", backend_port: 443)
+      http_off  = create(:system_federation_service_offering, account: account, service: service)
+      _https_off = create(:system_federation_service_offering, account: account, service: https_svc)
+      expect(described_class.by_protocol("http").pluck(:id)).to eq([ http_off.id ])
     end
   end
 end
