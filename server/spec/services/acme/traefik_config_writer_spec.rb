@@ -16,6 +16,19 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
     FileUtils.rm_rf(tmp_cert_dir)    if Dir.exist?(tmp_cert_dir)
   end
 
+  # Writes minimal on-disk PEM material for a cert the way Acme::CertificateManager
+  # would after issuance. The writer only advertises certs whose on-disk PEM exists
+  # and is non-empty, so examples that expect a cert in tls.certificates must
+  # materialize it first. (A `valid` row with no/blank PEM is intentionally skipped —
+  # see "skips a valid cert whose on-disk PEM is blank".)
+  def materialize_cert(cert, cert_dir:)
+    cert_path = described_class.cert_file_path(cert, cert_dir: cert_dir)
+    key_path  = described_class.key_file_path(cert, cert_dir: cert_dir)
+    FileUtils.mkdir_p(File.dirname(cert_path))
+    File.write(cert_path, "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n")
+    File.write(key_path, "-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----\n")
+  end
+
   describe ".write!" do
     context "with no valid certs" do
       it "writes an empty TLS config (no certificates entry has 0 items)" do
@@ -33,6 +46,11 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
       let!(:cert1) { create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred) }
       let!(:cert2) { create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred) }
       let!(:pending_cert) { create(:system_acme_certificate, account: account, dns_credential: dns_cred) }
+
+      before do
+        materialize_cert(cert1, cert_dir: tmp_cert_dir)
+        materialize_cert(cert2, cert_dir: tmp_cert_dir)
+      end
 
       it "includes only the valid certs" do
         result = described_class.write!(account: account,
@@ -63,6 +81,28 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(first["certFile"]).to include(account.id)
         expect(first["keyFile"]).to end_with(".key")
         expect(first["stores"]).to eq([ "default" ])
+      end
+
+      it "skips a valid cert whose on-disk PEM is blank, without dropping its routers" do
+        # Production failure mode: a `valid` row whose materialize wrote an
+        # empty/garbage .crt. Traefik would otherwise log "failed to find any
+        # PEM data in certificate input" on every reload. cert1 is real PEM
+        # (from the before hook); overwrite cert2 with a non-PEM stub.
+        stub_path = described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir)
+        File.write(stub_path, "stub-cert")
+
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+        expect(cert_files).to include(described_class.cert_file_path(cert1, cert_dir: tmp_cert_dir))
+        expect(cert_files).not_to include(stub_path)
+        # cert_count reflects valid DB rows (unchanged); routers stay for BOTH
+        # certs so the read-side ingress projection can't drift from the writer.
+        expect(result[:cert_count]).to eq(2)
+        expect(parsed["http"]["routers"]).not_to be_empty
       end
     end
 
@@ -233,14 +273,14 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(node_api.dig("tls", "options")).to eq("mtls-optional@file")
       end
 
-      it "emits nine routers per cert (node-api + federation-api + internal-api + worker-api + worker-auth + api + agent + cable + frontend)" do
+      it "emits ten routers per cert (node-api + federation-api + internal-api + worker-api + worker-auth + api + agent + cable + sidekiq + frontend)" do
         cert
         result = described_class.write!(account: account,
                                          dynamic_dir: tmp_dynamic_dir,
                                          cert_dir: tmp_cert_dir)
         parsed = YAML.load_file(result[:output_path])
         keys = parsed["http"]["routers"].keys
-        expect(keys.size).to eq(9)
+        expect(keys.size).to eq(10)
         # cert-bearing API routers (CN enforced per-route in the backend)
         expect(keys).to include(satisfy { |k| k.end_with?("-node-api") })
         expect(keys).to include(satisfy { |k| k.end_with?("-federation-api") })
@@ -253,6 +293,7 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         # public / dual-auth routers
         expect(keys).to include(satisfy { |k| k.end_with?("-agent") })
         expect(keys).to include(satisfy { |k| k.end_with?("-cable") })
+        expect(keys).to include(satisfy { |k| k.end_with?("-sidekiq") })
         expect(keys).to include(satisfy { |k| k.end_with?("-frontend") })
         # the bare -api router (not one of the longer -*-api suffixes)
         expect(keys).to include(satisfy { |k|
@@ -268,7 +309,7 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                                          cert_dir: tmp_cert_dir)
         parsed = YAML.load_file(result[:output_path])
         routers = parsed["http"]["routers"].values
-        expect(routers.size).to eq(9)
+        expect(routers.size).to eq(10)
         expect(routers).to all(satisfy { |r| r["entryPoints"] == [ "websecure" ] })
         # No router should declare the retired websecure-mtls entrypoint.
         expect(routers).not_to include(satisfy { |r| r["entryPoints"].to_a.include?("websecure-mtls") })
@@ -286,6 +327,63 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(fed_api["service"]).to eq("powernode-backend")
         expect(fed_api["entryPoints"]).to eq([ "websecure" ])
       end
+
+      it "routes /sidekiq to the worker-web service (Sidekiq dashboard)" do
+        cert
+        result = described_class.write!(account: account,
+                                         dynamic_dir: tmp_dynamic_dir,
+                                         cert_dir: tmp_cert_dir)
+        parsed = YAML.load_file(result[:output_path])
+        sidekiq = parsed["http"]["routers"].values
+                    .find { |r| r["rule"].include?("PathPrefix(`/sidekiq`)") }
+        expect(sidekiq).not_to be_nil
+        expect(sidekiq["service"]).to eq("powernode-worker-web")
+        expect(sidekiq["entryPoints"]).to eq([ "websecure" ])
+        # worker-web upstream is wired into services (defaults to :4567)
+        url = parsed.dig("http", "services", "powernode-worker-web", "loadBalancer", "servers", 0, "url")
+        expect(url).to eq("http://127.0.0.1:4567")
+      end
+    end
+  end
+
+  describe ".trusted_proxy_hosts (manage-proxy-hosts.sh -> Traefik integration)" do
+    around do |example|
+      original = ENV["POWERNODE_PROXY_EXTRA_HOSTS"]
+      ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS")
+      example.run
+    ensure
+      original.nil? ? ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS") : (ENV["POWERNODE_PROXY_EXTRA_HOSTS"] = original)
+    end
+
+    it "extracts literal hosts from the allowlist (strips ports, drops wildcards + localhost family)" do
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(
+        trusted_hosts: [ "dev.ipnode.us", "api.example.com:8443", "*.wild.example", "localhost", "127.0.0.1", "::1", "10.0.0.5" ]
+      )
+      expect(described_class.trusted_proxy_hosts).to contain_exactly("dev.ipnode.us", "api.example.com", "10.0.0.5")
+    end
+
+    it "merges allowlist hosts into extra_hosts" do
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.ipnode.us" ])
+      expect(described_class.extra_hosts).to include("dev.ipnode.us")
+    end
+
+    it "routes an allowlisted host through the bundled proxy (Host OR-group includes it)" do
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return(trusted_hosts: [ "dev.ipnode.us" ])
+      create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
+                                               common_name: "ops.example.test")
+      result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+      parsed = YAML.load_file(result[:output_path])
+      frontend_rule = parsed["http"]["routers"].values
+                        .find { |r| r["service"] == "powernode-frontend" }["rule"]
+      expect(frontend_rule).to include("Host(`dev.ipnode.us`)")
+      expect(frontend_rule).to include("Host(`ops.example.test`)")
+    end
+
+    it "is resilient (returns []) when AdminSetting is unavailable" do
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config)
+        .and_raise(ActiveRecord::StatementInvalid.new("relation missing"))
+      expect(described_class.trusted_proxy_hosts).to eq([])
+      expect { described_class.extra_hosts }.not_to raise_error
     end
   end
 end

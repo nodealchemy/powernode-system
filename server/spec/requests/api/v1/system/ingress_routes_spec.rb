@@ -55,6 +55,12 @@ RSpec.describe "Api::V1::System::IngressRoutes", type: :request do
       expect(frontend["path_prefix"]).to be_nil
       expect(frontend["backend_service"]).to eq("powernode-frontend")
 
+      # sidekiq dashboard router → worker-web service (routed via the bundled proxy)
+      sidekiq = routers.find { |r| r["name"] == "ingress-example-com-sidekiq" }
+      expect(sidekiq).to be_present
+      expect(sidekiq["path_prefix"]).to eq("/sidekiq")
+      expect(sidekiq["backend_service"]).to eq("powernode-worker-web")
+
       # public_endpoints convenience list reflects the common_name
       expect(route["public_endpoints"]).to include("https://ingress.example.com/")
     end

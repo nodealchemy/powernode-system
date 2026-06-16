@@ -32,12 +32,13 @@ module Api
 
           # Resolve the env-derived reverse-proxy values ONCE per request and
           # thread them into the presenter. Without this, the writer's class
-          # methods re-read POWERNODE_PROXY_{BACKEND,FRONTEND}_URL once per
-          # router (x9) and re-split POWERNODE_PROXY_EXTRA_HOSTS twice for EACH
-          # cert — ~12 env reads per cert. Threading them in makes it 3 total.
-          backend_url  = ::Acme::TraefikConfigWriter.backend_url
-          frontend_url = ::Acme::TraefikConfigWriter.frontend_url
-          extra_hosts  = ::Acme::TraefikConfigWriter.extra_hosts
+          # methods re-read POWERNODE_PROXY_{BACKEND,FRONTEND,WORKER_WEB}_URL once
+          # per router (x10) and re-split POWERNODE_PROXY_EXTRA_HOSTS twice for
+          # EACH cert — ~13 env reads per cert. Threading them in makes it 4 total.
+          backend_url    = ::Acme::TraefikConfigWriter.backend_url
+          frontend_url   = ::Acme::TraefikConfigWriter.frontend_url
+          worker_web_url = ::Acme::TraefikConfigWriter.worker_web_url
+          extra_hosts    = ::Acme::TraefikConfigWriter.extra_hosts
 
           render_success(
             routes: certs.map do |cert|
@@ -45,6 +46,7 @@ module Api
                 cert,
                 backend_url: backend_url,
                 frontend_url: frontend_url,
+                worker_web_url: worker_web_url,
                 extra_hosts: extra_hosts
               )
             end

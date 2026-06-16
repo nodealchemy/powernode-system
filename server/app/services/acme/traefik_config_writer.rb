@@ -324,7 +324,7 @@ module Acme
     def render_yaml(certs)
       hash = {
         "tls" => {
-          "certificates" => certs.map { |c| render_cert_entry(c) }
+          "certificates" => certs.select { |c| cert_materialized?(c) }.map { |c| render_cert_entry(c) }
         }
       }
       if certs.any?
@@ -347,6 +347,14 @@ module Acme
       ENV["POWERNODE_PROXY_FRONTEND_URL"].presence || "http://127.0.0.1:3001"
     end
 
+    # The standalone worker's Rack app (default :4567), which hosts the Sidekiq
+    # Web dashboard at /sidekiq (auth-gated by the worker's SidekiqWebAuth
+    # middleware). Only the /sidekiq prefix gets a router below — the worker's
+    # private /api/v1 API on the same port is intentionally NOT routed publicly.
+    def self.worker_web_url
+      ENV["POWERNODE_PROXY_WORKER_WEB_URL"].presence || "http://127.0.0.1:4567"
+    end
+
     # Additional hostnames Traefik should route to the same backend/frontend
     # services as the cert's common_name. Used when the platform sits behind
     # an external reverse proxy that terminates a public hostname's TLS and
@@ -358,10 +366,40 @@ module Acme
     # match both Host values without claiming to have a cert for the public
     # name (TLS for the public hostname is the external proxy's job).
     #
-    # Comma-separated; whitespace trimmed; empty entries dropped.
+    # Comma-separated; whitespace trimmed; empty entries dropped. Merged with the
+    # operator-managed allowlist (trusted_proxy_hosts) so hosts added via
+    # scripts/manage-proxy-hosts.sh are routed by the bundled proxy too.
     def self.extra_hosts
-      raw = ENV["POWERNODE_PROXY_EXTRA_HOSTS"].to_s
-      raw.split(",").map(&:strip).reject(&:empty?)
+      from_env = ENV["POWERNODE_PROXY_EXTRA_HOSTS"].to_s.split(",")
+      (from_env + trusted_proxy_hosts).map(&:strip).reject(&:empty?).uniq
+    end
+
+    # Hostnames from the operator-managed reverse-proxy allowlist
+    # (AdminSetting.reverse_proxy_url_config[:trusted_hosts], maintained by
+    # scripts/manage-proxy-hosts.sh) that are valid Traefik Host() values. This is
+    # the integration seam that makes `manage-proxy-hosts.sh add <host>` route
+    # <host> through the bundled proxy. Only literal hosts/IPs are usable: ports
+    # are stripped (the websecure entrypoint owns :443) and wildcard/regex
+    # patterns + the localhost family are dropped (Host() takes literals;
+    # localhost is already a cert CN). Best-effort — returns [] (never raises) if
+    # AdminSetting is unavailable (e.g. migrations not yet run / core mode).
+    def self.trusted_proxy_hosts
+      return [] unless defined?(::AdminSetting)
+
+      cfg = ::AdminSetting.reverse_proxy_url_config
+      return [] unless cfg.is_a?(Hash)
+
+      hosts = Array(cfg[:trusted_hosts]) | Array(cfg["trusted_hosts"])
+      hosts.filter_map do |raw|
+        h = raw.to_s.strip
+        next if h.empty? || h.include?("*")          # wildcards need HostRegexp — skip
+        h = h.sub(/:\d+\z/, "") if h.count(":") <= 1 # strip :port (leave IPv6 literals alone)
+        next if h.empty? || %w[localhost 127.0.0.1 ::1].include?(h)
+
+        h
+      end.uniq
+    rescue StandardError
+      []
     end
 
     # The single TLS option (clientAuth) applied to every router. Exposed so
@@ -374,15 +412,16 @@ module Acme
     # (write path → Traefik YAML) and routers_for (read path → ingress
     # projection). The frontend catchall has no path prefix (Host-only rule).
     ROUTER_SPECS = [
-      [ "node-api",       "/api/v1/system/node_api",       "powernode-backend"  ],
-      [ "federation-api", "/api/v1/system/federation_api", "powernode-backend"  ],
-      [ "internal-api",   "/api/v1/internal",              "powernode-backend"  ],
-      [ "worker-api",     "/api/v1/system/worker_api",     "powernode-backend"  ],
-      [ "worker-auth",    "/api/v1/worker_auth",           "powernode-backend"  ],
-      [ "api",            "/api",                          "powernode-backend"  ],
-      [ "agent",          "/agent",                        "powernode-backend"  ],
-      [ "cable",          "/cable",                        "powernode-backend"  ],
-      [ "frontend",       nil,                             "powernode-frontend" ]
+      [ "node-api",       "/api/v1/system/node_api",       "powernode-backend"    ],
+      [ "federation-api", "/api/v1/system/federation_api", "powernode-backend"    ],
+      [ "internal-api",   "/api/v1/internal",              "powernode-backend"    ],
+      [ "worker-api",     "/api/v1/system/worker_api",     "powernode-backend"    ],
+      [ "worker-auth",    "/api/v1/worker_auth",           "powernode-backend"    ],
+      [ "api",            "/api",                          "powernode-backend"    ],
+      [ "agent",          "/agent",                        "powernode-backend"    ],
+      [ "cable",          "/cable",                        "powernode-backend"    ],
+      [ "sidekiq",        "/sidekiq",                      "powernode-worker-web" ],
+      [ "frontend",       nil,                             "powernode-frontend"   ]
     ].freeze
 
     # Builds Traefik's host matcher for a certificate's common_name. SOURCE OF
@@ -413,20 +452,23 @@ module Acme
     # mutation. The frontend catchall router carries a nil path_prefix.
     #
     #   { name:, path_prefix:, backend_service:, backend_url:, entrypoint:, tls_resolver: }
-    # `backend_url:`/`frontend_url:` default to the env-reading class methods so
-    # the write path is unchanged. The read path (IngressRoutesController#index)
-    # passes pre-computed URLs so the env is parsed once per request instead of
-    # once per router (x9) per cert.
-    def self.routers_for(cert, backend_url: nil, frontend_url: nil)
-      be = backend_url || self.backend_url
-      fe = frontend_url || self.frontend_url
+    # `backend_url:`/`frontend_url:`/`worker_web_url:` default to the env-reading
+    # class methods so the write path is unchanged. The read path
+    # (IngressRoutesController#index) passes pre-computed URLs so the env is
+    # parsed once per request instead of once per router (x10) per cert.
+    def self.routers_for(cert, backend_url: nil, frontend_url: nil, worker_web_url: nil)
+      urls = {
+        "powernode-backend"    => backend_url    || self.backend_url,
+        "powernode-frontend"   => frontend_url   || self.frontend_url,
+        "powernode-worker-web" => worker_web_url || self.worker_web_url
+      }
       slug = router_slug_for(cert.common_name)
       ROUTER_SPECS.map do |suffix, path_prefix, service|
         {
           name:            "#{slug}-#{suffix}",
           path_prefix:     path_prefix,
           backend_service: service,
-          backend_url:     service == "powernode-frontend" ? fe : be,
+          backend_url:     urls.fetch(service),
           entrypoint:      ENTRYPOINT,
           tls_resolver:    TLS_RESOLVER
         }
@@ -449,6 +491,26 @@ module Acme
         "keyFile"  => self.class.key_file_path(cert, cert_dir: @cert_dir),
         "stores"   => [ "default" ]
       }
+    end
+
+    # True only when the cert's on-disk PEM material is actually present and
+    # non-empty. A `valid` AcmeCertificate row can still point at a missing or
+    # blank/stub .crt (e.g. a materialize where lego returned an empty
+    # cert_pem), which makes Traefik log "failed to find any PEM data in
+    # certificate input" on every reload. Gating the tls.certificates entry on
+    # this stops that. Deliberately gates ONLY the cert entry, never the routers
+    # — the read-side ingress projection (routers_for / IngressRoutePresenter)
+    # has no filesystem access and must stay identical to the write path, so a
+    # host with a broken cert keeps its routers and falls back to the
+    # default-store cert (surfacing the TLS mismatch rather than 404ing).
+    def cert_materialized?(cert)
+      cert_path = self.class.cert_file_path(cert, cert_dir: @cert_dir)
+      key_path  = self.class.key_file_path(cert, cert_dir: @cert_dir)
+      return false unless File.file?(cert_path) && File.file?(key_path)
+
+      File.read(cert_path).include?("-----BEGIN")
+    rescue SystemCallError
+      false
     end
 
     # Nine routers per cert, all on the single `websecure` (:443) entrypoint.
@@ -539,6 +601,12 @@ module Acme
         "powernode-frontend" => {
           "loadBalancer" => {
             "servers" => [ { "url" => self.class.frontend_url } ],
+            "passHostHeader" => true
+          }
+        },
+        "powernode-worker-web" => {
+          "loadBalancer" => {
+            "servers" => [ { "url" => self.class.worker_web_url } ],
             "passHostHeader" => true
           }
         }
