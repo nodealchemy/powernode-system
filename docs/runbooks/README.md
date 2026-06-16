@@ -24,6 +24,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [module-authoring.md](./module-authoring.md) | Module authors, platform contributors | Gitea repo + cosign + oras CLIs | ~45 min per new module |
 | [multi-cluster-k3s.md](./multi-cluster-k3s.md) | Kubernetes-focused operators | Multiple NodeInstances + SDWAN | ~1 hour per cluster |
 | [node-provisioning.md](./node-provisioning.md) | New operators, on-call SREs | Provider connection configured | ~5–15 min per node |
+| [publish-service.md](./publish-service.md) | SREs publishing internal services to their own users | An overlay backend (VIP or host) + an account TLS cert; `system.ingress.manage` | ~5 min per service |
 | [sdwan-network-setup.md](./sdwan-network-setup.md) | Network engineers, multi-tenant operators | At least one NodeInstance with publicly-reachable address | ~30 min |
 | [vault-credential-restoration.md](./vault-credential-restoration.md) | Security operators handling Vault DR | Vault snapshot, Shamir unseal keys | ~30 min – 2 hours |
 | [vendored-binary-bump.md](./vendored-binary-bump.md) | Platform maintainers updating Traefik / rpi4-firmware / dracut / kernel pins | Clean working tree; for ARM-only items, Pi 4 or QEMU-aarch64 | 15–60 min per bump |
@@ -37,6 +38,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Imaging a fleet of physical devices | [fleet-imaging-claim-by-id.md](./fleet-imaging-claim-by-id.md) |
 | Setting up SDWAN | [sdwan-network-setup.md](./sdwan-network-setup.md) |
 | Publishing a service publicly with TLS | [expose-service.md](./expose-service.md) (after [sdwan-network-setup.md](./sdwan-network-setup.md)) |
+| Publishing a service to your own users at `/svc/<slug>` | [publish-service.md](./publish-service.md) |
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
 | Responding to a security CVE | [cve-response.md](./cve-response.md) |
 | Building federation | [federation-setup.md](./federation-setup.md) → [federation-troubleshooting.md](./federation-troubleshooting.md) when stuck |

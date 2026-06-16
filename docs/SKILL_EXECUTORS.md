@@ -548,7 +548,7 @@ The agent picks up the new key on its next reconcile (~30 s) and re-establishes 
 
 ## Related Docs
 
-- [`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) — auto-generated canonical list of all 48 executors with descriptor I/O
+- [`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) — auto-generated canonical list of all 49 executors with descriptor I/O
 - [`SKILL_EXECUTOR_AUTHORING.md`](./SKILL_EXECUTOR_AUTHORING.md) — how to write a composable executor (descriptor, binds_to, cross-step data flow, rollback)
 - [`CONTAINER_RUNTIMES.md`](./CONTAINER_RUNTIMES.md) — `docker_provision` + `provision_cluster` integration
 - [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — sensor signals that trigger autonomous skill invocation
