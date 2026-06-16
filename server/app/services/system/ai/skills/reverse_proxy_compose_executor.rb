@@ -12,6 +12,12 @@ module System
       # file-watches the dynamic dir, so writing the YAML is the whole job:
       # Traefik reloads automatically.
       #
+      # It ALSO re-emits the account's locally-exposed `Sdwan::Service` routes
+      # (the `/svc/<slug>` plane) via `Sdwan::ServiceExposureWriter.write!`, into
+      # a sibling `local-services-<account>.yaml` in the same dynamic dir. Traefik
+      # merges all dynamic files, so a single compose call refreshes both the
+      # platform's per-cert routers and the account's service-bridge routes.
+      #
       # Intentionally narrow: it only regenerates from the account's valid
       # certs. It does NOT mutate ENV or override proxy backend/frontend URLs —
       # those are deployment-level concerns owned by powernode-reverse-proxy.sh
@@ -33,7 +39,9 @@ module System
             common_name: :string,
             status: :string,
             dynamic_config_path: :string,
-            routers_configured: :integer
+            routers_configured: :integer,
+            local_services_path: :string,
+            local_services_configured: :integer
           }
         )
 
@@ -49,13 +57,16 @@ module System
           end
 
           result = ::Acme::TraefikConfigWriter.write!(account: @account)
+          local = ::Sdwan::ServiceExposureWriter.write!(account: @account)
 
           success(
             certificate_id: cert.id,
             common_name: cert.common_name,
             status: cert.status,
             dynamic_config_path: result[:output_path],
-            routers_configured: result[:cert_count]
+            routers_configured: result[:cert_count],
+            local_services_path: local[:output_path],
+            local_services_configured: local[:route_count]
           )
         end
       end

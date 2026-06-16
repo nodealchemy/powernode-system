@@ -1,0 +1,103 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+# North-star orchestrator #2 (LOCAL sibling of ExposeServicePubliclyExecutor).
+# Resolves-or-creates an Sdwan::Service, flips on its local-exposure facet, and
+# regenerates the reverse proxy. The ServiceExposureWriter is stubbed at its
+# boundary so the spec asserts the orchestration (create/update + facet + regen)
+# rather than YAML rendering (covered by service_exposure_writer_spec).
+RSpec.describe System::Ai::Skills::ExposeServiceLocalExecutor do
+  let(:account)  { create(:account) }
+  let(:exec)     { described_class.new(account: account) }
+  let(:dns_cred) { create(:system_acme_dns_credential, :valid, account: account) }
+  let!(:cert) do
+    create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
+                                             common_name: "apps.example.test")
+  end
+
+  before do
+    allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+      .and_return(output_path: "/tmp/local-services.yaml", route_count: 1)
+  end
+
+  describe ".descriptor" do
+    it "advertises inputs, outputs, and approval gating" do
+      d = described_class.descriptor
+      expect(d[:name]).to eq("expose_service_local")
+      expect(d[:category]).to eq("devops")
+      expect(d[:requires_approval]).to be true
+      expect(d[:inputs].keys).to include(:service_id, :slug, :name, :backend_port, :auth_mode,
+                                         :required_permission, :required_group, :strip_prefix, :certificate_id)
+      expect(d[:outputs].keys).to include(:service_id, :slug, :local_path, :local_url, :auth_mode, :created)
+    end
+  end
+
+  describe "#execute — create-and-expose" do
+    it "creates a new locally-exposed service and regenerates the proxy" do
+      r = exec.execute(slug: "grafana", name: "Grafana", protocol: "https",
+                       backend_host: "10.20.0.5", backend_port: 3000, auth_mode: "authenticated")
+
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :created)).to be true
+      expect(r.dig(:data, :slug)).to eq("grafana")
+      expect(r.dig(:data, :local_path)).to eq("/svc/grafana")
+      expect(r.dig(:data, :local_url)).to eq("https://apps.example.test/svc/grafana")
+      expect(r.dig(:data, :routes_configured)).to eq(1)
+
+      svc = ::Sdwan::Service.find_by(account_id: account.id, slug: "grafana")
+      expect(svc.local_enabled).to be true
+      expect(svc.local_auth_mode).to eq("authenticated")
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
+    end
+
+    it "requires slug, name, and backend_port when creating" do
+      r = exec.execute(slug: "grafana")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/requires slug, name, and backend_port/)
+    end
+
+    it "requires a backend (vip or host) when creating" do
+      r = exec.execute(slug: "grafana", name: "Grafana", backend_port: 3000)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/backend_vip_id or backend_host/)
+    end
+
+    it "surfaces the model's reserved-slug validation as a failure" do
+      r = exec.execute(slug: "sidekiq", name: "X", backend_host: "h", backend_port: 80)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/reserved/i)
+    end
+
+    it "surfaces the model's scoped-requires-permission-or-group validation" do
+      r = exec.execute(slug: "scoped-svc", name: "Scoped", backend_host: "h", backend_port: 80,
+                       auth_mode: "scoped")
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/permission or group/i)
+    end
+  end
+
+  describe "#execute — expose an existing service" do
+    let!(:service) do
+      ::Sdwan::Service.create!(account: account, slug: "existing", name: "Existing",
+                               protocol: "https", backend_host: "10.0.0.9", backend_port: 8080)
+    end
+
+    it "enables local exposure on the existing record (created: false)" do
+      r = exec.execute(service_id: service.id, auth_mode: "scoped",
+                       required_permission: "services.existing.view")
+
+      expect(r[:success]).to be true
+      expect(r.dig(:data, :created)).to be false
+      expect(service.reload.local_enabled).to be true
+      expect(service.local_auth_mode).to eq("scoped")
+      expect(service.local_required_permission).to eq("services.existing.view")
+    end
+
+    it "fails clearly when the service_id is unknown / foreign" do
+      r = exec.execute(service_id: SecureRandom.uuid)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/not found/)
+    end
+  end
+end

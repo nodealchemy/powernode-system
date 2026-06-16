@@ -731,6 +731,17 @@ SKILLS_DATA = [
     tags: %w[platform sdwan vip port-mapping acme reverse-proxy expose public],
     system_prompt: "Use this skill when the operator asks to make an internal backend service reachable from the public internet at a hostname with TLS. It chains an SDWAN Virtual IP, a hub DNAT port mapping (443/80), an ACME certificate, and a reverse-proxy regeneration into one approval-gated step."
   },
+  {
+    name: "Expose Service Locally",
+    slug: "system-expose-service-local",
+    description: "Expose a backend service locally at /svc/<slug> on the platform's own host(s), authenticated by the reverse proxy (ForwardAuth). Creates/updates the Sdwan::Service, enables its local-exposure facet, and regenerates the reverse proxy.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::ExposeServiceLocalExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform sdwan service expose local forward-auth reverse-proxy svc],
+    system_prompt: "Use this skill when the operator asks to publish an internal/overlay service to the site's OWN authenticated users at a friendly /svc/<slug> path (NOT the public internet — use Expose Service Publicly for that). It creates or updates an Sdwan::Service, turns on its local-exposure facet (auth mode public/authenticated/scoped), and regenerates the reverse proxy. Approval-gated."
+  },
   # ─── Phase 3 (Federation & Multi-Site) — SDWAN-first federation ────────
   # Five executors landed in Phase 3. Their descriptors all declare the
   # tighter internal category "federation"; the platform Ai::Skill enum has

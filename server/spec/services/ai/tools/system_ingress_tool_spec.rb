@@ -14,7 +14,7 @@ RSpec.describe Ai::Tools::SystemIngressTool do
   # Real users via the canonical helper (per CLAUDE.md — never hand-build a User
   # double; action_permitted? calls user.respond_to?(:has_permission?) +
   # has_permission?, which only behave correctly on a real User).
-  let(:permissive_user) { user_with_permissions("system.ingress.manage", "system.acme.manage") }
+  let(:permissive_user) { user_with_permissions("system.ingress.read", "system.ingress.manage", "system.acme.manage") }
   let(:account)         { permissive_user.account }
 
   # Stub the three executors the tool routes to. They are constructed by the
@@ -37,12 +37,19 @@ RSpec.describe Ai::Tools::SystemIngressTool do
   end
 
   describe ".action_definitions" do
-    it "registers all three ingress/acme actions" do
+    it "registers every ingress / exposure / ACME / service action" do
       keys = described_class.action_definitions.keys
       expect(keys).to contain_exactly(
         "system_reverse_proxy_compose",
         "system_expose_service_publicly",
-        "system_acme_provision_certificate"
+        "system_expose_service_local",
+        "system_acme_provision_certificate",
+        "system_create_service",
+        "system_list_services",
+        "system_get_service",
+        "system_update_service",
+        "system_delete_service",
+        "system_unexpose_service_local"
       )
     end
 
@@ -101,6 +108,20 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(result[:success]).to be true
     end
 
+    it "routes system_expose_service_local to ExposeServiceLocalExecutor" do
+      local_executor = instance_double("System::Ai::Skills::ExposeServiceLocalExecutor")
+      stub_executor("System::Ai::Skills::ExposeServiceLocalExecutor",
+                    local_executor, { success: true, data: { local_path: "/svc/grafana" } })
+
+      result = tool.execute(params: {
+        action: "system_expose_service_local",
+        service_id: "svc-1", auth_mode: "authenticated"
+      })
+
+      expect(local_executor).to have_received(:execute).with(service_id: "svc-1", auth_mode: "authenticated")
+      expect(result.dig(:data, :local_path)).to eq("/svc/grafana")
+    end
+
     it "ignores undeclared extra params instead of raising ArgumentError (fix #3)" do
       stub_executor("System::Ai::Skills::ReverseProxyComposeExecutor",
                     reverse_proxy_executor, { success: true, data: { composed: true } })
@@ -138,6 +159,90 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       result = tool.execute(params: { action: "system_bogus_action" })
       expect(result[:success]).to be false
       expect(result[:error]).to match(/Unknown action/)
+    end
+  end
+
+  describe "Sdwan::Service inline CRUD" do
+    # The mutators call Sdwan::ServiceExposureWriter.write! for locally-exposed
+    # services — stub it so the spec never touches the filesystem.
+    before do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_return(output_path: "/tmp/local-services.yaml", route_count: 0)
+    end
+
+    def create_service!(**attrs)
+      ::Sdwan::Service.create!({
+        account: account, slug: "svc-#{SecureRandom.hex(3)}", name: "Svc",
+        protocol: "https", backend_host: "10.0.0.5", backend_port: 3000
+      }.merge(attrs))
+    end
+
+    it "creates a service (not exposed) via system_create_service" do
+      result = tool.execute(params: {
+        action: "system_create_service", slug: "grafana", name: "Grafana",
+        protocol: "http", backend_host: "10.0.0.9", backend_port: 3000
+      })
+      expect(result[:success]).to be true
+      svc = result.dig(:data, :service)
+      expect(svc[:slug]).to eq("grafana")
+      expect(svc[:local_enabled]).to be false
+      expect(svc[:local_path]).to eq("/svc/grafana")
+      expect(::Sdwan::Service.find_by(id: svc[:id], account_id: account.id)).to be_present
+    end
+
+    it "surfaces a model validation error (reserved slug) as a failure" do
+      result = tool.execute(params: {
+        action: "system_create_service", slug: "api", name: "X", backend_host: "h", backend_port: 80
+      })
+      expect(result[:success]).to be false
+      expect(result[:error]).to match(/reserved/i)
+    end
+
+    it "lists and filters services" do
+      create_service!(slug: "active-one", status: "active")
+      create_service!(slug: "disabled-one", status: "disabled")
+      all = tool.execute(params: { action: "system_list_services" })
+      expect(all.dig(:data, :count)).to eq(2)
+      only_active = tool.execute(params: { action: "system_list_services", status: "active" })
+      expect(only_active.dig(:data, :count)).to eq(1)
+    end
+
+    it "gets a single service scoped to the account" do
+      svc = create_service!(slug: "lookup")
+      result = tool.execute(params: { action: "system_get_service", service_id: svc.id })
+      expect(result.dig(:data, :service, :slug)).to eq("lookup")
+    end
+
+    it "updates backend plumbing and regenerates when locally exposed" do
+      svc = create_service!(slug: "upd", local_enabled: true)
+      result = tool.execute(params: {
+        action: "system_update_service", service_id: svc.id, name: "Renamed", backend_port: 9999
+      })
+      expect(result[:success]).to be true
+      expect(svc.reload.name).to eq("Renamed")
+      expect(svc.backend_port).to eq(9999)
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
+    end
+
+    it "does NOT flip local_enabled through update_service (exposure is executor-owned)" do
+      svc = create_service!(slug: "noflip", local_enabled: false)
+      tool.execute(params: { action: "system_update_service", service_id: svc.id, local_enabled: true })
+      expect(svc.reload.local_enabled).to be false
+    end
+
+    it "unexposes a service (fail-safe off) and regenerates" do
+      svc = create_service!(slug: "off", local_enabled: true)
+      result = tool.execute(params: { action: "system_unexpose_service_local", service_id: svc.id })
+      expect(result.dig(:data, :local_exposure)).to eq("disabled")
+      expect(svc.reload.local_enabled).to be false
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
+    end
+
+    it "deletes a service and regenerates only if it was exposed" do
+      exposed = create_service!(slug: "del-exposed", local_enabled: true)
+      tool.execute(params: { action: "system_delete_service", service_id: exposed.id })
+      expect(::Sdwan::Service.find_by(id: exposed.id)).to be_nil
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
     end
   end
 
