@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -102,7 +103,7 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title="Edit peer">
+    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title="Edit peer" icon={<Users className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="text-xs text-theme-secondary font-mono">
           Address: {peer.assigned_address}

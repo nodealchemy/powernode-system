@@ -153,6 +153,7 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
           <code className="font-mono text-sm text-theme-secondary">{credentialName}</code>
         </div>
       }
+      icon={<Globe className="w-6 h-6" />}
       maxWidth="4xl"
       footer={
         <div className="flex items-center justify-between">

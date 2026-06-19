@@ -214,6 +214,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
       <Modal
         isOpen={revokeGrantConfirm !== null}
         onClose={() => setRevokeGrantConfirm(null)}
+        icon={<Trash2 className="w-6 h-6" />}
         title="Revoke access grant"
       >
         {revokeGrantConfirm && (
@@ -245,6 +246,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
       <Modal
         isOpen={revokeDeviceConfirm !== null}
         onClose={() => setRevokeDeviceConfirm(null)}
+        icon={<Trash2 className="w-6 h-6" />}
         title="Revoke device"
       >
         {revokeDeviceConfirm && (

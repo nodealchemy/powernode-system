@@ -123,6 +123,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
           <span>Request certificate</span>
         </div>
       }
+      icon={<ShieldCheck className="w-6 h-6" />}
       maxWidth="2xl"
       footer={
         phase === 'form' ? (

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ShieldCheck } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -49,7 +50,7 @@ export const AccessGrantCreateModal: React.FC<AccessGrantCreateModalProps> = ({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Grant network access to user">
+    <Modal isOpen={isOpen} onClose={handleClose} icon={<ShieldCheck className="w-6 h-6" />} title="Grant network access to user">
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">User ID (UUID)</label>

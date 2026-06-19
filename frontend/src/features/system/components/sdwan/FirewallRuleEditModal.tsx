@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Pencil } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -109,7 +110,7 @@ export const FirewallRuleEditModal: React.FC<FirewallRuleEditModalProps> = ({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title={`Edit ${rule.name}`}>
+    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title={`Edit ${rule.name}`} icon={<Pencil className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">

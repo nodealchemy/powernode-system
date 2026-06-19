@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Plus, Pencil } from 'lucide-react';
+import { Plus, Pencil, Network, Trash2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -192,6 +192,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
         isOpen={isOpen}
         onClose={onClose}
         title={display.name}
+        icon={<Network className="w-6 h-6" />}
         subtitle={subtitle}
         size="7xl"
       >
@@ -320,7 +321,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
         onSaved={triggerRefresh}
       />
 
-      <Modal isOpen={peerToDetach !== null} onClose={() => setPeerToDetach(null)} title="Detach peer">
+      <Modal isOpen={peerToDetach !== null} onClose={() => setPeerToDetach(null)} title="Detach peer" icon={<Trash2 className="w-6 h-6" />}>
         {peerToDetach && (
           <div className="space-y-4">
             <p className="text-theme-primary">
@@ -337,7 +338,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
         )}
       </Modal>
 
-      <Modal isOpen={ruleToDelete !== null} onClose={() => setRuleToDelete(null)} title="Delete firewall rule">
+      <Modal isOpen={ruleToDelete !== null} onClose={() => setRuleToDelete(null)} title="Delete firewall rule" icon={<Trash2 className="w-6 h-6" />}>
         {ruleToDelete && (
           <div className="space-y-4">
             <p className="text-theme-primary">

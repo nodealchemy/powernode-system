@@ -126,6 +126,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      icon={<ShieldCheck className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-theme-info" />

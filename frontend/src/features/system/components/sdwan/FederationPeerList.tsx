@@ -211,7 +211,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
         </tbody>
       </table>
 
-      <Modal isOpen={revokeConfirm !== null} onClose={() => setRevokeConfirm(null)} title="Revoke federation peer">
+      <Modal isOpen={revokeConfirm !== null} onClose={() => setRevokeConfirm(null)} icon={<Ban className="w-6 h-6" />} title="Revoke federation peer">
         {revokeConfirm && (
           <div className="space-y-3">
             <p className="text-theme-primary">
@@ -238,7 +238,7 @@ export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshK
         )}
       </Modal>
 
-      <Modal isOpen={deleteConfirm !== null} onClose={() => setDeleteConfirm(null)} title="Delete federation peer">
+      <Modal isOpen={deleteConfirm !== null} onClose={() => setDeleteConfirm(null)} icon={<Trash2 className="w-6 h-6" />} title="Delete federation peer">
         {deleteConfirm && (
           <div className="space-y-3">
             <p className="text-theme-primary">

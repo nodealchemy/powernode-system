@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -82,6 +83,7 @@ export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
         isOpen={deleteConfirm !== null}
         onClose={() => !deleting && setDeleteConfirm(null)}
         title="Delete SDWAN network"
+        icon={<Trash2 className="w-6 h-6" />}
       >
         {deleteConfirm && (
           <div className="space-y-4">

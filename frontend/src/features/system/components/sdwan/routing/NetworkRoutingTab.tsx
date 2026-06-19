@@ -208,7 +208,7 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
       )}
 
       {showModeToggle && (
-        <Modal isOpen onClose={() => setShowModeToggle(false)} title="Change routing protocol" size="md">
+        <Modal isOpen onClose={() => setShowModeToggle(false)} title="Change routing protocol" icon={<Route className="w-6 h-6" />} size="md">
           <div className="space-y-3">
             <p className="text-sm text-theme-primary">
               Switching modes recompiles every peer's WireGuard + FRR config on the next agent reconcile.

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ArrowRightLeft } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -93,6 +94,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
       isOpen
       onClose={onClose}
       title={isEdit ? `Edit port mapping — ${mapping!.name}` : 'New port mapping'}
+      icon={<ArrowRightLeft className="w-6 h-6" />}
       size="lg"
     >
       <form onSubmit={handleSubmit} className="space-y-4">

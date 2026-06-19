@@ -1,4 +1,5 @@
 import { FC } from 'react';
+import { History } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { BootReplayTimeline } from './BootReplayTimeline';
@@ -37,6 +38,7 @@ export const BootReplayModal: FC<BootReplayModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title="Boot Replay"
+      icon={<History className="w-6 h-6" />}
       subtitle={subtitle}
       size="6xl"
     >

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Route } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -86,7 +87,7 @@ export const RoutePolicyEditModal: React.FC<RoutePolicyEditModalProps> = ({
   };
 
   return (
-    <Modal isOpen onClose={onClose} title={isEdit ? `Edit policy — ${policy!.name}` : 'New route policy'} size="lg">
+    <Modal isOpen onClose={onClose} title={isEdit ? `Edit policy — ${policy!.name}` : 'New route policy'} icon={<Route className="w-6 h-6" />} size="lg">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <div>

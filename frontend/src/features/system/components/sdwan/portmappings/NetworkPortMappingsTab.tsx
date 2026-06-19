@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -92,7 +93,7 @@ export const NetworkPortMappingsTab: React.FC<NetworkPortMappingsTabProps> = ({
       )}
 
       {deleteTarget && (
-        <Modal isOpen onClose={() => setDeleteTarget(null)} title="Delete port mapping" size="md">
+        <Modal isOpen onClose={() => setDeleteTarget(null)} title="Delete port mapping" icon={<Trash2 className="w-6 h-6" />} size="md">
           <div className="space-y-3">
             <p className="text-sm text-theme-primary">
               Delete port mapping <strong>{deleteTarget.name}</strong> ({deleteTarget.protocol}/

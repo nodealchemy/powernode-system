@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Globe } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -37,7 +37,7 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
   };
 
   return (
-    <Modal isOpen onClose={onClose} title={`Failover VIP — ${vip.name}`} size="md">
+    <Modal isOpen onClose={onClose} title={`Failover VIP — ${vip.name}`} icon={<Globe className="w-6 h-6" />} size="md">
       <div className="space-y-4">
         <div className="flex items-start gap-2 p-3 bg-theme-warning/30 rounded text-sm">
           <AlertTriangle size={20} className="text-theme-warning shrink-0 mt-0.5" />

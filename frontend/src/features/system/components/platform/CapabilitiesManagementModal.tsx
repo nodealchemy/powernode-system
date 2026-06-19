@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   Move,
+  Users,
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
@@ -134,6 +135,7 @@ export const CapabilitiesManagementModal: React.FC<CapabilitiesManagementModalPr
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      icon={<Users className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
           <Globe2 className="w-5 h-5 text-theme-info" />

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -55,7 +56,7 @@ export const FederationPeerProposeModal: React.FC<FederationPeerProposeModalProp
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => !submitting && (reset(), onClose())} title="Propose federation peer">
+    <Modal isOpen={isOpen} onClose={() => !submitting && (reset(), onClose())} title="Propose federation peer" icon={<Users className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="p-3 bg-theme-info border border-theme-info rounded text-xs text-theme-info">
           v1 stores the proposal as data only — cross-CA verification, prefix routing, and

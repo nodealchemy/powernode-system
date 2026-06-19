@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Network } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -63,7 +64,7 @@ export const NetworkCreateModal: React.FC<NetworkCreateModalProps> = ({ isOpen, 
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Create SDWAN network">
+    <Modal isOpen={isOpen} onClose={handleClose} title="Create SDWAN network" icon={<Network className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>

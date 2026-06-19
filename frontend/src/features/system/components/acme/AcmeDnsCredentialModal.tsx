@@ -220,6 +220,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
           <span>Add ACME DNS Credential</span>
         </div>
       }
+      icon={<ShieldCheck className="w-6 h-6" />}
       maxWidth="2xl"
       footer={
         <div className="flex items-center justify-end gap-2">

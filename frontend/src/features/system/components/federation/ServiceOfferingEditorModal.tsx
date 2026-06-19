@@ -158,6 +158,7 @@ export const ServiceOfferingEditorModal: React.FC<ServiceOfferingEditorModalProp
           <span>{isEdit ? 'Edit Service Offering' : 'New Service Offering'}</span>
         </div>
       }
+      icon={<Server className="w-6 h-6" />}
       maxWidth="2xl"
       footer={
         <div className="flex items-center justify-end gap-2">

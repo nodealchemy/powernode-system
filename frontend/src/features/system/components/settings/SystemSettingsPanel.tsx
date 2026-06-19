@@ -8,6 +8,7 @@ import {
   ShieldAlert,
   UserCog,
   GitBranch,
+  Settings,
 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { AutonomyPolicyGroup } from '@/shared/components/autonomy/AutonomyPolicyGroup';
@@ -160,6 +161,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
       variant="centered"
       size="6xl"
       title="System Autonomy Settings"
+      icon={<Settings className="w-6 h-6" />}
       subtitle="Configure per-action intervention policies and approval chains"
     >
       <div className="flex gap-4 min-h-[60vh]">

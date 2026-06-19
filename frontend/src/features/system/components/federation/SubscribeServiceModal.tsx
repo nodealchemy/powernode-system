@@ -113,6 +113,7 @@ export const SubscribeServiceModal: React.FC<SubscribeServiceModalProps> = ({
           <span>Subscribe to {offering.name}</span>
         </div>
       }
+      icon={<Server className="w-6 h-6" />}
       maxWidth="lg"
       footer={
         <div className="flex items-center justify-end gap-2">

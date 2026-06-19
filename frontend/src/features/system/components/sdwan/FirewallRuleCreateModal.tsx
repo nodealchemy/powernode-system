@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Shield } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -104,7 +105,7 @@ export const FirewallRuleCreateModal: React.FC<FirewallRuleCreateModalProps> = (
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Add firewall rule">
+    <Modal isOpen={isOpen} onClose={handleClose} title="Add firewall rule" icon={<Shield className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
           <div className="col-span-2">

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -105,6 +106,7 @@ export const NodesTab: React.FC<NodesTabProps> = ({ onActionsReady }) => {
         isOpen={!!deleteConfirmNode}
         onClose={() => setDeleteConfirmNode(null)}
         title="Delete Node"
+        icon={<Trash2 className="w-6 h-6" />}
         subtitle="This action cannot be undone"
         size="md"
         footer={

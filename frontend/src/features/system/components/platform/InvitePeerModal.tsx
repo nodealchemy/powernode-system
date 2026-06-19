@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Network, AlertCircle, X, Copy, Check, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { Network, AlertCircle, X, Copy, Check, KeyRound, Plus, Trash2, Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { platformPeersApi } from '../../services/api/platformPeersApi';
@@ -170,6 +170,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
+      icon={<Users className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
           <Network className="w-5 h-5 text-theme-info" />

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { PageContainer } from '@/shared/components/layout/PageContainer';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
@@ -194,7 +194,7 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
             )}
 
             {policyToDelete && (
-              <Modal isOpen onClose={() => setPolicyToDelete(null)} title="Delete route policy" size="md">
+              <Modal isOpen onClose={() => setPolicyToDelete(null)} title="Delete route policy" icon={<Trash2 className="w-6 h-6" />} size="md">
                 <div className="space-y-3">
                   <p className="text-sm text-theme-primary">
                     Delete policy <strong>{policyToDelete.name}</strong>? On the next agent reconcile, the

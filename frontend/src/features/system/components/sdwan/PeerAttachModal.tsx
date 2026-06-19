@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Users } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -98,7 +99,7 @@ export const PeerAttachModal: React.FC<PeerAttachModalProps> = ({ isOpen, networ
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Attach peer to network">
+    <Modal isOpen={isOpen} onClose={handleClose} title="Attach peer to network" icon={<Users className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">Node instance</label>

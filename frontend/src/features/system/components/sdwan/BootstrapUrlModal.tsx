@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Link } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import type { SdwanIssueUserDeviceResponse } from '../../types/sdwan.types';
@@ -38,7 +38,7 @@ export const BootstrapUrlModal: React.FC<BootstrapUrlModalProps> = ({ isOpen, re
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={`Bootstrap URL — ${result.user_device.label}`}>
+    <Modal isOpen={isOpen} onClose={onClose} icon={<Link className="w-6 h-6" />} title={`Bootstrap URL — ${result.user_device.label}`}>
       <div className="space-y-4">
         <div className="p-3 bg-theme-warning border border-theme-warning rounded text-sm">
           <strong className="text-theme-warning">Single-use, expires {new Date(result.bootstrap.expires_at).toLocaleString()}.</strong>

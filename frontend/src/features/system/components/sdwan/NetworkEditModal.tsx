@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Pencil } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -61,7 +62,7 @@ export const NetworkEditModal: React.FC<NetworkEditModalProps> = ({ isOpen, netw
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title={`Edit ${network.name}`}>
+    <Modal isOpen={isOpen} onClose={() => !submitting && onClose()} title={`Edit ${network.name}`} icon={<Pencil className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">Name</label>

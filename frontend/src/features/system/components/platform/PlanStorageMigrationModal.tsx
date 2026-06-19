@@ -98,7 +98,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Plan Storage Migration" size="md">
+    <Modal isOpen={isOpen} onClose={onClose} icon={<Database className="w-6 h-6" />} title="Plan Storage Migration" size="md">
       <div className="space-y-4">
         <div className="flex items-start gap-3 p-3 bg-theme-info/10 text-theme-info rounded text-sm">
           <Database className="w-4 h-4 flex-shrink-0 mt-0.5" />

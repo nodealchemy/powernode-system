@@ -135,6 +135,7 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
           <span>{phase === 'form' ? 'Spawn Platform' : 'Spawn Token'}</span>
         </div>
       }
+      icon={<Server className="w-6 h-6" />}
       maxWidth="2xl"
       footer={
         phase === 'form' ? (

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { User } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -44,7 +45,7 @@ export const UserDeviceIssueModal: React.FC<UserDeviceIssueModalProps> = ({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="Issue VPN device">
+    <Modal isOpen={isOpen} onClose={handleClose} title="Issue VPN device" icon={<User className="w-6 h-6" />}>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
           <label className="block text-sm font-medium text-theme-primary mb-1">Device label</label>

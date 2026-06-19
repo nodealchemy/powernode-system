@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
@@ -93,7 +94,7 @@ export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onAct
       )}
 
       {vipToDelete && (
-        <Modal isOpen onClose={() => setVipToDelete(null)} title="Delete Virtual IP" size="md">
+        <Modal isOpen onClose={() => setVipToDelete(null)} title="Delete Virtual IP" icon={<Trash2 className="w-6 h-6" />} size="md">
           <div className="space-y-3">
             <p className="text-sm text-theme-primary">
               Delete VIP <strong>{vipToDelete.name}</strong> ({vipToDelete.cidr})? Holders will release the
