@@ -380,7 +380,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/nodes')}
               >
-                <Server className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <Server className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Manage Nodes</span>
               </Button>
               <Button
@@ -388,7 +388,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/templates')}
               >
-                <FileText className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <FileText className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Templates</span>
               </Button>
               <Button
@@ -396,7 +396,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/providers')}
               >
-                <Globe className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <Globe className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Providers</span>
               </Button>
               <Button
@@ -404,7 +404,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/modules')}
               >
-                <Package className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <Package className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Modules</span>
               </Button>
               <Button
@@ -412,7 +412,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/puppet')}
               >
-                <Boxes className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <Boxes className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Puppet</span>
               </Button>
               <Button
@@ -420,7 +420,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                 className="flex flex-col items-center justify-center p-4 h-auto"
                 onClick={() => navigate('/app/system/tasks')}
               >
-                <Activity className="w-6 h-6 mb-2 text-theme-interactive-primary" />
+                <Activity className="w-6 h-6 mb-2" />
                 <span className="text-sm font-medium">Operations</span>
               </Button>
             </div>
