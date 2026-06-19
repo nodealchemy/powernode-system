@@ -310,7 +310,7 @@ export const PlatformList: React.FC<PlatformListProps> = ({
 
                       {canDelete && onDelete && (
                         <Button variant="outline" size="sm" onClick={() => onDelete(platform.id)} title="Delete Platform">
-                          <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                          <Trash2 className="w-4 h-4" />
                         </Button>
                       )}
                     </div>

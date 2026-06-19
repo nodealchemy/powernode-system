@@ -303,7 +303,7 @@ export const ArchitectureList: React.FC<ArchitectureListProps> = ({
 
                     {canManage && onDelete && !architecture.is_canonical && (
                       <Button variant="outline" size="sm" onClick={() => onDelete(architecture.id)} title="Delete Architecture">
-                        <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                        <Trash2 className="w-4 h-4" />
                       </Button>
                     )}
                   </div>

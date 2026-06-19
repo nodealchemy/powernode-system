@@ -652,7 +652,7 @@ const InstancePoolsPage: React.FC = () => {
                             title="Drain pool"
                             aria-label={`Drain ${pool.name}`}
                           >
-                            <Droplet className="w-4 h-4 text-theme-warning-fg" />
+                            <Droplet className="w-4 h-4" />
                           </Button>
                         )}
                         {canControl && (
@@ -666,7 +666,7 @@ const InstancePoolsPage: React.FC = () => {
                             title="Delete pool"
                             aria-label={`Delete ${pool.name}`}
                           >
-                            <Trash2 className="w-4 h-4 text-theme-danger-fg" />
+                            <Trash2 className="w-4 h-4" />
                           </Button>
                         )}
                       </div>
@@ -930,7 +930,7 @@ const InstancePoolsPage: React.FC = () => {
                       }
                       aria-label={`Drain ${pool.name}`}
                     >
-                      <Droplet className="w-4 h-4 mr-1 text-theme-warning-fg" />
+                      <Droplet className="w-4 h-4 mr-1" />
                       Drain
                     </Button>
                     <Button
@@ -940,7 +940,7 @@ const InstancePoolsPage: React.FC = () => {
                       disabled={isActioning || pool.status === 'archived'}
                       aria-label={`Delete ${pool.name}`}
                     >
-                      <Trash2 className="w-4 h-4 mr-1 text-theme-danger-fg" />
+                      <Trash2 className="w-4 h-4 mr-1" />
                       Delete
                     </Button>
                   </div>

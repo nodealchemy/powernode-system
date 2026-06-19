@@ -478,7 +478,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
 
                         {canDelete && onDelete && (
                           <Button variant="outline" size="sm" onClick={() => onDelete(module.id)} title="Delete Module">
-                            <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                            <Trash2 className="w-4 h-4" />
                           </Button>
                         )}
                       </div>

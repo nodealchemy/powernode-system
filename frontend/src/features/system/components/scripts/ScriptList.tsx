@@ -223,7 +223,7 @@ export const ScriptList: React.FC<ScriptListProps> = ({
 
                       {canDelete && onDelete && (
                         <Button variant="outline" size="sm" onClick={() => onDelete(script.id)} title="Delete Script">
-                          <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                          <Trash2 className="w-4 h-4" />
                         </Button>
                       )}
                     </div>

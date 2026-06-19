@@ -346,9 +346,9 @@ export const NodeList: React.FC<NodeListProps> = ({
                           title={node.enabled ? 'Disable Node' : 'Enable Node'}
                         >
                           {node.enabled ? (
-                            <PowerOff className="w-4 h-4 text-theme-warning-fg" />
+                            <PowerOff className="w-4 h-4" />
                           ) : (
-                            <Power className="w-4 h-4 text-theme-success-fg" />
+                            <Power className="w-4 h-4" />
                           )}
                         </Button>
                       )}
@@ -360,7 +360,7 @@ export const NodeList: React.FC<NodeListProps> = ({
                           onClick={() => armOrFire(`delete:${node.id}`, () => onDelete(node.id))}
                           title={deleteArmed ? 'Click again to confirm delete' : 'Delete Node'}
                         >
-                          {deleteArmed ? <span className="text-xs px-1">Confirm?</span> : <Trash2 className="w-4 h-4 text-theme-error-fg" />}
+                          {deleteArmed ? <span className="text-xs px-1">Confirm?</span> : <Trash2 className="w-4 h-4" />}
                         </Button>
                       )}
                     </div>

@@ -394,7 +394,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                           onClick={() => onDelete(template.id)}
                           title="Delete Template"
                         >
-                          <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                          <Trash2 className="w-4 h-4" />
                         </Button>
                       )}
                     </div>

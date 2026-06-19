@@ -344,7 +344,7 @@ export const PuppetModuleDetailModal: React.FC<PuppetModuleDetailModalProps> = (
                     title="Delete Resource"
                     disabled={!!resourceFormState}
                   >
-                    <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                    <Trash2 className="w-4 h-4" />
                   </Button>
                 )}
               </div>

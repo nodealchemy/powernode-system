@@ -367,7 +367,7 @@ export const ProviderList: React.FC<ProviderListProps> = ({
                             onClick={() => onDelete(provider.id)}
                             title="Delete Provider"
                           >
-                            <Trash2 className="w-4 h-4 text-theme-error-fg" />
+                            <Trash2 className="w-4 h-4" />
                           </Button>
                         )}
                       </div>
