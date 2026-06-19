@@ -1,4 +1,5 @@
 import { FC, useEffect, useState } from 'react';
+import { Package } from 'lucide-react';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Button } from '@/shared/components/ui/Button';
 import {
@@ -54,6 +55,7 @@ export const ModuleDetailModal: FC<Props> = ({ moduleId, onClose }) => {
       size="2xl"
       title={detail?.name || 'Module'}
       subtitle={detail?.description}
+      icon={<Package className="w-6 h-6" />}
       footer={
         <div className="flex justify-end">
           <Button variant="secondary" onClick={onClose}>

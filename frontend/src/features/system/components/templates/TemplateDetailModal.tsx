@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, FileText, Server, Package, Settings, Globe, Lock, User, Calendar, Edit2, Trash2 } from 'lucide-react';
+import { FileText, Server, Package, Settings, Globe, Lock, User, Calendar, Edit2, Trash2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/Button';
+import { Modal } from '@/shared/components/ui/Modal';
 import { Badge } from '@/shared/components/ui/Badge';
 import { LoadingSpinner } from '@/shared/components/ui/LoadingSpinner';
 import { TabContainer } from '@/shared/components/ui/TabContainer';
@@ -403,73 +404,46 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 transition-opacity"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative w-full max-w-4xl bg-theme-surface rounded-lg shadow-xl">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-theme">
-            <div className="flex items-center gap-3">
-              <FileText className="w-6 h-6 text-theme-info" />
-              <div>
-                <h2 className="text-lg font-semibold text-theme-primary">
-                  {loading ? 'Loading...' : template?.name || 'Template Details'}
-                </h2>
-                {template?.description && (
-                  <p className="text-sm text-theme-secondary truncate max-w-md">
-                    {template.description}
-                  </p>
-                )}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="w-5 h-5" />
+    <Modal
+      isOpen
+      onClose={onClose}
+      variant="centered"
+      size="4xl"
+      title={loading ? 'Loading...' : template?.name || 'Template Details'}
+      subtitle={template?.description}
+      icon={<FileText className="w-6 h-6" />}
+      footer={
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          {canEdit && onEdit && template && (
+            <Button variant="primary" onClick={() => onEdit(template)}>
+              <Edit2 className="w-4 h-4 mr-2" />
+              Edit Template
             </Button>
-          </div>
-
-          {/* Content */}
-          <div className="p-4 min-h-[400px]">
-            {loading ? (
-              <div className="flex items-center justify-center h-64">
-                <LoadingSpinner size="lg" />
-              </div>
-            ) : template ? (
-              <TabContainer
-                tabs={tabs}
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-64 text-theme-secondary">
-                Template not found
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex justify-end gap-3 p-4 border-t border-theme">
-            <Button variant="outline" onClick={onClose}>
-              Close
-            </Button>
-            {canEdit && onEdit && template && (
-              <Button
-                variant="primary"
-                onClick={() => onEdit(template)}
-              >
-                <Edit2 className="w-4 h-4 mr-2" />
-                Edit Template
-              </Button>
-            )}
-          </div>
+          )}
         </div>
+      }
+    >
+      <div className="min-h-[400px]">
+        {loading ? (
+          <div className="flex items-center justify-center h-64">
+            <LoadingSpinner size="lg" />
+          </div>
+        ) : template ? (
+          <TabContainer
+            tabs={tabs}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-64 text-theme-secondary">
+            Template not found
+          </div>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 };
 
