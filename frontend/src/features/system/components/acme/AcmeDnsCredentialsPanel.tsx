@@ -367,17 +367,17 @@ const StatusPill: React.FC<{ status: AcmeDnsCredentialStatus }> = ({ status }) =
       label: 'untested',
     },
     valid: {
-      className: 'bg-theme-success text-theme-success',
+      className: 'bg-theme-success-bg text-theme-success-fg',
       icon: <ShieldCheck className="w-3 h-3" />,
       label: 'valid',
     },
     invalid: {
-      className: 'bg-theme-danger text-theme-danger',
+      className: 'bg-theme-danger-bg text-theme-danger-fg',
       icon: <ShieldAlert className="w-3 h-3" />,
       label: 'invalid',
     },
     expired: {
-      className: 'bg-theme-warning text-theme-warning',
+      className: 'bg-theme-warning-bg text-theme-warning-fg',
       icon: <AlertTriangle className="w-3 h-3" />,
       label: 'expired',
     },

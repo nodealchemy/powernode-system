@@ -239,7 +239,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
-          <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
+          <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
             <AlertCircle className="w-4 h-4" />
             <span className="flex-1">{error}</span>
             <button type="button" onClick={() => setError(null)} className="p-1">
@@ -298,7 +298,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
         </div>
 
         {providerHelp && (
-          <div className="p-3 bg-theme-info rounded text-theme-info">
+          <div className="p-3 bg-theme-info-bg rounded text-theme-info-fg">
             <div className="flex items-start gap-2">
               <ShieldCheck className="w-4 h-4 mt-0.5 flex-shrink-0" />
               <div className="flex-1">{providerHelp.helpText}</div>

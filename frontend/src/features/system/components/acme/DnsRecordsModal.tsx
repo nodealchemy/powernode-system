@@ -473,7 +473,7 @@ const AddRecordForm: React.FC<{
       </div>
 
       {error && (
-        <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-xs rounded">
+        <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-xs rounded">
           <AlertCircle className="w-3 h-3" />
           <span className="flex-1">{error}</span>
         </div>

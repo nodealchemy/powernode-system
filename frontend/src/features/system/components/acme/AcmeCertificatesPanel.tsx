@@ -500,32 +500,32 @@ const StatusPill: React.FC<{ status: AcmeCertificateStatus }> = ({ status }) => 
       label: 'pending',
     },
     issuing: {
-      className: 'bg-theme-info text-theme-info',
+      className: 'bg-theme-info-bg text-theme-info-fg',
       icon: <RefreshCw className="w-3 h-3 animate-spin" />,
       label: 'issuing',
     },
     valid: {
-      className: 'bg-theme-success text-theme-success',
+      className: 'bg-theme-success-bg text-theme-success-fg',
       icon: <CheckCircle2 className="w-3 h-3" />,
       label: 'valid',
     },
     renewing: {
-      className: 'bg-theme-info text-theme-info',
+      className: 'bg-theme-info-bg text-theme-info-fg',
       icon: <RefreshCw className="w-3 h-3 animate-spin" />,
       label: 'renewing',
     },
     expired: {
-      className: 'bg-theme-warning text-theme-warning',
+      className: 'bg-theme-warning-bg text-theme-warning-fg',
       icon: <AlertTriangle className="w-3 h-3" />,
       label: 'expired',
     },
     revoked: {
-      className: 'bg-theme-danger text-theme-danger',
+      className: 'bg-theme-danger-bg text-theme-danger-fg',
       icon: <ShieldAlert className="w-3 h-3" />,
       label: 'revoked',
     },
     failed: {
-      className: 'bg-theme-danger text-theme-danger',
+      className: 'bg-theme-danger-bg text-theme-danger-fg',
       icon: <AlertTriangle className="w-3 h-3" />,
       label: 'failed',
     },

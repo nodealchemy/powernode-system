@@ -169,7 +169,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
       {phase === 'form' && (
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
+            <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
               <AlertCircle className="w-4 h-4" />
               <span className="flex-1">{error}</span>
               <button type="button" onClick={() => setError(null)} className="p-1">
@@ -210,7 +210,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
               DNS provider credential
             </label>
             {dnsCreds.length === 0 ? (
-              <div className="text-sm text-theme-warning bg-theme-warning rounded p-2">
+              <div className="text-sm text-theme-warning-fg bg-theme-warning-bg rounded p-2">
                 No valid DNS credentials. Add one and run "Test connectivity" first.
               </div>
             ) : (
