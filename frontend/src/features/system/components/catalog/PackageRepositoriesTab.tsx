@@ -163,8 +163,8 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
           className={
             'p-1 ' +
             (armedDelete === r.id
-              ? 'text-theme-danger'
-              : 'text-theme-secondary hover:text-theme-danger')
+              ? 'text-theme-danger-fg'
+              : 'text-theme-secondary hover:text-theme-danger-fg')
           }
           title={armedDelete === r.id ? 'Click again to confirm delete' : 'Delete'}
           data-testid={`package-repo-delete-${r.id}`}
@@ -177,7 +177,7 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
 
   const visibilityBadge = (r: SystemPackageRepository) =>
     r.shared ? (
-      <span className="px-2 py-0.5 rounded text-xs bg-theme-info/20 text-theme-info">shared</span>
+      <span className="px-2 py-0.5 rounded text-xs bg-theme-info-bg text-theme-info-fg">shared</span>
     ) : (
       <span className="px-2 py-0.5 rounded text-xs bg-theme-background-secondary text-theme-secondary">
         account
@@ -189,10 +189,10 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
       className={
         'px-2 py-0.5 rounded text-xs ' +
         (r.sync_status === 'idle'
-          ? 'bg-theme-success/20 text-theme-success'
+          ? 'bg-theme-success-bg text-theme-success-fg'
           : r.sync_status === 'syncing'
-            ? 'bg-theme-warning/20 text-theme-warning'
-            : 'bg-theme-danger/20 text-theme-danger')
+            ? 'bg-theme-warning-bg text-theme-warning-fg'
+            : 'bg-theme-danger-bg text-theme-danger-fg')
       }
     >
       {r.sync_status}
@@ -298,9 +298,9 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
                     <td className="p-2 text-right">
                       {typeof r.embedding_pending_count === 'number' ? (
                         r.embedding_pending_count === 0 ? (
-                          <span className="text-xs text-theme-success">embedded</span>
+                          <span className="text-xs text-theme-success-fg">embedded</span>
                         ) : (
-                          <span className="text-xs text-theme-warning">
+                          <span className="text-xs text-theme-warning-fg">
                             {r.embedding_pending_count.toLocaleString()}
                           </span>
                         )
@@ -347,7 +347,7 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
                     </span>
                     {typeof r.embedding_pending_count === 'number' &&
                       r.embedding_pending_count > 0 && (
-                        <span className="text-xs text-theme-warning">
+                        <span className="text-xs text-theme-warning-fg">
                           {r.embedding_pending_count.toLocaleString()} pending
                         </span>
                       )}

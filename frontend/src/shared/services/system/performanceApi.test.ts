@@ -830,20 +830,20 @@ describe('performanceApi.generateReport', () => {
 describe('performanceApi.getMetricColor', () => {
   const thresholds = { warn: 70, critical: 90 };
 
-  it('returns text-theme-success when value is below warn threshold', () => {
-    expect(performanceApi.getMetricColor(50, thresholds)).toBe('text-theme-success');
-    expect(performanceApi.getMetricColor(0, thresholds)).toBe('text-theme-success');
-    expect(performanceApi.getMetricColor(69.9, thresholds)).toBe('text-theme-success');
+  it('returns text-theme-success-fg when value is below warn threshold', () => {
+    expect(performanceApi.getMetricColor(50, thresholds)).toBe('text-theme-success-fg');
+    expect(performanceApi.getMetricColor(0, thresholds)).toBe('text-theme-success-fg');
+    expect(performanceApi.getMetricColor(69.9, thresholds)).toBe('text-theme-success-fg');
   });
 
-  it('returns text-theme-warning when value is at or above warn but below critical', () => {
-    expect(performanceApi.getMetricColor(70, thresholds)).toBe('text-theme-warning');
-    expect(performanceApi.getMetricColor(89.9, thresholds)).toBe('text-theme-warning');
+  it('returns text-theme-warning-fg when value is at or above warn but below critical', () => {
+    expect(performanceApi.getMetricColor(70, thresholds)).toBe('text-theme-warning-fg');
+    expect(performanceApi.getMetricColor(89.9, thresholds)).toBe('text-theme-warning-fg');
   });
 
-  it('returns text-theme-error when value is at or above critical threshold', () => {
-    expect(performanceApi.getMetricColor(90, thresholds)).toBe('text-theme-error');
-    expect(performanceApi.getMetricColor(100, thresholds)).toBe('text-theme-error');
+  it('returns text-theme-error-fg when value is at or above critical threshold', () => {
+    expect(performanceApi.getMetricColor(90, thresholds)).toBe('text-theme-error-fg');
+    expect(performanceApi.getMetricColor(100, thresholds)).toBe('text-theme-error-fg');
   });
 });
 
@@ -862,9 +862,9 @@ describe('performanceApi.getMetricBackgroundColor', () => {
     expect(performanceApi.getMetricBackgroundColor(75, thresholds)).toBe('bg-theme-warning-background');
   });
 
-  it('returns bg-theme-error when value is at or above critical threshold', () => {
-    expect(performanceApi.getMetricBackgroundColor(95, thresholds)).toBe('bg-theme-error');
-    expect(performanceApi.getMetricBackgroundColor(90, thresholds)).toBe('bg-theme-error');
+  it('returns bg-theme-error-bg when value is at or above critical threshold', () => {
+    expect(performanceApi.getMetricBackgroundColor(95, thresholds)).toBe('bg-theme-error-bg');
+    expect(performanceApi.getMetricBackgroundColor(90, thresholds)).toBe('bg-theme-error-bg');
   });
 });
 
@@ -875,26 +875,26 @@ describe('performanceApi.getMetricBackgroundColor', () => {
 describe('performanceApi.getAlertSeverityColor', () => {
   it('returns critical color class for critical severity', () => {
     const cls = performanceApi.getAlertSeverityColor('critical');
-    expect(cls).toContain('bg-theme-error');
-    expect(cls).toContain('text-theme-error');
+    expect(cls).toContain('bg-theme-error-bg');
+    expect(cls).toContain('text-theme-error-fg');
   });
 
   it('returns high color class for high severity', () => {
     const cls = performanceApi.getAlertSeverityColor('high');
-    expect(cls).toContain('bg-theme-error');
-    expect(cls).toContain('text-theme-error');
+    expect(cls).toContain('bg-theme-error-bg');
+    expect(cls).toContain('text-theme-error-fg');
   });
 
   it('returns medium color class for medium severity', () => {
     const cls = performanceApi.getAlertSeverityColor('medium');
-    expect(cls).toContain('bg-theme-warning');
-    expect(cls).toContain('text-theme-warning');
+    expect(cls).toContain('bg-theme-warning-bg');
+    expect(cls).toContain('text-theme-warning-fg');
   });
 
   it('returns low color class for low severity', () => {
     const cls = performanceApi.getAlertSeverityColor('low');
-    expect(cls).toContain('bg-theme-info');
-    expect(cls).toContain('text-theme-info');
+    expect(cls).toContain('bg-theme-info-bg');
+    expect(cls).toContain('text-theme-info-fg');
   });
 
   it('returns default class for unknown severity', () => {
@@ -909,22 +909,22 @@ describe('performanceApi.getAlertSeverityColor', () => {
 // =============================================================================
 
 describe('performanceApi.getHealthScoreColor', () => {
-  it('returns text-theme-success for scores >= 90', () => {
-    expect(performanceApi.getHealthScoreColor(90)).toBe('text-theme-success');
-    expect(performanceApi.getHealthScoreColor(100)).toBe('text-theme-success');
-    expect(performanceApi.getHealthScoreColor(95)).toBe('text-theme-success');
+  it('returns text-theme-success-fg for scores >= 90', () => {
+    expect(performanceApi.getHealthScoreColor(90)).toBe('text-theme-success-fg');
+    expect(performanceApi.getHealthScoreColor(100)).toBe('text-theme-success-fg');
+    expect(performanceApi.getHealthScoreColor(95)).toBe('text-theme-success-fg');
   });
 
-  it('returns text-theme-warning for scores >= 70 but < 90', () => {
-    expect(performanceApi.getHealthScoreColor(70)).toBe('text-theme-warning');
-    expect(performanceApi.getHealthScoreColor(89)).toBe('text-theme-warning');
-    expect(performanceApi.getHealthScoreColor(75)).toBe('text-theme-warning');
+  it('returns text-theme-warning-fg for scores >= 70 but < 90', () => {
+    expect(performanceApi.getHealthScoreColor(70)).toBe('text-theme-warning-fg');
+    expect(performanceApi.getHealthScoreColor(89)).toBe('text-theme-warning-fg');
+    expect(performanceApi.getHealthScoreColor(75)).toBe('text-theme-warning-fg');
   });
 
-  it('returns text-theme-error for scores below 70', () => {
-    expect(performanceApi.getHealthScoreColor(69)).toBe('text-theme-error');
-    expect(performanceApi.getHealthScoreColor(0)).toBe('text-theme-error');
-    expect(performanceApi.getHealthScoreColor(50)).toBe('text-theme-error');
+  it('returns text-theme-error-fg for scores below 70', () => {
+    expect(performanceApi.getHealthScoreColor(69)).toBe('text-theme-error-fg');
+    expect(performanceApi.getHealthScoreColor(0)).toBe('text-theme-error-fg');
+    expect(performanceApi.getHealthScoreColor(50)).toBe('text-theme-error-fg');
   });
 });
 

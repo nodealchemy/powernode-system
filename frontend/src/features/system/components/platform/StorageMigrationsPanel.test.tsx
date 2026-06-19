@@ -358,7 +358,7 @@ describe('StorageMigrationsPanel', () => {
     await waitFor(() => expect(screen.getByText('Boom')).toBeInTheDocument());
 
     // The error banner outer div contains: AlertTriangle icon, span.flex-1 (error text), button.p-1 (X)
-    // Find the outermost banner div that has the bg-theme-danger class
+    // Find the outermost banner div that has the bg-theme-danger-bg class
     const errorSpan = screen.getByText('Boom');
     // Go up to the flex container that contains the X button
     const bannerContainer = errorSpan.closest('.flex-1')!.parentElement!;

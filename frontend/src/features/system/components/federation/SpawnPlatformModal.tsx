@@ -131,7 +131,7 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <span>{phase === 'form' ? 'Spawn Platform' : 'Spawn Token'}</span>
         </div>
       }
@@ -166,7 +166,7 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
                   key={opt.value}
                   className={`block p-2 rounded border cursor-pointer ${
                     spawnMode === opt.value
-                      ? 'border-theme-info bg-theme-info'
+                      ? 'border-theme-info-border bg-theme-info-bg'
                       : 'border-theme bg-theme-background-secondary hover:bg-theme-surface-hover'
                   }`}
                 >
@@ -251,7 +251,7 @@ export const SpawnPlatformModal: React.FC<SpawnPlatformModalProps> = ({
         // Phase 2: token-shown-once
         response && (
           <div className="space-y-4">
-            <div className="p-3 bg-theme-warning text-theme-warning text-sm rounded flex items-start gap-2">
+            <div className="p-3 bg-theme-warning-bg text-theme-warning-fg text-sm rounded flex items-start gap-2">
               <KeyRound className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>
                 <strong>Capture this token now.</strong> The plaintext is shown only once.

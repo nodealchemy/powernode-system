@@ -170,7 +170,7 @@ export const AcmeCertificatesPanel: React.FC<AcmeCertificatesPanelProps> = ({
       <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
         <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-theme-info" />
+            <ShieldCheck className="w-5 h-5 text-theme-info-fg" />
             <h2 className="font-semibold text-theme-primary">Certificates</h2>
             <span className="text-xs text-theme-secondary">
               {loading
@@ -285,7 +285,7 @@ const CertRow: React.FC<CertRowProps> = ({
       <td className="px-4 py-3">
         <StatusPill status={cert.status} />
         {cert.last_renewal_error && (
-          <div className="text-xs text-theme-danger mt-1 max-w-xs italic">
+          <div className="text-xs text-theme-danger-fg mt-1 max-w-xs italic">
             {cert.last_renewal_error}
           </div>
         )}
@@ -299,7 +299,7 @@ const CertRow: React.FC<CertRowProps> = ({
               <div
                 className={
                   cert.days_until_expiry < 30
-                    ? 'text-theme-warning'
+                    ? 'text-theme-warning-fg'
                     : 'text-theme-tertiary'
                 }
               >
@@ -320,7 +320,7 @@ const CertRow: React.FC<CertRowProps> = ({
             onClick={onRequestIssue}
             disabled={acting}
             title="Request ACME issuance"
-            className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-info-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
           >
             {acting ? <Clock className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
             {acting ? 'Issuing…' : cert.status === 'failed' ? 'Retry' : 'Issue'}
@@ -332,7 +332,7 @@ const CertRow: React.FC<CertRowProps> = ({
             onClick={onRenew}
             disabled={acting}
             title="Renew now (force ACME renewal — same account key, fresh cert)"
-            className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-info-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
           >
             {acting ? <Clock className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
             {acting ? 'Renewing…' : 'Renew'}
@@ -344,7 +344,7 @@ const CertRow: React.FC<CertRowProps> = ({
             onClick={onRevoke}
             disabled={acting}
             title="Revoke certificate"
-            className="px-2 py-1 rounded text-xs text-theme-warning hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-warning-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
           >
             <ShieldAlert className="w-3 h-3" />
             Revoke
@@ -356,7 +356,7 @@ const CertRow: React.FC<CertRowProps> = ({
             onClick={onDelete}
             disabled={acting}
             title="Delete row"
-            className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
           >
             <Trash2 className="w-3 h-3" />
             Delete
@@ -439,7 +439,7 @@ const CertRow: React.FC<CertRowProps> = ({
                 {cert.days_until_expiry !== null && (
                   <span
                     className={
-                      cert.days_until_expiry < 30 ? 'text-theme-warning ml-1' : 'text-theme-tertiary ml-1'
+                      cert.days_until_expiry < 30 ? 'text-theme-warning-fg ml-1' : 'text-theme-tertiary ml-1'
                     }
                   >
                     {cert.days_until_expiry > 0
@@ -454,7 +454,7 @@ const CertRow: React.FC<CertRowProps> = ({
                 <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">
                   Last Renewal Error
                 </label>
-                <p className="text-theme-danger text-xs italic">{cert.last_renewal_error}</p>
+                <p className="text-theme-danger-fg text-xs italic">{cert.last_renewal_error}</p>
               </div>
             )}
             <div>

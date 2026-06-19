@@ -20,8 +20,8 @@ export const AsNumberSetupBanner: React.FC<AsNumberSetupBannerProps> = ({
 
   if (accountBgp) {
     return (
-      <div className="flex items-center gap-3 p-3 bg-theme-success/30 border border-theme-success/30 rounded text-sm">
-        <CheckCircle size={20} className="text-theme-success" />
+      <div className="flex items-center gap-3 p-3 bg-theme-success-bg border border-theme-success-border/30 rounded text-sm">
+        <CheckCircle size={20} className="text-theme-success-fg" />
         <div>
           <div className="font-medium text-theme-primary">
             Account AS allocated: <span className="font-mono">{accountBgp.as_number}</span>
@@ -49,15 +49,15 @@ export const AsNumberSetupBanner: React.FC<AsNumberSetupBannerProps> = ({
   };
 
   return (
-    <div className="flex items-center gap-3 p-3 bg-theme-warning/30 border border-theme-warning/30 rounded text-sm">
-      <Cpu size={20} className="text-theme-warning shrink-0" />
+    <div className="flex items-center gap-3 p-3 bg-theme-warning-bg border border-theme-warning-border/30 rounded text-sm">
+      <Cpu size={20} className="text-theme-warning-fg shrink-0" />
       <div className="flex-1">
         <div className="font-medium text-theme-primary">No AS number allocated</div>
         <div className="text-xs text-theme-secondary mt-0.5">
           iBGP networks need a 4-byte private AS number (RFC 6996, range 4200000000–4294967294). The platform
           assigns one deterministically per account.
         </div>
-        {error && <div className="text-theme-danger text-xs mt-1">{error}</div>}
+        {error && <div className="text-theme-danger-fg text-xs mt-1">{error}</div>}
       </div>
       {canManage && (
         <Button variant="primary" onClick={handleAllocate} disabled={allocating}>

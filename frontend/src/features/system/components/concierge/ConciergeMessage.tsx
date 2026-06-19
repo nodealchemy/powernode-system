@@ -66,7 +66,7 @@ export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest, onCo
           isUser
             ? 'bg-theme-primary text-theme-primary-text'
             : isTool
-              ? 'bg-theme-info text-theme-info border border-theme-info'
+              ? 'bg-theme-info-bg text-theme-info-fg border border-theme-info-border'
               : 'bg-theme-surface-hover text-theme-text-primary'
         }`}
       >

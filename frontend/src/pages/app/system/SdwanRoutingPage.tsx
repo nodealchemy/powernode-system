@@ -103,7 +103,7 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
 
   if (!canRead) {
     const denied = (
-      <div className="p-4 bg-theme-danger text-theme-danger rounded text-sm">
+      <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">
         You don't have permission to view SDWAN routing.
       </div>
     );
@@ -134,7 +134,7 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
         {loading && !data ? (
           <div className="p-4 text-theme-secondary">Loading routing overview…</div>
         ) : error ? (
-          <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>
+          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
         ) : data ? (
           <>
             <AsNumberSetupBanner

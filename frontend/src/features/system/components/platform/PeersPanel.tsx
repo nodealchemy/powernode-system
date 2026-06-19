@@ -64,7 +64,7 @@ export const PeersPanel: React.FC = () => {
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Network className="w-5 h-5 text-theme-info" />
+          <Network className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Peers</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${peers.length} ${peers.length === 1 ? 'peer' : 'peers'}`}
@@ -89,7 +89,7 @@ export const PeersPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">
@@ -176,7 +176,7 @@ const PeerRow: React.FC<PeerRowProps> = ({ peer, onSelect, onRevoke, isRevoking 
             onClick={onRevoke}
             disabled={isRevoking}
             title="Revoke peer"
-            className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
           >
             <Trash2 className="w-3 h-3" />
             {isRevoking ? 'Revoking…' : 'Revoke'}

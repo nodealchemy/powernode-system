@@ -14,15 +14,15 @@ interface VirtualIpListProps {
 const stateColor = (state: string) => {
   switch (state) {
     case 'active':
-      return 'text-theme-success';
+      return 'text-theme-success-fg';
     case 'pending':
-      return 'text-theme-warning';
+      return 'text-theme-warning-fg';
     case 'failing_over':
-      return 'text-theme-warning';
+      return 'text-theme-warning-fg';
     case 'unassigned':
       return 'text-theme-secondary';
     case 'error':
-      return 'text-theme-danger';
+      return 'text-theme-danger-fg';
     default:
       return 'text-theme-secondary';
   }
@@ -82,7 +82,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
   };
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading virtual IPs…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   if (vips.length === 0) {
     return (
@@ -158,7 +158,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
                   <button
                     type="button"
                     onClick={() => onFailover(v)}
-                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-warning"
+                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-warning-fg"
                     title="Trigger failover"
                   >
                     <GitBranch size={14} />
@@ -178,7 +178,7 @@ export const VirtualIpList: React.FC<VirtualIpListProps> = ({
                   <button
                     type="button"
                     onClick={() => onDelete(v)}
-                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger"
+                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger-fg"
                     title="Delete"
                   >
                     <Trash2 size={14} />

@@ -369,7 +369,7 @@ export const TemplateDetailModal: React.FC<TemplateDetailModalProps> = ({
                     onClick={() => handleRemoveModule(module.id, module.name)}
                     aria-label={`Remove ${module.name} from template`}
                   >
-                    <Trash2 className="w-4 h-4 text-theme-danger" />
+                    <Trash2 className="w-4 h-4 text-theme-danger-fg" />
                   </Button>
                 )}
               </div>

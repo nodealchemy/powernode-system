@@ -171,7 +171,7 @@ export const PackageBrowser: FC<Props> = ({
               </span>
             )}
             {typeof similarity === 'number' && (
-              <span className="px-1.5 py-0.5 text-[10px] rounded bg-theme-info/20 text-theme-info">
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-theme-info-bg text-theme-info-fg">
                 {Math.round(similarity * 100)}% match
               </span>
             )}
@@ -298,7 +298,7 @@ export const PackageBrowser: FC<Props> = ({
             <div className="p-4 text-sm text-theme-secondary">Embedding intent and searching…</div>
           )}
           {discover.phase === 'error' && (
-            <div className="p-4 text-sm text-theme-danger" data-testid="package-discover-error">
+            <div className="p-4 text-sm text-theme-danger-fg" data-testid="package-discover-error">
               {discover.message}
             </div>
           )}

@@ -266,9 +266,9 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         <div className="flex flex-wrap gap-4 pt-4 border-t border-theme">
           <div className="flex items-center gap-2">
             {module.enabled ? (
-              <CheckCircle className="w-5 h-5 text-theme-success" />
+              <CheckCircle className="w-5 h-5 text-theme-success-fg" />
             ) : (
-              <XCircle className="w-5 h-5 text-theme-error" />
+              <XCircle className="w-5 h-5 text-theme-error-fg" />
             )}
             <span className="text-theme-primary">
               {module.enabled ? 'Enabled' : 'Disabled'}
@@ -276,7 +276,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           </div>
           <div className="flex items-center gap-2">
             {module.public ? (
-              <Globe className="w-5 h-5 text-theme-info" />
+              <Globe className="w-5 h-5 text-theme-info-fg" />
             ) : (
               <Lock className="w-5 h-5 text-theme-secondary" />
             )}
@@ -324,7 +324,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         title: module.dependant
           ? `File spec (inherited from ${module.parent_module_name ?? 'parent'}.dependency_spec)`
           : 'File spec',
-        icon: <FileCode className="w-4 h-4 text-theme-info" />,
+        icon: <FileCode className="w-4 h-4 text-theme-info-fg" />,
         help: module.dependant
           ? `This is a dependant child module. Its file_spec is read-through from its parent's dependency_spec at runtime — to change what this dependant ships, edit ${module.parent_module_name ?? 'the parent'}'s dependency_spec instead.`
           : 'Paths this module owns and ships in its blob.',
@@ -333,7 +333,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'protected_spec',
         title: 'Protected spec',
-        icon: <ShieldCheck className="w-4 h-4 text-theme-info" />,
+        icon: <ShieldCheck className="w-4 h-4 text-theme-info-fg" />,
         help: 'Paths this module claims as sensitive. The build pipeline folds these into every neighbor\'s effective_mask, so no other module ships them. Used for /etc/shadow, /etc/ssh/ssh_host_*_key, and other security-critical files.',
         text: module.protected_spec_text,
         tone: 'protected',
@@ -341,7 +341,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'mask',
         title: 'Mask (local exclude)',
-        icon: <Settings className="w-4 h-4 text-theme-info" />,
+        icon: <Settings className="w-4 h-4 text-theme-info-fg" />,
         help: 'Paths to exclude from THIS module\'s blob during build (build cruft like /var/cache/apt/**). Local rsync filter; does not affect neighbors.',
         text: module.mask_text,
         tone: 'mask',
@@ -349,14 +349,14 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       {
         key: 'package_spec',
         title: 'Package spec',
-        icon: <Package className="w-4 h-4 text-theme-info" />,
+        icon: <Package className="w-4 h-4 text-theme-info-fg" />,
         help: 'Debian packages installed into the build chroot.',
         text: module.package_spec_text,
       },
       {
         key: 'dependency_spec',
         title: 'Dependency spec (inherited by dependants)',
-        icon: <GitBranch className="w-4 h-4 text-theme-info" />,
+        icon: <GitBranch className="w-4 h-4 text-theme-info-fg" />,
         help: 'The file-spec this module\'s dependant config / instance children inherit. When a child is created with this module as its parent_module, the child\'s file_spec returns this value transparently. Subscription-variety bases populate it; leaf modules with no dependants leave it empty.',
         text: module.dependency_spec_text,
       },
@@ -373,8 +373,8 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             .filter(l => l.length > 0);
           const empty = lines.length === 0;
           const borderClass =
-            section.tone === 'protected' ? 'border-theme-warning' :
-            section.tone === 'mask' ? 'border-theme-info' :
+            section.tone === 'protected' ? 'border-theme-warning-border' :
+            section.tone === 'mask' ? 'border-theme-info-border' :
             'border-theme';
           return (
             <div key={section.key}>
@@ -402,7 +402,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Lifecycle */}
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4 text-theme-info" />
+            <Settings className="w-4 h-4 text-theme-info-fg" />
             <h4 className="font-medium text-theme-primary">Lifecycle</h4>
           </div>
           <div className="bg-theme-background rounded-lg p-4 border border-theme grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -433,7 +433,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Config (raw JSON — usually populated by manifest import) */}
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4 text-theme-info" />
+            <Settings className="w-4 h-4 text-theme-info-fg" />
             <h4 className="font-medium text-theme-primary">Configuration</h4>
           </div>
           <p className="text-xs text-theme-secondary mb-2">
@@ -461,7 +461,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
         {/* Header with Add button */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <GitBranch className="w-5 h-5 text-theme-info" />
+            <GitBranch className="w-5 h-5 text-theme-info-fg" />
             <h4 className="font-medium text-theme-primary">Module Dependencies</h4>
           </div>
           {canManageDependencies && (
@@ -490,7 +490,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-theme-surface flex items-center justify-center">
-                    <Package className="w-5 h-5 text-theme-info" />
+                    <Package className="w-5 h-5 text-theme-info-fg" />
                   </div>
                   <div>
                     <h5 className="font-medium text-theme-primary">
@@ -524,7 +524,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                       onClick={() => handleRemoveDependency(dep.id)}
                       disabled={removingDependency === dep.id}
                       title="Remove dependency"
-                      className="text-theme-error hover:text-theme-error"
+                      className="text-theme-error-fg hover:text-theme-error-fg"
                     >
                       {removingDependency === dep.id ? (
                         <LoadingSpinner size="sm" />
@@ -573,7 +573,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-info" />
+              <Package className="w-6 h-6 text-theme-info-fg" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : module?.name || 'Module Details'}
@@ -606,7 +606,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-info text-theme-info'
+                      ? 'border-theme-info-border text-theme-info-fg'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >
@@ -632,7 +632,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
               </>
             ) : (
               <div className="text-center py-12">
-                <p className="text-theme-error">Failed to load module details</p>
+                <p className="text-theme-error-fg">Failed to load module details</p>
               </div>
             )}
           </div>
@@ -660,7 +660,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
               <div className="flex items-center justify-between p-4 border-b border-theme">
                 <div className="flex items-center gap-3">
-                  <Plus className="w-6 h-6 text-theme-info" />
+                  <Plus className="w-6 h-6 text-theme-info-fg" />
                   <h3 className="text-lg font-semibold text-theme-primary">
                     Add Dependency
                   </h3>

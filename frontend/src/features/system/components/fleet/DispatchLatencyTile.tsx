@@ -77,7 +77,7 @@ export const DispatchLatencyTile: React.FC = () => {
       {loading ? (
         <div className="text-xs text-theme-tertiary italic">Loading metrics...</div>
       ) : error ? (
-        <div className="text-xs text-theme-error">{error}</div>
+        <div className="text-xs text-theme-error-fg">{error}</div>
       ) : data ? (
         <>
           <div className="grid grid-cols-5 gap-2 mb-3">
@@ -99,7 +99,7 @@ export const DispatchLatencyTile: React.FC = () => {
           {completedRate + failureRate > 0 && (
             <div className="text-xs text-theme-tertiary">
               Failure rate:{' '}
-              <span className={failurePercent > 5 ? 'text-theme-error' : 'text-theme-text-primary'}>
+              <span className={failurePercent > 5 ? 'text-theme-error-fg' : 'text-theme-text-primary'}>
                 {failurePercent.toFixed(2)}%
               </span>
             </div>

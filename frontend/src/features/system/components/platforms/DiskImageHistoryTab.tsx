@@ -134,7 +134,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
     <section className="bg-theme-surface rounded-lg border border-theme">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <History size={16} className="text-theme-info" />
+          <History size={16} className="text-theme-info-fg" />
           <h2 className="font-medium text-theme-primary">Publication history</h2>
           {publications.length > 0 && (
             <Badge variant="info" size="xs">{publications.length}</Badge>
@@ -176,7 +176,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
                         <Badge variant="secondary" size="xs">{p.arch}</Badge>
                         {p.attestation_present && (
                           <span title="cosign attestation verified">
-                            <ShieldCheck size={12} className="text-theme-success" />
+                            <ShieldCheck size={12} className="text-theme-success-fg" />
                           </span>
                         )}
                       </div>
@@ -188,7 +188,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
                         )}
                         {p.attempt_count > 1 && (
                           <span title="Retried after failure">
-                            <AlertTriangle size={12} className="inline text-theme-warning" /> {p.attempt_count} attempts
+                            <AlertTriangle size={12} className="inline text-theme-warning-fg" /> {p.attempt_count} attempts
                           </span>
                         )}
                       </div>
@@ -237,7 +237,7 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Attestation</label>
                         <p className="text-theme-primary flex items-center gap-1">
                           {p.attestation_present ? (
-                            <><ShieldCheck size={14} className="text-theme-success" /> present</>
+                            <><ShieldCheck size={14} className="text-theme-success-fg" /> present</>
                           ) : 'absent'}
                           {p.cosign_bundle_present && <span className="text-theme-tertiary">· cosign bundle</span>}
                         </p>
@@ -291,8 +291,8 @@ export const DiskImageHistoryTab: React.FC<Props> = ({ platform }) => {
                     </div>
                     {p.error_message && (
                       <div className="mt-3">
-                        <label className="block text-xs font-semibold text-theme-error uppercase tracking-wide mb-1">Error</label>
-                        <p className="text-xs text-theme-error break-all">{p.error_message}</p>
+                        <label className="block text-xs font-semibold text-theme-error-fg uppercase tracking-wide mb-1">Error</label>
+                        <p className="text-xs text-theme-error-fg break-all">{p.error_message}</p>
                       </div>
                     )}
                   </div>

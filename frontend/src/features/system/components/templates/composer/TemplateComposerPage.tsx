@@ -246,7 +246,7 @@ function ConflictPanel({ conflicts }: { conflicts: TemplateComposeConflict[] }):
   return (
     <div>
       <div className="flex items-center gap-2 text-sm font-medium mb-2">
-        <AlertTriangle size={14} className="text-theme-warning" />
+        <AlertTriangle size={14} className="text-theme-warning-fg" />
         Conflicts ({conflicts.length})
       </div>
       <ul className="space-y-1 text-xs">

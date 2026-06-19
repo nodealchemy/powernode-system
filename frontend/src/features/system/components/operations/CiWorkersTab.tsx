@@ -87,7 +87,7 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
 
       <section className="bg-theme-surface rounded-lg border border-theme">
         <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-          <Bot size={16} className="text-theme-info" />
+          <Bot size={16} className="text-theme-info-fg" />
           <h2 className="font-medium text-theme-primary">Active CI workers</h2>
           {workers.length > 0 && (
             <Badge variant="info" size="xs">{workers.length}</Badge>
@@ -175,7 +175,7 @@ export const CiWorkersTab: React.FC<CiWorkersTabProps> = ({ onActionsReady }) =>
                       )}
                       {canDelete && (
                         <Button size="sm" variant="ghost" onClick={() => handleRevoke(w)} title="Revoke worker">
-                          <Trash2 size={14} className="text-theme-danger" />
+                          <Trash2 size={14} className="text-theme-danger-fg" />
                         </Button>
                       )}
                     </div>
@@ -279,7 +279,7 @@ const TokenShownOnceModal: React.FC<{
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-2xl p-6">
         <h3 className="text-lg font-semibold mb-2 text-theme-primary">CI worker: {name}</h3>
-        <p className="text-sm text-theme-warning mb-4 font-medium">
+        <p className="text-sm text-theme-warning-fg mb-4 font-medium">
           ⚠️ This token is shown ONCE. It cannot be recovered. Save it now.
         </p>
 

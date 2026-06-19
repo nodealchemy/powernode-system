@@ -65,7 +65,7 @@ export const ModuleDetailModal: FC<Props> = ({ moduleId, onClose }) => {
       }
     >
       {loading && <div className="text-sm text-theme-tertiary">Loading...</div>}
-      {error && <div className="text-sm text-theme-danger">{error}</div>}
+      {error && <div className="text-sm text-theme-danger-fg">{error}</div>}
 
       {detail && (
         <div className="space-y-4">

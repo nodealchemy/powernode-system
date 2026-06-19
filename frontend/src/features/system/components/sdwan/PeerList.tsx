@@ -42,7 +42,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
   }, [load, refreshKey]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading peers…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   if (peers.length === 0) {
     return (
@@ -87,7 +87,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                 <div className="flex items-center gap-2">
                   {p.publicly_reachable ? (
                     <>
-                      <Globe size={16} className="text-theme-info" />
+                      <Globe size={16} className="text-theme-info-fg" />
                       <span className="text-sm text-theme-primary">Hub</span>
                     </>
                   ) : (
@@ -123,7 +123,7 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
                   <button
                     type="button"
                     onClick={() => onDetach(p)}
-                    className="text-theme-danger hover:bg-theme-danger p-1 rounded"
+                    className="text-theme-danger-fg hover:bg-theme-danger-bg p-1 rounded"
                     aria-label={`Detach peer ${p.assigned_address}`}
                   >
                     <Trash2 size={16} />
@@ -240,10 +240,10 @@ export const PeerList: React.FC<PeerListProps> = ({ networkId, onDetach, onEdit,
 function peerStatusClass(status: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (status) {
-    case 'active': return `${base} bg-theme-success text-theme-success`;
-    case 'degraded': return `${base} bg-theme-warning text-theme-warning`;
-    case 'pending': return `${base} bg-theme-info text-theme-info`;
-    case 'disconnected': return `${base} bg-theme-danger text-theme-danger`;
+    case 'active': return `${base} bg-theme-success-bg text-theme-success-fg`;
+    case 'degraded': return `${base} bg-theme-warning-bg text-theme-warning-fg`;
+    case 'pending': return `${base} bg-theme-info-bg text-theme-info-fg`;
+    case 'disconnected': return `${base} bg-theme-danger-bg text-theme-danger-fg`;
     default: return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

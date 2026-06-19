@@ -47,7 +47,7 @@ export const PlatformOverviewCards: React.FC = () => {
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger text-theme-danger text-sm rounded inline-flex items-center gap-2">
+      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
         <AlertTriangle className="w-4 h-4" />
         Overview failed to load: {error}
       </div>
@@ -70,31 +70,31 @@ export const PlatformOverviewCards: React.FC = () => {
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
       <Card
-        icon={<Network className="w-4 h-4 text-theme-info" />}
+        icon={<Network className="w-4 h-4 text-theme-info-fg" />}
         label="Peers"
         primary={overview.peers.count}
         detail={statusDetail(overview.peers.by_status, [ 'active', 'enrolled', 'degraded' ])}
       />
       <Card
-        icon={<Server className="w-4 h-4 text-theme-info" />}
+        icon={<Server className="w-4 h-4 text-theme-info-fg" />}
         label="Children"
         primary={overview.children.count}
         detail={statusDetail(overview.children.by_status, [ 'active', 'enrolled', 'proposed' ])}
       />
       <Card
-        icon={<Globe2 className="w-4 h-4 text-theme-info" />}
+        icon={<Globe2 className="w-4 h-4 text-theme-info-fg" />}
         label="Services"
         primary={`${overview.services.offerings} / ${overview.services.subscriptions}`}
         detail="offerings / subscriptions"
       />
       <Card
-        icon={<Move className="w-4 h-4 text-theme-info" />}
+        icon={<Move className="w-4 h-4 text-theme-info-fg" />}
         label="Migrations"
         primary={overview.migrations.count}
         detail={statusDetail(overview.migrations.by_status, [ 'pending', 'applying', 'applied' ])}
       />
       <Card
-        icon={<ShieldCheck className="w-4 h-4 text-theme-info" />}
+        icon={<ShieldCheck className="w-4 h-4 text-theme-info-fg" />}
         label="Certificates"
         primary={overview.certificates.count}
         detail={
@@ -123,7 +123,7 @@ const Card: React.FC<CardProps> = ({ icon, label, primary, detail, warn }) => (
       <span>{label}</span>
     </div>
     <div className="text-2xl font-semibold text-theme-primary">{primary}</div>
-    <div className={`text-xs mt-1 ${warn ? 'text-theme-warning' : 'text-theme-tertiary'}`}>
+    <div className={`text-xs mt-1 ${warn ? 'text-theme-warning-fg' : 'text-theme-tertiary'}`}>
       {detail}
     </div>
   </div>

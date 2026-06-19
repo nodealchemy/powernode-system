@@ -183,7 +183,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
                         : 'text-theme-secondary hover:bg-theme-surface-hover hover:text-theme-primary')
                     }
                   >
-                    <Icon size={16} className={isActive ? 'text-theme-info' : 'text-theme-tertiary'} />
+                    <Icon size={16} className={isActive ? 'text-theme-info-fg' : 'text-theme-tertiary'} />
                     <span className="flex-1 truncate">{s.label}</span>
                     <span className="text-[10px] text-theme-tertiary tabular-nums">
                       {s.actions.length}
@@ -206,7 +206,7 @@ export const SystemSettingsPanel: React.FC<SystemSettingsPanelProps> = ({ isOpen
               >
                 <GitBranch
                   size={16}
-                  className={activeKey === CHAINS_KEY ? 'text-theme-info' : 'text-theme-tertiary'}
+                  className={activeKey === CHAINS_KEY ? 'text-theme-info-fg' : 'text-theme-tertiary'}
                 />
                 <span className="flex-1 truncate">Approval Chains</span>
               </button>

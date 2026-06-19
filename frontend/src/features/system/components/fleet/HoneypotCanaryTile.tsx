@@ -35,13 +35,13 @@ export const HoneypotCanaryTile: React.FC = () => {
     return Date.now() - t <= 24 * 60 * 60 * 1000;
   });
 
-  const tone = last24h.length > 0 ? 'border-theme-error' : last7d.length > 0 ? 'border-theme-warning' : 'border-theme';
+  const tone = last24h.length > 0 ? 'border-theme-error-border' : last7d.length > 0 ? 'border-theme-warning-border' : 'border-theme';
 
   return (
     <div className={`bg-theme-surface rounded-lg border ${tone} p-3`}>
       <div className="flex items-center justify-between text-xs">
         <div className="flex items-center gap-1 text-theme-tertiary">
-          {last24h.length > 0 ? <ShieldAlert size={14} className="text-theme-error" /> : <Shield size={14} />}
+          {last24h.length > 0 ? <ShieldAlert size={14} className="text-theme-error-fg" /> : <Shield size={14} />}
           Honeypot Canaries
         </div>
         {last24h.length > 0 && <Badge variant="danger">ALERT</Badge>}
@@ -63,7 +63,7 @@ export const HoneypotCanaryTile: React.FC = () => {
         )}
       </div>
       {last24h.length > 0 && (
-        <div className="mt-2 text-xs text-theme-error">
+        <div className="mt-2 text-xs text-theme-error-fg">
           Last access: {accessEvents[0] && new Date(accessEvents[0].emitted_at).toLocaleString()}
         </div>
       )}

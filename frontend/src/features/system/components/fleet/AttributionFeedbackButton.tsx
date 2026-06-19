@@ -58,10 +58,10 @@ export const AttributionFeedbackButton: React.FC<Props> = ({
     <div className="space-y-2">
       <div className="flex gap-2">
         <Button size="xs" variant="secondary" onClick={() => submit(true)} disabled={submitting}>
-          <CheckCircle2 size={12} className="text-theme-success" /> Confirm
+          <CheckCircle2 size={12} className="text-theme-success-fg" /> Confirm
         </Button>
         <Button size="xs" variant="ghost" onClick={() => submit(false)} disabled={submitting}>
-          <XCircle size={12} className="text-theme-error" /> Reject
+          <XCircle size={12} className="text-theme-error-fg" /> Reject
         </Button>
         {!showNote && (
           <Button size="xs" variant="ghost" onClick={() => setShowNote(true)}>

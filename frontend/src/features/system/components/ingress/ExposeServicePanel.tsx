@@ -203,7 +203,7 @@ export const ExposeServicePanel: React.FC = () => {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
         <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-          <Globe className="w-5 h-5 text-theme-info" />
+          <Globe className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Expose a service</h2>
         </header>
 
@@ -359,7 +359,7 @@ export const ExposeServicePanel: React.FC = () => {
         </header>
 
         {concierge.error && (
-          <div className="px-4 py-2 bg-theme-danger text-theme-danger text-xs border-b border-theme">
+          <div className="px-4 py-2 bg-theme-danger-bg text-theme-danger-fg text-xs border-b border-theme">
             {concierge.error}
           </div>
         )}

@@ -91,7 +91,7 @@ export const IngressRoutesPanel: React.FC = () => {
   return (
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-        <Globe className="w-5 h-5 text-theme-info" />
+        <Globe className="w-5 h-5 text-theme-info-fg" />
         <h2 className="font-semibold text-theme-primary">Routes</h2>
         <span className="text-xs text-theme-secondary">
           {loading
@@ -110,7 +110,7 @@ export const IngressRoutesPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">
@@ -190,7 +190,7 @@ const RouteRow: React.FC<RouteRowProps> = ({ route }) => {
               {route.days_until_expiry !== null && (
                 <div
                   className={
-                    route.days_until_expiry < 30 ? 'text-theme-warning' : 'text-theme-tertiary'
+                    route.days_until_expiry < 30 ? 'text-theme-warning-fg' : 'text-theme-tertiary'
                   }
                 >
                   {route.days_until_expiry > 0
@@ -215,7 +215,7 @@ const RouteRow: React.FC<RouteRowProps> = ({ route }) => {
                   href={url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-theme-surface border border-theme text-theme-info hover:bg-theme-surface-hover transition-colors"
+                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-theme-surface border border-theme text-theme-info-fg hover:bg-theme-surface-hover transition-colors"
                 >
                   <ExternalLink className="w-3 h-3" />
                   <span className="font-mono break-all">{url}</span>
@@ -267,27 +267,27 @@ const StatusPill: React.FC<{ status: IngressRouteStatus }> = ({ status }) => {
     { className: string; icon: React.ReactNode; label: string }
   > = {
     valid: {
-      className: 'bg-theme-success text-theme-success',
+      className: 'bg-theme-success-bg text-theme-success-fg',
       icon: <CheckCircle2 className="w-3 h-3" />,
       label: 'valid',
     },
     pending: {
-      className: 'bg-theme-warning text-theme-warning',
+      className: 'bg-theme-warning-bg text-theme-warning-fg',
       icon: <Clock className="w-3 h-3" />,
       label: 'pending',
     },
     issuing: {
-      className: 'bg-theme-warning text-theme-warning',
+      className: 'bg-theme-warning-bg text-theme-warning-fg',
       icon: <RefreshCw className="w-3 h-3 animate-spin" />,
       label: 'issuing',
     },
     renewing: {
-      className: 'bg-theme-warning text-theme-warning',
+      className: 'bg-theme-warning-bg text-theme-warning-fg',
       icon: <RefreshCw className="w-3 h-3 animate-spin" />,
       label: 'renewing',
     },
     revoked: {
-      className: 'bg-theme-danger text-theme-danger',
+      className: 'bg-theme-danger-bg text-theme-danger-fg',
       icon: <ShieldAlert className="w-3 h-3" />,
       label: 'revoked',
     },

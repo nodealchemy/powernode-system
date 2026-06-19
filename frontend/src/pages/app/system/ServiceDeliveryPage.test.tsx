@@ -88,10 +88,10 @@ describe('ServiceDeliveryPage', () => {
 
     // The active tab carries the info-accent classes; siblings do not.
     expect(screen.getByRole('link', { name: /Subscriptions/i }).className).toContain(
-      'text-theme-info',
+      'text-theme-info-fg',
     );
     expect(screen.getByRole('link', { name: /Offerings/i }).className).not.toContain(
-      'text-theme-info',
+      'text-theme-info-fg',
     );
 
     // The matched tab's body renders.

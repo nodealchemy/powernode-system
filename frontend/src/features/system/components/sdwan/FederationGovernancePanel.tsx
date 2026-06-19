@@ -42,7 +42,7 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
     <div className="border border-theme rounded p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <ShieldAlert size={18} className="text-theme-info" />
+          <ShieldAlert size={18} className="text-theme-info-fg" />
           <h3 className="font-medium text-theme-primary">Governance scan</h3>
         </div>
         <Button variant="secondary" onClick={run} disabled={running}>
@@ -51,12 +51,12 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
         </Button>
       </div>
 
-      {error && <div className="p-2 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>}
+      {error && <div className="p-2 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>}
 
       {findings === null ? (
         <div className="text-sm text-theme-secondary">Click "Re-scan" to run governance checks.</div>
       ) : findings.length === 0 ? (
-        <div className="p-3 bg-theme-success text-theme-success rounded text-sm">
+        <div className="p-3 bg-theme-success-bg text-theme-success-fg rounded text-sm">
           No governance findings. Federation peers look healthy.
         </div>
       ) : (
@@ -85,9 +85,9 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
 function severityClass(s: SdwanFederationFindingSeverity): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium uppercase';
   switch (s) {
-    case 'critical': return `${base} bg-theme-danger text-theme-danger`;
-    case 'high':     return `${base} bg-theme-warning text-theme-warning`;
-    case 'medium':   return `${base} bg-theme-info text-theme-info`;
+    case 'critical': return `${base} bg-theme-danger-bg text-theme-danger-fg`;
+    case 'high':     return `${base} bg-theme-warning-bg text-theme-warning-fg`;
+    case 'medium':   return `${base} bg-theme-info-bg text-theme-info-fg`;
     default:         return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

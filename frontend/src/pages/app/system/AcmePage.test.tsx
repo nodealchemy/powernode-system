@@ -287,9 +287,9 @@ describe('AcmePage', () => {
       expect(screen.getByTestId('dns-credentials-panel')).toBeInTheDocument(),
     );
 
-    // The active tab gets `border-theme-info` class (from PathTabs implementation)
+    // The active tab gets `border-theme-info-border` class (from PathTabs implementation)
     const dnsLink = screen.getByRole('link', { name: /DNS Credentials/i });
-    expect(dnsLink.className).toContain('border-theme-info');
+    expect(dnsLink.className).toContain('border-theme-info-border');
   });
 
   it('marks the certificates tab as active when on that route', async () => {
@@ -302,7 +302,7 @@ describe('AcmePage', () => {
     );
 
     const certLink = screen.getByRole('link', { name: /Certificates/i });
-    expect(certLink.className).toContain('border-theme-info');
+    expect(certLink.className).toContain('border-theme-info-border');
   });
 
   it('does not mark the inactive tab as active', async () => {
@@ -315,7 +315,7 @@ describe('AcmePage', () => {
     );
 
     const certLink = screen.getByRole('link', { name: /Certificates/i });
-    expect(certLink.className).not.toContain('border-theme-info');
+    expect(certLink.className).not.toContain('border-theme-info-border');
   });
 
   // ---------------------------------------------------------------------------

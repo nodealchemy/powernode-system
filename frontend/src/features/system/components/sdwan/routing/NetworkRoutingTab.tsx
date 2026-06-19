@@ -77,7 +77,7 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
   const totalLanSubnets = peers.reduce((sum, p) => sum + (p.lan_subnets?.length ?? 0), 0);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading routing data…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   return (
     <div className="space-y-5">
@@ -129,7 +129,7 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
                   <td className="px-3 py-2 font-medium">{p.node_instance_id?.slice(0, 8) ?? p.id.slice(0, 8)}</td>
                   <td className="px-3 py-2 text-xs">
                     <span className="inline-flex items-center gap-1">
-                      <Wifi size={12} className={p.publicly_reachable ? 'text-theme-success' : 'text-theme-secondary'} />
+                      <Wifi size={12} className={p.publicly_reachable ? 'text-theme-success-fg' : 'text-theme-secondary'} />
                       {p.publicly_reachable ? 'Hub' : 'Spoke'}
                     </span>
                   </td>
@@ -170,8 +170,8 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
             </div>
             <div className="p-3">
               {hubPeers.length === 0 ? (
-                <div className="flex items-start gap-2 p-2 bg-theme-warning/30 rounded text-sm">
-                  <AlertTriangle size={16} className="text-theme-warning shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 p-2 bg-theme-warning-bg rounded text-sm">
+                  <AlertTriangle size={16} className="text-theme-warning-fg shrink-0 mt-0.5" />
                   <div className="text-theme-secondary">
                     No publicly reachable hubs. iBGP needs at least one route reflector — flag a peer as{' '}
                     <code className="font-mono text-xs">publicly_reachable: true</code> to elect it as RR.
@@ -184,7 +184,7 @@ export const NetworkRoutingTab: React.FC<NetworkRoutingTabProps> = ({ network, o
                       key={p.id}
                       className="px-3 py-1.5 rounded bg-theme-background-secondary text-xs flex items-center gap-2"
                     >
-                      <Wifi size={12} className="text-theme-success" />
+                      <Wifi size={12} className="text-theme-success-fg" />
                       {p.node_instance_id?.slice(0, 8) ?? p.id.slice(0, 8)} (RR)
                     </div>
                   ))}

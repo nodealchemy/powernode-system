@@ -138,7 +138,7 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden" data-testid="peer-liveness-monitor">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Network className="w-5 h-5 text-theme-info" />
+          <Network className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Peer Liveness</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${summary.total} ${summary.total === 1 ? 'peer' : 'peers'}`}
@@ -150,9 +150,9 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
             title={isConnected ? 'Live channel connected' : 'Live channel offline — showing last-known state'}
           >
             {isConnected ? (
-              <Wifi className="w-3.5 h-3.5 text-theme-success" />
+              <Wifi className="w-3.5 h-3.5 text-theme-success-fg" />
             ) : (
-              <WifiOff className="w-3.5 h-3.5 text-theme-warning" />
+              <WifiOff className="w-3.5 h-3.5 text-theme-warning-fg" />
             )}
             {isConnected ? 'live' : 'offline'}
           </span>
@@ -170,10 +170,10 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
 
       <div className="px-4 py-2 border-b border-theme flex items-center gap-4 text-xs">
         <span className="text-theme-secondary">
-          active <span className="font-mono text-theme-success">{summary.active}</span>
+          active <span className="font-mono text-theme-success-fg">{summary.active}</span>
         </span>
         <span className="text-theme-secondary">
-          degraded <span className="font-mono text-theme-warning">{summary.degraded}</span>
+          degraded <span className="font-mono text-theme-warning-fg">{summary.degraded}</span>
         </span>
         <span className="text-theme-secondary">
           stale heartbeat <span className="font-mono text-theme-primary">{summary.stale}</span>
@@ -181,7 +181,7 @@ export const PeerLivenessMonitor: React.FC<PeerLivenessMonitorProps> = ({ refres
       </div>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
         </div>

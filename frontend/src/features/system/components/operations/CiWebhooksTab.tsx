@@ -85,7 +85,7 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
 
       <section className="bg-theme-surface rounded-lg border border-theme">
         <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-          <Webhook size={16} className="text-theme-info" />
+          <Webhook size={16} className="text-theme-info-fg" />
           <h2 className="font-medium text-theme-primary">Active webhooks</h2>
           {webhooks.length > 0 && (
             <Badge variant="info" size="xs">{webhooks.length}</Badge>
@@ -181,7 +181,7 @@ export const CiWebhooksTab: React.FC<CiWebhooksTabProps> = ({ onActionsReady }) 
                       )}
                       {canDelete && (
                         <Button size="sm" variant="ghost" onClick={() => handleRevoke(w)} title="Revoke webhook">
-                          <Trash2 size={14} className="text-theme-danger" />
+                          <Trash2 size={14} className="text-theme-danger-fg" />
                         </Button>
                       )}
                     </div>
@@ -288,7 +288,7 @@ const SecretShownOnceModal: React.FC<{
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div className="bg-theme-surface rounded-lg shadow-xl w-full max-w-2xl p-6">
         <h3 className="text-lg font-semibold mb-2 text-theme-primary">{title}</h3>
-        <p className="text-sm text-theme-warning mb-4 font-medium">
+        <p className="text-sm text-theme-warning-fg mb-4 font-medium">
           ⚠️ This secret is shown ONCE. It cannot be recovered. Save it now.
         </p>
 

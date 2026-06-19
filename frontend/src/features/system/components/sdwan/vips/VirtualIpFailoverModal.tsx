@@ -39,8 +39,8 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
   return (
     <Modal isOpen onClose={onClose} title={`Failover VIP — ${vip.name}`} icon={<Globe className="w-6 h-6" />} size="md">
       <div className="space-y-4">
-        <div className="flex items-start gap-2 p-3 bg-theme-warning/30 rounded text-sm">
-          <AlertTriangle size={20} className="text-theme-warning shrink-0 mt-0.5" />
+        <div className="flex items-start gap-2 p-3 bg-theme-warning-bg rounded text-sm">
+          <AlertTriangle size={20} className="text-theme-warning-fg shrink-0 mt-0.5" />
           <div>
             <div className="font-medium text-theme-primary">Manual failover</div>
             <div className="text-theme-secondary mt-1">
@@ -71,7 +71,7 @@ export const VirtualIpFailoverModal: React.FC<VirtualIpFailoverModalProps> = ({
         </div>
 
         {!nextHolder && (
-          <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">
+          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">
             No failover candidates configured. Edit the VIP and add at least one peer to{' '}
             <code className="font-mono text-xs">failover_holder_peer_ids</code> first.
           </div>

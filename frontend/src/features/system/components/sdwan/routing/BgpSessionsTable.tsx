@@ -11,12 +11,12 @@ interface BgpSessionsTableProps {
 const stateColor = (state: string) => {
   switch (state) {
     case 'established':
-      return 'text-theme-success';
+      return 'text-theme-success-fg';
     case 'opensent':
     case 'openconfirm':
     case 'connect':
     case 'active':
-      return 'text-theme-warning';
+      return 'text-theme-warning-fg';
     case 'idle':
       return 'text-theme-secondary';
     default:
@@ -106,7 +106,7 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
       {loading ? (
         <div className="p-4 text-theme-secondary text-sm">Loading sessions…</div>
       ) : error ? (
-        <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
       ) : sessions.length === 0 ? (
         <div className="p-8 text-center text-theme-secondary text-sm">
           <Activity size={32} className="mx-auto mb-2 opacity-50" />
@@ -211,7 +211,7 @@ export const BgpSessionsTable: React.FC<BgpSessionsTableProps> = ({ networkId, r
                         {s.last_error && (
                           <div className="mt-3">
                             <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last error</label>
-                            <pre className="font-mono text-xs bg-theme-surface border border-theme rounded px-2 py-1 whitespace-pre-wrap text-theme-danger">{s.last_error}</pre>
+                            <pre className="font-mono text-xs bg-theme-surface border border-theme rounded px-2 py-1 whitespace-pre-wrap text-theme-danger-fg">{s.last_error}</pre>
                           </div>
                         )}
 

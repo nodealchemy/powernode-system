@@ -290,7 +290,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                     <div className="flex items-center gap-2">
                       <div className="w-24 bg-theme-background rounded-full h-2">
                         <div
-                          className="bg-theme-info h-2 rounded-full transition-all duration-300"
+                          className="bg-theme-info-bg h-2 rounded-full transition-all duration-300"
                           style={{ width: `${operation.progress || 0}%` }}
                         />
                       </div>
@@ -371,7 +371,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                       {operation.error_message && (
                         <div className="col-span-full">
                           <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Error</label>
-                          <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{operation.error_message}</pre>
+                          <pre className="text-xs text-theme-error-fg whitespace-pre-wrap font-mono">{operation.error_message}</pre>
                         </div>
                       )}
                     </div>
@@ -458,7 +458,7 @@ export const OperationList: React.FC<OperationListProps> = ({
               <div className="mt-3">
                 <div className="w-full bg-theme-background rounded-full h-2">
                   <div
-                    className="bg-theme-info h-2 rounded-full transition-all duration-300"
+                    className="bg-theme-info-bg h-2 rounded-full transition-all duration-300"
                     style={{ width: `${operation.progress || 0}%` }}
                   />
                 </div>
@@ -501,7 +501,7 @@ export const OperationList: React.FC<OperationListProps> = ({
                 {operation.error_message && (
                   <div className="col-span-2">
                     <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Error</label>
-                    <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{operation.error_message}</pre>
+                    <pre className="text-xs text-theme-error-fg whitespace-pre-wrap font-mono">{operation.error_message}</pre>
                   </div>
                 )}
               </div>

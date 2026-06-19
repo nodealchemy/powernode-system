@@ -23,12 +23,12 @@ const ALL_STATUSES: PeerStatus[] = [
 // in PeerStatusPill.tsx.
 const EXPECTED_CLASSES: Record<PeerStatus, { bg: string; text: string }> = {
   proposed: { bg: 'bg-theme-background-tertiary', text: 'text-theme-secondary' },
-  accepted: { bg: 'bg-theme-info', text: 'text-theme-info' },
-  enrolled: { bg: 'bg-theme-info', text: 'text-theme-info' },
-  active: { bg: 'bg-theme-success', text: 'text-theme-success' },
-  degraded: { bg: 'bg-theme-warning', text: 'text-theme-warning' },
-  suspended: { bg: 'bg-theme-warning', text: 'text-theme-warning' },
-  revoked: { bg: 'bg-theme-danger', text: 'text-theme-danger' },
+  accepted: { bg: 'bg-theme-info-bg', text: 'text-theme-info-fg' },
+  enrolled: { bg: 'bg-theme-info-bg', text: 'text-theme-info-fg' },
+  active: { bg: 'bg-theme-success-bg', text: 'text-theme-success-fg' },
+  degraded: { bg: 'bg-theme-warning-bg', text: 'text-theme-warning-fg' },
+  suspended: { bg: 'bg-theme-warning-bg', text: 'text-theme-warning-fg' },
+  revoked: { bg: 'bg-theme-danger-bg', text: 'text-theme-danger-fg' },
 };
 
 // Structural classes that must be present for every status.

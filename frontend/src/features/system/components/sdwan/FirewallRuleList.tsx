@@ -44,14 +44,14 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
   }, [load, refreshKey]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading firewall rules…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 px-3 py-2 bg-theme-background-secondary rounded text-sm">
-        <Shield size={16} className={defaultPolicy === 'drop' ? 'text-theme-danger' : 'text-theme-success'} />
+        <Shield size={16} className={defaultPolicy === 'drop' ? 'text-theme-danger-fg' : 'text-theme-success-fg'} />
         <span className="text-theme-secondary">Default policy:</span>
-        <span className={`font-medium ${defaultPolicy === 'drop' ? 'text-theme-danger' : 'text-theme-success'}`}>
+        <span className={`font-medium ${defaultPolicy === 'drop' ? 'text-theme-danger-fg' : 'text-theme-success-fg'}`}>
           {defaultPolicy === 'drop' ? 'Drop all (allowlist mode)' : 'Allow all'}
         </span>
         <span className="text-theme-secondary text-xs ml-auto">
@@ -123,7 +123,7 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
                     <button
                       type="button"
                       onClick={() => onDelete(r)}
-                      className="text-theme-danger hover:bg-theme-danger p-1 rounded"
+                      className="text-theme-danger-fg hover:bg-theme-danger-bg p-1 rounded"
                       aria-label={`Delete rule ${r.name}`}
                     >
                       <Trash2 size={16} />
@@ -211,9 +211,9 @@ export const FirewallRuleList: React.FC<FirewallRuleListProps> = ({ networkId, o
 function actionBadgeClass(action: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (action) {
-    case 'accept': return `${base} bg-theme-success text-theme-success`;
-    case 'drop':   return `${base} bg-theme-danger text-theme-danger`;
-    case 'reject': return `${base} bg-theme-warning text-theme-warning`;
+    case 'accept': return `${base} bg-theme-success-bg text-theme-success-fg`;
+    case 'drop':   return `${base} bg-theme-danger-bg text-theme-danger-fg`;
+    case 'reject': return `${base} bg-theme-warning-bg text-theme-warning-fg`;
     default:       return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
 }

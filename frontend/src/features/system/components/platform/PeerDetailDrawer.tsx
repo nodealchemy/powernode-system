@@ -72,7 +72,7 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
       <aside className="fixed top-0 right-0 h-full w-full max-w-lg bg-theme-surface border-l border-theme z-40 shadow-lg overflow-y-auto">
         <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3 sticky top-0 bg-theme-surface">
           <div className="flex items-center gap-2">
-            <Network className="w-5 h-5 text-theme-info" />
+            <Network className="w-5 h-5 text-theme-info-fg" />
             <h3 className="font-semibold text-theme-primary">Peer Detail</h3>
           </div>
           <button
@@ -85,7 +85,7 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
             <span className="flex-1">{error}</span>
           </div>
@@ -135,7 +135,7 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
             )}
 
             {peer.acceptance_pending && peer.acceptance_expires_at && (
-              <section className="p-3 bg-theme-warning text-theme-warning text-xs rounded">
+              <section className="p-3 bg-theme-warning-bg text-theme-warning-fg text-xs rounded">
                 <strong>Acceptance pending</strong> — token expires{' '}
                 {new Date(peer.acceptance_expires_at).toLocaleString()}. The
                 remote operator must POST the token to{' '}
@@ -185,19 +185,19 @@ export const PeerDetailDrawer: React.FC<PeerDetailDrawerProps> = ({ peerId, onCl
               <div className="text-xs text-theme-tertiary uppercase mb-2">Related Records</div>
               <div className="grid grid-cols-3 gap-2">
                 <RelatedCard
-                  icon={<ShieldCheck className="w-4 h-4 text-theme-info" />}
+                  icon={<ShieldCheck className="w-4 h-4 text-theme-info-fg" />}
                   label="Grants"
                   count={peer.grants_count}
                   onClick={() => setGrantsOpen(true)}
                 />
                 <RelatedCard
-                  icon={<Globe2 className="w-4 h-4 text-theme-info" />}
+                  icon={<Globe2 className="w-4 h-4 text-theme-info-fg" />}
                   label="Capabilities"
                   count={peer.capabilities_count}
                   onClick={() => setCapabilitiesOpen(true)}
                 />
                 <RelatedCard
-                  icon={<GitBranch className="w-4 h-4 text-theme-info" />}
+                  icon={<GitBranch className="w-4 h-4 text-theme-info-fg" />}
                   label="Bridges"
                   count={peer.bridges_count}
                   linkTo="/app/system/sdwan/topology"
@@ -280,9 +280,9 @@ const KeyValue: React.FC<{ label: string; value: string; mono?: boolean }> = ({
 const EndpointCard: React.FC<{ endpoint: PeerEndpoint }> = ({ endpoint }) => {
   const statusColor =
     endpoint.status === 'reachable'
-      ? 'text-theme-success'
+      ? 'text-theme-success-fg'
       : endpoint.status === 'unreachable'
-        ? 'text-theme-danger'
+        ? 'text-theme-danger-fg'
         : 'text-theme-secondary';
 
   return (

@@ -123,12 +123,12 @@ interface CandidateRowProps {
 const CandidateRow: React.FC<CandidateRowProps> = ({ candidate, rank, instanceId }) => {
   const isTop = rank === 1;
   return (
-    <li className={`border ${isTop ? 'border-theme-warning' : 'border-theme'} rounded p-3 bg-theme-background`}>
+    <li className={`border ${isTop ? 'border-theme-warning-border' : 'border-theme'} rounded p-3 bg-theme-background`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs text-theme-tertiary">#{rank}</span>
-            {isTop && <AlertTriangle size={12} className="text-theme-warning" />}
+            {isTop && <AlertTriangle size={12} className="text-theme-warning-fg" />}
             <span className="font-medium text-sm">{candidate.module_name || candidate.module_id}</span>
             <Badge variant="default">{candidate.kind}</Badge>
             <span className="text-xs text-theme-tertiary">score {candidate.score}</span>

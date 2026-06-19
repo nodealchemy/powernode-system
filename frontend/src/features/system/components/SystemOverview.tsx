@@ -56,13 +56,13 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
       switch (status) {
         case 'complete':
         case 'running':
-          return 'text-theme-success';
+          return 'text-theme-success-fg';
         case 'failed':
         case 'aborted':
-          return 'text-theme-error';
+          return 'text-theme-error-fg';
         case 'pending':
         case 'scheduled':
-          return 'text-theme-warning';
+          return 'text-theme-warning-fg';
         default:
           return 'text-theme-secondary';
       }
@@ -105,7 +105,7 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
         <div className={`${className}`}>
           <Card variant="outlined" padding="lg">
             <div className="text-center py-8">
-              <XCircle className="w-12 h-12 text-theme-error mx-auto mb-4" />
+              <XCircle className="w-12 h-12 text-theme-error-fg mx-auto mb-4" />
               <h3 className="text-lg font-semibold text-theme-primary mb-2">Failed to Load System Data</h3>
               <p className="text-theme-secondary mb-4">{error}</p>
               <Button onClick={loadData} variant="primary">
@@ -259,51 +259,51 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
             <div className="space-y-4">
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-warning/10 rounded-lg flex items-center justify-center">
-                    <Clock className="w-5 h-5 text-theme-warning" />
+                  <div className="w-10 h-10 bg-theme-warning-bg rounded-lg flex items-center justify-center">
+                    <Clock className="w-5 h-5 text-theme-warning-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Pending</p>
                     <p className="text-sm text-theme-secondary">Waiting to start</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-warning">{stats.operations.pending}</span>
+                <span className="text-2xl font-bold text-theme-warning-fg">{stats.operations.pending}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-info/10 rounded-lg flex items-center justify-center">
-                    <Play className="w-5 h-5 text-theme-info" />
+                  <div className="w-10 h-10 bg-theme-info-bg rounded-lg flex items-center justify-center">
+                    <Play className="w-5 h-5 text-theme-info-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Running</p>
                     <p className="text-sm text-theme-secondary">Currently executing</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-info">{stats.operations.running}</span>
+                <span className="text-2xl font-bold text-theme-info-fg">{stats.operations.running}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-success/10 rounded-lg flex items-center justify-center">
-                    <CheckCircle className="w-5 h-5 text-theme-success" />
+                  <div className="w-10 h-10 bg-theme-success-bg rounded-lg flex items-center justify-center">
+                    <CheckCircle className="w-5 h-5 text-theme-success-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Completed</p>
                     <p className="text-sm text-theme-secondary">Successfully finished</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-success">{stats.operations.completed}</span>
+                <span className="text-2xl font-bold text-theme-success-fg">{stats.operations.completed}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-error/10 rounded-lg flex items-center justify-center">
-                    <XCircle className="w-5 h-5 text-theme-error" />
+                  <div className="w-10 h-10 bg-theme-error-bg rounded-lg flex items-center justify-center">
+                    <XCircle className="w-5 h-5 text-theme-error-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Failed</p>
                     <p className="text-sm text-theme-secondary">Errors encountered</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-error">{stats.operations.failed}</span>
+                <span className="text-2xl font-bold text-theme-error-fg">{stats.operations.failed}</span>
               </div>
             </div>
           </Card>
@@ -331,39 +331,39 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-success/10 rounded-lg flex items-center justify-center">
-                    <Server className="w-5 h-5 text-theme-success" />
+                  <div className="w-10 h-10 bg-theme-success-bg rounded-lg flex items-center justify-center">
+                    <Server className="w-5 h-5 text-theme-success-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Instance Modules</p>
                     <p className="text-sm text-theme-secondary">Instance-specific</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-success">{stats.modules.by_variety.instance}</span>
+                <span className="text-2xl font-bold text-theme-success-fg">{stats.modules.by_variety.instance}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-warning/10 rounded-lg flex items-center justify-center">
-                    <Package className="w-5 h-5 text-theme-warning" />
+                  <div className="w-10 h-10 bg-theme-warning-bg rounded-lg flex items-center justify-center">
+                    <Package className="w-5 h-5 text-theme-warning-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Subscription Modules</p>
                     <p className="text-sm text-theme-secondary">Subscription-based</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-warning">{stats.modules.by_variety.subscription}</span>
+                <span className="text-2xl font-bold text-theme-warning-fg">{stats.modules.by_variety.subscription}</span>
               </div>
               <div className="flex items-center justify-between p-3 bg-theme-surface rounded-lg">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-theme-info/10 rounded-lg flex items-center justify-center">
-                    <Boxes className="w-5 h-5 text-theme-info" />
+                  <div className="w-10 h-10 bg-theme-info-bg rounded-lg flex items-center justify-center">
+                    <Boxes className="w-5 h-5 text-theme-info-fg" />
                   </div>
                   <div>
                     <p className="font-medium text-theme-primary">Puppet Assignments</p>
                     <p className="text-sm text-theme-secondary">Module ↔ Puppet links</p>
                   </div>
                 </div>
-                <span className="text-2xl font-bold text-theme-info">{stats.puppet.assignments}</span>
+                <span className="text-2xl font-bold text-theme-info-fg">{stats.puppet.assignments}</span>
               </div>
             </div>
           </Card>
@@ -460,10 +460,10 @@ export const SystemOverview = forwardRef<SystemOverviewHandle, SystemOverviewPro
                     </div>
                     {activity.status && (
                       <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                        activity.status === 'complete' ? 'bg-theme-success/10 text-theme-success' :
-                        activity.status === 'running' ? 'bg-theme-info/10 text-theme-info' :
-                        activity.status === 'failed' ? 'bg-theme-error/10 text-theme-error' :
-                        'bg-theme-warning/10 text-theme-warning'
+                        activity.status === 'complete' ? 'bg-theme-success-bg text-theme-success-fg' :
+                        activity.status === 'running' ? 'bg-theme-info-bg text-theme-info-fg' :
+                        activity.status === 'failed' ? 'bg-theme-error-bg text-theme-error-fg' :
+                        'bg-theme-warning-bg text-theme-warning-fg'
                       }`}>
                         {activity.status}
                       </span>

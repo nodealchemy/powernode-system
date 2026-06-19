@@ -1024,7 +1024,7 @@ describe('AcmeCertificatesPanel', () => {
 
     await waitFor(() => expect(screen.getByText('in 10d')).toBeInTheDocument());
     const el = screen.getByText('in 10d');
-    expect(el.className).toContain('text-theme-warning');
+    expect(el.className).toContain('text-theme-warning-fg');
   });
 
   it('applies tertiary color class for certs expiring in >= 30 days', async () => {

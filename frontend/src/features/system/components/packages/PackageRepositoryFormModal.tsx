@@ -333,7 +333,7 @@ export const PackageRepositoryFormModal: FC<Props> = ({ repository, open, onClos
               className="mt-1"
             />
             {translationMessage && (
-              <p className="mt-1 text-xs text-theme-info flex items-center gap-1">
+              <p className="mt-1 text-xs text-theme-info-fg flex items-center gap-1">
                 <Check className="w-3 h-3" />
                 {translationMessage}
               </p>

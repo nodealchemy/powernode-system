@@ -119,7 +119,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <ShieldCheck className="w-5 h-5 text-theme-info" />
+          <ShieldCheck className="w-5 h-5 text-theme-info-fg" />
           <span>Request certificate</span>
         </div>
       }
@@ -146,7 +146,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
     >
       {phase === 'issuing' && (
         <div className="space-y-3 py-8 text-center">
-          <RefreshCw className="w-8 h-8 mx-auto text-theme-info animate-spin" />
+          <RefreshCw className="w-8 h-8 mx-auto text-theme-info-fg animate-spin" />
           <div className="text-theme-primary font-medium">Issuing certificate…</div>
           <div className="text-sm text-theme-secondary">
             ACME ceremony is running — typically 60-180 seconds. The connection stays
@@ -157,7 +157,7 @@ export const RequestCertificateModal: React.FC<RequestCertificateModalProps> = (
 
       {phase === 'done' && (
         <div className="space-y-3 py-8 text-center">
-          <ShieldCheck className="w-8 h-8 mx-auto text-theme-success" />
+          <ShieldCheck className="w-8 h-8 mx-auto text-theme-success-fg" />
           <div className="text-theme-primary font-medium">Certificate issued.</div>
           <div className="text-sm text-theme-secondary">
             The cert + private key + chain are stored in Vault. Inspect from the list

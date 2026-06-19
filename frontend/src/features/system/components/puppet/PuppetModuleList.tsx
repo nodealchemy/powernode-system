@@ -247,7 +247,7 @@ export const PuppetModuleList: React.FC<PuppetModuleListProps> = ({
                               {canDelete && onDelete && (
                                 <button
                                   onClick={() => { onDelete(module.id); setDropdownOpen(null); }}
-                                  className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                                  className="w-full text-left px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover flex items-center gap-2"
                                 >
                                   <Trash2 className="w-4 h-4" />
                                   Delete Module
@@ -323,7 +323,7 @@ export const PuppetModuleList: React.FC<PuppetModuleListProps> = ({
                         {canDelete && onDelete && (
                           <button
                             onClick={() => { onDelete(module.id); setDropdownOpen(null); }}
-                            className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                            className="w-full text-left px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover flex items-center gap-2"
                           >
                             <Trash2 className="w-4 h-4" />
                             Delete Module

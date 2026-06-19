@@ -100,7 +100,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
   return (
     <Modal isOpen={isOpen} onClose={onClose} icon={<Database className="w-6 h-6" />} title="Plan Storage Migration" size="md">
       <div className="space-y-4">
-        <div className="flex items-start gap-3 p-3 bg-theme-info/10 text-theme-info rounded text-sm">
+        <div className="flex items-start gap-3 p-3 bg-theme-info-bg text-theme-info-fg rounded text-sm">
           <Database className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <div>
             Move a stateful component's data from one volume to another. The
@@ -110,7 +110,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 p-3 bg-theme-danger/10 text-theme-danger rounded text-sm">
+          <div className="flex items-center gap-2 p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             <span>{error}</span>
           </div>
@@ -171,7 +171,7 @@ export const PlanStorageMigrationModal: React.FC<PlanStorageMigrationModalProps>
             </div>
           </div>
           {sourceId === targetId && sourceId !== '' && (
-            <div className="text-xs text-theme-warning">Source and target must differ.</div>
+            <div className="text-xs text-theme-warning-fg">Source and target must differ.</div>
           )}
         </div>
 

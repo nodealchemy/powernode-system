@@ -187,7 +187,7 @@ export const ModuleCategoryFormModal: React.FC<ModuleCategoryFormModalProps> = (
         {/* Name Field */}
         <div>
           <label htmlFor="category-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger">*</span>
+            Name <span className="text-theme-danger-fg">*</span>
           </label>
           <input
             id="category-name"
@@ -198,12 +198,12 @@ export const ModuleCategoryFormModal: React.FC<ModuleCategoryFormModalProps> = (
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger' : 'border-theme'}
+              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting}
           />
           {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.name}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
           )}
         </div>
 
@@ -252,7 +252,7 @@ export const ModuleCategoryFormModal: React.FC<ModuleCategoryFormModalProps> = (
           <div className="p-3 bg-theme-surface-hover rounded-lg">
             <div className="text-sm text-theme-secondary mb-1">Preview:</div>
             <div className="flex items-center gap-2">
-              <FolderTree className="w-4 h-4 text-theme-info" />
+              <FolderTree className="w-4 h-4 text-theme-info-fg" />
               <span className="text-theme-primary">
                 {selectedParent && (
                   <span className="text-theme-secondary">{selectedParent.name} / </span>

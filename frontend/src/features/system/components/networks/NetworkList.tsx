@@ -357,7 +357,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({
                               <div className="border-t border-theme my-1" />
                               <button
                                 onClick={() => { onDelete(network.id); setDropdownOpen(null); }}
-                                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover"
+                                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover"
                               >
                                 <Trash2 className="w-4 h-4" />
                                 Delete

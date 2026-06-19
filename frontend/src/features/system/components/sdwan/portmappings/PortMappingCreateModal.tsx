@@ -137,7 +137,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
             ))}
           </select>
           {hubPeers.length === 0 && (
-            <div className="text-xs text-theme-warning mt-1">
+            <div className="text-xs text-theme-warning-fg mt-1">
               No hubs available. Mark a peer as <code className="font-mono">publicly_reachable: true</code> first.
             </div>
           )}
@@ -240,7 +240,7 @@ export const PortMappingCreateModal: React.FC<PortMappingCreateModalProps> = ({
               ))}
             </select>
             {vips.length === 0 && (
-              <div className="text-xs text-theme-warning mt-1">
+              <div className="text-xs text-theme-warning-fg mt-1">
                 No VIPs in this network. Create one in the Virtual IPs tab first.
               </div>
             )}

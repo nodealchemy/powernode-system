@@ -233,7 +233,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <HardDrive className="w-6 h-6 text-theme-info" />
+              <HardDrive className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Volume' : 'Create Volume'}
               </h2>
@@ -249,7 +249,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -257,12 +257,12 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                   onChange={(e) => handleChange('name', e.target.value)}
                   placeholder="Enter volume name"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -287,7 +287,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
               {/* Region */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Region <span className="text-theme-error">*</span>
+                  Region <span className="text-theme-error-fg">*</span>
                 </label>
                 {loadingRegions ? (
                   <div className="flex items-center justify-center py-2">
@@ -298,7 +298,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                     value={formData.provider_region_id}
                     onChange={(e) => handleChange('provider_region_id', e.target.value)}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.provider_region_id ? 'border-theme-error' : 'border-theme'
+                      errors.provider_region_id ? 'border-theme-error-border' : 'border-theme'
                     }`}
                     disabled={submitting || isEditMode}
                   >
@@ -315,7 +315,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                   </select>
                 )}
                 {errors.provider_region_id && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.provider_region_id}
                   </p>
@@ -344,7 +344,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
               {/* Size */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Size (GB) <span className="text-theme-error">*</span>
+                  Size (GB) <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="number"
@@ -353,12 +353,12 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                   min={1}
                   max={16384}
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                    errors.size_gb ? 'border-theme-error' : 'border-theme'
+                    errors.size_gb ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.size_gb && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.size_gb}
                   </p>
@@ -416,7 +416,7 @@ export const VolumeFormModal: React.FC<VolumeFormModalProps> = ({
                     type="checkbox"
                     checked={formData.encrypted}
                     onChange={(e) => handleChange('encrypted', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     disabled={submitting || isEditMode}
                   />
                   <span className="text-sm text-theme-primary">Encrypt volume</span>

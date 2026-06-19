@@ -68,7 +68,7 @@ export const HealthPanel: React.FC = () => {
 
   if (error && !health) {
     return (
-      <div className="p-3 bg-theme-danger text-theme-danger text-sm rounded inline-flex items-center gap-2">
+      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
         <AlertTriangle className="w-4 h-4" />
         {error}
       </div>
@@ -108,7 +108,7 @@ export const HealthPanel: React.FC = () => {
               <div>env · <span className="font-mono">{health.rails.rails_env ?? '—'}</span></div>
               <div>ruby · <span className="font-mono">{health.rails.ruby_version ?? '—'}</span></div>
               <div>db · {health.rails.db_connected ? 'connected' : 'disconnected'}</div>
-              {health.rails.error && <div className="text-theme-danger">{health.rails.error}</div>}
+              {health.rails.error && <div className="text-theme-danger-fg">{health.rails.error}</div>}
             </div>
           }
         />
@@ -130,7 +130,7 @@ export const HealthPanel: React.FC = () => {
                   {new Date(health.worker.last_seen_at).toLocaleString()}
                 </div>
               )}
-              {health.worker.error && <div className="text-theme-danger">{health.worker.error}</div>}
+              {health.worker.error && <div className="text-theme-danger-fg">{health.worker.error}</div>}
             </div>
           }
         />
@@ -149,7 +149,7 @@ export const HealthPanel: React.FC = () => {
                   probed {new Date(health.redis.probe_at).toLocaleTimeString()}
                 </div>
               )}
-              {health.redis.error && <div className="text-theme-danger">{health.redis.error}</div>}
+              {health.redis.error && <div className="text-theme-danger-fg">{health.redis.error}</div>}
             </div>
           }
         />
@@ -163,7 +163,7 @@ export const HealthPanel: React.FC = () => {
             <div className="space-y-0.5">
               <div>database · <span className="font-mono text-xs">{health.postgres.database ?? '—'}</span></div>
               <div>active conns · <span className="font-mono">{health.postgres.active_connections ?? '—'}</span></div>
-              {health.postgres.error && <div className="text-theme-danger">{health.postgres.error}</div>}
+              {health.postgres.error && <div className="text-theme-danger-fg">{health.postgres.error}</div>}
             </div>
           }
         />
@@ -179,12 +179,12 @@ export const HealthPanel: React.FC = () => {
                 <div key={k}>{k} · <span className="font-mono">{v}</span></div>
               ))}
               {(health.acme.expiring_within_30d ?? 0) > 0 && (
-                <div className="text-theme-warning">
+                <div className="text-theme-warning-fg">
                   {health.acme.expiring_within_30d} expiring &lt;30d
                 </div>
               )}
               {(health.acme.expiring_within_7d ?? 0) > 0 && (
-                <div className="text-theme-danger">
+                <div className="text-theme-danger-fg">
                   {health.acme.expiring_within_7d} expiring &lt;7d
                 </div>
               )}
@@ -194,7 +194,7 @@ export const HealthPanel: React.FC = () => {
                   next {new Date(health.acme.nearest_expiry_at).toLocaleDateString()}
                 </div>
               )}
-              {health.acme.error && <div className="text-theme-danger">{health.acme.error}</div>}
+              {health.acme.error && <div className="text-theme-danger-fg">{health.acme.error}</div>}
             </div>
           }
         />
@@ -208,7 +208,7 @@ export const HealthPanel: React.FC = () => {
             <div className="space-y-0.5">
               <div>VIPs · <span className="font-mono">{health.sdwan.virtual_ips?.count ?? 0}</span> ({health.sdwan.virtual_ips?.assigned ?? 0} assigned)</div>
               <div>BGP · <span className="font-mono">{health.sdwan.bgp?.established ?? 0}/{health.sdwan.bgp?.total ?? 0} established</span></div>
-              {health.sdwan.error && <div className="text-theme-danger">{health.sdwan.error}</div>}
+              {health.sdwan.error && <div className="text-theme-danger-fg">{health.sdwan.error}</div>}
             </div>
           }
         />
@@ -224,7 +224,7 @@ export const HealthPanel: React.FC = () => {
               <div>degraded · <span className="font-mono">{health.federation.degraded ?? 0}</span></div>
               <div>suspended · <span className="font-mono">{health.federation.suspended ?? 0}</span></div>
               {(health.federation.heartbeat_stale ?? 0) > 0 && (
-                <div className="text-theme-warning">
+                <div className="text-theme-warning-fg">
                   {health.federation.heartbeat_stale} stale heartbeat
                 </div>
               )}
@@ -234,7 +234,7 @@ export const HealthPanel: React.FC = () => {
                   last {new Date(health.federation.last_handshake_at).toLocaleString()}
                 </div>
               )}
-              {health.federation.error && <div className="text-theme-danger">{health.federation.error}</div>}
+              {health.federation.error && <div className="text-theme-danger-fg">{health.federation.error}</div>}
             </div>
           }
         />
@@ -269,17 +269,17 @@ const StatusPill: React.FC<{ status: SubsystemStatus }> = ({ status }) => {
   const config: Record<SubsystemStatus, { icon: React.ReactNode; cls: string; label: string }> = {
     ok: {
       icon: <CheckCircle2 className="w-3 h-3" />,
-      cls: 'bg-theme-success text-theme-success',
+      cls: 'bg-theme-success-bg text-theme-success-fg',
       label: 'ok',
     },
     degraded: {
       icon: <AlertCircle className="w-3 h-3" />,
-      cls: 'bg-theme-warning text-theme-warning',
+      cls: 'bg-theme-warning-bg text-theme-warning-fg',
       label: 'degraded',
     },
     down: {
       icon: <XCircle className="w-3 h-3" />,
-      cls: 'bg-theme-danger text-theme-danger',
+      cls: 'bg-theme-danger-bg text-theme-danger-fg',
       label: 'down',
     },
     unknown: {

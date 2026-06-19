@@ -51,7 +51,7 @@ export const MigrationsPanel: React.FC = () => {
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Move className="w-5 h-5 text-theme-info" />
+          <Move className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Migrations</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${migrations.length} record${migrations.length === 1 ? '' : 's'}`}
@@ -69,7 +69,7 @@ export const MigrationsPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">
@@ -119,7 +119,7 @@ export const MigrationsPanel: React.FC = () => {
                 </td>
                 <td className="px-4 py-3"><StatusPill status={m.status} /></td>
                 <td className="px-4 py-3 text-xs text-theme-secondary">
-                  {m.dry_run ? <span className="text-theme-info">dry-run</span> : 'no'}
+                  {m.dry_run ? <span className="text-theme-info-fg">dry-run</span> : 'no'}
                 </td>
                 <td className="px-4 py-3 text-xs text-theme-secondary font-mono">
                   {m.step_count} / {m.total_steps}
@@ -162,12 +162,12 @@ const OperationBadge: React.FC<{ op: MigrationOperation }> = ({ op }) => {
 const StatusPill: React.FC<{ status: MigrationStatus }> = ({ status }) => {
   const styleByStatus: Record<MigrationStatus, string> = {
     planned: 'bg-theme-background-tertiary text-theme-secondary',
-    validating: 'bg-theme-info text-theme-info',
-    transferring: 'bg-theme-info text-theme-info',
-    conflict: 'bg-theme-warning text-theme-warning',
-    applying: 'bg-theme-info text-theme-info',
-    completed: 'bg-theme-success text-theme-success',
-    failed: 'bg-theme-danger text-theme-danger',
+    validating: 'bg-theme-info-bg text-theme-info-fg',
+    transferring: 'bg-theme-info-bg text-theme-info-fg',
+    conflict: 'bg-theme-warning-bg text-theme-warning-fg',
+    applying: 'bg-theme-info-bg text-theme-info-fg',
+    completed: 'bg-theme-success-bg text-theme-success-fg',
+    failed: 'bg-theme-danger-bg text-theme-danger-fg',
     cancelled: 'bg-theme-background-tertiary text-theme-secondary',
   };
   return (
@@ -222,7 +222,7 @@ const MigrationDetailDrawer: React.FC<MigrationDetailDrawerProps> = ({ migration
       <aside className="fixed top-0 right-0 h-full w-full max-w-2xl bg-theme-surface border-l border-theme z-40 shadow-lg overflow-y-auto">
         <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3 sticky top-0 bg-theme-surface">
           <div className="flex items-center gap-2">
-            <Move className="w-5 h-5 text-theme-info" />
+            <Move className="w-5 h-5 text-theme-info-fg" />
             <h3 className="font-semibold text-theme-primary">Migration Detail</h3>
           </div>
           <button
@@ -235,7 +235,7 @@ const MigrationDetailDrawer: React.FC<MigrationDetailDrawerProps> = ({ migration
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
             <span className="flex-1">{error}</span>
           </div>
@@ -264,7 +264,7 @@ const MigrationDetailDrawer: React.FC<MigrationDetailDrawerProps> = ({ migration
             </section>
 
             {migration.error_message && (
-              <section className="p-3 bg-theme-danger text-theme-danger text-xs rounded">
+              <section className="p-3 bg-theme-danger-bg text-theme-danger-fg text-xs rounded">
                 <div className="font-medium mb-1">Error</div>
                 <div className="font-mono">{migration.error_message}</div>
               </section>

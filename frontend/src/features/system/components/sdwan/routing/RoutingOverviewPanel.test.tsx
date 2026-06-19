@@ -119,7 +119,7 @@ describe('RoutingOverviewPanel', () => {
     );
     // value "3" in the BGP sessions tile should carry the success class
     const valueEl = screen.getByTitle('3 established (100%)').previousElementSibling as HTMLElement;
-    expect(valueEl?.className).toContain('text-theme-success');
+    expect(valueEl?.className).toContain('text-theme-success-fg');
   });
 
   it('applies warning tone when fewer than 80% of sessions are established', () => {
@@ -139,7 +139,7 @@ describe('RoutingOverviewPanel', () => {
     // 6/10 = 60% < 80 → warning
     const hint = screen.getByTitle('6 established (60%)');
     const valueEl = hint.previousElementSibling as HTMLElement;
-    expect(valueEl?.className).toContain('text-theme-warning');
+    expect(valueEl?.className).toContain('text-theme-warning-fg');
   });
 
   it('applies default tone when sessions > 0 but ratio is at or above 80%', () => {
@@ -160,8 +160,8 @@ describe('RoutingOverviewPanel', () => {
     const hint = screen.getByTitle('4 established (80%)');
     const valueEl = hint.previousElementSibling as HTMLElement;
     expect(valueEl?.className).toContain('text-theme-primary');
-    expect(valueEl?.className).not.toContain('text-theme-success');
-    expect(valueEl?.className).not.toContain('text-theme-warning');
+    expect(valueEl?.className).not.toContain('text-theme-success-fg');
+    expect(valueEl?.className).not.toContain('text-theme-warning-fg');
   });
 
   it('applies default tone when total_sessions is 0', () => {
@@ -184,8 +184,8 @@ describe('RoutingOverviewPanel', () => {
     // No warning or success classes anywhere in the sessions tile value
     const valueEls = sessionsTile?.querySelectorAll('[class*="text-2xl"]');
     valueEls?.forEach((el) => {
-      expect(el.className).not.toContain('text-theme-success');
-      expect(el.className).not.toContain('text-theme-warning');
+      expect(el.className).not.toContain('text-theme-success-fg');
+      expect(el.className).not.toContain('text-theme-warning-fg');
     });
   });
 

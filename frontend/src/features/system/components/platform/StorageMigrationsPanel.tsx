@@ -112,7 +112,7 @@ export const StorageMigrationsPanel: React.FC = () => {
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Database className="w-5 h-5 text-theme-info" />
+          <Database className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Storage Migrations</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${migrations.length} record${migrations.length === 1 ? '' : 's'}`}
@@ -122,7 +122,7 @@ export const StorageMigrationsPanel: React.FC = () => {
           <button
             type="button"
             onClick={() => setPlanOpen(true)}
-            className="px-2 py-1 text-xs rounded bg-theme-info text-theme-info hover:opacity-80 inline-flex items-center gap-1"
+            className="px-2 py-1 text-xs rounded bg-theme-info-bg text-theme-info-fg hover:opacity-80 inline-flex items-center gap-1"
           >
             <Plus className="w-3 h-3" /> Plan
           </button>
@@ -139,7 +139,7 @@ export const StorageMigrationsPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">
@@ -250,7 +250,7 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
         {progressPct !== null ? (
           <div className="flex items-center gap-2">
             <div className="flex-1 h-2 bg-theme-background-secondary rounded overflow-hidden min-w-[60px]">
-              <div className="h-full bg-theme-info" style={{ width: `${progressPct}%` }} />
+              <div className="h-full bg-theme-info-bg" style={{ width: `${progressPct}%` }} />
             </div>
             <span className="text-theme-secondary tabular-nums w-10 text-right">{progressPct}%</span>
           </div>
@@ -268,7 +268,7 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
               type="button"
               onClick={onApprove}
               disabled={pending}
-              className="px-2 py-1 text-xs rounded bg-theme-success text-theme-success hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1"
+              className="px-2 py-1 text-xs rounded bg-theme-success-bg text-theme-success-fg hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1"
             >
               <CheckCircle2 className="w-3 h-3" /> Approve
             </button>
@@ -278,7 +278,7 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
               type="button"
               onClick={onCancel}
               disabled={pending}
-              className="px-2 py-1 text-xs rounded bg-theme-danger text-theme-danger hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1"
+              className="px-2 py-1 text-xs rounded bg-theme-danger-bg text-theme-danger-fg hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1"
             >
               <XCircle className="w-3 h-3" /> Cancel
             </button>
@@ -294,13 +294,13 @@ const MigrationRow: React.FC<MigrationRowProps> = ({
 
 const STATUS_TONE: Record<StorageMigrationStatus, string> = {
   planned: 'bg-theme-background-secondary text-theme-secondary',
-  approved: 'bg-theme-info text-theme-info',
-  preparing: 'bg-theme-info text-theme-info',
-  syncing: 'bg-theme-warning text-theme-warning',
-  verifying: 'bg-theme-warning text-theme-warning',
-  cutover: 'bg-theme-warning text-theme-warning',
-  completed: 'bg-theme-success text-theme-success',
-  failed: 'bg-theme-danger text-theme-danger',
+  approved: 'bg-theme-info-bg text-theme-info-fg',
+  preparing: 'bg-theme-info-bg text-theme-info-fg',
+  syncing: 'bg-theme-warning-bg text-theme-warning-fg',
+  verifying: 'bg-theme-warning-bg text-theme-warning-fg',
+  cutover: 'bg-theme-warning-bg text-theme-warning-fg',
+  completed: 'bg-theme-success-bg text-theme-success-fg',
+  failed: 'bg-theme-danger-bg text-theme-danger-fg',
   cancelled: 'bg-theme-background-secondary text-theme-tertiary',
 };
 

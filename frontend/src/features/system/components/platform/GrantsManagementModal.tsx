@@ -129,7 +129,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
       icon={<ShieldCheck className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
-          <ShieldCheck className="w-5 h-5 text-theme-info" />
+          <ShieldCheck className="w-5 h-5 text-theme-info-fg" />
           <span>Grants — </span>
           <code className="font-mono text-sm text-theme-secondary">{peerLabel}</code>
         </div>
@@ -151,7 +151,7 @@ export const GrantsManagementModal: React.FC<GrantsManagementModalProps> = ({
     >
       <div className="space-y-4">
         {error && (
-          <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
+          <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
             <AlertCircle className="w-4 h-4" />
             <span className="flex-1">{error}</span>
             <button type="button" onClick={() => setError(null)} className="p-1">
@@ -246,7 +246,7 @@ const GrantRow: React.FC<GrantRowProps> = ({ grant, isRevoking, onRevoke }) => {
             onClick={onRevoke}
             disabled={isRevoking}
             title="Revoke grant"
-            className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover transition-colors disabled:opacity-40 inline-flex items-center gap-1"
+            className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-surface-hover transition-colors disabled:opacity-40 inline-flex items-center gap-1"
           >
             <Trash2 className="w-3 h-3" />
             {isRevoking ? 'Revoking…' : 'Revoke'}
@@ -294,9 +294,9 @@ const GrantRow: React.FC<GrantRowProps> = ({ grant, isRevoking, onRevoke }) => {
 
 const LifecyclePill: React.FC<{ lifecycle: GrantLifecycle }> = ({ lifecycle }) => {
   const cls: Record<GrantLifecycle, string> = {
-    active: 'bg-theme-success text-theme-success',
-    expired: 'bg-theme-warning text-theme-warning',
-    revoked: 'bg-theme-danger text-theme-danger',
+    active: 'bg-theme-success-bg text-theme-success-fg',
+    expired: 'bg-theme-warning-bg text-theme-warning-fg',
+    revoked: 'bg-theme-danger-bg text-theme-danger-fg',
     archived: 'bg-theme-background-tertiary text-theme-secondary',
   };
   return (
@@ -383,7 +383,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
     >
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold text-theme-primary inline-flex items-center gap-2">
-          <Plus className="w-4 h-4 text-theme-info" />
+          <Plus className="w-4 h-4 text-theme-info-fg" />
           Issue New Grant
         </h4>
         <button
@@ -396,7 +396,7 @@ const IssueGrantForm: React.FC<IssueGrantFormProps> = ({ peerId, onIssued, onCan
       </div>
 
       {error && (
-        <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-xs rounded">
+        <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-xs rounded">
           <AlertCircle className="w-3 h-3" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">

@@ -167,7 +167,7 @@ describe('BgpSessionsTable', () => {
 
     await waitFor(() => screen.getByText('established'));
     const stateEl = screen.getByText('established');
-    expect(stateEl).toHaveClass('text-theme-success');
+    expect(stateEl).toHaveClass('text-theme-success-fg');
   });
 
   it('applies warning color class for "active" state', async () => {
@@ -176,7 +176,7 @@ describe('BgpSessionsTable', () => {
 
     await waitFor(() => screen.getByText('active'));
     const stateEl = screen.getByText('active');
-    expect(stateEl).toHaveClass('text-theme-warning');
+    expect(stateEl).toHaveClass('text-theme-warning-fg');
   });
 
   it('applies secondary color class for "idle" state', async () => {

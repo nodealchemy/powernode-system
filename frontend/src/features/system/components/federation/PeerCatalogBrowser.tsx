@@ -72,7 +72,7 @@ export const PeerCatalogBrowser: React.FC<PeerCatalogBrowserProps> = ({
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">
             {peerLabel ?? 'Peer'} Service Catalog
           </h2>
@@ -143,7 +143,7 @@ const OfferingCard: React.FC<OfferingCardProps> = ({ offering, onSubscribe }) =>
           <span className="font-medium text-theme-primary">{offering.name}</span>
           <span className="text-xs text-theme-secondary font-mono">{offering.slug}</span>
           {offering.status === 'deprecated' && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-theme-warning text-theme-warning">
+            <span className="text-xs px-1.5 py-0.5 rounded bg-theme-warning-bg text-theme-warning-fg">
               deprecated
             </span>
           )}

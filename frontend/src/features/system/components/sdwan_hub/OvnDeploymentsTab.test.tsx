@@ -485,10 +485,10 @@ describe('OvnDeploymentsTab', () => {
   // ---------------------------------------------------------------------------
 
   it.each([
-    ['active', /bg-theme-success/],
-    ['bootstrapping', /bg-theme-info/],
+    ['active', /bg-theme-success-bg/],
+    ['bootstrapping', /bg-theme-info-bg/],
     ['pending', /bg-theme-background-secondary/],
-    ['degraded', /bg-theme-danger/],
+    ['degraded', /bg-theme-danger-bg/],
   ] as const)(
     'applies correct status badge class for status "%s"',
     async (status, expectedClass) => {

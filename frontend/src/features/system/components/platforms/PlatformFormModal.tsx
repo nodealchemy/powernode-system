@@ -180,7 +180,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
         <div className={`relative w-full ${isEditMode ? 'max-w-4xl' : 'max-w-2xl'} bg-theme-surface rounded-lg shadow-xl`}>
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Layers className="w-6 h-6 text-theme-info" />
+              <Layers className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Platform' : 'Create Platform'}
               </h2>
@@ -195,7 +195,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
               {/* Name */}
               <div>
                 <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -205,11 +205,11 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                   onChange={handleChange}
                   placeholder="e.g., Ubuntu 22.04 LTS"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -328,7 +328,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -339,7 +339,7 @@ export const PlatformFormModal: React.FC<PlatformFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

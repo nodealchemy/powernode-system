@@ -196,7 +196,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
         <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-info" />
+              <Package className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Puppet Module' : 'Add Puppet Module'}
               </h2>
@@ -212,7 +212,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error">*</span>
+                    Name <span className="text-theme-error-fg">*</span>
                   </label>
                   <input
                     type="text"
@@ -222,11 +222,11 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                     onChange={handleChange}
                     placeholder="e.g., puppetlabs-apache"
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error' : 'border-theme'
+                      errors.name ? 'border-theme-error-border' : 'border-theme'
                     }`}
                   />
                   {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.name}
                     </p>
@@ -360,11 +360,11 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                   rows={3}
                   placeholder='[{"name": "puppetlabs/stdlib", "version_requirement": ">= 4.0.0"}]'
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.dependencies ? 'border-theme-error' : 'border-theme'
+                    errors.dependencies ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.dependencies && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.dependencies}
                   </p>
@@ -383,11 +383,11 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                   onChange={handleChange}
                   rows={3}
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.config ? 'border-theme-error' : 'border-theme'
+                    errors.config ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.config && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.config}
                   </p>
@@ -406,11 +406,11 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                   onChange={handleChange}
                   rows={3}
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                    errors.metadata ? 'border-theme-error' : 'border-theme'
+                    errors.metadata ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.metadata && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.metadata}
                   </p>
@@ -425,7 +425,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -436,7 +436,7 @@ export const PuppetModuleFormModal: React.FC<PuppetModuleFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

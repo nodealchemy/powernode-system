@@ -239,7 +239,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Server className="w-6 h-6 text-theme-info" />
+              <Server className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Connection' : 'Add Connection'}
               </h2>
@@ -255,7 +255,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -263,12 +263,12 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                   onChange={(e) => handleChange('name', e.target.value)}
                   placeholder="Enter connection name"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -312,7 +312,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                 {/* Access Key */}
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Access Key {!isEditMode && <span className="text-theme-error">*</span>}
+                    Access Key {!isEditMode && <span className="text-theme-error-fg">*</span>}
                   </label>
                   <input
                     type="text"
@@ -320,12 +320,12 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                     onChange={(e) => handleChange('access_key', e.target.value)}
                     placeholder={isEditMode ? "Leave empty to keep existing" : "Enter access key"}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.access_key ? 'border-theme-error' : 'border-theme'
+                      errors.access_key ? 'border-theme-error-border' : 'border-theme'
                     }`}
                     disabled={submitting}
                   />
                   {errors.access_key && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.access_key}
                     </p>
@@ -335,7 +335,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                 {/* Secret Key */}
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-theme-primary mb-1">
-                    Secret Key {!isEditMode && <span className="text-theme-error">*</span>}
+                    Secret Key {!isEditMode && <span className="text-theme-error-fg">*</span>}
                   </label>
                   <input
                     type="password"
@@ -343,12 +343,12 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                     onChange={(e) => handleChange('secret_key', e.target.value)}
                     placeholder={isEditMode ? "Leave empty to keep existing" : "Enter secret key"}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.secret_key ? 'border-theme-error' : 'border-theme'
+                      errors.secret_key ? 'border-theme-error-border' : 'border-theme'
                     }`}
                     disabled={submitting}
                   />
                   {errors.secret_key && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.secret_key}
                     </p>
@@ -411,7 +411,7 @@ export const ConnectionFormModal: React.FC<ConnectionFormModalProps> = ({
                     </Button>
                   </div>
                   {testMessage && (
-                    <p className={`mt-2 text-sm ${testStatus === 'success' ? 'text-theme-success' : 'text-theme-error'}`}>
+                    <p className={`mt-2 text-sm ${testStatus === 'success' ? 'text-theme-success-fg' : 'text-theme-error-fg'}`}>
                       {testMessage}
                     </p>
                   )}

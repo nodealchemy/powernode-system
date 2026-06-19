@@ -143,7 +143,7 @@ describe('HoneypotCanaryTile', () => {
     mockPost.mockResolvedValue(signalsResponse([]));
     render(<HoneypotCanaryTile />);
     await waitFor(() => expect(screen.queryByText(/Loading…/)).not.toBeInTheDocument());
-    // ShieldAlert is not rendered — no element with the text-theme-error icon class in icon area
+    // ShieldAlert is not rendered — no element with the text-theme-error-fg icon class in icon area
     // We verify by absence of the ALERT badge (indicator of ShieldAlert path)
     expect(screen.queryByText('ALERT')).not.toBeInTheDocument();
   });

@@ -109,7 +109,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Network className="w-6 h-6 text-theme-info" />
+              <Network className="w-6 h-6 text-theme-info-fg" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : network?.name || 'Network Details'}
@@ -165,8 +165,8 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                       <div className="flex items-center gap-2">
                         {network.dns_support ? (
                           <>
-                            <CheckCircle className="w-4 h-4 text-theme-success" />
-                            <span className="text-theme-success">Enabled</span>
+                            <CheckCircle className="w-4 h-4 text-theme-success-fg" />
+                            <span className="text-theme-success-fg">Enabled</span>
                           </>
                         ) : (
                           <>
@@ -181,8 +181,8 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                       <div className="flex items-center gap-2">
                         {network.dns_hostnames ? (
                           <>
-                            <CheckCircle className="w-4 h-4 text-theme-success" />
-                            <span className="text-theme-success">Enabled</span>
+                            <CheckCircle className="w-4 h-4 text-theme-success-fg" />
+                            <span className="text-theme-success-fg">Enabled</span>
                           </>
                         ) : (
                           <>

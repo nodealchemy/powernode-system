@@ -71,7 +71,7 @@ export const HostBridgesTab: React.FC = () => {
     return <div className="p-8 text-center text-theme-secondary">Loading host bridges…</div>;
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
   if (bridges.length === 0) {
     return (
@@ -196,8 +196,8 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, o
               className={
                 'p-1 rounded text-xs ' +
                 (armed
-                  ? 'bg-theme-danger text-theme-danger px-2'
-                  : 'text-theme-danger hover:bg-theme-danger')
+                  ? 'bg-theme-danger-bg text-theme-danger-fg px-2'
+                  : 'text-theme-danger-fg hover:bg-theme-danger-bg')
               }
               aria-label={`Remove bridge ${b.bridge_name}`}
               title={armed ? 'Click to confirm' : 'Remove bridge'}
@@ -226,7 +226,7 @@ const BridgeRow: React.FC<BridgeRowProps> = ({ bridge: b, canManage, expanded, o
               <DetailItem label="Created">{formatTs(d.created_at)}</DetailItem>
               <DetailItem label="Updated">{formatTs(d.updated_at)}</DetailItem>
               {detailError && (
-                <div className="col-span-full text-xs text-theme-danger">
+                <div className="col-span-full text-xs text-theme-danger-fg">
                   Detail unavailable: {detailError}
                 </div>
               )}
@@ -258,7 +258,7 @@ function formatTs(ts?: string | null): string {
 function kindBadgeClass(kind: 'linux' | 'ovs'): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   return kind === 'ovs'
-    ? `${base} bg-theme-info text-theme-info`
+    ? `${base} bg-theme-info-bg text-theme-info-fg`
     : `${base} bg-theme-background-secondary text-theme-secondary`;
 }
 
@@ -266,11 +266,11 @@ function stateBadgeClass(state: SdwanHostBridgeState): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (state) {
     case 'active':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'pending':
-      return `${base} bg-theme-info text-theme-info`;
+      return `${base} bg-theme-info-bg text-theme-info-fg`;
     case 'draining':
-      return `${base} bg-theme-warning text-theme-warning`;
+      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
     case 'removed':
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:

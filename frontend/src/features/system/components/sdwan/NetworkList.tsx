@@ -62,7 +62,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
     return <div className="p-8 text-center text-theme-secondary">Loading networks…</div>;
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
   if (networks.length === 0) {
     return (
@@ -114,7 +114,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <NetworkIcon size={16} className="text-theme-info" />
+                      <NetworkIcon size={16} className="text-theme-info-fg" />
                       <span className="font-medium text-theme-primary">{n.name}</span>
                     </div>
                     <div className="text-xs text-theme-secondary">{n.slug}</div>
@@ -136,7 +136,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                           e.stopPropagation();
                           onOpenDetails(n);
                         }}
-                        className="text-theme-info hover:bg-theme-surface-hover p-1 rounded transition-colors"
+                        className="text-theme-info-fg hover:bg-theme-surface-hover p-1 rounded transition-colors"
                         aria-label={`View details for ${n.name}`}
                         title="View details"
                         data-testid={`open-network-${n.id}`}
@@ -150,7 +150,7 @@ export const NetworkList: React.FC<NetworkListProps> = ({ onOpenDetails, onDelet
                             e.stopPropagation();
                             onDelete(n);
                           }}
-                          className="text-theme-danger hover:bg-theme-danger/10 p-1 rounded transition-colors"
+                          className="text-theme-danger-fg hover:bg-theme-danger-bg p-1 rounded transition-colors"
                           aria-label={`Delete ${n.name}`}
                           data-testid={`delete-network-${n.id}`}
                         >
@@ -221,11 +221,11 @@ function statusBadgeClass(status: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (status) {
     case 'active':
-      return `${base} bg-theme-success/20 text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'registered':
-      return `${base} bg-theme-info/20 text-theme-info`;
+      return `${base} bg-theme-info-bg text-theme-info-fg`;
     case 'suspended':
-      return `${base} bg-theme-warning/20 text-theme-warning`;
+      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
     case 'archived':
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:

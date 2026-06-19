@@ -289,7 +289,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                 <td className="px-4 py-3">
                   {volume.node_instance_id ? (
                     <div className="flex items-center gap-2 text-sm">
-                      <Link className="w-4 h-4 text-theme-success flex-shrink-0" />
+                      <Link className="w-4 h-4 text-theme-success-fg flex-shrink-0" />
                       {renderAttachedInstance(volume)}
                     </div>
                   ) : (
@@ -357,7 +357,7 @@ export const VolumeList: React.FC<VolumeListProps> = ({
                               <div className="border-t border-theme my-1" />
                               <button
                                 onClick={() => { onDelete(volume.id); setDropdownOpen(null); }}
-                                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover"
+                                className="w-full flex items-center gap-2 px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover"
                               >
                                 <Trash2 className="w-4 h-4" />
                                 Delete

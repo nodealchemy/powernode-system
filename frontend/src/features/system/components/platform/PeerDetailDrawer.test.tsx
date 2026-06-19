@@ -414,7 +414,7 @@ describe('PeerDetailDrawer', () => {
     await waitFor(() => expect(screen.getByText('reachable')).toBeInTheDocument());
 
     const statusEl = screen.getByText('reachable');
-    expect(statusEl).toHaveClass('text-theme-success');
+    expect(statusEl).toHaveClass('text-theme-success-fg');
   });
 
   it('renders endpoint status with correct color class for "unreachable"', async () => {
@@ -430,7 +430,7 @@ describe('PeerDetailDrawer', () => {
     await waitFor(() => expect(screen.getByText('unreachable')).toBeInTheDocument());
 
     const statusEl = screen.getByText('unreachable');
-    expect(statusEl).toHaveClass('text-theme-danger');
+    expect(statusEl).toHaveClass('text-theme-danger-fg');
   });
 
   it('shows "No endpoints declared." when endpoints array is empty', async () => {

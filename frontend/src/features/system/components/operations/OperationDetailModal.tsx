@@ -160,7 +160,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
               </div>
               <div className="w-full bg-theme-surface rounded-full h-3">
                 <div
-                  className="bg-theme-info h-3 rounded-full transition-all duration-300"
+                  className="bg-theme-info-bg h-3 rounded-full transition-all duration-300"
                   style={{ width: `${operation.progress || 0}%` }}
                 />
               </div>
@@ -247,12 +247,12 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
 
         {/* Error Message */}
         {operation.error_message && (
-          <div className="bg-theme-danger/10 border border-theme-danger/30 rounded-lg p-4">
+          <div className="bg-theme-danger-bg border border-theme-danger-border/30 rounded-lg p-4">
             <div className="flex items-center gap-2 mb-2">
-              <XCircle className="w-5 h-5 text-theme-error" />
-              <h4 className="font-medium text-theme-error">Error</h4>
+              <XCircle className="w-5 h-5 text-theme-error-fg" />
+              <h4 className="font-medium text-theme-error-fg">Error</h4>
             </div>
-            <pre className="text-sm text-theme-error whitespace-pre-wrap font-mono">
+            <pre className="text-sm text-theme-error-fg whitespace-pre-wrap font-mono">
               {operation.error_message}
             </pre>
           </div>
@@ -289,10 +289,10 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
               return (
                 <div key={idx} className="relative flex items-start gap-4 pl-10">
                   <div className={`absolute left-2 w-4 h-4 rounded-full border-2 bg-theme-surface ${
-                    eventType === 'error' ? 'border-theme-error' :
-                    eventType === 'warning' ? 'border-theme-warning' :
-                    eventType === 'success' ? 'border-theme-success' :
-                    'border-theme-info'
+                    eventType === 'error' ? 'border-theme-error-border' :
+                    eventType === 'warning' ? 'border-theme-warning-border' :
+                    eventType === 'success' ? 'border-theme-success-border' :
+                    'border-theme-info-border'
                   }`} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
@@ -354,7 +354,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Activity className="w-6 h-6 text-theme-info" />
+              <Activity className="w-6 h-6 text-theme-info-fg" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : operation?.command || 'Operation Details'}
@@ -380,7 +380,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-info text-theme-info'
+                      ? 'border-theme-info-border text-theme-info-fg'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >
@@ -405,8 +405,8 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
               </>
             ) : (
               <div className="text-center py-12">
-                <AlertCircle className="w-12 h-12 text-theme-error mx-auto mb-4" />
-                <p className="text-theme-error">Failed to load operation details</p>
+                <AlertCircle className="w-12 h-12 text-theme-error-fg mx-auto mb-4" />
+                <p className="text-theme-error-fg">Failed to load operation details</p>
               </div>
             )}
           </div>
@@ -424,7 +424,7 @@ export const OperationDetailModal: React.FC<OperationDetailModalProps> = ({
                       size="sm"
                       onClick={handleCancel}
                       disabled={actionLoading !== null}
-                      className="text-theme-warning border-theme-warning hover:bg-theme-warning/10"
+                      className="text-theme-warning-fg border-theme-warning-border hover:bg-theme-warning-bg"
                     >
                       {actionLoading === 'cancel' ? (
                         <LoadingSpinner size="sm" className="mr-2" />

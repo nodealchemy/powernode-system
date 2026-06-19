@@ -221,7 +221,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <FileText className="w-6 h-6 text-theme-info" />
+              <FileText className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Template' : isDuplicateMode ? 'Duplicate Template' : 'Create Template'}
               </h2>
@@ -240,7 +240,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                   htmlFor="name"
                   className="block text-sm font-medium text-theme-primary mb-1"
                 >
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -250,11 +250,11 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                   onChange={handleChange}
                   placeholder="Enter template name"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -277,11 +277,11 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                   placeholder="Enter template description"
                   rows={3}
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none ${
-                    errors.description ? 'border-theme-error' : 'border-theme'
+                    errors.description ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.description && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.description}
                   </p>
@@ -334,11 +334,11 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                   onChange={handleChange}
                   placeholder="e.g., root"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.admin_user ? 'border-theme-error' : 'border-theme'
+                    errors.admin_user ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.admin_user && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.admin_user}
                   </p>
@@ -354,7 +354,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -366,7 +366,7 @@ export const CreateTemplateModal: React.FC<CreateTemplateModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public (visible to all accounts)</span>
                 </label>

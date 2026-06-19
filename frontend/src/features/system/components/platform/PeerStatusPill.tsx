@@ -11,12 +11,12 @@ import type { PeerStatus } from '../../types/peer.types';
  */
 const STYLE_BY_STATUS: Record<PeerStatus, string> = {
   proposed: 'bg-theme-background-tertiary text-theme-secondary',
-  accepted: 'bg-theme-info text-theme-info',
-  enrolled: 'bg-theme-info text-theme-info',
-  active: 'bg-theme-success text-theme-success',
-  degraded: 'bg-theme-warning text-theme-warning',
-  suspended: 'bg-theme-warning text-theme-warning',
-  revoked: 'bg-theme-danger text-theme-danger',
+  accepted: 'bg-theme-info-bg text-theme-info-fg',
+  enrolled: 'bg-theme-info-bg text-theme-info-fg',
+  active: 'bg-theme-success-bg text-theme-success-fg',
+  degraded: 'bg-theme-warning-bg text-theme-warning-fg',
+  suspended: 'bg-theme-warning-bg text-theme-warning-fg',
+  revoked: 'bg-theme-danger-bg text-theme-danger-fg',
 };
 
 export const PeerStatusPill: React.FC<{ status: PeerStatus }> = ({ status }) => (

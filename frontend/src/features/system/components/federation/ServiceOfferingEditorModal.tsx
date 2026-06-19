@@ -154,7 +154,7 @@ export const ServiceOfferingEditorModal: React.FC<ServiceOfferingEditorModalProp
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <span>{isEdit ? 'Edit Service Offering' : 'New Service Offering'}</span>
         </div>
       }

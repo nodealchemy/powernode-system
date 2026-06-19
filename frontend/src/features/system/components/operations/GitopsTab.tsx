@@ -136,7 +136,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
 
       <section className="bg-theme-surface rounded-lg border border-theme">
         <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-          <GitBranch size={16} className="text-theme-info" />
+          <GitBranch size={16} className="text-theme-info-fg" />
           <h2 className="font-medium text-theme-primary">Repositories</h2>
           {repositories.length > 0 && (
             <Badge variant="info" size="xs">{repositories.length}</Badge>
@@ -195,7 +195,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                           ? <>Last synced {new Date(repo.last_synced_at).toLocaleString()} · {repo.last_diff_count} diff(s)</>
                           : 'Never synced'}
                         {repo.last_error ? (
-                          <span className="text-theme-danger"> · {repo.last_error}</span>
+                          <span className="text-theme-danger-fg"> · {repo.last_error}</span>
                         ) : null}
                       </div>
 
@@ -231,7 +231,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                             {repo.last_error && (
                               <div className="col-span-full">
                                 <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Last error</label>
-                                <pre className="text-xs text-theme-error whitespace-pre-wrap font-mono">{repo.last_error}</pre>
+                                <pre className="text-xs text-theme-error-fg whitespace-pre-wrap font-mono">{repo.last_error}</pre>
                               </div>
                             )}
                           </div>
@@ -259,7 +259,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                                       <code className="text-theme-tertiary font-mono truncate max-w-[8rem]" title={run.synced_revision}>{run.synced_revision}</code>
                                     )}
                                     {run.error_message && (
-                                      <span className="text-theme-danger">· {run.error_message}</span>
+                                      <span className="text-theme-danger-fg">· {run.error_message}</span>
                                     )}
                                   </li>
                                 ))}
@@ -283,7 +283,7 @@ export const GitopsTab: React.FC<GitopsTabProps> = ({ onActionsReady }) => {
                       )}
                       {canWrite && (
                         <Button size="sm" variant="ghost" onClick={() => handleDelete(repo)} title="Delete repository">
-                          <Trash2 size={14} className="text-theme-danger" />
+                          <Trash2 size={14} className="text-theme-danger-fg" />
                         </Button>
                       )}
                     </div>

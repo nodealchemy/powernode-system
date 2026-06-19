@@ -98,7 +98,7 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
       )}
 
       {concierge.error && (
-        <div className="px-4 py-2 bg-theme-error text-theme-error text-xs border-b border-theme">
+        <div className="px-4 py-2 bg-theme-error-bg text-theme-error-fg text-xs border-b border-theme">
           {concierge.error}
         </div>
       )}

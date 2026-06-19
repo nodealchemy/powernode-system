@@ -89,7 +89,7 @@ export const IpfixCollectorsTab: React.FC = () => {
     return <div className="p-8 text-center text-theme-secondary">Loading IPFIX collectors…</div>;
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
   if (collectors.length === 0) {
     return (
@@ -187,7 +187,7 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
         </td>
         <td className="p-3">
           <div className="flex items-center gap-2">
-            <Activity size={14} className="text-theme-info" />
+            <Activity size={14} className="text-theme-info-fg" />
             <span className="font-medium text-theme-primary">{c.name}</span>
           </div>
         </td>
@@ -198,7 +198,7 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
         </td>
         <td className="p-3">
           {c.is_winning_collector ? (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-theme-success text-theme-success">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-theme-success-bg text-theme-success-fg">
               <CheckCircle size={12} /> Winning
             </span>
           ) : (
@@ -224,8 +224,8 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
                 className={
                   'p-1 rounded text-xs ' +
                   (armed
-                    ? 'bg-theme-danger text-theme-danger px-2'
-                    : 'text-theme-danger hover:bg-theme-danger')
+                    ? 'bg-theme-danger-bg text-theme-danger-fg px-2'
+                    : 'text-theme-danger-fg hover:bg-theme-danger-bg')
                 }
                 aria-label={`Delete collector ${c.name}`}
                 title={armed ? 'Click to confirm' : 'Delete collector'}
@@ -253,7 +253,7 @@ const CollectorRow: React.FC<CollectorRowProps> = ({ collector: c, canManage, ex
               <DetailItem label="Created">{formatTs(d.created_at)}</DetailItem>
               <DetailItem label="Updated">{formatTs(d.updated_at)}</DetailItem>
               {detailError && (
-                <div className="col-span-full text-xs text-theme-danger">
+                <div className="col-span-full text-xs text-theme-danger-fg">
                   Detail unavailable: {detailError}
                 </div>
               )}
@@ -285,6 +285,6 @@ function formatTs(ts?: string | null): string {
 function stateBadgeClass(state: SdwanIpfixState): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   return state === 'active'
-    ? `${base} bg-theme-success text-theme-success`
+    ? `${base} bg-theme-success-bg text-theme-success-fg`
     : `${base} bg-theme-background-secondary text-theme-secondary`;
 }

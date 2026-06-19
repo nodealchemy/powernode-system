@@ -88,7 +88,7 @@ export const SystemTopology: React.FC<SystemTopologyProps> = ({ refreshKey }) =>
   }
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>
+      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
     );
   }
   if (!data) {
@@ -198,10 +198,10 @@ const MultiHandles: React.FC<{ counts?: HandleCounts }> = ({ counts }) => {
 const SelfNode: React.FC<NodeProps> = ({ data }) => {
   const d = data as unknown as TopologyNodeData;
   return (
-    <div className="px-4 py-3 bg-theme-info/10 border-2 border-theme-info rounded-lg shadow-sm min-w-[180px] text-center">
+    <div className="px-4 py-3 bg-theme-info-bg border-2 border-theme-info-border rounded-lg shadow-sm min-w-[180px] text-center">
       <MultiHandles counts={d.handle_counts} />
-      <Server className="w-5 h-5 mx-auto mb-1 text-theme-info" />
-      <div className="font-semibold text-sm text-theme-info">{d.label}</div>
+      <Server className="w-5 h-5 mx-auto mb-1 text-theme-info-fg" />
+      <div className="font-semibold text-sm text-theme-info-fg">{d.label}</div>
       {d.subtitle && <div className="text-xs text-theme-secondary mt-0.5">{d.subtitle}</div>}
     </div>
   );

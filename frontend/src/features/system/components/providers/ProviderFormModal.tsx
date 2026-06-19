@@ -458,7 +458,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
         <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Cloud className="w-6 h-6 text-theme-info" />
+              <Cloud className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Provider' : 'Add Provider'}
               </h2>
@@ -514,7 +514,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
               data-testid="provider-form-credentials-panel"
             >
               {!editProvider && createdProvider && (
-                <div className="rounded-lg border border-theme-success/40 bg-theme-success/10 p-3 text-sm text-theme-secondary">
+                <div className="rounded-lg border border-theme-success-border/40 bg-theme-success-bg p-3 text-sm text-theme-secondary">
                   <p className="font-medium text-theme-primary">
                     Provider "{createdProvider.name}" created.
                   </p>
@@ -564,7 +564,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       )}
                     </Button>
                     {credentialSaved && (
-                      <span className="flex items-center gap-1 text-xs text-theme-success">
+                      <span className="flex items-center gap-1 text-xs text-theme-success-fg">
                         <CheckCircle2 className="h-4 w-4" />
                         Credentials encrypted and stored.
                       </span>
@@ -572,7 +572,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                   </div>
                 </>
               ) : (
-                <div className="rounded-lg border border-theme bg-theme-warning/10 p-4 text-sm text-theme-secondary">
+                <div className="rounded-lg border border-theme bg-theme-warning-bg p-4 text-sm text-theme-secondary">
                   <p className="font-medium text-theme-primary">
                     No credential schema for {formData.provider_type}.
                   </p>
@@ -596,7 +596,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error">*</span>
+                    Name <span className="text-theme-error-fg">*</span>
                   </label>
                   <input
                     type="text"
@@ -606,11 +606,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                     onChange={handleChange}
                     placeholder="e.g., Production AWS"
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error' : 'border-theme'
+                      errors.name ? 'border-theme-error-border' : 'border-theme'
                     }`}
                   />
                   {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.name}
                     </p>
@@ -619,7 +619,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                 <div>
                   <label htmlFor="provider_type" className="block text-sm font-medium text-theme-primary mb-1">
-                    Provider Type <span className="text-theme-error">*</span>
+                    Provider Type <span className="text-theme-error-fg">*</span>
                   </label>
                   <select
                     id="provider_type"
@@ -627,7 +627,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                     value={formData.provider_type}
                     onChange={handleChange}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.provider_type ? 'border-theme-error' : 'border-theme'
+                      errors.provider_type ? 'border-theme-error-border' : 'border-theme'
                     }`}
                   >
                     {providerTypes.map(type => (
@@ -720,7 +720,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div>
                     <label htmlFor="proxmox_endpoint" className="block text-sm font-medium text-theme-primary mb-1">
-                      PVE API Endpoint <span className="text-theme-error">*</span>
+                      PVE API Endpoint <span className="text-theme-error-fg">*</span>
                     </label>
                     <input
                       id="proxmox_endpoint"
@@ -730,12 +730,12 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       onChange={handleChange}
                       placeholder="https://pve.example.com:8006"
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.proxmox_endpoint ? 'border-theme-error' : 'border-theme'
+                        errors.proxmox_endpoint ? 'border-theme-error-border' : 'border-theme'
                       }`}
                       data-testid="provider-form-proxmox-endpoint"
                     />
                     {errors.proxmox_endpoint ? (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.proxmox_endpoint}
                       </p>
@@ -908,7 +908,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div>
                     <label htmlFor="gcp_project_id" className="block text-sm font-medium text-theme-primary mb-1">
-                      Project ID <span className="text-theme-error">*</span>
+                      Project ID <span className="text-theme-error-fg">*</span>
                     </label>
                     <input
                       id="gcp_project_id"
@@ -918,11 +918,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       onChange={handleChange}
                       placeholder="my-gcp-project-12345"
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.gcp_project_id ? 'border-theme-error' : 'border-theme'
+                        errors.gcp_project_id ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     />
                     {errors.gcp_project_id ? (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.gcp_project_id}
                       </p>
@@ -1041,7 +1041,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
 
                   <div>
                     <label htmlFor="openstack_auth_url" className="block text-sm font-medium text-theme-primary mb-1">
-                      Keystone auth URL <span className="text-theme-error">*</span>
+                      Keystone auth URL <span className="text-theme-error-fg">*</span>
                     </label>
                     <input
                       id="openstack_auth_url"
@@ -1051,11 +1051,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       onChange={handleChange}
                       placeholder="https://keystone.example.com:5000/v3"
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.openstack_auth_url ? 'border-theme-error' : 'border-theme'
+                        errors.openstack_auth_url ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     />
                     {errors.openstack_auth_url ? (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.openstack_auth_url}
                       </p>
@@ -1206,11 +1206,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       rows={4}
                       placeholder='{}'
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                        errors.config ? 'border-theme-error' : 'border-theme'
+                        errors.config ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     />
                     {errors.config && (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.config}
                       </p>
@@ -1230,11 +1230,11 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                       rows={4}
                       placeholder='{}'
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus resize-none font-mono text-sm ${
-                        errors.capabilities ? 'border-theme-error' : 'border-theme'
+                        errors.capabilities ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     />
                     {errors.capabilities && (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.capabilities}
                       </p>
@@ -1251,7 +1251,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -1262,7 +1262,7 @@ export const ProviderFormModal: React.FC<ProviderFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

@@ -14,7 +14,7 @@ interface CveTabProps {
 }
 
 // Severity → Badge variant. The Badge component maps these to theme classes
-// (danger → bg-theme-error, warning → bg-theme-warning, info → bg-theme-info),
+// (danger → bg-theme-error-bg, warning → bg-theme-warning-bg, info → bg-theme-info-bg),
 // so colors stay theme-driven — never hardcoded.
 function severityVariant(severity?: string | null): 'danger' | 'warning' | 'info' | 'secondary' {
   switch ((severity ?? '').toLowerCase()) {
@@ -134,7 +134,7 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
 
       <section className="bg-theme-surface rounded-lg border border-theme">
         <header className="px-4 py-3 border-b border-theme flex items-center gap-2">
-          <ShieldAlert size={16} className="text-theme-warning" />
+          <ShieldAlert size={16} className="text-theme-warning-fg" />
           <h2 className="font-medium text-theme-primary">CVE exposures</h2>
           {exposures.length > 0 && (
             <Badge variant="info" size="xs">{exposures.length}</Badge>
@@ -290,7 +290,7 @@ export const CveTab: React.FC<CveTabProps> = ({ onActionsReady }) => {
                         href={e.cve.reference_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-xs text-theme-info hover:underline whitespace-nowrap shrink-0"
+                        className="text-xs text-theme-info-fg hover:underline whitespace-nowrap shrink-0"
                       >
                         Reference
                       </a>

@@ -221,7 +221,7 @@ export const NodeList: React.FC<NodeListProps> = ({
             <button
               type="button"
               onClick={clearTemplateFilter}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info-bg border border-theme-info-border text-theme-info-fg hover:bg-theme-info-bg transition-colors"
               title="Clear template filter"
             >
               <span>Filtered by template</span>
@@ -346,9 +346,9 @@ export const NodeList: React.FC<NodeListProps> = ({
                           title={node.enabled ? 'Disable Node' : 'Enable Node'}
                         >
                           {node.enabled ? (
-                            <PowerOff className="w-4 h-4 text-theme-warning" />
+                            <PowerOff className="w-4 h-4 text-theme-warning-fg" />
                           ) : (
-                            <Power className="w-4 h-4 text-theme-success" />
+                            <Power className="w-4 h-4 text-theme-success-fg" />
                           )}
                         </Button>
                       )}
@@ -360,7 +360,7 @@ export const NodeList: React.FC<NodeListProps> = ({
                           onClick={() => armOrFire(`delete:${node.id}`, () => onDelete(node.id))}
                           title={deleteArmed ? 'Click again to confirm delete' : 'Delete Node'}
                         >
-                          {deleteArmed ? <span className="text-xs px-1">Confirm?</span> : <Trash2 className="w-4 h-4 text-theme-error" />}
+                          {deleteArmed ? <span className="text-xs px-1">Confirm?</span> : <Trash2 className="w-4 h-4 text-theme-error-fg" />}
                         </Button>
                       )}
                     </div>
@@ -517,7 +517,7 @@ export const NodeList: React.FC<NodeListProps> = ({
                               setDropdownOpen(null);
                             }}
                             className={`w-full text-left px-4 py-2 text-sm hover:bg-theme-surface-hover flex items-center gap-2 ${
-                              node.enabled ? 'text-theme-warning' : 'text-theme-success'
+                              node.enabled ? 'text-theme-warning-fg' : 'text-theme-success-fg'
                             }`}
                           >
                             {node.enabled ? (
@@ -542,7 +542,7 @@ export const NodeList: React.FC<NodeListProps> = ({
                               });
                             }}
                             className={`w-full text-left px-4 py-2 text-sm hover:bg-theme-surface-hover flex items-center gap-2 ${
-                              deleteArmed ? 'text-theme-error font-medium' : 'text-theme-error'
+                              deleteArmed ? 'text-theme-error-fg font-medium' : 'text-theme-error-fg'
                             }`}
                           >
                             <Trash2 className="w-4 h-4" />

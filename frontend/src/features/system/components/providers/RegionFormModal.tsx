@@ -161,7 +161,7 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <MapPin className="w-6 h-6 text-theme-info" />
+              <MapPin className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Region' : 'Add Region'}
               </h2>
@@ -177,7 +177,7 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -185,12 +185,12 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
                   onChange={(e) => handleChange('name', e.target.value)}
                   placeholder="Enter region name"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -200,7 +200,7 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
               {/* Region Code */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Region Code <span className="text-theme-error">*</span>
+                  Region Code <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -208,12 +208,12 @@ export const RegionFormModal: React.FC<RegionFormModalProps> = ({
                   onChange={(e) => handleChange('region_code', e.target.value)}
                   placeholder="e.g., us-east-1"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.region_code ? 'border-theme-error' : 'border-theme'
+                    errors.region_code ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.region_code && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.region_code}
                   </p>

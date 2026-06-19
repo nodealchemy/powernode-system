@@ -324,7 +324,7 @@ describe('PlatformOverviewCards', () => {
 
     await waitFor(() => expect(screen.getByText('2 expiring soon')).toBeInTheDocument());
     const detail = screen.getByText('2 expiring soon');
-    expect(detail.className).toContain('text-theme-warning');
+    expect(detail.className).toContain('text-theme-warning-fg');
   });
 
   it('does NOT apply the warning color class when near_expiry is 0', async () => {
@@ -336,7 +336,7 @@ describe('PlatformOverviewCards', () => {
 
     await waitFor(() => expect(screen.getByText('Certificates')).toBeInTheDocument());
     const detail = screen.getByText('5 valid');
-    expect(detail.className).not.toContain('text-theme-warning');
+    expect(detail.className).not.toContain('text-theme-warning-fg');
     expect(detail.className).toContain('text-theme-tertiary');
   });
 

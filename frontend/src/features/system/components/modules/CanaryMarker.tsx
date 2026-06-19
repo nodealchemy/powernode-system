@@ -65,7 +65,7 @@ export const CanaryMarker: React.FC<Props> = ({ module, onUpdated }) => {
     <div className="bg-theme-surface border border-theme rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold flex items-center gap-2">
-          {isCanary ? <ShieldAlert size={14} className="text-theme-warning" /> : <Shield size={14} />}
+          {isCanary ? <ShieldAlert size={14} className="text-theme-warning-fg" /> : <Shield size={14} />}
           Honeypot Canary
         </h3>
         {isCanary && <Badge variant="warning">CANARY</Badge>}

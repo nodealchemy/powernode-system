@@ -97,7 +97,7 @@ export const FlowSamplesTab: React.FC = () => {
     return <div className="p-8 text-center text-theme-secondary">Loading collectors…</div>;
   }
   if (error && collectors.length === 0) {
-    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
   if (collectors.length === 0) {
     return (
@@ -158,14 +158,14 @@ export const FlowSamplesTab: React.FC = () => {
           type="button"
           onClick={loadSamples}
           disabled={samplesLoading}
-          className="ml-auto px-3 py-1.5 rounded text-sm bg-theme-info text-theme-on-accent hover:opacity-90 disabled:opacity-50"
+          className="ml-auto px-3 py-1.5 rounded text-sm bg-theme-info-fg text-theme-on-accent hover:opacity-90 disabled:opacity-50"
         >
           {samplesLoading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
 
       {error && (
-        <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>
+        <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
       )}
 
       {samplesLoading && samples.length === 0 ? (
@@ -247,12 +247,12 @@ function protocolBadgeClass(label: string): string {
   const base = 'px-2 py-0.5 rounded text-xs font-medium';
   switch (label) {
     case 'tcp':
-      return `${base} bg-theme-info text-theme-info`;
+      return `${base} bg-theme-info-bg text-theme-info-fg`;
     case 'udp':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'icmp':
     case 'icmpv6':
-      return `${base} bg-theme-warning text-theme-warning`;
+      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
     default:
       return `${base} bg-theme-background-secondary text-theme-secondary`;
   }

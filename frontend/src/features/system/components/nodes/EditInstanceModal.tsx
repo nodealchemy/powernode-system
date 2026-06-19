@@ -201,7 +201,7 @@ export const EditInstanceModal: React.FC<EditInstanceModalProps> = ({
         {/* Name Field */}
         <div>
           <label htmlFor="edit-instance-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger">*</span>
+            Name <span className="text-theme-danger-fg">*</span>
           </label>
           <input
             id="edit-instance-name"
@@ -212,19 +212,19 @@ export const EditInstanceModal: React.FC<EditInstanceModalProps> = ({
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger' : 'border-theme'}
+              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting}
           />
           {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.name}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
           )}
         </div>
 
         {/* Instance Type */}
         <div>
           <label htmlFor="edit-instance-variety" className="block text-sm font-medium text-theme-primary mb-1">
-            Instance Type <span className="text-theme-danger">*</span>
+            Instance Type <span className="text-theme-danger-fg">*</span>
           </label>
           <select
             id="edit-instance-variety"
@@ -233,7 +233,7 @@ export const EditInstanceModal: React.FC<EditInstanceModalProps> = ({
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.variety ? 'border-theme-danger' : 'border-theme'}
+              ${errors.variety ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting}
           >
@@ -242,7 +242,7 @@ export const EditInstanceModal: React.FC<EditInstanceModalProps> = ({
             <option value="dynamic">Dynamic Instance</option>
           </select>
           {errors.variety && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.variety}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.variety}</p>
           )}
           <p className="mt-1 text-xs text-theme-secondary">
             {formData.variety === 'cloud' && 'Virtual machine hosted in a cloud provider'}

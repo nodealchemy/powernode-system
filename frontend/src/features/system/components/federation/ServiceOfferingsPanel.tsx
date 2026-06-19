@@ -120,7 +120,7 @@ export const ServiceOfferingsPanel: React.FC<ServiceOfferingsPanelProps> = ({
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Service Offerings</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${offerings.length} ${offerings.length === 1 ? 'offering' : 'offerings'}`}
@@ -392,9 +392,9 @@ const StatusFilterBar: React.FC<{
 const StatusPill: React.FC<{ status: OfferingStatus }> = ({ status }) => {
   const styleByStatus: Record<OfferingStatus, string> = {
     draft: 'bg-theme-background-tertiary text-theme-secondary',
-    active: 'bg-theme-success text-theme-success',
-    deprecated: 'bg-theme-warning text-theme-warning',
-    retired: 'bg-theme-danger text-theme-danger',
+    active: 'bg-theme-success-bg text-theme-success-fg',
+    deprecated: 'bg-theme-warning-bg text-theme-warning-fg',
+    retired: 'bg-theme-danger-bg text-theme-danger-fg',
   };
   return (
     <span
@@ -421,7 +421,7 @@ const ActionButton: React.FC<ActionButtonProps> = ({ icon, label, onClick, disab
     title={label}
     className={`px-2 py-1 rounded text-xs inline-flex items-center gap-1 ${
       danger
-        ? 'text-theme-danger hover:bg-theme-danger'
+        ? 'text-theme-danger-fg hover:bg-theme-danger-bg'
         : 'text-theme-secondary hover:bg-theme-surface-hover'
     } disabled:opacity-40 disabled:cursor-not-allowed`}
   >

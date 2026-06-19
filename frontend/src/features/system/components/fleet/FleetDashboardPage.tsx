@@ -180,7 +180,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                 className={
                   'px-2 py-0.5 rounded border transition-colors ' +
                   (active
-                    ? 'bg-theme-info text-theme-on-accent border-theme-info'
+                    ? 'bg-theme-info-fg text-theme-on-accent border-theme-info-border'
                     : 'border-theme text-theme-primary hover:bg-theme-surface-hover')
                 }
               >
@@ -198,7 +198,7 @@ export function FleetDashboardPage(): React.JSX.Element {
                 className={
                   'px-2 py-0.5 rounded border transition-colors ' +
                   (active
-                    ? 'bg-theme-info text-theme-on-accent border-theme-info'
+                    ? 'bg-theme-info-fg text-theme-on-accent border-theme-info-border'
                     : 'border-theme text-theme-primary hover:bg-theme-surface-hover')
                 }
               >
@@ -396,7 +396,7 @@ interface CounterProps {
 }
 function Counter({ icon, label, value, highlight }: CounterProps): React.JSX.Element {
   return (
-    <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning' : 'border-theme'} p-3`}>
+    <div className={`bg-theme-surface rounded-lg border ${highlight ? 'border-theme-warning-border' : 'border-theme'} p-3`}>
       <div className="flex items-center justify-between">
         <div className="text-xs text-theme-tertiary flex items-center gap-1">
           {icon}

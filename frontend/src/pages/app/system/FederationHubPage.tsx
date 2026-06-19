@@ -318,7 +318,7 @@ interface SectionProps {
 const Section: React.FC<SectionProps> = ({ icon, title, subtitle, children }) => (
   <section>
     <div className="flex items-center gap-2 mb-2">
-      <span className="text-theme-info">{icon}</span>
+      <span className="text-theme-info-fg">{icon}</span>
       <h3 className="font-semibold text-theme-primary">{title}</h3>
     </div>
     {subtitle && <p className="text-xs text-theme-secondary mb-3">{subtitle}</p>}

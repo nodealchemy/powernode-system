@@ -89,7 +89,7 @@ const StatCard: React.FC<{ label: string; value: number; sublabel?: string }> = 
 
 const Legend: React.FC = () => (
   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-theme-secondary pt-1">
-    <LegendItem swatch="bg-theme-info/10 border border-theme-info" label="Self" />
+    <LegendItem swatch="bg-theme-info-bg border border-theme-info-border" label="Self" />
     <LegendItem swatch="bg-theme-surface border border-theme" label="SDWAN network" />
     <LegendItem swatch="bg-theme-surface border-2 border-theme" label="Platform peer" />
     <LegendItem swatch="bg-theme-background-secondary border border-theme" label="Data-plane peer" />

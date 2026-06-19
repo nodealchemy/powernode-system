@@ -76,7 +76,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
   useEffect(() => { load(); }, [load, refreshKey, localRefreshKey]);
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading access state…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   return (
     <div className="space-y-4">
@@ -154,11 +154,11 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
                           <td className="p-2 font-mono text-xs text-theme-secondary">{d.assigned_address}</td>
                           <td className="p-2">
                             {d.revoked_at ? (
-                              <span className="text-theme-danger">revoked</span>
+                              <span className="text-theme-danger-fg">revoked</span>
                             ) : d.last_downloaded_at ? (
-                              <span className="text-theme-success">active</span>
+                              <span className="text-theme-success-fg">active</span>
                             ) : (
-                              <span className="text-theme-info">pending download</span>
+                              <span className="text-theme-info-fg">pending download</span>
                             )}
                           </td>
                           <td className="p-2 text-xs text-theme-secondary">
@@ -168,7 +168,7 @@ export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) =
                             {canManage && !d.revoked_at && (
                               <button
                                 type="button" onClick={() => setRevokeDeviceConfirm(d)}
-                                className="text-theme-danger hover:bg-theme-danger p-1 rounded"
+                                className="text-theme-danger-fg hover:bg-theme-danger-bg p-1 rounded"
                                 aria-label={`Revoke ${d.label}`}
                               >
                                 <Trash2 size={14} />

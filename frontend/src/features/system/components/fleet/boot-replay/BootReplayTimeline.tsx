@@ -44,7 +44,7 @@ export const BootReplayTimeline: FC<Props> = ({ instanceId, correlationId }) => 
 
   if (error) {
     return (
-      <div className="p-6 text-sm text-theme-error">
+      <div className="p-6 text-sm text-theme-error-fg">
         {error}
         <button
           type="button"
@@ -101,7 +101,7 @@ export const BootReplayTimeline: FC<Props> = ({ instanceId, correlationId }) => 
               </span>
               <span className="font-medium">{evt.kind}</span>
               {evt.severity !== 'low' && (
-                <span className="ml-2 text-xs text-theme-warning">{evt.severity}</span>
+                <span className="ml-2 text-xs text-theme-warning-fg">{evt.severity}</span>
               )}
             </button>
           ))}

@@ -123,8 +123,8 @@ export const NodesTab: React.FC<NodesTabProps> = ({ onActionsReady }) => {
             Are you sure you want to delete the node <strong>{deleteConfirmNode?.name}</strong>?
           </p>
           {deleteConfirmNode && (deleteConfirmNode.instance_count || 0) > 0 && (
-            <div className="p-3 bg-theme-warning/10 border border-theme-warning/30 rounded-lg">
-              <p className="text-theme-warning text-sm">
+            <div className="p-3 bg-theme-warning-bg border border-theme-warning-border/30 rounded-lg">
+              <p className="text-theme-warning-fg text-sm">
                 <strong>Warning:</strong> This node has {deleteConfirmNode.instance_count} instance(s).
                 Deleting this node will also remove all associated instances.
               </p>

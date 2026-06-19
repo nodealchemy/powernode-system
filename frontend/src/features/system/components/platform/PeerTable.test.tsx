@@ -338,14 +338,14 @@ describe('PeerStatusCell', () => {
   it('applies the success theme class for active status', () => {
     renderRow(<PeerStatusCell peer={PEER_ACTIVE} />);
     const pill = screen.getByText('active');
-    expect(pill).toHaveClass('bg-theme-success');
+    expect(pill).toHaveClass('bg-theme-success-bg');
   });
 
   it('applies the danger theme class for revoked status', () => {
     const revokedPeer: PlatformPeerSummary = { ...PEER_ACTIVE, status: 'revoked' };
     renderRow(<PeerStatusCell peer={revokedPeer} />);
     const pill = screen.getByText('revoked');
-    expect(pill).toHaveClass('bg-theme-danger');
+    expect(pill).toHaveClass('bg-theme-danger-bg');
   });
 });
 
@@ -389,7 +389,7 @@ describe('PeerHeartbeatCell', () => {
       const ts = screen.getByText(new Date('2026-05-01T12:00:00Z').toLocaleString());
       const wrapper = ts.closest('span');
       expect(wrapper).toHaveClass('text-theme-secondary');
-      expect(wrapper).not.toHaveClass('text-theme-warning');
+      expect(wrapper).not.toHaveClass('text-theme-warning-fg');
     });
   });
 
@@ -399,11 +399,11 @@ describe('PeerHeartbeatCell', () => {
       expect(screen.getByText('stale')).toBeInTheDocument();
     });
 
-    it('applies text-theme-warning class when stale is true', () => {
+    it('applies text-theme-warning-fg class when stale is true', () => {
       renderRow(<PeerHeartbeatCell peer={PEER_STALE} stale />);
       const ts = screen.getByText(new Date('2025-12-31T08:00:00Z').toLocaleString());
       const wrapper = ts.closest('span');
-      expect(wrapper).toHaveClass('text-theme-warning');
+      expect(wrapper).toHaveClass('text-theme-warning-fg');
       expect(wrapper).not.toHaveClass('text-theme-secondary');
     });
 

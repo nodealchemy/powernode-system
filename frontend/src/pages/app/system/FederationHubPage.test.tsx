@@ -105,10 +105,10 @@ describe('FederationHubPage', () => {
   it('marks the active tab from the /federation/<tab> path segment', () => {
     renderAt('/app/system/federation/control');
 
-    // PathTabs marks the active tab with border-theme-info + text-theme-primary.
-    expect(screen.getByRole('link', { name: /Control/i }).className).toContain('border-theme-info');
+    // PathTabs marks the active tab with border-theme-info-border + text-theme-primary.
+    expect(screen.getByRole('link', { name: /Control/i }).className).toContain('border-theme-info-border');
     expect(screen.getByRole('link', { name: /Monitor/i }).className).not.toContain(
-      'border-theme-info',
+      'border-theme-info-border',
     );
 
     // The Control tab body renders (peer control panel sentinel).

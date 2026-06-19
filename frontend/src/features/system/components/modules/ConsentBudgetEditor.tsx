@@ -91,7 +91,7 @@ export const ConsentBudgetEditor: React.FC<Props> = ({ module, onUpdated }) => {
         </div>
         <div>
           <div className="block text-xs text-theme-tertiary mb-1">Remaining</div>
-          <div className={`text-base font-mono ${remaining === 0 ? 'text-theme-error' : ''}`}>
+          <div className={`text-base font-mono ${remaining === 0 ? 'text-theme-error-fg' : ''}`}>
             {remaining ?? '∞'}
           </div>
         </div>

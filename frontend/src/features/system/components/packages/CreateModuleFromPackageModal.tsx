@@ -146,9 +146,9 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
     suggestion.suggested.length > 0;
 
   const confidenceBadgeClass = (level: 'high' | 'medium' | 'low'): string => {
-    if (level === 'high') return 'bg-theme-success/20 text-theme-success';
-    if (level === 'medium') return 'bg-theme-info/20 text-theme-info';
-    return 'bg-theme-warning/20 text-theme-warning';
+    if (level === 'high') return 'bg-theme-success-bg text-theme-success-fg';
+    if (level === 'medium') return 'bg-theme-info-bg text-theme-info-fg';
+    return 'bg-theme-warning-bg text-theme-warning-fg';
   };
 
   return (
@@ -159,7 +159,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
             <h2 className="text-lg font-semibold text-theme-primary">Create Module from Package</h2>
             <p className="text-sm text-theme-secondary mt-0.5">
               {packageName} <span className="opacity-60">·</span> {repository.name} <span className="opacity-60">·</span>{' '}
-              <span className={suggestionApplied ? 'text-theme-info' : ''}>
+              <span className={suggestionApplied ? 'text-theme-info-fg' : ''}>
                 {effectiveArchitectures.join(', ')}
               </span>
               {suggestionApplied && (
@@ -181,7 +181,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
 
         {suggestionApplied && suggestion!.rationale.length > 0 && (
           <details className="mb-3 text-xs">
-            <summary className="cursor-pointer text-theme-info hover:underline">
+            <summary className="cursor-pointer text-theme-info-fg hover:underline">
               Why these architectures?
             </summary>
             <ul className="mt-1 ml-4 space-y-0.5 text-theme-secondary">
@@ -203,7 +203,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
         )}
 
         {error && (
-          <div className="mb-3 p-2 bg-theme-danger/10 text-theme-danger rounded text-sm">{error}</div>
+          <div className="mb-3 p-2 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
         )}
 
         {loading && <div className="p-6 text-center text-theme-secondary">Resolving dependency closure…</div>}
@@ -325,7 +325,7 @@ export const CreateModuleFromPackageModal: FC<Props> = ({
         )}
 
         {!loading && preview && preview.errors.length > 0 && (
-          <div className="mt-2 text-xs text-theme-danger">
+          <div className="mt-2 text-xs text-theme-danger-fg">
             Cannot proceed: {preview.errors.join('; ')}
           </div>
         )}

@@ -81,7 +81,7 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
       <aside className="fixed top-0 right-0 h-full w-full max-w-lg bg-theme-surface border-l border-theme z-40 shadow-lg overflow-y-auto">
         <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3 sticky top-0 bg-theme-surface">
           <div className="flex items-center gap-2">
-            <Database className="w-5 h-5 text-theme-info" />
+            <Database className="w-5 h-5 text-theme-info-fg" />
             <h3 className="font-semibold text-theme-primary">Storage Migration</h3>
           </div>
           <button
@@ -94,7 +94,7 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
         </header>
 
         {error && (
-          <div className="p-3 bg-theme-danger/10 text-theme-danger flex items-center gap-2 text-sm">
+          <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
             <span className="flex-1">{error}</span>
           </div>
@@ -143,7 +143,7 @@ export const StorageMigrationDetailDrawer: React.FC<StorageMigrationDetailDrawer
                 <Stamp label="Cancelled"  iso={migration.cancelled_at} />
               </div>
               {migration.error_message && (
-                <div className="mt-2 text-xs text-theme-danger flex items-start gap-2">
+                <div className="mt-2 text-xs text-theme-danger-fg flex items-start gap-2">
                   <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
                   <span>{migration.error_message}</span>
                 </div>
@@ -243,7 +243,7 @@ const ByteCounters: React.FC<{
       {pct !== null && (
         <div className="flex items-center gap-2">
           <div className="flex-1 h-2 bg-theme-background-secondary rounded overflow-hidden">
-            <div className="h-full bg-theme-info" style={{ width: `${pct}%` }} />
+            <div className="h-full bg-theme-info-bg" style={{ width: `${pct}%` }} />
           </div>
           <span className="text-xs text-theme-secondary tabular-nums w-10 text-right">{pct}%</span>
         </div>

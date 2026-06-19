@@ -118,7 +118,7 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Link className="w-6 h-6 text-theme-info" />
+              <Link className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 Attach Volume
               </h2>
@@ -142,7 +142,7 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
             {/* Instance Selection */}
             <div>
               <label className="block text-sm font-medium text-theme-primary mb-1">
-                Select Instance <span className="text-theme-error">*</span>
+                Select Instance <span className="text-theme-error-fg">*</span>
               </label>
               {loading ? (
                 <div className="flex items-center justify-center py-4">
@@ -210,7 +210,7 @@ export const VolumeAttachModal: React.FC<VolumeAttachModalProps> = ({
 
             {/* Error */}
             {error && (
-              <div className="flex items-center gap-2 text-theme-error text-sm">
+              <div className="flex items-center gap-2 text-theme-error-fg text-sm">
                 <AlertCircle className="w-4 h-4" />
                 {error}
               </div>

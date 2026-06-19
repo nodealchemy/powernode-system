@@ -377,7 +377,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
         {/* Name Field */}
         <div>
           <label htmlFor="instance-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger">*</span>
+            Name <span className="text-theme-danger-fg">*</span>
           </label>
           <input
             id="instance-name"
@@ -388,19 +388,19 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger' : 'border-theme'}
+              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting}
           />
           {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.name}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
           )}
         </div>
 
         {/* Instance Type */}
         <div>
           <label htmlFor="instance-variety" className="block text-sm font-medium text-theme-primary mb-1">
-            Instance Type <span className="text-theme-danger">*</span>
+            Instance Type <span className="text-theme-danger-fg">*</span>
           </label>
           <div className="grid grid-cols-3 gap-3">
             {(['cloud', 'physical', 'dynamic'] as const).map((type) => (
@@ -411,8 +411,8 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 className={`
                   flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors
                   ${formData.variety === type
-                    ? 'bg-theme-info text-white border-theme-info'
-                    : 'bg-theme-surface text-theme-secondary border-theme hover:border-theme-info/50'
+                    ? 'bg-theme-info-fg text-white border-theme-info-border'
+                    : 'bg-theme-surface text-theme-secondary border-theme hover:border-theme-info-border/50'
                   }
                 `}
                 disabled={submitting}
@@ -423,7 +423,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
             ))}
           </div>
           {errors.variety && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.variety}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.variety}</p>
           )}
           <p className="mt-2 text-xs text-theme-secondary">
             {formData.variety === 'cloud' && 'Virtual machine hosted in a cloud provider'}
@@ -443,7 +443,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
             {/* Provider Connection */}
             <div>
               <label htmlFor="provider-connection" className="block text-sm font-medium text-theme-secondary mb-1">
-                Provider Connection <span className="text-theme-danger">*</span>
+                Provider Connection <span className="text-theme-danger-fg">*</span>
               </label>
               <div className="relative">
                 <select
@@ -453,7 +453,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   className={`
                     w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
                     focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_connection_id ? 'border-theme-danger' : 'border-theme'}
+                    ${errors.provider_connection_id ? 'border-theme-danger-border' : 'border-theme'}
                   `}
                   disabled={submitting || loadingConnections}
                 >
@@ -469,14 +469,14 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 )}
               </div>
               {errors.provider_connection_id && (
-                <p className="mt-1 text-sm text-theme-danger">{errors.provider_connection_id}</p>
+                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_connection_id}</p>
               )}
             </div>
 
             {/* Region */}
             <div>
               <label htmlFor="provider-region" className="block text-sm font-medium text-theme-secondary mb-1">
-                Region <span className="text-theme-danger">*</span>
+                Region <span className="text-theme-danger-fg">*</span>
               </label>
               <div className="relative">
                 <select
@@ -486,7 +486,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   className={`
                     w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
                     focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_region_id ? 'border-theme-danger' : 'border-theme'}
+                    ${errors.provider_region_id ? 'border-theme-danger-border' : 'border-theme'}
                   `}
                   disabled={submitting || !formData.provider_connection_id || loadingRegions}
                 >
@@ -502,14 +502,14 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 )}
               </div>
               {errors.provider_region_id && (
-                <p className="mt-1 text-sm text-theme-danger">{errors.provider_region_id}</p>
+                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_region_id}</p>
               )}
             </div>
 
             {/* Instance Type */}
             <div>
               <label htmlFor="provider-instance-type" className="block text-sm font-medium text-theme-secondary mb-1">
-                Instance Size <span className="text-theme-danger">*</span>
+                Instance Size <span className="text-theme-danger-fg">*</span>
               </label>
               <div className="relative">
                 <select
@@ -519,7 +519,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                   className={`
                     w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
                     focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-                    ${errors.provider_instance_type_id ? 'border-theme-danger' : 'border-theme'}
+                    ${errors.provider_instance_type_id ? 'border-theme-danger-border' : 'border-theme'}
                   `}
                   disabled={submitting || !formData.provider_region_id || loadingInstanceTypes}
                 >
@@ -535,7 +535,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
                 )}
               </div>
               {errors.provider_instance_type_id && (
-                <p className="mt-1 text-sm text-theme-danger">{errors.provider_instance_type_id}</p>
+                <p className="mt-1 text-sm text-theme-danger-fg">{errors.provider_instance_type_id}</p>
               )}
             </div>
 
@@ -638,7 +638,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
 
             <div>
               <label htmlFor="instance-platform" className="block text-sm font-medium text-theme-secondary mb-1">
-                Platform <span className="text-theme-danger">*</span>
+                Platform <span className="text-theme-danger-fg">*</span>
               </label>
               <div className="relative">
                 <select

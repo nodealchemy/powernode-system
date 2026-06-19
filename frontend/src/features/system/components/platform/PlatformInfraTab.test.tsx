@@ -124,43 +124,43 @@ describe('PlatformInfraTab', () => {
   it('marks the Services tab as active when the URL ends with /services', () => {
     renderAt(`${BASE}/services`);
     const link = screen.getByRole('link', { name: /services/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Peers tab as active when the URL ends with /peers', () => {
     renderAt(`${BASE}/peers`);
     const link = screen.getByRole('link', { name: /peers/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Children tab as active when the URL ends with /children', () => {
     renderAt(`${BASE}/children`);
     const link = screen.getByRole('link', { name: /children/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Migrations tab as active when the URL ends with /migrations', () => {
     renderAt(`${BASE}/migrations`);
     const link = screen.getByRole('link', { name: /migrations/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Scaling tab as active when the URL ends with /scaling', () => {
     renderAt(`${BASE}/scaling`);
     const link = screen.getByRole('link', { name: /scaling/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Health tab as active when the URL ends with /health', () => {
     renderAt(`${BASE}/health`);
     const link = screen.getByRole('link', { name: /health/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('marks the Deploy tab as active when the URL ends with /deploy', () => {
     renderAt(`${BASE}/deploy`);
     const link = screen.getByRole('link', { name: /deploy/i });
-    expect(link.className).toContain('border-theme-info');
+    expect(link.className).toContain('border-theme-info-border');
   });
 
   it('does not mark inactive tabs with the active border class', () => {
@@ -168,7 +168,7 @@ describe('PlatformInfraTab', () => {
     const inactiveTabs = ['Peers', 'Children', 'Migrations', 'Scaling', 'Health', 'Deploy'];
     for (const label of inactiveTabs) {
       const link = screen.getByRole('link', { name: new RegExp(label, 'i') });
-      expect(link.className).not.toContain('border-theme-info');
+      expect(link.className).not.toContain('border-theme-info-border');
       expect(link.className).toContain('border-transparent');
     }
   });
@@ -219,7 +219,7 @@ describe('PlatformInfraTab', () => {
     // After the redirect, Services tab should be active and its panels rendered.
     expect(screen.getByTestId('service-offerings-panel')).toBeInTheDocument();
     const servicesLink = screen.getByRole('link', { name: /services/i });
-    expect(servicesLink.className).toContain('border-theme-info');
+    expect(servicesLink.className).toContain('border-theme-info-border');
   });
 
   // ── Panel isolation ──────────────────────────────────────────────────────────

@@ -216,10 +216,10 @@ describe('PortMappingList', () => {
     await waitFor(() => expect(screen.getByText('web-http')).toBeInTheDocument());
 
     const tcpSpan = screen.getByText('tcp');
-    expect(tcpSpan).toHaveClass('text-theme-info');
+    expect(tcpSpan).toHaveClass('text-theme-info-fg');
 
     const udpSpan = screen.getByText('udp');
-    expect(udpSpan).toHaveClass('text-theme-success');
+    expect(udpSpan).toHaveClass('text-theme-success-fg');
   });
 
   it('displays the listen port next to protocol', async () => {

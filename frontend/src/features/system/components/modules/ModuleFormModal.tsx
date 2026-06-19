@@ -315,7 +315,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
         <div className="relative w-full max-w-3xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Package className="w-6 h-6 text-theme-info" />
+              <Package className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Module' : 'Create Module'}
               </h2>
@@ -383,7 +383,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                      Name <span className="text-theme-error">*</span>
+                      Name <span className="text-theme-error-fg">*</span>
                     </label>
                     <input
                       type="text"
@@ -393,11 +393,11 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       onChange={handleChange}
                       placeholder="e.g., nginx-config"
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                        errors.name ? 'border-theme-error' : 'border-theme'
+                        errors.name ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     />
                     {errors.name && (
-                      <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                      <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                         <AlertCircle className="w-4 h-4" />
                         {errors.name}
                       </p>
@@ -406,7 +406,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
 
                   <div>
                     <label htmlFor="variety" className="block text-sm font-medium text-theme-primary mb-1">
-                      Type <span className="text-theme-error">*</span>
+                      Type <span className="text-theme-error-fg">*</span>
                     </label>
                     <select
                       id="variety"
@@ -414,7 +414,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       value={formData.variety}
                       onChange={handleChange}
                       className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                        errors.variety ? 'border-theme-error' : 'border-theme'
+                        errors.variety ? 'border-theme-error-border' : 'border-theme'
                       }`}
                     >
                       <option value="config">Config</option>
@@ -520,7 +520,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                 </p>
 
                 {editModule?.dependant && (
-                  <div className="rounded-lg border border-theme-info bg-theme-info/10 p-3 text-xs text-theme-primary">
+                  <div className="rounded-lg border border-theme-info-border bg-theme-info-bg p-3 text-xs text-theme-primary">
                     This is a <strong>dependant child module</strong>
                     {editModule.parent_module_name ? <> of <code>{editModule.parent_module_name}</code></> : null}.
                     Its <code>file_spec</code> is inherited from the parent&apos;s
@@ -541,7 +541,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       <label htmlFor={field} className="block text-sm font-medium text-theme-primary mb-1">
                         {SPEC_LABELS[field].title}
                         {isDependantInheritedField && (
-                          <span className="ml-2 text-xs text-theme-info font-normal">
+                          <span className="ml-2 text-xs text-theme-info-fg font-normal">
                             (inherited from <code>{editModule?.parent_module_name ?? 'parent'}.dependency_spec</code>)
                           </span>
                         )}
@@ -626,7 +626,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="reboot_required"
                       checked={formData.reboot_required}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     />
                     <Power className="w-4 h-4 text-theme-secondary" />
                     <span className="text-sm text-theme-primary">Reboot required on attach/detach</span>
@@ -638,7 +638,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="lock_spec"
                       checked={formData.lock_spec}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     />
                     <Lock className="w-4 h-4 text-theme-secondary" />
                     <span className="text-sm text-theme-primary">Lock module (prevent further spec edits)</span>
@@ -656,7 +656,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="enabled"
                       checked={formData.enabled}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     />
                     <span className="text-sm text-theme-primary">Enabled</span>
                   </label>
@@ -667,7 +667,7 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
                       name="public"
                       checked={formData.public}
                       onChange={handleChange}
-                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                      className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     />
                     <span className="text-sm text-theme-primary">Public</span>
                   </label>

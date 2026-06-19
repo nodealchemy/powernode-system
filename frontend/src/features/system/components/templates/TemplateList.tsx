@@ -216,7 +216,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
             <button
               type="button"
               onClick={clearPlatformFilter}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info-bg border border-theme-info-border text-theme-info-fg hover:bg-theme-info-bg transition-colors"
               title="Clear platform filter"
             >
               <span>Filtered by platform</span>
@@ -394,7 +394,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                           onClick={() => onDelete(template.id)}
                           title="Delete Template"
                         >
-                          <Trash2 className="w-4 h-4 text-theme-error" />
+                          <Trash2 className="w-4 h-4 text-theme-error-fg" />
                         </Button>
                       )}
                     </div>
@@ -574,7 +574,7 @@ export const TemplateList: React.FC<TemplateListProps> = ({
                               onDelete(template.id);
                               setDropdownOpen(null);
                             }}
-                            className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                            className="w-full text-left px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover flex items-center gap-2"
                           >
                             <Trash2 className="w-4 h-4" />
                             Delete Template

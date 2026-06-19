@@ -155,7 +155,7 @@ describe('FederationGovernancePanel', () => {
     await waitFor(() => expect(screen.getByText('critical')).toBeInTheDocument());
 
     const badge = screen.getByText('critical');
-    expect(badge.className).toMatch(/bg-theme-danger/);
+    expect(badge.className).toMatch(/bg-theme-danger-bg/);
   });
 
   it('applies the correct severity badge class for "high" severity', async () => {
@@ -166,7 +166,7 @@ describe('FederationGovernancePanel', () => {
     await waitFor(() => expect(screen.getByText('high')).toBeInTheDocument());
 
     const badge = screen.getByText('high');
-    expect(badge.className).toMatch(/bg-theme-warning/);
+    expect(badge.className).toMatch(/bg-theme-warning-bg/);
   });
 
   it('applies the correct severity badge class for "medium" severity', async () => {
@@ -177,7 +177,7 @@ describe('FederationGovernancePanel', () => {
     await waitFor(() => expect(screen.getByText('medium')).toBeInTheDocument());
 
     const badge = screen.getByText('medium');
-    expect(badge.className).toMatch(/bg-theme-info/);
+    expect(badge.className).toMatch(/bg-theme-info-bg/);
   });
 
   it('applies the default badge class for "low" severity', async () => {

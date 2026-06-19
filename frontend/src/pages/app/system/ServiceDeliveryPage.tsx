@@ -88,7 +88,7 @@ export const ServiceDeliveryPage: React.FC = () => {
             to={`/app/system/service-delivery/${tab.key}`}
             className={`px-3 py-2 text-sm border-b-2 inline-flex items-center gap-2 -mb-px ${
               activeTab === tab.key
-                ? 'border-theme-info text-theme-info font-medium'
+                ? 'border-theme-info-border text-theme-info-fg font-medium'
                 : 'border-transparent text-theme-secondary hover:text-theme-primary'
             }`}
           >

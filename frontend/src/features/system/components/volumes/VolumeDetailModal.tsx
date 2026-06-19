@@ -207,7 +207,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <HardDrive className="w-6 h-6 text-theme-info" />
+              <HardDrive className="w-6 h-6 text-theme-info-fg" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : volume?.name || 'Volume Details'}
@@ -282,7 +282,7 @@ export const VolumeDetailModal: React.FC<VolumeDetailModalProps> = ({
                     <div>
                       <label className="block text-sm text-theme-secondary mb-1">Attachment</label>
                       {volume.node_instance_id ? (
-                        <div className="flex items-center gap-2 text-theme-success">
+                        <div className="flex items-center gap-2 text-theme-success-fg">
                           <Link className="w-4 h-4 flex-shrink-0" />
                           {(volume as VolumeWithAttachment).node_id ? (
                             <EntityLink

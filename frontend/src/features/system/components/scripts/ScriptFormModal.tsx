@@ -143,7 +143,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
         <div className="relative w-full max-w-2xl bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <FileCode className="w-6 h-6 text-theme-info" />
+              <FileCode className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Script' : 'Create Script'}
               </h2>
@@ -159,7 +159,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                    Name <span className="text-theme-error">*</span>
+                    Name <span className="text-theme-error-fg">*</span>
                   </label>
                   <input
                     type="text"
@@ -169,11 +169,11 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
                     onChange={handleChange}
                     placeholder="e.g., Install Dependencies"
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                      errors.name ? 'border-theme-error' : 'border-theme'
+                      errors.name ? 'border-theme-error-border' : 'border-theme'
                     }`}
                   />
                   {errors.name && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.name}
                     </p>
@@ -182,7 +182,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
 
                 <div>
                   <label htmlFor="variety" className="block text-sm font-medium text-theme-primary mb-1">
-                    Type <span className="text-theme-error">*</span>
+                    Type <span className="text-theme-error-fg">*</span>
                   </label>
                   <select
                     id="variety"
@@ -190,7 +190,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
                     value={formData.variety}
                     onChange={handleChange}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.variety ? 'border-theme-error' : 'border-theme'
+                      errors.variety ? 'border-theme-error-border' : 'border-theme'
                     }`}
                   >
                     <option value="build">Build Script</option>
@@ -199,7 +199,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
                     <option value="custom">Custom Script</option>
                   </select>
                   {errors.variety && (
-                    <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                    <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                       <AlertCircle className="w-4 h-4" />
                       {errors.variety}
                     </p>
@@ -247,7 +247,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
                     name="enabled"
                     checked={formData.enabled}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -258,7 +258,7 @@ export const ScriptFormModal: React.FC<ScriptFormModalProps> = ({
                     name="public"
                     checked={formData.public}
                     onChange={handleChange}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

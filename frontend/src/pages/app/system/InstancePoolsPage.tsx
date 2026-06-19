@@ -174,13 +174,13 @@ const instancePoolsApi = {
 function statusPillClasses(status: InstancePoolSummary['status']): string {
   switch (status) {
     case 'active':
-      return 'bg-theme-success/10 text-theme-success';
+      return 'bg-theme-success-bg text-theme-success-fg';
     case 'draining':
-      return 'bg-theme-warning/10 text-theme-warning';
+      return 'bg-theme-warning-bg text-theme-warning-fg';
     case 'archived':
       return 'bg-theme-text-secondary/10 text-theme-secondary';
     case 'paused':
-      return 'bg-theme-info/10 text-theme-info';
+      return 'bg-theme-info-bg text-theme-info-fg';
     default:
       return 'bg-theme-text-secondary/10 text-theme-secondary';
   }
@@ -190,7 +190,7 @@ function lifecyclePillClasses(
   lifecycleClass: InstancePoolSummary['lifecycle_class'],
 ): string {
   return lifecycleClass === 'spot'
-    ? 'bg-theme-warning/10 text-theme-warning'
+    ? 'bg-theme-warning-bg text-theme-warning-fg'
     : 'bg-theme-interactive-primary/10 text-theme-interactive-primary';
 }
 
@@ -584,14 +584,14 @@ const InstancePoolsPage: React.FC = () => {
                         <span>{pool.max_size}</span>
                       </div>
                       {pool.deficit > 0 && (
-                        <div className="text-xs text-theme-warning mt-0.5">
+                        <div className="text-xs text-theme-warning-fg mt-0.5">
                           deficit: {pool.deficit}
                         </div>
                       )}
                     </td>
                     <td className="py-3 px-4 text-sm text-theme-secondary">
                       <div className="font-mono">
-                        <span className="text-theme-success">
+                        <span className="text-theme-success-fg">
                           {pool.ready_count} ready
                         </span>
                         <span className="text-theme-tertiary"> · </span>
@@ -600,7 +600,7 @@ const InstancePoolsPage: React.FC = () => {
                         <span>{pool.claimed_count} claimed</span>
                       </div>
                       {pool.errored_count > 0 && (
-                        <div className="text-xs text-theme-danger mt-0.5">
+                        <div className="text-xs text-theme-danger-fg mt-0.5">
                           {pool.errored_count} errored
                         </div>
                       )}
@@ -652,7 +652,7 @@ const InstancePoolsPage: React.FC = () => {
                             title="Drain pool"
                             aria-label={`Drain ${pool.name}`}
                           >
-                            <Droplet className="w-4 h-4 text-theme-warning" />
+                            <Droplet className="w-4 h-4 text-theme-warning-fg" />
                           </Button>
                         )}
                         {canControl && (
@@ -666,7 +666,7 @@ const InstancePoolsPage: React.FC = () => {
                             title="Delete pool"
                             aria-label={`Delete ${pool.name}`}
                           >
-                            <Trash2 className="w-4 h-4 text-theme-danger" />
+                            <Trash2 className="w-4 h-4 text-theme-danger-fg" />
                           </Button>
                         )}
                       </div>
@@ -737,7 +737,7 @@ const InstancePoolsPage: React.FC = () => {
                             <p
                               className={
                                 pool.deficit > 0
-                                  ? 'text-theme-warning'
+                                  ? 'text-theme-warning-fg'
                                   : 'text-theme-primary'
                               }
                             >
@@ -749,14 +749,14 @@ const InstancePoolsPage: React.FC = () => {
                               Members (ready / warming / claimed / errored)
                             </label>
                             <p className="text-theme-primary font-mono text-xs">
-                              <span className="text-theme-success">
+                              <span className="text-theme-success-fg">
                                 {pool.ready_count}
                               </span>{' '}
                               / {pool.warming_count} / {pool.claimed_count} /{' '}
                               <span
                                 className={
                                   pool.errored_count > 0
-                                    ? 'text-theme-danger'
+                                    ? 'text-theme-danger-fg'
                                     : undefined
                                 }
                               >
@@ -871,7 +871,7 @@ const InstancePoolsPage: React.FC = () => {
                   </div>
                   <div>
                     <span className="text-theme-tertiary">ready:</span>{' '}
-                    <span className="text-theme-success">
+                    <span className="text-theme-success-fg">
                       {pool.ready_count}
                     </span>
                   </div>
@@ -886,7 +886,7 @@ const InstancePoolsPage: React.FC = () => {
                   {pool.errored_count > 0 && (
                     <div>
                       <span className="text-theme-tertiary">errored:</span>{' '}
-                      <span className="text-theme-danger">
+                      <span className="text-theme-danger-fg">
                         {pool.errored_count}
                       </span>
                     </div>
@@ -930,7 +930,7 @@ const InstancePoolsPage: React.FC = () => {
                       }
                       aria-label={`Drain ${pool.name}`}
                     >
-                      <Droplet className="w-4 h-4 mr-1 text-theme-warning" />
+                      <Droplet className="w-4 h-4 mr-1 text-theme-warning-fg" />
                       Drain
                     </Button>
                     <Button
@@ -940,7 +940,7 @@ const InstancePoolsPage: React.FC = () => {
                       disabled={isActioning || pool.status === 'archived'}
                       aria-label={`Delete ${pool.name}`}
                     >
-                      <Trash2 className="w-4 h-4 mr-1 text-theme-danger" />
+                      <Trash2 className="w-4 h-4 mr-1 text-theme-danger-fg" />
                       Delete
                     </Button>
                   </div>
@@ -1005,7 +1005,7 @@ const InstancePoolsPage: React.FC = () => {
                       <p
                         className={
                           pool.deficit > 0
-                            ? 'text-theme-warning'
+                            ? 'text-theme-warning-fg'
                             : 'text-theme-primary'
                         }
                       >
@@ -1092,8 +1092,8 @@ const InstancePoolsPage: React.FC = () => {
             claimed instances keep running until the operator terminates them.
           </p>
           {deletePool && deletePool.claimed_count > 0 && (
-            <div className="p-3 bg-theme-warning/10 border border-theme-warning/30 rounded-lg">
-              <p className="text-theme-warning text-sm">
+            <div className="p-3 bg-theme-warning-bg border border-theme-warning-border/30 rounded-lg">
+              <p className="text-theme-warning-fg text-sm">
                 <strong>Heads up:</strong> {deletePool.claimed_count}{' '}
                 claimed instance(s) will continue running. You&apos;ll need to
                 terminate them separately.
@@ -1261,7 +1261,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
             htmlFor="pool-name"
             className="block text-sm font-medium text-theme-primary mb-1"
           >
-            Name <span className="text-theme-danger">*</span>
+            Name <span className="text-theme-danger-fg">*</span>
           </label>
           <input
             id="pool-name"
@@ -1271,11 +1271,11 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
             placeholder="web-warm-pool"
             disabled={submitting}
             className={`w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary ${
-              errors.name ? 'border-theme-danger' : 'border-theme'
+              errors.name ? 'border-theme-danger-border' : 'border-theme'
             }`}
           />
           {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.name}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
           )}
         </div>
 
@@ -1302,7 +1302,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
             htmlFor="pool-template"
             className="block text-sm font-medium text-theme-primary mb-1"
           >
-            Node template <span className="text-theme-danger">*</span>
+            Node template <span className="text-theme-danger-fg">*</span>
           </label>
           <select
             id="pool-template"
@@ -1312,7 +1312,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
             }
             disabled={submitting || loadingTemplates}
             className={`w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary ${
-              errors.node_template_id ? 'border-theme-danger' : 'border-theme'
+              errors.node_template_id ? 'border-theme-danger-border' : 'border-theme'
             }`}
           >
             <option value="">
@@ -1326,7 +1326,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
             ))}
           </select>
           {errors.node_template_id && (
-            <p className="mt-1 text-sm text-theme-danger">
+            <p className="mt-1 text-sm text-theme-danger-fg">
               {errors.node_template_id}
             </p>
           )}
@@ -1357,7 +1357,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
               htmlFor="pool-target"
               className="block text-sm font-medium text-theme-primary mb-1"
             >
-              Target size <span className="text-theme-danger">*</span>
+              Target size <span className="text-theme-danger-fg">*</span>
             </label>
             <input
               id="pool-target"
@@ -1392,7 +1392,7 @@ const CreatePoolModal: React.FC<CreatePoolModalProps> = ({
           </div>
         </div>
         {errors.sizing && (
-          <p className="text-sm text-theme-danger">{errors.sizing}</p>
+          <p className="text-sm text-theme-danger-fg">{errors.sizing}</p>
         )}
 
         <div>
@@ -1630,7 +1630,7 @@ const EditPoolModal: React.FC<EditPoolModalProps> = ({
                 htmlFor="edit-pool-target"
                 className="block text-sm font-medium text-theme-primary mb-1"
               >
-                Target size <span className="text-theme-danger">*</span>
+                Target size <span className="text-theme-danger-fg">*</span>
               </label>
               <input
                 id="edit-pool-target"
@@ -1665,7 +1665,7 @@ const EditPoolModal: React.FC<EditPoolModalProps> = ({
             </div>
           </div>
           {errors.sizing && (
-            <p className="text-sm text-theme-danger">{errors.sizing}</p>
+            <p className="text-sm text-theme-danger-fg">{errors.sizing}</p>
           )}
 
           <div>
@@ -1796,7 +1796,7 @@ const PoolDetailModal: React.FC<PoolDetailModalProps> = ({
             </div>
           </div>
           {pool.deficit > 0 && (
-            <div className="mt-2 text-xs text-theme-warning">
+            <div className="mt-2 text-xs text-theme-warning-fg">
               Reaper will provision {pool.deficit} additional instance(s) on
               the next tick.
             </div>
@@ -1808,14 +1808,14 @@ const PoolDetailModal: React.FC<PoolDetailModalProps> = ({
             Members
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <div className="p-3 bg-theme-success/10 rounded-lg">
-              <div className="text-xs text-theme-success">ready</div>
+            <div className="p-3 bg-theme-success-bg rounded-lg">
+              <div className="text-xs text-theme-success-fg">ready</div>
               <div className="font-mono text-theme-primary">
                 {pool.ready_count}
               </div>
             </div>
-            <div className="p-3 bg-theme-info/10 rounded-lg">
-              <div className="text-xs text-theme-info">warming</div>
+            <div className="p-3 bg-theme-info-bg rounded-lg">
+              <div className="text-xs text-theme-info-fg">warming</div>
               <div className="font-mono text-theme-primary">
                 {pool.warming_count}
               </div>
@@ -1828,8 +1828,8 @@ const PoolDetailModal: React.FC<PoolDetailModalProps> = ({
                 {pool.claimed_count}
               </div>
             </div>
-            <div className="p-3 bg-theme-danger/10 rounded-lg">
-              <div className="text-xs text-theme-danger">errored</div>
+            <div className="p-3 bg-theme-danger-bg rounded-lg">
+              <div className="text-xs text-theme-danger-fg">errored</div>
               <div className="font-mono text-theme-primary">
                 {pool.errored_count}
               </div>

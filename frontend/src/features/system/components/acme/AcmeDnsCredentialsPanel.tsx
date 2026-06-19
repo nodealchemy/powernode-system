@@ -124,7 +124,7 @@ export const AcmeDnsCredentialsPanel: React.FC<AcmeDnsCredentialsPanelProps> = (
       <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
         <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <KeyRound className="w-5 h-5 text-theme-info" />
+            <KeyRound className="w-5 h-5 text-theme-info-fg" />
             <h2 className="font-semibold text-theme-primary">DNS Provider Credentials</h2>
             <span className="text-xs text-theme-secondary">
               {loading
@@ -252,7 +252,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
             <Clock className="w-3 h-3" />
             {new Date(cred.last_validated_at).toLocaleString()}
             {cred.needs_revalidation && (
-              <span className="text-theme-warning ml-1" title="Older than 24h">stale</span>
+              <span className="text-theme-warning-fg ml-1" title="Older than 24h">stale</span>
             )}
           </span>
         ) : (
@@ -265,7 +265,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           onClick={onTest}
           disabled={testing}
           title="Verify the credential against the provider's API"
-          className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
+          className="px-2 py-1 rounded text-xs text-theme-info-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 mr-1 transition-colors"
         >
           {testing ? <Clock className="w-3 h-3" /> : <Check className="w-3 h-3" />}
           {testing ? 'Testing…' : 'Test'}
@@ -275,7 +275,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
             type="button"
             onClick={onManageDns}
             title="Manage DNS records on zones this credential can reach"
-            className="px-2 py-1 rounded text-xs text-theme-info hover:bg-theme-surface-hover inline-flex items-center gap-1 mr-1 transition-colors"
+            className="px-2 py-1 rounded text-xs text-theme-info-fg hover:bg-theme-surface-hover inline-flex items-center gap-1 mr-1 transition-colors"
           >
             <Globe className="w-3 h-3" />
             DNS Records
@@ -286,7 +286,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({
           onClick={onDelete}
           disabled={deleting}
           title="Delete credential + Vault secret"
-          className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
+          className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-surface-hover disabled:opacity-40 inline-flex items-center gap-1 transition-colors"
         >
           <Trash2 className="w-3 h-3" />
           {deleting ? 'Deleting…' : 'Delete'}

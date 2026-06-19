@@ -108,7 +108,7 @@ export const PackageFilterBar: FC<PackageFilterBarProps> = ({
       >
         <Sparkles size={11} />
         Discover by intent
-        <span className="px-1 text-[9px] rounded bg-theme-info/30 text-theme-info">AI</span>
+        <span className="px-1 text-[9px] rounded bg-theme-info-bg text-theme-info-fg">AI</span>
       </button>
     </div>
 

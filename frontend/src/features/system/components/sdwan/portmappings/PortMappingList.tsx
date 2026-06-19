@@ -66,7 +66,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
   };
 
   if (loading) return <div className="p-4 text-theme-secondary">Loading port mappings…</div>;
-  if (error) return <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>;
+  if (error) return <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>;
 
   if (mappings.length === 0) {
     return (
@@ -118,7 +118,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
             </td>
             <td className="px-3 py-2 font-mono text-xs">{peerLabel(m.hub_peer_id)}</td>
             <td className="px-3 py-2 font-mono text-xs">
-              <span className={m.protocol === 'tcp' ? 'text-theme-info' : 'text-theme-success'}>
+              <span className={m.protocol === 'tcp' ? 'text-theme-info-fg' : 'text-theme-success-fg'}>
                 {m.protocol}
               </span>
               <span className="text-theme-secondary mx-1">/</span>
@@ -127,7 +127,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
             <td className="px-3 py-2 text-xs">
               {m.target_virtual_ip_id ? (
                 <span>
-                  <span className="text-theme-warning">VIP</span>{' '}
+                  <span className="text-theme-warning-fg">VIP</span>{' '}
                   <EntityLink
                     type="sdwan_virtual_ip"
                     id={`${networkId}:${m.target_virtual_ip_id}`}
@@ -147,7 +147,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
             <td className="px-3 py-2 font-mono text-xs">{m.effective_target_port}</td>
             <td className="px-3 py-2">
               {m.enabled ? (
-                <Power size={14} className="text-theme-success" />
+                <Power size={14} className="text-theme-success-fg" />
               ) : (
                 <PowerOff size={14} className="text-theme-secondary" />
               )}
@@ -178,7 +178,7 @@ export const PortMappingList: React.FC<PortMappingListProps> = ({
                   <button
                     type="button"
                     onClick={() => onDelete(m)}
-                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger"
+                    className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger-fg"
                     title="Delete"
                   >
                     <Trash2 size={14} />

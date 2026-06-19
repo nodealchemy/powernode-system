@@ -112,7 +112,7 @@ export const PeerEditModal: React.FC<PeerEditModalProps> = ({ isOpen, networkId,
           <div className="text-xs text-theme-secondary">
             Currently using: <span className="font-mono">{peer.effective_endpoint}</span>
             {peer.effective_endpoint_family && (
-              <span className="ml-1 text-theme-info">({peer.effective_endpoint_family})</span>
+              <span className="ml-1 text-theme-info-fg">({peer.effective_endpoint_family})</span>
             )}
             {peer.fallback_endpoint && (
               <span className="ml-2">· fallback: <span className="font-mono">{peer.fallback_endpoint}</span></span>

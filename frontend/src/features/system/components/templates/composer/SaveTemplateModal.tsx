@@ -148,7 +148,7 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
                   <option key={id} value={id}>{platformNameById.get(id) || id}</option>
                 ))}
               </select>
-              <p className="text-xs text-theme-warning mt-1">
+              <p className="text-xs text-theme-warning-fg mt-1">
                 Modules span multiple platforms; pick the target.
               </p>
             </div>
@@ -157,12 +157,12 @@ export const SaveTemplateModal: React.FC<Props> = ({ modules, conflicts, onClose
           <div className="text-sm text-theme-muted bg-theme-background p-3 rounded">
             <strong>{modules.length}</strong> module(s) will be attached to this template.
             {conflicts.length > 0 && (
-              <span className="text-theme-warning"> · {conflicts.length} conflict(s) — must resolve first</span>
+              <span className="text-theme-warning-fg"> · {conflicts.length} conflict(s) — must resolve first</span>
             )}
           </div>
 
           {error && (
-            <div className="text-sm text-theme-error">{error}</div>
+            <div className="text-sm text-theme-error-fg">{error}</div>
           )}
         </div>
 

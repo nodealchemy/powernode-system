@@ -148,7 +148,7 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Globe className="w-5 h-5 text-theme-info" />
+          <Globe className="w-5 h-5 text-theme-info-fg" />
           <span>DNS Records — </span>
           <code className="font-mono text-sm text-theme-secondary">{credentialName}</code>
         </div>
@@ -284,7 +284,7 @@ const RecordRow: React.FC<{
       {record.ttl === 1 ? 'auto' : record.ttl}
     </td>
     <td className="px-3 py-2 text-xs text-theme-secondary">
-      {record.proxied ? <span className="text-theme-info">proxied</span> : '—'}
+      {record.proxied ? <span className="text-theme-info-fg">proxied</span> : '—'}
     </td>
     <td className="px-3 py-2 text-right">
       <button
@@ -299,7 +299,7 @@ const RecordRow: React.FC<{
         type="button"
         onClick={onDelete}
         disabled={isDeleting}
-        className="p-1 rounded text-theme-danger hover:bg-theme-surface-hover transition-colors disabled:opacity-40"
+        className="p-1 rounded text-theme-danger-fg hover:bg-theme-surface-hover transition-colors disabled:opacity-40"
         title="Delete record"
       >
         <Trash2 className="w-3 h-3" />
@@ -386,7 +386,7 @@ const EditRecordRow: React.FC<{
           type="button"
           onClick={handleSave}
           disabled={submitting}
-          className="p-1 rounded text-theme-success hover:bg-theme-surface-hover transition-colors mr-1"
+          className="p-1 rounded text-theme-success-fg hover:bg-theme-surface-hover transition-colors mr-1"
           title="Save"
         >
           <Check className="w-3 h-3" />
@@ -400,7 +400,7 @@ const EditRecordRow: React.FC<{
         >
           <X className="w-3 h-3" />
         </button>
-        {error && <div className="text-xs text-theme-danger mt-1">{error}</div>}
+        {error && <div className="text-xs text-theme-danger-fg mt-1">{error}</div>}
       </td>
     </tr>
   );
@@ -460,7 +460,7 @@ const AddRecordForm: React.FC<{
     <div className="p-3 bg-theme-background-secondary border border-theme rounded space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold text-theme-primary inline-flex items-center gap-2">
-          <Plus className="w-4 h-4 text-theme-info" />
+          <Plus className="w-4 h-4 text-theme-info-fg" />
           Add DNS Record
         </h4>
         <button

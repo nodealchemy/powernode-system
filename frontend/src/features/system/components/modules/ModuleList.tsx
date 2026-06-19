@@ -174,7 +174,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
           <div className="bg-theme-surface rounded-lg border border-theme p-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <FolderTree className="w-5 h-5 text-theme-info" />
+                <FolderTree className="w-5 h-5 text-theme-info-fg" />
                 <h3 className="font-medium text-theme-primary">Categories</h3>
               </div>
               {canCreate && onCategoryCreate && (
@@ -193,7 +193,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                 onClick={() => setFilters(prev => ({ ...prev, categoryId: null }))}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                   filters.categoryId === null
-                    ? 'bg-theme-info text-white'
+                    ? 'bg-theme-info-fg text-white'
                     : 'text-theme-secondary hover:bg-theme-surface-hover'
                 }`}
               >
@@ -218,7 +218,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                         onClick={() => setFilters(prev => ({ ...prev, categoryId: category.id }))}
                         className={`flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                           filters.categoryId === category.id
-                            ? 'bg-theme-info text-white'
+                            ? 'bg-theme-info-fg text-white'
                             : 'text-theme-secondary hover:bg-theme-surface-hover'
                         }`}
                         style={{ paddingLeft: `${(category.depth + 1) * 12}px` }}
@@ -249,7 +249,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                                 e.stopPropagation();
                                 onCategoryDelete(category.id);
                               }}
-                              className="p-1 text-theme-secondary hover:text-theme-error rounded"
+                              className="p-1 text-theme-secondary hover:text-theme-error-fg rounded"
                               title="Delete category"
                             >
                               <Trash2 className="w-3 h-3" />
@@ -336,7 +336,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                 <button
                   type="button"
                   onClick={clearDeepLinkFilters}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info/10 border border-theme-info text-theme-info hover:bg-theme-info/20 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm bg-theme-info-bg border border-theme-info-border text-theme-info-fg hover:bg-theme-info-bg transition-colors"
                   title="Clear deep-link filter"
                 >
                   <span>{filters.parentModuleId ? 'Filtered to dependents' : 'Filtered by platform'}</span>
@@ -394,17 +394,17 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                               next to the name. Hover titles explain what
                               each one means; no extra columns needed. */}
                           {module.lock_spec && (
-                            <Lock className="w-3.5 h-3.5 text-theme-warning" aria-label="Spec locked" />
+                            <Lock className="w-3.5 h-3.5 text-theme-warning-fg" aria-label="Spec locked" />
                           )}
                           {module.reboot_required && (
-                            <Power className="w-3.5 h-3.5 text-theme-warning" aria-label="Reboot required on attach/detach" />
+                            <Power className="w-3.5 h-3.5 text-theme-warning-fg" aria-label="Reboot required on attach/detach" />
                           )}
                           {module.protected_spec && module.protected_spec.length > 0 && (
-                            <ShieldCheck className="w-3.5 h-3.5 text-theme-info" aria-label="Declares protected_spec" />
+                            <ShieldCheck className="w-3.5 h-3.5 text-theme-info-fg" aria-label="Declares protected_spec" />
                           )}
                         </div>
                         {module.dependant && (
-                          <p className="text-xs text-theme-info mt-0.5 flex items-center gap-1">
+                          <p className="text-xs text-theme-info-fg mt-0.5 flex items-center gap-1">
                             <GitBranch className="w-3 h-3" />
                             dependant of{' '}
                             {module.parent_module_id ? (
@@ -415,7 +415,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                                 className="text-xs"
                               />
                             ) : (
-                              <code className="text-theme-info">{module.parent_module_name ?? 'parent'}</code>
+                              <code className="text-theme-info-fg">{module.parent_module_name ?? 'parent'}</code>
                             )}
                           </p>
                         )}
@@ -478,7 +478,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
 
                         {canDelete && onDelete && (
                           <Button variant="outline" size="sm" onClick={() => onDelete(module.id)} title="Delete Module">
-                            <Trash2 className="w-4 h-4 text-theme-error" />
+                            <Trash2 className="w-4 h-4 text-theme-error-fg" />
                           </Button>
                         )}
                       </div>
@@ -654,17 +654,17 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                         {module.name}
                       </span>
                       {module.lock_spec && (
-                        <Lock className="w-3.5 h-3.5 text-theme-warning" aria-label="Spec locked" />
+                        <Lock className="w-3.5 h-3.5 text-theme-warning-fg" aria-label="Spec locked" />
                       )}
                       {module.reboot_required && (
-                        <Power className="w-3.5 h-3.5 text-theme-warning" aria-label="Reboot required" />
+                        <Power className="w-3.5 h-3.5 text-theme-warning-fg" aria-label="Reboot required" />
                       )}
                       {module.protected_spec && module.protected_spec.length > 0 && (
-                        <ShieldCheck className="w-3.5 h-3.5 text-theme-info" aria-label="Declares protected_spec" />
+                        <ShieldCheck className="w-3.5 h-3.5 text-theme-info-fg" aria-label="Declares protected_spec" />
                       )}
                     </div>
                     {module.dependant && (
-                      <p className="text-xs text-theme-info flex items-center gap-1">
+                      <p className="text-xs text-theme-info-fg flex items-center gap-1">
                         <GitBranch className="w-3 h-3" />
                         dependant of{' '}
                         {module.parent_module_id ? (
@@ -714,7 +714,7 @@ export const ModuleList: React.FC<ModuleListProps> = ({
                           {canDelete && onDelete && (
                             <button
                               onClick={() => { onDelete(module.id); setDropdownOpen(null); }}
-                              className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                              className="w-full text-left px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover flex items-center gap-2"
                             >
                               <Trash2 className="w-4 h-4" />
                               Delete Module

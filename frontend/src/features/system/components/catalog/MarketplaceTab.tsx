@@ -62,7 +62,7 @@ export const MarketplaceTab: FC = () => {
       </div>
 
       {loading && <div className="text-sm text-theme-secondary">Loading marketplace...</div>}
-      {error && <div className="text-sm text-theme-danger">{error}</div>}
+      {error && <div className="text-sm text-theme-danger-fg">{error}</div>}
 
       {!loading && !error && modules.length === 0 && (
         <div className="text-sm text-theme-secondary">No modules match the current filters.</div>

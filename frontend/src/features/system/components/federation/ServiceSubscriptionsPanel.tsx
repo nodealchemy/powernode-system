@@ -141,7 +141,7 @@ export const ServiceSubscriptionsPanel: React.FC<ServiceSubscriptionsPanelProps>
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Service Subscriptions</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${subs.length} ${subs.length === 1 ? 'subscription' : 'subscriptions'}`}
@@ -273,7 +273,7 @@ const SubscriptionRow: React.FC<SubscriptionRowProps> = ({
             onClick={onCancel}
             disabled={isCancelling}
             title="Cancel subscription"
-            className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-danger disabled:opacity-40"
+            className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-danger-bg disabled:opacity-40"
           >
             {isCancelling ? 'Cancelling…' : 'Cancel'}
           </button>
@@ -403,9 +403,9 @@ const StatusFilterBar: React.FC<{
 const StatusPill: React.FC<{ status: SubscriptionStatus }> = ({ status }) => {
   const styleByStatus: Record<SubscriptionStatus, string> = {
     pending: 'bg-theme-background-tertiary text-theme-secondary',
-    active: 'bg-theme-success text-theme-success',
-    suspended: 'bg-theme-warning text-theme-warning',
-    cancelled: 'bg-theme-danger text-theme-danger',
+    active: 'bg-theme-success-bg text-theme-success-fg',
+    suspended: 'bg-theme-warning-bg text-theme-warning-fg',
+    cancelled: 'bg-theme-danger-bg text-theme-danger-fg',
   };
   return (
     <span

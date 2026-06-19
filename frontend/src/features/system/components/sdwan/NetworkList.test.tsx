@@ -212,8 +212,8 @@ describe('NetworkList', () => {
       expect(screen.getByTestId('network-row-net-aaa')).toBeInTheDocument(),
     );
     const badge = screen.getByText('active');
-    expect(badge.className).toContain('bg-theme-success/20');
-    expect(badge.className).toContain('text-theme-success');
+    expect(badge.className).toContain('bg-theme-success-bg');
+    expect(badge.className).toContain('text-theme-success-fg');
   });
 
   it('applies the info badge class for registered networks', async () => {
@@ -223,8 +223,8 @@ describe('NetworkList', () => {
       expect(screen.getByTestId('network-row-net-bbb')).toBeInTheDocument(),
     );
     const badge = screen.getByText('registered');
-    expect(badge.className).toContain('bg-theme-info/20');
-    expect(badge.className).toContain('text-theme-info');
+    expect(badge.className).toContain('bg-theme-info-bg');
+    expect(badge.className).toContain('text-theme-info-fg');
   });
 
   it('applies the warning badge class for suspended networks', async () => {
@@ -234,8 +234,8 @@ describe('NetworkList', () => {
       expect(screen.getByTestId('network-row-net-ccc')).toBeInTheDocument(),
     );
     const badge = screen.getByText('suspended');
-    expect(badge.className).toContain('bg-theme-warning/20');
-    expect(badge.className).toContain('text-theme-warning');
+    expect(badge.className).toContain('bg-theme-warning-bg');
+    expect(badge.className).toContain('text-theme-warning-fg');
   });
 
   it('applies the muted badge class for archived networks', async () => {

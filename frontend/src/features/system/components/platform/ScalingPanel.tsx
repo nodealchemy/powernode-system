@@ -116,7 +116,7 @@ export const ScalingPanel: React.FC = () => {
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <TrendingUp className="w-5 h-5 text-theme-info" />
+          <TrendingUp className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Deployments</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${deployments.length} component${deployments.length === 1 ? '' : 's'}`}
@@ -134,7 +134,7 @@ export const ScalingPanel: React.FC = () => {
       </header>
 
       {error && (
-        <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm">
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
           <button type="button" onClick={() => setError(null)} className="p-1">
@@ -213,8 +213,8 @@ const DeploymentRow: React.FC<DeploymentRowProps> = ({
     drift === 0
       ? 'text-theme-secondary'
       : drift > 0
-        ? 'text-theme-warning'
-        : 'text-theme-danger';
+        ? 'text-theme-warning-fg'
+        : 'text-theme-danger-fg';
 
   return (
     <tr className="border-t border-theme">
@@ -282,7 +282,7 @@ const DeploymentRow: React.FC<DeploymentRowProps> = ({
               type="button"
               onClick={onSave}
               disabled={isSaving}
-              className="px-2 py-1 rounded text-xs text-theme-success hover:bg-theme-surface-hover inline-flex items-center gap-1 transition-colors"
+              className="px-2 py-1 rounded text-xs text-theme-success-fg hover:bg-theme-surface-hover inline-flex items-center gap-1 transition-colors"
             >
               <Check className="w-3 h-3" />
               {isSaving ? 'Saving…' : 'Save'}

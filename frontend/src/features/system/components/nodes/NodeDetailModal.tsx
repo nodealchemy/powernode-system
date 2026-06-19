@@ -422,7 +422,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                   className="p-1 text-theme-secondary hover:text-theme-primary rounded"
                   title="Copy address"
                 >
-                  {copiedField === 'address' ? <Check className="w-4 h-4 text-theme-success" /> : <Copy className="w-4 h-4" />}
+                  {copiedField === 'address' ? <Check className="w-4 h-4 text-theme-success-fg" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
             </div>
@@ -500,7 +500,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
             return (
             <div
               key={instance.id}
-              className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-info/50 transition-colors"
+              className="bg-theme-surface-hover rounded-lg p-4 border border-theme hover:border-theme-info-border/50 transition-colors"
             >
               <div className="flex items-center justify-between gap-2">
                 <button
@@ -544,7 +544,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                       type="button"
                       onClick={() => setDeleteInstanceConfirm(instance)}
                       title="Delete Instance"
-                      className="p-1.5 text-theme-secondary hover:text-theme-error hover:bg-theme-surface rounded transition-colors"
+                      className="p-1.5 text-theme-secondary hover:text-theme-error-fg hover:bg-theme-surface rounded transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -584,7 +584,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                             className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
                             title="Copy IP"
                           >
-                            {copiedField === `${instance.id}-private` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                            {copiedField === `${instance.id}-private` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
                           </button>
                         </div>
                       )}
@@ -597,7 +597,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                             className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
                             title="Copy IP"
                           >
-                            {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                            {copiedField === `${instance.id}-public` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
                           </button>
                           {canControlInstances && instance.variety === 'cloud' && (() => {
                             const key = `disassociate:${instance.id}`;
@@ -606,7 +606,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                               <button
                                 onClick={() => armOrFire(key, () => handleIpAction(instance, 'disassociate'))}
                                 disabled={ipActionInFlight !== null}
-                                className={`ml-1 p-0.5 rounded disabled:opacity-50 ${armed ? 'text-theme-error font-medium' : 'text-theme-secondary hover:text-theme-error'}`}
+                                className={`ml-1 p-0.5 rounded disabled:opacity-50 ${armed ? 'text-theme-error-fg font-medium' : 'text-theme-secondary hover:text-theme-error-fg'}`}
                                 title={armed ? 'Click again to confirm release' : 'Release public IP'}
                               >
                                 {ipActionInFlight === `${instance.id}-disassociate`
@@ -621,7 +621,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                         <button
                           onClick={() => handleIpAction(instance, 'associate')}
                           disabled={ipActionInFlight !== null}
-                          className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme text-xs text-theme-secondary hover:text-theme-primary hover:border-theme-info disabled:opacity-50"
+                          className="flex items-center gap-1 bg-theme-surface px-2 py-1 rounded border border-theme text-xs text-theme-secondary hover:text-theme-primary hover:border-theme-info-border disabled:opacity-50"
                           title="Allocate and associate a public IP"
                         >
                           {ipActionInFlight === `${instance.id}-associate`
@@ -639,7 +639,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                             className="ml-1 p-0.5 text-theme-secondary hover:text-theme-primary rounded"
                             title="Copy IP"
                           >
-                            {copiedField === `${instance.id}-vpn` ? <Check className="w-3 h-3 text-theme-success" /> : <Copy className="w-3 h-3" />}
+                            {copiedField === `${instance.id}-vpn` ? <Check className="w-3 h-3 text-theme-success-fg" /> : <Copy className="w-3 h-3" />}
                           </button>
                         </div>
                       )}
@@ -997,7 +997,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                   )}
                   {/* Error message */}
                   {operation.status === 'failed' && operation.error_message && (
-                    <p className="text-sm text-theme-danger mt-2">{operation.error_message}</p>
+                    <p className="text-sm text-theme-danger-fg mt-2">{operation.error_message}</p>
                   )}
                   <div className="flex items-center gap-4 mt-2 text-xs text-theme-secondary">
                     {operation.started_at && (

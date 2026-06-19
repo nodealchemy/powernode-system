@@ -15,9 +15,9 @@ const StatTile: React.FC<{
 }> = ({ icon, label, value, hint, tone = 'default' }) => {
   const toneClass =
     tone === 'success'
-      ? 'text-theme-success'
+      ? 'text-theme-success-fg'
       : tone === 'warning'
-      ? 'text-theme-warning'
+      ? 'text-theme-warning-fg'
       : 'text-theme-primary';
 
   // Numbers + short labels stay big (text-2xl). Long string values like

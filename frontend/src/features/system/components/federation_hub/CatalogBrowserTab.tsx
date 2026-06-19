@@ -64,7 +64,7 @@ export const CatalogBrowserTab: React.FC = () => {
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
+      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
         <AlertTriangle className="w-4 h-4" />
         <span>{error}</span>
       </div>

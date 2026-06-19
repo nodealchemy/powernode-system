@@ -187,7 +187,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
         {/* Name Field */}
         <div>
           <label htmlFor="edit-node-name" className="block text-sm font-medium text-theme-primary mb-1">
-            Name <span className="text-theme-danger">*</span>
+            Name <span className="text-theme-danger-fg">*</span>
           </label>
           <input
             id="edit-node-name"
@@ -198,12 +198,12 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               placeholder-theme-secondary focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.name ? 'border-theme-danger' : 'border-theme'}
+              ${errors.name ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting}
           />
           {errors.name && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.name}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.name}</p>
           )}
         </div>
 
@@ -226,7 +226,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
         {/* Template Selection */}
         <div>
           <label htmlFor="edit-node-template" className="block text-sm font-medium text-theme-primary mb-1">
-            Template <span className="text-theme-danger">*</span>
+            Template <span className="text-theme-danger-fg">*</span>
           </label>
           <select
             id="edit-node-template"
@@ -235,7 +235,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
             className={`
               w-full px-3 py-2 rounded-lg border bg-theme-surface text-theme-primary
               focus:outline-none focus:ring-2 focus:ring-theme-interactive-primary
-              ${errors.node_template_id ? 'border-theme-danger' : 'border-theme'}
+              ${errors.node_template_id ? 'border-theme-danger-border' : 'border-theme'}
             `}
             disabled={submitting || loadingTemplates}
           >
@@ -251,7 +251,7 @@ export const EditNodeModal: React.FC<EditNodeModalProps> = ({
             ))}
           </select>
           {errors.node_template_id && (
-            <p className="mt-1 text-sm text-theme-danger">{errors.node_template_id}</p>
+            <p className="mt-1 text-sm text-theme-danger-fg">{errors.node_template_id}</p>
           )}
 
           {/* Template Info */}

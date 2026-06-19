@@ -94,7 +94,7 @@ export const PlatformInfraTab: React.FC = () => {
               to={`${BASE_PATH}/${tab.key}`}
               className={`px-3 py-2 text-sm inline-flex items-center gap-2 border-b-2 transition-colors ${
                 isActive
-                  ? 'border-theme-info text-theme-primary font-medium'
+                  ? 'border-theme-info-border text-theme-primary font-medium'
                   : 'border-transparent text-theme-secondary hover:text-theme-primary'
               }`}
             >

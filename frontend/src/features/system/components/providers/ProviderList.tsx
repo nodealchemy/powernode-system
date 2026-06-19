@@ -367,7 +367,7 @@ export const ProviderList: React.FC<ProviderListProps> = ({
                             onClick={() => onDelete(provider.id)}
                             title="Delete Provider"
                           >
-                            <Trash2 className="w-4 h-4 text-theme-error" />
+                            <Trash2 className="w-4 h-4 text-theme-error-fg" />
                           </Button>
                         )}
                       </div>
@@ -458,7 +458,7 @@ export const ProviderList: React.FC<ProviderListProps> = ({
                         {canDelete && onDelete && (
                           <button
                             onClick={() => { onDelete(provider.id); setDropdownOpen(null); }}
-                            className="w-full text-left px-4 py-2 text-sm text-theme-error hover:bg-theme-surface-hover flex items-center gap-2"
+                            className="w-full text-left px-4 py-2 text-sm text-theme-error-fg hover:bg-theme-surface-hover flex items-center gap-2"
                           >
                             <Trash2 className="w-4 h-4" />
                             Delete Provider

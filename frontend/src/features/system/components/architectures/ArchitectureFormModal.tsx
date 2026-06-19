@@ -191,7 +191,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
         <div className="relative w-full max-w-lg bg-theme-surface rounded-lg shadow-xl">
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Cpu className="w-6 h-6 text-theme-info" />
+              <Cpu className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? (isCanonical ? 'Architecture (canonical)' : 'Edit Architecture') : 'Create Architecture'}
               </h2>
@@ -203,7 +203,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
 
           {isCanonical && (
             <div className="mx-4 mt-4 p-3 rounded border border-theme bg-theme-background-secondary text-sm text-theme-secondary flex items-start gap-2">
-              <Lock className="w-4 h-4 mt-0.5 flex-shrink-0 text-theme-info" />
+              <Lock className="w-4 h-4 mt-0.5 flex-shrink-0 text-theme-info-fg" />
               <span>
                 This is a seeded canonical architecture — read-only via the API. Evolve via a database migration.
               </span>
@@ -212,7 +212,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
 
           {!canManage && !isCanonical && (
             <div className="mx-4 mt-4 p-3 rounded border border-theme bg-theme-background-secondary text-sm text-theme-secondary flex items-start gap-2">
-              <Lock className="w-4 h-4 mt-0.5 flex-shrink-0 text-theme-warning" />
+              <Lock className="w-4 h-4 mt-0.5 flex-shrink-0 text-theme-warning-fg" />
               <span>
                 You don't have <code>system.architectures.manage</code> — opening in read-only mode.
               </span>
@@ -223,7 +223,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
             <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
               <div>
                 <label htmlFor="name" className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -234,11 +234,11 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                   placeholder="e.g., loongarch64"
                   disabled={isReadOnly}
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus disabled:opacity-60 ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -248,7 +248,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="family" className="block text-sm font-medium text-theme-primary mb-1">
-                    Family <span className="text-theme-error">*</span>
+                    Family <span className="text-theme-error-fg">*</span>
                   </label>
                   <select
                     id="family"
@@ -263,7 +263,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                     ))}
                   </select>
                   {errors.family && (
-                    <p className="mt-1 text-sm text-theme-error">{errors.family}</p>
+                    <p className="mt-1 text-sm text-theme-error-fg">{errors.family}</p>
                   )}
                 </div>
 
@@ -377,7 +377,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                     checked={formData.enabled}
                     onChange={handleChange}
                     disabled={isReadOnly}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Enabled</span>
                 </label>
@@ -389,7 +389,7 @@ export const ArchitectureFormModal: React.FC<ArchitectureFormModalProps> = ({
                     checked={formData.public}
                     onChange={handleChange}
                     disabled={isReadOnly}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                   />
                   <span className="text-sm text-theme-primary">Public</span>
                 </label>

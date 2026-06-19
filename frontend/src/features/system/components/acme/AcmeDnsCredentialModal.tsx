@@ -55,7 +55,7 @@ const PROVIDER_HELP: Record<AcmeDnsProvider, ProviderHelp> = {
               href="https://dash.cloudflare.com/profile/api-tokens"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-theme-info inline-flex items-center gap-1 hover:underline"
+              className="text-theme-info-fg inline-flex items-center gap-1 hover:underline"
             >
               Cloudflare → My Profile → API Tokens
               <ExternalLink className="w-3 h-3" />
@@ -93,7 +93,7 @@ const PROVIDER_HELP: Record<AcmeDnsProvider, ProviderHelp> = {
           href="https://cloud.digitalocean.com/account/api/tokens"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-theme-info hover:underline"
+          className="text-theme-info-fg hover:underline"
         >
           DigitalOcean → API → Tokens
         </a>
@@ -110,7 +110,7 @@ const PROVIDER_HELP: Record<AcmeDnsProvider, ProviderHelp> = {
           href="https://dns.hetzner.com/settings/api-token"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-theme-info hover:underline"
+          className="text-theme-info-fg hover:underline"
         >
           dns.hetzner.com → Settings → API Tokens
         </a>
@@ -216,7 +216,7 @@ export const AcmeDnsCredentialModal: React.FC<AcmeDnsCredentialModalProps> = ({
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <KeyRound className="w-5 h-5 text-theme-info" />
+          <KeyRound className="w-5 h-5 text-theme-info-fg" />
           <span>Add ACME DNS Credential</span>
         </div>
       }

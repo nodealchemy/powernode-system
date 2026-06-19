@@ -152,7 +152,7 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
     <section className="bg-theme-surface rounded-lg border border-theme">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Cpu size={16} className="text-theme-info" />
+          <Cpu size={16} className="text-theme-info-fg" />
           <h2 className="font-medium text-theme-primary">Unclaimed Devices</h2>
           {visibleDevices.length > 0 && (
             <Badge variant="info" size="xs">{visibleDevices.length}</Badge>
@@ -212,7 +212,7 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
                       disabled={discardingId === d.id}
                       title="Discard this device"
                     >
-                      <Trash2 size={14} className="text-theme-error" />
+                      <Trash2 size={14} className="text-theme-error-fg" />
                     </Button>
                   </div>
                 </div>
@@ -246,7 +246,7 @@ export const UnclaimedDevicesPanel: React.FC<UnclaimedDevicesPanelProps> = ({
               ))}
             </select>
             {pickerInstances.length === 0 && (
-              <p className="text-xs text-theme-warning mb-3">
+              <p className="text-xs text-theme-warning-fg mb-3">
                 No claimable instances. Create a variety=physical NodeInstance first.
               </p>
             )}

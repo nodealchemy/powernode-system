@@ -86,7 +86,7 @@ export const PeerHeartbeatCell: React.FC<{ peer: PlatformPeerSummary; stale?: bo
   <td className="px-4 py-3 text-xs">
     {peer.last_heartbeat_at ? (
       <span
-        className={`inline-flex items-center gap-1 ${stale ? 'text-theme-warning' : 'text-theme-secondary'}`}
+        className={`inline-flex items-center gap-1 ${stale ? 'text-theme-warning-fg' : 'text-theme-secondary'}`}
       >
         <Clock className="w-3 h-3" />
         {new Date(peer.last_heartbeat_at).toLocaleString()}

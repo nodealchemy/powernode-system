@@ -220,7 +220,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
                   className={
                     'px-3 py-2 text-sm font-medium border-b-2 transition-colors ' +
                     (tab === k
-                      ? 'border-theme-info text-theme-info'
+                      ? 'border-theme-info-border text-theme-info-fg'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary')
                   }
                 >
@@ -235,7 +235,7 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
             <div className="p-8 text-center text-theme-secondary">Loading network…</div>
           )}
           {error && (
-            <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>
+            <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>
           )}
 
           {/* Tab content */}

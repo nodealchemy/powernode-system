@@ -132,7 +132,7 @@ export const ChildrenPanel: React.FC<ChildrenPanelProps> = ({
     <div className="bg-theme-surface border border-theme rounded-lg overflow-hidden">
       <header className="px-4 py-3 border-b border-theme flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <h2 className="font-semibold text-theme-primary">Children</h2>
           <span className="text-xs text-theme-secondary">
             {loading ? 'loading…' : `${children.length} ${children.length === 1 ? 'child' : 'children'}`}
@@ -239,7 +239,7 @@ const ChildRow: React.FC<ChildRowProps> = ({
       </td>
       <td className="px-4 py-3 text-xs text-theme-secondary">
         {child.acceptance_pending ? (
-          <span className="text-theme-warning">
+          <span className="text-theme-warning-fg">
             yes (expires {child.acceptance_expires_at ? new Date(child.acceptance_expires_at).toLocaleString() : '—'})
           </span>
         ) : (
@@ -263,7 +263,7 @@ const ChildRow: React.FC<ChildRowProps> = ({
             onClick={onRevoke}
             disabled={isRevoking}
             title="Revoke child"
-            className="px-2 py-1 rounded text-xs text-theme-danger hover:bg-theme-danger disabled:opacity-40 inline-flex items-center gap-1"
+            className="px-2 py-1 rounded text-xs text-theme-danger-fg hover:bg-theme-danger-bg disabled:opacity-40 inline-flex items-center gap-1"
           >
             <Trash2 className="w-3 h-3" />
             {isRevoking ? 'Revoking…' : 'Revoke'}
@@ -394,12 +394,12 @@ const StatusFilterBar: React.FC<{
 const StatusPill: React.FC<{ status: ChildPeerStatus }> = ({ status }) => {
   const styleByStatus: Record<ChildPeerStatus, string> = {
     proposed: 'bg-theme-background-tertiary text-theme-secondary',
-    accepted: 'bg-theme-info text-theme-info',
-    enrolled: 'bg-theme-info text-theme-info',
-    active: 'bg-theme-success text-theme-success',
-    degraded: 'bg-theme-warning text-theme-warning',
-    suspended: 'bg-theme-warning text-theme-warning',
-    revoked: 'bg-theme-danger text-theme-danger',
+    accepted: 'bg-theme-info-bg text-theme-info-fg',
+    enrolled: 'bg-theme-info-bg text-theme-info-fg',
+    active: 'bg-theme-success-bg text-theme-success-fg',
+    degraded: 'bg-theme-warning-bg text-theme-warning-fg',
+    suspended: 'bg-theme-warning-bg text-theme-warning-fg',
+    revoked: 'bg-theme-danger-bg text-theme-danger-fg',
   };
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styleByStatus[status]}`}>

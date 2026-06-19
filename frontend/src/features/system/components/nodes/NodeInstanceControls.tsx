@@ -154,7 +154,7 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
                   disabled={loading === 'start'}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-theme-primary hover:bg-theme-surface-hover disabled:opacity-50"
                 >
-                  <Play className="w-4 h-4 text-theme-success" />
+                  <Play className="w-4 h-4 text-theme-success-fg" />
                   {loading === 'start' ? 'Starting...' : 'Start'}
                 </button>
               )}
@@ -164,10 +164,10 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
                     onClick={() => handleAction('stop')}
                     disabled={loading === 'stop'}
                     className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-theme-surface-hover disabled:opacity-50 ${
-                      isArmed('stop') ? 'text-theme-error font-medium' : 'text-theme-primary'
+                      isArmed('stop') ? 'text-theme-error-fg font-medium' : 'text-theme-primary'
                     }`}
                   >
-                    <Square className="w-4 h-4 text-theme-danger" />
+                    <Square className="w-4 h-4 text-theme-danger-fg" />
                     {loading === 'stop'
                       ? 'Stopping...'
                       : isArmed('stop')
@@ -178,10 +178,10 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
                     onClick={() => handleAction('reboot')}
                     disabled={loading === 'reboot'}
                     className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-theme-surface-hover disabled:opacity-50 ${
-                      isArmed('reboot') ? 'text-theme-warning font-medium' : 'text-theme-primary'
+                      isArmed('reboot') ? 'text-theme-warning-fg font-medium' : 'text-theme-primary'
                     }`}
                   >
-                    <RotateCw className="w-4 h-4 text-theme-warning" />
+                    <RotateCw className="w-4 h-4 text-theme-warning-fg" />
                     {loading === 'reboot'
                       ? 'Rebooting...'
                       : isArmed('reboot')
@@ -195,10 +195,10 @@ export const NodeInstanceControls: React.FC<NodeInstanceControlsProps> = ({
                   onClick={() => handleAction('terminate')}
                   disabled={loading === 'terminate'}
                   className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-theme-surface-hover disabled:opacity-50 ${
-                    terminateArmed ? 'text-theme-error font-medium' : 'text-theme-primary'
+                    terminateArmed ? 'text-theme-error-fg font-medium' : 'text-theme-primary'
                   }`}
                 >
-                  <XOctagon className="w-4 h-4 text-theme-error" />
+                  <XOctagon className="w-4 h-4 text-theme-error-fg" />
                   {loading === 'terminate'
                     ? 'Terminating...'
                     : terminateArmed

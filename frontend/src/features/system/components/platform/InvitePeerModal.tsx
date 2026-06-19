@@ -173,7 +173,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
       icon={<Users className="w-6 h-6" />}
       title={
         <div className="flex items-center gap-2">
-          <Network className="w-5 h-5 text-theme-info" />
+          <Network className="w-5 h-5 text-theme-info-fg" />
           <span>{phase === 'form' ? 'Invite Peer' : 'Acceptance Token'}</span>
         </div>
       }
@@ -200,7 +200,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
       {phase === 'form' ? (
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-2 bg-theme-danger text-theme-danger flex items-center gap-2 text-sm rounded">
+            <div className="p-2 bg-theme-danger-bg text-theme-danger-fg flex items-center gap-2 text-sm rounded">
               <AlertCircle className="w-4 h-4" />
               <span className="flex-1">{error}</span>
               <button type="button" onClick={() => setError(null)} className="p-1">
@@ -276,7 +276,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
               <button
                 type="button"
                 onClick={handleAddEndpoint}
-                className="text-xs text-theme-info hover:underline inline-flex items-center gap-1"
+                className="text-xs text-theme-info-fg hover:underline inline-flex items-center gap-1"
               >
                 <Plus className="w-3 h-3" /> Add Endpoint
               </button>
@@ -319,7 +319,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
                       type="button"
                       onClick={() => handleRemoveEndpoint(idx)}
                       title="Remove endpoint"
-                      className="p-1 text-theme-danger hover:bg-theme-surface-hover rounded transition-colors"
+                      className="p-1 text-theme-danger-fg hover:bg-theme-surface-hover rounded transition-colors"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -353,7 +353,7 @@ export const InvitePeerModal: React.FC<InvitePeerModalProps> = ({
       ) : (
         response && (
           <div className="space-y-4">
-            <div className="p-3 bg-theme-warning text-theme-warning text-sm rounded flex items-start gap-2">
+            <div className="p-3 bg-theme-warning-bg text-theme-warning-fg text-sm rounded flex items-start gap-2">
               <KeyRound className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>
                 <strong>Capture this token now.</strong> The plaintext is shown only once.

@@ -109,7 +109,7 @@ export const SubscribeServiceModal: React.FC<SubscribeServiceModalProps> = ({
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-theme-info" />
+          <Server className="w-5 h-5 text-theme-info-fg" />
           <span>Subscribe to {offering.name}</span>
         </div>
       }

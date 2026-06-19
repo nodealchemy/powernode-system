@@ -268,9 +268,9 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
         <div className="flex flex-wrap gap-4 pt-4 border-t border-theme">
           <div className="flex items-center gap-2">
             {provider.enabled ? (
-              <CheckCircle className="w-5 h-5 text-theme-success" />
+              <CheckCircle className="w-5 h-5 text-theme-success-fg" />
             ) : (
-              <XCircle className="w-5 h-5 text-theme-error" />
+              <XCircle className="w-5 h-5 text-theme-error-fg" />
             )}
             <span className="text-theme-primary">
               {provider.enabled ? 'Enabled' : 'Disabled'}
@@ -278,7 +278,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
           </div>
           <div className="flex items-center gap-2">
             {provider.public ? (
-              <Globe className="w-5 h-5 text-theme-info" />
+              <Globe className="w-5 h-5 text-theme-info-fg" />
             ) : (
               <Lock className="w-5 h-5 text-theme-secondary" />
             )}
@@ -372,7 +372,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                       size="sm"
                       onClick={() => setRegionToDelete(region)}
                       title="Delete region"
-                      className="text-theme-error hover:text-theme-error"
+                      className="text-theme-error-fg hover:text-theme-error-fg"
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -474,7 +474,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                       size="sm"
                       onClick={() => setConnectionToDelete(connection)}
                       title="Delete connection"
-                      className="text-theme-error hover:text-theme-error"
+                      className="text-theme-error-fg hover:text-theme-error-fg"
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -535,7 +535,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Cloud className="w-6 h-6 text-theme-info" />
+              <Cloud className="w-6 h-6 text-theme-info-fg" />
               <div>
                 <h2 className="text-lg font-semibold text-theme-primary">
                   {loading ? 'Loading...' : provider?.name || 'Provider Details'}
@@ -568,7 +568,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === tab.id
-                      ? 'border-theme-info text-theme-info'
+                      ? 'border-theme-info-border text-theme-info-fg'
                       : 'border-transparent text-theme-secondary hover:text-theme-primary hover:border-theme-tertiary'
                   }`}
                 >
@@ -599,7 +599,7 @@ export const ProviderDetailModal: React.FC<ProviderDetailModalProps> = ({
               </>
             ) : (
               <div className="text-center py-12">
-                <p className="text-theme-error">Failed to load provider details</p>
+                <p className="text-theme-error-fg">Failed to load provider details</p>
               </div>
             )}
           </div>

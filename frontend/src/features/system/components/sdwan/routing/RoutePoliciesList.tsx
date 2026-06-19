@@ -16,9 +16,9 @@ const scopeColor = (scope: string) => {
     case 'account':
       return 'bg-theme-background-secondary text-theme-primary';
     case 'network':
-      return 'bg-theme-info text-theme-info';
+      return 'bg-theme-info-bg text-theme-info-fg';
     case 'peer':
-      return 'bg-theme-warning text-theme-warning';
+      return 'bg-theme-warning-bg text-theme-warning-fg';
     default:
       return 'bg-theme-background-secondary';
   }
@@ -178,7 +178,7 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
       {loading ? (
         <div className="p-4 text-theme-secondary text-sm">Loading…</div>
       ) : error ? (
-        <div className="p-3 bg-theme-danger text-theme-danger rounded text-sm">{error}</div>
+        <div className="p-3 bg-theme-danger-bg text-theme-danger-fg rounded text-sm">{error}</div>
       ) : policies.length === 0 ? (
         <div className="p-8 text-center text-theme-secondary text-sm">
           No route policies yet.
@@ -244,14 +244,14 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
                       )}
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      <span className={p.direction === 'import' ? 'text-theme-info' : 'text-theme-success'}>
+                      <span className={p.direction === 'import' ? 'text-theme-info-fg' : 'text-theme-success-fg'}>
                         {p.direction}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-xs">{p.statement_count}</td>
                     <td className="px-3 py-2">
                       {p.enabled ? (
-                        <Power size={14} className="text-theme-success" />
+                        <Power size={14} className="text-theme-success-fg" />
                       ) : (
                         <PowerOff size={14} className="text-theme-secondary" />
                       )}
@@ -282,7 +282,7 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
                           <button
                             type="button"
                             onClick={() => onDelete(p)}
-                            className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger"
+                            className="p-1 hover:bg-theme-background-secondary rounded text-theme-danger-fg"
                             title="Delete"
                           >
                             <Trash2 size={14} />
@@ -351,7 +351,7 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
                           {loadingDetail ? (
                             <div className="text-xs text-theme-secondary">Loading statements…</div>
                           ) : errDetail ? (
-                            <div className="text-xs text-theme-danger">{errDetail}</div>
+                            <div className="text-xs text-theme-danger-fg">{errDetail}</div>
                           ) : statements && statements.length > 0 ? (
                             <ol className="space-y-1">
                               {statements.map((s, idx) => (
@@ -360,8 +360,8 @@ export const RoutePoliciesList: React.FC<RoutePoliciesListProps> = ({
                                   className="font-mono text-xs bg-theme-surface border border-theme rounded px-2 py-1"
                                 >
                                   <span className="text-theme-secondary">{idx + 1}.</span>{' '}
-                                  <span className="text-theme-info">match</span> {matchSummary(s)}{' '}
-                                  <span className="text-theme-success">then</span> {actionSummary(s)}
+                                  <span className="text-theme-info-fg">match</span> {matchSummary(s)}{' '}
+                                  <span className="text-theme-success-fg">then</span> {actionSummary(s)}
                                 </li>
                               ))}
                             </ol>

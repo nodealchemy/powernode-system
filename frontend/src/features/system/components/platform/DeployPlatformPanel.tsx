@@ -67,7 +67,7 @@ export const DeployPlatformPanel: React.FC = () => {
 
   if (error) {
     return (
-      <div className="p-3 bg-theme-danger text-theme-danger text-sm rounded inline-flex items-center gap-2">
+      <div className="p-3 bg-theme-danger-bg text-theme-danger-fg text-sm rounded inline-flex items-center gap-2">
         <AlertTriangle className="w-4 h-4" />
         {error}
       </div>
@@ -79,7 +79,7 @@ export const DeployPlatformPanel: React.FC = () => {
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
-        <Rocket className="w-5 h-5 text-theme-info" />
+        <Rocket className="w-5 h-5 text-theme-info-fg" />
         <h2 className="text-lg font-semibold text-theme-primary">Deploy a New Platform</h2>
       </div>
       <p className="text-sm text-theme-secondary mb-4">

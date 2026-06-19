@@ -55,7 +55,7 @@ export const OvnDeploymentsTab: React.FC = () => {
     return <div className="p-8 text-center text-theme-secondary">Loading OVN deployment…</div>;
   }
   if (error) {
-    return <div className="p-4 bg-theme-danger text-theme-danger rounded">{error}</div>;
+    return <div className="p-4 bg-theme-danger-bg text-theme-danger-fg rounded">{error}</div>;
   }
   if (!deployment) {
     return (
@@ -78,7 +78,7 @@ export const OvnDeploymentsTab: React.FC = () => {
       <div className="bg-theme-surface border border-theme rounded-lg p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Layers className="text-theme-info" size={24} />
+            <Layers className="text-theme-info-fg" size={24} />
             <div>
               <h3 className="text-lg font-medium text-theme-primary">OVN Deployment</h3>
               <p className="text-xs text-theme-secondary font-mono">{deployment.id}</p>
@@ -132,7 +132,7 @@ const SwitchCard: React.FC<SwitchCardProps> = ({ switchData: s }) => {
       {s.ports.length > 0 && (
         <div className="border-t border-theme pt-3">
           <div className="flex items-center gap-2 mb-2">
-            <NetworkIcon size={14} className="text-theme-info" />
+            <NetworkIcon size={14} className="text-theme-info-fg" />
             <span className="text-xs uppercase tracking-wide text-theme-secondary">Logical Switch Ports</span>
           </div>
           <table className="w-full text-xs">
@@ -158,7 +158,7 @@ const SwitchCard: React.FC<SwitchCardProps> = ({ switchData: s }) => {
       {s.acls && s.acls.length > 0 && (
         <div className="border-t border-theme pt-3">
           <div className="flex items-center gap-2 mb-2">
-            <Shield size={14} className="text-theme-info" />
+            <Shield size={14} className="text-theme-info-fg" />
             <span className="text-xs uppercase tracking-wide text-theme-secondary">Firewall ACLs</span>
           </div>
           <table className="w-full text-xs">
@@ -246,13 +246,13 @@ function statusBadgeClass(status: SdwanOvnDeploymentStatus): string {
   const base = 'px-3 py-1 rounded text-sm font-medium';
   switch (status) {
     case 'active':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'bootstrapping':
-      return `${base} bg-theme-info text-theme-info`;
+      return `${base} bg-theme-info-bg text-theme-info-fg`;
     case 'pending':
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     case 'degraded':
-      return `${base} bg-theme-danger text-theme-danger`;
+      return `${base} bg-theme-danger-bg text-theme-danger-fg`;
     default:
       return `${base} bg-theme-background-secondary text-theme-secondary`;
   }
@@ -262,9 +262,9 @@ function portStateBadgeClass(state: SdwanOvnPortState): string {
   const base = 'px-1.5 py-0.5 rounded text-xs font-medium';
   switch (state) {
     case 'active':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'pending':
-      return `${base} bg-theme-info text-theme-info`;
+      return `${base} bg-theme-info-bg text-theme-info-fg`;
     case 'removed':
       return `${base} bg-theme-background-secondary text-theme-secondary`;
     default:
@@ -277,11 +277,11 @@ function actionBadgeClass(action: SdwanOvnAclAction): string {
   switch (action) {
     case 'allow':
     case 'allow-related':
-      return `${base} bg-theme-success text-theme-success`;
+      return `${base} bg-theme-success-bg text-theme-success-fg`;
     case 'drop':
-      return `${base} bg-theme-warning text-theme-warning`;
+      return `${base} bg-theme-warning-bg text-theme-warning-fg`;
     case 'reject':
-      return `${base} bg-theme-danger text-theme-danger`;
+      return `${base} bg-theme-danger-bg text-theme-danger-fg`;
     default:
       return `${base} bg-theme-background-secondary text-theme-secondary`;
   }

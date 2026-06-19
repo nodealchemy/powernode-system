@@ -50,8 +50,8 @@ describe('ModuleCard', () => {
     const { container } = render(
       <ModuleCard module={{ ...baseModule, trust_tier: 'unrecognized-tier' }} onClick={jest.fn()} />
     );
-    // Community-tier styles use bg-theme-warning per TRUST_TIER_STYLES fallback
-    expect(container.querySelector('.bg-theme-warning')).toBeInTheDocument();
+    // Community-tier styles use bg-theme-warning-bg per TRUST_TIER_STYLES fallback
+    expect(container.querySelector('.bg-theme-warning-bg')).toBeInTheDocument();
   });
 
   it('invokes onClick when the card is clicked', () => {

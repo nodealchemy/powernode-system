@@ -217,7 +217,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-theme">
             <div className="flex items-center gap-3">
-              <Network className="w-6 h-6 text-theme-info" />
+              <Network className="w-6 h-6 text-theme-info-fg" />
               <h2 className="text-lg font-semibold text-theme-primary">
                 {isEditMode ? 'Edit Network' : 'Create Network'}
               </h2>
@@ -233,7 +233,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Name <span className="text-theme-error">*</span>
+                  Name <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -241,12 +241,12 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                   onChange={(e) => handleChange('name', e.target.value)}
                   placeholder="Enter network name"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.name ? 'border-theme-error' : 'border-theme'
+                    errors.name ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting}
                 />
                 {errors.name && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.name}
                   </p>
@@ -271,7 +271,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
               {/* Region */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  Region <span className="text-theme-error">*</span>
+                  Region <span className="text-theme-error-fg">*</span>
                 </label>
                 {loadingRegions ? (
                   <div className="flex items-center justify-center py-2">
@@ -282,7 +282,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     value={formData.provider_region_id}
                     onChange={(e) => handleChange('provider_region_id', e.target.value)}
                     className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary focus:outline-none focus:border-theme-focus ${
-                      errors.provider_region_id ? 'border-theme-error' : 'border-theme'
+                      errors.provider_region_id ? 'border-theme-error-border' : 'border-theme'
                     }`}
                     disabled={submitting || isEditMode}
                   >
@@ -299,7 +299,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                   </select>
                 )}
                 {errors.provider_region_id && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.provider_region_id}
                   </p>
@@ -309,7 +309,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
               {/* CIDR Block */}
               <div>
                 <label className="block text-sm font-medium text-theme-primary mb-1">
-                  CIDR Block <span className="text-theme-error">*</span>
+                  CIDR Block <span className="text-theme-error-fg">*</span>
                 </label>
                 <input
                   type="text"
@@ -317,12 +317,12 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                   onChange={(e) => handleChange('cidr_block', e.target.value)}
                   placeholder="e.g., 10.0.0.0/16"
                   className={`w-full px-3 py-2 rounded-lg border bg-theme-background text-theme-primary font-mono placeholder:text-theme-tertiary focus:outline-none focus:border-theme-focus ${
-                    errors.cidr_block ? 'border-theme-error' : 'border-theme'
+                    errors.cidr_block ? 'border-theme-error-border' : 'border-theme'
                   }`}
                   disabled={submitting || isEditMode}
                 />
                 {errors.cidr_block && (
-                  <p className="mt-1 text-sm text-theme-error flex items-center gap-1">
+                  <p className="mt-1 text-sm text-theme-error-fg flex items-center gap-1">
                     <AlertCircle className="w-4 h-4" />
                     {errors.cidr_block}
                   </p>
@@ -339,7 +339,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.dns_support}
                     onChange={(e) => handleChange('dns_support', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Enable DNS resolution</span>
@@ -350,7 +350,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.dns_hostnames}
                     onChange={(e) => handleChange('dns_hostnames', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Enable DNS hostnames</span>
@@ -361,7 +361,7 @@ export const NetworkFormModal: React.FC<NetworkFormModalProps> = ({
                     type="checkbox"
                     checked={formData.is_default}
                     onChange={(e) => handleChange('is_default', e.target.checked)}
-                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info focus:ring-theme-focus"
+                    className="w-4 h-4 rounded border-theme bg-theme-background text-theme-info-fg focus:ring-theme-focus"
                     disabled={submitting}
                   />
                   <span className="text-sm text-theme-primary">Set as default network</span>
