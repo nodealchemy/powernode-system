@@ -64,7 +64,7 @@ export const ConciergeMessage: FC<Props> = ({ message, onCveRunbookRequest, onCo
       <div
         className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
           isUser
-            ? 'bg-theme-primary text-theme-primary-text'
+            ? 'bg-theme-interactive-primary text-theme-primary-text'
             : isTool
               ? 'bg-theme-info-bg text-theme-info-fg border border-theme-info-border'
               : 'bg-theme-surface-hover text-theme-text-primary'

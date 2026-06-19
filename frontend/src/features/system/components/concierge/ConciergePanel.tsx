@@ -132,7 +132,7 @@ export const ConciergePanel: FC<Props> = ({ open, onClose }) => {
             type="button"
             onClick={handleSend}
             disabled={concierge.pending || !draft.trim() || !concierge.conversationId}
-            className="px-4 py-1.5 text-sm rounded bg-theme-primary text-theme-primary-text hover:bg-theme-primary-hover disabled:opacity-50"
+            className="px-4 py-1.5 text-sm rounded bg-theme-interactive-primary text-theme-primary-text hover:bg-theme-primary-hover disabled:opacity-50"
           >
             Send
           </button>

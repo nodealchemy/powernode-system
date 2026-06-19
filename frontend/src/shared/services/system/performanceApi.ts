@@ -310,10 +310,10 @@ export const performanceApi = {
 
   getAlertSeverityColor(severity: string): string {
     switch (severity) {
-      case 'critical': return 'bg-theme-error-bg bg-opacity-10 text-theme-error-fg';
-      case 'high': return 'bg-theme-error-bg bg-opacity-5 text-theme-error-fg';
-      case 'medium': return 'bg-theme-warning-bg bg-opacity-10 text-theme-warning-fg';
-      case 'low': return 'bg-theme-info-bg bg-opacity-10 text-theme-info-fg';
+      case 'critical': return 'bg-theme-error-bg text-theme-error-fg';
+      case 'high': return 'bg-theme-error-bg text-theme-error-fg';
+      case 'medium': return 'bg-theme-warning-bg text-theme-warning-fg';
+      case 'low': return 'bg-theme-info-bg text-theme-info-fg';
       default: return 'bg-theme-surface text-theme-secondary';
     }
   },
