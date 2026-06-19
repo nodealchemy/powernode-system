@@ -168,6 +168,27 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       # to avoid colliding with render_success's reserved top-level message).
       expect(body["reason"]).to include("401")
     end
+
+    # Regression: a sealed/unreachable Vault makes get_credential return an empty
+    # read, which the controller used to report as 422 "no credential for this
+    # row" — indistinguishable from real data loss. It must be a transient 503.
+    it "returns 503 (not a misleading 422) when Vault is sealed/unreachable" do
+      allow(fake_vault).to receive(:get_credential).and_return({})
+      allow(::Security::VaultClient).to receive(:sealed?).and_return(true)
+
+      post test_path, headers: auth_headers_for(reader).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.body).to match(/sealed|unreachable/i)
+    end
+
+    it "returns 422 when the credential is genuinely absent (Vault healthy but empty)" do
+      allow(fake_vault).to receive(:get_credential).and_return({})
+      allow(::Security::VaultClient).to receive(:sealed?).and_return(false)
+
+      post test_path, headers: auth_headers_for(reader).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to match(/no credential/i)
+    end
   end
 
   describe "DELETE /acme_dns_credentials/:id" do

@@ -151,6 +151,19 @@ module Api
           )
 
           unless plaintext.is_a?(Hash) && plaintext.any?
+            # A sealed or unreachable Vault returns an empty read here — which is
+            # NOT the same as a genuinely absent credential. Surface it as a
+            # transient 503 so operators don't mistake a Vault outage for lost
+            # credentials. VaultClient.sealed? returns true when sealed OR
+            # unreachable ("assume sealed if we can't connect").
+            if ::Security::VaultClient.sealed?
+              return render_error(
+                "Vault is sealed or unreachable — credentials are temporarily " \
+                "unreadable. Unseal Vault and retry.",
+                status: :service_unavailable
+              )
+            end
+
             return render_error("Vault has no credential for this row.",
                                 status: :unprocessable_content)
           end
