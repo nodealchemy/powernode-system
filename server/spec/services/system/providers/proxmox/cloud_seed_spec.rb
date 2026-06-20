@@ -5,7 +5,7 @@ require "rails_helper"
 RSpec.describe System::Providers::Proxmox::CloudSeed do
   let(:spawn_payload) do
     {
-      "parent_url"       => "https://ops.ipnode.net",
+      "parent_url"       => "https://ops.ipnode.us",
       "acceptance_token" => "test-token",
       "spawn_mode"       => "managed_child",
       "parent_peer_id"   => "abc12345-1234-1234-1234-abcdef012345",
@@ -62,7 +62,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
   it "writes the federation-payload.json fallback for fw-cfg-less PVE token-auth spawns" do
     fed = payload["write_files"].find { |f| f["path"] == "/etc/powernode/federation-payload.json" }
     expect(fed).to be_present
-    expect(JSON.parse(fed["content"])).to include("parent_url" => "https://ops.ipnode.net")
+    expect(JSON.parse(fed["content"])).to include("parent_url" => "https://ops.ipnode.us")
   end
 
   it "writes the pnadmin sudoers grant for break-glass access from first boot" do

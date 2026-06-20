@@ -360,7 +360,7 @@ module Acme
     # an external reverse proxy that terminates a public hostname's TLS and
     # forwards HTTP requests with the original Host header preserved.
     #
-    # Example (ops): cert is for `ops.ipnode.net` (internal), but the public
+    # Example (ops): cert is for `ops.ipnode.us` (internal), but the public
     # face `ops.powernode.org` lands here via the external proxy. Setting
     # POWERNODE_PROXY_EXTRA_HOSTS=ops.powernode.org makes the router rule
     # match both Host values without claiming to have a cert for the public

@@ -45,7 +45,7 @@ require "shellwords"
 
 ACCOUNT_NAME       = ENV.fetch("SMOKE_ACCOUNT_NAME", "Powernode Admin")
 NODE_NAME          = ENV.fetch("SMOKE_NODE_NAME", "physical-smoke-pivot-root")
-PARENT_URL         = ENV.fetch("SMOKE_PARENT_URL", "https://ops.ipnode.net")
+PARENT_URL         = ENV.fetch("SMOKE_PARENT_URL", "https://ops.ipnode.us")
 PVE_NODE           = ENV.fetch("SMOKE_PVE_NODE", "dna")
 FWCFG_DIR_LOCAL    = ENV.fetch("SMOKE_FWCFG_DIR", "/tmp/pn-smoke-fwcfg")
 SYSTEM_BASE        = "powernode-system-base"

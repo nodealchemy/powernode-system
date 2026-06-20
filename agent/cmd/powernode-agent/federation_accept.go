@@ -68,7 +68,7 @@ Idempotent via a marker file; safe to run multiple times.`,
 			if insecure {
 				// Bypass TLS verify — dogfood/dev only. The parent's cert
 				// might be issued for a different SAN than the agent's
-				// connect-to URL (e.g. parent_url=https://ops.ipnode.net but
+				// connect-to URL (e.g. parent_url=https://ops.ipnode.us but
 				// cert is for ops.powernode.org). Operator must opt-in.
 				tr := http.DefaultTransport.(*http.Transport).Clone()
 				tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
