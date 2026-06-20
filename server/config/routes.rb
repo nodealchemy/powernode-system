@@ -18,6 +18,12 @@ Rails.application.routes.draw do
         # not git pushes — Gitea's push webhook doesn't fire for these).
         post "module_publications", to: "module_publications#create"
 
+        # === Setup wizard ===
+        # Step endpoint contributed via extension.json `setup_steps`; the core
+        # setup wizard POSTs the step payload here. Per-extension completion is
+        # stamped by core (POST /api/v1/setup/extensions/system/configured).
+        post "setup/defaults", to: "setup#defaults"
+
         # === Operator-facing CRUD ===
         # Public-facing tasks API: list/show/create/cancel only.
         # State mutations (start/complete/fail/abort) are worker-only via

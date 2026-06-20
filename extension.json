@@ -19,5 +19,18 @@
     "server": true,
     "frontend": true,
     "worker": true
-  }
+  },
+  "setup_steps": [
+    {
+      "key": "system.defaults",
+      "title": "Virtualization defaults",
+      "description": "Default region for new cloud/VM provisioning. Optional — adjustable later in System settings.",
+      "order": 65,
+      "required": false,
+      "endpoint": "/api/v1/system/setup/defaults",
+      "schema": [
+        { "key": "default_region", "label": "Default region", "type": "text", "required": false, "placeholder": "us-east-1" }
+      ]
+    }
+  ]
 }
