@@ -16,7 +16,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
   let(:rendered) do
     described_class.render(
       spawn_payload: spawn_payload,
-      hostname:      "ops2.ipnode.net",
+      hostname:      "ops2.ipnode.us",
       ssh_authorized_keys: [ "ssh-ed25519 AAAA test@dev" ]
     )
   end
@@ -39,7 +39,7 @@ RSpec.describe System::Providers::Proxmox::CloudSeed do
     netplan = payload["write_files"].find { |f| f["path"] == "/etc/netplan/99-powernode-dhcp.yaml" }
     expect(netplan).to be_present
     expect(netplan["content"]).to include("send-hostname: true")
-    expect(netplan["content"]).to include("hostname: ops2.ipnode.net")
+    expect(netplan["content"]).to include("hostname: ops2.ipnode.us")
     # NIC name is image-dependent (eth0 on biosdevname-disabled images,
     # enp0s18/ens18 on Ubuntu cloud images) — match by glob so netplan
     # apply doesn't silently no-op when eth0 is absent.
