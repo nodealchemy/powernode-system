@@ -11,7 +11,7 @@
 # Slice 1 of the SDWAN plan.
 module Sdwan
   class PeerKey < ApplicationRecord
-    self.table_name = "sdwan_peer_keys"
+    self.table_name = "system_sdwan_peer_keys"
 
     include VaultCredential
 

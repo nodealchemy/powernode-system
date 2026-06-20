@@ -14,7 +14,7 @@
 # Slice 1 of the SDWAN plan.
 module Sdwan
   class Network < ApplicationRecord
-    self.table_name = "sdwan_networks"
+    self.table_name = "system_sdwan_networks"
 
     STATUSES = %w[registered active suspended archived].freeze
     # Slice 9a — per-network routing layer.

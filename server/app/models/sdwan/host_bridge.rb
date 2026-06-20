@@ -28,7 +28,7 @@ module Sdwan
   class HostBridge < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_host_bridges"
+    self.table_name = "system_sdwan_host_bridges"
 
     STATES = %w[pending active draining removed].freeze
     KINDS  = %w[linux ovs].freeze

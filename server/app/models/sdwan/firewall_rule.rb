@@ -18,7 +18,7 @@
 # Slice 2 of the SDWAN plan.
 module Sdwan
   class FirewallRule < ApplicationRecord
-    self.table_name = "sdwan_firewall_rules"
+    self.table_name = "system_sdwan_firewall_rules"
 
     ACTIONS    = %w[accept drop reject].freeze
     DIRECTIONS = %w[ingress egress both].freeze

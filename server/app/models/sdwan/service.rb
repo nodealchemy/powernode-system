@@ -9,7 +9,7 @@ module Sdwan
   # is emitted by Sdwan::ServiceExposureWriter on this side. Backend is
   # VIP-backed so Traefik dials the service over the overlay (no loopback hop).
   class Service < ApplicationRecord
-    self.table_name = "sdwan_services"
+    self.table_name = "system_sdwan_services"
 
     PROTOCOLS  = %w[https http tcp tls].freeze
     STATUSES   = %w[active disabled].freeze

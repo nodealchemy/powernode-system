@@ -18,7 +18,7 @@
 # over-sdwan feature.
 module Sdwan
   class SubnetAdvertisement < ApplicationRecord
-    self.table_name = "sdwan_subnet_advertisements"
+    self.table_name = "system_sdwan_subnet_advertisements"
 
     SOURCES = %w[declared_lan_subnet virtual_ip learned_via_bgp pod_subnet].freeze
 

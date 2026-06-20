@@ -35,7 +35,7 @@ module Sdwan
   class OvnAcl < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_ovn_acls"
+    self.table_name = "system_sdwan_ovn_acls"
 
     STATES     = %w[pending active removed].freeze
     DIRECTIONS = %w[from-lport to-lport].freeze

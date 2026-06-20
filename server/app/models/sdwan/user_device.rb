@@ -14,7 +14,7 @@
 # Slice 4 of the SDWAN plan.
 module Sdwan
   class UserDevice < ApplicationRecord
-    self.table_name = "sdwan_user_devices"
+    self.table_name = "system_sdwan_user_devices"
 
     include VaultCredential
 

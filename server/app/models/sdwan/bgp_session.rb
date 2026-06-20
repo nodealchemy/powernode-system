@@ -9,7 +9,7 @@
 # Slice 9c of the SDWAN plan.
 module Sdwan
   class BgpSession < ApplicationRecord
-    self.table_name = "sdwan_bgp_sessions"
+    self.table_name = "system_sdwan_bgp_sessions"
 
     STATES = %w[idle connect active opensent openconfirm established].freeze
 

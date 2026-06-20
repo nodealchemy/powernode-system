@@ -25,7 +25,7 @@ module Sdwan
   class HostVrfAssignment < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_host_vrf_assignments"
+    self.table_name = "system_sdwan_host_vrf_assignments"
 
     STATES = %w[pending active draining removed].freeze
 

@@ -22,7 +22,7 @@
 # Slice 7b of the SDWAN plan.
 module Sdwan
   class PortMapping < ApplicationRecord
-    self.table_name = "sdwan_port_mappings"
+    self.table_name = "system_sdwan_port_mappings"
 
     PROTOCOLS = %w[tcp udp].freeze
 

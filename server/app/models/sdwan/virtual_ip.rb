@@ -14,7 +14,7 @@
 # Slice 9b of the SDWAN plan.
 module Sdwan
   class VirtualIp < ApplicationRecord
-    self.table_name = "sdwan_virtual_ips"
+    self.table_name = "system_sdwan_virtual_ips"
 
     STATES = %w[pending active failing_over unassigned error].freeze
 

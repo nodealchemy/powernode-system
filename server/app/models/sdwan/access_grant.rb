@@ -7,7 +7,7 @@
 # Slice 4 of the SDWAN plan.
 module Sdwan
   class AccessGrant < ApplicationRecord
-    self.table_name = "sdwan_access_grants"
+    self.table_name = "system_sdwan_access_grants"
 
     STATUSES = %w[active suspended revoked].freeze
 

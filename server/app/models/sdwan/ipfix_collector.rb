@@ -15,7 +15,7 @@ module Sdwan
   class IpfixCollector < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_ipfix_collectors"
+    self.table_name = "system_sdwan_ipfix_collectors"
 
     STATES = %w[active disabled].freeze
 

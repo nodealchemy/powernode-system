@@ -14,7 +14,7 @@
 # Slice 1 of the SDWAN plan.
 module Sdwan
   class Configuration < ApplicationRecord
-    self.table_name = "sdwan_configurations"
+    self.table_name = "system_sdwan_configurations"
 
     belongs_to :account
 

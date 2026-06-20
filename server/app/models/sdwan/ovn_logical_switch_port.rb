@@ -27,7 +27,7 @@ module Sdwan
   class OvnLogicalSwitchPort < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_ovn_logical_switch_ports"
+    self.table_name = "system_sdwan_ovn_logical_switch_ports"
 
     STATES = %w[pending active removed].freeze
     KINDS  = %w[vm container external].freeze

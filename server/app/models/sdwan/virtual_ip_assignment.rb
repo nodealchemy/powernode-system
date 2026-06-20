@@ -8,7 +8,7 @@
 # Slice 9b of the SDWAN plan.
 module Sdwan
   class VirtualIpAssignment < ApplicationRecord
-    self.table_name = "sdwan_virtual_ip_assignments"
+    self.table_name = "system_sdwan_virtual_ip_assignments"
 
     REASONS = %w[initial manual_failover sensor_failover holder_changed revoked].freeze
 

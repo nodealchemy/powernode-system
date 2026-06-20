@@ -10,7 +10,7 @@
 # Slice 9c of the SDWAN plan.
 module Sdwan
   class AccountBgp < ApplicationRecord
-    self.table_name = "sdwan_account_bgps"
+    self.table_name = "system_sdwan_account_bgps"
 
     # RFC 6996 4-byte private AS range. 94 million ASes — practically
     # inexhaustible for a single Powernode install.

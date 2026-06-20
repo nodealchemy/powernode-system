@@ -17,7 +17,7 @@
 # Phase O6 follow-up of the OVS+OVN dual-profile networking roadmap.
 module Sdwan
   class FlowSample < ApplicationRecord
-    self.table_name = "sdwan_flow_samples"
+    self.table_name = "system_sdwan_flow_samples"
 
     # Standard IANA protocol numbers most commonly seen in flow data.
     # Validation accepts any 0-255 value (full IANA range); these are

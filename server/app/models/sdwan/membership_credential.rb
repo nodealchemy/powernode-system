@@ -24,7 +24,7 @@ module Sdwan
   class MembershipCredential < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_membership_credentials"
+    self.table_name = "system_sdwan_membership_credentials"
 
     STATUSES = %w[pending active expiring revoked].freeze
 

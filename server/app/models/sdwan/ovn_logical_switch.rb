@@ -20,7 +20,7 @@ module Sdwan
   class OvnLogicalSwitch < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_ovn_logical_switches"
+    self.table_name = "system_sdwan_ovn_logical_switches"
 
     STATES = %w[pending active removed].freeze
 

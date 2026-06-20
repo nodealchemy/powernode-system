@@ -21,7 +21,7 @@ module Sdwan
   class RouteLeak < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_route_leaks"
+    self.table_name = "system_sdwan_route_leaks"
 
     DIRECTIONS  = %w[one_way bidirectional].freeze
     STATES      = %w[proposed active revoked].freeze

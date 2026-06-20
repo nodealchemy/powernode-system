@@ -24,7 +24,7 @@ module Sdwan
   class OvnDeployment < ApplicationRecord
     include AASM
 
-    self.table_name = "sdwan_ovn_deployments"
+    self.table_name = "system_sdwan_ovn_deployments"
 
     STATES = %w[pending bootstrapping active degraded].freeze
 

@@ -10,7 +10,7 @@
 # (endpoint_host_v6 / endpoint_host_v4) alongside the legacy endpoint_host.
 module Sdwan
   class Peer < ApplicationRecord
-    self.table_name = "sdwan_peers"
+    self.table_name = "system_sdwan_peers"
 
     STATUSES = %w[pending active degraded disconnected].freeze
     HEALTHY_HANDSHAKE_WINDOW = 3.minutes

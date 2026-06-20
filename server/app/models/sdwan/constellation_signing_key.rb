@@ -18,7 +18,7 @@ module Sdwan
   class ConstellationSigningKey < ApplicationRecord
     include VaultCredential
 
-    self.table_name = "sdwan_constellation_signing_keys"
+    self.table_name = "system_sdwan_constellation_signing_keys"
     self.vault_credential_type = "constellation_signing_key"
 
     belongs_to :account

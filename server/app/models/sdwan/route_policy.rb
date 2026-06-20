@@ -28,7 +28,7 @@
 # Slice 9e of the SDWAN plan.
 module Sdwan
   class RoutePolicy < ApplicationRecord
-    self.table_name = "sdwan_route_policies"
+    self.table_name = "system_sdwan_route_policies"
 
     SCOPES     = %w[account network peer].freeze
     DIRECTIONS = %w[import export].freeze
