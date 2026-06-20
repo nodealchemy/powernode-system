@@ -46,7 +46,7 @@ FactoryBot.define do
   factory :system_gitops_repository, class: "System::GitopsRepository" do
     association :account
     sequence(:name) { |n| "fleet-config-#{n}" }
-    sequence(:repo_url) { |n| "git@git.ipnode.net:powernode/fleet-config-#{n}.git" }
+    sequence(:repo_url) { |n| "git@git.powernode.net:powernode/fleet-config-#{n}.git" }
     branch { "main" }
     enabled { true }
     auto_apply { false }

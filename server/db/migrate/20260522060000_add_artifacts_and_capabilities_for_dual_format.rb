@@ -13,7 +13,7 @@
 #      artifact metadata. Shape:
 #        {
 #          "composefs": {
-#            "oci_ref":        "git.ipnode.org/.../mod:tag",
+#            "oci_ref":        "git.powernode.org/.../mod:tag",
 #            "digest":         "sha256:...",
 #            "fsverity_root":  "sha256:...",
 #            "size":           1662976,

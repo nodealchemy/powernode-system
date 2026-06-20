@@ -100,7 +100,7 @@ round-trip. The 2026-06-07 re-validation used this method:
 When this document was first authored (2026-05-17 modernization pass),
 render parity was confirmed via:
 
-- Gitea: `https://git.ipnode.org/<account>/powernode-system/src/branch/develop/docs/ARCHITECTURE.md` rendered in the web UI
+- Gitea: `https://git.powernode.org/<account>/powernode-system/src/branch/develop/docs/ARCHITECTURE.md` rendered in the web UI
 - GitHub: `https://github.com/nodealchemy/powernode-system/blob/master/docs/ARCHITECTURE.md` rendered on github.com
 
 Reference screenshots were captured for the 7 ARCHITECTURE.md diagrams

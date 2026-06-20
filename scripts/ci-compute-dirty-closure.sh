@@ -26,7 +26,7 @@
 # Env knobs:
 #   MODULES_DIR=modules               (root of per-module manifests)
 #   APT_DRIFT_CHECK=1                 (1 = enable apt query, 0 = skip — default)
-#   APT_REGISTRY=git.ipnode.org       (oras pull source for annotations)
+#   APT_REGISTRY=git.powernode.org       (oras pull source for annotations)
 #   APT_OWNER=powernode               (oras namespace)
 #   APT_PROBE_MODE=local              (local | docker)
 #                                       local: run apt-cache in the current
@@ -95,7 +95,7 @@ fi
 
 MODULES_DIR="${MODULES_DIR:-modules}"
 APT_DRIFT_CHECK="${APT_DRIFT_CHECK:-0}"
-APT_REGISTRY="${APT_REGISTRY:-git.ipnode.org}"
+APT_REGISTRY="${APT_REGISTRY:-git.powernode.org}"
 APT_OWNER="${APT_OWNER:-powernode}"
 APT_PROBE_MODE="${APT_PROBE_MODE:-local}"
 APT_DRIFT_PROBE_IMAGE="${APT_DRIFT_PROBE_IMAGE:-debian:trixie-slim}"

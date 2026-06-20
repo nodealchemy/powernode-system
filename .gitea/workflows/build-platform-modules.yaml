@@ -201,7 +201,7 @@ jobs:
           # Construct the clone URL with token auth when GIT_TOKEN is
           # set (private repos); fall back to anonymous HTTPS for
           # public repos.
-          base="${GITHUB_SERVER_URL:-https://git.ipnode.org}"
+          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
           if [ -n "${GIT_TOKEN:-}" ]; then
             clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
           else
@@ -435,7 +435,7 @@ jobs:
           esac
 
           if [ "$needs_parent" = "1" ]; then
-            parent_host="${POWERNODE_PARENT_HOST:-git.ipnode.org}"
+            parent_host="${POWERNODE_PARENT_HOST:-git.powernode.org}"
             parent_path="${POWERNODE_PARENT_PATH:-powernode/powernode-platform}"
             clone_url="https://x-access-token:${PARENT_PAT}@${parent_host}/${parent_path}.git"
             echo "Cloning parent ${parent_host}/${parent_path}..."
@@ -800,7 +800,7 @@ jobs:
           # Tag = workflow input, else commit SHA short.
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
-          REGISTRY_NS="git.ipnode.org/powernode"
+          REGISTRY_NS="git.powernode.org/powernode"
           EROFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}"
           LATEST_REF="${REGISTRY_NS}/${{ matrix.module }}:latest"
 
@@ -809,7 +809,7 @@ jobs:
           # ORAS_REGISTRY_USERNAME / PASSWORD env vars on its own.
           # Authenticate first so the subsequent `oras push` against
           # the private Gitea registry doesn't 401.
-          oras login git.ipnode.org \
+          oras login git.powernode.org \
             --username "$ORAS_REGISTRY_USERNAME" \
             --password-stdin <<< "$ORAS_REGISTRY_PASSWORD"
 

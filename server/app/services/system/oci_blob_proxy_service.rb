@@ -10,7 +10,7 @@ require "securerandom"
 
 module System
   # Proxies OCI artifact composefs-blob downloads from the upstream
-  # registry (Gitea container registry at git.ipnode.org today) to
+  # registry (Gitea container registry at git.powernode.org today) to
   # on-node agents. The agent's existing oci.Puller streams from the
   # URL returned by /api/v1/system/node_api/modules/:id/download —
   # this service is the backing implementation that actually fetches
@@ -339,8 +339,8 @@ module System
       host
     end
 
-    # oci_ref shape: "git.ipnode.org/powernode/<name>:<tag>" or
-    # "git.ipnode.org/powernode/<name>@sha256:<digest>". Strip the host
+    # oci_ref shape: "git.powernode.org/powernode/<name>:<tag>" or
+    # "git.powernode.org/powernode/<name>@sha256:<digest>". Strip the host
     # and the tag/digest suffix to get the repo path used in
     # /v2/<repo_path>/manifests/... URLs.
     def repo_path

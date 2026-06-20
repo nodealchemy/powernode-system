@@ -8,16 +8,16 @@
 # both: instant tool availability + working checkout.
 #
 # Build:
-#   docker build -t git.ipnode.org/powernode/runner-platform-builder:latest \
+#   docker build -t git.powernode.org/powernode/runner-platform-builder:latest \
 #     extensions/system/.gitea/runner-images/platform-builder/
 #
 # Push:
-#   docker login git.ipnode.org -u <gitea-user> -p <gitea-PAT-with-package:write>
-#   docker push git.ipnode.org/powernode/runner-platform-builder:latest
+#   docker login git.powernode.org -u <gitea-user> -p <gitea-PAT-with-package:write>
+#   docker push git.powernode.org/powernode/runner-platform-builder:latest
 #
 # Reference from a workflow:
 #   container:
-#     image: git.ipnode.org/powernode/runner-platform-builder:latest
+#     image: git.powernode.org/powernode/runner-platform-builder:latest
 
 FROM docker.io/library/ubuntu:24.04
 

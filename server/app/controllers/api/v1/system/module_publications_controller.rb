@@ -32,7 +32,7 @@ module Api
       #     "manifest_yaml_b64": "<base64 of modules/<slug>/manifest.yaml>",
       #     "artifacts": {
       #       "erofs": {
-      #         "oci_ref":       "git.ipnode.org/powernode/powernode-hub-backend:c71ebc3",
+      #         "oci_ref":       "git.powernode.org/powernode/powernode-hub-backend:c71ebc3",
       #         "fsverity_root": "sha256:...",
       #         "size":          50000000,
       #         "media_type":    "application/vnd.powernode.erofs"

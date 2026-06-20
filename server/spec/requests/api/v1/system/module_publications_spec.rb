@@ -57,7 +57,7 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
   let(:artifacts) do
     {
       erofs: {
-        oci_ref:       "git.ipnode.org/powernode/powernode-hub-backend:abc1234",
+        oci_ref:       "git.powernode.org/powernode/powernode-hub-backend:abc1234",
         fsverity_root: "sha256:" + ("0" * 64),
         size:          12_345_678,
         media_type:    "application/vnd.powernode.erofs"
