@@ -41,14 +41,13 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "medium",
     tags: %w[provisioning fleet templates storage sdwan stack],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator's brief calls for a complete stack —
-      compute + (optional) SDWAN attach + (optional) per-instance storage —
-      from a single Template. Inputs: template_id, count (1-50),
-      provider_region_id, provider_instance_type_id, network_id (optional),
-      with_storage_gb (optional), dry_run. Returns created node ids,
-      node instance ids, storage volume ids, sdwan peer ids, and a
-      planned_actions audit log. Has a rollback handler that terminates
-      provisioned instances + deletes provisioned volumes in reverse order.
+      Provision a complete stack from a single Template — compute + (optional) SDWAN attach
+      + (optional) per-instance storage.
+      Inputs: template_id, count (1-50), provider_region_id, provider_instance_type_id,
+      network_id (optional), with_storage_gb (optional), dry_run.
+      Returns created node ids, node instance ids, storage volume ids, sdwan peer ids,
+      and a planned_actions audit log. Rollback terminates provisioned instances + deletes
+      provisioned volumes in reverse order.
     PROMPT
   },
   {
@@ -61,15 +60,14 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "medium",
     tags: %w[provisioning scaling adaptation fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill when the AdaptationProposer detects capacity pressure
-      or a region-imbalance condition on an existing provisioning project.
+      Scale a provisioning project when the AdaptationProposer detects capacity pressure
+      or region imbalance.
       Inputs: project_id (Ai::Mission id), target_count (1-50),
-      scaling_strategy (add_replicas | vertical_resize | add_region) plus
-      strategy-specific lookups (template_id, provider_region_id,
-      provider_instance_type_id, module_id, target_version_id, network_id,
-      with_storage_gb), dry_run. Returns the unified outputs envelope so
-      the runner's rollback dispatch can terminate any new instances and
-      delete any new volumes uniformly with the M0 contract.
+      scaling_strategy (add_replicas | vertical_resize | add_region) plus strategy-specific
+      lookups (template_id, provider_region_id, provider_instance_type_id, module_id,
+      target_version_id, network_id, with_storage_gb), dry_run.
+      Returns the unified outputs envelope so the runner's rollback dispatch can terminate
+      new instances and delete new volumes uniformly with the M0 contract.
     PROMPT
   },
   {
@@ -82,14 +80,12 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "high",
     tags: %w[provisioning relocation cutover adaptation],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an adaptation calls for moving a workload to a
-      different region (region failure, latency drift, cost arbitrage).
-      Inputs: project_id, from_region_id, to_region_id, cutover_strategy
-      (blue_green | drain), template_id, provider_instance_type_id, count
-      (1-50), source_instance_ids[], network_id (optional),
-      with_storage_gb (optional), dry_run. Requires approval (high blast
-      radius). Rollback terminates the new target stack — source
-      instances cannot be un-terminated.
+      Relocate a workload to a different region (region failure, latency drift, cost arbitrage).
+      Inputs: project_id, from_region_id, to_region_id, cutover_strategy (blue_green | drain),
+      template_id, provider_instance_type_id, count (1-50), source_instance_ids[],
+      network_id (optional), with_storage_gb (optional), dry_run.
+      Requires approval (high blast radius). Rollback terminates the new target stack —
+      source instances cannot be un-terminated.
     PROMPT
   },
   {
@@ -102,13 +98,12 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "low",
     tags: %w[provisioning storage volume mount adaptation],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an instance needs a fresh attached volume — for
-      data growth, log retention, or attaching project-scoped storage.
+      Provision, attach, and mount a fresh volume on an instance — for data growth,
+      log retention, or project-scoped storage.
       Inputs: instance_id, size_gb (1-16384), volume_type (optional),
-      mount_point (default /data), dry_run. Returns storage_volume_ids
-      and the mount sub-hash (instance_id, device, mount_point) so the
-      operator can verify provisioning succeeded. Rollback detaches and
-      deletes the volume.
+      mount_point (default /data), dry_run.
+      Returns storage_volume_ids and the mount sub-hash (instance_id, device, mount_point).
+      Rollback detaches and deletes the volume.
     PROMPT
   },
   {
@@ -121,14 +116,12 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "medium",
     tags: %w[provisioning sdwan network vip topology adaptation],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an adaptation introduces an overlay between
-      project instances (e.g. "stitch the new region peers into the
-      existing project mesh"). Inputs: project_id, instance_ids[]
-      (1-100), network_name, topology (hub_and_spoke | mesh), with_vip
-      (optional), vip_name (optional), vip_cidr (required when with_vip),
-      dry_run. Returns sdwan_network_id, sdwan_peer_ids, virtual_ip_id,
-      and a topology_preview. Rollback destroys the VIP, peers, and
-      network in reverse order.
+      Introduce an overlay between project instances (e.g. "stitch the new region peers
+      into the existing project mesh").
+      Inputs: project_id, instance_ids[] (1-100), network_name, topology (hub_and_spoke | mesh),
+      with_vip (optional), vip_name (optional), vip_cidr (required when with_vip), dry_run.
+      Returns sdwan_network_id, sdwan_peer_ids, virtual_ip_id, and a topology_preview.
+      Rollback destroys the VIP, peers, and network in reverse order.
     PROMPT
   },
   {
@@ -144,15 +137,15 @@ PROVISIONING_SKILLS_DATA = [
     blast_radius: "medium",
     tags: %w[provisioning deploy git systemd m3 self-serve],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator's brief carries a Git repository URL
-      and (optionally) a start command — the M3 "Run My Code" path. Inputs:
-      node_instance_id, repo_url, branch (default "main"), start_command
-      (optional — auto-detected from package.json/requirements.txt when
-      absent), deploy_key (optional, for private repos), dry_run. Returns
-      commit_sha, public_url, systemd_unit_path. Auto-detect runtime falls
-      back to nodejs (package.json) → python (requirements.txt or
-      pyproject.toml). Rollback removes /opt/app and disables the systemd
-      unit. SSH transport is delegated to System::SshExecutionService.
+      Clone, install, and run application code from a Git repo on a NodeInstance —
+      the M3 "Run My Code" path (brief carries a repo URL and optional start command).
+      Inputs: node_instance_id, repo_url, branch (default "main"),
+      start_command (optional — auto-detected from package.json/requirements.txt when absent),
+      deploy_key (optional, for private repos), dry_run.
+      Returns commit_sha, public_url, systemd_unit_path. Runtime auto-detect:
+      nodejs (package.json) → python (requirements.txt or pyproject.toml).
+      Rollback removes /opt/app and disables the systemd unit.
+      SSH transport is delegated to System::SshExecutionService.
     PROMPT
   }
 ].freeze
@@ -231,13 +224,11 @@ entry.assign_attributes(
   category: "devops",
   status: "active",
   system_prompt: <<~PROMPT.strip,
-    Front door for AI-driven infrastructure provisioning. Use when an operator
-    asks to stand up, provision, deploy, or scale infrastructure (compute,
-    clusters, networks, storage, full stacks). Delegates to the System
-    Concierge, which captures a project brief, composes a multi-step plan
-    (provision → SDWAN → storage → app), surfaces it for approval, and
-    executes it with live progress + rollback. Input: a natural-language
-    description of the desired infrastructure.
+    Front door for AI-driven infrastructure provisioning — operator asks to stand up,
+    provision, deploy, or scale infrastructure (compute, clusters, networks, storage, full stacks).
+    Delegates to the System Concierge, which captures a project brief, composes a multi-step plan
+    (provision → SDWAN → storage → app), surfaces it for approval, and executes with live progress + rollback.
+    Input: a natural-language description of the desired infrastructure.
   PROMPT
   commands: [],
   activation_rules: {},

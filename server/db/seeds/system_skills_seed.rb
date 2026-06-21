@@ -53,10 +53,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::AttributeFailureExecutor",
     tags: %w[fleet failure-analysis modules diagnostics],
     system_prompt: <<~PROMPT.strip
-      Use this skill when a NodeInstance has failed and an operator wants to know
-      which recent module change or promotion likely caused it. Inputs: instance_id
-      (required), lookback_hours (default 24). Returns ranked candidates with a
-      confidence score + reasoning.
+      Rank likely causes of a failed NodeInstance among recent module changes/promotions.
+      Inputs: instance_id (required), lookback_hours (default 24).
+      Returns ranked candidates with confidence score + reasoning.
     PROMPT
   },
   {
@@ -68,10 +67,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::CapacityRecommendExecutor",
     tags: %w[fleet capacity-planning autoscale],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks "do I have enough nodes" or "should I
-      scale up/down" for a Template fleet. Inputs: template_id, target_min_active.
-      Returns a sized recommendation (count delta, instance type tweaks) with a
-      confidence label.
+      Size a Template fleet — answers "do I have enough nodes" / "scale up or down".
+      Inputs: template_id, target_min_active.
+      Returns count delta + instance-type tweaks with a confidence label.
     PROMPT
   },
   {
@@ -84,10 +82,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::CveResponseExecutor",
     tags: %w[cve security fleet exposure],
     system_prompt: <<~PROMPT.strip
-      Use this skill when a CVE has been disclosed and operators need to know which
-      modules/instances are exposed. Inputs: cve_id, severity, affected_packages.
-      Returns risk score + remediation plan (ranked by impact). Sets
-      requires_approval=true for plans that touch >5% of the fleet.
+      Triage a disclosed CVE — enumerate exposed modules/instances and plan remediation.
+      Inputs: cve_id, severity, affected_packages.
+      Returns risk score + impact-ranked remediation plan.
+      Sets requires_approval=true when a plan touches >5% of the fleet.
     PROMPT
   },
   {
@@ -99,9 +97,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::CveRunbookGenerateExecutor",
     tags: %w[cve security runbook documentation],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks for a written CVE remediation playbook.
-      Inputs: cve_id, persist_as_page (optional). Generates markdown covering
-      exposed modules, step-by-step remediation, and verification commands.
+      Generate a markdown CVE remediation playbook.
+      Inputs: cve_id, persist_as_page (optional).
+      Covers exposed modules, step-by-step remediation, and verification commands.
     PROMPT
   },
   {
@@ -114,14 +112,12 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::CveRemediationOrchestrationExecutor",
     tags: %w[cve security remediation orchestration autonomy],
     system_prompt: <<~PROMPT.strip
-      Use this skill when the CVE Responder agent has decided to act on a
-      CVE (either inline for critical-severity notify_and_proceed, or after
-      operator approval for require_approval). Inputs: cve_id (required),
-      severity (optional), affected_module_ids (optional), exposure_ids
-      (optional). Triages via CveResponseExecutor, dispatches
-      PackageModuleRefreshExecutor for each linked module, plans rolling
-      upgrades for any module that already has a newer blessed version, and
-      transitions named CveExposure rows to remediating state.
+      Run the full CVE remediation chain once the CVE Responder agent decides to act
+      (inline for critical-severity notify_and_proceed, or post-approval for require_approval).
+      Inputs: cve_id (required), severity, affected_module_ids, exposure_ids (all optional).
+      Triages via CveResponseExecutor, dispatches PackageModuleRefreshExecutor per linked module,
+      plans rolling upgrades for modules with a newer blessed version, and transitions named
+      CveExposure rows to remediating.
     PROMPT
   },
   {
@@ -134,11 +130,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::DockerProvisionExecutor",
     tags: %w[runtime docker container fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks to provision Docker on a NodeInstance
-      that already has the docker-engine module assigned + an SDWAN peer attached.
-      Inputs: node_instance_id, dry_run (optional). Returns the managed
-      Devops::DockerHost row + endpoint. Idempotent — already_provisioned=true on
-      re-call. Prefers existing host over re-creation.
+      Provision a managed Docker daemon on a NodeInstance that already has the
+      docker-engine module assigned and an SDWAN peer attached.
+      Inputs: node_instance_id, dry_run (optional).
+      Returns the managed Devops::DockerHost row + endpoint.
+      Idempotent — reuses an existing host, setting already_provisioned=true on re-call.
     PROMPT
   },
   {
@@ -150,10 +146,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::DriftRemediateExecutor",
     tags: %w[drift modules reconcile fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill when a NodeInstance's running modules don't match its assigned
-      modules. Inputs: instance_id, max_disruption_pct (default 20). Returns
-      planned attach/detach/update actions with a disruption percentage. Sets
-      requires_approval=true if the disruption exceeds the threshold.
+      Reconcile a NodeInstance's running modules against its assigned modules.
+      Inputs: instance_id, max_disruption_pct (default 20).
+      Returns planned attach/detach/update actions with a disruption percentage.
+      Sets requires_approval=true when disruption exceeds the threshold.
     PROMPT
   },
   {
@@ -165,11 +161,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::FederationManagerExecutor",
     tags: %w[federation sdwan peers grants certs health],
     system_prompt: <<~PROMPT.strip
-      Use this skill to survey federation health for an account — peer cert
-      rotation candidates, grants approaching expiry, grants overdue for
-      review, broad-scope grants, capability drift. Inputs: none (scoped
-      to current account). Returns ranked findings the operator or SDWAN
-      Manager autonomy loop should action.
+      Survey federation health for the current account: peer cert rotation candidates,
+      grants near expiry, grants overdue for review, broad-scope grants, capability drift.
+      Inputs: none (account-scoped).
+      Returns ranked findings for the operator or SDWAN Manager autonomy loop to action.
     PROMPT
   },
   {
@@ -181,10 +176,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ModuleComposeExecutor",
     tags: %w[modules composition templates planning],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator describes a workload (e.g. "nginx web server
-      with TLS and metrics") and wants a Template draft. Inputs: description (free
-      text), platform_id (optional), max_modules. Returns a draft template with
-      module candidates and any conflicts.
+      Draft a Template from a workload description (e.g. "nginx web server with TLS and metrics").
+      Inputs: description (free text), platform_id (optional), max_modules.
+      Returns a draft template with module candidates and any conflicts.
     PROMPT
   },
   {
@@ -197,11 +191,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ProvisionClusterExecutor",
     tags: %w[provisioning fleet templates batch],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator wants to spin up N nodes from a Template in
-      one shot. Inputs: template_id, count (1-50), provider_region_id,
-      provider_instance_type_id, name_prefix, dry_run. Returns created nodes +
-      provisioning task ids. For larger fleet rolls, use rolling_module_upgrade
-      with explicit operator approval instead.
+      Spin up N nodes from a Template in one shot.
+      Inputs: template_id, count (1-50), provider_region_id,
+      provider_instance_type_id, name_prefix, dry_run.
+      Returns created nodes + provisioning task ids.
+      For larger fleet rolls, use rolling_module_upgrade with explicit operator approval.
     PROMPT
   },
   {
@@ -214,11 +208,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::RollingModuleUpgradeExecutor",
     tags: %w[rolling-upgrade modules release circuit-breaker],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator wants to upgrade a NodeModule across a
-      Template fleet without taking everyone down. Inputs: template_id, module_id,
-      target_version_id, batch_pct (default 10%), max_consecutive_failures (default
-      2), health_timeout_sec. Returns a plan with batches + circuit-breaker config.
-      Skill returns the plan; the autonomy reconciler executes it batch-by-batch.
+      Plan a batched rolling upgrade of a NodeModule across a Template fleet without full downtime.
+      Inputs: template_id, module_id, target_version_id, batch_pct (default 10%),
+      max_consecutive_failures (default 2), health_timeout_sec.
+      Returns a plan with batches + circuit-breaker config; the autonomy reconciler
+      executes it batch-by-batch.
     PROMPT
   },
   {
@@ -230,9 +224,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::RunbookGenerateExecutor",
     tags: %w[runbook documentation templates ops],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks for a written runbook for a Template.
-      Inputs: template_id, persist_as_page (optional). Generates markdown covering
-      boot order, failure modes, and recovery procedures.
+      Generate a markdown operational runbook for a Template.
+      Inputs: template_id, persist_as_page (optional).
+      Covers boot order, failure modes, and recovery procedures.
     PROMPT
   },
   {
@@ -244,9 +238,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanBgpSessionRemediateExecutor",
     tags: %w[sdwan bgp routing diagnostics],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an iBGP session is unhealthy (idle/active/connect/etc.).
-      Inputs: bgp_session_id OR (peer_id + neighbor_address). v1 returns analysis +
-      recommended action only — does NOT auto-restart FRR.
+      Triage an unhealthy iBGP session (idle/active/connect/etc.).
+      Inputs: bgp_session_id OR (peer_id + neighbor_address).
+      v1 returns analysis + recommended action only — does NOT auto-restart FRR.
     PROMPT
   },
   {
@@ -258,10 +252,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanFailoverExecutor",
     tags: %w[sdwan failover hub topology],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an SDWAN network's hub is unreachable. Inputs: network_id,
-      dry_run (default true; v1 only supports planning). Returns hub-candidate
-      spokes ranked by last_handshake_at. Operator manually flips publicly_reachable
-      after review.
+      Plan a hub failover for an SDWAN network whose hub is unreachable.
+      Inputs: network_id, dry_run (default true; v1 plans only).
+      Returns hub-candidate spokes ranked by last_handshake_at.
+      Operator manually flips publicly_reachable after review.
     PROMPT
   },
   {
@@ -273,9 +267,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanPeerRemediateExecutor",
     tags: %w[sdwan peers key-rotation tunnel],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an SDWAN peer is degraded or stuck. Inputs: peer_id,
-      dry_run. Rotates the peer's WireGuard keypair so the agent re-establishes the
-      tunnel from a clean key on its next reconcile.
+      Recover a degraded or stuck SDWAN peer.
+      Inputs: peer_id, dry_run.
+      Rotates the peer's WireGuard keypair so the agent re-establishes the tunnel
+      from a clean key on its next reconcile.
     PROMPT
   },
   {
@@ -287,10 +282,9 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanVipFailoverExecutor",
     tags: %w[sdwan vip failover anycast],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an Sdwan::VirtualIp's holder peer goes silent. Inputs:
-      virtual_ip_id, dry_run. Promotes the next failover candidate to active
-      holder. Anycast VIPs return informational responses only (failover handled
-      by routing).
+      Promote the next failover candidate when an Sdwan::VirtualIp's holder peer goes silent.
+      Inputs: virtual_ip_id, dry_run.
+      Anycast VIPs return informational responses only (failover handled by routing).
     PROMPT
   },
   {
@@ -303,16 +297,13 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanOvnComposeTopologyExecutor",
     tags: %w[sdwan ovn topology heavyweight composition],
     system_prompt: <<~PROMPT.strip
-      Use this skill on heavyweight-profile accounts to compose an OVN
-      logical-network topology in one shot. Inputs: switches (array of
-      {name, cidr?, ports: [{name, kind, addresses?, host_node_instance_id?}]}),
-      nb_db_endpoint + sb_db_endpoint (required only when no Sdwan::OvnDeployment
-      exists for the account yet), northd_host (optional advisory hint),
-      dry_run (default false). Returns the compiled ovn-nbctl plan an
-      executor or operator can apply against the NB DB. Re-uses the
-      existing per-account OvnDeployment when present; otherwise creates
-      one. Auto-activates new switches and ports so the compiler emits
-      them in the same call.
+      Compose an OVN logical-network topology in one shot. Heavyweight-profile accounts only.
+      Inputs: switches (array of {name, cidr?, ports: [{name, kind, addresses?, host_node_instance_id?}]}),
+      nb_db_endpoint + sb_db_endpoint (required only when no Sdwan::OvnDeployment exists for the account yet),
+      northd_host (optional advisory hint), dry_run (default false).
+      Returns the compiled ovn-nbctl plan to apply against the NB DB. Reuses the existing
+      per-account OvnDeployment or creates one. Auto-activates new switches and ports so the
+      compiler emits them in the same call.
     PROMPT
   },
   {
@@ -325,16 +316,13 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanHostBridgeComposeExecutor",
     tags: %w[sdwan bridges allocation profile-aware composition],
     system_prompt: <<~PROMPT.strip
-      Use this skill to allocate per-host SDWAN bridges for a set of
-      NodeInstances. Inputs: host_node_instance_ids (1-100), kind
-      (optional explicit override: linux | ovs — wins over the host's
-      network_profile when supplied), dry_run (default false). Returns
-      allocated bridge ids + per-host allocations
-      (bridge_name, kind, short_id, reused). Auto-selects OVS for
-      heavyweight-profile hosts and Linux bridge for lightweight ones, so
-      a mixed-profile fleet gets the right driver per host without
-      operator coordination. Idempotent — re-running with the same hosts
-      returns the existing bridges with reused=true.
+      Allocate per-host SDWAN bridges for a set of NodeInstances.
+      Inputs: host_node_instance_ids (1-100), kind (optional explicit override:
+      linux | ovs — wins over the host's network_profile when supplied), dry_run (default false).
+      Returns allocated bridge ids + per-host allocations (bridge_name, kind, short_id, reused).
+      Auto-selects OVS for heavyweight-profile hosts and Linux bridge for lightweight ones,
+      so a mixed-profile fleet gets the right driver per host. Idempotent — re-running with
+      the same hosts returns the existing bridges with reused=true.
     PROMPT
   },
   {
@@ -347,17 +335,15 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanIpfixCollectorComposeExecutor",
     tags: %w[sdwan ipfix telemetry heavyweight composition],
     system_prompt: <<~PROMPT.strip
-      Use this skill to register an IPFIX collector for an account.
+      Register an IPFIX collector for an account.
       Inputs: name (unique per account; reused on re-execution),
       host (IPv4/IPv6/hostname — IPv6 brackets handled automatically),
-      port (1-65535), sampling_rate (default 1 = every flow),
-      dry_run (default false). Returns collector id + target_endpoint +
-      is_winning_collector (true iff this row is the one the topology
-      compiler will pick — only the oldest active collector per account
-      gets stamped on heavyweight host bridges). Heavyweight-profile
-      only in effect: lightweight hosts ignore the ipfix payload.
-      Idempotent on (account, name) — re-running with the same name
-      returns the existing row without mutating host/port/sampling_rate.
+      port (1-65535), sampling_rate (default 1 = every flow), dry_run (default false).
+      Returns collector id + target_endpoint + is_winning_collector (true iff this is the row
+      the topology compiler picks — only the oldest active collector per account gets stamped
+      on heavyweight host bridges). Heavyweight-profile only; lightweight hosts ignore the ipfix payload.
+      Idempotent on (account, name) — re-running with the same name returns the existing row
+      without mutating host/port/sampling_rate.
     PROMPT
   },
   {
@@ -370,18 +356,16 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanComposeFullTopologyExecutor",
     tags: %w[sdwan composition orchestration topology],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator wants a complete SDWAN topology in
-      one tool call. Inputs: host_node_instance_ids (always required —
-      passed to host_bridge_compose), kind (optional bridge kind override
-      — passed through), ovn_topology (optional hash of {nb_db_endpoint,
-      sb_db_endpoint, northd_host?, switches} — runs ovn_compose_topology
-      when supplied), ipfix_collector (optional hash of {name, host, port,
-      sampling_rate?} — runs ipfix_collector_compose when supplied),
-      dry_run (default false). Always runs bridge composition; OVN and
-      IPFIX are opt-in. Returns each sub-skill's structured data nested
-      under outputs. Sub-failures are collected, never short-circuited —
-      operators may want to retry just the failing phase rather than
-      redo everything. Has a single-call rollback that delegates to each
+      Compose a complete SDWAN topology in one tool call.
+      Inputs: host_node_instance_ids (always required — passed to host_bridge_compose),
+      kind (optional bridge kind override — passed through),
+      ovn_topology (optional hash {nb_db_endpoint, sb_db_endpoint, northd_host?, switches} —
+      runs ovn_compose_topology when supplied),
+      ipfix_collector (optional hash {name, host, port, sampling_rate?} —
+      runs ipfix_collector_compose when supplied), dry_run (default false).
+      Always runs bridge composition; OVN and IPFIX are opt-in. Returns each sub-skill's
+      structured data nested under outputs. Sub-failures are collected, never short-circuited,
+      so the operator can retry just the failing phase. Single-call rollback delegates to each
       sub-executor's rollback in reverse order.
     PROMPT
   },
@@ -395,19 +379,16 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SdwanOvnApplyAclExecutor",
     tags: %w[sdwan ovn acl firewall heavyweight composition],
     system_prompt: <<~PROMPT.strip
-      Use this skill to apply OVN ACLs (firewall rules) to a logical
-      switch. Inputs: logical_switch_id (must belong to the executing
-      account), acls (array of {name, direction, priority?, match,
-      action}, 1-100), dry_run (default false). direction:
-      from-lport (egress from source) | to-lport (ingress to destination).
-      action: allow | drop | reject | allow-related. priority: 0-32767,
-      higher first, default 1000. match: OVN match expression like
-      `ip4.src == 10.0.0.0/8 && tcp.dst == 5432`. Returns ovn_acl_ids +
-      per-ACL allocations + the recompiled deployment plan with new
-      acl-add commands. Idempotent on (switch, name) — re-running with
-      the same name returns the existing ACL row without mutating its
-      match/action/priority. Heavyweight-profile only (lightweight
-      hosts use kube-proxy NetworkPolicy for the equivalent function).
+      Apply OVN ACLs (firewall rules) to a logical switch.
+      Inputs: logical_switch_id (must belong to the executing account),
+      acls (array of {name, direction, priority?, match, action}, 1-100), dry_run (default false).
+      direction: from-lport (egress from source) | to-lport (ingress to destination).
+      action: allow | drop | reject | allow-related. priority: 0-32767, higher first, default 1000.
+      match: OVN match expression like `ip4.src == 10.0.0.0/8 && tcp.dst == 5432`.
+      Returns ovn_acl_ids + per-ACL allocations + the recompiled deployment plan with new acl-add commands.
+      Idempotent on (switch, name) — re-running with the same name returns the existing ACL row
+      without mutating its match/action/priority. Heavyweight-profile only (lightweight hosts use
+      kube-proxy NetworkPolicy for the equivalent function).
     PROMPT
   },
   # ─── Package repository skills ─────────────────────────────────────
@@ -420,10 +401,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::PackageRepositorySyncExecutor",
     tags: %w[packages apt rpm sync catalog],
     system_prompt: <<~PROMPT.strip
-      Use this skill to refresh the synced apt/rpm package metadata for one
-      PackageRepository. Inputs: repository_id (required). Returns upserted
-      count + obsoleted (soft-deleted) count + new package_count. Cheap to
-      run frequently; daily cron triggers a fleet-wide sweep automatically.
+      Refresh synced apt/rpm package metadata for one PackageRepository.
+      Inputs: repository_id (required).
+      Returns upserted count + obsoleted (soft-deleted) count + new package_count.
+      Cheap to run frequently; a daily cron triggers a fleet-wide sweep automatically.
     PROMPT
   },
   {
@@ -436,12 +417,12 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::PackageModuleCreateExecutor",
     tags: %w[packages modules build closure supply-chain],
     system_prompt: <<~PROMPT.strip
-      Use this skill to turn an apt/rpm package into a NodeModule. Inputs:
-      repository_id, package_name (both required), architectures (optional,
-      defaults to repo.architectures), recommends_selected (optional list
-      of recommends package names to opt in), category_id (optional).
-      Creates the top-level NodeModule + transitive dependency NodeModules
-      (auto_generated=true) + ModuleDependency edges + dispatches CI build.
+      Turn an apt/rpm package into a NodeModule.
+      Inputs: repository_id, package_name (both required),
+      architectures (optional, defaults to repo.architectures),
+      recommends_selected (optional list of recommends package names to opt in),
+      category_id (optional). Creates the top-level NodeModule + transitive dependency
+      NodeModules (auto_generated=true) + ModuleDependency edges + dispatches a CI build.
       REQUIRES HUMAN APPROVAL — supply-chain critical.
     PROMPT
   },
@@ -455,11 +436,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::PackageModuleRefreshExecutor",
     tags: %w[packages modules refresh drift cve],
     system_prompt: <<~PROMPT.strip
-      Use this skill when PackageDriftSensor flags a module whose upstream
-      version has bumped beyond the locally-materialized version. Replays
-      persisted recommends_chosen for deterministic refreshes. Inputs:
-      package_module_link_id (required), force (optional). CVE-flagged
-      drifts auto-approve; non-CVE drifts require human approval.
+      Re-materialize a package-sourced NodeModule when PackageDriftSensor flags its upstream
+      version bumped beyond the locally-materialized one. Replays persisted recommends_chosen
+      for deterministic refreshes.
+      Inputs: package_module_link_id (required), force (optional).
+      CVE-flagged drifts auto-approve; non-CVE drifts require human approval.
     PROMPT
   },
   # ─── Architecture catalog skills ───────────────────────────────────
@@ -472,13 +453,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ArchitectureProposeExecutor",
     tags: %w[architecture catalog proposal fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill to surface the need for a new CPU architecture
-      in the platform-wide catalog without holding the manage
-      permission. Inputs: name (required, e.g. loongarch64), family
-      (required, one of: x86, arm, power, z, risc-v, mips, other),
+      Propose a new CPU architecture for the platform-wide catalog without holding the manage permission.
+      Inputs: name (required, e.g. loongarch64),
+      family (required, one of: x86, arm, power, z, risc-v, mips, other),
       apt_name, rpm_name, display_name, description, justification.
-      Creates an Ai::AgentProposal row — the architecture is NOT
-      materialized until an operator approves the proposal.
+      Creates an Ai::AgentProposal row — the architecture is NOT materialized until an operator approves.
     PROMPT
   },
   {
@@ -490,13 +469,11 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ArchitectureCreateExecutor",
     tags: %w[architecture catalog create fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an agent has system.architectures.manage AND
-      needs to directly create a new custom architecture. Inputs:
-      name (required), family (required), apt_name, rpm_name,
-      display_name, description, enabled, public. The created row is
-      always is_canonical=false — agents can't fabricate canonicals.
-      Each call surfaces for operator confirmation via the
-      intervention policy.
+      Directly create a custom architecture. Requires the system.architectures.manage permission.
+      Inputs: name (required), family (required), apt_name, rpm_name,
+      display_name, description, enabled, public.
+      The created row is always is_canonical=false — agents can't fabricate canonicals.
+      Each call surfaces for operator confirmation via the intervention policy.
     PROMPT
   },
   {
@@ -508,11 +485,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ArchitectureUpdateExecutor",
     tags: %w[architecture catalog update fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill to update a non-canonical architecture's fields.
-      Inputs: architecture_id (required), attributes (required hash of
-      allowed keys: name, family, apt_name, rpm_name, display_name,
-      description, kernel_options, enabled, public). Canonical rows
-      are immutable and return an error.
+      Update a non-canonical architecture's fields.
+      Inputs: architecture_id (required), attributes (required hash of allowed keys:
+      name, family, apt_name, rpm_name, display_name, description, kernel_options, enabled, public).
+      Canonical rows are immutable and return an error.
     PROMPT
   },
   {
@@ -524,10 +500,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ArchitectureDeleteExecutor",
     tags: %w[architecture catalog delete fleet],
     system_prompt: <<~PROMPT.strip
-      Use this skill to delete a non-canonical architecture from the
-      platform-wide catalog. Inputs: architecture_id (required). Fails
-      if any NodePlatform references it (restrict_with_error
-      dependency). Canonical rows are immutable and return an error.
+      Delete a non-canonical architecture from the platform-wide catalog.
+      Inputs: architecture_id (required).
+      Fails if any NodePlatform references it (restrict_with_error dependency).
+      Canonical rows are immutable and return an error.
     PROMPT
   },
   # ─── T2.B ────────────────────────────────────────────────────────────
@@ -540,15 +516,13 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::SuggestArchitecturesForFleetExecutor",
     tags: %w[architecture fleet packages materialize suggestion],
     system_prompt: <<~PROMPT.strip
-      Use this skill BEFORE invoking system-package-module-create when
-      the operator hasn't specified architectures. Inputs: repository_id
-      (required), max_suggestions (1-7, default 4). Returns the canonical
-      architectures most-likely-correct for the operator's fleet — the
-      intersection of (repo's served archs, arches with non-zero fleet
-      NodePlatform coverage), ranked by NodePlatform count. Falls back
-      to repo defaults with a `fallback: true` flag + low confidence
-      when there's no fleet overlap. Use the per-arch `rationale` array
-      to explain the recommendation to the operator.
+      Suggest which canonical architectures to materialize a package for. Call BEFORE
+      system-package-module-create when the operator hasn't specified architectures.
+      Inputs: repository_id (required), max_suggestions (1-7, default 4).
+      Returns the architectures best-matching the fleet — the intersection of (repo's served archs,
+      arches with non-zero fleet NodePlatform coverage), ranked by NodePlatform count.
+      Falls back to repo defaults with `fallback: true` + low confidence when there's no fleet overlap.
+      Use the per-arch `rationale` array to explain the recommendation.
     PROMPT
   },
   # ─── Wrapper skills for inventory/inspection MCP actions ─────────────
@@ -564,12 +538,10 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ListPackageRepositoriesSummaryExecutor",
     tags: %w[inventory packages repositories summary],
     system_prompt: <<~PROMPT.strip
-      Use this skill for any operator query asking about the inventory of
-      package repositories ("how many", "what kinds", "list them",
-      "what's configured", etc.). Returns total count, breakdown by kind
-      (apt/rpm/dnf), visibility (shared vs account), sync status, and the
-      full list. Always prefer this skill over generic "look elsewhere"
-      responses when the user asks about repository inventory.
+      Answer any package-repository inventory query ("how many", "what kinds",
+      "list them", "what's configured").
+      Returns total count, breakdown by kind (apt/rpm/dnf), visibility (shared vs account),
+      sync status, and the full list. Always prefer this over a generic "look elsewhere" reply.
     PROMPT
   },
   # ─── Intent-based package discovery (semantic) ───────────────────────
@@ -582,16 +554,13 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::DiscoverPackagesByIntentExecutor",
     tags: %w[packages discovery semantic intent catalog embedding],
     system_prompt: <<~PROMPT.strip
-      Use this skill when the operator describes a capability NEED rather
-      than a package NAME ("I need a reverse proxy", "find me an
-      in-memory cache"). Inputs: intent (required free-text),
-      repository_ids (optional), kind (apt|rpm|dnf), architectures
-      (canonical names — cross-kind expanded), license (exact match),
-      top_k (1-50, default 10). Returns ranked packages with
-      similarity scores + per-result reasoning + an overall
-      confidence label (high/medium/low). Use system-search-packages
-      INSTEAD when the operator already knows the package name and just
-      wants to filter/browse — search is faster for keyword queries.
+      Semantic package discovery for when the operator describes a capability NEED, not a
+      package NAME ("I need a reverse proxy", "find me an in-memory cache").
+      Inputs: intent (required free-text), repository_ids (optional), kind (apt|rpm|dnf),
+      architectures (canonical names — cross-kind expanded), license (exact match), top_k (1-50, default 10).
+      Returns ranked packages with similarity scores + per-result reasoning + an overall
+      confidence label (high/medium/low). Use system-search-packages INSTEAD when the operator
+      knows the package name and just wants to filter/browse — search is faster for keyword queries.
     PROMPT
   },
   # ─── Platform maintenance (D2-ext.1) ───────────────────────────────
@@ -605,19 +574,17 @@ SKILLS_DATA = [
     invocation_mode: "one_shot",
     tags: %w[platform maintenance certificates renewal drift health],
     system_prompt: <<~PROMPT.strip
-      Use this skill for ROUTINE platform care — not for incident
-      response (use platform_resilience for that), not for new
-      deployments (use platform_deploy).
+      ROUTINE platform care only — NOT incident response (use platform_resilience),
+      NOT new deployments (use platform_deploy).
 
-      The skill is action-discriminated. Pick the right branch:
+      Action-discriminated; pick the branch:
         - cert_status   → "are my certs healthy?" / "what's expiring?"
         - cert_rotate   → "rotate the cert for X" / "renew everything expiring"
         - drift_check   → "any drift on my deployments?"
         - health_check  → "what's the platform's overall health?"
 
-      Each branch is read-only OR triggers an async background job.
-      None of them block on long work — the skill returns immediately
-      with structured recommendations the operator can act on.
+      Each branch is read-only or triggers an async background job — none block on long work;
+      returns immediately with structured recommendations.
     PROMPT
   },
 
@@ -632,20 +599,17 @@ SKILLS_DATA = [
     invocation_mode: "one_shot",
     tags: %w[platform resilience drain scale failover incident],
     system_prompt: <<~PROMPT.strip
-      Use this skill when something is misbehaving or capacity is
-      under pressure — phrases like "drain X", "scale up", "what's
-      wrong with the fleet", "any unhealthy peers".
+      Incident response when something misbehaves or capacity is under pressure —
+      "drain X", "scale up", "what's wrong with the fleet", "any unhealthy peers".
 
-      The skill is action-discriminated:
+      Action-discriminated:
         - drain_instance  → cordon + drain a specific NodeInstance
         - scale           → mutate target_replicas (set | increment | decrement)
         - failover_check  → read-only triage of stress signals
 
-      `failover_check` is the safe diagnostic call — always prefer it
-      first when the operator describes a vague problem. Use the
-      mutation branches (drain_instance, scale) only after you've
-      confirmed the failing component AND the operator has agreed to
-      the action.
+      Prefer failover_check first for vague problems — it's the safe diagnostic call.
+      Use mutation branches (drain_instance, scale) only after confirming the failing
+      component AND getting operator agreement.
     PROMPT
   },
 
@@ -653,40 +617,30 @@ SKILLS_DATA = [
   {
     name: "Platform Deploy",
     slug: "system-platform-deploy",
-    description: "Deploy a new Powernode platform (standalone or federated). With no params, returns a wizard payload describing the form fields. With full params, calls System::PlatformDeploymentOrchestrator to provision the new platform end-to-end.",
+    description: "Deploy a new Powernode platform (standalone or federated). No params returns a wizard payload of form fields; full params call System::PlatformDeploymentOrchestrator to provision end-to-end.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::PlatformDeployExecutor",
     invocation_mode: "workflow_step",
     tags: %w[platform deployment provisioning federation standalone],
     system_prompt: <<~PROMPT.strip
-      Use this skill when the operator wants to spin up a new Powernode
-      platform — phrases like "deploy a new platform", "spin up another
-      hub", "create a federated peer", "stand up a standalone instance".
+      Spin up a new Powernode platform — "deploy a new platform", "spin up another hub",
+      "create a federated peer", "stand up a standalone instance".
 
       Two modes:
-        - standalone  → sovereign platform, no FederationPeer relationship
-        - federated   → peers with this platform on first boot (requires
-                        spawn_mode + parent_url)
+        - standalone (default) → sovereign platform, no FederationPeer relationship
+        - federated            → peers with this platform on first boot (requires spawn_mode + parent_url)
 
-      Calling with no parameters returns a wizard payload — the frontend
-      renders an inline form so the operator can fill in the details.
-      Once submitted, call this skill AGAIN with mode + name + (for
-      federated) parent_url + spawn_mode.
+      No parameters returns a wizard payload; the frontend renders an inline form.
+      After submit, call AGAIN with mode + name + (federated) parent_url + spawn_mode.
 
-      Standalone is the default. The new platform comes up sovereign:
-      its first-run handler creates a fresh admin account, requests its
-      own ACME cert if public_dns_hostname is set, and is ready to sign
-      into within ~5 minutes.
+      Standalone comes up sovereign: first-run handler creates a fresh admin account,
+      requests its own ACME cert if public_dns_hostname is set, signable within ~5 minutes.
+      Federated returns a single-use acceptance_token — capture it immediately, it's never
+      shown again; the child's first-run handler uses it to complete the handshake.
 
-      Federated mode returns a single-use acceptance_token — the operator
-      MUST capture it immediately because it's never shown again. The
-      child platform's first-run handler uses it to complete the
-      handshake.
-
-      Always confirm with the operator BEFORE calling in deploy mode —
-      this provisions real infrastructure. The wizard phase is a safe
-      no-op so use it generously to surface the form.
+      Deploy mode provisions real infrastructure — confirm with the operator first.
+      The wizard phase is a safe no-op; use it generously to surface the form.
     PROMPT
   },
 
@@ -694,31 +648,30 @@ SKILLS_DATA = [
   {
     name: "ACME Certificate Provision",
     slug: "system-acme-certificate-provision",
-    description: "Provision (issue) a new ACME TLS certificate for the platform's public listeners. Creates the certificate record and drives it through issuance via the ACME server (Let's Encrypt by default). Inputs: common_name, sans, issuer, challenge_type, dns_credential_id (dns-01 only), acme_email.",
+    description: "Issue a new ACME TLS certificate for the platform's public listeners — creates the record and drives issuance via the ACME server. Inputs: common_name, sans, issuer, challenge_type, dns_credential_id (dns-01 only), acme_email.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::AcmeCertificateProvisionExecutor",
     invocation_mode: "one_shot",
     tags: %w[platform acme certificates tls issuance provision],
     system_prompt: <<~PROMPT.strip
-      Use this skill to OBTAIN a new TLS certificate for a hostname.
-      Specify common_name, issuer (one of letsencrypt-prod,
-      letsencrypt-staging, internal-ca), and challenge_type (one of
-      dns-01, http-01, tls-alpn-01). dns-01 REQUIRES dns_credential_id
-      (a System::AcmeDnsCredential). For renewing or rotating an EXISTING
-      cert use platform_maintenance (action=cert_rotate) instead.
+      Obtain a NEW TLS certificate for a hostname.
+      Inputs: common_name, issuer (letsencrypt-prod | letsencrypt-staging | internal-ca),
+      challenge_type (dns-01 | http-01 | tls-alpn-01).
+      dns-01 REQUIRES dns_credential_id (a System::AcmeDnsCredential).
+      To renew/rotate an EXISTING cert, use platform_maintenance (action=cert_rotate).
     PROMPT
   },
   {
     name: "Reverse Proxy Compose",
     slug: "system-reverse-proxy-compose",
-    description: "Regenerate the reverse-proxy (Traefik) dynamic config for a certificate's account from its valid certs. Brings a valid certificate's HTTPS routers online; Traefik file-watches and reloads automatically.",
+    description: "Regenerate the reverse-proxy (Traefik) dynamic config for a certificate's account from its valid certs, bringing its HTTPS routers online. Traefik file-watches and reloads automatically.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::ReverseProxyComposeExecutor",
     invocation_mode: "one_shot",
     tags: %w[platform reverse-proxy traefik certificates routing],
-    system_prompt: "Use this skill to (re)generate the Traefik dynamic config for the account that owns a given valid certificate, bringing its HTTPS routers online. Requires a single input certificate_id (must be status=valid). Read/regenerate only — it emits the account's dynamic YAML; it does not change proxy backend/frontend URLs or env."
+    system_prompt: "(Re)generate the Traefik dynamic config for the account owning a given valid certificate, bringing its HTTPS routers online. Input: certificate_id (must be status=valid). Regenerate-only — emits the account's dynamic YAML; does not change proxy backend/frontend URLs or env."
   },
   {
     name: "Expose Service Publicly",
@@ -729,18 +682,18 @@ SKILLS_DATA = [
     executor: "System::Ai::Skills::ExposeServicePubliclyExecutor",
     invocation_mode: "one_shot",
     tags: %w[platform sdwan vip port-mapping acme reverse-proxy expose public],
-    system_prompt: "Use this skill when the operator asks to make an internal backend service reachable from the public internet at a hostname with TLS. It chains an SDWAN Virtual IP, a hub DNAT port mapping (443/80), an ACME certificate, and a reverse-proxy regeneration into one approval-gated step."
+    system_prompt: "Make an internal backend service reachable from the public internet at a hostname with TLS. Chains an SDWAN Virtual IP + hub DNAT port mapping (443/80) + ACME certificate + reverse-proxy regeneration into one approval-gated step."
   },
   {
     name: "Expose Service Locally",
     slug: "system-expose-service-local",
-    description: "Expose a backend service locally at /svc/<slug> on the platform's own host(s), authenticated by the reverse proxy (ForwardAuth). Creates/updates the Sdwan::Service, enables its local-exposure facet, and regenerates the reverse proxy.",
+    description: "Expose a backend service locally at /svc/<slug> on the platform's own host(s), authenticated by the reverse proxy (ForwardAuth). Creates/updates the Sdwan::Service, enables its local-exposure facet, and regenerates the proxy.",
     category: "devops",
     subdomain: "platform-deployment",
     executor: "System::Ai::Skills::ExposeServiceLocalExecutor",
     invocation_mode: "one_shot",
     tags: %w[platform sdwan service expose local forward-auth reverse-proxy svc],
-    system_prompt: "Use this skill when the operator asks to publish an internal/overlay service to the site's OWN authenticated users at a friendly /svc/<slug> path (NOT the public internet — use Expose Service Publicly for that). It creates or updates an Sdwan::Service, turns on its local-exposure facet (auth mode public/authenticated/scoped), and regenerates the reverse proxy. Approval-gated."
+    system_prompt: "Publish an internal/overlay service to the site's OWN authenticated users at a /svc/<slug> path (NOT the public internet — use Expose Service Publicly for that). Creates/updates an Sdwan::Service, turns on its local-exposure facet (auth mode public/authenticated/scoped), and regenerates the reverse proxy. Approval-gated."
   },
   # ─── Phase 3 (Federation & Multi-Site) — SDWAN-first federation ────────
   # Five executors landed in Phase 3. Their descriptors all declare the
@@ -754,47 +707,43 @@ SKILLS_DATA = [
     name: "Federation Acceptance",
     slug: "system-federation-acceptance",
     invocation_mode: "one_shot",
-    description: "Complete a federation handshake from a single-use acceptance token — runs the full accept chain (accept transition, platform enroll, managed-child operator grant, node_api bootstrap-token issuance, SDWAN overlay attach, and a federation governance health scan). Use when an operator wants to finish peering with a proposed federation peer whose acceptance token they hold.",
+    description: "Complete a federation handshake from a single-use acceptance token — runs the full accept chain: accept transition, platform enroll, managed-child operator grant, node_api bootstrap-token issuance, SDWAN overlay attach, federation governance health scan.",
     category: "devops",
     subdomain: "federation",
     executor: "System::Ai::Skills::FederationAcceptanceExecutor",
     tags: %w[federation sdwan acceptance handshake peer multi-site],
     system_prompt: <<~PROMPT.strip
-      Use this skill to complete a federation handshake from a single-use
-      acceptance token (held after a peer was proposed). Inputs:
-      acceptance_token (required — consumed on success), contract_version
-      (required — must be a supported version, currently [1]), capabilities
-      (optional), extension_slugs (optional), endpoints (optional array of
-      { url, scope, priority, cidr_hint? }). Runs the full accept chain
-      synchronously: accept transition → platform enroll → managed-child
-      operator grant → node_api bootstrap-token issuance → SDWAN overlay
-      attach → governance health scan. Federation peering is sensitive, so
-      this skill is APPROVAL-GATED. Returns peer_id, status, peer_kind,
-      contract_version_agreed, node_enrollment, sdwan_attach, governance,
-      and any warnings from the soft post-accept steps.
+      Complete a federation handshake from a single-use acceptance token (held after a peer was proposed).
+      Inputs: acceptance_token (required — consumed on success),
+      contract_version (required — a supported version, currently [1]),
+      capabilities (optional), extension_slugs (optional),
+      endpoints (optional array of { url, scope, priority, cidr_hint? }).
+      Runs the accept chain synchronously: accept transition → platform enroll → managed-child
+      operator grant → node_api bootstrap-token issuance → SDWAN overlay attach → governance health scan.
+      APPROVAL-GATED (federation peering is sensitive). Returns peer_id, status, peer_kind,
+      contract_version_agreed, node_enrollment, sdwan_attach, governance, and any warnings from
+      the soft post-accept steps.
     PROMPT
   },
   {
     name: "SDWAN Federation Compose",
     slug: "system-sdwan-federation-compose",
     invocation_mode: "workflow_step",
-    description: "Stand up a federation overlay topology (hub-and-spoke OR full-mesh) by composing per-peer Sdwan::PeerEnroller + Sdwan::TopologyCompiler + Sdwan::Bgp::RoutePolicyCompiler. Creates one Sdwan::Network, enrolls each member as a peer (hubs publicly_reachable), and compiles the per-peer WireGuard + FRR route-policy envelope. Reverse-order rollback tears down peers then the network.",
+    description: "Stand up a federation overlay topology (hub-and-spoke OR full-mesh) — composes per-peer Sdwan::PeerEnroller + Sdwan::TopologyCompiler + Sdwan::Bgp::RoutePolicyCompiler. Creates one Sdwan::Network, enrolls each member as a peer (hubs publicly_reachable), compiles the per-peer WireGuard + FRR route-policy envelope. Reverse-order rollback tears down peers then the network.",
     category: "devops",
     subdomain: "federation",
     executor: "System::Ai::Skills::SdwanFederationComposeExecutor",
     tags: %w[sdwan federation composition topology multi-site],
     system_prompt: <<~PROMPT.strip
-      Use this skill to compose a federation overlay across instances. Inputs:
-      network_name (required), topology (required — "hub_and_spoke" or
-      "full_mesh"), peers (required array — each {node_instance_id (required),
-      role: "hub"|"spoke" for hub_and_spoke, endpoint_host_v6/v4 + endpoint_port
-      for hubs, lan_subnets, bgp_route_reflector_client}), routing_protocol
-      (optional — "static" default or "ibgp"), dry_run (default false).
-      hub_and_spoke requires >=1 hub and every hub needs an endpoint; full_mesh
-      has no hub/spoke split. Returns sdwan_network_id, sdwan_peer_ids,
-      hub_peer_ids, topology_preview (per-peer WG view), and route_policy_preview
-      (per-peer FRR route-maps; meaningful for ibgp). Failures are collected,
-      not short-circuited. Single-call rollback destroys peers in reverse
+      Compose a federation overlay across instances.
+      Inputs: network_name (required), topology (required — "hub_and_spoke" or "full_mesh"),
+      peers (required array — each {node_instance_id (required), role: "hub"|"spoke" for hub_and_spoke,
+      endpoint_host_v6/v4 + endpoint_port for hubs, lan_subnets, bgp_route_reflector_client}),
+      routing_protocol (optional — "static" default or "ibgp"), dry_run (default false).
+      hub_and_spoke requires >=1 hub and every hub needs an endpoint; full_mesh has no hub/spoke split.
+      Returns sdwan_network_id, sdwan_peer_ids, hub_peer_ids, topology_preview (per-peer WG view),
+      and route_policy_preview (per-peer FRR route-maps; meaningful for ibgp).
+      Failures are collected, not short-circuited. Single-call rollback destroys peers in reverse
       enrollment order then the network.
     PROMPT
   },
@@ -802,45 +751,43 @@ SKILLS_DATA = [
     name: "Multi-Tenant Isolation",
     slug: "system-multi-tenant-isolation",
     invocation_mode: "one_shot",
-    description: "Provision a fully-isolated SDWAN network slice for a single tenant inside the account: a dedicated overlay network with its own VRF + isolated iBGP RIB (no shared routing table), a non-overlapping /64 (Sdwan::PrefixAllocator), default-deny nftables firewall rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native — no k8s NetworkPolicy, no VLAN.",
+    description: "Provision a fully-isolated SDWAN network slice for one tenant in the account: a dedicated overlay network with its own VRF + isolated iBGP RIB (no shared routing table), a non-overlapping /64 (Sdwan::PrefixAllocator), default-deny nftables rules scoped to the tenant CIDR, an OVN logical switch, and tenant-CIDR OVN ACLs. SDWAN-native — no k8s NetworkPolicy, no VLAN.",
     category: "devops",
     subdomain: "federation",
     executor: "System::Ai::Skills::MultiTenantIsolationExecutor",
     tags: %w[sdwan federation isolation tenant ovn nftables multi-site],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks to "isolate tenant <X>", "give
-      <tenant> its own segregated network", or "stand up a blast-radius
-      boundary for <tenant>". Inputs: tenant_key (required — slug-safe
-      identifier), network_name (optional), tenant_cidr (optional — defaults
-      to the auto-allocated /64), nb_db_endpoint + sb_db_endpoint (required
-      only when the account has no Sdwan::OvnDeployment yet), ovn_switch_name
-      (optional), dry_run (default false). Composes a VRF-isolated Sdwan::Network
-      (ibgp) + PrefixAllocator /64 + default-deny nftables rules + an OVN
-      logical switch + tenant-CIDR OVN ACLs — entirely on the SDWAN overlay.
-      APPROVAL-GATED (high blast radius). Reverse-order rollback: ACLs → switch
-      → firewall rules → network.
+      Isolate a tenant — "isolate tenant <X>", "give <tenant> its own segregated network",
+      "stand up a blast-radius boundary for <tenant>".
+      Inputs: tenant_key (required — slug-safe identifier), network_name (optional),
+      tenant_cidr (optional — defaults to the auto-allocated /64),
+      nb_db_endpoint + sb_db_endpoint (required only when the account has no Sdwan::OvnDeployment yet),
+      ovn_switch_name (optional), dry_run (default false).
+      Composes a VRF-isolated Sdwan::Network (ibgp) + PrefixAllocator /64 + default-deny nftables rules
+      + an OVN logical switch + tenant-CIDR OVN ACLs, entirely on the SDWAN overlay.
+      APPROVAL-GATED (high blast radius). Reverse-order rollback: ACLs → switch → firewall rules → network.
     PROMPT
   },
   {
     name: "Service Discovery Composer",
     slug: "system-service-discovery-composer",
     invocation_mode: "one_shot",
-    description: "Make a backend service discoverable across the fleet over the SDWAN overlay end-to-end — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering for federated peers, regenerates the local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names.",
+    description: "Make a backend service discoverable across the fleet over the SDWAN overlay — provisions a Virtual IP (auto-advertised via iBGP for in-overlay discovery), publishes a VIP-backed federation service-catalog offering for federated peers, regenerates the local Traefik routes, and OPTIONALLY publishes a public DNS record (A/AAAA/CNAME) for internet-facing names.",
     category: "devops",
     subdomain: "federation",
     executor: "System::Ai::Skills::ServiceDiscoveryComposerExecutor",
     tags: %w[sdwan federation discovery service-catalog dns multi-site],
     system_prompt: <<~PROMPT.strip
-      Use this skill when an operator asks to "make <service> discoverable",
-      "publish <service> to the service catalog", or "advertise <service> to
-      other sites". Inputs: service_name + service_slug (required), sdwan_network_id
-      + backend_peer_id + backend_port + vip_cidr (required), protocol (optional —
-      https default), grant_scopes / grant_ttl_days (optional), traefik_dynamic_dir
-      (optional), public_dns (optional, INTERNET-FACING only — { dns_credential_id,
-      record_name, record_type?, record_content?, ttl? }). Discovery rides the
-      SDWAN overlay: the VIP is auto-advertised via iBGP and a VIP-backed
-      Federation::ServiceOffering lets federated peers subscribe. External DNS is
-      the only non-overlay substrate and is soft (a failure is a warning).
+      Make a service discoverable — "make <service> discoverable",
+      "publish <service> to the service catalog", "advertise <service> to other sites".
+      Inputs: service_name + service_slug (required),
+      sdwan_network_id + backend_peer_id + backend_port + vip_cidr (required),
+      protocol (optional — https default), grant_scopes / grant_ttl_days (optional),
+      traefik_dynamic_dir (optional),
+      public_dns (optional, INTERNET-FACING only — { dns_credential_id, record_name, record_type?, record_content?, ttl? }).
+      Discovery rides the SDWAN overlay: the VIP is auto-advertised via iBGP and a VIP-backed
+      Federation::ServiceOffering lets federated peers subscribe. External DNS is the only
+      non-overlay substrate and is soft (a failure is a warning).
       APPROVAL-GATED. Reverse-order rollback: DNS record → offering → VIP.
     PROMPT
   },
@@ -848,23 +795,22 @@ SKILLS_DATA = [
     name: "Federation Peer Remediate",
     slug: "system-federation-peer-remediate",
     invocation_mode: "one_shot",
-    description: "Remediate a stale or cert-expiring federation peer: re-handshake a stale peer over mTLS (recovering it if reachable), degrade an unreachable active peer, or alert the operator that a federation cert needs an operator-driven rotation. Invoked by the fleet DecisionEngine off the FederationPeerLivenessSensor.",
+    description: "Remediate a stale or cert-expiring federation peer: re-handshake a stale peer over mTLS (recovering it if reachable), degrade an unreachable active peer, or alert the operator that a federation cert needs operator-driven rotation. Invoked by the fleet DecisionEngine off the FederationPeerLivenessSensor.",
     category: "sre_observability",
     subdomain: "federation",
     executor: "System::Ai::Skills::FederationPeerRemediateExecutor",
     tags: %w[federation sdwan peers liveness remediation heartbeat certs],
     system_prompt: <<~PROMPT.strip
-      Use this skill to remediate a stale or cert-expiring federation peer.
-      Inputs: federation_peer_id (required), reason (optional —
-      heartbeat_stale | cert_expiring | cert_expired, defaults to
-      heartbeat_stale), dry_run (default false). For heartbeat_stale it
-      re-handshakes the peer over mTLS (a reachable peer self-recovers via
-      its inbound heartbeat; an unreachable active peer is degraded; a
-      non-degradable peer is alerted). For cert_expiring/cert_expired it
-      alerts the operator — federation cert rotation is operator-driven
-      (cross-CA handshake), never auto-rotated. Every branch emits a
-      FleetEvent. The SDWAN Manager autonomy loop invokes this off the
-      FederationPeerLivenessSensor; it is also operator-runnable.
+      Remediate a stale or cert-expiring federation peer.
+      Inputs: federation_peer_id (required),
+      reason (optional — heartbeat_stale | cert_expiring | cert_expired, default heartbeat_stale),
+      dry_run (default false).
+      heartbeat_stale re-handshakes over mTLS (a reachable peer self-recovers via its inbound heartbeat;
+      an unreachable active peer is degraded; a non-degradable peer is alerted).
+      cert_expiring/cert_expired alert the operator — federation cert rotation is operator-driven
+      (cross-CA handshake), never auto-rotated. Every branch emits a FleetEvent.
+      The SDWAN Manager autonomy loop invokes this off the FederationPeerLivenessSensor;
+      also operator-runnable.
     PROMPT
   }
 ].freeze
