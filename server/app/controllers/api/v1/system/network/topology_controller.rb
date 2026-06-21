@@ -18,7 +18,7 @@ module Api
             # so gate on the same read permission the sibling SDWAN endpoints
             # use. Without this, any authenticated account user (even a bare
             # member) could read the full network topology. Audit 2026-06-09 F8-08.
-            require_permission("sdwan.networks.read")
+            require_permission("system.sdwan.networks.read")
 
             result = ::System::TopologyBuilder.build(account: current_account)
             render_success(

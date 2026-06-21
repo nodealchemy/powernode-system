@@ -18,19 +18,19 @@ module Api
           before_action :set_vip, only: %i[show update destroy failover]
 
           def index
-            require_permission("sdwan.vips.read")
+            require_permission("system.sdwan.vips.read")
             vips = @network.virtual_ips.order(:name)
             vips = vips.where(state: params[:state]) if params[:state].present?
             render_success(virtual_ips: vips.map { |v| serialize_vip(v) }, count: vips.size)
           end
 
           def show
-            require_permission("sdwan.vips.read")
+            require_permission("system.sdwan.vips.read")
             render_success(virtual_ip: serialize_vip_full(@vip))
           end
 
           def create
-            require_permission("sdwan.vips.manage")
+            require_permission("system.sdwan.vips.manage")
             attrs = vip_params
 
             ::Sdwan::VirtualIp.transaction do
@@ -49,7 +49,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.vips.manage")
+            require_permission("system.sdwan.vips.manage")
             ::Sdwan::VirtualIp.transaction do
               previous_holders = Array(@vip.holder_peer_ids).dup
               if @vip.update(vip_params)
@@ -62,7 +62,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.vips.manage")
+            require_permission("system.sdwan.vips.manage")
             id = @vip.id
             address = @vip.try(:cidr)
             gate!(
@@ -85,7 +85,7 @@ module Api
 
           # POST /virtual_ips/:id/failover — manual failover for non-anycast VIPs.
           def failover
-            require_permission("sdwan.vips.manage")
+            require_permission("system.sdwan.vips.manage")
             id = @vip.id
             gate!(
               action_category: "system.sdwan_vip_failover",

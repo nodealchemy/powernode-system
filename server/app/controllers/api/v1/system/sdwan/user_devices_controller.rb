@@ -20,13 +20,13 @@ module Api
           before_action :set_device, only: %i[show destroy revoke]
 
           def index
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             devices = @grant.user_devices.order(created_at: :desc)
             render_success(user_devices: devices.map { |d| serialize_device(d) }, count: devices.size)
           end
 
           def show
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             render_success(user_device: serialize_device(@device))
           end
 
@@ -35,7 +35,7 @@ module Api
           # device by re-issuing if lost, since each issuance creates a
           # NEW UserDevice with a fresh keypair — old keys remain auditable).
           def create
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             attrs = device_params
 
             result = ::Sdwan::UserDeviceIssuer.issue!(grant: @grant, label: attrs[:label])
@@ -56,7 +56,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             id = @device.id
             label = @device.try(:label)
             gate!(
@@ -76,7 +76,7 @@ module Api
 
           # POST /user_devices/:id/revoke — soft revoke, keeps the row for audit.
           def revoke
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             id = @device.id
             label = @device.try(:label)
             gate!(

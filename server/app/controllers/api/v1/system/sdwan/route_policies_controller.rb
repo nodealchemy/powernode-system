@@ -16,7 +16,7 @@ module Api
           before_action :set_policy, only: %i[show update destroy compile]
 
           def index
-            require_permission("sdwan.route_policies.read")
+            require_permission("system.sdwan.route_policies.read")
             scope = ::Sdwan::RoutePolicy.where(account_id: @account.id)
             scope = scope.where(scope: params[:scope]) if params[:scope].present?
             scope = scope.where(direction: params[:direction]) if params[:direction].present?
@@ -27,12 +27,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.route_policies.read")
+            require_permission("system.sdwan.route_policies.read")
             render_success(route_policy: serialize_full(@policy))
           end
 
           def create
-            require_permission("sdwan.route_policies.manage")
+            require_permission("system.sdwan.route_policies.manage")
             policy = ::Sdwan::RoutePolicy.new(policy_params.merge(account_id: @account.id))
             if policy.save
               render_success({ route_policy: serialize_full(policy) }, status: :created)
@@ -42,7 +42,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.route_policies.manage")
+            require_permission("system.sdwan.route_policies.manage")
             if @policy.update(policy_params)
               render_success(route_policy: serialize_full(@policy))
             else
@@ -51,7 +51,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.route_policies.manage")
+            require_permission("system.sdwan.route_policies.manage")
             id = @policy.id
             name = @policy.name
             gate!(
@@ -70,7 +70,7 @@ module Api
           # context of a specific peer. Useful for "what does my policy
           # look like in production?" debugging.
           def compile
-            require_permission("sdwan.route_policies.read")
+            require_permission("system.sdwan.route_policies.read")
             peer_id = params[:peer_id]
             return render_error("peer_id required", status: :bad_request) if peer_id.blank?
 

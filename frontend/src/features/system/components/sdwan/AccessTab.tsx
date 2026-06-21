@@ -31,7 +31,7 @@ interface AccessTabProps {
 export const AccessTab: React.FC<AccessTabProps> = ({ networkId, refreshKey }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.user_devices.manage');
+  const canManage = hasPermission('system.sdwan.user_devices.manage');
 
   const [grants, setGrants] = useState<SdwanAccessGrant[]>([]);
   const [devicesByGrant, setDevicesByGrant] = useState<Record<string, SdwanUserDevice[]>>({});

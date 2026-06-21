@@ -32,7 +32,7 @@ module Api
           before_action :set_collector
 
           def index
-            require_permission("sdwan.ipfix.read")
+            require_permission("system.sdwan.ipfix.read")
 
             scope = ::Sdwan::FlowSample.for_account(@account)
                                        .for_collector(@collector)
@@ -57,7 +57,7 @@ module Api
           end
 
           def create
-            require_permission("sdwan.ipfix.ingest")
+            require_permission("system.sdwan.ipfix.ingest")
 
             records = params.dig(:flow_samples) || params[:records] || []
             unless records.is_a?(Array)

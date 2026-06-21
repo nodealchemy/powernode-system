@@ -21,7 +21,7 @@ import type {
 export const IpfixCollectorsTab: React.FC = () => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.ipfix.manage');
+  const canManage = hasPermission('system.sdwan.ipfix.manage');
 
   const [collectors, setCollectors] = useState<SdwanIpfixCollector[]>([]);
   const [loading, setLoading] = useState(true);

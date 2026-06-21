@@ -17,7 +17,7 @@ interface FederationPeerListProps {
 export const FederationPeerList: React.FC<FederationPeerListProps> = ({ refreshKey }) => {
   const { addNotification } = useNotifications();
   const { hasPermission } = usePermissions();
-  const canManage = hasPermission('sdwan.federation.manage');
+  const canManage = hasPermission('system.sdwan.federation.manage');
 
   const [peers, setPeers] = useState<SdwanFederationPeer[]>([]);
   const [loading, setLoading] = useState(true);

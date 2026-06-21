@@ -17,7 +17,7 @@ module Api
           before_action :set_account
 
           def show
-            require_permission("sdwan.routing.read")
+            require_permission("system.sdwan.routing.read")
             account_bgp = ::Sdwan::AccountBgp.find_by(account_id: @account.id)
             networks = ::Sdwan::Network.where(account_id: @account.id)
 
@@ -40,7 +40,7 @@ module Api
           end
 
           def allocate_as
-            require_permission("sdwan.routing.manage")
+            require_permission("system.sdwan.routing.manage")
             existing = ::Sdwan::AccountBgp.find_by(account_id: @account.id)
             if existing
               return render_success(account_bgp: serialize_account_bgp(existing), allocated: false)
@@ -54,7 +54,7 @@ module Api
           end
 
           def sessions
-            require_permission("sdwan.routing.read")
+            require_permission("system.sdwan.routing.read")
             scope = ::Sdwan::BgpSession.joins(:network)
                                        .where(sdwan_networks: { account_id: @account.id })
             scope = scope.where(sdwan_networks: { id: params[:network_id] }) if params[:network_id].present?

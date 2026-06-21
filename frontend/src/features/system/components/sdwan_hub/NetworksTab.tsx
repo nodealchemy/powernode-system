@@ -19,7 +19,7 @@ interface NetworksTabProps {
 export const NetworksTab: React.FC<NetworksTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.networks.manage');
+  const canManage = hasPermission('system.sdwan.networks.manage');
 
   const [showCreate, setShowCreate] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<SdwanNetwork | null>(null);

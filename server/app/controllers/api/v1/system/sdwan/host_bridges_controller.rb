@@ -18,7 +18,7 @@ module Api
           before_action :set_bridge, only: %i[show destroy]
 
           def index
-            require_permission("sdwan.host_bridges.read")
+            require_permission("system.sdwan.host_bridges.read")
 
             scope = ::Sdwan::HostBridge
                       .where(account_id: @account.id)
@@ -42,12 +42,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.host_bridges.read")
+            require_permission("system.sdwan.host_bridges.read")
             render_success(host_bridge: serialize_bridge_full(@bridge))
           end
 
           def destroy
-            require_permission("sdwan.host_bridges.manage")
+            require_permission("system.sdwan.host_bridges.manage")
             # Release via the allocator with force: true so the short_id
             # returns to the pool immediately (rather than entering the
             # draining grace window). Operators using inline UI delete

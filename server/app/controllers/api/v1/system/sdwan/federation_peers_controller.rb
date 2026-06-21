@@ -21,21 +21,21 @@ module Api
           before_action :set_peer, only: %i[show update destroy revoke]
 
           def index
-            require_permission("sdwan.federation.read")
+            require_permission("system.sdwan.federation.read")
             peers = ::System::FederationPeer.where(account_id: @account.id).order(created_at: :desc)
             peers = peers.where(status: params[:status]) if params[:status].present?
             render_success(federation_peers: peers.map { |p| serialize_peer(p) }, count: peers.size)
           end
 
           def show
-            require_permission("sdwan.federation.read")
+            require_permission("system.sdwan.federation.read")
             render_success(federation_peer: serialize_peer_full(@peer))
           end
 
           # POST creates a "proposed" row. Federation peering is sensitive —
           # always gated through Ai::AutonomyGate (default require_approval).
           def create
-            require_permission("sdwan.federation.manage")
+            require_permission("system.sdwan.federation.manage")
             attrs = peer_params.to_h
 
             gate!(
@@ -56,7 +56,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.federation.manage")
+            require_permission("system.sdwan.federation.manage")
             new_status = params.dig(:federation_peer, :status)
             if new_status.present? && !@peer.can_transition_to?(new_status)
               return render_error(
@@ -73,7 +73,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.federation.manage")
+            require_permission("system.sdwan.federation.manage")
             id = @peer.id
             url = @peer.remote_instance_url
             gate!(
@@ -88,7 +88,7 @@ module Api
           end
 
           def revoke
-            require_permission("sdwan.federation.manage")
+            require_permission("system.sdwan.federation.manage")
             id = @peer.id
             url = @peer.remote_instance_url
             gate!(

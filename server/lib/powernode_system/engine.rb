@@ -142,62 +142,216 @@ module PowernodeSystem
     # so safe across Rails reloader cycles.
     initializer "powernode_system.register_permissions", after: :load_config_initializers do
       config.after_initialize do
-        next unless defined?(::Permissions) && ::Permissions.respond_to?(:register_permissions)
+        next unless defined?(::Permissions) && ::Permissions.respond_to?(:register_catalog)
 
-        # Permission descriptions (mirrors what the extension's permission
-        # migrations create). Listed here so Permission.sync_from_config!
-        # can pre-create them with the right descriptions.
-        ::Permissions.register_permissions(
-          # Cloud sync (worker-side reconcile tick)
-          "system.cloud_sync.reconcile"  => "Trigger CloudSyncService reconcile tick (worker, hourly)",
-          # Fleet autonomy (worker-side reconcile tick)
-          "system.fleet.reconcile"       => "Trigger FleetAutonomyService reconcile tick (worker, 60s)",
-          "system.fleet.autonomy"        => "Fleet autonomy decision making (worker)",
-          # GitOps reconcile + access
-          "system.gitops.reconcile"      => "Trigger GitOps reconcile tick (worker, cron)",
-          "system.gitops.sync"           => "Sync a GitOps repository (worker)",
-          "system.gitops.read"           => "Read GitOps repository state",
-          "system.gitops.write"          => "Modify GitOps repository state",
-          # Metrics ingest
-          "system.metrics.read"          => "Read system metrics + telemetry",
-          # Package catalog embedding pipeline
-          "system.packages.embed"        => "Lease + write package embeddings (worker)",
-          "system.packages.reembed"      => "Manually re-embed a package repository's catalog (operator)",
-          # Ingress + public exposure + ACME provisioning (SystemIngressTool)
-          "system.ingress.read"          => "View ingress / reverse-proxy / public-exposure state (SystemIngressTool floor)",
-          "system.ingress.manage"        => "Compose reverse proxies + expose services publicly (SystemIngressTool)",
-          "system.acme.manage"           => "Provision/renew ACME certificates via the ingress tool"
-        )
+        # FULL system-extension permission catalog, declared via the Permissions
+        # catalog DSL. `register_catalog` routes through register_permissions +
+        # register_role_permissions, so grants survive Role#sync_permissions!'s
+        # destructive replace on every db:seed.
+        #
+        # Grant convention (from the permission audit):
+        #   operator surface (controllers + AI tools)  -> admin
+        #   worker surface  (authorize_worker_permission!) -> system_worker
+        #   both surfaces -> both. super_admin gets everything programmatically.
+        #
+        # `resource :<r>, actions:` generates "system.<r>.<action>".
+        # `permission "full.name", ...` is the escape hatch for irregular /
+        # namespace-level names (feature-area singletons, non-CRUD verbs, and
+        # the 4-segment system.sdwan.* names the resource helper can't express).
+        ::Permissions.register_catalog(namespace: "system") do
+          # ---------------------------------------------------------------
+          # Worker reconcile ticks + feature-area singletons (pre-existing 13,
+          # folded in unchanged) + operator scale/health dashboard.
+          # ---------------------------------------------------------------
+          permission "system.cloud_sync.reconcile", "Trigger CloudSyncService reconcile tick (worker, hourly)",
+                     grant: { system_worker: true }
+          permission "system.fleet.reconcile", "Trigger FleetAutonomyService reconcile tick (worker, 60s)",
+                     grant: { system_worker: true }
+          permission "system.fleet.autonomy", "Fleet autonomy decision making (worker)",
+                     grant: { system_worker: true }
+          permission "system.fleet.read", "View fleet / concierge state",
+                     grant: { admin: true }
+          permission "system.gitops.reconcile", "Trigger GitOps reconcile tick (worker, cron)",
+                     grant: { system_worker: true }
+          permission "system.gitops.sync", "Sync a GitOps repository (worker)",
+                     grant: { system_worker: true }
+          permission "system.gitops.read", "Read GitOps repository state",
+                     grant: { system_worker: true }
+          permission "system.gitops.write", "Modify GitOps repository state", grant: {}
+          permission "system.metrics.read", "Read system metrics + telemetry",
+                     grant: { system_worker: true }
+          permission "system.health.check", "Check worker / system health (WorkerPermissionsView + health endpoints)",
+                     grant: { admin: true, system_worker: true }
+          permission "system.packages.embed", "Lease + write package embeddings (worker)",
+                     grant: { system_worker: true }
+          permission "system.packages.reembed", "Manually re-embed a package repository's catalog (operator)", grant: {}
+          permission "system.ingress.read", "View ingress / reverse-proxy / public-exposure state (SystemIngressTool floor)",
+                     grant: { admin: true }
+          permission "system.ingress.manage", "Compose reverse proxies + expose services publicly (SystemIngressTool)",
+                     grant: { admin: true }
+          permission "system.marketplace.read", "Browse the system node-module marketplace (CatalogPage MarketplaceTab)",
+                     grant: { admin: true, manager: true, member: true }
 
-        # Worker role grants. Migrations already grant these (via
-        # role.permissions << perm), but db:seed's destructive sync wipes
-        # them on every run — this registration is what keeps them in
-        # place across seeds.
-        ::Permissions.register_role_permissions(
-          "system_worker",
-          %w[
-            system.cloud_sync.reconcile
-            system.fleet.reconcile
-            system.fleet.autonomy
-            system.gitops.reconcile
-            system.gitops.sync
-            system.gitops.read
-            system.metrics.read
-            system.packages.embed
-          ]
-        )
+          # ---------------------------------------------------------------
+          # Platform dashboard (singular `platform`) — operator deploy/scale/health.
+          # (was db/seeds/system_platform_permissions.rb)
+          # ---------------------------------------------------------------
+          permission "system.platform.read", "View the unified Platform dashboard (counts, status, overview)",
+                     grant: { admin: true }
+          permission "system.platform.scale", "Draft scaling plans for platform components",
+                     grant: { admin: true }
+          permission "system.platform.scale.apply", "Apply a drafted scaling plan (provisions/decommissions instances)",
+                     grant: { admin: true }
+          permission "system.platform.health.read", "Read platform health metrics (uptime, queue depth, etc.)",
+                     grant: { admin: true }
+          permission "system.platform.deploy", "Deploy a new Powernode platform (standalone or federated)",
+                     grant: { admin: true }
+          permission "system.migrations.read", "View platform infrastructure migrations (PlatformInfraTab)",
+                     grant: { admin: true }
+          permission "system.migrations.apply", "Compose, advance, or run multi-hop migration chains",
+                     grant: { admin: true }
+          permission "system.migrations.cancel", "Cancel an active multi-hop migration chain",
+                     grant: { admin: true }
 
-        # Operator role grants for the ingress / ACME-provisioning tool
-        # surface. Registered here (not via migration alone) so db:seed's
-        # destructive permission sync doesn't wipe them.
-        ::Permissions.register_role_permissions(
-          "admin",
-          %w[
-            system.ingress.read
-            system.ingress.manage
-            system.acme.manage
-          ]
-        )
+          # ---------------------------------------------------------------
+          # ACME / DNS certificate lifecycle (was db/seeds/system_acme_permissions.rb).
+          # system.acme.manage pre-existed in the engine seam; folded in here.
+          # ---------------------------------------------------------------
+          permission "system.acme.read", "View issued ACME certificates and renewal state",
+                     grant: { admin: true }
+          permission "system.acme.issue", "Request a new ACME certificate for a domain",
+                     grant: { admin: true }
+          permission "system.acme.renew", "Trigger an out-of-band renewal of an existing certificate",
+                     grant: { admin: true }
+          permission "system.acme.revoke", "Revoke an issued certificate",
+                     grant: { admin: true }
+          permission "system.acme.manage", "Provision/renew ACME certificates via the ingress tool",
+                     grant: { admin: true }
+
+          # ---------------------------------------------------------------
+          # CVE exposure (was db/seeds/system_cve_permissions.rb).
+          # ---------------------------------------------------------------
+          permission "system.cve.read", "View CVE exposures across the fleet (severity, state, affected modules)",
+                     grant: { admin: true, manager: true, member: true }
+          permission "system.cve.manage", "Triage CVE exposures (mark remediating / resolved / wont_fix)",
+                     grant: { admin: true, manager: true }
+
+          # ---------------------------------------------------------------
+          # Storage assignments + credentials (was db/seeds/system_storage_permissions.rb).
+          # Worker compliance archival. system.storage.* tool floor.
+          # ---------------------------------------------------------------
+          permission "system.compliance.archive", "Archive daily compliance snapshots (worker)",
+                     grant: { system_worker: true }
+          permission "system.storage.read", "Read storage-owner assignments + chown status (tool floor)",
+                     grant: { admin: true }
+
+          # ---------------------------------------------------------------
+          # CRUD resources (operator surface -> admin unless noted).
+          # ---------------------------------------------------------------
+          resource :architectures, actions: %i[read create delete manage propose], grant: { admin: :all }
+          resource :children, actions: %i[read spawn manage], grant: { admin: :all }
+          resource :connections, actions: %i[read create update delete test], grant: { admin: :all }
+          resource :infra_tasks, actions: %i[read create control], grant: { admin: :all }
+          resource :instances, actions: %i[read create update delete control claim], grant: { admin: :all }
+          resource :modules, actions: %i[read create update delete],
+                   grant: { admin: :all, system_worker: %i[read update] }
+          resource :networks, actions: %i[read create update delete], grant: { admin: :all }
+          resource :node_instances, actions: %i[read create update delete manage],
+                   grant: { admin: %i[read manage], system_worker: :all }
+          resource :nodes, actions: %i[read create update delete],
+                   grant: { admin: :all, system_worker: %i[read update] }
+          resource :package_modules, actions: %i[create view refresh],
+                   grant: { admin: :all, system_worker: %i[create refresh] }
+          resource :package_repositories, actions: %i[view create update delete sync manage_shared],
+                   grant: { admin: :all, system_worker: %i[sync] }
+          resource :packages, actions: %i[search view], grant: { admin: :all }
+          resource :peers, actions: %i[read invite manage activate execute], grant: { admin: :all }
+          resource :platforms, actions: %i[read create update delete], grant: { admin: :all }
+          resource :providers, actions: %i[read create update delete test], grant: { admin: :all }
+          resource :puppet, actions: %i[read create update delete], grant: { admin: :all }
+          resource :regions, actions: %i[read create update delete], grant: { admin: :all }
+          resource :scripts, actions: %i[read create update delete], grant: { admin: :all }
+          resource :service_offerings, actions: %i[read manage], grant: { admin: :all }
+          resource :service_subscriptions, actions: %i[read subscribe cancel], grant: { admin: :all }
+          resource :templates, actions: %i[read create update delete], grant: { admin: :all }
+          resource :unclaimed_devices, actions: %i[read discard],
+                   grant: { admin: :all, system_worker: %i[discard] }
+          resource :volumes, actions: %i[read create update delete snapshot manage],
+                   grant: { admin: %i[read create update delete snapshot], system_worker: %i[read create update delete manage] }
+
+          # Worker-only task queue (distinct principal from operator infra_tasks).
+          resource :tasks, actions: %i[read create manage execute], grant: { system_worker: :all }
+
+          # ACME DNS provider credentials + DNS record CRUD (acme seed).
+          resource :acme_dns, actions: %i[read manage], grant: { admin: :all }
+          resource :dns, actions: %i[read manage], grant: { admin: :all }
+
+          # Storage assignments + mount points (storage seed).
+          # admin -> all; manager -> assignments {read,create,update,assign,rotate_credential}
+          # (NOT delete); member -> assignments read.
+          resource :"storage.assignments",
+                   actions: %i[read create update delete assign rotate_credential],
+                   grant: {
+                     admin: :all,
+                     manager: %i[read create update assign rotate_credential],
+                     member: %i[read]
+                   }
+          resource :"storage.mount_points", actions: %i[read create update delete], grant: { admin: :all }
+
+          # ---------------------------------------------------------------
+          # SDWAN — user's prefix rule: system.sdwan.* (tables are system_sdwan_*).
+          # 4-segment names => permission escape hatch. operator CRUD -> admin;
+          # sidecar/service ingest -> system_worker (machine credential, not admin).
+          # ---------------------------------------------------------------
+          permission "system.sdwan.networks.read", "View SDWAN overlay networks",
+                     grant: { admin: true }
+          permission "system.sdwan.networks.manage", "Create, update, and delete SDWAN networks",
+                     grant: { admin: true }
+          permission "system.sdwan.peers.read", "View SDWAN peers and compiled topology",
+                     grant: { admin: true }
+          permission "system.sdwan.peers.manage", "Attach, detach, and update SDWAN peers",
+                     grant: { admin: true }
+          permission "system.sdwan.firewall.read", "View SDWAN firewall rules",
+                     grant: { admin: true }
+          permission "system.sdwan.firewall.manage", "Create, update, and delete SDWAN firewall rules",
+                     grant: { admin: true }
+          permission "system.sdwan.host_bridges.read", "View SDWAN host bridges",
+                     grant: { admin: true }
+          permission "system.sdwan.host_bridges.manage", "Create, activate, and release SDWAN host bridges",
+                     grant: { admin: true }
+          permission "system.sdwan.ipfix.read", "View SDWAN IPFIX collectors and flow samples",
+                     grant: { admin: true }
+          permission "system.sdwan.ipfix.manage", "Create and delete SDWAN IPFIX collectors",
+                     grant: { admin: true }
+          permission "system.sdwan.ipfix.ingest", "Ingest IPFIX flow-sample batches (sidecar/service token)",
+                     grant: { system_worker: true }
+          permission "system.sdwan.ovn.read", "View SDWAN OVN deployments, switches, ports, and ACLs",
+                     grant: { admin: true }
+          permission "system.sdwan.ovn.manage", "Create and delete SDWAN OVN deployments, switches, ports, and ACLs",
+                     grant: { admin: true }
+          permission "system.sdwan.port_mappings.read", "View SDWAN hub port mappings (DNAT)",
+                     grant: { admin: true }
+          permission "system.sdwan.port_mappings.manage", "Create, update, and delete SDWAN port mappings",
+                     grant: { admin: true }
+          permission "system.sdwan.route_policies.read", "View and compile SDWAN route policies",
+                     grant: { admin: true }
+          permission "system.sdwan.route_policies.manage", "Create, update, and delete SDWAN route policies",
+                     grant: { admin: true }
+          permission "system.sdwan.routing.read", "View SDWAN routing state (subnet advertisements, BGP sessions)",
+                     grant: { admin: true }
+          permission "system.sdwan.routing.manage", "Manage SDWAN routing (LAN subnets, routing mode, AS number)",
+                     grant: { admin: true }
+          permission "system.sdwan.user_devices.manage", "Manage SDWAN user VPN devices and access grants",
+                     grant: { admin: true }
+          permission "system.sdwan.federation.read", "View SDWAN federation peers, scans, and audit log",
+                     grant: { admin: true }
+          permission "system.sdwan.federation.manage", "Propose, accept, revoke, and configure SDWAN federation peers",
+                     grant: { admin: true }
+          permission "system.sdwan.vips.read", "View SDWAN virtual IPs and assignments",
+                     grant: { admin: true }
+          permission "system.sdwan.vips.manage", "Create, update, delete, and fail over SDWAN virtual IPs",
+                     grant: { admin: true }
+        end
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register extension permissions: #{e.message}"
       end

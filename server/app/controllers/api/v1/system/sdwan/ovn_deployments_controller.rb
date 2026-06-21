@@ -24,7 +24,7 @@ module Api
           before_action :set_deployment, only: %i[show]
 
           def index
-            require_permission("sdwan.ovn.read")
+            require_permission("system.sdwan.ovn.read")
 
             deployment = ::Sdwan::OvnDeployment.for_account(@account).first
 
@@ -35,7 +35,7 @@ module Api
           end
 
           def show
-            require_permission("sdwan.ovn.read")
+            require_permission("system.sdwan.ovn.read")
 
             switches = @deployment.logical_switches
                                   .includes(:ports, :acls)

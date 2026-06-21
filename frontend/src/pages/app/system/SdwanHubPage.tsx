@@ -31,14 +31,14 @@ const TABS: { key: TabKey; label: string; permission: string }[] = [
   // P4.5.8 — system-wide federation + SDWAN graph. Lands first because
   // it's the operator's at-a-glance view; deeper drill-down lives in
   // the kind-specific tabs that follow.
-  { key: 'topology', label: 'Topology', permission: 'sdwan.networks.read' },
-  { key: 'networks', label: 'Networks', permission: 'sdwan.networks.read' },
-  { key: 'routing', label: 'Routing', permission: 'sdwan.routing.read' },
-  { key: 'federation', label: 'Federation', permission: 'sdwan.federation.read' },
-  { key: 'host_bridges', label: 'Host Bridges', permission: 'sdwan.host_bridges.read' },
-  { key: 'ovn', label: 'OVN', permission: 'sdwan.ovn.read' },
-  { key: 'ipfix', label: 'IPFIX', permission: 'sdwan.ipfix.read' },
-  { key: 'flows', label: 'Flows', permission: 'sdwan.ipfix.read' },
+  { key: 'topology', label: 'Topology', permission: 'system.sdwan.networks.read' },
+  { key: 'networks', label: 'Networks', permission: 'system.sdwan.networks.read' },
+  { key: 'routing', label: 'Routing', permission: 'system.sdwan.routing.read' },
+  { key: 'federation', label: 'Federation', permission: 'system.sdwan.federation.read' },
+  { key: 'host_bridges', label: 'Host Bridges', permission: 'system.sdwan.host_bridges.read' },
+  { key: 'ovn', label: 'OVN', permission: 'system.sdwan.ovn.read' },
+  { key: 'ipfix', label: 'IPFIX', permission: 'system.sdwan.ipfix.read' },
+  { key: 'flows', label: 'Flows', permission: 'system.sdwan.ipfix.read' },
 ];
 
 const BASE_PATH = '/app/system/sdwan';
@@ -70,8 +70,8 @@ const SdwanHubPage: React.FC = () => {
   const [networksActions, setNetworksActions] = useState<{ openCreate: () => void } | null>(null);
   const [federationActions, setFederationActions] = useState<{ openPropose: () => void } | null>(null);
 
-  const canManageNetworks = hasPermission('sdwan.networks.manage');
-  const canManageFederation = hasPermission('sdwan.federation.manage');
+  const canManageNetworks = hasPermission('system.sdwan.networks.manage');
+  const canManageFederation = hasPermission('system.sdwan.federation.manage');
 
   const pageActions: PageAction[] = [];
   if (activeTabKey === 'networks' && canManageNetworks && networksActions) {

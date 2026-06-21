@@ -125,7 +125,7 @@ export function registerSystemEntities(): void {
     {
       type: 'sdwan_network',
       label: 'SDWAN Network',
-      permission: 'sdwan.networks.read',
+      permission: 'system.sdwan.networks.read',
       icon: 'ShieldCheck',
       component: asModal(SdwanNetworkDetailModal),
       objectProp: 'network',
@@ -253,7 +253,7 @@ export function registerSystemEntities(): void {
     {
       type: 'sdwan_host_bridge',
       label: 'Host Bridge',
-      permission: 'sdwan.host_bridges.read',
+      permission: 'system.sdwan.host_bridges.read',
       icon: 'Cable',
       labelField: 'bridge_name',
       fetchById: (id: string) => sdwanApi.getHostBridge(id),
@@ -263,7 +263,7 @@ export function registerSystemEntities(): void {
       // the deployment row so the generic modal has scalar fields to render.
       type: 'sdwan_ovn_deployment',
       label: 'OVN Deployment',
-      permission: 'sdwan.ovn.read',
+      permission: 'system.sdwan.ovn.read',
       icon: 'Boxes',
       labelField: 'status',
       fetchById: (id: string) => sdwanApi.getOvnDeployment(id).then((r) => r.deployment),
@@ -271,7 +271,7 @@ export function registerSystemEntities(): void {
     {
       type: 'sdwan_ipfix_collector',
       label: 'IPFIX Collector',
-      permission: 'sdwan.ipfix.read',
+      permission: 'system.sdwan.ipfix.read',
       icon: 'Radar',
       labelField: 'name',
       fetchById: (id: string) => sdwanApi.getIpfixCollector(id),
@@ -281,7 +281,7 @@ export function registerSystemEntities(): void {
       // network, so both segments are required.
       type: 'sdwan_virtual_ip',
       label: 'Virtual IP',
-      permission: 'sdwan.vips.read',
+      permission: 'system.sdwan.vips.read',
       icon: 'Globe',
       labelField: 'name',
       fetchById: (id: string) => {
@@ -300,7 +300,7 @@ export function registerSystemEntities(): void {
       // `/sdwan/route_policies/:id` — NOT a network-nested composite.
       type: 'sdwan_route_policy',
       label: 'Route Policy',
-      permission: 'sdwan.route_policies.read',
+      permission: 'system.sdwan.route_policies.read',
       icon: 'Route',
       labelField: 'name',
       fetchById: (id: string) => sdwanApi.getRoutePolicy(id),

@@ -15,7 +15,7 @@ module Api
           before_action :set_network, only: %i[show update destroy topology]
 
           def index
-            require_permission("sdwan.networks.read")
+            require_permission("system.sdwan.networks.read")
             scope = ::Sdwan::Network.where(account_id: @account.id).order(:name)
             scope = scope.where(status: params[:status]) if params[:status].present?
             networks = paginate(scope)
@@ -23,12 +23,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.networks.read")
+            require_permission("system.sdwan.networks.read")
             render_success(network: serialize_network_full(@network))
           end
 
           def create
-            require_permission("sdwan.networks.manage")
+            require_permission("system.sdwan.networks.manage")
             attrs = network_params
 
             network = ::Sdwan::Network.new(attrs.merge(account_id: @account.id))
@@ -40,7 +40,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.networks.manage")
+            require_permission("system.sdwan.networks.manage")
             if @network.update(network_params)
               render_success(network: serialize_network_full(@network.reload))
             else
@@ -49,7 +49,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.networks.manage")
+            require_permission("system.sdwan.networks.manage")
             id = @network.id
             name = @network.name
             gate!(
@@ -67,7 +67,7 @@ module Api
           # Returns the compiled per-peer view for every peer in the network.
           # Useful for operator visualization (slice 3) and external diagnostics.
           def topology
-            require_permission("sdwan.peers.read")
+            require_permission("system.sdwan.peers.read")
             views = ::Sdwan::TopologyCompiler.compile_for_network(@network)
             render_success(
               network_id: @network.id,

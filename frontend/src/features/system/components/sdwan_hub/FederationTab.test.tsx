@@ -300,7 +300,7 @@ describe('FederationTab', () => {
 
   // ── Permission check ─────────────────────────────────────────────────────
 
-  it('calls hasPermission with "sdwan.federation.manage"', () => {
+  it('calls hasPermission with "system.sdwan.federation.manage"', () => {
     const mockHasPermission = jest.fn(() => true);
     // Re-mock with a spy-enabled version
     jest.isolateModules(() => {

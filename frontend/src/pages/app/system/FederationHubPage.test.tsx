@@ -127,7 +127,7 @@ describe('FederationHubPage', () => {
 
   it('hides the Control tab when the operator lacks sdwan.federation.manage', () => {
     // Grant everything except federation management → Monitor only.
-    mockHasPermission.mockImplementation((perm: string) => perm !== 'sdwan.federation.manage');
+    mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.federation.manage');
 
     renderAt('/app/system/federation/monitor');
 
@@ -137,7 +137,7 @@ describe('FederationHubPage', () => {
 
   it('hides the Monitor tab when the operator lacks system.peers.read', () => {
     // Only federation management → Control only.
-    mockHasPermission.mockImplementation((perm: string) => perm === 'sdwan.federation.manage');
+    mockHasPermission.mockImplementation((perm: string) => perm === 'system.sdwan.federation.manage');
 
     renderAt('/app/system/federation/control');
 
@@ -147,7 +147,7 @@ describe('FederationHubPage', () => {
 
   it('gates Monitor sub-sections on their own read permissions', () => {
     // Monitor visible (peers.read), but no OVN read → isolation section hidden.
-    mockHasPermission.mockImplementation((perm: string) => perm !== 'sdwan.ovn.read');
+    mockHasPermission.mockImplementation((perm: string) => perm !== 'system.sdwan.ovn.read');
 
     renderAt('/app/system/federation/monitor');
 

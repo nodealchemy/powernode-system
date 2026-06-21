@@ -12,7 +12,7 @@ interface FederationTabProps {
 
 export const FederationTab: React.FC<FederationTabProps> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
-  const _canManage = hasPermission('sdwan.federation.manage');
+  const _canManage = hasPermission('system.sdwan.federation.manage');
   void _canManage; // gating happens at the parent hub via PageContainer.actions
 
   const [showPropose, setShowPropose] = useState(false);

@@ -66,12 +66,12 @@ export const NetworkDetailModal: React.FC<NetworkDetailModalProps> = ({
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
 
-  const canManageNetwork      = hasPermission('sdwan.networks.manage');
-  const canManagePeers        = hasPermission('sdwan.peers.manage');
-  const canManageFw           = hasPermission('sdwan.firewall.manage');
-  const canManageVips         = hasPermission('sdwan.vips.manage');
-  const canManageRouting      = hasPermission('sdwan.routing.manage');
-  const canManagePortMappings = hasPermission('sdwan.port_mappings.manage');
+  const canManageNetwork      = hasPermission('system.sdwan.networks.manage');
+  const canManagePeers        = hasPermission('system.sdwan.peers.manage');
+  const canManageFw           = hasPermission('system.sdwan.firewall.manage');
+  const canManageVips         = hasPermission('system.sdwan.vips.manage');
+  const canManageRouting      = hasPermission('system.sdwan.routing.manage');
+  const canManagePortMappings = hasPermission('system.sdwan.port_mappings.manage');
 
   // Local network detail — refetched on open + on triggerRefresh so
   // we always show the freshest data without forcing parent rerender.

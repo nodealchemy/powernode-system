@@ -20,7 +20,7 @@ import type {
 export const HostBridgesTab: React.FC = () => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.host_bridges.manage');
+  const canManage = hasPermission('system.sdwan.host_bridges.manage');
 
   const [bridges, setBridges] = useState<SdwanHostBridge[]>([]);
   const [loading, setLoading] = useState(true);

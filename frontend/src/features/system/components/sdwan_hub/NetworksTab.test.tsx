@@ -393,7 +393,7 @@ describe('NetworksTab', () => {
   });
 
   it('passes undefined as onDelete when user lacks sdwan.networks.manage', () => {
-    mockHasPermission = (perm: string) => perm !== 'sdwan.networks.manage';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.networks.manage';
     renderTab();
     expect(mockCapturedNetworkListProps.onDelete).toBeUndefined();
   });

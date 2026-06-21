@@ -17,18 +17,18 @@ module Api
           before_action :set_peer, only: %i[show update destroy]
 
           def index
-            require_permission("sdwan.peers.read")
+            require_permission("system.sdwan.peers.read")
             peers = @network.peers.includes(:node_instance, :keys).order(:created_at)
             render_success(peers: peers.map { |p| serialize_peer(p) }, count: peers.size)
           end
 
           def show
-            require_permission("sdwan.peers.read")
+            require_permission("system.sdwan.peers.read")
             render_success(peer: serialize_peer_full(@peer))
           end
 
           def create
-            require_permission("sdwan.peers.manage")
+            require_permission("system.sdwan.peers.manage")
             attrs = peer_params
 
             node_instance = ::System::NodeInstance.joins(:node)
@@ -59,7 +59,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.peers.manage")
+            require_permission("system.sdwan.peers.manage")
             if @peer.update(peer_update_params)
               render_success(peer: serialize_peer_full(@peer.reload))
             else
@@ -73,7 +73,7 @@ module Api
           # the executor (Sdwan::Executors::DeletePeer) handles the destroy
           # when the chain completes.
           def destroy
-            require_permission("sdwan.peers.manage")
+            require_permission("system.sdwan.peers.manage")
 
             gate_result = ::Ai::AutonomyGate.evaluate(
               action_category: "sdwan.peer_delete",

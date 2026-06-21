@@ -18,7 +18,7 @@ module Api
           before_action :set_rule, only: %i[show update destroy]
 
           def index
-            require_permission("sdwan.firewall.read")
+            require_permission("system.sdwan.firewall.read")
             rules = @network.firewall_rules.ordered
             rules = rules.where(enabled: params[:enabled]) if params.key?(:enabled)
             render_success(
@@ -29,12 +29,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.firewall.read")
+            require_permission("system.sdwan.firewall.read")
             render_success(firewall_rule: serialize_rule_full(@rule))
           end
 
           def create
-            require_permission("sdwan.firewall.manage")
+            require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
 
             rule = @network.firewall_rules.new(account_id: @account.id)
@@ -48,7 +48,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.firewall.manage")
+            require_permission("system.sdwan.firewall.manage")
             attrs = rule_params
             assign_with_port_range(@rule, attrs)
             if @rule.save
@@ -59,7 +59,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.firewall.manage")
+            require_permission("system.sdwan.firewall.manage")
             id = @rule.id
             gate!(
               action_category: "sdwan.firewall_rule_delete",

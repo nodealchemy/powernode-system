@@ -22,7 +22,7 @@ interface NetworkVipsTabProps {
 export const NetworkVipsTab: React.FC<NetworkVipsTabProps> = ({ networkId, onActionsReady }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.vips.manage');
+  const canManage = hasPermission('system.sdwan.vips.manage');
 
   const [refreshKey, setRefreshKey] = useState(0);
   const [showCreate, setShowCreate] = useState(false);

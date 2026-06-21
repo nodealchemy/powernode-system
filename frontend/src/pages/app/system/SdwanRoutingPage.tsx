@@ -41,9 +41,9 @@ const SdwanRoutingPage: React.FC<SdwanRoutingPageProps> = ({ embedded = false })
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
   const location = useLocation();
-  const canManage = hasPermission('sdwan.routing.manage');
-  const canRead = hasPermission('sdwan.routing.read');
-  const canManagePolicies = hasPermission('sdwan.route_policies.manage');
+  const canManage = hasPermission('system.sdwan.routing.manage');
+  const canRead = hasPermission('system.sdwan.routing.read');
+  const canManagePolicies = hasPermission('system.sdwan.route_policies.manage');
 
   const [data, setData] = useState<SdwanRoutingOverview | null>(null);
   const [loading, setLoading] = useState(true);

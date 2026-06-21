@@ -23,7 +23,7 @@ export const NetworkPortMappingsTab: React.FC<NetworkPortMappingsTabProps> = ({
 }) => {
   const { hasPermission } = usePermissions();
   const { addNotification } = useNotifications();
-  const canManage = hasPermission('sdwan.port_mappings.manage');
+  const canManage = hasPermission('system.sdwan.port_mappings.manage');
 
   const [refreshKey, setRefreshKey] = useState(0);
   const [editTarget, setEditTarget] = useState<SdwanPortMapping | null | undefined>(undefined);

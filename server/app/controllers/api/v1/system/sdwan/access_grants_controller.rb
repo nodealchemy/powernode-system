@@ -18,18 +18,18 @@ module Api
           before_action :set_grant, only: %i[show update destroy revoke]
 
           def index
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             grants = @network.access_grants.includes(:user, :user_devices).order(created_at: :desc)
             render_success(access_grants: grants.map { |g| serialize_grant(g) }, count: grants.size)
           end
 
           def show
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             render_success(access_grant: serialize_grant_full(@grant))
           end
 
           def create
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             attrs = grant_params
 
             user = ::User.where(account_id: @account.id).find(attrs[:user_id])
@@ -54,7 +54,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             if @grant.update(grant_update_params)
               render_success(access_grant: serialize_grant_full(@grant.reload))
             else
@@ -63,7 +63,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             @grant.destroy!
             render_success(deleted: true, id: @grant.id)
           end
@@ -73,7 +73,7 @@ module Api
           # AutonomyGate (default require_approval) — revoking access cuts
           # off a user's VPN immediately.
           def revoke
-            require_permission("sdwan.user_devices.manage")
+            require_permission("system.sdwan.user_devices.manage")
             id = @grant.id
             user_email = @grant.try(:user)&.email
             gate!(

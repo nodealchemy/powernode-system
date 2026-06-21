@@ -17,6 +17,12 @@
 #
 # Order matters — skill catalogs first, then agents that bind skills,
 # then policy/permission seeds.
+#
+# NOTE: extension permissions + role grants are NO LONGER seeded imperatively.
+# They are declared in lib/powernode_system/engine.rb via the Permissions
+# catalog DSL (register_catalog), which registers them at boot and survives
+# Role#sync_permissions!'s destructive replace. The former
+# system_{storage,acme,platform,cve}_permissions.rb seed files were retired.
 
 ext_seeds = File.expand_path("seeds", __dir__)
 
@@ -26,10 +32,6 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # public_package_repositories_seed) are deliberately excluded — they're
 # either destructive, expensive, or operator-only.
 SYSTEM_SEED_FILES = %w[
-  system_storage_permissions.rb
-  system_acme_permissions.rb
-  system_platform_permissions.rb
-  system_cve_permissions.rb
   fleet_autonomy_agent.rb
   system_concierge_agent.rb
   system_runtime_manager_agent.rb

@@ -159,13 +159,13 @@ describe('SdwanHubPage', () => {
 
   it('hides tabs whose permission is not granted', () => {
     // Grant everything EXCEPT federation
-    mockHasPermission = (perm: string) => perm !== 'sdwan.federation.read';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.federation.read';
     renderPage();
     expect(screen.queryByRole('link', { name: 'Federation' })).not.toBeInTheDocument();
   });
 
   it('still shows tabs whose permissions ARE granted when some are denied', () => {
-    mockHasPermission = (perm: string) => perm !== 'sdwan.federation.read';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.federation.read';
     renderPage();
     expect(screen.getByRole('link', { name: 'Networks' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Topology' })).toBeInTheDocument();
@@ -303,7 +303,7 @@ describe('SdwanHubPage', () => {
   });
 
   it('does not show "Create network" when user lacks sdwan.networks.manage', async () => {
-    mockHasPermission = (perm: string) => perm !== 'sdwan.networks.manage';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.networks.manage';
     renderPage('/networks');
 
     act(() => {
@@ -368,7 +368,7 @@ describe('SdwanHubPage', () => {
   });
 
   it('does not show "Propose peer" when user lacks sdwan.federation.manage', async () => {
-    mockHasPermission = (perm: string) => perm !== 'sdwan.federation.manage';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.federation.manage';
     renderPage('/federation');
 
     act(() => {
@@ -473,7 +473,7 @@ describe('SdwanHubPage', () => {
   // ---------------------------------------------------------------------------
 
   it('hides both IPFIX and Flows tabs when sdwan.ipfix.read is denied', () => {
-    mockHasPermission = (perm: string) => perm !== 'sdwan.ipfix.read';
+    mockHasPermission = (perm: string) => perm !== 'system.sdwan.ipfix.read';
     renderPage('/networks');
     expect(screen.queryByRole('link', { name: 'IPFIX' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Flows' })).not.toBeInTheDocument();

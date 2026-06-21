@@ -81,7 +81,7 @@ const TABS: PathTabSpec<TabKey>[] = [
   {
     key: 'control',
     label: 'Control',
-    permission: 'sdwan.federation.manage',
+    permission: 'system.sdwan.federation.manage',
     icon: <SlidersHorizontal className="w-4 h-4" />,
   },
 ];
@@ -94,7 +94,7 @@ export const FederationHubPage: React.FC = () => {
   // toggled from the Control tab's action.
   const [conciergeOpen, setConciergeOpen] = useState(false);
 
-  const canManageFederation = hasPermission('sdwan.federation.manage');
+  const canManageFederation = hasPermission('system.sdwan.federation.manage');
 
   const pageActions: PageAction[] = [];
   if (canManageFederation) {
@@ -152,11 +152,11 @@ interface TabProps {
 
 const MonitorTab: React.FC<TabProps> = ({ hasPermission }) => {
   const canReadPeers = hasPermission('system.peers.read');
-  const canReadNetworks = hasPermission('sdwan.networks.read');
-  const canReadOvn = hasPermission('sdwan.ovn.read');
-  const canReadVips = hasPermission('sdwan.vips.manage');
+  const canReadNetworks = hasPermission('system.sdwan.networks.read');
+  const canReadOvn = hasPermission('system.sdwan.ovn.read');
+  const canReadVips = hasPermission('system.sdwan.vips.manage');
   const canReadSubscriptions = hasPermission('system.service_subscriptions.read');
-  const canReadFederation = hasPermission('sdwan.federation.read');
+  const canReadFederation = hasPermission('system.sdwan.federation.read');
 
   return (
     <div className="space-y-8" data-testid="federation-monitor-tab">
@@ -216,10 +216,10 @@ const MonitorTab: React.FC<TabProps> = ({ hasPermission }) => {
 
 const ControlTab: React.FC<TabProps> = ({ hasPermission }) => {
   const canReadPeers = hasPermission('system.peers.read');
-  const canManageFederation = hasPermission('sdwan.federation.manage');
+  const canManageFederation = hasPermission('system.sdwan.federation.manage');
   const canReadOfferings = hasPermission('system.service_offerings.read');
   const canSubscribe = hasPermission('system.service_subscriptions.read');
-  const canManageVips = hasPermission('sdwan.vips.manage');
+  const canManageVips = hasPermission('system.sdwan.vips.manage');
   const canReadAcmeDns = hasPermission('system.acme_dns.read');
 
   const [offeringEditorOpen, setOfferingEditorOpen] = useState(false);

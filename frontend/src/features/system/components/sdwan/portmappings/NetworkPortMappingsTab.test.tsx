@@ -272,7 +272,7 @@ describe('NetworkPortMappingsTab', () => {
 
   it('checks the sdwan.port_mappings.manage permission', () => {
     renderTab();
-    expect(mockHasPermission).toHaveBeenCalledWith('sdwan.port_mappings.manage');
+    expect(mockHasPermission).toHaveBeenCalledWith('system.sdwan.port_mappings.manage');
   });
 
   // ---------------------------------------------------------------------------

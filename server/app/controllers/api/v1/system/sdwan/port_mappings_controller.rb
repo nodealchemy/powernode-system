@@ -18,7 +18,7 @@ module Api
           before_action :set_mapping, only: %i[show update destroy]
 
           def index
-            require_permission("sdwan.port_mappings.read")
+            require_permission("system.sdwan.port_mappings.read")
             scope = @network.port_mappings
             scope = scope.where(sdwan_peer_id: params[:hub_peer_id]) if params[:hub_peer_id].present?
             scope = scope.where(enabled: ActiveModel::Type::Boolean.new.cast(params[:enabled])) if params.key?(:enabled)
@@ -27,12 +27,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.port_mappings.read")
+            require_permission("system.sdwan.port_mappings.read")
             render_success(port_mapping: serialize_full(@mapping))
           end
 
           def create
-            require_permission("sdwan.port_mappings.manage")
+            require_permission("system.sdwan.port_mappings.manage")
             mapping = @network.port_mappings.new(mapping_params.merge(account_id: @account.id))
             if mapping.save
               render_success({ port_mapping: serialize_full(mapping) }, status: :created)
@@ -42,7 +42,7 @@ module Api
           end
 
           def update
-            require_permission("sdwan.port_mappings.manage")
+            require_permission("system.sdwan.port_mappings.manage")
             if @mapping.update(mapping_params)
               render_success(port_mapping: serialize_full(@mapping))
             else
@@ -51,7 +51,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.port_mappings.manage")
+            require_permission("system.sdwan.port_mappings.manage")
             id = @mapping.id
             gate!(
               action_category: "sdwan.port_mapping_delete",

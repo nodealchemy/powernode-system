@@ -21,7 +21,7 @@ module Api
           before_action :set_collector, only: %i[show update destroy]
 
           def index
-            require_permission("sdwan.ipfix.read")
+            require_permission("system.sdwan.ipfix.read")
 
             scope = ::Sdwan::IpfixCollector.for_account(@account)
             scope = scope.where(state: params[:state]) if params[:state].present?
@@ -37,12 +37,12 @@ module Api
           end
 
           def show
-            require_permission("sdwan.ipfix.read")
+            require_permission("system.sdwan.ipfix.read")
             render_success(ipfix_collector: serialize_collector_full(@collector))
           end
 
           def update
-            require_permission("sdwan.ipfix.manage")
+            require_permission("system.sdwan.ipfix.manage")
 
             target = params.dig(:ipfix_collector, :state) || params[:state]
             case target.to_s
@@ -56,7 +56,7 @@ module Api
           end
 
           def destroy
-            require_permission("sdwan.ipfix.manage")
+            require_permission("system.sdwan.ipfix.manage")
             @collector.destroy!
             render_success(deleted: true, id: @collector.id)
           end

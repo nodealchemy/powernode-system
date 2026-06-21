@@ -254,7 +254,7 @@ describe('registerSystemEntities()', () => {
 
     it('sdwan_network has correct permission and icon', () => {
       const def = entityRegistry.getEntity('sdwan_network');
-      expect(def!.permission).toBe('sdwan.networks.read');
+      expect(def!.permission).toBe('system.sdwan.networks.read');
       expect(def!.icon).toBe('ShieldCheck');
     });
   });
@@ -422,7 +422,7 @@ describe('registerSystemEntities()', () => {
 
       const def = entityRegistry.getEntity('sdwan_host_bridge');
       expect(def!.labelField).toBe('bridge_name');
-      expect(def!.permission).toBe('sdwan.host_bridges.read');
+      expect(def!.permission).toBe('system.sdwan.host_bridges.read');
 
       const result = await def!.fetchById!('hb-1');
       expect(mockSdwanApiGetHostBridge).toHaveBeenCalledWith('hb-1');
@@ -436,7 +436,7 @@ describe('registerSystemEntities()', () => {
 
       const def = entityRegistry.getEntity('sdwan_ovn_deployment');
       expect(def!.labelField).toBe('status');
-      expect(def!.permission).toBe('sdwan.ovn.read');
+      expect(def!.permission).toBe('system.sdwan.ovn.read');
 
       const result = await def!.fetchById!('ovn-1');
       expect(mockSdwanApiGetOvnDeployment).toHaveBeenCalledWith('ovn-1');
@@ -449,7 +449,7 @@ describe('registerSystemEntities()', () => {
 
       const def = entityRegistry.getEntity('sdwan_ipfix_collector');
       expect(def!.labelField).toBe('name');
-      expect(def!.permission).toBe('sdwan.ipfix.read');
+      expect(def!.permission).toBe('system.sdwan.ipfix.read');
 
       const result = await def!.fetchById!('col-1');
       expect(mockSdwanApiGetIpfixCollector).toHaveBeenCalledWith('col-1');
@@ -462,7 +462,7 @@ describe('registerSystemEntities()', () => {
 
       const def = entityRegistry.getEntity('sdwan_route_policy');
       expect(def!.labelField).toBe('name');
-      expect(def!.permission).toBe('sdwan.route_policies.read');
+      expect(def!.permission).toBe('system.sdwan.route_policies.read');
 
       const result = await def!.fetchById!('rp-1');
       expect(mockSdwanApiGetRoutePolicy).toHaveBeenCalledWith('rp-1');
@@ -529,7 +529,7 @@ describe('registerSystemEntities()', () => {
 
         const def = entityRegistry.getEntity('sdwan_virtual_ip');
         expect(def!.labelField).toBe('name');
-        expect(def!.permission).toBe('sdwan.vips.read');
+        expect(def!.permission).toBe('system.sdwan.vips.read');
 
         const result = await def!.fetchById!('net-xyz:vip-1');
         expect(mockSdwanApiGetVirtualIp).toHaveBeenCalledWith('net-xyz', 'vip-1');
