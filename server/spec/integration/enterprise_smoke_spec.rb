@@ -274,7 +274,7 @@ RSpec.describe "AI-driven provisioning M4 enterprise smoke", type: :integration 
     audit_rows = ::AuditLog
                    .where(account_id: account.id)
                    .where(resource_type: "System::NodeInstance")
-                   .where(action: ::AuditActions::SYSTEM_NODE_INSTANCE_ACTIONS)
+                   .where(action: ::System::LifecycleAuditable::AUDITED_ACTIONS)
                    .order(created_at: :asc)
                    .to_a
 

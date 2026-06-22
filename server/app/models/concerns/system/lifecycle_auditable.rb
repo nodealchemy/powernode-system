@@ -25,6 +25,14 @@ module System
       mark_provisioning mark_running mark_stopped mark_terminated mark_errored
     ].freeze
 
+    # Fully-qualified audit-action tokens this concern emits (one per audited
+    # event), i.e. "system.node_instance.<event>". Canonical owner-defined list —
+    # the system engine registers these into AuditActions.all_actions via the
+    # register_actions seam, and consumers (e.g. the business audit export) that
+    # need to filter NodeInstance lifecycle rows reference this constant rather
+    # than a relocated core constant.
+    AUDITED_ACTIONS = AUDITED_EVENTS.map { |e| "system.node_instance.#{e}" }.freeze
+
     AUDITED_EVENTS.each do |event_name|
       bang_method = "#{event_name}!"
 

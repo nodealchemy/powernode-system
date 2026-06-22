@@ -357,6 +357,29 @@ module PowernodeSystem
       end
     end
 
+    # Register this extension's audit ACTIONS via the AuditActions seam (the
+    # audit twin of register_catalog). The system.node_instance.* lifecycle
+    # tokens were relocated out of core's AuditActions concern — they are emitted
+    # only here, by the System::NodeInstance lifecycle-auditable decoration on
+    # every AASM transition (app/models/concerns/system/lifecycle_auditable.rb).
+    # AuditLog#action validates against the dynamic AuditActions.all_actions
+    # union, so once this runs at boot those audit rows validate.
+    initializer "powernode_system.register_audit_actions", after: :load_config_initializers do
+      config.after_initialize do
+        next unless defined?(::AuditActions) && ::AuditActions.respond_to?(:register_actions)
+
+        # Single source of truth: the fully-qualified tokens are defined beside
+        # the emitter (System::LifecycleAuditable), so the registered set can
+        # never drift from what the lifecycle decoration actually emits.
+        ::AuditActions.register_actions(
+          "system",
+          ::System::LifecycleAuditable::AUDITED_ACTIONS
+        )
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
+      end
+    end
+
     # Register this extension's skill-routing domain with the parent's
     # ConciergeRouter. Used as the fallback when a skill's metadata
     # doesn't explicitly declare `domain`, and as the affinity signal
