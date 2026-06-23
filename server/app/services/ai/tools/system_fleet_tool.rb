@@ -1730,7 +1730,7 @@ module Ai
         [ "devops_docker_hosts", "node_instance_id" ],
         [ "system_storage_credentials", "node_instance_id" ],
         [ "system_mount_encryption_keys", "node_instance_id" ],
-        [ "billing_provisioning_usage_records", "node_instance_id" ],
+        [ "business_billing_provisioning_usage_records", "node_instance_id" ],
         [ "ai_provisioning_code_deployments", "node_instance_id" ],
         [ "system_sdwan_host_vrf_assignments", "node_instance_id" ],
         [ "system_sdwan_host_bridges", "node_instance_id" ],

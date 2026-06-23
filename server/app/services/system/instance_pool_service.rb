@@ -342,7 +342,7 @@ module System
       # regardless of pool name.
       query = ::System::InstancePool.for_account(account).active
       query = query.where(lifecycle_class: lifecycle_class) if lifecycle_class
-      query = query.joins(:node_instances).where(node_instances: { pool_state: "ready" })
+      query = query.joins(:node_instances).where(system_node_instances: { pool_state: "ready" })
 
       pool = query.first
       raise NoReadyMembersError, "no active pool with ready members " \

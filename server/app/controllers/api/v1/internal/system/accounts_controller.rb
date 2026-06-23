@@ -11,8 +11,8 @@ module Api
           def index
             accounts = if params[:for_maintenance]
                         Account.includes(:subscription)
-                               .where(subscriptions: { status: %w[active trialing] })
-                               .or(Account.includes(:subscription).where(subscriptions: { id: nil }))
+                               .where(business_subscriptions: { status: %w[active trialing] })
+                               .or(Account.includes(:subscription).where(business_subscriptions: { id: nil }))
             else
                         Account.all
             end
