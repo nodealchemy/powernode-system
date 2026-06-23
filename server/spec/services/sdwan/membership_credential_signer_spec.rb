@@ -8,7 +8,7 @@ RSpec.describe Sdwan::MembershipCredentialSigner, type: :service do
   before do
     Sdwan::MembershipCredential.where(account_id: account.id).delete_all
     Sdwan::ConstellationSigningKey.where(account_id: account.id).delete_all
-    Sdwan::PeerKey.joins(:peer).where(sdwan_peers: { account_id: account.id }).delete_all
+    Sdwan::PeerKey.joins(:peer).where(system_sdwan_peers: { account_id: account.id }).delete_all
     Sdwan::Peer.where(account_id: account.id).delete_all
     Sdwan::Network.where(account_id: account.id).delete_all
     Sdwan::Configuration.where(account_id: account.id).delete_all
