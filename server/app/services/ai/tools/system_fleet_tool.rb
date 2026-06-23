@@ -1722,7 +1722,7 @@ module Ai
         [ "system_node_modules", "node_instance_id" ],
         [ "system_bootstrap_tokens", "node_instance_id" ],
         [ "system_node_certificates", "node_instance_id" ],
-        [ "sdwan_ovn_logical_switch_ports", "host_node_instance_id" ],
+        [ "system_sdwan_ovn_logical_switch_ports", "host_node_instance_id" ],
         [ "system_unclaimed_devices", "claimed_node_instance_id" ],
         [ "system_node_instance_peers", "node_instance_id" ],
         [ "system_storage_assignments", "node_instance_id" ],
@@ -1732,8 +1732,8 @@ module Ai
         [ "system_mount_encryption_keys", "node_instance_id" ],
         [ "billing_provisioning_usage_records", "node_instance_id" ],
         [ "ai_provisioning_code_deployments", "node_instance_id" ],
-        [ "sdwan_host_vrf_assignments", "node_instance_id" ],
-        [ "sdwan_host_bridges", "node_instance_id" ],
+        [ "system_sdwan_host_vrf_assignments", "node_instance_id" ],
+        [ "system_sdwan_host_bridges", "node_instance_id" ],
         [ "system_instance_mount_points", "node_instance_id" ],
         [ "system_provider_volumes", "node_instance_id" ]
       ].freeze
@@ -1741,14 +1741,14 @@ module Ai
       # FK dependents of sdwan_peers — those peers are attached to the instance
       # being destroyed and themselves have child rows that must clear first.
       DESTROY_SDWAN_PEER_FKS = [
-        [ "sdwan_peer_keys", "sdwan_peer_id" ],
-        [ "sdwan_subnet_advertisements", "sdwan_peer_id" ],
-        [ "sdwan_virtual_ip_assignments", "sdwan_peer_id" ],
-        [ "sdwan_bgp_sessions", "sdwan_peer_id" ],
-        [ "sdwan_bgp_sessions", "neighbor_peer_id" ],
-        [ "sdwan_port_mappings", "sdwan_peer_id" ],
-        [ "sdwan_port_mappings", "target_peer_id" ],
-        [ "sdwan_membership_credentials", "sdwan_peer_id" ]
+        [ "system_sdwan_peer_keys", "sdwan_peer_id" ],
+        [ "system_sdwan_subnet_advertisements", "sdwan_peer_id" ],
+        [ "system_sdwan_virtual_ip_assignments", "sdwan_peer_id" ],
+        [ "system_sdwan_bgp_sessions", "sdwan_peer_id" ],
+        [ "system_sdwan_bgp_sessions", "neighbor_peer_id" ],
+        [ "system_sdwan_port_mappings", "sdwan_peer_id" ],
+        [ "system_sdwan_port_mappings", "target_peer_id" ],
+        [ "system_sdwan_membership_credentials", "sdwan_peer_id" ]
       ].freeze
 
       def destroy_instance(params)
@@ -1769,7 +1769,7 @@ module Ai
 
           # SDWAN peers attached to this instance + their child rows
           peer_rows = ActiveRecord::Base.connection.exec_query(
-            "SELECT id FROM sdwan_peers WHERE node_instance_id = $1",
+            "SELECT id FROM system_sdwan_peers WHERE node_instance_id = $1",
             "peers_for_inst", [ inst_id ]
           )
           peer_rows.rows.flatten.each do |peer_id|
@@ -1781,7 +1781,7 @@ module Ai
               deleted["#{table}.#{col}"] += k if k > 0
             end
             k = ActiveRecord::Base.connection.exec_delete(
-              "DELETE FROM sdwan_peers WHERE id = $1",
+              "DELETE FROM system_sdwan_peers WHERE id = $1",
               "del-peer", [ peer_id ]
             )
             peers_destroyed += k

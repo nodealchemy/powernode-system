@@ -1042,7 +1042,7 @@ module Ai
 
       def account_user_devices
         ::Sdwan::UserDevice.joins(access_grant: :network)
-                           .where(sdwan_networks: { account_id: @account.id })
+                           .where(system_sdwan_networks: { account_id: @account.id })
       end
 
       def serialize_grant(g)
@@ -1467,8 +1467,8 @@ module Ai
 
       def get_bgp_sessions(params)
         scope = ::Sdwan::BgpSession.joins(:network)
-                                   .where(sdwan_networks: { account_id: @account.id })
-        scope = scope.where(sdwan_networks: { id: params[:network_id] }) if params[:network_id].present?
+                                   .where(system_sdwan_networks: { account_id: @account.id })
+        scope = scope.where(system_sdwan_networks: { id: params[:network_id] }) if params[:network_id].present?
         scope = scope.where(state: params[:state]) if params[:state].present?
 
         sessions = scope.order(updated_at: :desc).limit(500).to_a
@@ -1480,7 +1480,7 @@ module Ai
 
       def get_bgp_config_for_peer(params)
         peer = ::Sdwan::Peer.joins(:network)
-                            .where(sdwan_networks: { account_id: @account.id })
+                            .where(system_sdwan_networks: { account_id: @account.id })
                             .find(params[:peer_id])
         cfg = ::Sdwan::Bgp::ConfigCompiler.compile_for_peer(peer)
         success_result(peer_id: peer.id, network_id: peer.sdwan_network_id, bgp: cfg)
@@ -1571,7 +1571,7 @@ module Ai
 
       def compile_route_policy(params)
         peer = ::Sdwan::Peer.joins(:network)
-                            .where(sdwan_networks: { account_id: @account.id })
+                            .where(system_sdwan_networks: { account_id: @account.id })
                             .find(params[:peer_id])
         compiled = ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(peer)
         success_result(peer_id: peer.id, network_id: peer.sdwan_network_id, compiled: compiled)
@@ -1665,7 +1665,7 @@ module Ai
         return nil if id.blank?
 
         ::Sdwan::PortMapping.joins(:network)
-                            .where(sdwan_networks: { account_id: @account.id })
+                            .where(system_sdwan_networks: { account_id: @account.id })
                             .find_by(id: id)
       end
 

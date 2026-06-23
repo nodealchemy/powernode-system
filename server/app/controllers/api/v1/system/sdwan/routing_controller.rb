@@ -29,11 +29,11 @@ module Api
                 static_networks: networks.where(routing_protocol: "static").count,
                 established_sessions: ::Sdwan::BgpSession
                                          .joins(:network)
-                                         .where(sdwan_networks: { account_id: @account.id })
+                                         .where(system_sdwan_networks: { account_id: @account.id })
                                          .established.count,
                 total_sessions: ::Sdwan::BgpSession
                                    .joins(:network)
-                                   .where(sdwan_networks: { account_id: @account.id })
+                                   .where(system_sdwan_networks: { account_id: @account.id })
                                    .count
               }
             )
@@ -56,8 +56,8 @@ module Api
           def sessions
             require_permission("system.sdwan.routing.read")
             scope = ::Sdwan::BgpSession.joins(:network)
-                                       .where(sdwan_networks: { account_id: @account.id })
-            scope = scope.where(sdwan_networks: { id: params[:network_id] }) if params[:network_id].present?
+                                       .where(system_sdwan_networks: { account_id: @account.id })
+            scope = scope.where(system_sdwan_networks: { id: params[:network_id] }) if params[:network_id].present?
             scope = scope.where(state: params[:state]) if params[:state].present?
 
             sessions = scope.order(updated_at: :desc).limit(500).to_a

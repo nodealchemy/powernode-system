@@ -75,7 +75,7 @@ module System
       scope :accepting_new_subscriptions, -> { where(status: "active") }
       scope :terminal,             -> { where(status: TERMINAL_STATUSES) }
       # Backend protocol now lives on the service — join through it.
-      scope :by_protocol,          ->(p) { joins(:service).where(sdwan_services: { protocol: p }) }
+      scope :by_protocol,          ->(p) { joins(:service).where(system_sdwan_services: { protocol: p }) }
 
       def can_transition_to?(new_status)
         TRANSITIONS.fetch(status, []).include?(new_status.to_s)

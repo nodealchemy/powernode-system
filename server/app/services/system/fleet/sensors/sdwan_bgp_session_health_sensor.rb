@@ -39,7 +39,7 @@ module System
         def unhealthy_state_signals
           ::Sdwan::BgpSession
             .joins(:network)
-            .where(sdwan_networks: { account_id: account.id })
+            .where(system_sdwan_networks: { account_id: account.id })
             .where.not(state: "established")
             .where("last_state_change_at < ?", UNHEALTHY_WINDOW.ago)
             .where("last_observed_at >= ?", STALE_WINDOW.ago) # exclude stale; covered separately
@@ -73,7 +73,7 @@ module System
         def stale_observation_signals
           ::Sdwan::BgpSession
             .joins(:network)
-            .where(sdwan_networks: { account_id: account.id })
+            .where(system_sdwan_networks: { account_id: account.id })
             .where("last_observed_at < ?", STALE_WINDOW.ago)
             .find_each.map do |session|
               age = Time.current - session.last_observed_at

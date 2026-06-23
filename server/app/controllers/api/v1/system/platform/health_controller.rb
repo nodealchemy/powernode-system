@@ -204,7 +204,7 @@ module Api
             vips = ::Sdwan::VirtualIp.where(account: current_account)
             assignments = if defined?(::Sdwan::VirtualIpAssignment)
                             ::Sdwan::VirtualIpAssignment.joins(:virtual_ip)
-                                                        .where(sdwan_virtual_ips: { account_id: current_account.id })
+                                                        .where(system_sdwan_virtual_ips: { account_id: current_account.id })
             end
             networks = ::Sdwan::Network.where(account: current_account) if defined?(::Sdwan::Network)
             bgp_total = bgp_established = nil

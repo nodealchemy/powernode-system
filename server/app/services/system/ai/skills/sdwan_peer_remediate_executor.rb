@@ -47,7 +47,7 @@ module System
 
         def perform(peer_id:, dry_run: false)
           peer = ::Sdwan::Peer.joins(:network)
-                              .where(sdwan_networks: { account_id: @account.id })
+                              .where(system_sdwan_networks: { account_id: @account.id })
                               .find_by(id: peer_id)
           return failure("peer not found in account") unless peer
 

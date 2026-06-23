@@ -24,7 +24,7 @@ module System
 
           ::Sdwan::Peer
             .joins(:network)
-            .where(sdwan_networks: { account_id: account.id, status: %w[registered active] })
+            .where(system_sdwan_networks: { account_id: account.id, status: %w[registered active] })
             .where("last_handshake_at IS NOT NULL")
             .where("last_handshake_at < ?", DRIFT_WINDOW.ago)
             .find_each.map do |peer|

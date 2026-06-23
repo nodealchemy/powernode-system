@@ -81,14 +81,14 @@ module System
           if id.present?
             return ::Sdwan::BgpSession
                      .joins(:network)
-                     .where(sdwan_networks: { account_id: @account.id })
+                     .where(system_sdwan_networks: { account_id: @account.id })
                      .find_by(id: id)
           end
           return nil if peer_id.blank? || neighbor_address.blank?
 
           ::Sdwan::BgpSession
             .joins(:network)
-            .where(sdwan_networks: { account_id: @account.id })
+            .where(system_sdwan_networks: { account_id: @account.id })
             .find_by(sdwan_peer_id: peer_id, neighbor_address: neighbor_address)
         end
 

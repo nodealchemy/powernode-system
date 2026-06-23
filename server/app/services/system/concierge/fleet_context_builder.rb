@@ -98,7 +98,7 @@ module System
 
         ::Sdwan::BgpSession
           .joins(:network)
-          .where(sdwan_networks: { account_id: @account.id }, state: "established")
+          .where(system_sdwan_networks: { account_id: @account.id }, state: "established")
           .count
       rescue StandardError
         nil

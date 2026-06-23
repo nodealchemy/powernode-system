@@ -75,7 +75,7 @@ module Api
             return render_error("peer_id required", status: :bad_request) if peer_id.blank?
 
             peer = ::Sdwan::Peer.joins(:network)
-                                .where(sdwan_networks: { account_id: @account.id })
+                                .where(system_sdwan_networks: { account_id: @account.id })
                                 .find_by(id: peer_id)
             return render_not_found("Peer") unless peer
 

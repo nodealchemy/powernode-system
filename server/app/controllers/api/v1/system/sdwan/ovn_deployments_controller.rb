@@ -69,7 +69,7 @@ module Api
               switch_count: d.logical_switches.compilable.count,
               port_count: ::Sdwan::OvnLogicalSwitchPort
                             .joins(:logical_switch)
-                            .where(sdwan_ovn_logical_switches: { sdwan_ovn_deployment_id: d.id })
+                            .where(system_sdwan_ovn_logical_switches: { sdwan_ovn_deployment_id: d.id })
                             .compilable
                             .count,
               bootstrapped_at: d.bootstrapped_at&.iso8601,

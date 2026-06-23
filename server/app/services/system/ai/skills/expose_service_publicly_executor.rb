@@ -214,7 +214,7 @@ module System
 
           existing = ::Sdwan::VirtualIp
                        .joins(:network)
-                       .where(sdwan_networks: { account_id: @account.id })
+                       .where(system_sdwan_networks: { account_id: @account.id })
                        .find_by(sdwan_network_id: network_id, name: vip_name)
           if existing
             return { success: true, vip_id: existing.id, vip_cidr: existing.cidr,
