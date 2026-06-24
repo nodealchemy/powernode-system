@@ -414,7 +414,7 @@ modules in the catalog: `docker-engine`, `k3s-server`, `k3s-agent`.
   container runtime autonomy with 7 intervention policies — separate
   trust score + approval queue from Fleet Autonomy. Allows
   per-domain policy tuning (e.g. `notify_and_proceed` for docker
-  provisioning while keeping `kubernetes_cluster_decommission` gated).
+  provisioning while keeping `kubernetes_decommission_cluster` gated).
 
 - **Phase 3 kubeadm** uses the same shape — extends `RUNTIME_MODULES`
   in the runtime/handshake controller, adds parallel kubeadm

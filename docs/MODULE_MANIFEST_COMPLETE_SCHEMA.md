@@ -163,7 +163,7 @@ dependencies:
 | `requires` | `<gitea-org/repo>@<version-constraint>` | Modules this depends on. Constraint syntax: `^1.0` (compatible), `~1.2` (patch-compatible), `=1.2.3` (exact), `*` (any). |
 | `provides` | abstract capability tags | What this module exposes that other modules can target. Often used with naming conventions like `http.port:80`, `database:postgres`, `runtime:rails`. |
 
-When `system_compose_module` is invoked, the composer walks the dependency graph and rejects compositions where multiple modules provide the same capability (e.g., two modules both providing `http.port:80` on the same node).
+When `module_compose` is invoked, the composer walks the dependency graph and rejects compositions where multiple modules provide the same capability (e.g., two modules both providing `http.port:80` on the same node).
 
 ### Lifecycle: `init` vs `services`
 
