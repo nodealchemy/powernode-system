@@ -6,7 +6,7 @@ We take security seriously. This document covers how to report vulnerabilities i
 
 **Do not report security vulnerabilities through public GitHub issues, X, or any other public channel.** Public reports give attackers a window between disclosure and patch availability that we can't shorten.
 
-Email **security@nodealchemy.com** with:
+**[Open a private security advisory on GitHub](https://github.com/nodealchemy/powernode-platform/security/advisories/new)** with:
 
 - Description of the vulnerability + components affected
 - Steps to reproduce (proof-of-concept welcome but not required)
@@ -21,7 +21,7 @@ You can expect:
 
 ## Coordinated disclosure
 
-1. You report privately to security@nodealchemy.com
+1. You report privately via a GitHub security advisory
 2. We investigate, develop + verify a fix, and assign a CVE if warranted
 3. We release the fix + publish a security advisory on the repo
 4. You may publish your write-up after the advisory ships
@@ -61,4 +61,4 @@ We aim for a 90-day disclosure window from initial report but can negotiate base
 
 Security researchers who responsibly disclose vulnerabilities through this process are credited in the resulting advisory unless they prefer anonymity. We don't currently run a paid bug bounty.
 
-See also [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community conduct issues go through a separate channel (conduct@nodealchemy.com), not the security inbox.
+See also [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community conduct issues go through a separate channel (a GitHub security advisory; see CODE_OF_CONDUCT.md), not the security inbox.
