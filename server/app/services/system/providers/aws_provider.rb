@@ -617,6 +617,16 @@ module System
         run_params[:subnet_id] = params[:subnet_id] if params[:subnet_id]
         run_params[:user_data] = Base64.encode64(params[:user_data]) if params[:user_data]
 
+        # Idempotency — pass the NodeInstance UUID as the EC2 ClientToken so a
+        # lost-response retry (the AWS SDK's default standard retry mode makes up
+        # to 3 attempts) dedupes to the SAME billable instance rather than
+        # launching a duplicate. The token MUST be stable across retries of the
+        # same logical provision, so it is sourced from the per-instance UUID
+        # (threaded in via :instance) — never a random value, which would defeat
+        # AWS-side deduplication.
+        client_token = params[:instance]&.id
+        run_params[:client_token] = client_token.to_s if client_token.present?
+
         # Assemble tags once and pass them via tag_specifications so the
         # instance launches already tagged (atomic with run_instances). The
         # human-readable Name is folded in here rather than applied by a

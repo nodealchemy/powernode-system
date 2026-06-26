@@ -120,6 +120,22 @@ RSpec.describe System::Providers::AwsProvider do
 
       provider.create_instance(tagged_params)
     end
+
+    # Idempotency: the AWS SDK's default retry mode (standard, up to 3 attempts)
+    # can launch a DUPLICATE billable instance if a run_instances response is
+    # lost in flight and the request is retried. Passing a STABLE ClientToken —
+    # the NodeInstance UUID, constant across retries of the same logical
+    # provision — makes AWS dedupe the retry to a single instance. A random
+    # token would defeat this (every retry would look like a brand-new request).
+    it "passes the NodeInstance UUID as a stable client_token for idempotency" do
+      node_instance = instance_double("System::NodeInstance", id: "01890c2a-7b3e-7e1a-9d6f-2c4b5a6d7e8f")
+
+      expect(ec2_client).to receive(:run_instances).with(hash_including(
+        client_token: "01890c2a-7b3e-7e1a-9d6f-2c4b5a6d7e8f"
+      )).and_return(run_instances_response)
+
+      provider.create_instance(params.merge(instance: node_instance))
+    end
   end
 
   describe "#terminate_instance" do
