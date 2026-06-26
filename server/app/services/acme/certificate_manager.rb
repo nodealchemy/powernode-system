@@ -270,8 +270,9 @@ module Acme
           # NOTE: these columns are named `vault_path_*` for historical reasons,
           # but they now hold the on-disk paths Traefik reads. The cert bundle
           # is also stored in Vault under the convention path; that's the
-          # source of truth for renewals + remote serving. P2.5.next: rename
-          # these columns to `disk_path_*` to remove the misnomer.
+          # source of truth for renewals + remote serving. Renaming these
+          # columns to `disk_path_*` to drop the misnomer remains a tracked
+          # follow-up (column rename out of scope here).
           vault_path_certificate: disk_paths[:cert],
           vault_path_private_key: disk_paths[:key],
           vault_path_chain: disk_paths[:chain],

@@ -8,10 +8,10 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 
 | Domain | Operator Guide | Key Source Files |
 |---|---|---|
-| Node lifecycle | `docs/ARCHITECTURE.md` §2 | `app/models/system/{node,node_instance,node_template,node_architecture,node_platform}.rb`, `app/services/system/{enrollment,bootstrap,provisioning,instance_control}_service.rb` |
+| Node lifecycle | `docs/ARCHITECTURE.md` §2 (On-node runtime + NodeInstance lifecycle) | `app/models/system/{node,node_instance,node_template,node_architecture,node_platform}.rb`, `app/services/system/{enrollment,bootstrap,provisioning,instance_control}_service.rb` |
 | Modules + categories + assignments | `docs/ARCHITECTURE.md` §1 | `app/models/system/{node_module,node_module_category,node_module_assignment,node_module_version}.rb`, `app/services/system/{module_version,module_build,module_publication_processor,module_oci_ingest}_service.rb` |
 | Container runtimes (Phase 1 Docker + Phase 2 K3s) | `docs/CONTAINER_RUNTIMES.md` | `app/services/system/docker_daemon_provisioner_service.rb`, `app/services/system/kubernetes_cluster_provisioner_service.rb`, `app/controllers/api/v1/system/node_api/runtime_controller.rb`, `agent/internal/dockerd/`, `agent/internal/k3sd/` |
-| SDWAN (slices 1–9) | `docs/ARCHITECTURE.md` §5 | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
+| SDWAN (slices 1–9) | `docs/SDWAN_MANAGER_AGENT.md`, `docs/runbooks/sdwan-network-setup.md` | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
 | Service exposure (`Sdwan::Service`) | `docs/runbooks/publish-service.md` | `app/models/sdwan/service.rb`, `app/services/sdwan/service_exposure_writer.rb` (local `/svc/<slug>` + ForwardAuth), `app/controllers/api/v1/system/ingress/forward_auth_controller.rb`, `app/services/ai/tools/system_ingress_tool.rb`; federated facet = `Federation::ServiceOffering` |
 | Fleet autonomy + sensors | `docs/FLEET_SENSORS.md`, `docs/ARCHITECTURE.md` §4 | `app/services/system/fleet/sensors/`, `app/services/fleet_autonomy_service.rb`, `db/seeds/fleet_autonomy_agent.rb` |
 | Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (49 executors), `db/seeds/system_skills_seed.rb` |
@@ -73,7 +73,7 @@ System-extension MCP actions follow these prefixes:
 - `kubernetes_*` — Phase 2 K8s clusters (read + decommission + kubeconfig)
 - `docker_*` — DockerHost CRUD + container/image/network/volume management (works on managed + external hosts)
 
-The full action catalog regenerates via `cd server && bundle exec rails mcp:generate_tool_catalog` (from the **parent platform** tree, gitignored at `docs/platform/MCP_TOOL_CATALOG.md` in that tree — the extension does not contain its own copy). For an operator-curated subset see [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md).
+The full action catalog regenerates via `cd server && bundle exec rails mcp:generate_tool_catalog` (from the **parent platform** tree, auto-generated at `docs/reference/auto/mcp-tools.md` in that tree — the extension does not contain its own copy). For an operator-curated subset see [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md).
 
 ## Critical Conventions
 
@@ -111,7 +111,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)
 - `docs/INGRESS_TLS_GUIDE.md` — operator guide for ingress/TLS (Ingress page Routes + Expose-Service wizard, the VIP→port-map→ACME→Traefik expose lifecycle, DNS-01 credentials, staging-vs-prod issuers, split-brain DNS troubleshooting)
 - `docs/MISSION_COMPOSITION_ARCHITECTURE.md` — two composition paths (deterministic vs. LLM-general), hybrid routing, cross-step data flow, and the shared runner + approval gate
-- `docs/FLEET_SENSORS.md` — 17 sensor reference + intervention policy table (split per-agent post 2026-05-10)
+- `docs/FLEET_SENSORS.md` — 20 fleet sensors (tick-registered) + 2 CVE sensors reference + intervention policy table (split per-agent post 2026-05-10)
 - `docs/DISK_IMAGE_CI.md` — webhook + CI worker workflow
 - `docs/MCP_API_REFERENCE.md` — `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions
 - `docs/agent-peering.md` — NodeInstance-as-Agent pattern
