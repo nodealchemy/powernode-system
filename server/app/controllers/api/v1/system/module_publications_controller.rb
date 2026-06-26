@@ -63,12 +63,14 @@ module Api
           artifacts   = artifacts.to_unsafe_h if artifacts.respond_to?(:to_unsafe_h)
           return render_error("module_name + tag required", :bad_request) if module_name.empty? || tag.empty?
 
-          # Resolve the NodeModule the publish targets. Lookup chain:
+          # Resolve the NodeModule the publish targets — scoped to the CI
+          # worker's OWN account (multi-tenant safe; closes the cross-tenant
+          # IDOR). Lookup chain, all within @current_ci_worker.account:
           #   1. gitea_repo_full_name match (canonical OCI namespace)
-          #   2. bare name match across any account (legacy)
-          #   3. create a new NodeModule on the publisher account
-          #      with stub defaults; ManifestImportService at apply
-          #      time fills in details from manifest_yaml_b64.
+          #   2. bare name match within the account
+          #   3. create a new NodeModule on the worker's account with stub
+          #      defaults; ManifestImportService at apply time fills in
+          #      details from manifest_yaml_b64.
           #
           # The auto-create path decouples CI publication cadence from
           # the platform's deploy state — when a module is renamed or
@@ -79,7 +81,9 @@ module Api
           # where 9 renamed modules triggered notify 404s until
           # /tmp/ops-create-renamed-modules.rb was run by hand).
           gitea_repo = "powernode/#{module_name}"
-          node_module = ::System::ModulePublishTargetResolver.new.find_or_create_publish_target(gitea_repo, module_name)
+          node_module = ::System::ModulePublishTargetResolver.new.find_or_create_publish_target(
+            gitea_repo, module_name, account: @current_ci_worker.account
+          )
           unless node_module
             return render_error(
               "could not resolve or create NodeModule for gitea_repo=#{gitea_repo} (or name=#{module_name.inspect})",

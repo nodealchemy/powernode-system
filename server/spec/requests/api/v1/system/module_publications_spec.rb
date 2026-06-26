@@ -163,9 +163,11 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
     # These tests cover the deploy-decoupling path: when CI publishes a
     # module the platform's deployed code/seeds haven't created a
     # NodeModule for yet (e.g., a fresh rename or a newly-added module),
-    # the controller should create the row on the publisher account
+    # the controller should create the row on the CI worker's own account
     # instead of 404-ing.
 
+    # The auto-created module always lands on the CI worker's account
+    # (`account`), which the worker authenticated as.
     let(:publisher_account) { account } # account fixture from outer scope
 
     let(:fresh_module_yaml) do
@@ -190,14 +192,6 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
         reboot_required: false
       YAML
     end
-
-    before do
-      # Force the publisher-account resolver to pick the account fixture
-      # by aliasing PLATFORM_PUBLISHER_ACCOUNT_NAME to its name.
-      ENV["PLATFORM_PUBLISHER_ACCOUNT_NAME"] = publisher_account.name
-    end
-
-    after { ENV.delete("PLATFORM_PUBLISHER_ACCOUNT_NAME") }
 
     it "creates a fresh NodeModule when no name nor gitea_repo match exists" do
       body = base_body.merge(
@@ -250,16 +244,14 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       expect(created.node_platform_id).to eq(canonical_platform.id), "expected canonical 'ubuntu-24.04-lts' platform, got platform named #{created.node_platform&.name.inspect}"
     end
 
-    it "returns 422 with a clear message when no publisher account is resolvable" do
-      # Stub the resolver to simulate a scenario where no account fits the
-      # publisher heuristic. Mucking with the DB directly (destroy_all on
-      # NodeModule / Account) is brittle: (a) the controller's final
-      # fallback would pick the only remaining account anyway, and
-      # (b) Account.destroy_all cascades through associations that have
-      # unrelated schema drift (system_node_architectures.account_id is
-      # not in the live schema even though the model declares it).
+    it "returns 422 with a clear message when the target can't be auto-created" do
+      # Stub the resolver to simulate a worker account that can't supply a
+      # usable category/platform for the stub row (resolve returns nil).
+      # Mucking with the DB directly is brittle, and the lookup is now
+      # account-scoped, so a targeted stub on the category resolution is
+      # the cleanest way to drive the controller's 422 render path.
       allow_any_instance_of(::System::ModulePublishTargetResolver)
-        .to receive(:resolve_publisher_account).and_return(nil)
+        .to receive(:resolve_publisher_category).and_return(nil)
 
       body = base_body.merge(module_name: "ghost-module")
       post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
@@ -269,28 +261,98 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       expect(error_msg).to match(/could not resolve or create NodeModule/i)
     end
 
-    it "preserves the existing-row lookup path when name matches" do
-      # Pre-create a NodeModule under a DIFFERENT account so name match
-      # resolves it instead of auto-creating a duplicate.
-      other_account = create(:account, name: "Other Tenant")
-      other_platform = create(:system_node_platform, account: other_account)
-      other_category = create(:system_node_module_category, account: other_account)
-      existing = create(:system_node_module, account: other_account, node_platform: other_platform,
-                                              category: other_category, variety: "subscription",
-                                              name: "shared-name-mod")
+    it "preserves the existing-row lookup path when name matches within the CI worker's account" do
+      # Legitimate same-account lookup: a module already exists under the
+      # CI worker's OWN account (`account`) whose name matches the publish
+      # but whose gitea_repo_full_name does not. The name-match path must
+      # resolve it (no duplicate row) and the publish lands on it.
+      existing = create(:system_node_module, account: account, node_platform: platform,
+                                             category: category, variety: "subscription",
+                                             name: "same-account-mod",
+                                             gitea_repo_full_name: "powernode/some-other-repo")
 
       body = base_body.merge(
-        module_name: "shared-name-mod",
-        manifest_yaml_b64: Base64.strict_encode64(fresh_module_yaml.gsub("never-seen-before", "shared-name-mod"))
+        module_name: "same-account-mod",
+        manifest_yaml_b64: Base64.strict_encode64(fresh_module_yaml.gsub("never-seen-before", "same-account-mod"))
       )
 
       expect {
         post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
-      }.not_to change { System::NodeModule.where(name: "shared-name-mod").count }
+      }.not_to change { System::NodeModule.where(name: "same-account-mod").count }
 
       expect(response).to have_http_status(:ok)
-      # Confirm it was the existing module that received the version, not a new one
+      # Confirm it was the existing same-account module that received the version
       expect(existing.versions.count).to eq(1)
+    end
+  end
+
+  describe "cross-tenant isolation — the module registry is account-scoped (IDOR fix)" do
+    # The CI worker authenticates as `account` (tenant A). A publish MUST
+    # resolve or create the target NodeModule strictly within the worker's
+    # own account: it must never reach across tenants to a same-named (or
+    # same-gitea_repo) module owned by another account, and auto-creation
+    # must land in the worker's account — never a platform-wide publisher
+    # heuristic that could attach the module to the wrong tenant.
+    let(:fresh_module_yaml) do
+      <<~YAML
+        schema_version: 1
+        name: placeholder
+        display_name: "Placeholder"
+        file_spec:
+          - /opt/powernode/placeholder/**
+        reboot_required: false
+      YAML
+    end
+
+    it "does NOT resolve a same-named NodeModule owned by another account" do
+      # Tenant B owns "shared-mod". Worker A publishes "shared-mod".
+      other_account  = create(:account, name: "Other Tenant")
+      other_platform = create(:system_node_platform, account: other_account)
+      other_category = create(:system_node_module_category, account: other_account)
+      victim = create(:system_node_module, account: other_account, node_platform: other_platform,
+                                           category: other_category, variety: "subscription",
+                                           name: "shared-mod")
+
+      body = base_body.merge(
+        module_name: "shared-mod",
+        manifest_yaml_b64: Base64.strict_encode64(fresh_module_yaml.gsub("placeholder", "shared-mod"))
+      )
+
+      post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
+
+      expect(response).to have_http_status(:ok)
+      # Tenant B's module must NEVER become the publish target.
+      expect(victim.reload.versions.count).to eq(0)
+      # The publish resolves/creates strictly within the CI worker's account (A).
+      a_module = account.system_node_modules.find_by(name: "shared-mod")
+      expect(a_module).to be_present
+      expect(a_module.versions.count).to eq(1)
+    end
+
+    it "auto-creates a brand-new module under the CI worker's account, not the publisher heuristic" do
+      # Stand up the account the legacy publisher heuristic ("Powernode
+      # Admin" by default) would have selected, complete with a category +
+      # platform so the unfixed resolver successfully creates the module
+      # there. The fix must ignore the heuristic and create under tenant A.
+      ENV.delete("PLATFORM_PUBLISHER_ACCOUNT_NAME")
+      heuristic_account = create(:account, name: "Powernode Admin")
+      create(:system_node_module_category, account: heuristic_account, variety: "subscription")
+      create(:system_node_platform, account: heuristic_account)
+
+      body = base_body.merge(
+        module_name: "greenfield-mod",
+        manifest_yaml_b64: Base64.strict_encode64(fresh_module_yaml.gsub("placeholder", "greenfield-mod"))
+      )
+
+      expect {
+        post "/api/v1/system/module_publications", params: body.to_json, headers: bearer
+      }.to change { System::NodeModule.where(name: "greenfield-mod").count }.from(0).to(1)
+
+      expect(response).to have_http_status(:ok)
+      created = System::NodeModule.find_by(name: "greenfield-mod")
+      expect(created.account_id).to eq(account.id),
+             "auto-created module landed in #{created.account&.name.inspect} (#{created.account_id}); " \
+             "expected the CI worker's account #{account.name.inspect} (#{account.id})"
     end
   end
 end

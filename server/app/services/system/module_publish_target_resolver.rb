@@ -10,24 +10,31 @@ module System
   class ModulePublishTargetResolver
     # Find the NodeModule receiving this publish; create one if absent.
     #
-    # Lookup order:
+    # ACCOUNT-SCOPED (multi-tenant safe). The module registry is owned
+    # per-account: a CI publish authenticated as account A may only ever
+    # resolve or create modules within account A. `account` is the CI
+    # worker's owning account (controller passes @current_ci_worker.account).
+    #
+    # Lookup order — ALL scoped to the supplied account:
     #   1. gitea_repo_full_name match (canonical OCI namespace)
-    #   2. bare name match across any account (legacy unscoped lookup;
-    #      ambiguous with multi-tenant seed data but preserves prior
-    #      behavior when the row exists somewhere)
-    #   3. find_or_create_by(account: publisher, name:) — stub row
-    #      with sane defaults; the apply_manifest_yaml step
-    #      immediately following populates the rest.
+    #   2. bare name match within the account
+    #   3. create a NodeModule on `account` with stub defaults; the
+    #      apply_manifest_yaml step immediately following populates the rest.
+    #
+    # Scoping every lookup to the worker's account closes the cross-tenant
+    # IDOR where an unscoped find_by(name:)/find_by(gitea_repo_full_name:)
+    # could resolve (and then republish/promote) another tenant's module,
+    # and where auto-create attached the row to a heuristically-picked
+    # "publisher" account rather than the worker's own.
     #
     # Auto-creation guards against record-invalid + returns nil so the
     # caller can render a clean 422 instead of bubbling an exception.
-    def find_or_create_publish_target(gitea_repo, module_name)
-      existing = ::System::NodeModule.find_by(gitea_repo_full_name: gitea_repo) ||
-                 ::System::NodeModule.find_by(name: module_name)
-      return existing if existing
-
-      account = resolve_publisher_account
+    def find_or_create_publish_target(gitea_repo, module_name, account:)
       return nil unless account
+
+      existing = account.system_node_modules.find_by(gitea_repo_full_name: gitea_repo) ||
+                 account.system_node_modules.find_by(name: module_name)
+      return existing if existing
 
       category = resolve_publisher_category(account)
       platform = resolve_publisher_node_platform(account)
@@ -50,23 +57,6 @@ module System
     end
 
     private
-
-    # Account that owns auto-created NodeModules. Default lookup:
-    #   1. ENV[PLATFORM_PUBLISHER_ACCOUNT_NAME] (operator override)
-    #   2. "Powernode Admin" (seed-managed canonical name)
-    #   3. Account with the most existing NodeModule rows (heuristic
-    #      for finding the platform-admin account in multi-tenant
-    #      installs where it might have a non-default name)
-    #   4. First account by created_at (last-resort fallback)
-    def resolve_publisher_account
-      explicit = ENV.fetch("PLATFORM_PUBLISHER_ACCOUNT_NAME", "Powernode Admin")
-      ::Account.find_by(name: explicit) ||
-        (
-          top_id = ::System::NodeModule.group(:account_id).count.max_by(&:last)&.first
-          top_id ? ::Account.find_by(id: top_id) : nil
-        ) ||
-        ::Account.order(:created_at).first
-    end
 
     # Category for auto-created NodeModules. "Powernode Platform"
     # is the seed-managed category for platform modules; absent
