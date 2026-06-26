@@ -78,8 +78,10 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
     # Layer-digest fetch hits the registry; skip the network hop in unit
     # tests. The behavior under success is covered by the agent's pull
     # path; here we only care that the controller calls it and merges
-    # the response cleanly. nil = "couldn't fetch" path.
-    allow_any_instance_of(Api::V1::System::ModulePublicationsController)
+    # the response cleanly. nil = "couldn't fetch" path. The fetch logic
+    # now lives in System::OciLayerDigestFetcher (extracted from the
+    # controller), so the stub targets the service.
+    allow_any_instance_of(::System::OciLayerDigestFetcher)
       .to receive(:fetch_oci_layer_digest).and_return(nil)
   end
 
@@ -256,7 +258,7 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       # (b) Account.destroy_all cascades through associations that have
       # unrelated schema drift (system_node_architectures.account_id is
       # not in the live schema even though the model declares it).
-      allow_any_instance_of(Api::V1::System::ModulePublicationsController)
+      allow_any_instance_of(::System::ModulePublishTargetResolver)
         .to receive(:resolve_publisher_account).and_return(nil)
 
       body = base_body.merge(module_name: "ghost-module")

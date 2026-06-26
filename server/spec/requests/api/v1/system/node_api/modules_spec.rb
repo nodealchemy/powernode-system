@@ -252,4 +252,48 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(services).to eq([])
     end
   end
+
+  describe "download" do
+    let!(:version) do
+      create(:system_node_module_version, node_module: base_module, version_number: 1).tap do |v|
+        v.update_columns(artifacts: {
+          "erofs" => {
+            "oci_ref"       => "git.example.com/powernode/nginx-base:abc1234",
+            "oci_digest"    => "sha256:deadbeefcafe",
+            "fsverity_root" => "sha256:rootcafef00d",
+            "size"          => 4096,
+            "media_type"    => "application/vnd.powernode.erofs"
+          }
+        })
+        base_module.update_columns(current_version_id: v.id)
+      end
+    end
+
+    it "emits the file + oci blocks for a published artifact (build_file_payload)" do
+      get "/api/v1/system/node_api/modules/#{base_module.id}/download", headers: headers
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+
+      expect(data["file"]).to eq(
+        "name"         => "nginx-base.erofs",
+        "size"         => 4096,
+        "checksum"     => "deadbeefcafe",
+        "download_url" => "/api/v1/system/node_api/files/modules/#{base_module.id}",
+        "content_type" => "application/vnd.powernode.erofs"
+      )
+      expect(data["oci"]).to eq(
+        "ref"                => "git.example.com/powernode/nginx-base:abc1234",
+        "digest"             => "sha256:deadbeefcafe",
+        "fsverity_root_hash" => "sha256:rootcafef00d",
+        "size_bytes"         => 4096
+      )
+    end
+
+    it "returns an error when the module has no published artifact" do
+      base_module.update_columns(current_version_id: nil)
+      get "/api/v1/system/node_api/modules/#{base_module.id}/download", headers: headers
+      body = JSON.parse(response.body)
+      expect(body["error"]).to include("no published artifact")
+    end
+  end
 end

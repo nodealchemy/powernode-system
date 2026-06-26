@@ -1,9 +1,6 @@
 # frozen_string_literal: true
 
 require "base64"
-require "json"
-require "net/http"
-require "uri"
 
 module Api
   module V1
@@ -82,7 +79,7 @@ module Api
           # where 9 renamed modules triggered notify 404s until
           # /tmp/ops-create-renamed-modules.rb was run by hand).
           gitea_repo = "powernode/#{module_name}"
-          node_module = find_or_create_publish_target(gitea_repo, module_name)
+          node_module = ::System::ModulePublishTargetResolver.new.find_or_create_publish_target(gitea_repo, module_name)
           unless node_module
             return render_error(
               "could not resolve or create NodeModule for gitea_repo=#{gitea_repo} (or name=#{module_name.inspect})",
@@ -128,7 +125,7 @@ module Api
             # failure here doesn't abort the publish — the digest can
             # be backfilled later, and the agent will simply refuse to
             # mount until it shows up.
-            erofs_layer = fetch_oci_layer_digest(node_module, normalized.dig("erofs", "oci_ref"))
+            erofs_layer = ::System::OciLayerDigestFetcher.new.fetch_oci_layer_digest(node_module, normalized.dig("erofs", "oci_ref"))
             if erofs_layer && normalized["erofs"].is_a?(Hash)
               normalized["erofs"] = normalized["erofs"].merge(
                 "oci_digest" => erofs_layer[:digest],
@@ -170,80 +167,6 @@ module Api
 
         private
 
-        # Find the NodeModule receiving this publish; create one if absent.
-        #
-        # Lookup order:
-        #   1. gitea_repo_full_name match (canonical OCI namespace)
-        #   2. bare name match across any account (legacy unscoped lookup;
-        #      ambiguous with multi-tenant seed data but preserves prior
-        #      behavior when the row exists somewhere)
-        #   3. find_or_create_by(account: publisher, name:) — stub row
-        #      with sane defaults; the apply_manifest_yaml step
-        #      immediately following populates the rest.
-        #
-        # Auto-creation guards against record-invalid + returns nil so the
-        # caller can render a clean 422 instead of bubbling an exception.
-        def find_or_create_publish_target(gitea_repo, module_name)
-          existing = ::System::NodeModule.find_by(gitea_repo_full_name: gitea_repo) ||
-                     ::System::NodeModule.find_by(name: module_name)
-          return existing if existing
-
-          account = resolve_publisher_account
-          return nil unless account
-
-          category = resolve_publisher_category(account)
-          platform = resolve_publisher_node_platform(account)
-          return nil unless category && platform
-
-          ::System::NodeModule.create!(
-            account:       account,
-            name:          module_name,
-            variety:       "subscription",
-            category:      category,
-            node_platform: platform,
-            enabled:       true,
-            public:        false,
-            priority:      50,
-            lock_spec:     false
-          )
-        rescue ::ActiveRecord::RecordInvalid => e
-          Rails.logger.warn "[ModulePublicationsController] auto-create failed for name=#{module_name}: #{e.message}"
-          nil
-        end
-
-        # Account that owns auto-created NodeModules. Default lookup:
-        #   1. ENV[PLATFORM_PUBLISHER_ACCOUNT_NAME] (operator override)
-        #   2. "Powernode Admin" (seed-managed canonical name)
-        #   3. Account with the most existing NodeModule rows (heuristic
-        #      for finding the platform-admin account in multi-tenant
-        #      installs where it might have a non-default name)
-        #   4. First account by created_at (last-resort fallback)
-        def resolve_publisher_account
-          explicit = ENV.fetch("PLATFORM_PUBLISHER_ACCOUNT_NAME", "Powernode Admin")
-          ::Account.find_by(name: explicit) ||
-            (
-              top_id = ::System::NodeModule.group(:account_id).count.max_by(&:last)&.first
-              top_id ? ::Account.find_by(id: top_id) : nil
-            ) ||
-            ::Account.order(:created_at).first
-        end
-
-        # Category for auto-created NodeModules. "Powernode Platform"
-        # is the seed-managed category for platform modules; absent
-        # that, drop into whatever category the account has set up.
-        def resolve_publisher_category(account)
-          ::System::NodeModuleCategory.find_by(account: account, name: "Powernode Platform", variety: "subscription") ||
-            ::System::NodeModuleCategory.find_by(account: account, variety: "subscription") ||
-            ::System::NodeModuleCategory.find_by(account: account)
-        end
-
-        # NodePlatform for auto-created NodeModules. ubuntu-24.04-lts is
-        # the seed default; fall back to first available.
-        def resolve_publisher_node_platform(account)
-          ::System::NodePlatform.find_by(account: account, name: "ubuntu-24.04-lts") ||
-            ::System::NodePlatform.find_by(account: account)
-        end
-
         # Re-applies the manifest YAML carried in the payload via
         # ManifestImportService — keeps NodeModule + ModuleService rows
         # aligned with the source-tree manifest that CI just packaged.
@@ -273,51 +196,6 @@ module Api
           msg = "ManifestImportService crashed module=#{node_module.name}: #{e.class}: #{e.message}"
           Rails.logger.warn "[ModulePublicationsController] #{msg}"
           msg
-        end
-
-        # HEADs the OCI manifest at oci_ref and returns the descriptor
-        # for the erofs layer (or nil if it can't authenticate / parse).
-        # The agent uses {digest, size, media_type} during pull —
-        # everything else in the manifest is informational here.
-        #
-        # Auth: reuses the account's Gitea PAT (the same credential the
-        # operator configured for git operations); registries hosted on
-        # the same Gitea instance accept that PAT as Basic-auth password
-        # with any username. No new secret surface.
-        def fetch_oci_layer_digest(node_module, oci_ref)
-          return nil if oci_ref.blank?
-          m = oci_ref.match(%r{\A([^/]+)/(.+):([^:]+)\z})
-          return nil unless m
-          registry, repo, tag = m[1], m[2], m[3]
-
-          pat = node_module.account.git_provider_credentials.where(auth_type: "personal_access_token").first&.access_token
-          return nil if pat.blank?
-
-          uri = URI("https://#{registry}/v2/#{repo}/manifests/#{tag}")
-          http = Net::HTTP.new(uri.host, uri.port)
-          http.use_ssl = (uri.scheme == "https")
-          http.open_timeout = 5
-          http.read_timeout = 10
-          req = Net::HTTP::Get.new(uri.path)
-          req["Authorization"] = "Basic " + ::Base64.strict_encode64("ci:#{pat}")
-          req["Accept"] = [
-            "application/vnd.oci.image.manifest.v1+json",
-            "application/vnd.docker.distribution.manifest.v2+json"
-          ].join(",")
-          res = http.request(req)
-          return nil unless res.is_a?(Net::HTTPSuccess)
-
-          manifest = JSON.parse(res.body)
-          layers = Array(manifest["layers"])
-          erofs_layer = layers.find { |l| l["mediaType"].to_s =~ /erofs/ } || layers.first
-          return nil unless erofs_layer
-
-          { digest:     erofs_layer["digest"].to_s,
-            size:       erofs_layer["size"].to_i,
-            media_type: erofs_layer["mediaType"].to_s }
-        rescue StandardError => e
-          Rails.logger.warn "[ModulePublicationsController] fetch_oci_layer_digest #{oci_ref}: #{e.class}: #{e.message}"
-          nil
         end
 
         # Mirror of ModulePublicationProcessor#find_or_create_version
