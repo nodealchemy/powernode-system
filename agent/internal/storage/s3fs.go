@@ -35,8 +35,3 @@ func MountObject(ctx context.Context, runner mount.Runner, client httpGetter, ta
 	// per recipe.Type, then start the systemd unit.
 	return fmt.Errorf("object storage node-mount not yet implemented for recipe type %s", task.Recipe.Type)
 }
-
-// UnmountObject reverses MountObject.
-func UnmountObject(ctx context.Context, runner mount.Runner, task *UnmountTask) error {
-	return StopAndRemoveMountUnit(ctx, runner, task.UnitName)
-}

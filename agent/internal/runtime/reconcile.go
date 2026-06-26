@@ -657,7 +657,6 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	}
 
 	mod := mount.Module{ID: moduleID, Digest: mf.Digest, Priority: mf.EffectivePriority}
-	manifests := map[string]*manifest.Manifest{moduleID: mf}
 	if err := r.attachModule(ctx, mod, mf); err != nil {
 		return "", err
 	}
@@ -666,7 +665,6 @@ func (r *Reconciler) AttachOne(ctx context.Context, moduleID string) (string, er
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		return "", fmt.Errorf("save state: %w", err)
 	}
-	_ = manifests
 	return "attached", nil
 }
 
