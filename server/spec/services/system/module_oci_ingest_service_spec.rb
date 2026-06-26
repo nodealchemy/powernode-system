@@ -100,4 +100,29 @@ RSpec.describe System::ModuleOciIngestService do
       expect(described_class.adapter).to be_a(described_class::OrasOciAdapter)
     end
   end
+
+  # IMP-1b9ec6821c25 — ensure_binary! used string-shell `system("which #{name} …")`;
+  # the rest of this adapter shells out via array-form Open3.capture3. The PATH check
+  # must use the no-shell array form (no injection surface) and still raise IngestError
+  # when the binary is absent.
+  describe "OrasOciAdapter#ensure_binary! (no-shell PATH check)" do
+    let(:adapter) { described_class::OrasOciAdapter.new }
+
+    def status_double(ok)
+      instance_double(Process::Status, success?: ok)
+    end
+
+    it "checks the binary via array-form Open3.capture3 (not a shell string)" do
+      expect(Open3).to receive(:capture3).with("which", "oras").and_return(["", "", status_double(true)])
+      # If the implementation still used `system("which #{name} …")`, Open3.capture3
+      # would never be invoked and this expectation would fail.
+      expect { adapter.send(:ensure_binary!, "oras") }.not_to raise_error
+    end
+
+    it "raises IngestError when the binary is not on PATH" do
+      allow(Open3).to receive(:capture3).with("which", "cosign").and_return(["", "not found", status_double(false)])
+      expect { adapter.send(:ensure_binary!, "cosign") }
+        .to raise_error(described_class::IngestError, /cosign binary not found/)
+    end
+  end
 end

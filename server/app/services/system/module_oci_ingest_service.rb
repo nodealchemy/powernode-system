@@ -262,7 +262,13 @@ module System
       private
 
       def ensure_binary!(name)
-        return if system("which #{name} > /dev/null 2>&1")
+        # Array-form Open3 (no shell) — matches the rest of this adapter's
+        # shell-outs (Open3.capture3("oras", …)). `name` is a static literal
+        # today ("oras"/"cosign"), but array form removes any shell-injection
+        # surface and keeps the convention consistent. capture3 suppresses the
+        # `which` output the same way the old `> /dev/null 2>&1` did.
+        _out, _err, status = ::Open3.capture3("which", name)
+        return if status.success?
 
         raise IngestError, "#{name} binary not found on PATH (required for OrasOciAdapter)"
       end
