@@ -419,6 +419,26 @@ module System
         value
       end
 
+      # Resolve the first present value among *keys, preferring transient (BYOC
+      # request-scoped) credentials, else the connection's typed column / config
+      # via #credential. Hoisted from the 4 cloud adapters (was byte-identical).
+      def auth_credential(*keys)
+        if @transient_credentials
+          keys.each do |key|
+            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
+            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+          end
+          return nil
+        end
+
+        return nil unless connection
+        keys.each do |key|
+          value = credential(column: key.to_sym, config_key: key.to_s)
+          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
+        end
+        nil
+      end
+
       # Apply the fail-fast connect/read timeout convention to a Faraday
       # connection builder (the block argument yielded by `Faraday.new`).
       # Centralizes the open_timeout/timeout pair so the hand-rolled REST

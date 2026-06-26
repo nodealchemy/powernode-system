@@ -588,26 +588,6 @@ module System
 
       private
 
-      # Resolve an auth-probe credential — transient creds (M2 BYOC test
-      # flow) win; otherwise fall back to the connection columns via the
-      # BaseProvider credential helper.
-      def auth_credential(*keys)
-        if @transient_credentials
-          keys.each do |key|
-            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
-            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
-          end
-          return nil
-        end
-
-        return nil unless connection
-        keys.each do |key|
-          value = credential(column: key.to_sym, config_key: key.to_s)
-          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
-        end
-        nil
-      end
-
       # Pull a human-readable reason out of a Keystone error response.
       # Bodies are JSON: { "error": { "message": "...", "code": 401 } }.
       def parse_keystone_error(response)

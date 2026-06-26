@@ -501,28 +501,6 @@ module System
 
       private
 
-      # Resolve a credential by key from transient creds (set by
-      # `with_credentials` for the BYOC test path) or fall back to the
-      # connection's typed columns via the BaseProvider helper. The first
-      # provided key wins; remaining keys are aliases (e.g., "access_key"
-      # is the connection-column alias of "access_key_id").
-      def auth_credential(*keys)
-        if @transient_credentials
-          keys.each do |key|
-            value = @transient_credentials[key.to_s] || @transient_credentials[key.to_sym]
-            return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
-          end
-          return nil
-        end
-
-        return nil unless connection
-        keys.each do |key|
-          value = credential(column: key.to_sym, config_key: key.to_s)
-          return value if value.respond_to?(:present?) ? value.present? : !value.to_s.empty?
-        end
-        nil
-      end
-
       def ec2_client
         @ec2_client ||= Aws::EC2::Client.new(
           region: aws_region,

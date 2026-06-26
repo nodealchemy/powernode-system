@@ -279,4 +279,57 @@ RSpec.describe System::Providers::BaseProvider do
       expect(conn.options.timeout).to eq(described_class::DEFAULT_READ_TIMEOUT)
     end
   end
+
+  # Credential resolver hoisted from the 4 cloud adapters (aws/azure/gcp/
+  # openstack), where it was byte-identical. Resolves the first present value
+  # among *keys, preferring transient (BYOC request-scoped) creds, else the
+  # connection's typed column / config via the protected #credential helper.
+  describe "#auth_credential (hoisted credential resolver)" do
+    context "transient (BYOC request-scoped) credentials" do
+      it "returns the first present value from @transient_credentials (string key)" do
+        provider.instance_variable_set(:@transient_credentials, { "access_key_id" => "AKIA-transient" })
+
+        expect(provider.send(:auth_credential, "access_key_id")).to eq("AKIA-transient")
+      end
+
+      it "honors symbol keys and first-present-wins alias order" do
+        provider.instance_variable_set(:@transient_credentials, { secret_access_key: "shh" })
+
+        expect(provider.send(:auth_credential, "secret_access_key", "secret_key")).to eq("shh")
+      end
+
+      it "short-circuits to nil (never consulting the connection) when the key is absent/blank" do
+        provider.instance_variable_set(:@transient_credentials, { "access_key_id" => "" })
+
+        expect(provider).not_to receive(:credential)
+        expect(provider.send(:auth_credential, "access_key_id")).to be_nil
+      end
+    end
+
+    context "connection-column / config fallback (no transient creds)" do
+      it "resolves via #credential and returns the value" do
+        allow(provider).to receive(:credential)
+          .with(column: :access_key_id, config_key: "access_key_id").and_return("AKIA-column")
+
+        expect(provider.send(:auth_credential, "access_key_id")).to eq("AKIA-column")
+      end
+
+      it "tries each key in order and returns the first present one" do
+        allow(provider).to receive(:credential)
+          .with(column: :access_key, config_key: "access_key").and_return(nil)
+        allow(provider).to receive(:credential)
+          .with(column: :access_key_id, config_key: "access_key_id").and_return("AKIA-alias")
+
+        expect(provider.send(:auth_credential, "access_key", "access_key_id")).to eq("AKIA-alias")
+      end
+    end
+
+    context "neither transient creds nor a connection" do
+      let(:no_conn_provider) { test_provider_class.new(nil, region: region) }
+
+      it "returns nil" do
+        expect(no_conn_provider.send(:auth_credential, "access_key_id")).to be_nil
+      end
+    end
+  end
 end
