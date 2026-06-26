@@ -58,11 +58,19 @@ module System
 
     TERMINAL_STATUSES = %w[revoked].freeze
 
+    # `revoked` is reachable from EVERY non-terminal state: an operator (or
+    # the platform) must be able to kill a cert at any point in its
+    # lifecycle — including mid-issuance and mid-renewal. This is what lets
+    # Acme::CertificateManager#revoke! drive the transition through the
+    # state machine (rather than a raw `update!`) from any live state, and
+    # what makes the revoke-while-renewing race resolvable: a renew claims
+    # `valid → renewing`, a concurrent revoke moves `renewing → revoked`,
+    # and the renew's commit re-checks `terminal?` and discards its result.
     TRANSITIONS = {
-      "pending"  => %w[issuing failed],
-      "issuing"  => %w[valid failed],
+      "pending"  => %w[issuing failed revoked],
+      "issuing"  => %w[valid failed revoked],
       "valid"    => %w[renewing expired revoked],
-      "renewing" => %w[valid failed],
+      "renewing" => %w[valid failed revoked],
       "expired"  => %w[renewing revoked],
       "failed"   => %w[issuing renewing revoked],
       "revoked"  => []

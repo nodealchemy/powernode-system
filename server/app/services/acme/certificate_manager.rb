@@ -41,15 +41,27 @@ module Acme
     end
 
     def issue!(certificate:)
+      # CLAIM (short lock): reload + eligibility check + `→ issuing` happen
+      # atomically under a row lock so two concurrent issuance attempts
+      # can't both pass the check and both place an ACME order (double
+      # issuance burns Let's Encrypt rate limits). A second attempt reloads
+      # under the lock, sees `issuing`/`valid`, and bails. We do NOT hold
+      # this lock across the multi-minute ACME order below — the lock is
+      # released the moment the block returns.
+      #
       # Allow `pending → issuing` (initial issuance) and `failed → issuing`
       # (retry after a previous issuance failed). The state machine on
       # AcmeCertificate enforces the valid edges.
-      unless certificate.can_transition_to?("issuing")
-        return failure(certificate, "certificate not eligible for issuance (got status=#{certificate.status})")
+      certificate.with_lock do
+        certificate.reload
+        unless certificate.can_transition_to?("issuing")
+          return failure(certificate, "certificate not eligible for issuance (got status=#{certificate.status})")
+        end
+
+        certificate.transition_to!("issuing")
       end
 
-      certificate.transition_to!("issuing")
-
+      # ACME order — runs OUTSIDE any DB lock (can take minutes).
       cert_material = with_validated_provider(certificate) do |dns_creds_hash|
         @acme_client.issue(
           common_name: certificate.common_name,
@@ -63,8 +75,11 @@ module Acme
         )
       end
 
-      apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
-      Result.new(ok?: true, certificate: certificate)
+      if apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
+        Result.new(ok?: true, certificate: certificate)
+      else
+        failure(certificate, "certificate was revoked mid-issuance; issue result discarded")
+      end
     rescue StandardError => e
       Rails.logger.error("[Acme::CertificateManager#issue!] #{e.class}: #{e.message}")
       certificate.transition_to!("failed", error_message: e.message[0, 1000])
@@ -72,12 +87,22 @@ module Acme
     end
 
     def renew!(certificate:)
-      unless certificate.status == "valid"
-        return failure(certificate, "certificate not in valid state (got #{certificate.status})")
+      # CLAIM (short lock): reload + valid-check + `valid → renewing` happen
+      # atomically under a row lock. A concurrent renewal sweep reloads
+      # under the lock, sees `renewing`, and bails — so overlapping sweeps
+      # can't both place an ACME order (double issuance → Let's Encrypt
+      # rate-limit burn). The lock is released as soon as the block returns;
+      # we do NOT hold it across the multi-minute ACME call below.
+      certificate.with_lock do
+        certificate.reload
+        unless certificate.status == "valid"
+          return failure(certificate, "certificate not in valid state (got #{certificate.status})")
+        end
+
+        certificate.transition_to!("renewing")
       end
 
-      certificate.transition_to!("renewing")
-
+      # ACME renewal — runs OUTSIDE any DB lock (can take minutes).
       cert_material = with_validated_provider(certificate) do |dns_creds_hash|
         # Renew uses the same powernode-acme entry point as issue (lego
         # treats renewal as "obtain with existing account key"); the
@@ -96,8 +121,16 @@ module Acme
         )
       end
 
-      apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
-      Result.new(ok?: true, certificate: certificate)
+      # COMMIT (short lock, with recheck): apply_cert_material! re-reads the
+      # row under a lock and refuses to materialize if the cert was revoked
+      # mid-renewal — this is the revoke-resurrection fix. A false return
+      # means "discarded because the cert is terminal"; surface it as a
+      # failure rather than reporting a phantom success.
+      if apply_cert_material!(certificate, normalize_keys(cert_material), transition: "valid")
+        Result.new(ok?: true, certificate: certificate)
+      else
+        failure(certificate, "certificate was revoked mid-renewal; renew result discarded")
+      end
     rescue StandardError => e
       Rails.logger.error("[Acme::CertificateManager#renew!] #{e.class}: #{e.message}")
       certificate.transition_to!("failed", error_message: e.message[0, 1000])
@@ -133,11 +166,30 @@ module Acme
         end
       end
 
-      certificate.update!(
-        status:     "revoked",
-        revoked_at: Time.current,
-        metadata:   certificate.metadata.merge("revocation_reason" => reason.to_s.presence)
-      )
+      # COMMIT (short lock): drive `→ revoked` through the state machine
+      # (NOT a raw `update!`, which would bypass the guard and silently
+      # resurrect-race with a renew commit). Re-read under the lock and
+      # re-check `terminal?` so this interleaves correctly with an in-flight
+      # renew: whichever of {revoke, renew-commit} grabs the lock first
+      # wins, and the other sees the terminal/updated state and stands down.
+      revoked = false
+      certificate.with_lock do
+        certificate.reload
+        unless certificate.terminal?
+          certificate.transition_to!(
+            "revoked",
+            attrs: {
+              revoked_at: Time.current,
+              metadata:   certificate.metadata.merge("revocation_reason" => reason.to_s.presence)
+            }
+          )
+          revoked = true
+        end
+      end
+
+      unless revoked
+        return failure(certificate, "certificate already in terminal state (#{certificate.status})")
+      end
 
       # Local cleanup. Order matters:
       #   1. Drop the on-disk PEM/key/chain so the cert can't be served
@@ -183,30 +235,60 @@ module Acme
       end
     end
 
+    # COMMIT step for issue!/renew!. Persists the freshly-obtained ACME
+    # material and drives `→ transition` (typically "valid") under a SHORT
+    # row lock, re-reading the row first. If the cert was revoked while the
+    # ACME call was in flight (terminal state), the result is DISCARDED:
+    # nothing is stored to Vault, nothing is written to disk, no transition
+    # happens, and the Traefik config is NOT regenerated — so a revoked cert
+    # can never be resurrected into the served config. Returns true when the
+    # material was applied, false when it was discarded.
+    #
+    # The lock is short: it spans only the Vault store + on-disk write +
+    # state transition, never the multi-minute ACME call (that already
+    # completed before we get here).
     def apply_cert_material!(certificate, cert_material, transition:)
-      store_to_vault!(certificate, cert_material)
-      disk_paths = materialize_to_disk!(certificate, cert_material)
+      applied = false
 
-      attrs = {
-        issued_at: cert_material[:issued_at] || Time.current,
-        expires_at: cert_material[:expires_at],
-        # NOTE: these columns are named `vault_path_*` for historical reasons,
-        # but they now hold the on-disk paths Traefik reads. The cert bundle
-        # is also stored in Vault under the convention path; that's the
-        # source of truth for renewals + remote serving. P2.5.next: rename
-        # these columns to `disk_path_*` to remove the misnomer.
-        vault_path_certificate: disk_paths[:cert],
-        vault_path_private_key: disk_paths[:key],
-        vault_path_chain: disk_paths[:chain],
-        vault_path_account_key: nil
-      }
-      certificate.transition_to!(transition, attrs: attrs)
+      certificate.with_lock do
+        certificate.reload
+        if certificate.terminal?
+          Rails.logger.warn(
+            "[Acme::CertificateManager#apply_cert_material!] cert #{certificate.id} is " \
+            "#{certificate.status} (revoked mid-flight); discarding the freshly-obtained " \
+            "ACME material — not storing, not materializing, not transitioning."
+          )
+          next # leave the lock without applying; `applied` stays false
+        end
 
-      # Regenerate the Traefik dynamic config so the new cert lands in
-      # the file Traefik file-watches. Best-effort: a writer failure must
-      # NOT roll back the issuance (the cert + PEMs are valid; the
-      # writer can be re-run any time via Acme::TraefikConfigWriter.write!).
-      regenerate_traefik_config!(certificate)
+        store_to_vault!(certificate, cert_material)
+        disk_paths = materialize_to_disk!(certificate, cert_material)
+
+        attrs = {
+          issued_at: cert_material[:issued_at] || Time.current,
+          expires_at: cert_material[:expires_at],
+          # NOTE: these columns are named `vault_path_*` for historical reasons,
+          # but they now hold the on-disk paths Traefik reads. The cert bundle
+          # is also stored in Vault under the convention path; that's the
+          # source of truth for renewals + remote serving. P2.5.next: rename
+          # these columns to `disk_path_*` to remove the misnomer.
+          vault_path_certificate: disk_paths[:cert],
+          vault_path_private_key: disk_paths[:key],
+          vault_path_chain: disk_paths[:chain],
+          vault_path_account_key: nil
+        }
+        certificate.transition_to!(transition, attrs: attrs)
+        applied = true
+      end
+
+      # Regenerate the Traefik dynamic config so the new cert lands in the
+      # file Traefik file-watches — only when we actually applied material.
+      # Done OUTSIDE the lock. Best-effort: a writer failure must NOT roll
+      # back the issuance (the cert + PEMs are valid; the writer can be
+      # re-run any time via Acme::TraefikConfigWriter.write!).
+      regenerate_traefik_config!(certificate) if applied
+
+      applied
     end
 
     # Pulls cert + key + chain + account_key from cert_material and writes

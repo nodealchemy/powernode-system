@@ -139,6 +139,25 @@ RSpec.describe Acme::CertificateManager, type: :service do
       result = described_class.renew!(certificate: cert, acme_client: stub_client)
       expect(result.ok?).to be false
     end
+
+    # Concurrency: a second overlapping renewal sweep must not place a
+    # duplicate ACME order. The short-lock claim reloads the row under the
+    # lock; if a concurrent sweep already moved it to `renewing`, this one
+    # sees the reloaded status (not its stale in-memory `valid`) and bails.
+    it "bails without a second ACME call when the reloaded status is no longer valid" do
+      cert # materialize the row as `valid`
+      # Simulate a concurrent sweep having claimed the row AFTER this
+      # manager loaded it: DB says `renewing`, in-memory object still `valid`.
+      System::AcmeCertificate.where(id: cert.id).update_all(status: "renewing")
+      expect(cert.status).to eq("valid") # stale in-memory value
+
+      result = described_class.renew!(certificate: cert, acme_client: stub_client)
+
+      expect(result.ok?).to be false
+      expect(result.error).to match(/not in valid state.*renewing/)
+      expect(stub_client).not_to have_received(:renew) # no duplicate ACME order
+      expect(cert.reload.status).to eq("renewing")     # not double-transitioned
+    end
   end
 
   describe ".revoke!" do
@@ -168,6 +187,27 @@ RSpec.describe Acme::CertificateManager, type: :service do
       result = described_class.revoke!(certificate: cert, acme_client: stub_client)
       expect(result.ok?).to be false
       expect(result.error).to match(/terminal state/)
+    end
+
+    # Security: revoke! must drive `→ revoked` through the state machine
+    # (transition_to!), NOT a raw `update!` that bypasses the guard. The
+    # raw update was the bug that let a revoke race against a renew commit.
+    it "drives → revoked through the state machine (transition_to!), not a raw update!" do
+      expect(cert).to receive(:transition_to!).with("revoked", any_args).and_call_original
+      result = described_class.revoke!(certificate: cert, reason: "audit", acme_client: stub_client)
+      expect(result.ok?).to be true
+      expect(cert.reload.status).to eq("revoked")
+    end
+
+    # The operator must be able to kill a cert that is mid-renewal. This
+    # only works because `renewing → revoked` is now a permitted edge AND
+    # revoke! goes through the state machine.
+    it "can revoke a cert that is mid-renewal (renewing → revoked)" do
+      cert.update!(status: "renewing")
+      result = described_class.revoke!(certificate: cert, reason: "kill mid-renew", acme_client: stub_client)
+      expect(result.ok?).to be true
+      expect(cert.reload.status).to eq("revoked")
+      expect(cert.metadata["revocation_reason"]).to eq("kill mid-renew")
     end
 
     # P2.5.7 acceptance smoke surfaced three lifecycle bugs at revoke
@@ -202,6 +242,57 @@ RSpec.describe Acme::CertificateManager, type: :service do
       [ cert_path, key_path, chain_path ].each do |p|
         expect(File.exist?(p)).to be(false), "expected #{p} to be removed after revoke!"
       end
+    end
+  end
+
+  # IMP-274b1f25dfb9 — revoke-resurrection race. The ACME renew (lego)
+  # call takes minutes and runs OUTSIDE any DB lock. An operator revoke
+  # can land while it is in flight. The commit step (apply_cert_material!)
+  # must re-read the row under a short lock and DISCARD the result if the
+  # cert was revoked mid-flight — otherwise the stale renew result would
+  # resurrect the revoked cert back into Traefik.
+  describe "revoke-resurrection (concurrency)" do
+    let(:cert) do
+      create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred).tap do |c|
+        c.update_columns(
+          vault_path_certificate: "acme-certificates/#{account.id}/#{c.id}/cert",
+          vault_path_private_key: "acme-certificates/#{account.id}/#{c.id}/key"
+        )
+      end
+    end
+
+    it "does NOT resurrect a cert that is revoked while the ACME renew is in flight" do
+      # Spy on the Traefik writer so we can prove the revoked cert is never
+      # re-materialized into the served config by the renew path.
+      allow(::Acme::TraefikConfigWriter).to receive(:write!)
+        .and_return(output_path: "/tmp/test", cert_count: 0)
+
+      # The lego call (here, the stub) is where an operator revoke lands:
+      # mutate the row to `revoked` mid-call, then hand back fresh material.
+      allow(stub_client).to receive(:renew) do
+        System::AcmeCertificate.where(id: cert.id)
+                               .update_all(status: "revoked", revoked_at: Time.current)
+        cert_material
+      end
+
+      result = described_class.renew!(certificate: cert, acme_client: stub_client)
+
+      expect(result.ok?).to be false
+      expect(result.error).to match(/revoked mid-renewal|discarded/)
+      expect(cert.reload.status).to eq("revoked")          # NOT resurrected to valid
+      expect(fake_vault).not_to have_received(:store_credential) # material not persisted
+      expect(::Acme::TraefikConfigWriter).not_to have_received(:write!) # not re-served
+    end
+
+    it "apply_cert_material! discards material + returns false for a revoked cert" do
+      manager = described_class.new(acme_client: stub_client)
+      cert.update!(status: "revoked", revoked_at: Time.current)
+
+      applied = manager.send(:apply_cert_material!, cert, cert_material, transition: "valid")
+
+      expect(applied).to be(false)
+      expect(cert.reload.status).to eq("revoked")
+      expect(fake_vault).not_to have_received(:store_credential)
     end
   end
 
