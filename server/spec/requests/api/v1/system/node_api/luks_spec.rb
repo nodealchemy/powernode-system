@@ -103,4 +103,49 @@ RSpec.describe "Api::V1::System::NodeApi::Luks#show", type: :request do
     )
     expect(JSON.parse(response.body).dig("data", "audit_id")).to eq(event.id)
   end
+
+  # IMP-32b37c128df8 — the local fallback HMACs `account:instance:label` keyed
+  # ONLY by POWERNODE_LUKS_FALLBACK_SEED. With the seed unset the key is empty,
+  # so the disk-encryption passphrase becomes a deterministic function of three
+  # non-secret IDs — recomputable by anyone who knows them. Production must fail
+  # CLOSED rather than issue a guessable key; dev/test stays gated (relaxed
+  # threat model).
+  describe "production fail-closed when POWERNODE_LUKS_FALLBACK_SEED is unset" do
+    around do |example|
+      original = ENV["POWERNODE_LUKS_FALLBACK_SEED"]
+      ENV.delete("POWERNODE_LUKS_FALLBACK_SEED")
+      example.run
+    ensure
+      original.nil? ? ENV.delete("POWERNODE_LUKS_FALLBACK_SEED") : (ENV["POWERNODE_LUKS_FALLBACK_SEED"] = original)
+    end
+
+    it "refuses to issue a deterministic fallback passphrase in production (no Vault, no seed)" do
+      allow(Rails.env).to receive(:production?).and_return(true)
+
+      fetch(instance, "rootfs")
+
+      expect(response).to have_http_status(:service_unavailable)
+      # No passphrase material leaks in the refusal payload.
+      expect(JSON.parse(response.body).dig("data", "passphrase")).to be_nil
+      # And no LUKS passphrase was "issued" — no audit event for a refusal.
+      expect(System::FleetEvent.where(kind: "system.luks_passphrase_issued").count).to eq(0)
+    end
+
+    it "still issues via the local fallback in dev/test with the seed unset (gated)" do
+      fetch(instance, "rootfs")
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "derivation")).to eq("local_fallback")
+    end
+
+    it "issues via the seeded fallback even in production when the seed IS configured" do
+      ENV["POWERNODE_LUKS_FALLBACK_SEED"] = "a-real-operator-configured-seed"
+      allow(Rails.env).to receive(:production?).and_return(true)
+
+      fetch(instance, "rootfs")
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "derivation")).to eq("local_fallback")
+    end
+  end
 end

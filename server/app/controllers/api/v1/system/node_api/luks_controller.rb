@@ -25,6 +25,11 @@ module Api
         # passphrase is re-fetched (LUKS keys are derived deterministically
         # so the same passphrase unlocks the volume on every reboot).
         class LuksController < BaseController
+          # Raised when the local deterministic fallback would be used in
+          # production without a configured POWERNODE_LUKS_FALLBACK_SEED — we
+          # refuse rather than issue a guessable disk-encryption key.
+          class LuksFallbackUnavailableError < StandardError; end
+
           # GET /api/v1/system/node_api/config/luks/:partition_label
           # Returns: { passphrase, derivation: "vault_transit"|"local_fallback",
           #            partition_label, audit_id }
@@ -59,6 +64,11 @@ module Api
               derivation: result[:derivation],
               audit_id: audit&.id
             )
+          rescue LuksFallbackUnavailableError => e
+            # Fail closed: a misconfigured production deployment must not receive
+            # a guessable passphrase. The message names the config knobs only —
+            # never any key material.
+            render_error(e.message, :service_unavailable)
           end
 
           private
@@ -85,8 +95,19 @@ module Api
             # secret. NOT as secure as Vault Transit but acceptable
             # for dev/test deployments.
             require "openssl"
-            base = current_account.id.to_s + ":" + current_instance.id.to_s + ":" + label
             seed = ENV.fetch("POWERNODE_LUKS_FALLBACK_SEED", "")
+            # The seed is the ONLY secret in this derivation — the base is
+            # non-secret account/instance/label IDs. An empty seed makes the
+            # passphrase a deterministic function of public IDs, recomputable by
+            # anyone who knows them. Fail CLOSED in production: refuse rather
+            # than issue a guessable disk-encryption key — require Vault Transit
+            # or a real POWERNODE_LUKS_FALLBACK_SEED. The deterministic fallback
+            # remains available in dev/test (relaxed threat model).
+            if seed.blank? && ::Rails.env.production?
+              raise LuksFallbackUnavailableError,
+                    "LUKS passphrase unavailable: configure Vault Transit or set POWERNODE_LUKS_FALLBACK_SEED"
+            end
+            base = current_account.id.to_s + ":" + current_instance.id.to_s + ":" + label
             digest = OpenSSL::HMAC.hexdigest("SHA256", seed, base)
             { passphrase: digest, derivation: "local_fallback" }
           end
