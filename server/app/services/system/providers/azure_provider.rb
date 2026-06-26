@@ -1016,11 +1016,11 @@ module System
         end
       end
 
-      def log_operation(action, params: {})
-        safe = params.is_a?(Hash) ? params.except(:secret_key, :access_key, :ssh_public_key) : {}
-        Rails.logger.info("[AzureProvider] #{action} #{safe.inspect}")
-      end
-
+      # NOTE: #log_operation is intentionally NOT overridden here — Azure now
+      # inherits BaseProvider#log_operation, which recursively redacts the full
+      # LOG_SENSITIVE_KEYS (user_data, password, ssh_keys, access_token, …) via
+      # sanitize_for_log. The previous override shallow-.except'd only 3 keys and
+      # leaked the rest of create_instance's params to logs.
       def build_instance_response(cloud_id:, status:, private_ip: nil, instance_type: nil)
         {
           success: true,

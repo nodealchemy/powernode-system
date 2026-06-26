@@ -305,6 +305,40 @@ RSpec.describe System::Providers::AzureProvider do
     end
   end
 
+  # IMP-73635a2e7cd8 — Azure reimplemented #log_operation redacting only 3 keys
+  # (shallow .except), bypassing BaseProvider#log_operation + sanitize_for_log
+  # which recursively redacts the full LOG_SENSITIVE_KEYS. create_instance logs
+  # the whole params hash, so user_data/password/ssh_keys/access_token leaked to
+  # logs on Azure only. The override is removed so Azure inherits the safe base.
+  describe "#log_operation secret redaction" do
+    it "redacts all LOG_SENSITIVE_KEYS from operation logs (not just 3 keys)" do
+      logged = []
+      allow(Rails.logger).to receive(:info) { |msg| logged << msg.to_s }
+
+      provider.send(:log_operation, "create_instance", params: {
+        name: "vm-1",
+        user_data: "BASE64_CLOUD_INIT_PAYLOAD",
+        password: "hunter2-secret",
+        ssh_keys: [ "ssh-rsa AAAASECRETKEY" ],
+        access_token: "azure_access_token_secret",
+        secret_key: "client_secret_value"
+      })
+
+      line = logged.join("\n")
+      expect(line).to be_present
+      # None of the sensitive values may appear in the log line.
+      expect(line).not_to include("BASE64_CLOUD_INIT_PAYLOAD")
+      expect(line).not_to include("hunter2-secret")
+      expect(line).not_to include("ssh-rsa AAAASECRETKEY")
+      expect(line).not_to include("azure_access_token_secret")
+      expect(line).not_to include("client_secret_value")
+      # Sensitive keys are replaced with the base sanitizer's marker.
+      expect(line).to include("[REDACTED]")
+      # Non-sensitive values are preserved.
+      expect(line).to include("vm-1")
+    end
+  end
+
   after do
     stubs.verify_stubbed_calls
   rescue StandardError
