@@ -105,6 +105,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `README.md` — extension overview
 - `CONTRIBUTING.md` — submodule + commit workflow
 - `docs/ARCHITECTURE.md` — 9 subsystems + 4 API surfaces + security architecture
+- `docs/PROVIDER_ADAPTER_AUTHORING.md` — how to write a new cloud/hypervisor provider adapter (the `System::Providers::BaseProvider` 24-method contract, normalized return shapes, credential resolution, Registry wiring, and the `it_behaves_like "a cloud provider"` shared spec)
 - `docs/STORAGE_SUBSYSTEM.md` — storage data plane: volumes, mounts, chown ownership model, volume-to-volume migration state machine + MCP surface
 - `docs/SMOKE_TEST.md` — platform-level smoke catalog (18 seeded scripts, 8 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting

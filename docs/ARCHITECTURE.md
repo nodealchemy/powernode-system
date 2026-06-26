@@ -209,6 +209,15 @@ stateDiagram-v2
     terminated --> [*]
 ```
 
+**Provider adapters (cloud/hypervisor abstraction).** The `provider VM create` /
+`stopping` / `terminated` transitions above are driven by **provider adapters** — the
+substrate's pluggable backend layer. Each backend (AWS, GCP, Azure, OpenStack, Proxmox,
+ProCloud, local libvirt/QEMU, plus an in-memory `mock`) is a `System::Providers::BaseProvider`
+subclass under `app/services/system/providers/`, resolved by `System::Providers::Registry` and
+normalized to one response shape so callers (`System::CloudSyncService`, provisioning,
+controllers) stay backend-agnostic. To add a new backend, see the contract +
+checklist in [PROVIDER_ADAPTER_AUTHORING.md](./PROVIDER_ADAPTER_AUTHORING.md).
+
 ### 3. Multi-arch initramfs builder
 
 Six artifact families per architecture, both amd64 and arm64:
