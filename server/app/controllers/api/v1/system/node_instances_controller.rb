@@ -4,6 +4,13 @@ module Api
   module V1
     module System
       class NodeInstancesController < BaseController
+        # Lifecycle gating (gate_or_execute / gate_ip_action / control_or_error +
+        # local-hypervisor provider sync) and index-path provider reconciliation
+        # are extracted into cohesive concerns to keep this controller focused on
+        # action routing. See concerns/system/node_instance_*.rb.
+        include ::System::NodeInstanceGating
+        include ::System::NodeInstanceReconciliation
+
         before_action :set_account
         before_action :set_node
         before_action :set_instance, only: [
@@ -232,236 +239,6 @@ module Api
 
         private
 
-        # Transitional states are AASM-driven assertions of operator intent
-        # ("user clicked Start"). Reconciling against the provider while one
-        # of these is the live status produces races where a fast poll
-        # overwrites the intent before the actual provider operation has run.
-        # Reconcile only when the instance is in a stable, terminal-ish state.
-        TRANSITIONAL_STATUSES = %w[starting stopping rebooting].freeze
-        IN_FLIGHT_STATUSES    = %w[pending provisioning].freeze
-        # The set we consider safe to commit FROM a transitional state. A poll
-        # in the middle of `starting` should only update the model if the
-        # provider has resolved to one of these terminal-ish states; a sideways
-        # flip from `starting` back to `starting` (or to a non-terminal value)
-        # is suppressed.
-        TERMINAL_STATUSES = %w[running stopped terminated error].freeze
-
-        # Returns a rejection message if the instance is on a provider that has no
-        # public-IP concept (i.e. local hypervisors). nil = allowed.
-        def local_hypervisor_rejection_message
-          provider = @instance.provider_region&.provider
-          return nil unless provider&.provider_type == "local_qemu"
-          ip_hint = @instance.private_ip_address.presence || "pending"
-          "Public IP allocation is not supported for local hypervisor instances. " \
-            "Connect via the private IP (#{ip_hint}) from the host, or configure " \
-            "the provider with a bridged network for routable LAN addressing."
-        end
-
-        # Lazily reconcile in-flight instances against their provider. Mutates
-        # the array elements in place so the subsequent serialize sees fresh
-        # rows. Failures are swallowed per-instance — a stale read is better
-        # than failing the whole index call.
-        #
-        # Three reconcile modes:
-        #   - in_flight: status was pending/provisioning → accept any new status
-        #   - transitional: status was starting/stopping/rebooting → accept new
-        #     status only when it resolves to a terminal state (running/stopped/etc),
-        #     never sideways from one transitional to another
-        #   - ip_only: status is already running but private_ip_address is blank
-        #     → re-poll the provider for IPs without touching status. This catches
-        #     local_qemu instances whose DHCP lease lives in dnsmasq rather than
-        #     being captured at provision time.
-        def reconcile_in_flight_statuses!(instances)
-          instances.each do |instance|
-            in_flight     = IN_FLIGHT_STATUSES.include?(instance.status)
-            transitional  = TRANSITIONAL_STATUSES.include?(instance.status)
-            ip_only       = instance.status == "running" && instance.private_ip_address.blank?
-            next unless in_flight || transitional || ip_only
-            cloud_id = instance.config["cloud_instance_id"]
-            next if cloud_id.blank?
-            adapter = ::System::Providers::Registry.for_instance(instance)
-            next unless adapter.respond_to?(:sync_status)
-            result = adapter.sync_status(cloud_id)
-            next unless result[:success]
-
-            updates = {}
-            new_status = result[:status]
-            if new_status.present? && new_status != instance.status
-              # From in-flight, accept any provider-reported status (the
-              # platform-side row is just catching up to provider truth).
-              # From transitional, only commit when the provider has resolved
-              # to a terminal state — otherwise a fast poll mid-`starting`
-              # could push us back to an earlier state and produce the
-              # opposite UX bug from the one this guard is meant to prevent.
-              # ip_only mode never changes status.
-              if in_flight || (transitional && TERMINAL_STATUSES.include?(new_status))
-                updates[:status] = new_status
-              end
-            end
-            updates[:private_ip_address] = result[:private_ip_address] if result[:private_ip_address].present? && result[:private_ip_address] != instance.private_ip_address
-            updates[:public_ip_address]  = result[:public_ip_address]  if result[:public_ip_address].present?  && result[:public_ip_address]  != instance.public_ip_address
-            instance.update!(updates) if updates.any?
-          rescue StandardError => e
-            Rails.logger.warn("[NodeInstancesController] sync_status failed for #{instance.id}: #{e.class}: #{e.message}")
-          end
-        end
-
-        # Run an AASM transition with the platform-standard "may? then bang"
-        # pattern, then create an Operation that the worker runtime will
-        # execute. The state machine moves the instance into a transitional
-        # state ("starting", "stopping", etc.); the runtime finalizes via
-        # mark_running / mark_stopped / mark_terminated.
-        # Gate-aware wrapper around control_or_error. Consults the AutonomyGate
-        # for the policy on `system.task.<event>` and either proceeds inline
-        # (auto_approve / notify_and_proceed) or returns 202 + an approval
-        # request that, on approval, recreates the instance op via the
-        # ExecuteTask executor.
-        def gate_or_execute(event)
-          gate_result = ::Ai::AutonomyGate.evaluate(
-            action_category: "system.task.#{event}",
-            executor_class: "System::Executors::ExecuteTask",
-            params: {
-              task_attributes: {
-                command: event.to_s,
-                description: "#{event} #{@instance.class.name}##{@instance.id}",
-                operable_type: @instance.class.name,
-                operable_id: @instance.id,
-                initiated_by_id: current_user.id
-              }
-            },
-            account: current_account,
-            requested_by: current_user,
-            source_type: @instance.class.name,
-            source_id: @instance.id,
-            description: "#{event} instance #{@instance.id}"
-          )
-
-          case gate_result.decision
-          when :proceed
-            # Mirrors original control_or_error behaviour for the inline path.
-            unless @instance.public_send("may_#{event}?")
-              return render_error(
-                "Cannot #{event} instance in #{@instance.status} state",
-                status: :unprocessable_content
-              )
-            end
-            @instance.public_send("#{event}!")
-            execute_local_provider_action_sync!(event) if local_hypervisor_instance?
-            data = gate_result.result&.dig(:data) || {}
-            task = data[:task_id] ? current_account.system_tasks.find_by(id: data[:task_id]) : nil
-            render_success(
-              node_instance: serialize_instance(@instance.reload),
-              task: task ? ::System::TaskSerializer.new(task).as_json : nil
-            )
-          when :pending
-            render_pending_approval(gate_result.deferred_operation,
-                                    message: "Approval required to #{event} instance")
-          when :blocked
-            render_error(gate_result.error || "Action blocked by policy",
-                         status: :unprocessable_content)
-          end
-        end
-
-        # Variant of gate_or_execute for IP association/disassociation —
-        # which don't go through the AASM lifecycle (no may_event? predicate)
-        # but still need an audit row + the same gate semantics.
-        def gate_ip_action(event)
-          gate_result = ::Ai::AutonomyGate.evaluate(
-            action_category: "system.task.#{event}",
-            executor_class: "System::Executors::ExecuteTask",
-            params: {
-              task_attributes: {
-                command: event.to_s,
-                description: "#{event} #{@instance.class.name}##{@instance.id}",
-                operable_type: @instance.class.name,
-                operable_id: @instance.id,
-                initiated_by_id: current_user.id
-              }
-            },
-            account: current_account,
-            requested_by: current_user,
-            source_type: @instance.class.name,
-            source_id: @instance.id,
-            description: "#{event} on instance #{@instance.id}"
-          )
-
-          case gate_result.decision
-          when :proceed
-            data = gate_result.result&.dig(:data) || {}
-            task = data[:task_id] ? current_account.system_tasks.find_by(id: data[:task_id]) : nil
-            render_success(
-              node_instance: serialize_instance(@instance.reload),
-              task: task ? ::System::TaskSerializer.new(task).as_json : nil
-            )
-          when :pending
-            render_pending_approval(gate_result.deferred_operation,
-                                    message: "Approval required to #{event}")
-          when :blocked
-            render_error(gate_result.error || "Action blocked by policy",
-                         status: :unprocessable_content)
-          end
-        end
-
-        def control_or_error(event)
-          unless @instance.public_send("may_#{event}?")
-            return render_error(
-              "Cannot #{event} instance in #{@instance.status} state",
-              status: :unprocessable_content
-            )
-          end
-          @instance.public_send("#{event}!")
-          operation = create_instance_operation(event.to_s)
-
-          # Local hypervisor providers (qemu/libvirt) handle instance control
-          # synchronously — `virsh start`/`stop`/etc. is sub-100ms. The Task/
-          # Operation row stays as an audit record, but the actual provider
-          # call fires in this request thread so the user sees the result
-          # immediately. Cloud providers (AWS, GCP, etc.) keep the async
-          # path: they take seconds to minutes and rely on the worker queue.
-          execute_local_provider_action_sync!(event) if local_hypervisor_instance?
-
-          render_success(
-            node_instance: serialize_instance(@instance.reload),
-            task: operation ? ::System::TaskSerializer.new(operation).as_json : nil
-          )
-        end
-
-        def local_hypervisor_instance?
-          @instance.provider_region&.provider&.provider_type == "local_qemu"
-        end
-
-        # Map AASM event → provider verb + post-success status. The provider
-        # mutates the libvirt domain; we update the model status to match
-        # the now-known reality (running/stopped/etc.) without waiting for
-        # the next reconcile-on-read.
-        def execute_local_provider_action_sync!(event)
-          adapter = ::System::Providers::Registry.for_instance(@instance)
-          cloud_id = @instance.config["cloud_instance_id"]
-          return if cloud_id.blank?
-          result = case event.to_sym
-          when :start  then adapter.start_instance(cloud_id)
-          when :stop   then adapter.stop_instance(cloud_id)
-          when :reboot then adapter.respond_to?(:reboot_instance) ? adapter.reboot_instance(cloud_id) : nil
-          when :terminate then adapter.terminate_instance(cloud_id)
-          end
-          return unless result&.dig(:success)
-
-          # Map provider's response status to NodeInstance.status. The provider
-          # returns intermediate states (e.g. "starting" while the kernel boots);
-          # we leave AASM-set status as-is for transitions and only overwrite
-          # to terminal states (running/stopped/terminated) when the provider
-          # confirms them.
-          new_status = result[:status]
-          if %w[running stopped terminated error].include?(new_status) && new_status != @instance.status
-            @instance.update_column(:status, new_status)
-          end
-          if result[:private_ip_address].present?
-            @instance.update_column(:private_ip_address, result[:private_ip_address])
-          end
-        rescue StandardError => e
-          Rails.logger.warn("[NodeInstancesController] sync provider call failed (#{event}): #{e.class}: #{e.message}")
-        end
-
         def set_node
           @node = @account.system_nodes.find(params[:node_id])
         rescue ActiveRecord::RecordNotFound
@@ -494,21 +271,6 @@ module Api
 
         def serialize_collection(instances)
           instances.map { |i| serialize_instance(i) }
-        end
-
-        def create_instance_operation(command)
-          return nil unless current_account.respond_to?(:system_tasks)
-
-          current_account.system_tasks.create(
-            command: command,
-            description: "#{command.capitalize} node instance: #{@instance.name}",
-            operable: @instance,
-            initiated_by: current_user,
-            status: "pending"
-          )
-        rescue StandardError => e
-          Rails.logger.error "Failed to create operation: #{e.message}"
-          nil
         end
       end
     end
