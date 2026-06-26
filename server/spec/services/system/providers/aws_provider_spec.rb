@@ -82,6 +82,44 @@ RSpec.describe System::Providers::AwsProvider do
 
       provider.create_instance(params)
     end
+
+    # Regression: a separate post-create create_tags call could fail (missing
+    # ec2:CreateTags IAM, throttling) AFTER run_instances had already launched
+    # the billable instance, orphaning a running, untagged instance whose id
+    # was discarded — a permanent billable leak. Tagging must ride atomically
+    # on run_instances so the instance is born tagged.
+    it "launches the instance already tagged via run_instances tag_specifications" do
+      expect(ec2_client).to receive(:run_instances).with(hash_including(
+        tag_specifications: [ {
+          resource_type: "instance",
+          tags: [ { key: "Name", value: "test-instance" } ]
+        } ]
+      )).and_return(run_instances_response)
+
+      provider.create_instance(params)
+    end
+
+    it "does not perform a separate post-create create_tags call (no orphan window)" do
+      expect(ec2_client).not_to receive(:create_tags)
+
+      provider.create_instance(params)
+    end
+
+    it "merges explicit tags with the Name tag in the single run_instances call" do
+      tagged_params = params.merge(tags: { "Env" => "prod" })
+
+      expect(ec2_client).to receive(:run_instances) do |args|
+        spec = args[:tag_specifications].first
+        expect(spec[:resource_type]).to eq("instance")
+        expect(spec[:tags]).to include(
+          { key: "Env", value: "prod" },
+          { key: "Name", value: "test-instance" }
+        )
+        run_instances_response
+      end
+
+      provider.create_instance(tagged_params)
+    end
   end
 
   describe "#terminate_instance" do

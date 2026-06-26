@@ -36,16 +36,14 @@ module System
         run_params = build_run_instance_params(params)
 
         begin
+          # Tagging rides atomically on run_instances (via tag_specifications,
+          # assembled in build_run_instance_params) so the instance is born
+          # tagged. A separate post-create create_tags call could fail (missing
+          # ec2:CreateTags IAM, throttling) AFTER the billable instance had
+          # already launched, orphaning a running, untagged instance whose id
+          # was discarded — a permanent billable leak.
           response = ec2_client.run_instances(run_params)
           instance = response.instances.first
-
-          # Tag the instance with name
-          if params[:name].present?
-            ec2_client.create_tags(
-              resources: [ instance.instance_id ],
-              tags: [ { key: "Name", value: params[:name] } ]
-            )
-          end
 
           build_instance_response(
             cloud_id: instance.instance_id,
@@ -619,10 +617,19 @@ module System
         run_params[:subnet_id] = params[:subnet_id] if params[:subnet_id]
         run_params[:user_data] = Base64.encode64(params[:user_data]) if params[:user_data]
 
-        if params[:tags].present?
+        # Assemble tags once and pass them via tag_specifications so the
+        # instance launches already tagged (atomic with run_instances). The
+        # human-readable Name is folded in here rather than applied by a
+        # separate post-create create_tags call, which could fail after launch
+        # and orphan a running, untagged, billable instance.
+        tag_map = {}
+        params[:tags].each { |k, v| tag_map[k.to_s] = v.to_s } if params[:tags].present?
+        tag_map["Name"] = params[:name].to_s if params[:name].present?
+
+        if tag_map.any?
           run_params[:tag_specifications] = [ {
             resource_type: "instance",
-            tags: params[:tags].map { |k, v| { key: k.to_s, value: v.to_s } }
+            tags: tag_map.map { |k, v| { key: k, value: v } }
           } ]
         end
 
