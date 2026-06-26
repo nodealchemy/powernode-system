@@ -2063,9 +2063,26 @@ module Ai
       def delete_volume(params)
         v = ::System::ProviderVolume.find_by(id: params[:id], account: @account)
         return error_result("Volume not found") unless v
+        # Block-volume attach: recorded on the row FK by attach_to!.
         return error_result("Volume is attached — detach first") if v.node_instance_id.present?
+        # Network-FS attach (NFS/SMB/iSCSI): a pool, so no row FK is set —
+        # the per-consumer binding lives only in NodeInstance.config
+        # ["storage_volume"]["volume_id"]. Destroying a volume still mounted by
+        # live instances breaks those mounts and orphans data, so guard on it.
+        return error_result("Volume is attached — detach first") if volume_attached_via_network_fs?(v)
         v.destroy!
         success_result(deleted: true, id: params[:id])
+      end
+
+      # True when any of this account's instances reference the volume through
+      # the network-FS storage binding stamped on NodeInstance.config (the path
+      # used by attach_volume / PlatformDeploymentOrchestrator for NFS/SMB/iSCSI
+      # pools, which never sets ProviderVolume#node_instance_id).
+      def volume_attached_via_network_fs?(volume)
+        ::System::NodeInstance
+          .where(account_id: @account.id)
+          .where("config -> 'storage_volume' ->> 'volume_id' = ?", volume.id.to_s)
+          .exists?
       end
 
       def attach_volume(params)

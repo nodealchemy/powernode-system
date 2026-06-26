@@ -240,6 +240,52 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit IMP-298803318cfd — delete_volume's attach-guard only blocked on the
+  # block-volume FK (node_instance_id). Network-FS volumes (NFS/SMB/iSCSI) are
+  # pools: their per-consumer binding is recorded ONLY in
+  # NodeInstance.config["storage_volume"]["volume_id"] and the attach path
+  # never sets node_instance_id. So a shared volume actively mounted by live
+  # instances passed the guard and got destroy!-ed — breaking live mounts and
+  # orphaning data.
+  describe "delete_volume network-FS attach-guard (IMP-298803318cfd)" do
+    let(:nfs_type) do
+      create(:system_provider_volume_type, account: account, volume_type: "nfs")
+    end
+    let(:nfs_volume) do
+      create(:system_provider_volume, account: account, volume_type: nfs_type)
+    end
+
+    it "blocks deletion when an instance references it via config[\"storage_volume\"]" do
+      create(:system_node_instance, account: account,
+             config: { "storage_volume" => { "volume_id" => nfs_volume.id, "transport" => "nfs" } })
+
+      r = call("system_delete_volume", id: nfs_volume.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/attached/i)
+      expect(System::ProviderVolume.exists?(nfs_volume.id)).to be true
+    end
+
+    it "allows deletion of an unreferenced network-FS volume" do
+      r = call("system_delete_volume", id: nfs_volume.id)
+
+      expect(r[:success]).to be true
+      expect(System::ProviderVolume.exists?(nfs_volume.id)).to be false
+    end
+
+    it "still blocks a block-attached volume via node_instance_id (existing behavior)" do
+      block_instance = create(:system_node_instance, account: account)
+      block_volume = create(:system_provider_volume, :attached, account: account,
+                            node_instance: block_instance)
+
+      r = call("system_delete_volume", id: block_volume.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/attached/i)
+      expect(System::ProviderVolume.exists?(block_volume.id)).to be true
+    end
+  end
+
   # Audit F4-08 — agents could provision, terminate, and drain but not
   # start/stop/reboot, even though InstanceControlService and the AASM fully
   # support these operations. For GPU-cost-sensitive missions stop/start is
