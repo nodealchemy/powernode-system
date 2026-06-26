@@ -37,6 +37,51 @@ RSpec.describe System::Providers::GcpProvider do
     end
   end
 
+  # Behavior guard for the DRY extraction: the three wait_for_* helpers now
+  # share one poll_operation loop, differing only in their get() call. Each
+  # must still return on :DONE and raise on the first operation error.
+  describe "operation polling helpers (share #poll_operation)" do
+    let(:region_operations_client) { double("Google RegionOperations Client") }
+    let(:global_operations_client) { double("Google GlobalOperations Client") }
+    let(:operation) { double("Operation", name: "op-123") }
+
+    before do
+      allow(provider).to receive(:region_operations_client).and_return(region_operations_client)
+      allow(provider).to receive(:global_operations_client).and_return(global_operations_client)
+      allow(provider).to receive(:project_id).and_return("test-project")
+    end
+
+    def done_result
+      double("Op", status: :DONE, error: nil)
+    end
+
+    def errored_result
+      double("Op", status: :RUNNING, error: double("Err", errors: [ double("E", message: "boom") ]))
+    end
+
+    {
+      wait_for_operation: :zone_operations_client,
+      wait_for_regional_operation: :region_operations_client,
+      wait_for_global_operation: :global_operations_client
+    }.each do |method, client_name|
+      context "##{method}" do
+        let(:client) { send(client_name) }
+
+        it "returns the operation once it reports :DONE" do
+          result = done_result
+          allow(client).to receive(:get).and_return(result)
+          expect(provider.send(method, operation)).to eq(result)
+        end
+
+        it "raises Google::Cloud::Error on an operation error (no sleep/timeout)" do
+          allow(client).to receive(:get).and_return(errored_result)
+          expect { provider.send(method, operation) }
+            .to raise_error(Google::Cloud::Error, "boom")
+        end
+      end
+    end
+  end
+
   # Provisioning resilience: the OAuth/JWT token-exchange connection (auth
   # probe) previously lacked explicit timeouts. It must now carry the
   # 10s-connect / 60s-read convention so an unreachable token endpoint

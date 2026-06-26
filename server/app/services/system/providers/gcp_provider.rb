@@ -873,57 +873,33 @@ module System
       end
 
       def wait_for_operation(operation, timeout: 120)
-        deadline = Time.current + timeout
-
-        while Time.current < deadline
-          result = zone_operations_client.get(
-            project: project_id,
-            zone: zone,
-            operation: operation.name
-          )
-
-          return result if result.status == :DONE
-
-          if result.error&.errors&.any?
-            raise Google::Cloud::Error, result.error.errors.first.message
-          end
-
-          sleep 2
+        poll_operation(timeout: timeout) do
+          zone_operations_client.get(project: project_id, zone: zone, operation: operation.name)
         end
-
-        raise Google::Cloud::Error, "Operation timed out"
       end
 
       def wait_for_regional_operation(operation, timeout: 120)
-        deadline = Time.current + timeout
-
-        while Time.current < deadline
-          result = region_operations_client.get(
-            project: project_id,
-            region: gcp_region,
-            operation: operation.name
-          )
-
-          return result if result.status == :DONE
-
-          if result.error&.errors&.any?
-            raise Google::Cloud::Error, result.error.errors.first.message
-          end
-
-          sleep 2
+        poll_operation(timeout: timeout) do
+          region_operations_client.get(project: project_id, region: gcp_region, operation: operation.name)
         end
-
-        raise Google::Cloud::Error, "Operation timed out"
       end
 
       def wait_for_global_operation(operation, timeout: 120)
+        poll_operation(timeout: timeout) do
+          global_operations_client.get(project: project_id, operation: operation.name)
+        end
+      end
+
+      # Shared poll loop for the zone/region/global Compute operations clients,
+      # which differed only in their get() call. Polls the yielded operation
+      # resource until it reports :DONE, raises Google::Cloud::Error on the first
+      # operation error, and raises on timeout after `timeout` seconds. The block
+      # performs the client-specific get and returns the operation resource.
+      def poll_operation(timeout:)
         deadline = Time.current + timeout
 
         while Time.current < deadline
-          result = global_operations_client.get(
-            project: project_id,
-            operation: operation.name
-          )
+          result = yield
 
           return result if result.status == :DONE
 
