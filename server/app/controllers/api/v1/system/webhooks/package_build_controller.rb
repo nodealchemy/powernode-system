@@ -15,6 +15,8 @@ module Api
         # retry storms). We log internally and return 202 with an error
         # field for the CI workflow to record but not retry on.
         class PackageBuildController < ApplicationController
+          include ::System::Webhooks::HmacVerification
+
           skip_before_action :authenticate_request, raise: false
           skip_before_action :verify_authenticity_token, raise: false
 
@@ -92,14 +94,11 @@ module Api
             return false if closure_id.blank?
 
             secret = ::System::ModuleBuildDispatchService.webhook_secret_for(closure_id)
-            return false if secret.blank?
+            return false if secret.blank? # fail closed — never trust a default
 
-            provided = signature.start_with?("sha256=") ? signature.split("=", 2).last : signature
-            return false if provided.blank?
-
-            expected = OpenSSL::HMAC.hexdigest("SHA256", secret, body)
-            # Constant-time comparison
-            ActiveSupport::SecurityUtils.secure_compare(expected, provided)
+            # Constant-time HMAC compare via the shared concern (tolerates a
+            # leading "sha256=" prefix; false on malformed/length-mismatch).
+            secure_match?(hmac_hex(secret, body), signature)
           rescue StandardError
             false
           end

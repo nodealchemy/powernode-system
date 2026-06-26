@@ -120,6 +120,18 @@ RSpec.describe "Api::V1::System::Webhooks::ModuleSbom", type: :request do
       expect(artifact.reload.sbom_packages_count).to eq(0) # untouched
     end
 
+    it "accepts an unsigned SBOM when webhook_secret is blank (dev opt-out, fail-open unchanged)" do
+      node_module.update!(webhook_secret: nil)
+      body = build_body
+      post "/api/v1/system/webhooks/gitea/module_sbom",
+           params: body,
+           headers: { "Content-Type" => "application/json" }
+
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body)["message"]).to include("SBOM ingested")
+      expect(artifact.reload.sbom_packages_count).to eq(2)
+    end
+
     it "returns 200 with 'Module not found' for unknown module_id" do
       body = build_body(module_id: SecureRandom.uuid)
       post "/api/v1/system/webhooks/gitea/module_sbom",

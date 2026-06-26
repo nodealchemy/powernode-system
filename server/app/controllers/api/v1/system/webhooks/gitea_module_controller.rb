@@ -14,6 +14,8 @@ module Api
         # Per platform webhook receiver rules: ALWAYS returns 200/202.
         # Never 500 — that would cause Gitea to retry indefinitely.
         class GiteaModuleController < ApplicationController
+          include ::System::Webhooks::HmacVerification
+
           skip_before_action :authenticate_request, raise: false
           skip_before_action :verify_authenticity_token, raise: false
 
@@ -40,14 +42,7 @@ module Api
           private
 
           def parse_payload
-            body = request.body.read
-            return nil if body.blank?
-
-            @raw_body = body
-            JSON.parse(body).with_indifferent_access
-          rescue JSON::ParserError => e
-            Rails.logger.warn "[GiteaModule] Invalid JSON payload: #{e.message}"
-            nil
+            parse_json_request_body(log_tag: "[GiteaModule]")
           end
 
           # Routes events by Gitea repo full_name (e.g., "account/nginx-mod").
@@ -66,13 +61,10 @@ module Api
           def verify_signature(secret)
             return true if secret.blank? # opt-out for dev / testing
 
-            signature = request.headers["X-Gitea-Signature"] ||
-                        request.headers["X-Hub-Signature-256"]
-            return false if signature.blank?
-
-            signature = signature.sub(/\Asha256=/, "")
-            expected = OpenSSL::HMAC.hexdigest("sha256", secret, @raw_body)
-            Rack::Utils.secure_compare(expected, signature)
+            secure_match?(
+              hmac_hex(secret, @raw_body),
+              signature_from_headers("X-Gitea-Signature", "X-Hub-Signature-256")
+            )
           end
 
           # Extracts the relevant tag/version + OCI ref from the Gitea event,
@@ -162,9 +154,7 @@ module Api
           # ordering: refresh manifest first, snapshot version with
           # the imported state, then ingest OCI artifact.
 
-          def render_ok(message = "OK")
-            render json: { status: "ok", message: message }, status: :ok
-          end
+          # render_ok is provided by System::Webhooks::HmacVerification.
         end
       end
     end

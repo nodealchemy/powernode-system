@@ -21,6 +21,8 @@ module Api
         #
         # Reference: comprehensive stabilization sweep Phase 10.2.
         class ModuleSbomController < ApplicationController
+          include ::System::Webhooks::HmacVerification
+
           skip_before_action :authenticate_request, raise: false
           skip_before_action :verify_authenticity_token, raise: false
 
@@ -53,14 +55,7 @@ module Api
           private
 
           def parse_payload
-            body = request.body.read
-            return nil if body.blank?
-
-            @raw_body = body
-            JSON.parse(body).with_indifferent_access
-          rescue JSON::ParserError => e
-            Rails.logger.warn "[ModuleSbom] Invalid JSON payload: #{e.message}"
-            nil
+            parse_json_request_body(log_tag: "[ModuleSbom]")
           end
 
           def find_node_module(module_id)
@@ -71,17 +66,15 @@ module Api
 
           # HMAC-SHA256 over raw body, hex-encoded. Mirrors
           # GiteaModuleController#verify_signature: same secret column,
-          # same headers, same comparison primitive.
+          # same headers, same comparison primitive (both now route
+          # through System::Webhooks::HmacVerification).
           def verify_signature(secret)
             return true if secret.blank? # opt-out for dev / testing
 
-            signature = request.headers["X-Gitea-Signature"] ||
-                        request.headers["X-Hub-Signature-256"]
-            return false if signature.blank?
-
-            signature = signature.sub(/\Asha256=/, "")
-            expected = OpenSSL::HMAC.hexdigest("sha256", secret, @raw_body)
-            Rack::Utils.secure_compare(expected, signature)
+            secure_match?(
+              hmac_hex(secret, @raw_body),
+              signature_from_headers("X-Gitea-Signature", "X-Hub-Signature-256")
+            )
           end
 
           # Locates the ModuleArtifact row for (module, git tag, arch). Tag
@@ -112,9 +105,7 @@ module Api
             parser_result
           end
 
-          def render_ok(message = "OK")
-            render json: { status: "ok", message: message }, status: :ok
-          end
+          # render_ok is provided by System::Webhooks::HmacVerification.
         end
       end
     end
