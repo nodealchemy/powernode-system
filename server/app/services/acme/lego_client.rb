@@ -69,10 +69,15 @@ module Acme
         "--cf-token-env", token_env_name
       ]
       argv += [ "--sans", sans.join(",") ] if sans.any?
-      argv += [ "--account-key-pem", account_key_pem ] if account_key_pem.present?
 
       @logger.info("[Acme::LegoClient] issue #{common_name} via #{provider} (#{issuer})")
-      result = run_binary!(argv, env: child_env)
+      # The account key (crypto material) is handed to the binary via a 0600
+      # temp file, never argv. For issue it is optional (empty = the binary
+      # generates a fresh account key). run_binary! MUST execute while the
+      # file still exists, so it runs inside the helper's block.
+      result = with_optional_account_key_file(account_key_pem) do |key_argv|
+        run_binary!(argv + key_argv, env: child_env)
+      end
 
       unless result["ok"]
         raise IntegrationError, "powernode-acme reported failure: #{result['error']}"
@@ -96,18 +101,22 @@ module Acme
       argv = [
         binary_path,
         "renew",
-        "--domain",          common_name,
-        "--email",           email,
-        "--acme-server",     acme_server,
-        "--issuer",          issuer.to_s,
-        "--dns",             provider.to_s,
-        "--cf-token-env",    token_env_name,
-        "--account-key-pem", account_key_pem
+        "--domain",       common_name,
+        "--email",        email,
+        "--acme-server",  acme_server,
+        "--issuer",       issuer.to_s,
+        "--dns",          provider.to_s,
+        "--cf-token-env", token_env_name
       ]
       argv += [ "--sans", sans.join(",") ] if sans.any?
 
       @logger.info("[Acme::LegoClient] renew #{common_name} via #{provider} (#{issuer})")
-      result = run_binary!(argv, env: child_env)
+      # The account key is mandatory for renewal (guarded above) and is
+      # passed via a 0600 temp file, never argv. run_binary! runs inside
+      # the helper's block so the file exists during exec.
+      result = with_optional_account_key_file(account_key_pem) do |key_argv|
+        run_binary!(argv + key_argv, env: child_env)
+      end
 
       raise IntegrationError, "powernode-acme reported failure: #{result['error']}" unless result["ok"]
       result
@@ -176,6 +185,28 @@ module Acme
     def ensure_dns01!(challenge)
       return if challenge.to_s == "dns-01"
       raise IntegrationError, "powernode-acme v1 only supports dns-01 (got #{challenge.inspect})"
+    end
+
+    # The ACME account private key is crypto material — it MUST NOT appear in
+    # argv (visible in `ps` / /proc/<pid>/cmdline). When present, it is written
+    # to a 0600 file inside `Dir.mktmpdir` (owner-only, auto-cleaned) and handed
+    # to the binary via `--account-key-pem-file` — mirroring #revoke. The caller
+    # MUST run the binary INSIDE the yielded block so the file still exists at
+    # exec time. When the key is blank (issue may omit it — the binary then
+    # generates a fresh account key) no file is created and no flag is added.
+    #
+    # @yieldparam key_argv [Array<String>] extra argv to append (the file flag,
+    #   or [] when no key was supplied)
+    # @return whatever the block returns
+    def with_optional_account_key_file(account_key_pem)
+      return yield([]) if account_key_pem.blank?
+
+      ::Dir.mktmpdir("powernode-acme-key") do |dir|
+        key_file = ::File.join(dir, "account.key.pem")
+        ::File.write(key_file, account_key_pem)
+        ::File.chmod(0o600, key_file)
+        yield([ "--account-key-pem-file", key_file ])
+      end
     end
 
     # Resolves the env-var name for the provider's secret + builds the

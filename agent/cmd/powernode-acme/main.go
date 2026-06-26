@@ -73,7 +73,8 @@ func runIssue(args []string) {
 	acmeServer := fs.String("acme-server", "", "ACME directory URL. Defaults to LE prod.")
 	issuer := fs.String("issuer", "letsencrypt-prod", "Issuer label (passed through to result).")
 	dnsProvider := fs.String("dns", "cloudflare", "DNS-01 provider slug. v1: cloudflare only.")
-	accountKeyPEM := fs.String("account-key-pem", "", "Existing account key PEM (optional). Empty = generate fresh.")
+	accountKeyPEM := fs.String("account-key-pem", "", "Existing account key PEM (optional). Empty = generate fresh. Prefer --account-key-pem-file to keep the key out of argv.")
+	accountKeyPEMFile := fs.String("account-key-pem-file", "", "Path to a file containing the account key PEM (preferred; keeps the key out of argv).")
 	cfTokenEnv := fs.String("cf-token-env", "CLOUDFLARE_DNS_API_TOKEN",
 		"Name of env var holding the Cloudflare API token. Default CLOUDFLARE_DNS_API_TOKEN.")
 	if err := fs.Parse(args); err != nil {
@@ -86,6 +87,18 @@ func runIssue(args []string) {
 		sans = splitCSV(*sansCSV)
 	}
 
+	// Prefer the key from a file (kept out of argv / process listings).
+	// Fall back to the inline flag for backward compat; file wins.
+	effectiveAccountKeyPEM := *accountKeyPEM
+	if *accountKeyPEMFile != "" {
+		keyBytes, err := os.ReadFile(*accountKeyPEMFile)
+		if err != nil {
+			emit(acmepkg.IssueResult{OK: false, Error: fmt.Sprintf("read account key: %v", err)})
+			return
+		}
+		effectiveAccountKeyPEM = string(keyBytes)
+	}
+
 	result, err := acmepkg.Issue(acmepkg.IssueParams{
 		Domain:                *domain,
 		SANs:                  sans,
@@ -93,7 +106,7 @@ func runIssue(args []string) {
 		ACMEServer:            *acmeServer,
 		Issuer:                *issuer,
 		DNSProvider:           *dnsProvider,
-		AccountKeyPEM:         *accountKeyPEM,
+		AccountKeyPEM:         effectiveAccountKeyPEM,
 		CloudflareAPITokenEnv: *cfTokenEnv,
 	})
 	if err != nil {
@@ -114,7 +127,8 @@ func runRenew(args []string) {
 	acmeServer := fs.String("acme-server", "", "ACME directory URL. Defaults to LE prod.")
 	issuer := fs.String("issuer", "letsencrypt-prod", "Issuer label.")
 	dnsProvider := fs.String("dns", "cloudflare", "DNS-01 provider slug.")
-	accountKeyPEM := fs.String("account-key-pem", "", "Existing account key PEM. REQUIRED for renewal.")
+	accountKeyPEM := fs.String("account-key-pem", "", "Existing account key PEM. REQUIRED for renewal. Prefer --account-key-pem-file to keep the key out of argv.")
+	accountKeyPEMFile := fs.String("account-key-pem-file", "", "Path to a file containing the account key PEM (preferred; keeps the key out of argv).")
 	cfTokenEnv := fs.String("cf-token-env", "CLOUDFLARE_DNS_API_TOKEN",
 		"Name of env var holding the Cloudflare API token.")
 	if err := fs.Parse(args); err != nil {
@@ -127,6 +141,18 @@ func runRenew(args []string) {
 		sans = splitCSV(*sansCSV)
 	}
 
+	// Prefer the key from a file (kept out of argv / process listings).
+	// Fall back to the inline flag for backward compat; file wins.
+	effectiveAccountKeyPEM := *accountKeyPEM
+	if *accountKeyPEMFile != "" {
+		keyBytes, err := os.ReadFile(*accountKeyPEMFile)
+		if err != nil {
+			emit(acmepkg.IssueResult{OK: false, Error: fmt.Sprintf("read account key: %v", err)})
+			return
+		}
+		effectiveAccountKeyPEM = string(keyBytes)
+	}
+
 	result, err := acmepkg.Renew(acmepkg.IssueParams{
 		Domain:                *domain,
 		SANs:                  sans,
@@ -134,7 +160,7 @@ func runRenew(args []string) {
 		ACMEServer:            *acmeServer,
 		Issuer:                *issuer,
 		DNSProvider:           *dnsProvider,
-		AccountKeyPEM:         *accountKeyPEM,
+		AccountKeyPEM:         effectiveAccountKeyPEM,
 		CloudflareAPITokenEnv: *cfTokenEnv,
 	})
 	if err != nil {
