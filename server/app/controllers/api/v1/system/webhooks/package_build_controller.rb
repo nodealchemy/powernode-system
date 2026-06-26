@@ -55,6 +55,21 @@ module Api
             render_error("Invalid JSON: #{e.message}", status: :bad_request)
           rescue ::System::PackageBuildWebhookService::WebhookError => e
             render_error("Webhook validation error: #{e.message}", status: :unprocessable_content)
+          rescue StandardError => e
+            # Catch-all for unexpected PROCESSING failures. Per the platform
+            # webhook-receiver rule, return 202 (NEVER 500) so the CI workflow
+            # records the failure without retry-storming. Auth/signature
+            # rejections are handled above (401) and never reach here. Log
+            # internally for operator visibility, mirroring GiteaModuleController.
+            Rails.logger.error("[PackageBuildWebhook] processing error: #{e.class}: #{e.message}")
+            Rails.logger.error(e.backtrace.first(5).join("\n")) if e.backtrace
+            render_success(
+              {
+                ok:    false,
+                error: "#{e.class}: #{e.message}"
+              },
+              status: :accepted
+            )
           end
 
           private
