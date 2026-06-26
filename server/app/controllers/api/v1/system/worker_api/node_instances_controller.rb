@@ -102,16 +102,21 @@ module Api
           def maintenance
             authorize_worker_permission!("system.node_instances.manage")
 
-            service = ::System::InstanceMaintenanceService.new(@instance)
-            result = service.perform_maintenance
+            result = ::System::InstanceMaintenanceService.run_maintenance(instance: @instance)
 
-            if result[:success]
+            if result.success?
               render_success(
                 instance: serialize_instance(@instance.reload),
-                maintenance_result: result
+                maintenance_result: {
+                  success: result.success?,
+                  tasks_run: result.data[:tasks_run],
+                  tasks_succeeded: result.data[:tasks_succeeded],
+                  tasks_failed: result.data[:tasks_failed],
+                  results: result.data[:results]
+                }
               )
             else
-              render_error(result[:error] || "Maintenance failed")
+              render_error(result.error || "Maintenance failed")
             end
           end
 
