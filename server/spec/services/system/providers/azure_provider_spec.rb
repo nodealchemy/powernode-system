@@ -144,15 +144,22 @@ RSpec.describe System::Providers::AzureProvider do
       allow(provider).to receive(:vm_public_ip).and_return(nil)
 
       result = provider.get_instance("test-vm")
-      expect(result[:cloud_id]).to eq("test-vm")
+      # Adapter contract (base_provider#build_instance_response): the :success
+      # flag, :cloud_instance_id, and the :*_address IP keys CloudSyncService
+      # reads — NOT a bespoke :cloud_id/:private_ip hash.
+      expect(result[:success]).to be true
+      expect(result[:cloud_instance_id]).to eq("test-vm")
       expect(result[:status]).to eq("running")
+      expect(result[:private_ip_address]).to eq("10.0.0.4")
+      expect(result[:public_ip_address]).to be_nil
     end
 
-    it "returns nil when the VM does not exist (non-success)" do
+    it "raises ResourceNotFoundError when the VM does not exist (404)" do
       stubs.get("/subscriptions/sub-12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/missing-vm") do
         [ 404, {}, { "error" => { "message" => "Not found" } }.to_json ]
       end
-      expect(provider.get_instance("missing-vm")).to be_nil
+      expect { provider.get_instance("missing-vm") }
+        .to raise_error(described_class::ResourceNotFoundError)
     end
   end
 

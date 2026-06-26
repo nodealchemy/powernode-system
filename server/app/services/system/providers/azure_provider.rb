@@ -264,17 +264,32 @@ module System
           api_version: ARM_API_VERSION,
           query: { "$expand" => "instanceView" }
         )
-        return nil unless response.success?
+        # Conform to the documented adapter contract (base_provider
+        # #build_instance_response / #sync_status). A 404 raises
+        # ResourceNotFoundError — the azure/openstack "gone" convention the
+        # consumer maps to terminated — and other failures raise their mapped
+        # error (azure_failure! already routes 401/403/404/429/402). The
+        # success shape carries :success + the :*_address IP keys CloudSyncService
+        # reads. Previously this returned nil on not-found (NoMethodError in the
+        # consumer) and a bespoke :cloud_id/:private_ip hash with no :success, so
+        # healthy Azure VMs never synced.
+        azure_failure!(response) unless response.success?
 
         vm = response.body
+        # Build the documented contract shape explicitly: :success + the
+        # :private_ip_address/:public_ip_address keys CloudSyncService reads.
+        # (The azure-local #build_instance_response is itself non-conforming —
+        # it emits :private_ip with no public IP — so it cannot be reused here;
+        # that helper's drift is a separate follow-up.)
         {
-          cloud_id: vm["name"],
+          success: true,
+          cloud_instance_id: vm["name"],
           name: vm["name"],
           status: vm_power_state(vm),
           instance_type: vm.dig("properties", "hardwareProfile", "vmSize"),
           location: vm["location"],
-          private_ip: vm_private_ip(rg, instance_id),
-          public_ip: vm_public_ip(rg, instance_id)
+          private_ip_address: vm_private_ip(rg, instance_id),
+          public_ip_address: vm_public_ip(rg, instance_id)
         }
       end
 
