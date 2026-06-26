@@ -28,6 +28,11 @@
 module Sdwan
   module Bgp
     class RoutePolicyCompiler
+      # Narrowing order: broadest scope first so a combined route-map
+      # calls account filters before network before peer (narrowest
+      # set-actions applied last → win).
+      SCOPE_PRECEDENCE = { "account" => 0, "network" => 1, "peer" => 2 }.freeze
+
       def self.compile_for_peer(peer)
         new(peer).compile
       end
@@ -202,9 +207,28 @@ module Sdwan
       # Account- + network-scoped policies attach to every neighbor in
       # the network. Peer-scoped policies attach only to that peer's
       # neighbors. Direction (import vs export) drives `in` vs `out`.
+      #
+      # When a neighbor has MULTIPLE same-direction applicable policies
+      # (e.g. an account-scoped baseline filter + a peer-scoped policy)
+      # we MUST attach all of them — attaching only the last would leave
+      # the others rendered into frr.conf but never referenced (silent
+      # unfiltered route leak). Because every per-policy route-map is a
+      # default-deny ALLOWLIST (explicit `deny` tail in compile_policy),
+      # the filters compose by AND: a route must be permitted by EVERY
+      # applicable policy. We express that in FRR via a combined
+      # route-map that `call`s each per-policy map with `on-match next`
+      # chaining (narrowest set-actions applied last → win). A single
+      # applicable policy keeps its direct name (no combined wrapper).
       def assign_to_neighbors
         neighbors = neighbor_addresses_for_peer
-        @policies.each do |policy|
+
+        # accumulate per (neighbor, direction) in narrowing order so the
+        # combined map calls account → network → peer.
+        assignments_by_neighbor = Hash.new do |h, addr|
+          h[addr] = Hash.new { |hh, direction| hh[direction] = [] }
+        end
+
+        policies_in_narrowing_order.each do |policy|
           rm_name = "#{policy.slug}-#{policy.direction}"
           target_neighbors = case policy.scope
           when "account", "network"
@@ -220,9 +244,56 @@ module Sdwan
           end
 
           target_neighbors.each do |addr|
-            @neighbor_assignments[addr][policy.direction.to_sym] = rm_name
+            assignments_by_neighbor[addr][policy.direction.to_sym] << rm_name
           end
         end
+
+        assignments_by_neighbor.each do |addr, by_direction|
+          by_direction.each do |direction, rm_names|
+            @neighbor_assignments[addr][direction] =
+              if rm_names.length == 1
+                rm_names.first
+              else
+                build_combined_route_map(addr, direction, rm_names)
+              end
+          end
+        end
+      end
+
+      # Stable sort of @policies into narrowing scope order (account,
+      # then network, then peer), preserving the existing within-scope
+      # order (applicable_to already orders by name). each_with_index +
+      # tuple key makes the sort stable.
+      def policies_in_narrowing_order
+        @policies.each_with_index
+                 .sort_by { |policy, idx| [ SCOPE_PRECEDENCE.fetch(policy.scope, 99), idx ] }
+                 .map(&:first)
+      end
+
+      # Compose multiple same-direction allowlist filters into one
+      # combined route-map. Each clause `call`s a per-policy map; every
+      # clause except the last gets `on-match next` so FRR proceeds to
+      # the next filter only when the current one permits. Naive clause
+      # concatenation would be WRONG here: a per-policy `permit` clause
+      # would terminate the map before later policies run.
+      def build_combined_route_map(addr, direction, rm_names)
+        combined = "nbr-#{sanitize_frr_name(addr)}-#{direction}"
+        lines = []
+        rm_names.each_with_index do |rm, i|
+          lines << "route-map #{combined} permit #{(i + 1) * 10}"
+          lines << " call #{rm}"
+          lines << " on-match next" unless i == rm_names.length - 1
+        end
+        lines << "!"
+        @route_maps << lines.join("\n")
+        combined
+      end
+
+      # FRR route-map names are restricted to a flat identifier syntax;
+      # IPv6 ULA neighbor addresses contain colons that are invalid in
+      # a route-map name, so map any char outside [A-Za-z0-9_-] to "-".
+      def sanitize_frr_name(addr)
+        addr.to_s.gsub(/[^A-Za-z0-9_-]/, "-")
       end
 
       def neighbor_addresses_for_peer

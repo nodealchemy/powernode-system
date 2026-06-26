@@ -104,6 +104,85 @@ RSpec.describe Sdwan::Bgp::RoutePolicyCompiler, type: :service do
     end
   end
 
+  describe "single applicable policy keeps the direct (non-combined) map name" do
+    let!(:policy) do
+      Sdwan::RoutePolicy.create!(
+        account_id: account.id, name: "p-single-#{SecureRandom.hex(3)}",
+        scope: "account", direction: "import",
+        statements: [
+          { "match" => { "prefix_in" => [ "10.0.0.0/8" ] },
+            "action" => { "type" => "accept" } }
+        ]
+      )
+    end
+
+    it "uses the per-policy map name directly without an nbr- combined wrapper" do
+      out = described_class.compile_for_peer(peer1)
+      neighbor_addr = peer2.assigned_address.to_s.split("/").first
+      name = out[:neighbor_assignments][neighbor_addr][:import]
+      expect(name).to eq("#{policy.slug}-import")
+      expect(name).not_to start_with("nbr-")
+    end
+  end
+
+  describe "multiple same-direction applicable policies compose into one combined route-map" do
+    # An account-scoped baseline allowlist filter AND a peer-scoped
+    # policy, both inbound. The pre-fix compiler dropped the account
+    # filter (last-write-wins kept only the peer policy) → silent leak.
+    let!(:account_policy) do
+      Sdwan::RoutePolicy.create!(
+        account_id: account.id, name: "p-acct-#{SecureRandom.hex(3)}",
+        scope: "account", direction: "import",
+        statements: [
+          { "match" => { "prefix_in" => [ "10.0.0.0/8" ] },
+            "action" => { "type" => "accept", "set_local_pref" => 100 } }
+        ]
+      )
+    end
+    let!(:peer_policy) do
+      Sdwan::RoutePolicy.create!(
+        account_id: account.id, name: "p-peer-#{SecureRandom.hex(3)}",
+        scope: "peer", scope_resource_id: peer1.id, direction: "import",
+        statements: [
+          { "match" => { "prefix_in" => [ "10.1.0.0/16" ] },
+            "action" => { "type" => "accept", "set_local_pref" => 200 } }
+        ]
+      )
+    end
+
+    let(:neighbor_addr) { peer2.assigned_address.to_s.split("/").first }
+    let(:out) { described_class.compile_for_peer(peer1) }
+    let(:acct_map) { "#{account_policy.slug}-import" }
+    let(:peer_map) { "#{peer_policy.slug}-import" }
+
+    it "attaches a combined nbr-<addr>-import map instead of dropping the account policy" do
+      combined = out[:neighbor_assignments][neighbor_addr][:import]
+      expect(combined).to match(/\Anbr-.*-import\z/)
+      # combined name must be FRR-valid — no colons from IPv6 ULA addrs
+      expect(combined).not_to include(":")
+    end
+
+    it "renders the combined map into route_maps calling BOTH policy maps in narrowing order" do
+      combined_name = out[:neighbor_assignments][neighbor_addr][:import]
+      combined_block = out[:route_maps].find { |rm| rm.start_with?("route-map #{combined_name} ") }
+      expect(combined_block).not_to be_nil
+
+      expect(combined_block).to include("call #{acct_map}")
+      expect(combined_block).to include("call #{peer_map}")
+      # narrowing order: account (broadest) called before peer (narrowest)
+      expect(combined_block.index("call #{acct_map}")).to be < combined_block.index("call #{peer_map}")
+      # on-match next BETWEEN clauses, exactly once, and NOT after the last call
+      expect(combined_block.scan(/on-match next/).length).to eq(1)
+      expect(combined_block).to match(/call #{Regexp.escape(peer_map)}\n!/)
+    end
+
+    it "still renders both per-policy maps so the combined map can call them" do
+      joined = out[:route_maps].join("\n")
+      expect(joined).to include("route-map #{acct_map} ")
+      expect(joined).to include("route-map #{peer_map} ")
+    end
+  end
+
   describe "scope=peer policies attach only to the matching peer" do
     let!(:peer_policy) do
       Sdwan::RoutePolicy.create!(
