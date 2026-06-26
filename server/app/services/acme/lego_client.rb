@@ -292,9 +292,43 @@ module Acme
     # ShellOutputSanitizer before they land in raised IntegrationError
     # messages — those propagate up to Rails.logger and the operator-
     # facing failure response. Same redactor as SshExecutionService.
+    #
+    # @timeout is enforced and the child is KILLED on expiry. A bare
+    # Timeout.timeout would unwind this Ruby thread while leaving the lego
+    # subprocess running (reaped by nobody) — so we drive popen3 directly,
+    # join the wait thread with a deadline, and TERM/KILL the pid ourselves.
+    # RenewalSweepService renews synchronously inside a find_each loop, so a
+    # single wedged lego process must not be allowed to hang the worker
+    # thread forever and starve every remaining cert renewal.
+    #
+    # stdout/stderr are drained on dedicated reader threads to avoid a
+    # pipe-buffer deadlock (a child that fills its stdout pipe blocks on
+    # write while we block on join). stdin is closed immediately, preserving
+    # the previous `stdin_data: ""` (no input) semantics.
     def run_binary!(argv, env:)
-      stdout, stderr, status = ::Open3.capture3(env, *argv,
-                                                 stdin_data: "")
+      stdout = +""
+      stderr = +""
+      status = nil
+
+      ::Open3.popen3(env, *argv) do |stdin, out, err, wait_thr|
+        stdin.close
+        out_reader = ::Thread.new { out.read }
+        err_reader = ::Thread.new { err.read }
+
+        if wait_thr.join(@timeout)
+          status = wait_thr.value
+          stdout = out_reader.value
+          stderr = err_reader.value
+        else
+          ::Process.kill("TERM", wait_thr.pid) rescue nil
+          ::Process.kill("KILL", wait_thr.pid) unless wait_thr.join(5)
+          out_reader.kill
+          err_reader.kill
+          raise IntegrationError,
+                "powernode-acme timed out after #{@timeout}s (#{argv[1]})"
+        end
+      end
+
       unless status.success?
         raise IntegrationError,
               "powernode-acme exited #{status.exitstatus}: " \
