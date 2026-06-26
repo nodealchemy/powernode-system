@@ -30,8 +30,11 @@ module Sdwan
     class RoutePolicyCompiler
       # Narrowing order: broadest scope first so a combined route-map
       # calls account filters before network before peer (narrowest
-      # set-actions applied last → win).
-      SCOPE_PRECEDENCE = { "account" => 0, "network" => 1, "peer" => 2 }.freeze
+      # set-actions applied last → win). The account's
+      # AccountBgp#default_route_policy is the BROADEST clause of all
+      # (precedence -1) — an account-wide baseline filter that composes
+      # ahead of every real-scope policy.
+      SCOPE_PRECEDENCE = { "default" => -1, "account" => 0, "network" => 1, "peer" => 2 }.freeze
 
       def self.compile_for_peer(peer)
         new(peer).compile
@@ -40,6 +43,8 @@ module Sdwan
       def initialize(peer)
         @peer = peer
         @policies = ::Sdwan::RoutePolicy.applicable_to(peer: peer).to_a
+        @default_policy_id = nil
+        fold_in_default_route_policy
         @prefix_lists = []
         @ipv6_prefix_lists = []
         @as_path_lists = []
@@ -68,6 +73,38 @@ module Sdwan
       end
 
       private
+
+      # Fold the account's AccountBgp#default_route_policy into the
+      # policy set as the BROADEST (account-wide) baseline filter.
+      # Without this the column is settable but NO compiler reads it:
+      # an operator who sets a default route policy believes a baseline
+      # filter is enforced, while routes are accepted/advertised
+      # UNFILTERED (silent security gap). The default is treated as
+      # account-wide regardless of the referenced policy's own scope
+      # field ("default" means account-wide), applies to EVERY neighbor
+      # in its direction, and composes FIRST (ahead of account/network/
+      # peer policies) via effective_scope precedence -1.
+      #
+      # DEDUPE: a policy that is BOTH the account default AND
+      # independently returned by applicable_to is kept once — we mark
+      # its id so it sorts/attaches as the default, but never add a
+      # second copy (which would call its route-map twice).
+      def fold_in_default_route_policy
+        account_bgp = ::Sdwan::AccountBgp.find_by(account_id: @peer.account_id)
+        default = account_bgp&.default_route_policy
+        return unless default&.enabled
+
+        @default_policy_id = default.id
+        @policies << default unless @policies.any? { |p| p.id == default.id }
+      end
+
+      # The account default route policy is treated as account-wide
+      # regardless of the referenced policy's own scope field, and sorts
+      # ahead of every real scope (precedence -1) so it composes as the
+      # broadest clause. All other policies keep their declared scope.
+      def effective_scope(policy)
+        policy.id == @default_policy_id ? "default" : policy.scope
+      end
 
       def empty_output
         {
@@ -230,8 +267,8 @@ module Sdwan
 
         policies_in_narrowing_order.each do |policy|
           rm_name = "#{policy.slug}-#{policy.direction}"
-          target_neighbors = case policy.scope
-          when "account", "network"
+          target_neighbors = case effective_scope(policy)
+          when "default", "account", "network"
                                neighbors
           when "peer"
                                # Peer-scoped policy only applies if THIS
@@ -260,13 +297,13 @@ module Sdwan
         end
       end
 
-      # Stable sort of @policies into narrowing scope order (account,
-      # then network, then peer), preserving the existing within-scope
-      # order (applicable_to already orders by name). each_with_index +
-      # tuple key makes the sort stable.
+      # Stable sort of @policies into narrowing scope order (the account
+      # default first, then account, network, peer), preserving the
+      # existing within-scope order (applicable_to already orders by
+      # name). each_with_index + tuple key makes the sort stable.
       def policies_in_narrowing_order
         @policies.each_with_index
-                 .sort_by { |policy, idx| [ SCOPE_PRECEDENCE.fetch(policy.scope, 99), idx ] }
+                 .sort_by { |policy, idx| [ SCOPE_PRECEDENCE.fetch(effective_scope(policy), 99), idx ] }
                  .map(&:first)
       end
 
