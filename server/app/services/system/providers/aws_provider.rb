@@ -482,7 +482,9 @@ module System
 
         sts_client = ::Aws::STS::Client.new(
           region: region_name,
-          credentials: ::Aws::Credentials.new(access_key_id, secret_access_key)
+          credentials: ::Aws::Credentials.new(access_key_id, secret_access_key),
+          http_open_timeout: DEFAULT_CONNECT_TIMEOUT,
+          http_read_timeout: DEFAULT_READ_TIMEOUT
         )
         sts_client.get_caller_identity
         true
@@ -524,7 +526,9 @@ module System
       def ec2_client
         @ec2_client ||= Aws::EC2::Client.new(
           region: aws_region,
-          credentials: aws_credentials
+          credentials: aws_credentials,
+          http_open_timeout: DEFAULT_CONNECT_TIMEOUT,
+          http_read_timeout: DEFAULT_READ_TIMEOUT
         )
       end
 

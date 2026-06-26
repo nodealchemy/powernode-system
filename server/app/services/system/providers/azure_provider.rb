@@ -85,13 +85,7 @@ module System
           return false
         end
 
-        login_conn = Faraday.new(url: LOGIN_BASE) do |f|
-          f.request :url_encoded
-          f.response :json, content_type: /\bjson$/
-          f.adapter Faraday.default_adapter
-        end
-
-        response = login_conn.post("/#{tenant}/oauth2/v2.0/token") do |req|
+        response = login_connection.post("/#{tenant}/oauth2/v2.0/token") do |req|
           req.body = {
             grant_type:    "client_credentials",
             client_id:     client_id_val,
@@ -789,13 +783,7 @@ module System
       def fetch_token!
         return @token if @token && @token_expires_at && @token_expires_at > Time.now + 60
 
-        login_conn = Faraday.new(url: LOGIN_BASE) do |f|
-          f.request :url_encoded
-          f.response :json, content_type: /\bjson$/
-          f.adapter Faraday.default_adapter
-        end
-
-        response = login_conn.post("/#{tenant_id}/oauth2/v2.0/token") do |req|
+        response = login_connection.post("/#{tenant_id}/oauth2/v2.0/token") do |req|
           req.body = {
             grant_type:    "client_credentials",
             client_id:     client_id,
@@ -851,11 +839,22 @@ module System
         end
       end
 
+      # AAD token-exchange (login) connection. Carries the fail-fast
+      # connect/read timeout convention so an unreachable login endpoint
+      # doesn't block provisioning for the Faraday/Net::HTTP default.
+      def login_connection
+        @login_connection ||= Faraday.new(url: LOGIN_BASE) do |f|
+          f.request :url_encoded
+          f.response :json, content_type: /\bjson$/
+          apply_http_timeouts(f)
+          f.adapter Faraday.default_adapter
+        end
+      end
+
       def arm_connection
         @arm_connection ||= Faraday.new(url: MGMT_BASE) do |f|
           f.response :json, content_type: /\bjson$/
-          f.options.timeout      = 60
-          f.options.open_timeout = 10
+          apply_http_timeouts(f)
           f.adapter Faraday.default_adapter
         end
       end

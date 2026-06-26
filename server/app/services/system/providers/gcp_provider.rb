@@ -728,10 +728,7 @@ module System
         rsa = ::OpenSSL::PKey::RSA.new(private_key)
         assertion = ::JWT.encode(payload, rsa, "RS256")
 
-        token_conn = Faraday.new do |f|
-          f.adapter Faraday.default_adapter
-        end
-        response = token_conn.post(token_uri) do |req|
+        response = jwt_token_connection.post(token_uri) do |req|
           req.headers["Content-Type"] = "application/x-www-form-urlencoded"
           req.body = URI.encode_www_form(
             grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -797,51 +794,78 @@ module System
         nil
       end
 
+      # OAuth/JWT token-exchange connection (service-account auth probe).
+      # Carries the fail-fast connect/read timeout convention so an
+      # unreachable token endpoint doesn't block provisioning for the
+      # Faraday/Net::HTTP default.
+      def jwt_token_connection
+        Faraday.new do |f|
+          apply_http_timeouts(f)
+          f.adapter Faraday.default_adapter
+        end
+      end
+
+      # Apply the fail-fast read-timeout convention to a GCE Rest client
+      # config. The GAPIC Rest stack exposes a single per-call `timeout`
+      # (seconds); there is no separate connect timeout, so the read value
+      # bounds the whole call.
+      def apply_gcp_timeout(config)
+        config.timeout = DEFAULT_READ_TIMEOUT
+      end
+
       def instances_client
         @instances_client ||= Google::Cloud::Compute::V1::Instances::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def addresses_client
         @addresses_client ||= Google::Cloud::Compute::V1::Addresses::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def disks_client
         @disks_client ||= Google::Cloud::Compute::V1::Disks::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def images_client
         @images_client ||= Google::Cloud::Compute::V1::Images::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def zones_client
         @zones_client ||= Google::Cloud::Compute::V1::Zones::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def zone_operations_client
         @zone_operations_client ||= Google::Cloud::Compute::V1::ZoneOperations::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def region_operations_client
         @region_operations_client ||= Google::Cloud::Compute::V1::RegionOperations::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 
       def global_operations_client
         @global_operations_client ||= Google::Cloud::Compute::V1::GlobalOperations::Rest::Client.new do |config|
           config.credentials = gcp_credentials
+          apply_gcp_timeout(config)
         end
       end
 

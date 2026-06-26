@@ -277,6 +277,27 @@ RSpec.describe System::Providers::AzureProvider do
     end
   end
 
+  # Provisioning resilience: the AAD token (login) connection previously
+  # lacked explicit timeouts, so an auth-endpoint blip blocked for the
+  # Faraday/Net::HTTP default and stalled provisioning. Both the token and
+  # ARM connections must now carry the 10s-connect / 60s-read convention.
+  describe "auth/token connection timeouts" do
+    it "applies the connect/read convention to the AAD token (login) connection" do
+      conn = provider.send(:login_connection)
+      expect(conn.options.open_timeout).to eq(10)
+      expect(conn.options.timeout).to eq(60)
+    end
+
+    it "applies the convention to the ARM data-plane connection" do
+      # The shared `before` stubs #arm_connection on the subject; build a
+      # fresh instance so the real builder runs.
+      fresh = described_class.new(connection, region: region)
+      conn = fresh.send(:arm_connection)
+      expect(conn.options.open_timeout).to eq(10)
+      expect(conn.options.timeout).to eq(60)
+    end
+  end
+
   after do
     stubs.verify_stubbed_calls
   rescue StandardError

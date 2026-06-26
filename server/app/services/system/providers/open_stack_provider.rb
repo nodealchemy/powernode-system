@@ -560,10 +560,7 @@ module System
         end
 
         token_url = url.to_s.sub(%r{/+$}, "") + "/auth/tokens"
-        conn = Faraday.new do |f|
-          f.adapter Faraday.default_adapter
-        end
-        response = conn.post(token_url) do |req|
+        response = keystone_connection.post(token_url) do |req|
           req.headers["Content-Type"] = "application/json"
           req.body = request_body.to_json
         end
@@ -622,6 +619,16 @@ module System
         nil
       end
 
+      # Keystone v3 token-exchange connection (auth probe). Carries the
+      # fail-fast connect/read timeout convention so an unreachable Keystone
+      # endpoint doesn't block provisioning for the Faraday/Net::HTTP default.
+      def keystone_connection
+        Faraday.new do |f|
+          apply_http_timeouts(f)
+          f.adapter Faraday.default_adapter
+        end
+      end
+
       def compute_client
         @compute_client ||= Fog::OpenStack::Compute.new(fog_credentials)
       end
@@ -645,7 +652,15 @@ module System
           openstack_api_key:      credential(column: :secret_key, required: true),
           openstack_project_name: project_name,
           openstack_domain_name:  domain_name,
-          openstack_region:       openstack_region
+          openstack_region:       openstack_region,
+          # Fog::OpenStack speaks to Keystone/Nova/etc. over Excon; pass the
+          # fail-fast connect/read timeout convention through so an unreachable
+          # control-plane endpoint doesn't block provisioning for the default.
+          connection_options: {
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            read_timeout:    DEFAULT_READ_TIMEOUT,
+            write_timeout:   DEFAULT_READ_TIMEOUT
+          }
         }
       end
 

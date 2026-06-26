@@ -37,6 +37,18 @@ RSpec.describe System::Providers::GcpProvider do
     end
   end
 
+  # Provisioning resilience: the OAuth/JWT token-exchange connection (auth
+  # probe) previously lacked explicit timeouts. It must now carry the
+  # 10s-connect / 60s-read convention so an unreachable token endpoint
+  # fails fast instead of blocking provisioning.
+  describe "auth/token connection timeouts" do
+    it "applies the connect/read convention to the OAuth token connection" do
+      conn = provider.send(:jwt_token_connection)
+      expect(conn.options.open_timeout).to eq(10)
+      expect(conn.options.timeout).to eq(60)
+    end
+  end
+
   describe "#get_instance" do
     let(:access_config) { double("Google AccessConfig", nat_i_p: "35.192.1.2") }
     let(:network_interface) do

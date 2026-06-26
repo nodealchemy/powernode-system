@@ -29,6 +29,20 @@ module System
         unknown: "unknown"
       }.freeze
 
+      # Provisioning resilience — fail-fast HTTP timeout convention.
+      #
+      # Every auth/token + SDK/HTTP connection on the provisioning path MUST
+      # carry an explicit connect + read timeout. Without one, an unreachable
+      # auth/control-plane endpoint blocks for the Net::HTTP/SDK default
+      # (~60-600s) per call and stalls fleet-wide provisioning. These constants
+      # centralize the 10s-connect / 60s-read values that Proxmox/ProCloud and
+      # the Azure ARM connection already follow; adapters reference them (Faraday
+      # via #apply_http_timeouts, aws-sdk via http_open_timeout/http_read_timeout,
+      # fog via connection_options, google via config.timeout) instead of
+      # hand-rolling literals.
+      DEFAULT_CONNECT_TIMEOUT = 10
+      DEFAULT_READ_TIMEOUT    = 60
+
       attr_reader :connection, :region, :logger, :last_authentication_error
 
       # Initialize provider with connection credentials
@@ -403,6 +417,19 @@ module System
         end
 
         value
+      end
+
+      # Apply the fail-fast connect/read timeout convention to a Faraday
+      # connection builder (the block argument yielded by `Faraday.new`).
+      # Centralizes the open_timeout/timeout pair so the hand-rolled REST
+      # adapters (Azure, GCP, OpenStack auth) don't repeat the literals.
+      #
+      # @param faraday [Faraday::Connection] builder yielded inside Faraday.new
+      # @return [Faraday::Connection] the same builder (for chaining)
+      def apply_http_timeouts(faraday)
+        faraday.options.open_timeout = DEFAULT_CONNECT_TIMEOUT
+        faraday.options.timeout      = DEFAULT_READ_TIMEOUT
+        faraday
       end
 
       # Build normalized instance response

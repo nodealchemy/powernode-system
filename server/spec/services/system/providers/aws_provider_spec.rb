@@ -339,3 +339,46 @@ RSpec.describe System::Providers::AwsProvider do
     end
   end
 end
+
+# Provisioning resilience: aws-sdk clients (Seahorse) default to unbounded
+# blocking on connect/read. The STS auth probe and the EC2 data-plane client
+# must both pass the 10s-connect / 60s-read convention via
+# http_open_timeout / http_read_timeout. These are guarded by `defined?` so
+# they run on deployments that install the optional SDK gems and skip cleanly
+# in the core bundle (matching the rest of this file).
+RSpec.describe System::Providers::AwsProvider, "SDK client timeouts" do
+  let(:connection) do
+    instance_double("System::ProviderConnection",
+      access_key: "AKIATEST12345",
+      secret_key: "secret-key-12345",
+      config: {},
+      account: nil,
+      provider: nil
+    )
+  end
+  let(:region) { instance_double("System::ProviderRegion", region_code: "us-east-1") }
+  subject(:provider) { described_class.new(connection, region: region) }
+
+  it "passes connect/read timeouts to the STS auth client" do
+    skip "aws-sdk-core (STS) not loaded" unless defined?(Aws::STS::Client)
+
+    fake_sts = instance_double("Aws::STS::Client")
+    allow(fake_sts).to receive(:get_caller_identity)
+    expect(Aws::STS::Client).to receive(:new)
+      .with(hash_including(http_open_timeout: 10, http_read_timeout: 60))
+      .and_return(fake_sts)
+
+    expect(provider.authenticate?).to be true
+  end
+
+  it "passes connect/read timeouts to the EC2 data-plane client" do
+    skip "aws-sdk-ec2 not installed (optional provider gem)" unless defined?(Aws::EC2::Client)
+
+    fake_ec2 = instance_double("Aws::EC2::Client")
+    expect(Aws::EC2::Client).to receive(:new)
+      .with(hash_including(http_open_timeout: 10, http_read_timeout: 60))
+      .and_return(fake_ec2)
+
+    provider.send(:ec2_client)
+  end
+end

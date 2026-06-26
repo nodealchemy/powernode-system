@@ -177,3 +177,30 @@ RSpec.describe System::Providers::OpenStackProvider do
     end
   end
 end
+
+# Provisioning resilience: the Keystone v3 `/auth/tokens` connection (auth
+# probe) previously lacked explicit timeouts. This describe is intentionally
+# separate from the main suite — it exercises the pure-Faraday auth connection
+# builder, which needs no fog-openstack SDK, so it runs even where that
+# optional gem is absent.
+RSpec.describe System::Providers::OpenStackProvider, "auth/token connection timeouts" do
+  let(:connection) do
+    instance_double("System::ProviderConnection",
+      access_key: "username",
+      secret_key: "password",
+      tenant: "project-id",
+      endpoint_url: "https://openstack.example.com:5000/v3",
+      config: {},
+      account: nil,
+      provider: nil
+    )
+  end
+  let(:region) { instance_double("System::ProviderRegion", region_code: "RegionOne") }
+  subject(:provider) { described_class.new(connection, region: region) }
+
+  it "applies the connect/read convention to the Keystone token connection" do
+    conn = provider.send(:keystone_connection)
+    expect(conn.options.open_timeout).to eq(10)
+    expect(conn.options.timeout).to eq(60)
+  end
+end

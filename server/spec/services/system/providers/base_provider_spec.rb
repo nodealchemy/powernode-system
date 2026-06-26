@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "faraday"
 
 RSpec.describe System::Providers::BaseProvider do
   # Create a test implementation since BaseProvider is abstract
@@ -251,6 +252,31 @@ RSpec.describe System::Providers::BaseProvider do
 
     it "defines QuotaExceededError" do
       expect(System::Providers::BaseProvider::QuotaExceededError).to be < System::Providers::BaseProvider::ProviderError
+    end
+  end
+
+  # Provisioning resilience: every auth/token + SDK/HTTP connection on the
+  # provisioning path must fail fast rather than block for the Net::HTTP/SDK
+  # default (~60-600s) when an endpoint is unreachable. BaseProvider centralizes
+  # the 10s-connect / 60s-read convention (matching Proxmox/ProCloud) so adapters
+  # don't hand-roll the values.
+  describe "HTTP timeout convention" do
+    it "exposes a 10s connect-timeout constant" do
+      expect(described_class::DEFAULT_CONNECT_TIMEOUT).to eq(10)
+    end
+
+    it "exposes a 60s read-timeout constant" do
+      expect(described_class::DEFAULT_READ_TIMEOUT).to eq(60)
+    end
+
+    it "#apply_http_timeouts stamps connect + read timeouts on a Faraday connection" do
+      conn = Faraday.new(url: "https://example.test") do |f|
+        provider.send(:apply_http_timeouts, f)
+        f.adapter Faraday.default_adapter
+      end
+
+      expect(conn.options.open_timeout).to eq(described_class::DEFAULT_CONNECT_TIMEOUT)
+      expect(conn.options.timeout).to eq(described_class::DEFAULT_READ_TIMEOUT)
     end
   end
 end
