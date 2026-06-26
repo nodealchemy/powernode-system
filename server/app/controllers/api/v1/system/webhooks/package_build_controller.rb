@@ -74,19 +74,32 @@ module Api
 
           private
 
+          # Verifies HMAC-SHA256 over the RAW BODY (not just closure_id) using
+          # the per-closure secret derived by
+          # ModuleBuildDispatchService.webhook_secret_for — the same value the
+          # CI workflow signs with. Signing the whole body authenticates the
+          # artifact metadata (oci_ref, versions), so a captured signature
+          # can't be replayed against a forged body. Header format:
+          # "sha256=<hex>" (mirrors the disk-image webhook + Gitea/GitHub).
+          #
+          # Fails closed: when no server-side secret is configured (prod, env
+          # var unset) webhook_secret_for returns nil and we REJECT, rather
+          # than trusting a publicly-known committed default.
           def verify_signature(body, signature)
             return false if signature.blank?
 
             closure_id = JSON.parse(body)["closure_id"] rescue nil
             return false if closure_id.blank?
 
-            expected = OpenSSL::HMAC.hexdigest(
-              "SHA256",
-              ENV.fetch("POWERNODE_PACKAGE_BUILD_HMAC_KEY", "dev-package-build-secret"),
-              closure_id
-            )
+            secret = ::System::ModuleBuildDispatchService.webhook_secret_for(closure_id)
+            return false if secret.blank?
+
+            provided = signature.start_with?("sha256=") ? signature.split("=", 2).last : signature
+            return false if provided.blank?
+
+            expected = OpenSSL::HMAC.hexdigest("SHA256", secret, body)
             # Constant-time comparison
-            ActiveSupport::SecurityUtils.secure_compare(expected, signature.to_s)
+            ActiveSupport::SecurityUtils.secure_compare(expected, provided)
           rescue StandardError
             false
           end

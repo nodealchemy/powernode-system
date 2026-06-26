@@ -19,6 +19,12 @@ module System
     DEFAULT_WORKFLOW_FILENAME = "build.yaml"
     DEFAULT_REF               = "main"
 
+    # Env var holding the server-side secret from which per-closure webhook
+    # secrets are derived. Has NO production default on purpose — this repo
+    # is public (MIT), so a committed fallback would publish the signing key.
+    SERVER_SECRET_ENV   = "POWERNODE_PACKAGE_BUILD_HMAC_KEY"
+    DEV_FALLBACK_SECRET = "dev-package-build-secret"
+
     class << self
       def adapter
         @adapter ||= build_adapter
@@ -54,6 +60,28 @@ module System
           repository: repository, modules: modules,
           architectures: architectures, requested_by: requested_by
         )
+      end
+
+      # Server-side secret used to derive per-closure webhook secrets.
+      # Fails closed in production: returns nil when SERVER_SECRET_ENV is
+      # unset so callers REJECT rather than trusting the publicly-known dev
+      # fallback (this repo is MIT/public). Only dev/test fall back.
+      def server_secret
+        ENV.fetch(SERVER_SECRET_ENV) do
+          (Rails.env.development? || Rails.env.test?) ? DEV_FALLBACK_SECRET : nil
+        end
+      end
+
+      # Per-closure webhook secret = HMAC-SHA256(server_secret, closure_id).
+      # Single source of truth shared by both ends of the callback:
+      #   - the dispatcher signs the CI callback body with this secret;
+      #   - the inbound webhook controller derives the same value to verify.
+      # Returns nil when no server secret is configured (prod fail-closed).
+      def webhook_secret_for(closure_id)
+        secret = server_secret
+        return nil if secret.blank? || closure_id.blank?
+
+        OpenSSL::HMAC.hexdigest("SHA256", secret, closure_id.to_s)
       end
 
       private
@@ -167,16 +195,13 @@ module System
     end
 
     def generate_webhook_secret(closure_id)
-      # HMAC the closure_id with a server-side secret. The CI workflow
-      # will sign its webhook with this same secret so the controller can
-      # verify the callback is genuine. The secret persists for the
-      # duration of the build (the controller validates the HMAC, not
-      # the secret value itself).
-      OpenSSL::HMAC.hexdigest(
-        "SHA256",
-        ENV.fetch("POWERNODE_PACKAGE_BUILD_HMAC_KEY", "dev-package-build-secret"),
-        closure_id
-      )
+      # Per-closure secret = HMAC(server_secret, closure_id). The CI workflow
+      # signs its callback BODY with this secret so the controller can verify
+      # the callback is genuine AND that the body wasn't tampered with. Shares
+      # one derivation with the controller via .webhook_secret_for so both
+      # ends stay in lock-step; returns nil in prod when no server secret is
+      # configured (fail-closed — see .server_secret).
+      self.class.webhook_secret_for(closure_id)
     end
 
     def webhook_callback_url

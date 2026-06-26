@@ -229,15 +229,19 @@ jobs:
             --argjson modules "$MODULES" \
             '{closure_id: $closure_id, architecture: $architecture, modules: $modules, status: "complete"}')
 
-          # HMAC-SHA256 over the closure_id (matches the verification logic in
-          # PackageBuildWebhookController#verify_signature — the secret is
-          # closure-specific, so signing the closure_id alone is sufficient
-          # for caller authentication).
-          SIG=$(echo -n "${{ inputs.closure_id }}" | openssl dgst -sha256 -hmac "${{ inputs.webhook_secret }}" -hex | awk '{print $2}')
+          # HMAC-SHA256 over the EXACT body bytes we POST (NOT just the
+          # closure_id) using the closure-specific secret. This matches
+          # PackageBuildController#verify_signature, which HMACs
+          # request.raw_post — signing the whole body authenticates the
+          # artifact metadata (oci_ref, versions), so a captured signature
+          # can't be replayed against a forged body. `printf %s` + `-d "$BODY"`
+          # keep the signed and sent bytes identical. Header form "sha256=<hex>"
+          # mirrors build-disk-image.yaml.
+          SIG=$(printf %s "$BODY" | openssl dgst -sha256 -hmac "${{ inputs.webhook_secret }}" -hex | awk '{print $2}')
 
           curl -fsSL -X POST "${{ inputs.webhook_url }}" \
             -H "Content-Type: application/json" \
-            -H "X-Powernode-Signature: $SIG" \
+            -H "X-Powernode-Signature: sha256=$SIG" \
             -d "$BODY" || {
               echo "::warning::Webhook callback failed (HTTP error). Build artifacts remain in OCI registry."
             }
