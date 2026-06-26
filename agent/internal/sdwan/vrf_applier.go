@@ -29,7 +29,6 @@
 package sdwan
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -160,7 +159,7 @@ func (a *ShellVRFApplier) Apply(ctx context.Context, desired []DesiredVRF) error
 // applier (name starts with "sdwan-"). Reads `ip -d -j link show
 // type vrf` and parses the JSON output.
 func (a *ShellVRFApplier) listSdwanVRFs(ctx context.Context) (map[string]int, error) {
-	out, err := a.captureLinkShow(ctx)
+	out, err := captureLinkShow(ctx, a.ip(), "vrf")
 	if err != nil {
 		// `ip` returns non-zero when no VRFs exist on some kernels.
 		// Treat empty output as zero VRFs rather than a fatal error.
@@ -183,21 +182,6 @@ func (a *ShellVRFApplier) listSdwanVRFs(ctx context.Context) (map[string]int, er
 		filtered[name] = tableID
 	}
 	return filtered, nil
-}
-
-func (a *ShellVRFApplier) captureLinkShow(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, a.ip(), "-d", "-j", "link", "show", "type", "vrf")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Empty output + nonzero exit = no VRFs on this kernel.
-		if stdout.Len() == 0 {
-			return "", nil
-		}
-		return stdout.String(), fmt.Errorf("ip link show: %w; stderr=%s", err, stderr.String())
-	}
-	return stdout.String(), nil
 }
 
 func (a *ShellVRFApplier) createVRF(ctx context.Context, name string, tableID int) error {

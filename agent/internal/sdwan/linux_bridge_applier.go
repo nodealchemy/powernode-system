@@ -39,7 +39,6 @@
 package sdwan
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -124,7 +123,7 @@ func (a *LinuxBridgeApplier) Apply(ctx context.Context, desired []DesiredBridge)
 		if err := a.bringUp(ctx, name); err != nil {
 			return fmt.Errorf("bring up %s: %w", name, err)
 		}
-		if err := a.reconcileAddrs(ctx, name, b.Cidrs); err != nil {
+		if err := reconcileAddrs(ctx, a.ip(), name, b.Cidrs); err != nil {
 			return fmt.Errorf("reconcile addrs on %s: %w", name, err)
 		}
 	}
@@ -149,7 +148,7 @@ func (a *LinuxBridgeApplier) Apply(ctx context.Context, desired []DesiredBridge)
 // per object (ifname + linkinfo.info_kind + filter on bridge prefix)
 // and a hand-rolled parser would obscure the lookup.
 func (a *LinuxBridgeApplier) listBridges(ctx context.Context) (map[string]struct{}, error) {
-	out, err := a.captureLinkShow(ctx)
+	out, err := captureLinkShow(ctx, a.ip(), "bridge")
 	if err != nil {
 		// `ip` returns nonzero when no bridges exist on some kernel
 		// versions. Treat empty-output failure as "no bridges yet".
@@ -175,22 +174,6 @@ func (a *LinuxBridgeApplier) listBridges(ctx context.Context) (map[string]struct
 		filtered[name] = struct{}{}
 	}
 	return filtered, nil
-}
-
-func (a *LinuxBridgeApplier) captureLinkShow(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, a.ip(), "-d", "-j", "link", "show", "type", "bridge")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Empty output + nonzero exit = no bridges of this type on
-		// this kernel. Treat as zero bridges rather than fatal.
-		if stdout.Len() == 0 {
-			return "", nil
-		}
-		return stdout.String(), fmt.Errorf("ip link show: %w; stderr=%s", err, stderr.String())
-	}
-	return stdout.String(), nil
 }
 
 func (a *LinuxBridgeApplier) createBridge(ctx context.Context, name string) error {
@@ -237,90 +220,6 @@ func (a *LinuxBridgeApplier) bringUp(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("ip link set %s up: %w; %s", name, err, strings.TrimSpace(string(out)))
 	}
-	return nil
-}
-
-// reconcileAddrs adds any CIDR in `desired` that isn't currently on
-// the bridge, and removes any address that's on the bridge but not in
-// `desired`. Uses the same normalize-then-compare strategy as
-// vip_applier so different valid representations of the same CIDR
-// (uppercase v6, leading-zero prefix) compare equal.
-func (a *LinuxBridgeApplier) reconcileAddrs(ctx context.Context, ifname string, desired []string) error {
-	desiredByKey := make(map[string]string, len(desired))
-	for _, c := range desired {
-		key, err := normalizeCidr(c)
-		if err != nil {
-			// Bad CIDR from the platform — skip. Don't fail the whole
-			// reconcile; the next config push can correct it.
-			continue
-		}
-		desiredByKey[key] = c
-	}
-
-	actual, err := a.listAddrs(ctx, ifname)
-	if err != nil {
-		return fmt.Errorf("list addrs: %w", err)
-	}
-
-	// Add missing.
-	for key, original := range desiredByKey {
-		if _, ok := actual[key]; ok {
-			continue
-		}
-		if err := a.addAddr(ctx, ifname, original); err != nil {
-			return fmt.Errorf("add %s: %w", original, err)
-		}
-	}
-
-	// Remove orphans.
-	for key, original := range actual {
-		if _, ok := desiredByKey[key]; ok {
-			continue
-		}
-		_ = a.delAddr(ctx, ifname, original)
-	}
-	return nil
-}
-
-// listAddrs returns key→original-cidr for addresses currently on the
-// bridge. Reads `ip -j addr show dev <ifname>` and parses the JSON.
-// The shape is `[{ "addr_info": [{"family":"inet|inet6","local":"<ip>","prefixlen":N}, ...] }]`.
-func (a *LinuxBridgeApplier) listAddrs(ctx context.Context, ifname string) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, a.ip(), "-j", "addr", "show", "dev", ifname)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Iface may have been concurrently removed; tolerate.
-		if strings.Contains(stderr.String(), "does not exist") {
-			return map[string]string{}, nil
-		}
-		// Empty stdout on some kernels when the iface has no addrs.
-		if stdout.Len() == 0 {
-			return map[string]string{}, nil
-		}
-		return nil, fmt.Errorf("ip addr show dev %s: %w; stderr=%s", ifname, err, stderr.String())
-	}
-	return parseAddrShow(stdout.String())
-}
-
-func (a *LinuxBridgeApplier) addAddr(ctx context.Context, ifname, cidr string) error {
-	cmd := exec.CommandContext(ctx, a.ip(), "addr", "add", cidr, "dev", ifname)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// Already there — fine. Helper covers both old + new iproute2 messages
-		// (see ipops.go for the substring catalog).
-		if isIPAddrAddAlreadyExistsErr(string(out)) {
-			return nil
-		}
-		return fmt.Errorf("ip addr add %s dev %s: %w; %s", cidr, ifname, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func (a *LinuxBridgeApplier) delAddr(ctx context.Context, ifname, cidr string) error {
-	cmd := exec.CommandContext(ctx, a.ip(), "addr", "del", cidr, "dev", ifname)
-	_, _ = cmd.CombinedOutput()
 	return nil
 }
 

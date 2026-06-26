@@ -173,7 +173,7 @@ func (a *ShellOvsBridgeApplier) Apply(ctx context.Context, desired []DesiredBrid
 		if err := a.bringUp(ctx, name); err != nil {
 			return fmt.Errorf("bring up %s: %w", name, err)
 		}
-		if err := a.reconcileAddrs(ctx, name, b.Cidrs); err != nil {
+		if err := reconcileAddrs(ctx, a.ip(), name, b.Cidrs); err != nil {
 			return fmt.Errorf("reconcile addrs on %s: %w", name, err)
 		}
 		if err := a.reconcileIpfix(ctx, name, b.Ipfix); err != nil {
@@ -283,93 +283,6 @@ func (a *ShellOvsBridgeApplier) bringUp(ctx context.Context, name string) error 
 	if err != nil {
 		return fmt.Errorf("ip link set %s up: %w; %s", name, err, strings.TrimSpace(string(out)))
 	}
-	return nil
-}
-
-// reconcileAddrs adds any CIDR in `desired` that isn't currently on
-// the bridge, and removes any address that's on the bridge but not in
-// `desired`. Identical strategy to LinuxBridgeApplier.reconcileAddrs:
-// the kernel sees the OVS internal port under the bridge's name, so
-// the same `ip addr add/del/show` commands work without modification.
-// Shares the normalizeCidr + parseAddrShow helpers from the Linux
-// applier so different valid representations of the same CIDR
-// (uppercase v6, leading-zero prefix) compare equal.
-func (a *ShellOvsBridgeApplier) reconcileAddrs(ctx context.Context, ifname string, desired []string) error {
-	desiredByKey := make(map[string]string, len(desired))
-	for _, c := range desired {
-		key, err := normalizeCidr(c)
-		if err != nil {
-			// Bad CIDR from the platform — skip; the next config push
-			// can correct it without us aborting the whole reconcile.
-			continue
-		}
-		desiredByKey[key] = c
-	}
-
-	actual, err := a.listAddrs(ctx, ifname)
-	if err != nil {
-		return fmt.Errorf("list addrs: %w", err)
-	}
-
-	// Add missing.
-	for key, original := range desiredByKey {
-		if _, ok := actual[key]; ok {
-			continue
-		}
-		if err := a.addAddr(ctx, ifname, original); err != nil {
-			return fmt.Errorf("add %s: %w", original, err)
-		}
-	}
-
-	// Remove orphans.
-	for key, original := range actual {
-		if _, ok := desiredByKey[key]; ok {
-			continue
-		}
-		_ = a.delAddr(ctx, ifname, original)
-	}
-	return nil
-}
-
-// listAddrs returns key→original-cidr for addresses currently on the
-// bridge's internal port. Same shape as LinuxBridgeApplier.listAddrs;
-// reads `ip -j addr show dev <ifname>` and parses the JSON via the
-// shared parseAddrShow helper.
-func (a *ShellOvsBridgeApplier) listAddrs(ctx context.Context, ifname string) (map[string]string, error) {
-	cmd := exec.CommandContext(ctx, a.ip(), "-j", "addr", "show", "dev", ifname)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Iface may have been concurrently removed; tolerate.
-		if strings.Contains(stderr.String(), "does not exist") {
-			return map[string]string{}, nil
-		}
-		// Empty stdout on some kernels when the iface has no addrs.
-		if stdout.Len() == 0 {
-			return map[string]string{}, nil
-		}
-		return nil, fmt.Errorf("ip addr show dev %s: %w; stderr=%s", ifname, err, stderr.String())
-	}
-	return parseAddrShow(stdout.String())
-}
-
-func (a *ShellOvsBridgeApplier) addAddr(ctx context.Context, ifname, cidr string) error {
-	cmd := exec.CommandContext(ctx, a.ip(), "addr", "add", cidr, "dev", ifname)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// Already there — fine. See ipops.go for the iproute2 message catalog.
-		if isIPAddrAddAlreadyExistsErr(string(out)) {
-			return nil
-		}
-		return fmt.Errorf("ip addr add %s dev %s: %w; %s", cidr, ifname, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func (a *ShellOvsBridgeApplier) delAddr(ctx context.Context, ifname, cidr string) error {
-	cmd := exec.CommandContext(ctx, a.ip(), "addr", "del", cidr, "dev", ifname)
-	_, _ = cmd.CombinedOutput()
 	return nil
 }
 
