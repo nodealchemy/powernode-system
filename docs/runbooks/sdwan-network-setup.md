@@ -6,6 +6,8 @@ End-to-end operator guide for the system extension's SDWAN layer: WireGuard-base
 
 **Audience:** external operators, internal SREs, network engineers configuring multi-region overlays.
 
+> This runbook is how to **use** SDWAN. For how the platform **compiles** your intent into the on-node WireGuard / FRR / nftables / OVN artifacts, see [`../SDWAN_ARCHITECTURE.md`](../SDWAN_ARCHITECTURE.md).
+
 ## Concept reference
 
 | Concept | What it is | Backing model |

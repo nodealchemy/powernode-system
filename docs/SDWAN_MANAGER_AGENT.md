@@ -276,6 +276,7 @@ For audit-grade retention: critical events retain 365 days; routine reconciliati
 
 - [`FLEET_SENSORS.md`](./FLEET_SENSORS.md) — the sensors that emit `sdwan.*` signals
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) §5 — SDWAN subsystem reference (model + service layer)
+- [`SDWAN_ARCHITECTURE.md`](./SDWAN_ARCHITECTURE.md) — the server-side **compile pipeline** that produces the artifacts this agent's drift sensors reconcile (intent → per-stage compilers → on-node WireGuard / FRR / nftables / OVN)
 - [`runbooks/sdwan-network-setup.md`](./runbooks/sdwan-network-setup.md) — end-to-end SDWAN provisioning runbook
 - [`SKILL_EXECUTOR_CATALOG.md`](./SKILL_EXECUTOR_CATALOG.md) — full skill executor catalog (auto-generated)
 - [`CLAUDE.md`](../CLAUDE.md) — index of all extension agents, including this one

@@ -521,6 +521,11 @@ auto-generated tool catalog lives at
 from parent root). For an operator-curated subset see
 [`MCP_API_REFERENCE.md`](./MCP_API_REFERENCE.md) in this directory.
 
+The compile pipeline behind the `system_sdwan_*` actions — how declarative
+intent (networks, peers, route policies, OVN switches) is compiled into the
+on-node WireGuard / FRR / nftables / `ovn-nbctl` artifacts the agent applies
+— is documented in [`SDWAN_ARCHITECTURE.md`](./SDWAN_ARCHITECTURE.md).
+
 ---
 
 ## Security architecture
@@ -607,6 +612,7 @@ flowchart TB
 
 - [README.md](../README.md) — user-facing summary
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow
+- [docs/SDWAN_ARCHITECTURE.md](./SDWAN_ARCHITECTURE.md) — SDWAN compile pipeline (intent → per-stage compilers → on-node artifacts)
 - [docs/SMOKE_TEST.md](./SMOKE_TEST.md) — platform-level smoke catalog (28 seeds, 9 passes)
 - [docs/tutorials/](./tutorials/) — numbered learning sequence
 - [Parent platform's CLAUDE.md](../../../CLAUDE.md) — full platform context

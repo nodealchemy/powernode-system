@@ -11,7 +11,7 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 | Node lifecycle | `docs/ARCHITECTURE.md` §2 (On-node runtime + NodeInstance lifecycle) | `app/models/system/{node,node_instance,node_template,node_architecture,node_platform}.rb`, `app/services/system/{enrollment,bootstrap,provisioning,instance_control}_service.rb` |
 | Modules + categories + assignments | `docs/ARCHITECTURE.md` §1 | `app/models/system/{node_module,node_module_category,node_module_assignment,node_module_version}.rb`, `app/services/system/{module_version,module_build,module_publication_processor,module_oci_ingest}_service.rb` |
 | Container runtimes (Phase 1 Docker + Phase 2 K3s) | `docs/CONTAINER_RUNTIMES.md` | `app/services/system/docker_daemon_provisioner_service.rb`, `app/services/system/kubernetes_cluster_provisioner_service.rb`, `app/controllers/api/v1/system/node_api/runtime_controller.rb`, `agent/internal/dockerd/`, `agent/internal/k3sd/` |
-| SDWAN (slices 1–9) | `docs/SDWAN_MANAGER_AGENT.md`, `docs/runbooks/sdwan-network-setup.md` | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
+| SDWAN (slices 1–9) | `docs/SDWAN_ARCHITECTURE.md` (compile pipeline), `docs/SDWAN_MANAGER_AGENT.md`, `docs/runbooks/sdwan-network-setup.md` | `app/models/sdwan/`, `app/services/sdwan/`, `app/controllers/api/v1/system/sdwan/` |
 | Service exposure (`Sdwan::Service`) | `docs/runbooks/publish-service.md` | `app/models/sdwan/service.rb`, `app/services/sdwan/service_exposure_writer.rb` (local `/svc/<slug>` + ForwardAuth), `app/controllers/api/v1/system/ingress/forward_auth_controller.rb`, `app/services/ai/tools/system_ingress_tool.rb`; federated facet = `Federation::ServiceOffering` |
 | Fleet autonomy + sensors | `docs/FLEET_SENSORS.md`, `docs/ARCHITECTURE.md` §4 | `app/services/system/fleet/sensors/`, `app/services/fleet_autonomy_service.rb`, `db/seeds/fleet_autonomy_agent.rb` |
 | Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (49 executors), `db/seeds/system_skills_seed.rb` |
@@ -105,6 +105,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `README.md` — extension overview
 - `CONTRIBUTING.md` — submodule + commit workflow
 - `docs/ARCHITECTURE.md` — 9 subsystems + 4 API surfaces + security architecture
+- `docs/SDWAN_ARCHITECTURE.md` — SDWAN compile pipeline: intent models → orchestrator (`Sdwan::TopologyCompiler`) + per-stage compilers (BGP/FRR, OVN, nftables firewall/NAT) → on-node artifacts, allocators, topology strategies, MCP surface
 - `docs/PROVIDER_ADAPTER_AUTHORING.md` — how to write a new cloud/hypervisor provider adapter (the `System::Providers::BaseProvider` 24-method contract, normalized return shapes, credential resolution, Registry wiring, and the `it_behaves_like "a cloud provider"` shared spec)
 - `docs/STORAGE_SUBSYSTEM.md` — storage data plane: volumes, mounts, chown ownership model, volume-to-volume migration state machine + MCP surface
 - `docs/SMOKE_TEST.md` — platform-level smoke catalog (18 seeded scripts, 8 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
