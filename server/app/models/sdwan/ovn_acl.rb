@@ -72,6 +72,27 @@ module Sdwan
                             greater_than_or_equal_to: PRIORITY_MIN,
                             less_than_or_equal_to: PRIORITY_MAX
                           }
+    # Two ACTIVE ACLs on the same switch+direction must not share a
+    # priority. OVN evaluates ACLs by the `priority` field (higher first);
+    # equal-priority matches on the same packet have UNDEFINED selection,
+    # so a broad allow and a specific drop sharing a priority can silently
+    # shadow the deny (policy bypass). The compiler's name-based emit order
+    # (Sdwan::OvnCompiler) sorts the emitted plan but does NOT influence
+    # OVN's runtime evaluation, so the guard must live on the record.
+    # Scoped to active rows only — pending/removed ACLs aren't emitted, so
+    # they can't collide at runtime; `priority` defaults to DEFAULT_PRIORITY
+    # (1000), which is exactly where uncoordinated rows would otherwise pile
+    # up. A partial-unique DB index (active rows only) is a recommended
+    # follow-up; it can't be added cleanly here because the combined
+    # core+extension test schema is loaded from db/schema.rb, not migrations.
+    validates :priority,
+              uniqueness: {
+                scope: %i[sdwan_ovn_logical_switch_id direction],
+                conditions: -> { where(state: "active") },
+                message: "collides with another active ACL on this switch and " \
+                         "direction (OVN equal-priority selection is undefined)"
+              },
+              if: -> { state == "active" }
     validates :match,     presence: true
 
     scope :active,      -> { where(state: "active") }
