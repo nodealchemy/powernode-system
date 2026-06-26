@@ -192,6 +192,43 @@ module Sdwan
         end
       end
 
+      # Per-VIP BGP advertisement attributes (metric/local-preference)
+      # for the VIPs this peer holds, keyed by VIP cidr. Only VIPs whose
+      # attributes are NON-DEFAULT (advertised_med != 0 OR
+      # advertised_local_pref != 100 — the FRR/model defaults) are
+      # included; default VIPs keep their bare `network <cidr>`
+      # announcement (behavior-preserving). The cidr keys mirror exactly
+      # the strings vip_cidrs_held_by feeds into networks_to_announce, so
+      # the announce loop can attach a route-map by cidr lookup without
+      # disturbing non-VIP (or default-VIP) announcements.
+      def vip_route_attrs_for(peer)
+        (@vip_route_attrs_for ||= {})[peer.id] ||= compute_vip_route_attrs_for(peer)
+      end
+
+      def compute_vip_route_attrs_for(peer)
+        net = peer.network
+        return {} unless net.respond_to?(:virtual_ips)
+
+        attrs = {}
+        net.virtual_ips.where(state: %w[active pending]).each do |vip|
+          holders = Array(vip.holder_peer_ids)
+          next if holders.empty?
+
+          holds = vip.anycast? ? holders.include?(peer.id) : holders.first == peer.id
+          next unless holds
+
+          # nil → the column default (med 0 / local-pref 100). Validation
+          # forbids nil in practice, but defaulting keeps unset values on
+          # the bare-announcement path.
+          med = vip.advertised_med.to_i
+          lp  = vip.advertised_local_pref.nil? ? 100 : vip.advertised_local_pref.to_i
+          next if med == 0 && lp == 100
+
+          attrs[vip.cidr] = { vip_id: vip.id, med: med, lp: lp }
+        end
+        attrs
+      end
+
       # ----------------------------------------------------------------
       # Multi-VRF host enumeration
       # ----------------------------------------------------------------
@@ -415,6 +452,37 @@ module Sdwan
             lines << "!"
           end
         end
+
+        # Per-VIP advertisement maps. Defined here — alongside the other
+        # route-maps and BEFORE the `router bgp` blocks — so FRR resolves
+        # the `network <cidr> route-map pn-vip-<id>` reference emitted in
+        # the bgp block. One block per held VIP with non-default
+        # attributes; only the non-default `set` line(s) are emitted.
+        render_vip_route_maps(lines)
+      end
+
+      def render_vip_route_maps(lines)
+        vrf_pairs_for_host.each do |_, host_peer|
+          vip_route_attrs_for(host_peer).each_value do |attrs|
+            lines << "route-map pn-vip-#{attrs[:vip_id]} permit 10"
+            lines << " set metric #{attrs[:med]}"              if attrs[:med] != 0
+            lines << " set local-preference #{attrs[:lp]}"     if attrs[:lp] != 100
+            lines << "!"
+          end
+        end
+      end
+
+      # Renders one `network <cidr>` announcement line, appending
+      # `route-map pn-vip-<id>` when the cidr is a held VIP with
+      # non-default advertisement attributes. A bare `network <cidr>`
+      # (today's behavior) is returned for every non-VIP cidr and every
+      # default-valued VIP.
+      def vip_network_line(cidr, vip_attrs)
+        if (attrs = vip_attrs[cidr])
+          "  network #{cidr} route-map pn-vip-#{attrs[:vip_id]}"
+        else
+          "  network #{cidr}"
+        end
       end
 
       def render_per_vrf_bgp_blocks(lines)
@@ -425,9 +493,18 @@ module Sdwan
           policy_output = policy_for(host_peer)
           neighbor_assignments = policy_output[:neighbor_assignments] || {}
           announces = networks_to_announce(host_peer)
+          vip_attrs = vip_route_attrs_for(host_peer)
 
           lines << "router bgp #{as_number} vrf #{hva.vrf_name}"
           lines << " bgp router-id #{::Sdwan::Bgp::RouterIdResolver.for_peer(host_peer)}"
+          # Account/instance-wide default local-preference. Only emitted
+          # when the operator set a non-default value: FRR's built-in
+          # default is 100, so `bgp default local-preference 100` is a
+          # no-op that would only churn the config. The column default is
+          # 100 (null:false), so unset accounts naturally emit nothing.
+          if (lp = @account_bgp&.default_local_pref) && lp != 100
+            lines << " bgp default local-preference #{lp}"
+          end
           lines << " no bgp default ipv4-unicast"
           lines << " bgp graceful-restart"
           lines << " timers bgp #{DEFAULT_KEEPALIVE_SECONDS} #{DEFAULT_HOLD_SECONDS}"
@@ -444,7 +521,7 @@ module Sdwan
           # IPv6 unicast AFI — overlay rides ULA /128s.
           lines << " address-family ipv6 unicast"
           announces.each do |cidr|
-            lines << "  network #{cidr}" if cidr.include?(":")
+            lines << vip_network_line(cidr, vip_attrs) if cidr.include?(":")
           end
           neighbors.each do |n|
             addr = n[:neighbor_address]
@@ -469,7 +546,7 @@ module Sdwan
           v4_announces = announces.reject { |c| c.include?(":") }
           if v4_announces.any?
             lines << " address-family ipv4 unicast"
-            v4_announces.each { |cidr| lines << "  network #{cidr}" }
+            v4_announces.each { |cidr| lines << vip_network_line(cidr, vip_attrs) }
             neighbors.each do |n|
               addr = n[:neighbor_address]
               lines << "  neighbor #{addr} activate"

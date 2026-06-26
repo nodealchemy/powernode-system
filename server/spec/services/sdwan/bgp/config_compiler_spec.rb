@@ -418,4 +418,103 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
       compiler.compile
     end
   end
+
+  # Account/instance-wide default local-preference
+  # (AccountBgp#default_local_pref). A settable-but-previously-unread
+  # knob: FRR applies it via `bgp default local-preference <N>` inside
+  # the router bgp block. We emit it ONLY for non-default values (FRR's
+  # built-in default is 100; the column default is 100/null:false) so
+  # unset accounts produce byte-identical config.
+  describe "account default local-preference" do
+    def lp_setup(name)
+      net = network!(name, cidr: "fd00:1::/64")
+      hub = peer!(network: net, host: host_a, hub: true)
+      _spoke = peer!(network: net, host: host_b)
+      assign_vrf!(host: host_a, network: net)
+      assign_vrf!(host: host_b, network: net)
+      hub
+    end
+
+    it "emits `bgp default local-preference` in the router bgp block when non-default" do
+      hub = lp_setup("lp-net")
+      account_bgp.update!(default_local_pref: 200)
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).to include(" bgp default local-preference 200")
+      # Placed early in the block, right after `bgp router-id`.
+      expect(text).to match(
+        %r{router bgp \d+ vrf \S+\n bgp router-id [^\n]+\n bgp default local-preference 200\n}
+      )
+    end
+
+    it "omits the directive when default_local_pref is the FRR default (100)" do
+      hub = lp_setup("lp-default-net")
+      account_bgp.update!(default_local_pref: 100)
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).not_to include("bgp default local-preference")
+    end
+  end
+
+  # Per-VIP advertisement attributes (VirtualIp#advertised_med /
+  # #advertised_local_pref). Previously ignored — VIP networks were
+  # announced as bare `network <cidr>`. We attach a per-VIP route-map
+  # that sets metric/local-preference, but ONLY for VIPs whose attrs are
+  # non-default (med 0 / local-pref 100 stay bare → behavior-preserving).
+  describe "per-VIP advertisement attributes" do
+    def vip_setup(name)
+      net = network!(name, cidr: "fd00:1::/64")
+      hub = peer!(network: net, host: host_a, hub: true)
+      _spoke = peer!(network: net, host: host_b)
+      assign_vrf!(host: host_a, network: net)
+      assign_vrf!(host: host_b, network: net)
+      [ net, hub ]
+    end
+
+    it "attaches a route-map to a held VIP network when med + local-pref are both non-default" do
+      net, hub = vip_setup("vip-net")
+      vip = Sdwan::VirtualIp.create!(
+        account_id: account.id, sdwan_network_id: net.id,
+        name: "tuned-vip", cidr: "fd00:1::99/128",
+        holder_peer_ids: [ hub.id ], state: "active",
+        advertised_med: 50, advertised_local_pref: 200
+      )
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).to include("  network fd00:1::99/128 route-map pn-vip-#{vip.id}")
+      expect(text).to include("route-map pn-vip-#{vip.id} permit 10")
+      expect(text).to include(" set metric 50")
+      expect(text).to include(" set local-preference 200")
+    end
+
+    it "emits only the non-default `set` line when one attribute is default" do
+      net, hub = vip_setup("vip-partial-net")
+      vip = Sdwan::VirtualIp.create!(
+        account_id: account.id, sdwan_network_id: net.id,
+        name: "med-only-vip", cidr: "fd00:1::55/128",
+        holder_peer_ids: [ hub.id ], state: "active",
+        advertised_med: 50, advertised_local_pref: 100
+      )
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).to include("  network fd00:1::55/128 route-map pn-vip-#{vip.id}")
+      expect(text).to include("route-map pn-vip-#{vip.id} permit 10")
+      expect(text).to include(" set metric 50")
+      expect(text).not_to include(" set local-preference")
+    end
+
+    it "keeps a bare `network` announcement for a held VIP with default attributes" do
+      net, hub = vip_setup("vip-default-net")
+      vip = Sdwan::VirtualIp.create!(
+        account_id: account.id, sdwan_network_id: net.id,
+        name: "plain-vip", cidr: "fd00:1::aa/128",
+        holder_peer_ids: [ hub.id ], state: "active"
+        # advertised_med / advertised_local_pref left at defaults (0 / 100)
+      )
+
+      text = described_class.compile_for_peer(hub)[:frr_text]
+      expect(text).to include("  network fd00:1::aa/128\n")
+      expect(text).not_to include("route-map pn-vip-#{vip.id}")
+    end
+  end
 end
