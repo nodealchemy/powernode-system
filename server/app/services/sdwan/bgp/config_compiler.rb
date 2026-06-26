@@ -56,7 +56,7 @@ module Sdwan
         # network. Cross-VRF neighbors are not advertised in this list
         # (route leaks are not iBGP sessions).
         neighbors = neighbors_for(@peer)
-        policy_output = ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(@peer)
+        policy_output = policy_for(@peer)
 
         {
           enabled: true,
@@ -89,6 +89,17 @@ module Sdwan
         @network.respond_to?(:ibgp_routing?) &&
           @network.ibgp_routing? &&
           @account_bgp&.enabled?
+      end
+
+      # Per-peer route-policy compilation is invoked from several render
+      # passes (global block + each per-VRF block, plus aux objects and
+      # route-maps) for the same set of peers within one compile. Memoize
+      # per peer so RoutePolicyCompiler runs (and its queries fire) at
+      # most once per distinct peer. The compiler is instantiated fresh
+      # per compile, so this memo is fresh per poll; the result is a
+      # read-only hash, so sharing it per-peer within one compile is safe.
+      def policy_for(peer)
+        (@policy_for ||= {})[peer] ||= ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(peer)
       end
 
       # ----------------------------------------------------------------
@@ -194,6 +205,10 @@ module Sdwan
       # single-network slice — used by tests that build peers without
       # a host.
       def vrf_pairs_for_host
+        @vrf_pairs_for_host ||= compute_vrf_pairs_for_host
+      end
+
+      def compute_vrf_pairs_for_host
         return [ [ synthetic_assignment_for(@peer), @peer ] ] if @host.nil?
 
         ::Sdwan::HostVrfAssignment
@@ -245,6 +260,10 @@ module Sdwan
       # an inbound route-map filter per leak. Bidirectional leaks
       # produce two clauses (one per direction).
       def leak_clauses_for(hva)
+        (@leak_clauses_for ||= {})[hva] ||= compute_leak_clauses_for(hva)
+      end
+
+      def compute_leak_clauses_for(hva)
         dest_network = hva.network
         leaks = ::Sdwan::RouteLeak
                   .compilable
@@ -345,7 +364,7 @@ module Sdwan
       def render_auxiliary_objects(lines)
         # Per-VRF route policies first.
         vrf_pairs_for_host.each do |_, host_peer|
-          policy_output = ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(host_peer)
+          policy_output = policy_for(host_peer)
           policy_output[:prefix_lists].each      { |l| lines << l }
           policy_output[:ipv6_prefix_lists].each { |l| lines << l }
           policy_output[:as_path_lists].each     { |l| lines << l }
@@ -383,7 +402,7 @@ module Sdwan
 
       def render_per_vrf_route_maps(lines)
         vrf_pairs_for_host.each do |_, host_peer|
-          policy_output = ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(host_peer)
+          policy_output = policy_for(host_peer)
           policy_output[:route_maps].each { |rm| lines << rm }
           lines << "!" if policy_output[:route_maps].any?
         end
@@ -403,7 +422,7 @@ module Sdwan
 
         vrf_pairs_for_host.each do |hva, host_peer|
           neighbors = neighbors_for(host_peer)
-          policy_output = ::Sdwan::Bgp::RoutePolicyCompiler.compile_for_peer(host_peer)
+          policy_output = policy_for(host_peer)
           neighbor_assignments = policy_output[:neighbor_assignments] || {}
           announces = networks_to_announce(host_peer)
 

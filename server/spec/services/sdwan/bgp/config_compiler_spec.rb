@@ -340,4 +340,82 @@ RSpec.describe Sdwan::Bgp::ConfigCompiler, type: :service do
       expect(text).not_to include("10.42.0.0/16")
     end
   end
+
+  # Memoization / perf guard (2026-06) — three computations used to
+  # re-run uncached several times per compile, each issuing DB queries:
+  #   * vrf_pairs_for_host  (~8×)
+  #   * RoutePolicyCompiler.compile_for_peer  (1 + 3×pairs)
+  #   * leak_clauses_for(hva)  (3× per hva)
+  # The compiler is instantiated fresh per compile, so instance-level
+  # memoization is safe (no cross-poll staleness) and all three results
+  # are consumed read-only. These examples lock in the reduction; the
+  # golden-fixture specs above prove the rendered config is unchanged.
+  describe "per-compile memoization (perf)" do
+    it "compiles each distinct peer's route policy at most once per compile" do
+      net = network!("perf-policy-net", cidr: "fd00:9::/64")
+      hub = peer!(network: net, host: host_a, hub: true)
+      _spoke = peer!(network: net, host: host_b)
+      assign_vrf!(host: host_a, network: net)
+      assign_vrf!(host: host_b, network: net)
+
+      allow(::Sdwan::Bgp::RoutePolicyCompiler)
+        .to receive(:compile_for_peer).and_call_original
+
+      described_class.compile_for_peer(hub)
+
+      # Unfixed code calls compile_for_peer 4× for this single-peer /
+      # single-pair host (global block @ compile + aux-objects +
+      # route-maps + per-VRF bgp-block, all for the same host_peer).
+      # Memoization collapses that to one call per DISTINCT peer — here
+      # @peer and the sole host_peer are the same persisted record, so
+      # exactly one call. The `at_most(2)` boundary fails on the
+      # unfixed 4× while staying robust to peer-object identity.
+      expect(::Sdwan::Bgp::RoutePolicyCompiler)
+        .to have_received(:compile_for_peer).at_most(2).times
+    end
+
+    it "enumerates host VRF pairs at most once across a full compile" do
+      net = network!("perf-vrf-net", cidr: "fd00:9::/64")
+      hub = peer!(network: net, host: host_a, hub: true)
+      _spoke = peer!(network: net, host: host_b)
+      assign_vrf!(host: host_a, network: net)
+      assign_vrf!(host: host_b, network: net)
+
+      compiler = described_class.new(hub)
+      # vrf_pairs_for_host is consulted ~8× per compile; the underlying
+      # DB-querying computation must run at most once.
+      expect(compiler).to receive(:compute_vrf_pairs_for_host)
+        .at_most(:once).and_call_original
+
+      compiler.compile
+    end
+
+    it "computes leak clauses at most once per host VRF assignment" do
+      net_a = network!("perf-leak-src", cidr: "fd00:a::/64")
+      net_b = network!("perf-leak-dst", cidr: "fd00:b::/64")
+      hub_a = peer!(network: net_a, host: host_a, hub: true)
+      _peer_a2 = peer!(network: net_a, host: host_b)
+      _hub_b  = peer!(network: net_b, host: host_a, hub: true)
+      _peer_b2 = peer!(network: net_b, host: host_b)
+      assign_vrf!(host: host_a, network: net_a)
+      assign_vrf!(host: host_a, network: net_b)
+      assign_vrf!(host: host_b, network: net_a)
+      assign_vrf!(host: host_b, network: net_b)
+
+      Sdwan::RouteLeak.create!(
+        account_id: account.id,
+        source_network: net_a, dest_network: net_b,
+        direction: "one_way",
+        prefix_filter: [ { "cidr" => "fd00:a::/64", "action" => "permit" } ]
+      ).activate!
+
+      compiler = described_class.new(hub_a)
+      # Two host VRF assignments → compute fires once per distinct hva,
+      # not 3× per hva as the unfixed render passes would.
+      expect(compiler).to receive(:compute_leak_clauses_for)
+        .at_most(2).times.and_call_original
+
+      compiler.compile
+    end
+  end
 end
