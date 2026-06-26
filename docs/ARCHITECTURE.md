@@ -423,6 +423,33 @@ modules in the catalog: `docker-engine`, `k3s-server`, `k3s-agent`.
 
 See `CONTAINER_RUNTIMES.md` for the operator workflow.
 
+### 9. Storage subsystem
+
+The data plane for stateful workloads — one layer below the runtime modules. It
+provisions backing volumes (`System::ProviderVolume`, with `ProviderVolumeType`
+transports `nfs`/`iscsi`/`smb`/EBS-tier/`custom` and optional RAID via
+`ProviderVolumeMember`), mounts them onto NodeInstances over the SDWAN overlay
+(`System::StorageAssignment` + Vault-sealed `StorageCredential` /
+`MountEncryptionKey`), owns the fleet-wide Unix-identity (chown) model for
+on-disk files, and moves a stateful component's data between volumes
+(`System::StorageMigration`) without losing the `(deployment, role)` binding.
+
+Every node side-effect is pull-based: the eight services in
+`app/services/system/storage/` enqueue `storage.*` `System::Task` rows (mount,
+unmount, `exports.apply`, `smb_user.apply`, `gateway.provision`, `chown`) that
+the on-node agent leases and reconciles. `StorageMigration` runs a hand-rolled
+(non-AASM) state machine `planned → approved → preparing → syncing → verifying →
+cutover → completed` (with `failed` reachable from any non-terminal state and
+`cancelled` only pre-sync); the `cutover → completed` transition swaps the
+instance's `storage_volume` binding to the target. The
+`StorageAssignmentDriftSensor` (§4, runs outside the tick array) emits
+`system.storage_assignment_drift` when a mount drifts. Migration cutover, chown,
+and `delete_volume` are the subsystem's dangerous operations.
+
+Full design — data model, the eight services, the exact state machine, and the
+MCP tool surface — is in [STORAGE_SUBSYSTEM.md](./STORAGE_SUBSYSTEM.md); the
+operator procedure is [runbooks/storage-migration.md](./runbooks/storage-migration.md).
+
 ---
 
 ## API surfaces

@@ -4,7 +4,7 @@ Powernode's system extension. Node lifecycle, modules, SDWAN, fleet autonomy, co
 
 This file is the index for AI sessions touching `extensions/system/`. Each domain points at its operator guide + critical source files.
 
-## Capability Domains (10)
+## Capability Domains (11)
 
 | Domain | Operator Guide | Key Source Files |
 |---|---|---|
@@ -19,6 +19,7 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 | CI workers + Gitea Actions | (cross-cuts disk image CI) | `app/services/system/{worker_dispatch,execution_dispatcher}.rb` |
 | Tasks + autonomy reconcile | `docs/ARCHITECTURE.md` §4 | `app/models/system/task.rb`, `app/services/system/runtime_task_dispatcher.rb` |
 | Honeypot canaries | `docs/ARCHITECTURE.md` §7 | `app/services/system/honeypot/canary_module_service.rb` |
+| Storage (volumes, mounts, migration, chown) | `docs/STORAGE_SUBSYSTEM.md`, `docs/runbooks/storage-migration.md` | `app/models/system/{provider_volume,storage_assignment,storage_migration,storage_credential}.rb`, `app/services/system/storage/`, `app/services/ai/tools/{system_fleet_tool,system_storage_owner_tool}.rb` |
 
 ## AI Agents (7)
 
@@ -103,7 +104,8 @@ This is a git submodule. Per root CLAUDE.md:
 
 - `README.md` — extension overview
 - `CONTRIBUTING.md` — submodule + commit workflow
-- `docs/ARCHITECTURE.md` — 8 subsystems + 4 API surfaces + security architecture
+- `docs/ARCHITECTURE.md` — 9 subsystems + 4 API surfaces + security architecture
+- `docs/STORAGE_SUBSYSTEM.md` — storage data plane: volumes, mounts, chown ownership model, volume-to-volume migration state machine + MCP surface
 - `docs/SMOKE_TEST.md` — platform-level smoke catalog (18 seeded scripts, 8 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
@@ -139,6 +141,7 @@ See `docs/runbooks/README.md` for the full index (audience + prereqs + runtime p
 - `federation-setup.md` — multi-region/multi-account federation peering
 - `federation-troubleshooting.md` — diagnostic procedures for federation failures
 - `vault-credential-restoration.md` — DR runbook for credential restoration
+- `storage-migration.md` — volume-to-volume data migration end-to-end (plan→approve→sync→cutover) + chown status/retry + NFS probe
 
 ### Tutorials (`docs/tutorials/`) — preferred entry point for learning
 
