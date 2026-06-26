@@ -103,6 +103,13 @@ module System
       cloud_result = provider_adapter.create_instance(provider_params)
 
       if cloud_result[:success]
+        # Capture the just-created cloud instance id BEFORE the persisting
+        # update! (or any later step) that could raise. If one does, the row is
+        # marked :error WITHOUT this id ever reaching the DB, so the reaper can't
+        # reclaim the now-orphaned, billable cloud VM. Holding it in a local lets
+        # the rescue paths terminate it (compensating rollback).
+        created_cloud_instance_id = cloud_result[:cloud_instance_id]
+
         instance.update!(
           cloud_instance_id: cloud_result[:cloud_instance_id],
           private_ip_address: cloud_result[:private_ip_address],
@@ -146,6 +153,7 @@ module System
       # exception must never leave it orphaned in :pending. Transition it to
       # the terminal :error state so it's visible as failed (and reapable).
       mark_instance_errored(instance)
+      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
       emit_provision_event(
         account: node.account, kind: "system.instance_provision_failed", severity: :high,
         instance: instance, node: node, payload: { error: e.message }
@@ -156,6 +164,7 @@ module System
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.message}")
       mark_instance_errored(instance)
+      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
       emit_provision_event(
         account: node.account, kind: "system.instance_provision_failed", severity: :high,
         instance: instance, node: node, payload: { error: e.message }
@@ -266,6 +275,21 @@ module System
       instance.mark_errored! if instance.may_mark_errored?
     rescue StandardError => e
       Rails.logger.warn("[ProvisioningService] failed to mark instance #{instance&.id} errored: #{e.class}: #{e.message}")
+    end
+
+    # Compensating rollback for a post-create failure: the cloud VM was already
+    # created (so it's running and billable), but a later step (e.g. update!)
+    # raised before its id reached the DB — leaving the reaper unable to reclaim
+    # it. Best-effort terminate it by the id captured at create time. Guarded by
+    # its own rescue so a terminate failure never masks the original error.
+    def terminate_orphaned_cloud_instance(provider_adapter, cloud_instance_id)
+      return if cloud_instance_id.blank?
+      return unless provider_adapter.respond_to?(:terminate_instance)
+
+      Rails.logger.warn("[ProvisioningService] Post-create failure — terminating orphaned cloud instance #{cloud_instance_id} to avoid a billable leak")
+      provider_adapter.terminate_instance(cloud_instance_id)
+    rescue StandardError => e
+      Rails.logger.error("[ProvisioningService] Failed to terminate orphaned cloud instance #{cloud_instance_id}: #{e.class}: #{e.message}")
     end
 
     # Emit a provision-lifecycle FleetEvent (provisioned / provision_failed) so

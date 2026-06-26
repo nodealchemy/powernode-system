@@ -73,6 +73,46 @@ RSpec.describe System::ProvisioningService do
     end
   end
 
+  # Cloud-resource leak (IMP-f21484318518): the cloud VM is created before the
+  # row is updated with its id. If a post-create step (e.g. update!) raises, the
+  # rescue only marks the row :error — the just-created, billable VM is left
+  # running with its id never persisted, so the reaper can't reclaim it. The fix
+  # captures the cloud id at create time and best-effort terminates it on failure.
+  describe "compensating rollback — orphaned cloud VM on post-create failure" do
+    it "terminates the just-created cloud instance when a post-create step (update!) raises" do
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-orphan-1", status: "running")
+      # The cloud VM is live, but persisting its id onto the row fails.
+      allow_any_instance_of(System::NodeInstance)
+        .to receive(:update!).and_raise(StandardError, "db write failed")
+
+      # Compensating action: the live cloud instance must be terminated by id.
+      expect(adapter).to receive(:terminate_instance).with("i-orphan-1").and_return(success: true)
+
+      result = provision
+
+      # ...and the row is still driven to the terminal :error state.
+      expect(result.success?).to be(false)
+      expect(System::NodeInstance.where(node: node, status: "pending")).to be_empty
+      expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
+    end
+
+    it "does not mask the original error when the compensating terminate itself fails" do
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-orphan-2", status: "running")
+      allow_any_instance_of(System::NodeInstance)
+        .to receive(:update!).and_raise(StandardError, "original failure")
+      allow(adapter).to receive(:terminate_instance)
+        .and_raise(StandardError, "terminate also failed")
+
+      result = provision
+
+      expect(result.success?).to be(false)
+      expect(result.error).to eq("original failure")
+      expect(System::NodeInstance.where(node: node).order(:created_at).last.status).to eq("error")
+    end
+  end
+
   describe "idempotency — repeated operation_id does not duplicate" do
     before do
       allow(adapter).to receive(:create_instance)
