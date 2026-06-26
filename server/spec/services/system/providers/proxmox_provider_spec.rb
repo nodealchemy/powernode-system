@@ -204,6 +204,87 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # Security regression: the QEMU fw_cfg entries staged on the cluster-shared
+  # NFS snippets export embed the single-use federation acceptance_token in
+  # cleartext (fw_cfg["opt/com.powernode/acceptance_token"]). They MUST be
+  # written 0o600 — world-readable 0o644 would expose the token to anything
+  # that can read the shared export. (IMP-8671c221f23e)
+  describe "fw-cfg staging perms (federation acceptance_token must not be world-readable)" do
+    let(:acceptance_token) { "SINGLE-USE-FEDERATION-ACCEPTANCE-TOKEN-xyz" }
+    let(:params) do
+      {
+        name: "fed-vm",
+        instance_type: "pve.vm.small",
+        image_id: "dna-data:import/noble.qcow2",
+        node: "dna",
+        storage: "dna-data",
+        start: false,
+        options: {
+          spawn_payload: {
+            "parent_url"       => "https://parent.powernode.internal",
+            "acceptance_token" => acceptance_token,
+            "spawn_mode"       => "managed_child",
+            "parent_peer_id"   => "peerabcd1234",
+            "contract_version" => "v1"
+          }
+        }
+      }
+    end
+
+    around do |example|
+      prev = ENV["POWERNODE_PVE_USE_FWCFG"]
+      ENV["POWERNODE_PVE_USE_FWCFG"] = "1"
+      example.run
+    ensure
+      if prev.nil?
+        ENV.delete("POWERNODE_PVE_USE_FWCFG")
+      else
+        ENV["POWERNODE_PVE_USE_FWCFG"] = prev
+      end
+    end
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("100")
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/qemu", hash_including("vmid" => 100, "name" => "fed-vm"))
+        .and_return("UPID:dna:001:001:001:qmcreate:100:user!tok:")
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+
+      # Do NOT touch the real shared snippets export — spy on the filesystem.
+      allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:write)
+    end
+
+    it "writes the fw-cfg entry files with perm 0o600 (never world-readable 0o644)" do
+      provider.create_instance(params)
+
+      # The fw-cfg entry write (path under the "<vmid>-fwcfg/" subdir) must be 0o600.
+      expect(File).to have_received(:write).with(
+        a_string_including("-fwcfg/"),
+        anything,
+        mode: "w", perm: 0o600
+      ).at_least(:once)
+
+      # ...and never world-readable.
+      expect(File).not_to have_received(:write).with(
+        a_string_including("-fwcfg/"),
+        anything,
+        mode: "w", perm: 0o644
+      )
+    end
+
+    it "never writes the cleartext acceptance_token to a world-readable (0o644) file" do
+      provider.create_instance(params)
+
+      expect(File).not_to have_received(:write).with(
+        anything,
+        a_string_including(acceptance_token),
+        mode: "w", perm: 0o644
+      )
+    end
+  end
+
   describe "#create_instance (LXC mode)" do
     let(:params) do
       {

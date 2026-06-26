@@ -609,9 +609,109 @@ module System
         ip_config = params[:ip_config] || "ip=dhcp"
         image_volid = params.fetch(:image_id)
 
-        # Build the qemu create body. The scsi0 disk uses size=0 with
-        # `import-from` (PVE quirk #3: import requires zero target size).
-        # We resize after creation.
+        body = build_qemu_vm_body(
+          params,
+          preset:      preset,
+          vmid:        vmid,
+          storage:     storage,
+          bridge:      bridge,
+          ip_config:   ip_config,
+          image_volid: image_volid
+        )
+
+        # Federation spawn auto-render: when SpawnPlatformService forwards a
+        # spawn_payload via options[:spawn_payload] and the caller didn't
+        # provide explicit user_data, render a #cloud-config that downloads
+        # the agent + enables the systemd service. The spawn payload itself
+        # reaches the agent via the fw-cfg block below. Operators can
+        # override by passing params[:user_data] (or :ssh_authorized_keys
+        # to inject keys into the auto-rendered output).
+        if params[:user_data].blank?
+          sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+          if sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
+            params = params.merge(
+              user_data: ::System::Providers::Proxmox::CloudSeed.render(
+                spawn_payload:       sp,
+                hostname:            params[:hostname] || params[:name],
+                agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
+                ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
+              )
+            )
+          end
+        end
+
+        stage_cicustom(body, params, vmid: vmid)
+
+        # fw_cfg_entries: virtio-fw-cfg seed entries (the LocalQemu CloudSeed
+        # pattern, mirrored for PVE). The Go agent at
+        # extensions/system/agent/internal/federation/config.go reads each
+        # entry from /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/<key>.
+        #
+        # PVE doesn't expose a structured fw-cfg config field — we go through
+        # the `args` escape-hatch, passing `-fw_cfg name=...,file=<path>` per
+        # entry. The files MUST live on a PVE-side filesystem path; we stage
+        # them on the same NFS-shared snippets storage used by cicustom so a
+        # single mount on ops covers both seeding mechanisms. The PVE-side
+        # mount path follows the `/mnt/pve/<storage>/` convention.
+        # Derive fw_cfg entries from spawn_payload when the provisioner
+        # passed one (Federation::SpawnProvisioner). Direct
+        # params[:fw_cfg_entries] takes precedence — operator can
+        # extend/override the default federation set.
+        #
+        # PVE restricts the `args` config field (the only fw-cfg escape
+        # hatch) to root@pam. API-token spawns get a 500 "only root can
+        # set 'args' config" error. Default behavior is therefore to SKIP
+        # fw-cfg payload injection — the agent reads the federation payload
+        # from cloud-init file fallback (CloudSeed writes /etc/powernode/
+        # federation-payload.json). Opt back in by setting
+        # POWERNODE_PVE_USE_FWCFG=1 (operator with root@pam credentials).
+        fw_cfg = params[:fw_cfg_entries].is_a?(Hash) ? params[:fw_cfg_entries].dup : {}
+        spawn_payload = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0 &&
+           ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
+          fw_cfg["opt/com.powernode/parent_url"]       ||= spawn_payload["parent_url"].to_s
+          fw_cfg["opt/com.powernode/acceptance_token"] ||= spawn_payload["acceptance_token"].to_s
+          fw_cfg["opt/com.powernode/spawn_mode"]       ||= spawn_payload["spawn_mode"].to_s
+          fw_cfg["opt/com.powernode/parent_peer_id"]   ||= spawn_payload["parent_peer_id"].to_s
+          fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
+        end
+
+        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params)
+        unless fw_args.empty?
+          existing = body["args"].to_s
+          body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
+        end
+
+        create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        c.wait_task(node: node, upid: create_upid)
+
+        resize_boot_disk!(c, node: node, vmid: vmid, params: params, preset: preset)
+
+        # Install SSH keys via separate config update (PVE quirk #4:
+        # sshkeys is double-URL-encoded; sending via the same body as
+        # other fields with --data-urlencode doesn't work).
+        ssh_keys = Array(params[:ssh_keys]).compact.reject(&:empty?)
+        if ssh_keys.any?
+          set_ssh_keys!(c, node: node, kind: "qemu", vmid: vmid, ssh_keys: ssh_keys)
+        end
+
+        apply_protection!(c, node: node, vmid: vmid, params: params)
+
+        instance_id = "#{node}/qemu/#{vmid}"
+        # Start the VM by default. Post-create config (SSH keys, protection)
+        # is applied inline above, so there is nothing the caller needs the
+        # VM stopped for. Federation::SpawnProvisioner + ProvisioningService
+        # both expect "running" on return so the agent's first-boot
+        # enrollment can fire — without auto-start, every spawn lands a dark
+        # VM and operators have to manually `qm start`. Opt out with
+        # start: false for staging flows attaching extra disks first.
+        finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # Builds the qemu create body. The scsi0 disk uses size=0 with
+      # `import-from` (PVE quirk #3: import requires zero target size).
+      # We resize after creation.
+      def build_qemu_vm_body(params, preset:, vmid:, storage:, bridge:, ip_config:, image_volid:)
         body = {
           "vmid"     => vmid,
           "name"     => params.fetch(:name),
@@ -668,163 +768,68 @@ module System
         body["nameserver"]   = params[:nameserver]   if params[:nameserver]
         body["searchdomain"] = params[:searchdomain] if params[:searchdomain]
         body["cipassword"]   = params[:ci_password]  if params[:ci_password]
+        body
+      end
 
-        # Federation spawn auto-render: when SpawnPlatformService forwards a
-        # spawn_payload via options[:spawn_payload] and the caller didn't
-        # provide explicit user_data, render a #cloud-config that downloads
-        # the agent + enables the systemd service. The spawn payload itself
-        # reaches the agent via the fw-cfg block below. Operators can
-        # override by passing params[:user_data] (or :ssh_authorized_keys
-        # to inject keys into the auto-rendered output).
-        if params[:user_data].blank?
-          sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
-          if sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
-            params = params.merge(
-              user_data: ::System::Providers::Proxmox::CloudSeed.render(
-                spawn_payload:       sp,
-                hostname:            params[:hostname] || params[:name],
-                agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
-                ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
-              )
-            )
-          end
+      # cicustom: arbitrary cloud-init user-data via snippets. PVE has no
+      # REST API for snippet upload — they must reach the storage's
+      # snippets/ directory through the filesystem. We assume the operator
+      # has mounted a snippets-enabled storage (typically NFS shared
+      # across the cluster) at `:snippets_local_path` and configured the
+      # matching PVE storage name as `:snippets_storage`. Defaults assume
+      # the Powernode-platform-on-ops shape: dsm-data NFS at
+      # /mnt/pve-data/snippets. Sub-volume IDs in cicustom are relative
+      # to the storage root, hence `snippets/<filename>`.
+      #
+      # Mutates `body["cicustom"]` in place when any snippet was staged.
+      def stage_cicustom(body, params, vmid:)
+        return unless params[:user_data].present? || params[:meta_data].present?
+
+        snippets_storage = params[:snippets_storage] ||
+                           connection&.config&.dig("snippets_storage") ||
+                           "dsm-data"
+        snippets_local   = params[:snippets_local_path] ||
+                           connection&.config&.dig("snippets_local_path") ||
+                           "/mnt/pve-data/snippets"
+        cicustom_parts = []
+        # 0o600: user.yml carries the single-use acceptance_token in cleartext
+        # (federation-payload.json contents), and meta.yml + network.yml may
+        # carry equally sensitive runtime config. The NFS export is shared
+        # across PVE hosts + the ops backend, so world-readable 0644 would
+        # expose tokens to any tenant with read access on the export.
+        if params[:user_data].present?
+          user_path = File.join(snippets_local, "#{vmid}-user.yml")
+          File.write(user_path, params[:user_data], mode: "w", perm: 0o600)
+          cicustom_parts << "user=#{snippets_storage}:snippets/#{vmid}-user.yml"
         end
-
-        # cicustom: arbitrary cloud-init user-data via snippets. PVE has no
-        # REST API for snippet upload — they must reach the storage's
-        # snippets/ directory through the filesystem. We assume the operator
-        # has mounted a snippets-enabled storage (typically NFS shared
-        # across the cluster) at `:snippets_local_path` and configured the
-        # matching PVE storage name as `:snippets_storage`. Defaults assume
-        # the Powernode-platform-on-ops shape: dsm-data NFS at
-        # /mnt/pve-data/snippets. Sub-volume IDs in cicustom are relative
-        # to the storage root, hence `snippets/<filename>`.
-        if params[:user_data].present? || params[:meta_data].present?
-          snippets_storage = params[:snippets_storage] ||
-                             connection&.config&.dig("snippets_storage") ||
-                             "dsm-data"
-          snippets_local   = params[:snippets_local_path] ||
-                             connection&.config&.dig("snippets_local_path") ||
-                             "/mnt/pve-data/snippets"
-          cicustom_parts = []
-          # 0o600: user.yml carries the single-use acceptance_token in cleartext
-          # (federation-payload.json contents), and meta.yml + network.yml may
-          # carry equally sensitive runtime config. The NFS export is shared
-          # across PVE hosts + the ops backend, so world-readable 0644 would
-          # expose tokens to any tenant with read access on the export.
-          if params[:user_data].present?
-            user_path = File.join(snippets_local, "#{vmid}-user.yml")
-            File.write(user_path, params[:user_data], mode: "w", perm: 0o600)
-            cicustom_parts << "user=#{snippets_storage}:snippets/#{vmid}-user.yml"
-          end
-          if params[:meta_data].present?
-            meta_path = File.join(snippets_local, "#{vmid}-meta.yml")
-            File.write(meta_path, params[:meta_data], mode: "w", perm: 0o600)
-            cicustom_parts << "meta=#{snippets_storage}:snippets/#{vmid}-meta.yml"
-          end
-          if params[:network_config].present?
-            net_path = File.join(snippets_local, "#{vmid}-net.yml")
-            File.write(net_path, params[:network_config], mode: "w", perm: 0o600)
-            cicustom_parts << "network=#{snippets_storage}:snippets/#{vmid}-net.yml"
-          end
-          body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?
+        if params[:meta_data].present?
+          meta_path = File.join(snippets_local, "#{vmid}-meta.yml")
+          File.write(meta_path, params[:meta_data], mode: "w", perm: 0o600)
+          cicustom_parts << "meta=#{snippets_storage}:snippets/#{vmid}-meta.yml"
         end
-
-        # fw_cfg_entries: virtio-fw-cfg seed entries (the LocalQemu CloudSeed
-        # pattern, mirrored for PVE). The Go agent at
-        # extensions/system/agent/internal/federation/config.go reads each
-        # entry from /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/<key>.
-        #
-        # PVE doesn't expose a structured fw-cfg config field — we go through
-        # the `args` escape-hatch, passing `-fw_cfg name=...,file=<path>` per
-        # entry. The files MUST live on a PVE-side filesystem path; we stage
-        # them on the same NFS-shared snippets storage used by cicustom so a
-        # single mount on ops covers both seeding mechanisms. The PVE-side
-        # mount path follows the `/mnt/pve/<storage>/` convention.
-        # Derive fw_cfg entries from spawn_payload when the provisioner
-        # passed one (Federation::SpawnProvisioner). Direct
-        # params[:fw_cfg_entries] takes precedence — operator can
-        # extend/override the default federation set.
-        #
-        # PVE restricts the `args` config field (the only fw-cfg escape
-        # hatch) to root@pam. API-token spawns get a 500 "only root can
-        # set 'args' config" error. Default behavior is therefore to SKIP
-        # fw-cfg payload injection — the agent reads the federation payload
-        # from cloud-init file fallback (CloudSeed writes /etc/powernode/
-        # federation-payload.json). Opt back in by setting
-        # POWERNODE_PVE_USE_FWCFG=1 (operator with root@pam credentials).
-        fw_cfg = params[:fw_cfg_entries].is_a?(Hash) ? params[:fw_cfg_entries].dup : {}
-        spawn_payload = params.dig(:options, :spawn_payload) || params[:spawn_payload]
-        if spawn_payload.is_a?(Hash) && spawn_payload["parent_url"].to_s.length > 0 &&
-           ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
-          fw_cfg["opt/com.powernode/parent_url"]       ||= spawn_payload["parent_url"].to_s
-          fw_cfg["opt/com.powernode/acceptance_token"] ||= spawn_payload["acceptance_token"].to_s
-          fw_cfg["opt/com.powernode/spawn_mode"]       ||= spawn_payload["spawn_mode"].to_s
-          fw_cfg["opt/com.powernode/parent_peer_id"]   ||= spawn_payload["parent_peer_id"].to_s
-          fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
+        if params[:network_config].present?
+          net_path = File.join(snippets_local, "#{vmid}-net.yml")
+          File.write(net_path, params[:network_config], mode: "w", perm: 0o600)
+          cicustom_parts << "network=#{snippets_storage}:snippets/#{vmid}-net.yml"
         end
+        body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?
+      end
 
-        if fw_cfg.any?
-          snippets_storage = params[:snippets_storage] ||
-                             connection&.config&.dig("snippets_storage") ||
-                             "dsm-data"
-          snippets_local   = params[:snippets_local_path] ||
-                             connection&.config&.dig("snippets_local_path") ||
-                             "/mnt/pve-data/snippets"
-          pve_side_root    = "/mnt/pve/#{snippets_storage}/snippets"
-
-          fwcfg_subdir_ops = File.join(snippets_local, "#{vmid}-fwcfg")
-          fwcfg_subdir_pve = "#{pve_side_root}/#{vmid}-fwcfg"
-          FileUtils.mkdir_p(fwcfg_subdir_ops, mode: 0o755)
-
-          fw_args = []
-          fw_cfg.each do |key, value|
-            # Sanitize key for filename — "opt/com.powernode/parent_url" →
-            # "opt_com_powernode_parent_url"
-            safe = key.to_s.gsub(/[^A-Za-z0-9_.\-]/, "_")
-            entry_path_ops = File.join(fwcfg_subdir_ops, safe)
-            entry_path_pve = "#{fwcfg_subdir_pve}/#{safe}"
-            File.write(entry_path_ops, value.to_s, mode: "w", perm: 0o644)
-            fw_args << "-fw_cfg name=#{key},file=#{entry_path_pve}"
-          end
-
-          existing = body["args"].to_s
-          body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
-        end
-
-        create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
-        c.wait_task(node: node, upid: create_upid)
-
-        # Resize the imported disk to the final target size.
-        # (PVE quirk #3 cont'd: import sets disk to source size; resize after.)
+      # Resize the imported disk to the final target size.
+      # (PVE quirk #3 cont'd: import sets disk to source size; resize after.)
+      def resize_boot_disk!(c, node:, vmid:, params:, preset:)
         target_size_gb = params[:storage_gb] || preset[:storage_gb]
         resize_upid = c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/resize",
                             { "disk" => "scsi0", "size" => "#{target_size_gb}G" })
         # resize may return a UPID or empty; wait if UPID-shaped
         c.wait_task(node: node, upid: resize_upid) if upid_like?(resize_upid)
+      end
 
-        # Install SSH keys via separate config update (PVE quirk #4:
-        # sshkeys is double-URL-encoded; sending via the same body as
-        # other fields with --data-urlencode doesn't work).
-        ssh_keys = Array(params[:ssh_keys]).compact.reject(&:empty?)
-        if ssh_keys.any?
-          set_ssh_keys!(c, node: node, kind: "qemu", vmid: vmid, ssh_keys: ssh_keys)
-        end
+      # Set protection (default: ON for VMs since these are durable resources)
+      def apply_protection!(c, node:, vmid:, params:)
+        return unless params.fetch(:protection, true)
 
-        # Set protection (default: ON for VMs since these are durable resources)
-        if params.fetch(:protection, true)
-          c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "protection" => 1 })
-        end
-
-        instance_id = "#{node}/qemu/#{vmid}"
-        # Start the VM by default. Post-create config (SSH keys, protection)
-        # is applied inline above, so there is nothing the caller needs the
-        # VM stopped for. Federation::SpawnProvisioner + ProvisioningService
-        # both expect "running" on return so the agent's first-boot
-        # enrollment can fire — without auto-start, every spawn lands a dark
-        # VM and operators have to manually `qm start`. Opt out with
-        # start: false for staging flows attaching extra disks first.
-        finalize_create(instance_id, start: params.fetch(:start, true))
+        c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "protection" => 1 })
       end
 
       # ============================================================
@@ -937,7 +942,8 @@ module System
         ]
 
         # fw-cfg identity injection — same mechanism as the cloud_init
-        # path (line 703+), but mandatory here: the initramfs has NO
+        # path (the shared stage_fw_cfg_entries helper), but mandatory
+        # here: the initramfs has NO
         # cloud-init seed to fall back to, so fw-cfg IS the only way
         # the agent learns the federation acceptance_token + platform
         # URL on first boot. PVE requires root@pam for `args`, hence
@@ -955,28 +961,7 @@ module System
           fw_cfg["opt/com.powernode/contract_version"] ||= (spawn_payload["contract_version"] || "v1").to_s
         end
 
-        fw_args = []
-        if fw_cfg.any?
-          snippets_storage = params[:snippets_storage] ||
-                             connection&.config&.dig("snippets_storage") ||
-                             "dsm-data"
-          snippets_local   = params[:snippets_local_path] ||
-                             connection&.config&.dig("snippets_local_path") ||
-                             "/mnt/pve-data/snippets"
-          pve_side_root    = "/mnt/pve/#{snippets_storage}/snippets"
-
-          fwcfg_subdir_ops = File.join(snippets_local, "#{vmid}-fwcfg")
-          fwcfg_subdir_pve = "#{pve_side_root}/#{vmid}-fwcfg"
-          FileUtils.mkdir_p(fwcfg_subdir_ops, mode: 0o755)
-
-          fw_cfg.each do |key, value|
-            safe = key.to_s.gsub(/[^A-Za-z0-9_.\-]/, "_")
-            entry_path_ops = File.join(fwcfg_subdir_ops, safe)
-            entry_path_pve = "#{fwcfg_subdir_pve}/#{safe}"
-            File.write(entry_path_ops, value.to_s, mode: "w", perm: 0o600)
-            fw_args << "-fw_cfg" << "name=#{key},file=#{entry_path_pve}"
-          end
-        end
+        fw_args = stage_fw_cfg_entries(fw_cfg, vmid: vmid, params: params)
 
         body["args"] = (kernel_args + fw_args).join(" ")
 
@@ -985,6 +970,50 @@ module System
 
         instance_id = "#{node}/qemu/#{vmid}"
         finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # Stages QEMU fw_cfg entries as files on the cluster-shared snippets
+      # export and returns the `-fw_cfg name=…,file=…` args to splice into
+      # body["args"]. Returns [] when there are no entries.
+      #
+      # SINGLE SOURCE OF TRUTH for fw-cfg staging — both create_vm_instance
+      # (cloud_init) and create_direct_kernel_vm_instance call this. It was
+      # previously duplicated inline in both, and the copies drifted: the
+      # cloud_init copy regressed to 0o644 (world-readable) while the
+      # direct_kernel copy stayed 0o600.
+      #
+      # perm: 0o600 — entries can embed the single-use federation
+      # acceptance_token in cleartext (see
+      # fw_cfg["opt/com.powernode/acceptance_token"], set from the
+      # spawn_payload above). The snippets export is shared across PVE hosts +
+      # the ops backend over NFS, so world-readable 0o644 would expose the
+      # token to any tenant with read access on the export.
+      def stage_fw_cfg_entries(fw_cfg, vmid:, params:)
+        return [] if fw_cfg.empty?
+
+        snippets_storage = params[:snippets_storage] ||
+                           connection&.config&.dig("snippets_storage") ||
+                           "dsm-data"
+        snippets_local   = params[:snippets_local_path] ||
+                           connection&.config&.dig("snippets_local_path") ||
+                           "/mnt/pve-data/snippets"
+        pve_side_root    = "/mnt/pve/#{snippets_storage}/snippets"
+
+        fwcfg_subdir_ops = File.join(snippets_local, "#{vmid}-fwcfg")
+        fwcfg_subdir_pve = "#{pve_side_root}/#{vmid}-fwcfg"
+        FileUtils.mkdir_p(fwcfg_subdir_ops, mode: 0o755)
+
+        fw_args = []
+        fw_cfg.each do |key, value|
+          # Sanitize key for filename — "opt/com.powernode/parent_url" →
+          # "opt_com_powernode_parent_url"
+          safe = key.to_s.gsub(/[^A-Za-z0-9_.\-]/, "_")
+          entry_path_ops = File.join(fwcfg_subdir_ops, safe)
+          entry_path_pve = "#{fwcfg_subdir_pve}/#{safe}"
+          File.write(entry_path_ops, value.to_s, mode: "w", perm: 0o600)
+          fw_args << "-fw_cfg name=#{key},file=#{entry_path_pve}"
+        end
+        fw_args
       end
 
       # ============================================================
