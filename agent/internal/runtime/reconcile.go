@@ -485,6 +485,25 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 			}
 		}
 	}
+	// User-namespace isolation (PrivateUsers=) enforces via a per-unit
+	// systemd drop-in. UNLIKE seccomp (conditional on a profile path) we
+	// ALWAYS write this drop-in to reflect policy.UserNamespace — that's the
+	// only way the documented default (true) is actually enforced; an absent
+	// drop-in would silently leave the unit in the host user namespace.
+	// We write it for ALL modules, including Privileged ones: PrivateUsers
+	// is orthogonal to the capability/MAC opt-out (it only remaps UID/GID
+	// namespaces, never relaxing the bounding set or seccomp filter). A
+	// module that genuinely needs the host user namespace (raw socket
+	// access) sets `user_namespace: false` in its manifest, which yields
+	// PrivateUsers=no here; Privileged is a separate, orthogonal opt-in.
+	// Drop-in failures are non-fatal — surface via OnError; the service
+	// still starts with whatever userns posture systemd's defaults give it.
+	for _, unit := range mf.UnitNames() {
+		if err := security.WriteUserNamespaceDropIn(unit, policy.UserNamespace); err != nil {
+			r.cfg.OnError("reconciler:userns_dropin",
+				fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+		}
+	}
 
 	// P8.1 — Service lifecycle. lifecycle.AttachServices writes one
 	// systemd unit file per system_module_services row, runs
@@ -563,7 +582,11 @@ func hostFromURL(raw string) string {
 // config["security"] block. Returns an empty policy when no security
 // block is present.
 func buildPolicy(m *manifest.Manifest) *security.Policy {
-	p := &security.Policy{}
+	// UserNamespace defaults to true per Policy's documented contract — an
+	// omitted security.user_namespace must yield private-userns isolation,
+	// not the Go zero-value (false). An explicit `user_namespace: false`
+	// still parses to false via the assignment below.
+	p := &security.Policy{UserNamespace: true}
 	if m == nil || m.Config == nil {
 		return p
 	}
