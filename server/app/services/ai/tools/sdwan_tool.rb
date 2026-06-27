@@ -54,6 +54,7 @@ module Ai
         "system_service_discovery_compose"     => "system.sdwan.federation.manage",
         # Slice 9a: routing layer (static subnet routing)
         "system_sdwan_update_peer_lan_subnets"        => "system.sdwan.routing.manage",
+        "system_sdwan_set_peer_tags"                  => "system.sdwan.peers.manage",
         "system_sdwan_update_network_routing_mode"    => "system.sdwan.routing.manage",
         "system_sdwan_list_subnet_advertisements"  => "system.sdwan.routing.read",
         "system_sdwan_get_routing_summary"         => "system.sdwan.routing.read",
@@ -393,6 +394,13 @@ module Ai
             parameters: {
               peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer whose LAN subnets to declare" },
               lan_subnets: { type: "array", required: true, description: "Array of CIDR strings. Empty array clears." }
+            }
+          },
+          "system_sdwan_set_peer_tags" => {
+            description: "Set the firewall tag labels on a peer. A FirewallRule whose src/dst selector is { \"tag\": \"<label>\" } matches every peer carrying that label (Sdwan::SelectorResolver compiles it to an nft set of their addresses). Replaces the peer's whole tag set; empty array clears it.",
+            parameters: {
+              peer_id: { type: "string", required: true, description: "UUID of the SDWAN peer to label" },
+              tags: { type: "array", required: true, description: "Array of tag label strings (whitespace-trimmed, de-duped). Empty array clears all tags." }
             }
           },
           "system_sdwan_update_network_routing_mode" => {
@@ -748,6 +756,7 @@ module Ai
         when "system_service_discovery_compose"     then service_discovery_compose(params)
         # Slice 9a routing actions
         when "system_sdwan_update_peer_lan_subnets"       then set_peer_lan_subnets(params)
+        when "system_sdwan_set_peer_tags"                 then set_peer_tags(params)
         when "system_sdwan_update_network_routing_mode"   then set_network_routing_mode(params)
         when "system_sdwan_list_subnet_advertisements" then list_subnet_advertisements(params)
         when "system_sdwan_get_routing_summary"        then get_routing_summary(params)
@@ -1295,6 +1304,14 @@ module Ai
           lan_subnets: peer.lan_subnets,
           advertisement_count: peer.subnet_advertisements.active.count
         )
+      end
+
+      # D8 — set the firewall tag labels on a peer (the model normalizes:
+      # trim/dedup). Firewall { "tag": "x" } selectors then resolve to it.
+      def set_peer_tags(params)
+        peer = account_peers.find(params[:peer_id])
+        peer.update!(tags: Array(params[:tags]).map(&:to_s))
+        success_result(peer_id: peer.id, tags: peer.tags)
       end
 
       def set_network_routing_mode(params)
@@ -1878,6 +1895,7 @@ module Ai
           fallback_endpoint: fallback && "#{fallback[:host]}:#{fallback[:port]}",
           listen_port: p.listen_port,
           status: p.status,
+          tags: Array(p.tags),
           public_key: p.active_key&.public_key,
           last_handshake_at: p.last_handshake_at&.iso8601
         }

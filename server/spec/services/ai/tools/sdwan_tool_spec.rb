@@ -47,6 +47,32 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # ─── D8: peer firewall tags ──────────────────────────────────────────
+
+  describe "system_sdwan_set_peer_tags" do
+    let(:network)  { Sdwan::Network.create!(account_id: account.id, name: "tag-#{SecureRandom.hex(4)}") }
+    let(:instance) { create(:system_node_instance, node: node, name: "ti-#{SecureRandom.hex(3)}") }
+    let!(:peer)    { Sdwan::PeerEnroller.call(network: network, node_instance: instance) }
+
+    it "sets + normalizes (trim/dedup/drop-blank) the peer's tags" do
+      r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [" database ", "edge", "database", ""])
+      expect(r[:success]).to be true
+      expect(r[:data][:tags]).to eq(%w[database edge])
+      expect(peer.reload.tags).to eq(%w[database edge])
+    end
+
+    it "clears tags with an empty array" do
+      peer.update!(tags: %w[old])
+      r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [])
+      expect(r[:success]).to be true
+      expect(peer.reload.tags).to eq([])
+    end
+
+    it "is registered with the peers.manage permission" do
+      expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_set_peer_tags")).to eq("system.sdwan.peers.manage")
+    end
+  end
+
   # ─── Federation peer mutation + residency + audit ────────────────────
 
   describe "system_sdwan_update_federation_peer" do
@@ -563,11 +589,11 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
 
     describe "permission + registration" do
-      it "maps read actions to sdwan.ovn.read and delete to sdwan.ovn.manage" do
-        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_deployments")).to eq("sdwan.ovn.read")
-        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_get_ovn_deployment")).to eq("sdwan.ovn.read")
-        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_logical_switches")).to eq("sdwan.ovn.read")
-        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_delete_ovn_logical_switch_port")).to eq("sdwan.ovn.manage")
+      it "maps read actions to system.sdwan.ovn.read and delete to system.sdwan.ovn.manage" do
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_deployments")).to eq("system.sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_get_ovn_deployment")).to eq("system.sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_logical_switches")).to eq("system.sdwan.ovn.read")
+        expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_delete_ovn_logical_switch_port")).to eq("system.sdwan.ovn.manage")
       end
 
       it "documents all four in action_definitions" do

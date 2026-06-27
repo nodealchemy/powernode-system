@@ -80,8 +80,7 @@ module Sdwan
       return [] unless ::Sdwan::Peer.column_names.include?("tags")
 
       scope = network ? ::Sdwan::Peer.where(sdwan_network_id: network.id) : ::Sdwan::Peer.all
-      label = tag.to_s
-      scope.select { |peer| Array(peer.tags).map(&:to_s).include?(label) }
+      scope.with_tag(tag).to_a
     end
   end
 end

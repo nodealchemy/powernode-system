@@ -120,6 +120,8 @@ module Api
                                          # Slice 9a — declarative external prefixes the peer can route to
                                          :bgp_route_reflector_client,
                                          lan_subnets: [],
+                                         # D8 — firewall tag labels
+                                         tags: [],
                                          capabilities: {})
           end
 
@@ -129,6 +131,7 @@ module Api
                                          :endpoint_port, :listen_port,
                                          :bgp_route_reflector_client,
                                          lan_subnets: [],
+                                         tags: [],
                                          capabilities: {})
           end
 
@@ -156,6 +159,8 @@ module Api
               public_key: p.active_key&.public_key,
               # Slice 9a: routing-layer fields.
               lan_subnets: Array(p.lan_subnets),
+              # D8: firewall tag labels.
+              tags: Array(p.tags),
               bgp_route_reflector_client: p.bgp_route_reflector_client,
               bgp_router_id_override: p.bgp_router_id_override,
               advertised_prefix_count: p.subnet_advertisements.active.count

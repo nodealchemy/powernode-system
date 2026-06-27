@@ -206,12 +206,13 @@ Each stage is a small, single-responsibility service. Stated as
     grants nothing rather than silently matching every peer. (Previously such
     selectors compiled to `nil` and the rule fell through to a wildcard — a
     silent fail-*open*.)
-  - **Tag write path:** tag matching activates once peers carry a `tags`
-    attribute; `SelectorResolver` filters the network's peers by it when the
-    column exists and otherwise resolves every tag to the empty set (→
-    `MATCH_NOTHING`, fail-closed). Wiring the peer-tag write path
-    (column + controller/MCP params) is the remaining slice — until then,
-    tag rules deny rather than over-permit.
+  - **Tag write path:** peers carry a `tags` string-array (GIN-indexed); set it
+    via the REST peers controller (`peer.tags`) or the
+    `system_sdwan_set_peer_tags` MCP tool. `SelectorResolver` resolves a
+    `{ tag: x }` selector to the addresses of the network's peers carrying that
+    label (`Sdwan::Peer.with_tag`) and emits an nft set; a tag matching no peers
+    still resolves to `MATCH_NOTHING` (fail-closed), so an empty or typo'd tag
+    denies rather than over-permits.
 
 ### `Sdwan::NatCompiler` → nftables NAT
 
