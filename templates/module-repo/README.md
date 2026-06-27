@@ -18,7 +18,7 @@ Fork it (or use `pnmod init` once the SDK ships in M-MK-1) to create a new modul
 ## Lifecycle
 
 1. **Author:** edit `Containerfile`, `manifest.yaml`, and add files under `rootfs/`.
-2. **Register:** in the Powernode UI, create a `NodeModule` and set `gitea_repo_full_name` to this repo's path. Generate + paste a `webhook_secret`. Configure the secret in this repo's settings as `POWERNODE_WEBHOOK_SECRET` (Actions secret) so the workflow can sign back.
+2. **Register:** in the Powernode UI, create a `NodeModule` and set `gitea_repo_full_name` to this repo's path. The module's detail view shows a **derived webhook secret** (computed server-side from the platform root secret — not stored, rotatable). Copy it into BOTH (a) this repo's settings as the `POWERNODE_WEBHOOK_SECRET` Actions secret (so the CI module + SBOM callbacks sign back), and (b) the Gitea repo's native push-webhook config (so push events verify). When the platform runs with `POWERNODE_MODULE_WEBHOOK_ENFORCE=true`, payloads that don't carry a valid `X-Gitea-Signature = sha256=hex(HMAC-SHA256(derived_secret, body))` are rejected.
 3. **Build:** push a tag (`v1.0.0`) OR trigger via Powernode (which dispatches workflow_dispatch with `rsync_spec` + `package_spec` + `fingerprint`).
 4. **Sign + push:** the workflow builds, runs syft (SBOM) + grype (VEX), composefs-encodes, fs-verity-hashes, cosign-signs (Sigstore keyless), and pushes the artifact to the configured OCI registry.
 5. **Ingest:** the workflow's final step posts back to Powernode's `/api/v1/system/webhooks/gitea/module`, which triggers `ModuleOciIngestService`. A new `NodeModuleVersion` + per-arch `ModuleArtifact` rows land in the database.
@@ -41,7 +41,7 @@ sit beside it in a particular template's union mount).
 |---|---|
 | `GITEA_PUSH_USERNAME` | OCI registry login |
 | `GITEA_PUSH_TOKEN` | OCI registry token (write to `packages` scope) |
-| `POWERNODE_WEBHOOK_SECRET` | HMAC secret matching `NodeModule.webhook_secret` |
+| `POWERNODE_WEBHOOK_SECRET` | The module's **derived webhook secret** (shown on the module detail view). Signs the module-publish + SBOM callbacks; must match what the platform derives via `module_webhook_secret_for(module.id)`. |
 
 ## Required Gitea Actions vars
 

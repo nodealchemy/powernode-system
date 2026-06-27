@@ -245,6 +245,19 @@ module System
       package_module_link.present?
     end
 
+    # Per-module inbound-webhook signing secret, DERIVED (never stored) from
+    # the server-side root secret via ModuleBuildDispatchService. The legacy
+    # `webhook_secret` column was never populated; this replaces it. Operators
+    # copy this value into the module's Gitea repo webhook config + the repo's
+    # POWERNODE_WEBHOOK_SECRET Actions secret so module-publish and SBOM
+    # callbacks verify. Rotatable by rotating the server root secret. Returns
+    # nil in production when no server secret is configured (fail-closed).
+    # SECURITY: this is signing material — never log it; expose only to
+    # module-managers via show-only serialization.
+    def derived_webhook_secret
+      ::System::ModuleBuildDispatchService.module_webhook_secret_for(id)
+    end
+
     # Display name with legacy parent-aware rendering for dependant children.
     # Legacy: powernode-server/app/models/node_module.rb:154-162
     # - config-variety dependant: "<parent.name> for <node.name>"

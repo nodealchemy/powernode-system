@@ -223,5 +223,86 @@ RSpec.describe "Api::V1::System::Webhooks::ModuleSbom", type: :request do
       expect(response).to have_http_status(:ok)
       expect(JSON.parse(response.body)["message"]).to eq("Empty body")
     end
+
+    # IMP-7c61c2db3bef / D9 step-2 — fail-closed enforcement. With
+    # POWERNODE_MODULE_WEBHOOK_ENFORCE=true the SBOM receiver verifies the
+    # body HMAC against the DERIVED per-module secret (NOT the unpopulated
+    # node_module.webhook_secret column) and rejects anything unverifiable.
+    # Still ALWAYS 200 (no retry storms).
+    describe "POWERNODE_MODULE_WEBHOOK_ENFORCE=true (derived-secret fail-closed)" do
+      around do |ex|
+        prev = ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"]
+        ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = "true"
+        ex.run
+      ensure
+        ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = prev
+      end
+
+      def derived_secret
+        ::System::ModuleBuildDispatchService.module_webhook_secret_for(node_module.id)
+      end
+
+      def deliver(body, signature: nil)
+        headers = { "Content-Type" => "application/json" }
+        headers["X-Gitea-Signature"] = signature if signature
+        post "/api/v1/system/webhooks/gitea/module_sbom", params: body, headers: headers
+      end
+
+      context "dev/test (dev-fallback server secret present)" do
+        it "ACCEPTS an SBOM signed with the derived secret" do
+          body = build_body
+          deliver(body, signature: hmac_for(body, derived_secret))
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to include("SBOM ingested")
+          expect(artifact.reload.sbom_packages_count).to eq(2)
+        end
+
+        it "REJECTS a wrong signature (200 'Invalid signature', untouched artifact)" do
+          body = build_body
+          deliver(body, signature: "deadbeef")
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(artifact.reload.sbom_packages_count).to eq(0)
+        end
+
+        it "REJECTS an UNSIGNED SBOM — no more dev accept-all opt-out" do
+          body = build_body
+          deliver(body) # no signature header
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(artifact.reload.sbom_packages_count).to eq(0)
+        end
+      end
+
+      context "production with SERVER_SECRET_ENV set" do
+        around do |ex|
+          prev = ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"]
+          ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"] = "prod-root-secret-xyz"
+          ex.run
+        ensure
+          ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"] = prev
+        end
+
+        it "ACCEPTS an SBOM signed with the prod-rooted derived secret" do
+          allow(Rails.env).to receive(:production?).and_return(true)
+          body = build_body
+          deliver(body, signature: hmac_for(body, derived_secret))
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to include("SBOM ingested")
+        end
+      end
+
+      context "production with SERVER_SECRET_ENV unset (fail-closed)" do
+        it "REJECTS — no derivable secret, never 500" do
+          allow(::System::ModuleBuildDispatchService).to receive(:server_secret).and_return(nil)
+          body = build_body
+          deliver(body, signature: "sha256=#{OpenSSL::HMAC.hexdigest('sha256', 'anything', body)}")
+          expect(response).to have_http_status(:ok)
+          expect(response.status).not_to eq(500)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(artifact.reload.sbom_packages_count).to eq(0)
+        end
+      end
+    end
   end
 end

@@ -185,4 +185,61 @@ RSpec.describe System::ModuleBuildDispatchService do
       expect(payload[:inputs][:rsync_spec]).to include("+ /etc/service/**\n")
     end
   end
+
+  # IMP-7c61c2db3bef / D9 step-2 — per-module derived webhook secret.
+  describe ".module_webhook_secret_for" do
+    it "is a hex SHA256 HMAC over the domain-separated 'module-webhook:<id>'" do
+      id = SecureRandom.uuid
+      expected = OpenSSL::HMAC.hexdigest("SHA256", described_class.server_secret, "module-webhook:#{id}")
+      expect(described_class.module_webhook_secret_for(id)).to eq(expected)
+    end
+
+    it "domain-separates from the per-closure secret (same id never collides)" do
+      id = SecureRandom.uuid
+      module_sig  = described_class.module_webhook_secret_for(id)
+      closure_sig = described_class.webhook_secret_for(id)
+      expect(module_sig).to be_present
+      expect(module_sig).not_to eq(closure_sig)
+    end
+
+    it "is deterministic for a given id + server secret" do
+      id = SecureRandom.uuid
+      expect(described_class.module_webhook_secret_for(id))
+        .to eq(described_class.module_webhook_secret_for(id))
+    end
+
+    it "returns nil for a blank id" do
+      expect(described_class.module_webhook_secret_for(nil)).to be_nil
+      expect(described_class.module_webhook_secret_for("")).to be_nil
+    end
+
+    it "fails closed (nil) when no server secret is configured (prod with root unset)" do
+      allow(described_class).to receive(:server_secret).and_return(nil)
+      expect(described_class.module_webhook_secret_for(SecureRandom.uuid)).to be_nil
+    end
+  end
+
+  describe ".module_webhook_enforced?" do
+    around do |ex|
+      prev = ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"]
+      ex.run
+    ensure
+      ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = prev
+    end
+
+    it "defaults to false when unset (safe to land)" do
+      ENV.delete("POWERNODE_MODULE_WEBHOOK_ENFORCE")
+      expect(described_class.module_webhook_enforced?).to be(false)
+    end
+
+    it "is true for a truthy env value" do
+      ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = "true"
+      expect(described_class.module_webhook_enforced?).to be(true)
+    end
+
+    it "is false for an explicit false-y env value" do
+      ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = "false"
+      expect(described_class.module_webhook_enforced?).to be(false)
+    end
+  end
 end

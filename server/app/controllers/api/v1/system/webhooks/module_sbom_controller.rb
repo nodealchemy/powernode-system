@@ -33,7 +33,7 @@ module Api
             node_module = find_node_module(payload[:module_id])
             return render_ok("Module not found") unless node_module
 
-            unless verify_signature(node_module.webhook_secret)
+            unless verify_signature(node_module)
               Rails.logger.warn "[ModuleSbom] Invalid signature for #{node_module.name}"
               return render_ok("Invalid signature")
             end
@@ -65,11 +65,26 @@ module Api
           end
 
           # HMAC-SHA256 over raw body, hex-encoded. Mirrors
-          # GiteaModuleController#verify_signature: same secret column,
-          # same headers, same comparison primitive (both now route
-          # through System::Webhooks::HmacVerification).
-          def verify_signature(secret)
-            return true if secret.blank? # opt-out for dev / testing
+          # GiteaModuleController#verify_signature exactly — same two
+          # policies selected by ModuleBuildDispatchService
+          # .module_webhook_enforced? (POWERNODE_MODULE_WEBHOOK_ENFORCE):
+          #
+          #   * ENFORCED (fail-closed) — verify against the DERIVED per-module
+          #     secret; reject when it's blank (prod root unset) or when the
+          #     body is unsigned / mismatched. The unpopulated
+          #     node_module.webhook_secret column is ignored.
+          #   * LEGACY (default, fail-open) — verify against the column,
+          #     accepting a blank column (historical dev/test opt-out).
+          #
+          # A malformed signature yields false (never a 500) via secure_match?.
+          def verify_signature(node_module)
+            if ::System::ModuleBuildDispatchService.module_webhook_enforced?
+              secret = ::System::ModuleBuildDispatchService.module_webhook_secret_for(node_module.id)
+              return false if secret.blank? # fail closed — never trust a default
+            else
+              secret = node_module.webhook_secret
+              return true if secret.blank? # legacy opt-out for dev / testing
+            end
 
             secure_match?(
               hmac_hex(secret, @raw_body),

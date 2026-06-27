@@ -181,6 +181,17 @@ jobs:
           echo "artifact_ref=${ARTIFACT_REF}" >> $GITHUB_OUTPUT
 
       - name: Notify Powernode webhook
+        # SIGNING CONTRACT (module-publish + SBOM callbacks):
+        #   X-Gitea-Signature = sha256=hex(HMAC-SHA256(WEBHOOK_SECRET, raw_body))
+        # where WEBHOOK_SECRET == the module's DERIVED webhook secret. The
+        # platform derives the verifier as
+        #   ModuleBuildDispatchService.module_webhook_secret_for(module.id)
+        #   = HMAC-SHA256(server_root_secret, "module-webhook:<module.id>")
+        # and (when POWERNODE_MODULE_WEBHOOK_ENFORCE=true) REJECTS any body it
+        # can't verify. Set POWERNODE_WEBHOOK_SECRET (this repo's Actions
+        # secret) to the value shown on the module's detail view in the
+        # Powernode UI. Same secret also goes in the Gitea repo's native push
+        # webhook config so push events verify too.
         if: always()
         env:
           WEBHOOK_URL: ${{ vars.POWERNODE_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module' }}

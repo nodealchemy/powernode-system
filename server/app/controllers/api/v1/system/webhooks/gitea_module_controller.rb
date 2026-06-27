@@ -26,7 +26,7 @@ module Api
             node_module = find_node_module(payload)
             return render_ok("Module not found") unless node_module
 
-            unless verify_signature(node_module.webhook_secret)
+            unless verify_signature(node_module)
               Rails.logger.warn "[GiteaModule] Invalid signature for #{node_module.name}"
               return render_ok("Invalid signature")
             end
@@ -58,8 +58,32 @@ module Api
           # HMAC-SHA256 over the raw body, hex-encoded. Gitea sends as
           # X-Gitea-Signature; GitHub-style senders send X-Hub-Signature-256
           # with optional `sha256=` prefix.
-          def verify_signature(secret)
-            return true if secret.blank? # opt-out for dev / testing
+          #
+          # Two policies, selected by ModuleBuildDispatchService
+          # .module_webhook_enforced? (POWERNODE_MODULE_WEBHOOK_ENFORCE):
+          #
+          #   * ENFORCED (fail-closed) — verify against the DERIVED per-module
+          #     secret (module_webhook_secret_for, domain-separated, rotatable
+          #     via the server root secret). When that secret is blank (prod
+          #     with the root unset) we REJECT rather than trust a default —
+          #     and when the body is unsigned / mismatched we also reject. The
+          #     never-populated node_module.webhook_secret column is ignored.
+          #
+          #   * LEGACY (default, fail-open) — preserved verbatim so flipping
+          #     the flag is the only behavior change: verify against the
+          #     node_module.webhook_secret column, accepting when it's blank
+          #     (the historical dev/test opt-out).
+          #
+          # Either way a malformed signature yields false (never a 500) via
+          # the shared concern's secure_match?.
+          def verify_signature(node_module)
+            if ::System::ModuleBuildDispatchService.module_webhook_enforced?
+              secret = ::System::ModuleBuildDispatchService.module_webhook_secret_for(node_module.id)
+              return false if secret.blank? # fail closed — never trust a default
+            else
+              secret = node_module.webhook_secret
+              return true if secret.blank? # legacy opt-out for dev / testing
+            end
 
             secure_match?(
               hmac_hex(secret, @raw_body),

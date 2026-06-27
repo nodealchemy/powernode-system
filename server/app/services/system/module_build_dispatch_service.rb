@@ -25,6 +25,22 @@ module System
     SERVER_SECRET_ENV   = "POWERNODE_PACKAGE_BUILD_HMAC_KEY"
     DEV_FALLBACK_SECRET = "dev-package-build-secret"
 
+    # Domain separator for the per-MODULE inbound-webhook secret. Keeps the
+    # module-webhook derivation in a distinct namespace from the per-closure
+    # derivation (HMAC(server_secret, closure_id)) so a node_module.id can
+    # never derive the same value as some closure_id — even though both are
+    # HMAC'd under the SAME server_secret root.
+    MODULE_WEBHOOK_DOMAIN = "module-webhook"
+
+    # Deployment toggle for the module webhooks (gitea_module + module_sbom).
+    # When set truthy, those receivers verify against module_webhook_secret_for
+    # and FAIL CLOSED (reject unsigned / unverifiable payloads). When unset /
+    # false (the DEFAULT), they keep the legacy node_module.webhook_secret
+    # path so landing is safe: the operator flips this ON only AFTER setting
+    # SERVER_SECRET_ENV, configuring each Gitea module-repo webhook with the
+    # module's derived secret, and ensuring the SBOM CI signs with it.
+    MODULE_WEBHOOK_ENFORCE_ENV = "POWERNODE_MODULE_WEBHOOK_ENFORCE"
+
     class << self
       def adapter
         @adapter ||= build_adapter
@@ -82,6 +98,32 @@ module System
         return nil if secret.blank? || closure_id.blank?
 
         OpenSSL::HMAC.hexdigest("SHA256", secret, closure_id.to_s)
+      end
+
+      # Per-MODULE inbound-webhook secret, DOMAIN-SEPARATED from the
+      # per-closure secret = HMAC-SHA256(server_secret, "module-webhook:<id>").
+      # Single source of truth shared by both ends of the module callbacks:
+      #   - the operator copies it (via the module's serializer/detail UX)
+      #     into the Gitea repo webhook config + the repo's
+      #     POWERNODE_WEBHOOK_SECRET Actions secret, which the push webhook
+      #     and the CI module/SBOM callbacks sign their body with;
+      #   - the gitea_module + module_sbom controllers derive the same value
+      #     to verify.
+      # Returns nil when no server secret is configured (prod fail-closed) so
+      # callers REJECT rather than trusting the publicly-known dev fallback.
+      # Rotatable by rotating SERVER_SECRET_ENV — it's derived, never stored.
+      def module_webhook_secret_for(node_module_id)
+        secret = server_secret
+        return nil if secret.blank? || node_module_id.blank?
+
+        OpenSSL::HMAC.hexdigest("SHA256", secret, "#{MODULE_WEBHOOK_DOMAIN}:#{node_module_id}")
+      end
+
+      # Whether the module webhooks enforce the derived-secret, fail-closed
+      # policy (see MODULE_WEBHOOK_ENFORCE_ENV). Defaults false so the
+      # behavior change is opt-in and safe to land.
+      def module_webhook_enforced?
+        ActiveModel::Type::Boolean.new.cast(ENV.fetch(MODULE_WEBHOOK_ENFORCE_ENV, false))
       end
 
       private

@@ -419,5 +419,112 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         expect(response).to have_http_status(:ok)
       end
     end
+
+    # IMP-7c61c2db3bef / D9 step-2 — fail-closed enforcement. With
+    # POWERNODE_MODULE_WEBHOOK_ENFORCE=true the receiver verifies the body
+    # HMAC against the DERIVED per-module secret (NOT the never-populated
+    # node_module.webhook_secret column) and rejects anything it can't
+    # verify — closing the fail-open accept-all hole. Still NEVER 500s.
+    describe "POWERNODE_MODULE_WEBHOOK_ENFORCE=true (derived-secret fail-closed)" do
+      around do |ex|
+        prev_enforce = ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"]
+        prev_mode    = ENV["POWERNODE_WEBHOOK_INGEST_MODE"]
+        ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = "true"
+        # Pin inline ingest so a production stub can't divert through the
+        # worker/async path — we're testing the auth gate, not dispatch.
+        ENV["POWERNODE_WEBHOOK_INGEST_MODE"] = "inline"
+        ex.run
+      ensure
+        ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"] = prev_enforce
+        ENV["POWERNODE_WEBHOOK_INGEST_MODE"]    = prev_mode
+      end
+
+      # Live-derived per-module secret; recomputed each call so it tracks
+      # whatever SERVER_SECRET_ENV / server_secret stub is in effect.
+      def derived_secret
+        ::System::ModuleBuildDispatchService.module_webhook_secret_for(node_module.id)
+      end
+
+      def deliver(body, signature_header: nil, signature: nil)
+        headers = { "Content-Type" => "application/json" }
+        headers[signature_header] = signature if signature_header
+        post "/api/v1/system/webhooks/gitea/module", params: body, headers: headers
+      end
+
+      context "dev/test (dev-fallback server secret present)" do
+        it "ACCEPTS a body signed with the derived secret" do
+          body = push_payload.to_json
+          deliver(body, signature_header: "X-Gitea-Signature", signature: hmac_for(body, derived_secret))
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to include("Ingested")
+        end
+
+        it "REJECTS a wrong signature (200 'Invalid signature', never 500)" do
+          body = push_payload.to_json
+          deliver(body, signature_header: "X-Gitea-Signature", signature: "deadbeef")
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(node_module.versions.count).to eq(0)
+        end
+
+        it "REJECTS an UNSIGNED body — no more dev accept-all opt-out" do
+          body = push_payload.to_json
+          deliver(body) # no signature header at all
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(node_module.versions.count).to eq(0)
+        end
+
+        it "REJECTS even when the legacy webhook_secret column is set (column is ignored)" do
+          node_module.update!(webhook_secret: "legacy-column-value")
+          body = push_payload.to_json
+          # Sign with the COLUMN value — must NOT be accepted under enforcement.
+          deliver(body, signature_header: "X-Gitea-Signature",
+                        signature: hmac_for(body, "legacy-column-value"))
+          expect(response).to have_http_status(:ok)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+        end
+      end
+
+      context "production with SERVER_SECRET_ENV set" do
+        around do |ex|
+          prev = ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"]
+          ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"] = "prod-root-secret-xyz"
+          ex.run
+        ensure
+          ENV["POWERNODE_PACKAGE_BUILD_HMAC_KEY"] = prev
+        end
+
+        it "ACCEPTS a body signed with the prod-rooted derived secret (passes the auth gate, processes)" do
+          allow(Rails.env).to receive(:production?).and_return(true)
+          body = push_payload.to_json
+          deliver(body, signature_header: "X-Gitea-Signature", signature: hmac_for(body, derived_secret))
+          expect(response).to have_http_status(:ok)
+          # Past the signature gate -> the processor runs. Under a stubbed
+          # production env the real OCI ingest adapter is selected (it may
+          # then fail on network), so we assert reaching ingest ("Ingest...")
+          # rather than a successful "Ingested" — the point here is AUTH
+          # ACCEPTANCE, not ingest outcome.
+          msg = JSON.parse(response.body)["message"]
+          expect(msg).to include("Ingest")
+          expect(msg).not_to eq("Invalid signature")
+        end
+      end
+
+      context "production with SERVER_SECRET_ENV unset (fail-closed)" do
+        it "REJECTS — no derivable secret, never 500" do
+          # server_secret -> nil is exactly prod with the env var unset
+          # (only dev/test fall back). No per-module secret can be derived.
+          allow(::System::ModuleBuildDispatchService).to receive(:server_secret).and_return(nil)
+          body = push_payload.to_json
+          deliver(body, signature_header: "X-Gitea-Signature",
+                        signature: "sha256=#{OpenSSL::HMAC.hexdigest('sha256', 'anything', body)}")
+          expect(response).to have_http_status(:ok)
+          expect(response.status).not_to eq(500)
+          expect(JSON.parse(response.body)["message"]).to eq("Invalid signature")
+          expect(node_module.versions.count).to eq(0)
+        end
+      end
+    end
   end
 end
