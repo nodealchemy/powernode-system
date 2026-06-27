@@ -22,6 +22,13 @@ type MountTask struct {
 	Encryption          EncryptionSpec `json:"encryption"`
 	RequiresWGInterface bool           `json:"requires_wg_interface"`
 	WGInterfaceHint     string         `json:"wg_interface_hint"`
+
+	// Agent-internal systemd overrides for FUSE object mounts, where the unit's
+	// fs-type / What differ from the recipe's dispatch type / source (e.g. recipe
+	// type "s3fs" → systemd Type "fuse.s3fs"; rclone What is "<remote>:<path>").
+	// Never sent by the platform (json:"-"); set by MountObject before WriteMountUnit.
+	SystemdType string `json:"-"`
+	SystemdWhat string `json:"-"`
 }
 
 // MountRecipe is the per-mount-type instruction set built by the
@@ -121,4 +128,16 @@ type CredentialPayload struct {
 	UID      int            `json:"uid,omitempty"`
 	GID      int            `json:"gid,omitempty"`
 	Extra    map[string]any `json:"extra,omitempty"`
+
+	// Object-storage material (kept in sync with the providers'
+	// issue_node_credential payloads — s3_storage / gcs_storage / azure_storage):
+	//   s3fs   → AccessKeyID + SecretAccessKey (+ optional SessionToken)
+	//   gcsfuse→ CredentialsJSON (service-account key JSON)
+	//   rclone → AccountName + AccountKey (Azure Blob)
+	AccessKeyID     string `json:"access_key_id,omitempty"`
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+	SessionToken    string `json:"session_token,omitempty"`
+	CredentialsJSON string `json:"credentials_json,omitempty"`
+	AccountName     string `json:"account_name,omitempty"`
+	AccountKey      string `json:"account_key,omitempty"`
 }

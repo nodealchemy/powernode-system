@@ -71,5 +71,22 @@ Options=%s
 
 [Install]
 WantedBy=multi-user.target
-`, task.AssignmentID, deps.String(), task.Recipe.Source, task.MountPath, task.Recipe.Type, opts)
+`, task.AssignmentID, deps.String(), mountWhat(task), task.MountPath, mountType(task), opts)
+}
+
+// mountType / mountWhat let FUSE object mounts override the systemd fs-type /
+// What without disturbing the recipe's dispatch type / source. NFS/CIFS leave
+// the overrides empty and fall back to the recipe values.
+func mountType(task *MountTask) string {
+	if task.SystemdType != "" {
+		return task.SystemdType
+	}
+	return task.Recipe.Type
+}
+
+func mountWhat(task *MountTask) string {
+	if task.SystemdWhat != "" {
+		return task.SystemdWhat
+	}
+	return task.Recipe.Source
 }

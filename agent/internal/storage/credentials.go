@@ -59,11 +59,20 @@ func WriteCIFSCredentialFile(credID string, payload *CredentialPayload) (string,
 	return path, nil
 }
 
-// RemoveCredentialFile cleans up a transient credential file on unmount.
+// objectCredSuffixes are the per-recipe transient credential/config files an
+// object mount may have written (s3fs passwd, gcsfuse key, rclone config).
+var objectCredSuffixes = []string{".cred", ".passwd-s3fs", ".gcs.json", ".rclone.conf"}
+
+// RemoveCredentialFile cleans up the transient credential/config file(s) for a
+// credential on unmount. Best-effort across every shape an object mount may
+// have written so the uniform Unapply path (which doesn't know the recipe type)
+// leaves no secret material behind.
 func RemoveCredentialFile(credID string) error {
-	path := filepath.Join(MountCredsDir, credID+".cred")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, suffix := range objectCredSuffixes {
+		path := filepath.Join(MountCredsDir, credID+suffix)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
