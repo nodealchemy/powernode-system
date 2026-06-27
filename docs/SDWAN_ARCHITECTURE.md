@@ -195,10 +195,23 @@ Each stage is a small, single-responsibility service. Stated as
 - **Files:** `app/services/sdwan/firewall_compiler.rb` and
   `app/services/sdwan/selector_resolver.rb`. The resolver turns the JSONB
   selector primitives (`peer_id` → `ip6 saddr/daddr <addr>/128`, `cidr` →
-  the CIDR, `all` → wildcard) into nft match fragments. **Note:** `tag`
-  selectors currently compile to `nil` (effective wildcard) — tag-set
-  population is a not-yet-shipped slice, so tag rules should not be relied
-  on as security boundaries today.
+  the CIDR, `tag` → `ip6 saddr/daddr { <addrs of tagged peers> }`, `all` →
+  wildcard) into nft match fragments.
+  - **Fail-closed contract (security boundary):** a selector that is meant to
+    *restrict* but resolves to the empty set — a `tag` matching no peers, or a
+    `peer_id` pointing at a deleted peer — resolves to the `MATCH_NOTHING`
+    sentinel, not `nil`. `nil` means "no constraint (wildcard)"; `MATCH_NOTHING`
+    means "this rule can never match". The compiler **drops** any rule whose
+    selector is `MATCH_NOTHING`, so a restrict-rule with an empty target set
+    grants nothing rather than silently matching every peer. (Previously such
+    selectors compiled to `nil` and the rule fell through to a wildcard — a
+    silent fail-*open*.)
+  - **Tag write path:** tag matching activates once peers carry a `tags`
+    attribute; `SelectorResolver` filters the network's peers by it when the
+    column exists and otherwise resolves every tag to the empty set (→
+    `MATCH_NOTHING`, fail-closed). Wiring the peer-tag write path
+    (column + controller/MCP params) is the remaining slice — until then,
+    tag rules deny rather than over-permit.
 
 ### `Sdwan::NatCompiler` → nftables NAT
 

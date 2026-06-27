@@ -70,6 +70,32 @@ RSpec.describe Sdwan::FirewallCompiler, type: :service do
       expect(out).to include("udp dport { 3000-4000 } accept")
     end
 
+    it "DROPS a restrict-by-tag rule whose tag matches no peers (fail closed, not wildcard)" do
+      Sdwan::FirewallRule.create!(
+        sdwan_network_id: network.id, account_id: account.id,
+        name: "restrict-to-db-tag", priority: 100,
+        action: "accept", direction: "ingress", protocol: "tcp",
+        dst_port_range: (5432..5432),
+        src_selector: { "tag" => "database" }
+      )
+      out = described_class.new(network).compile[:ruleset]
+      # Emitting this rule WITHOUT the (empty) saddr clause would accept 5432
+      # from every peer — the old fail-open bug. It must be dropped entirely.
+      expect(out).not_to include("tcp dport 5432")
+    end
+
+    it "DROPS a rule whose peer_id selector points at a deleted peer (fail closed)" do
+      Sdwan::FirewallRule.create!(
+        sdwan_network_id: network.id, account_id: account.id,
+        name: "restrict-to-ghost", priority: 100,
+        action: "accept", direction: "ingress", protocol: "tcp",
+        dst_port_range: (2222..2222),
+        src_selector: { "peer_id" => SecureRandom.uuid }
+      )
+      out = described_class.new(network).compile[:ruleset]
+      expect(out).not_to include("tcp dport 2222")
+    end
+
     it "skips egress-only rules in slice 2 (input-hook only)" do
       Sdwan::FirewallRule.create!(
         sdwan_network_id: network.id, account_id: account.id,

@@ -21,8 +21,20 @@ RSpec.describe Sdwan::SelectorResolver, type: :service do
         .to eq("ip6 daddr fd00:2::/96")
     end
 
-    it "returns nil for a tag selector (slice 5 will populate sets)" do
-      expect(described_class.to_nft_match({ "tag" => "production" }, side: :saddr)).to be_nil
+    it "fails closed (MATCH_NOTHING) for a tag that resolves to no peers" do
+      # No peer-tag write path yet → the tag matches nobody → the rule must
+      # restrict to nothing, NOT silently become a wildcard (fail-open).
+      expect(described_class.to_nft_match({ "tag" => "production" }, side: :saddr))
+        .to eq(described_class::MATCH_NOTHING)
+    end
+
+    it "compiles a tag selector into an nft set of the tagged peers' addresses" do
+      allow(described_class).to receive(:addresses_for_tag)
+        .with("production", network: nil)
+        .and_return([ "fd00:1::5", "fd00:1::9" ])
+
+      expect(described_class.to_nft_match({ "tag" => "production" }, side: :saddr))
+        .to eq("ip6 saddr { fd00:1::5, fd00:1::9 }")
     end
 
     it "raises on an unknown side" do
@@ -47,9 +59,9 @@ RSpec.describe Sdwan::SelectorResolver, type: :service do
         expect(clause).to eq("ip6 saddr #{peer.assigned_address}")
       end
 
-      it "returns nil for a peer_id pointing at a deleted peer" do
+      it "fails closed (MATCH_NOTHING) for a peer_id pointing at a deleted peer" do
         clause = described_class.to_nft_match({ "peer_id" => SecureRandom.uuid }, side: :saddr)
-        expect(clause).to be_nil
+        expect(clause).to eq(described_class::MATCH_NOTHING)
       end
     end
   end

@@ -117,8 +117,15 @@ module Sdwan
     def emit_rule(rule)
       parts = [ "add rule inet #{TABLE} #{chain_name}", iif_clause ]
 
-      src = ::Sdwan::SelectorResolver.to_nft_match(rule.src_selector, side: :saddr)
-      dst = ::Sdwan::SelectorResolver.to_nft_match(rule.dst_selector, side: :daddr)
+      src = ::Sdwan::SelectorResolver.to_nft_match(rule.src_selector, side: :saddr, network: @network)
+      dst = ::Sdwan::SelectorResolver.to_nft_match(rule.dst_selector, side: :daddr, network: @network)
+
+      # Fail closed: a selector that restricts to the empty set (deleted peer,
+      # tag with no members) drops the whole rule rather than emitting it
+      # without that clause (which would match every peer = fail open).
+      return nil if src == ::Sdwan::SelectorResolver::MATCH_NOTHING
+      return nil if dst == ::Sdwan::SelectorResolver::MATCH_NOTHING
+
       parts << src if src
       parts << dst if dst
 
