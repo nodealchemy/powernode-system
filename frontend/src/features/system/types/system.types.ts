@@ -430,6 +430,11 @@ export interface SystemNodeModule {
   puppet_modules_count?: number;
   created_at: string;
   updated_at: string;
+  // Derived per-module webhook signing secret. The API includes this ONLY for
+  // users with the `system.modules.update` permission (NodeModuleSerializer
+  // include_webhook_secret), so its mere presence implies the viewer may see
+  // it. Treat as signing material: render masked, copy on demand, never log.
+  webhook_secret?: string;
   // Latest version snapshot — populated when the module has at least one
   // NodeModuleVersion row. nil for brand-new modules before publish.
   latest_version?: SystemNodeModuleVersionSummary | null;

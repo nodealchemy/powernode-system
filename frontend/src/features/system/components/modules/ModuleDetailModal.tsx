@@ -13,7 +13,12 @@ import {
   Plus,
   Trash2,
   ArrowRight,
-  ShieldCheck
+  ShieldCheck,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Copy,
+  Check
 } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
@@ -66,6 +71,12 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('info');
 
+  // Webhook signing-secret reveal/copy state. The secret is only present in the
+  // API payload for users with `system.modules.update`; it is rendered masked
+  // and never logged.
+  const [secretRevealed, setSecretRevealed] = useState(false);
+  const [secretCopied, setSecretCopied] = useState(false);
+
   // Dependencies state
   const [dependencies, setDependencies] = useState<SystemNodeModule[]>([]);
   const [loadingDependencies, setLoadingDependencies] = useState(false);
@@ -80,6 +91,8 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     if (isOpen && moduleId) {
       setLoading(true);
       setActiveTab('info');
+      setSecretRevealed(false);
+      setSecretCopied(false);
 
       systemApi.getModule(moduleId)
         .then(data => {
@@ -211,6 +224,17 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     );
   };
 
+  const handleCopyWebhookSecret = useCallback(async () => {
+    if (!module?.webhook_secret) return;
+    try {
+      await navigator.clipboard.writeText(module.webhook_secret);
+      setSecretCopied(true);
+      window.setTimeout(() => setSecretCopied(false), 2000);
+    } catch {
+      addNotification({ type: 'error', message: 'Could not copy webhook secret to clipboard' });
+    }
+  }, [module, addNotification]);
+
   const renderInfoTab = () => {
     if (!module) return null;
 
@@ -301,6 +325,43 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
             </span>
           </div>
         </div>
+
+        {/* Webhook signing secret — the API only includes this for users with
+            system.modules.update, so its presence is the access gate. Signing
+            material: masked by default, copied on demand, never logged. */}
+        {module.webhook_secret && (
+          <div className="pt-4 border-t border-theme">
+            <div className="flex items-center gap-2 mb-1">
+              <KeyRound className="w-4 h-4 text-theme-warning-fg" />
+              <label className="text-sm text-theme-secondary">Webhook signing secret</label>
+            </div>
+            <p className="text-xs text-theme-tertiary mb-2">
+              HMAC secret for this module&apos;s build / SBOM webhooks. Set it as the webhook
+              secret on the sending CI repository. Rotates with the platform signing key.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 min-w-0 truncate bg-theme-background border border-theme rounded-md px-3 py-2 text-sm font-mono text-theme-primary">
+                {secretRevealed ? module.webhook_secret : '•'.repeat(40)}
+              </code>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSecretRevealed(v => !v)}
+                aria-label={secretRevealed ? 'Hide webhook secret' : 'Reveal webhook secret'}
+              >
+                {secretRevealed ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyWebhookSecret}
+                aria-label="Copy webhook secret"
+              >
+                {secretCopied ? <Check className="w-4 h-4 text-theme-success-fg" /> : <Copy className="w-4 h-4" />}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     );
   };

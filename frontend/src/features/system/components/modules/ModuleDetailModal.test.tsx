@@ -236,6 +236,47 @@ describe('ModuleDetailModal', () => {
   });
 
   // ===========================================================================
+  // Webhook signing secret (D9-step-2 — permission-gated, masked)
+  // ===========================================================================
+
+  describe('webhook signing secret', () => {
+    // Obviously-fake value — never a real signing secret.
+    const FAKE_SECRET = 'whsec_test_FAKE_not_a_real_secret_0000';
+
+    it('does not render the section when the API omits webhook_secret', async () => {
+      mockGetModule.mockResolvedValue(BASE_MODULE);
+      renderModal();
+      await waitForModuleLoad('ssh-base');
+      expect(screen.queryByText('Webhook signing secret')).not.toBeInTheDocument();
+    });
+
+    it('renders masked by default and reveals on click (never auto-shown)', async () => {
+      mockGetModule.mockResolvedValue({ ...BASE_MODULE, webhook_secret: FAKE_SECRET });
+      renderModal();
+      await waitForModuleLoad('ssh-base');
+
+      expect(screen.getByText('Webhook signing secret')).toBeInTheDocument();
+      // Masked: the raw value is NOT in the DOM until revealed.
+      expect(screen.queryByText(FAKE_SECRET)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal webhook secret' }));
+      expect(screen.getByText(FAKE_SECRET)).toBeInTheDocument();
+    });
+
+    it('copies the secret to the clipboard on demand', async () => {
+      const writeText = jest.fn().mockResolvedValue(undefined);
+      Object.assign(navigator, { clipboard: { writeText } });
+
+      mockGetModule.mockResolvedValue({ ...BASE_MODULE, webhook_secret: FAKE_SECRET });
+      renderModal();
+      await waitForModuleLoad('ssh-base');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy webhook secret' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(FAKE_SECRET));
+    });
+  });
+
+  // ===========================================================================
   // Loading state
   // ===========================================================================
 
