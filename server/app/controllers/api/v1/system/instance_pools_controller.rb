@@ -128,14 +128,15 @@ module Api
           params.require(:pool).permit(
             :name, :description, :node_template_id, :target_size, :min_size,
             :max_size, :lifecycle_class, :provider_region_id, :provider_instance_type_id,
-            metadata: {}
+            metadata: {}, preferred_regions: []
           )
         end
 
         def update_params
           params.require(:pool).permit(
             :description, :target_size, :min_size, :max_size, :status,
-            :provider_region_id, :provider_instance_type_id, metadata: {}
+            :provider_region_id, :provider_instance_type_id, metadata: {},
+            preferred_regions: []
           )
         end
 

@@ -799,8 +799,9 @@ module Ai
               min_size: { type: "integer", required: false, description: "Lower bound (default 0)" },
               max_size: { type: "integer", required: false, description: "Upper bound (default target+10)" },
               lifecycle_class: { type: "string", required: false, description: "ephemeral|spot (default ephemeral)" },
-              provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion pool members are provisioned in" },
-              provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) pool members are provisioned as" }
+              provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion pool members are provisioned in (single-AZ default)" },
+              provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) pool members are provisioned as" },
+              preferred_regions: { type: "array", required: false, description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread — replenishment round-robins members across them by slot and skips regions the sensor marks unhealthy. Overrides provider_region_id when set." }
             }
           },
           # F8-07 — REST update parity (instance_pools_controller update_params).
@@ -818,6 +819,7 @@ module Ai
               status: { type: "string", required: false, description: "active | paused | archived" },
               provider_region_id: { type: "string", required: false, description: "UUID of the ProviderRegion to provision future members in" },
               provider_instance_type_id: { type: "string", required: false, description: "UUID of the ProviderInstanceType (SKU) for future members" },
+              preferred_regions: { type: "array", required: false, description: "Ordered list of ProviderRegion UUIDs for cross-AZ HA spread (replaces the pool's list; empty array clears it back to single-AZ)" },
               metadata: { type: "object", required: false, description: "Pool metadata hash (e.g. reuse_without_reset)" }
             }
           },
@@ -2868,7 +2870,8 @@ module Ai
           max_size: params[:max_size] || (params[:target_size].to_i + 10),
           lifecycle_class: params[:lifecycle_class] || "ephemeral",
           provider_region_id: params[:provider_region_id],
-          provider_instance_type_id: params[:provider_instance_type_id]
+          provider_instance_type_id: params[:provider_instance_type_id],
+          preferred_regions: Array(params[:preferred_regions]).compact_blank
         )
         success_result(data: { pool: pool.to_summary })
       rescue ActiveRecord::RecordInvalid => e
@@ -2881,8 +2884,10 @@ module Ai
         pool = ::System::InstancePool.for_account(@account).find(params[:id])
         attrs = params.slice(
           :description, :target_size, :min_size, :max_size, :status,
-          :provider_region_id, :provider_instance_type_id, :metadata
+          :provider_region_id, :provider_instance_type_id, :metadata, :preferred_regions
         ).to_h.compact
+        # Normalize the cross-AZ list (empty array clears it back to single-AZ).
+        attrs[:preferred_regions] = Array(attrs[:preferred_regions]).compact_blank if attrs.key?(:preferred_regions)
         return error_result("no mutable fields supplied") if attrs.empty?
 
         pool.update!(attrs)

@@ -18,6 +18,12 @@ module System
 
         def sense
           cutoff = Time.current - SILENT_THRESHOLD
+
+          # P2.5 gap #5 — stamp per-region health onto each cross-AZ pool so
+          # InstancePoolService#pick_region_for_slot can skip degraded regions
+          # during replenishment. Side effect of the same perception pass.
+          stamp_region_health(cutoff)
+
           ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
@@ -39,6 +45,52 @@ module System
         end
 
         private
+
+        # Writes pool.metadata["region_health"] = { region_id => state } for
+        # every cross-AZ pool (preferred_regions set) in the account. A region
+        # is "healthy" when at least one of the pool's members there is live,
+        # "unhealthy" when it has members but none are live, and "unknown" when
+        # it currently has no members (so a fresh region can still be picked).
+        # pick_region_for_slot only skips regions explicitly marked "unhealthy".
+        def stamp_region_health(cutoff)
+          pools = ::System::InstancePool
+                    .where(account_id: account.id)
+                    .where.not(preferred_regions: [])
+
+          pools.find_each do |pool|
+            regions = Array(pool.preferred_regions).compact_blank
+            next if regions.empty?
+
+            by_region = pool.node_instances
+                            .where(provider_region_id: regions)
+                            .select(:id, :provider_region_id, :status, :last_heartbeat_at)
+                            .group_by(&:provider_region_id)
+
+            health = regions.index_with do |region_id|
+              members = by_region[region_id] || []
+              if members.empty?
+                "unknown"
+              elsif members.any? { |m| live?(m, cutoff) }
+                "healthy"
+              else
+                "unhealthy"
+              end
+            end
+
+            existing = pool.metadata.is_a?(Hash) ? pool.metadata["region_health"] : nil
+            next if existing == health # avoid write churn when unchanged
+
+            pool.update!(metadata: (pool.metadata || {}).merge("region_health" => health))
+          end
+        rescue StandardError => e
+          Rails.logger.warn("[InstanceStatusSensor] region_health stamp failed: #{e.message}")
+        end
+
+        def live?(instance, cutoff)
+          %w[running starting].include?(instance.status) &&
+            instance.last_heartbeat_at.present? &&
+            instance.last_heartbeat_at >= cutoff
+        end
 
         # No heartbeat ever vs. recently silent. The first means the instance
         # never enrolled successfully (or is mid-bootstrap); the second means

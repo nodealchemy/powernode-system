@@ -122,4 +122,25 @@ RSpec.describe "Api::V1::System::InstancePools", type: :request do
       expect(response).to have_http_status(:forbidden)
     end
   end
+
+  # D6 — cross-AZ replenishment: preferred_regions must be writable so
+  # InstancePoolService#pick_region_for_slot has a list to round-robin.
+  describe "PATCH /api/v1/system/instance_pools/:id (preferred_regions)" do
+    it "sets and then clears preferred_regions" do
+      r1 = create(:system_provider_region, account: account)
+      r2 = create(:system_provider_region, account: account)
+
+      patch "/api/v1/system/instance_pools/#{pool.id}",
+            params: { pool: { preferred_regions: [ r1.id, r2.id ] } }.to_json,
+            headers: auth_headers_for(write_user).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:ok)
+      expect(pool.reload.preferred_regions).to eq([ r1.id, r2.id ])
+
+      patch "/api/v1/system/instance_pools/#{pool.id}",
+            params: { pool: { preferred_regions: [] } }.to_json,
+            headers: auth_headers_for(write_user).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:ok)
+      expect(pool.reload.preferred_regions).to eq([])
+    end
+  end
 end
