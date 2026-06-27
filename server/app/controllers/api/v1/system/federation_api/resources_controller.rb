@@ -10,7 +10,8 @@ module Api
         #
         # Auth chain (delegated to BaseController):
         #   mTLS cert → FederationPeer
-        #   Bearer fg-<id> → FederationGrant
+        #   Bearer fgs.<id>.<sig> (HMAC envelope; legacy fg-<id> during grace)
+        #     → FederationGrant
         #     grant.federation_peer == peer
         #     grant.active?
         #     grant.resource_kind == :kind

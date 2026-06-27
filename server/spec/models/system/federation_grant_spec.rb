@@ -150,16 +150,84 @@ RSpec.describe System::FederationGrant, type: :model do
     end
   end
 
-  describe "#bearer_token + .find_by_bearer_token" do
-    it "round-trips fg-<id>" do
-      grant = create(:system_federation_grant)
-      expect(grant.bearer_token).to eq("fg-#{grant.id}")
-      expect(described_class.find_by_bearer_token(grant.bearer_token)).to eq(grant)
+  describe "#bearer_token + .find_by_bearer_token (HMAC envelope, D2)" do
+    let(:grant) { create(:system_federation_grant) }
+
+    it "mints an `fgs.<id>.<sig>` HMAC envelope that round-trips" do
+      token = grant.bearer_token
+      expect(token).to start_with("fgs.")
+      prefix, id, sig = token.split(".", 3)
+      expect(prefix).to eq("fgs")
+      expect(id).to eq(grant.id)
+      expect(sig).to be_present
+      expect(described_class.find_by_bearer_token(token)).to eq(grant)
     end
 
-    it "returns nil for malformed tokens" do
-      expect(described_class.find_by_bearer_token("bogus")).to be_nil
-      expect(described_class.find_by_bearer_token(nil)).to be_nil
+    it "signs with HMAC-SHA256 over the domain-separated grant id" do
+      expected = OpenSSL::HMAC.hexdigest(
+        "SHA256", ::System::ModuleBuildDispatchService.server_secret,
+        "federation-grant:#{grant.id}"
+      )
+      expect(grant.bearer_token).to eq("fgs.#{grant.id}.#{expected}")
+    end
+
+    it "rejects a tampered signature (no grant resolved)" do
+      tampered = "fgs.#{grant.id}.#{'0' * 64}"
+      expect(described_class.find_by_bearer_token(tampered)).to be_nil
+    end
+
+    it "rejects a valid signature presented against the wrong id" do
+      other = create(:system_federation_grant)
+      _p, _id, sig = grant.bearer_token.split(".", 3)
+      forged = "fgs.#{other.id}.#{sig}"
+      expect(described_class.find_by_bearer_token(forged)).to be_nil
+    end
+
+    it "rejects a forged envelope for a non-existent grant" do
+      forged = "fgs.#{SecureRandom.uuid}.deadbeefdeadbeef"
+      expect(described_class.find_by_bearer_token(forged)).to be_nil
+    end
+
+    it "returns nil (not a 500) for malformed tokens" do
+      [ nil, "", "bogus", "fgs", "fgs.", "fgs.onlyid", "fgs..", "fgs.x.y.z",
+        "fgs.'; DROP TABLE x;--.sig", 12345 ].each do |bad|
+        expect(described_class.find_by_bearer_token(bad)).to be_nil
+      end
+    end
+
+    it "fails closed when the server secret is unavailable (prod, env unset)" do
+      token = grant.bearer_token
+      allow(::System::ModuleBuildDispatchService).to receive(:server_secret).and_return(nil)
+      expect(grant.bearer_token).to be_nil           # cannot mint unsigned
+      expect(described_class.find_by_bearer_token(token)).to be_nil
+    end
+
+    it "invalidates a previously-valid envelope after the secret rotates" do
+      token = grant.bearer_token
+      expect(described_class.find_by_bearer_token(token)).to eq(grant)
+      allow(::System::ModuleBuildDispatchService).to receive(:server_secret).and_return("rotated-root-secret")
+      expect(described_class.find_by_bearer_token(token)).to be_nil
+    end
+
+    describe "legacy raw-PK `fg-<id>` grace" do
+      it "accepts a legacy token while POWERNODE_FEDERATION_LEGACY_TOKEN is on (default)" do
+        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to eq(grant)
+      end
+
+      it "rejects a legacy token when POWERNODE_FEDERATION_LEGACY_TOKEN is off" do
+        prev = ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"]
+        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = "false"
+        expect(described_class.find_by_bearer_token("fg-#{grant.id}")).to be_nil
+        # the new envelope still resolves with legacy off
+        expect(described_class.find_by_bearer_token(grant.bearer_token)).to eq(grant)
+      ensure
+        ENV["POWERNODE_FEDERATION_LEGACY_TOKEN"] = prev
+      end
+
+      it "returns nil (not a 500) for a malformed legacy id" do
+        expect(described_class.find_by_bearer_token("fg-not-a-uuid")).to be_nil
+        expect(described_class.find_by_bearer_token("fg-")).to be_nil
+      end
     end
   end
 

@@ -76,7 +76,7 @@ RSpec.describe "Api::V1::System::Platform::PeerGrants", type: :request do
       expect(grant["lifecycle"]).to eq("active")
       expect(grant["unrestricted"]).to be false
       expect(grant["source_cidrs"]).to eq([ "10.0.0.0/24" ])
-      expect(grant["bearer_token_preview"]).to start_with("fg-")
+      expect(grant["bearer_token_preview"]).to start_with("fgs.")
     end
 
     it "clamps TTL to MIN_TTL when below 7 days" do

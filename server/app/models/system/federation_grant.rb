@@ -19,6 +19,28 @@ module System
     MIN_TTL     = 7.days
     REVOKED_RETENTION = 90.days
 
+    # --- Bearer-token envelope (D2: HMAC-signed, replaces raw-PK token) ---
+    #
+    # New tokens are HMAC-signed envelopes `fgs.<grant_id>.<hex_sig>`; the
+    # signature lets the verifier reject a forged/guessed token WITHOUT a DB
+    # lookup, and the token is no longer just the grant's (guessable-shaped)
+    # primary key.
+    TOKEN_PREFIX  = "fgs."
+    LEGACY_PREFIX = "fg-"
+
+    # Domain separator for the federation-grant token HMAC. Keeps this
+    # derivation in a distinct namespace from every other use of the shared
+    # server-secret root (e.g. ModuleBuildDispatchService's per-closure
+    # `closure_id` and per-module `module-webhook:<id>` derivations) so a
+    # grant.id can never derive the same value as some closure_id / module_id.
+    TOKEN_HMAC_DOMAIN = "federation-grant"
+
+    # Grace flag for legacy raw-PK `fg-<id>` tokens. Default TRUE so this
+    # change LANDS SAFELY — peers holding pre-envelope tokens keep working.
+    # The operator re-issues each peer's grant token (now minted as an `fgs.`
+    # envelope), then sets this false to reject legacy tokens entirely.
+    LEGACY_TOKEN_ENV = "POWERNODE_FEDERATION_LEGACY_TOKEN"
+
     self.table_name = "system_federation_grants"
 
     belongs_to :federation_peer, class_name: "System::FederationPeer"
@@ -155,18 +177,101 @@ module System
     end
 
     # The bearer token presented by the remote peer in
-    # `Authorization: Bearer fg-<grant_id>`. v1 uses the grant_id directly
-    # (cryptographically random UUIDv7); a future round may add an
-    # HMAC-signed JWT envelope so the remote peer can't forge by guessing.
+    # `Authorization: Bearer <token>`.
+    #
+    # Format (D2): an HMAC-signed envelope `fgs.<grant_id>.<hex_sig>` where
+    #   hex_sig = HMAC-SHA256(server_secret, "federation-grant:<grant_id>")
+    # rooted in the platform's shared server secret
+    # (ModuleBuildDispatchService.server_secret — prod-fail-closed,
+    # dev/test-fallback), domain-separated by TOKEN_HMAC_DOMAIN. The signature
+    # lets the verifier reject a forged/guessed token WITHOUT a DB lookup, and
+    # ROTATING the server secret invalidates EVERY outstanding token (then the
+    # operator re-issues per peer).
+    #
+    # Returns nil when the server secret is unavailable (production, env unset)
+    # — fail-closed: a caller cannot mint an unsigned token.
+    #
+    # Staged rollout: new grants immediately mint this `fgs.` envelope; pre-
+    # envelope peers hold raw-PK `fg-<id>` tokens that the verifier still
+    # accepts while POWERNODE_FEDERATION_LEGACY_TOKEN is on (the default), so
+    # this lands without breaking federation. The operator flips it off after
+    # re-issuing every peer's token.
     def bearer_token
-      "fg-#{id}"
+      sig = self.class.token_signature(id)
+      return nil if sig.blank?
+      "#{TOKEN_PREFIX}#{id}.#{sig}"
     end
 
     class << self
+      # HMAC-SHA256(server_secret, "federation-grant:<grant_id>"), hex-encoded.
+      # Single source of truth for both minting (#bearer_token) and verifying
+      # (.find_by_bearer_token). Returns nil — NEVER a fallback — when the
+      # shared server secret is unset in production, so the verifier fails
+      # closed rather than trusting a publicly-known dev value (repo is MIT).
+      def token_signature(grant_id)
+        secret = ::System::ModuleBuildDispatchService.server_secret
+        return nil if secret.blank? || grant_id.blank?
+
+        OpenSSL::HMAC.hexdigest("SHA256", secret, "#{TOKEN_HMAC_DOMAIN}:#{grant_id}")
+      end
+
+      # Resolve a presented bearer token to its FederationGrant.
+      #   - `fgs.` envelope: recompute the HMAC and CONSTANT-TIME compare; only
+      #     a valid signature reaches the DB lookup. Secret unset → nil.
+      #   - `fg-` legacy: accepted only while the grace flag is on; logs a
+      #     one-line deprecation warning (NEVER the token value).
+      #   - anything else / a malformed / forged token → nil, never a 500.
       def find_by_bearer_token(token)
-        return nil unless token.is_a?(String) && token.start_with?("fg-")
-        id = token.sub(/\Afg-/, "")
+        return nil unless token.is_a?(String)
+
+        if token.start_with?(TOKEN_PREFIX)
+          resolve_signed_token(token)
+        elsif token.start_with?(LEGACY_PREFIX)
+          resolve_legacy_token(token)
+        end
+      end
+
+      private
+
+      def resolve_signed_token(token)
+        # `fgs.<id>.<sig>` → 3 parts. A malformed token (missing id or sig)
+        # yields a blank part → nil, never a 500.
+        _prefix, grant_id, provided_sig = token.split(".", 3)
+        return nil if grant_id.blank? || provided_sig.blank?
+
+        expected_sig = token_signature(grant_id)
+        return nil if expected_sig.blank? # secret unavailable → fail closed
+
+        return nil unless ActiveSupport::SecurityUtils.secure_compare(expected_sig, provided_sig)
+
+        # find_by only runs on a validly-SIGNED id, which we minted (a real
+        # UUID), so no malformed-UUID StatementInvalid can reach here; the
+        # rescue is belt-and-suspenders against any unexpected raise.
+        find_by(id: grant_id)
+      rescue StandardError
+        nil
+      end
+
+      def resolve_legacy_token(token)
+        return nil unless legacy_tokens_accepted?
+
+        # One-line deprecation breadcrumb — NEVER log the token value.
+        Rails.logger.warn(
+          "[FederationGrant] accepted DEPRECATED raw-PK bearer token (legacy " \
+          "grace) — re-issue this peer's grant and set #{LEGACY_TOKEN_ENV}=false"
+        )
+        id = token.sub(/\A#{Regexp.escape(LEGACY_PREFIX)}/, "")
+        return nil if id.blank?
+
+        # A garbage legacy id (non-UUID) would raise StatementInvalid on the
+        # uuid cast — rescue so a malformed token is nil, not a 500.
         find_by(id: id)
+      rescue StandardError
+        nil
+      end
+
+      def legacy_tokens_accepted?
+        ActiveModel::Type::Boolean.new.cast(ENV.fetch(LEGACY_TOKEN_ENV, true))
       end
     end
 

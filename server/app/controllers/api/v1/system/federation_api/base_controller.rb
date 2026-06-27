@@ -69,7 +69,8 @@ module Api
             @current_account ||= current_federation_peer&.account
           end
 
-          # Resolves a Bearer `fg-<id>` token to a FederationGrant and
+          # Resolves a Bearer `fgs.<id>.<sig>` HMAC-envelope token (or a legacy
+          # `fg-<id>` token during the grace window) to a FederationGrant and
           # enforces the multi-layer auth chain expected by federation_api
           # resource endpoints:
           #
