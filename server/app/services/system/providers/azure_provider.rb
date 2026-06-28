@@ -1021,15 +1021,12 @@ module System
       # LOG_SENSITIVE_KEYS (user_data, password, ssh_keys, access_token, …) via
       # sanitize_for_log. The previous override shallow-.except'd only 3 keys and
       # leaked the rest of create_instance's params to logs.
-      def build_instance_response(cloud_id:, status:, private_ip: nil, instance_type: nil)
-        {
-          success: true,
-          cloud_instance_id: cloud_id,
-          status: status,
-          private_ip: private_ip,
-          instance_type: instance_type
-        }
-      end
+      # NOTE: #build_instance_response is intentionally NOT overridden here — Azure
+      # inherits BaseProvider#build_instance_response, which emits the documented
+      # contract (:private_ip_address / :public_ip_address, :provider_type, :synced_at)
+      # and folds extra kwargs in via **metadata. The previous local override drifted:
+      # it emitted :private_ip (and no public IP), so CloudSyncService's :private_ip_address
+      # read silently got nil. Callers pass instance_type: through (captured by **metadata).
     end
   end
 end
