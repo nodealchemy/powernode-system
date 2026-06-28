@@ -222,9 +222,11 @@ module System
       end
 
       def gitops_agent_id
-        # GitOps proposals don't come from a specific agent — use a
-        # well-known "system" agent if present, otherwise nil.
-        ::Ai::Agent.where(account: @repository.account, name: "gitops-reconciler").first&.id ||
+        # Attribute GitOps proposals to the dedicated "GitOps Reconciler" agent
+        # (seeded by db/seeds/system_gitops_reconciler_agent.rb). Falls back to
+        # an arbitrary account agent only if the seed hasn't run — preferable to
+        # a nil author, but the seed should make the fallback unreachable.
+        ::Ai::Agent.where(account: @repository.account, name: "GitOps Reconciler").first&.id ||
           ::Ai::Agent.where(account: @repository.account).first&.id
       end
 

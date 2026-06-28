@@ -39,6 +39,7 @@ SYSTEM_SEED_FILES = %w[
   system_disk_image_manager_agent.rb
   system_sdwan_manager_agent.rb
   system_topology_designer_agent.rb
+  system_gitops_reconciler_agent.rb
   system_fleet_kg_schema.rb
   system_kg_entities_seed.rb
   system_instance_pool_policies.rb

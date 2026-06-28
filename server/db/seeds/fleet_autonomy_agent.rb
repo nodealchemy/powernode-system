@@ -113,6 +113,15 @@ fleet_policies = {
   # but the operator should see that the safety net is firing.
   "system.storage_assignment_reconcile" => "notify_and_proceed",
 
+  # GitOps drift surfaced by GitopsDriftSensor (in FleetAutonomyService::SENSORS,
+  # so it gates as THIS agent — same reason federation_peer_remediate and the
+  # autonomous sdwan_* policies live here, not on the GitOps Reconciler agent
+  # that authors the proposals). notify_and_proceed: drift is informational
+  # (the reconciler opens proposals for the actual apply); without this binding
+  # the signal was classified :skipped and never reached the operator. Deduped
+  # per repo+revision fingerprint, so a standing drift notifies once per TTL.
+  "system.gitops_drift_remediate" => "notify_and_proceed",
+
   # Package repository ingestion. Sync is routine + reversible (just
   # refreshes cached metadata); module creation is supply-chain critical
   # (operator audits each new package entering the fleet); refresh requires

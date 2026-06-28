@@ -47,7 +47,8 @@ EXPECTED_AGENTS = {
   "SDWAN Manager"            => { tier: "trusted",   overall: 0.78 },
   "Disk Image Manager"       => { tier: "monitored", overall: 0.70 },
   "System Concierge"         => { tier: "monitored", overall: 0.75 },
-  "System Topology Designer" => { tier: "monitored", overall: 0.72 }
+  "System Topology Designer" => { tier: "monitored", overall: 0.72 },
+  "GitOps Reconciler"        => { tier: "monitored", overall: 0.72 }
 }.freeze
 
 EXPECTED_AGENTS.each do |name, expected|

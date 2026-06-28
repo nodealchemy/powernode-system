@@ -269,6 +269,17 @@ module System
         "system.storage_assignment_drift" => {
           skill: nil,
           action_category: "system.storage_assignment_reconcile"
+        },
+        # GitOps drift (GitopsDriftSensor) → notify-only gate. No skill and no
+        # REMEDIATION_APPLIER entry: the reconciler (System::Gitops::Reconciler,
+        # driven by SystemGitopsSyncJob) is what opens the proposals and applies
+        # auto_apply repos — the DecisionEngine's role here is purely to surface
+        # the drift through the autonomy gate (notify_and_proceed in the fleet
+        # seed) instead of dropping it as :skipped. Mirrors module_promotion_ready
+        # / instance_state_drifted (skill: nil, applier-less notification gates).
+        "system.gitops.drift_detected" => {
+          skill: nil,
+          action_category: "system.gitops_drift_remediate"
         }
       }.freeze
 
