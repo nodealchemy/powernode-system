@@ -75,7 +75,11 @@ module PowernodeSystem
           slug: "system",
           engine: PowernodeSystem::Engine,
           version: defined?(PowernodeSystem::VERSION) ? PowernodeSystem::VERSION : nil,
-          features_module: defined?(PowernodeSystem::Features) ? PowernodeSystem::Features : nil
+          features_module: defined?(PowernodeSystem::Features) ? PowernodeSystem::Features : nil,
+          capabilities: [:kubernetes_deploy],
+          # Contribute the Kubernetes deploy method to the core Ai::Deploy::MethodRegistry
+          # without core ever naming System::. Resolved lazily by class name.
+          providers: { deploy_method_providers: "System::Deploy::MethodProvider" }
         )
       end
     end
