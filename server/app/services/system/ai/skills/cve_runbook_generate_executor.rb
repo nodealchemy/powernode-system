@@ -35,7 +35,7 @@ module System
           }
         )
 
-        binds_to "System Concierge", "CVE Responder", "Claude Research Analyst"
+        binds_to "System Concierge", "CVE Responder"
 
         protected
 

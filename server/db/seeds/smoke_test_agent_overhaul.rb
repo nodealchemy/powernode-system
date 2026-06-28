@@ -3,7 +3,7 @@
 # Smoke test for the base-platform agent overhaul.
 #
 # Verifies that:
-#   1. All 7 system agents exist with the new differentiated trust tiers
+#   1. All 8 system agents exist with the new differentiated trust tiers
 #      (CVE Responder + SDWAN Manager → trusted; others → monitored)
 #   2. SkillBindings registry is populated (executors called `binds_to`)
 #   3. Every (skill_slug, agent_name) registration has a matching
@@ -12,7 +12,7 @@
 #   5. BaseSkillExecutor enforces #perform abstract (anonymous subclass
 #      without override returns failure, not undefined-method-from-hell)
 #   6. CrudFactory dispatches each route in ROUTES to the correct tool action
-#   7. Claude agents (Strategic Planner + Research Analyst) have skill bindings
+#   7. Core planning/research agents (Strategic Planner, Research Analyst) carry NO system-infra skills
 #   8. Concierge tool filter moved to ConciergeToolBridge constant
 #
 # Invoke:
@@ -38,7 +38,7 @@ Dir.glob(exec_glob).each { |f| require_dependency f }
 # ────────────────────────────────────────────────────────────────────
 # 1. System agents + differentiated trust tiers
 # ────────────────────────────────────────────────────────────────────
-step.call("Verify 7 system agents exist with expected trust tiers")
+step.call("Verify 8 system agents exist with expected trust tiers")
 
 EXPECTED_AGENTS = {
   "Fleet Autonomy"           => { tier: "monitored", overall: 0.74 },
@@ -157,18 +157,24 @@ end
 end
 
 # ────────────────────────────────────────────────────────────────────
-# 7. Claude agent skill bindings
+# 7. Core planning/research agents are NOT bound to system-infra skills
 # ────────────────────────────────────────────────────────────────────
-step.call("Verify Claude agents have skill bindings")
+# Domain-purity audit (2026-06-28): the generic core agents "Strategic
+# Planner" and "Research Analyst" were wrongly bound to system-extension
+# infra skills via `binds_to`. A core strategy/research agent must not own
+# `system-platform-deploy` / `system-capacity-recommend` etc. — those belong to
+# the system agents (Concierge / CVE Responder / Fleet Autonomy). This step pins
+# the corrected contract: the bindings are GONE.
+step.call("Verify core planning/research agents carry NO system-infra skill bindings")
 
-CLAUDE_AGENT_EXPECTATIONS = {
-  "Claude Strategic Planner" => %w[
+FORBIDDEN_CLAUDE_AGENT_BINDINGS = {
+  "Strategic Planner" => %w[
     system-capacity-recommend
     system-platform-deploy
     system-platform-resilience
     system-runbook-generate
   ],
-  "Claude Research Analyst"  => %w[
+  "Research Analyst"  => %w[
     system-attribute-failure
     system-cve-runbook-generate
     system-suggest-architectures-for-fleet
@@ -176,7 +182,7 @@ CLAUDE_AGENT_EXPECTATIONS = {
   ]
 }.freeze
 
-CLAUDE_AGENT_EXPECTATIONS.each do |agent_name, expected_slugs|
+FORBIDDEN_CLAUDE_AGENT_BINDINGS.each do |agent_name, forbidden_slugs|
   agent = ::Ai::Agent.find_by(name: agent_name)
   unless agent
     puts "    ⚠️  #{agent_name} not found — skipping (claude_agents_seed may not have run)"
@@ -186,9 +192,9 @@ CLAUDE_AGENT_EXPECTATIONS.each do |agent_name, expected_slugs|
   bound_slugs = ::Ai::AgentSkill.where(ai_agent_id: agent.id)
                                 .joins("INNER JOIN ai_skills ON ai_skills.id = ai_agent_skills.ai_skill_id")
                                 .pluck("ai_skills.slug")
-  missing = expected_slugs - bound_slugs
-  assert.call(missing.empty?,
-              "#{agent_name} has all #{expected_slugs.size} expected skills (missing=#{missing.inspect})")
+  leaked = forbidden_slugs & bound_slugs
+  assert.call(leaked.empty?,
+              "#{agent_name} carries no system-infra skills (leaked=#{leaked.inspect})")
 end
 
 # ────────────────────────────────────────────────────────────────────

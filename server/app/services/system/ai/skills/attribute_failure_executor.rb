@@ -39,7 +39,7 @@ module System
           }
         )
 
-        binds_to "System Concierge", "Claude Research Analyst"
+        binds_to "System Concierge"
 
         protected
 
