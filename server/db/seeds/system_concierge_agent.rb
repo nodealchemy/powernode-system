@@ -185,6 +185,13 @@ if concierge_agent.new_record?
   concierge_agent.creator  = creator
   concierge_agent.provider = provider
 end
+# Operator chat + delegation routing warrants a reasoning-tier model. Reassign
+# (not in-place mutate) so it persists alongside the in-place system_prompt the
+# accessor already wrote into mcp_metadata. No hardcoded model id —
+# AgentModelSelector resolves it from the account's credentialed providers.
+concierge_agent.mcp_metadata = (concierge_agent.mcp_metadata || {}).merge(
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+)
 concierge_agent.save!
 
 System::Seeds::AgentSetupHelpers.ensure_trust_score!(

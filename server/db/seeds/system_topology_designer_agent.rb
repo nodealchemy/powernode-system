@@ -172,6 +172,12 @@ if topology_agent.new_record?
   topology_agent.creator  = creator
   topology_agent.provider = provider
 end
+# Cross-cutting topology composition is reasoning-heavy. Reassign mcp_metadata
+# (not in-place) so the tier persists alongside the in-place system_prompt.
+# No hardcoded model id — AgentModelSelector resolves it.
+topology_agent.mcp_metadata = (topology_agent.mcp_metadata || {}).merge(
+  "model_config" => { "model_requirements" => { "tier" => "reasoning" } }
+)
 topology_agent.save!
 
 # Trust score — same "monitored" tier as Concierge + Fleet Autonomy. The
