@@ -98,7 +98,8 @@ module System
     private
 
     def system_agents
-      @system_agents ||= ::Ai::Agent.where(account: current_account, name: SYSTEM_AGENT_NAMES).index_by(&:name)
+      # Override-aware: an account override wins over the global default per name.
+      @system_agents ||= SYSTEM_AGENT_NAMES.filter_map { |n| a = ::Ai::Agent.resolve_for(current_account.id, name: n); [ n, a ] if a }.to_h
     end
 
     def serialize_agents

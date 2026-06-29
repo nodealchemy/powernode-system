@@ -73,9 +73,10 @@ gitops_prompt = <<~PROMPT
   operator can triage the queue without opening every proposal.
 PROMPT
 
-gitops_agent = admin_account.ai_agents.find_or_initialize_by(
+gitops_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: agent_name,
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "gitops-reconciler"
 )
 gitops_agent.assign_attributes(
   description: "Declarative fleet-state reconciler — diffs registered Git repositories against live state and authors drift proposals; owns operator-initiated GitOps actions",

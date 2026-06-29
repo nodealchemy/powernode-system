@@ -59,9 +59,10 @@ runtime_prompt = <<~PROMPT
      radius (which instances/workloads are affected).
 PROMPT
 
-runtime_agent = admin_account.ai_agents.find_or_initialize_by(
+runtime_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Runtime Manager",
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "runtime-manager"
 )
 runtime_agent.assign_attributes(
   description: "Container runtime lifecycle reconciler — Phase 1 Docker + Phase 2 K3s clusters; gates provision/decommission/upgrade actions",

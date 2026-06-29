@@ -50,10 +50,8 @@ module Api
         end
 
         def find_concierge_agent
-          @account.ai_agents.find_by(
-            name: "System Concierge",
-            agent_type: "assistant"
-          )
+          ::Ai::Agent.resolve_for(@account.id, name: "System Concierge", agent_type: "assistant")
+                     &.tap { |a| a.resolving_account = @account }
         end
 
         # Reuse the user's existing active Concierge conversation when it

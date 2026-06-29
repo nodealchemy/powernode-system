@@ -48,9 +48,10 @@ cve_prompt = <<~PROMPT
      the candidate fixed version, and the rollout strategy in every plan.
 PROMPT
 
-cve_agent = admin_account.ai_agents.find_or_initialize_by(
+cve_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "CVE Responder",
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "cve-responder"
 )
 cve_agent.assign_attributes(
   description: "CVE intake + remediation — SBOM ingest, exposure scan, patch orchestration",

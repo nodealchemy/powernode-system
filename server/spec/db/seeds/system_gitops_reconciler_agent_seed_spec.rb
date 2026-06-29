@@ -21,13 +21,17 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
   let!(:user)     { create(:user, account: account, email: "admin@powernode.org") }
   let!(:provider) { create(:ai_provider, account: account, provider_type: "anthropic", is_active: true) }
 
-  let(:agent) { Ai::Agent.find_by(account: account, name: "GitOps Reconciler") }
+  # GitOps Reconciler is a GLOBAL (platform-provided) agent (account_id nil).
+  let(:agent) { Ai::Agent.global.find_by(name: "GitOps Reconciler") }
 
   describe "the seeded agent" do
     before { load_seed!("system_gitops_reconciler_agent.rb") }
 
-    it "creates a monitor agent named 'GitOps Reconciler'" do
+    it "creates a GLOBAL monitor agent named 'GitOps Reconciler'" do
       expect(agent).to be_present
+      expect(agent.account_id).to be_nil
+      expect(agent.is_system).to be true
+      expect(agent.source_key).to eq("gitops-reconciler")
       expect(agent.agent_type).to eq("monitor")
       expect(agent.status).to eq("active")
     end
@@ -78,22 +82,22 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
       expect(chain.status).to eq("active")
     end
 
-    it "is idempotent across re-runs" do
+    it "is idempotent across re-runs (no duplicate global row)" do
       expect { load_seed!("system_gitops_reconciler_agent.rb") }
-        .not_to change { Ai::Agent.where(account: account, name: "GitOps Reconciler").count }.from(1)
+        .not_to change { Ai::Agent.global.where(name: "GitOps Reconciler").count }.from(1)
     end
   end
 
   describe "reconciler proposal attribution" do
     before { load_seed!("system_gitops_reconciler_agent.rb") }
 
-    it "attributes GitOps proposals to the GitOps Reconciler agent, not an arbitrary one" do
-      # An earlier-created agent would have won the old fallback ordering.
+    it "attributes GitOps proposals to the (global) GitOps Reconciler, not an arbitrary one" do
+      # An earlier-created account agent would have won the old fallback ordering.
       create(:ai_agent, account: account, name: "Some Other Agent", agent_type: "assistant")
       repo = create(:system_gitops_repository, account: account)
 
       reconciler = System::Gitops::Reconciler.new(repository: repo)
-      expect(reconciler.send(:gitops_agent_id)).to eq(agent.id)
+      expect(reconciler.send(:gitops_agent_id)).to eq(agent.id) # resolve_for finds the global default
     end
   end
 
@@ -109,7 +113,7 @@ RSpec.describe "system_gitops_reconciler_agent seed" do
   describe "the autonomous policy on Fleet Autonomy" do
     it "places system.gitops_drift_remediate on the Fleet Autonomy agent" do
       load_seed!("fleet_autonomy_agent.rb")
-      fleet = Ai::Agent.find_by(account: account, name: "Fleet Autonomy")
+      fleet = Ai::Agent.global.find_by(name: "Fleet Autonomy")
       expect(fleet).to be_present
 
       policy = Ai::InterventionPolicy.find_by(

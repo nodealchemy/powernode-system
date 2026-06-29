@@ -39,7 +39,7 @@ module System
       # signals through the DecisionEngine, and records outcomes via the
       # LearningExtractor. Returns a structured tick summary.
       def self.tick!(account:)
-        agent = account.ai_agents.find_by(agent_type: "monitor", name: "Fleet Autonomy")
+        agent = ::Ai::Agent.resolve_for(account.id, name: "Fleet Autonomy", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "Fleet Autonomy agent not seeded for account" } unless agent
 
         service = new(account: account, agent: agent)

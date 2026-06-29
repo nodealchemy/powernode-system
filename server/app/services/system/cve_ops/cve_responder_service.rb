@@ -39,7 +39,7 @@ module System
       ].freeze
 
       def self.tick!(account:)
-        agent = account.ai_agents.find_by(agent_type: "monitor", name: "CVE Responder")
+        agent = ::Ai::Agent.resolve_for(account.id, name: "CVE Responder", agent_type: "monitor")&.tap { |a| a.resolving_account = account }
         return { ok: false, reason: "CVE Responder agent not seeded for account" } unless agent
 
         new(account: account, agent: agent).tick!

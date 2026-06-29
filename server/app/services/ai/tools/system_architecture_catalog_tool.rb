@@ -290,7 +290,7 @@ module Ai
       def default_proposal_agent
         return nil unless @user&.account && defined?(::Ai::Agent)
 
-        ::Ai::Agent.where(account: @user.account).find_by(name: "Fleet Autonomy")
+        ::Ai::Agent.resolve_for(@user.account.id, name: "Fleet Autonomy", agent_type: "monitor")
       end
 
       def bool(v)

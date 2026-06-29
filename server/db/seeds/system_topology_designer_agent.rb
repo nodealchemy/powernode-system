@@ -132,9 +132,10 @@ system_prompt = <<~PROMPT
   to it when reasoning about what's already deployed.
 PROMPT
 
-topology_agent = admin_account.ai_agents.find_or_initialize_by(
+topology_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "System Topology Designer",
-  agent_type: "assistant"
+  agent_type: "assistant",
+  source_key: "system-topology-designer"
 )
 topology_agent.assign_attributes(
   description: "Specialist agent for cross-cutting platform topology design — SDWAN composition (today), container networking + storage topology (future). Invoked by Concierge for topology work; owns the SDWAN compose skill family.",

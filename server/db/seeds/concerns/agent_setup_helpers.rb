@@ -67,6 +67,34 @@ module System
         { account: account, creator: creator, provider: provider }
       end
 
+      # Find-or-initialize a GLOBAL (account_id nil) fundamental system agent.
+      #
+      # Fundamental core/system agents are platform-provided DEFAULTS shared
+      # across accounts (account_id nil, seed-managed by source_key); an account
+      # can override one with its own copy via Ai::Agent#clone_to_account, and
+      # resolution prefers the account's row (Ai::Agent.resolve_for).
+      #
+      # Converts a pre-globalization ACCOUNT-scoped row of the same name in
+      # place (account_id → nil) rather than creating a duplicate — the id stays
+      # stable, so the agent's trust score, intervention policies, and skill
+      # bindings (all keyed by ai_agent_id) keep pointing at it. The caller
+      # assigns the rest of the attributes and saves.
+      #
+      # NOTE: a global agent has no account of its own — its operational config
+      # (trust score, intervention policies, approval chain) is still seeded
+      # per-account (the admin account here), since that is where the autonomy
+      # tick gates actions. The DEFINITION (name, prompt, type, model
+      # requirements, skill bindings) is global; the POLICY is per-account.
+      def find_or_initialize_global_agent(name:, agent_type:, source_key:)
+        agent = ::Ai::Agent.find_by(account_id: nil, name: name, agent_type: agent_type) ||
+                ::Ai::Agent.where(name: name, agent_type: agent_type).where.not(account_id: nil).first ||
+                ::Ai::Agent.new(name: name, agent_type: agent_type)
+        agent.account_id = nil
+        agent.source_key = source_key
+        agent.is_system  = true
+        agent
+      end
+
       # Idempotent upsert for an agent's trust score. Differentiates the
       # initial baseline per agent risk profile.
       #

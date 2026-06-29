@@ -52,7 +52,7 @@ count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "gl
 puts "  ✅ Instance pool policies (manual): #{count} created/updated"
 
 # Agent scope (Fleet Autonomy creating pools as part of capacity expansion)
-fleet_agent = admin_account.ai_agents.find_by(name: "Fleet Autonomy", agent_type: "monitor")
+fleet_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Fleet Autonomy", agent_type: "monitor")
 if fleet_agent
   count = upsert_pool_policies_for_scope!(admin_account, pool_policies, scope: "agent", agent: fleet_agent)
   puts "  ✅ Instance pool policies (Fleet Autonomy): #{count} created/updated"

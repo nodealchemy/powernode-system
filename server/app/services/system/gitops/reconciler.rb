@@ -226,8 +226,8 @@ module System
         # (seeded by db/seeds/system_gitops_reconciler_agent.rb). Falls back to
         # an arbitrary account agent only if the seed hasn't run — preferable to
         # a nil author, but the seed should make the fallback unreachable.
-        ::Ai::Agent.where(account: @repository.account, name: "GitOps Reconciler").first&.id ||
-          ::Ai::Agent.where(account: @repository.account).first&.id
+        ::Ai::Agent.resolve_for(@repository.account_id, name: "GitOps Reconciler", agent_type: "monitor")&.id ||
+          ::Ai::Agent.for_account(@repository.account_id).first&.id
       end
 
       def priority_for(diff)

@@ -47,12 +47,14 @@ RSpec.describe "system agents persona + model tier" do
     end
   end
 
+  # System agents are now GLOBAL (account_id nil, platform-provided).
   def agent(name)
-    Ai::Agent.find_by!(account: account, name: name)
+    Ai::Agent.global.find_by!(name: name)
   end
 
-  it "seeds all 8 system agents" do
-    expect(Ai::Agent.where(account: account, name: ALL_AGENTS).count).to eq(ALL_AGENTS.size)
+  it "seeds all 8 system agents as global (account_id nil)" do
+    expect(Ai::Agent.global.where(name: ALL_AGENTS).count).to eq(ALL_AGENTS.size)
+    expect(Ai::Agent.where(account: account, name: ALL_AGENTS)).to be_empty
   end
 
   it "gives every system agent a non-empty persona system_prompt" do

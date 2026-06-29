@@ -54,9 +54,10 @@ sdwan_prompt = <<~PROMPT
      id, the observed vs desired state, and the specific remediation.
 PROMPT
 
-sdwan_agent = admin_account.ai_agents.find_or_initialize_by(
+sdwan_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "SDWAN Manager",
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "sdwan-manager"
 )
 sdwan_agent.assign_attributes(
   description: "SDWAN reconciler — peer health, topology compilation, VIP failover, federation, BGP",

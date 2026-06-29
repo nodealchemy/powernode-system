@@ -46,7 +46,7 @@ seen_executors = Set.new
 
 registrations.each do |entry|
   seen_executors << entry[:executor]
-  agent = ::Ai::Agent.find_by(name: entry[:agent_name])
+  agent = ::Ai::Agent.global.find_by(name: entry[:agent_name])
   unless agent
     unknown_agents[entry[:agent_name]] += 1
     next
@@ -68,7 +68,7 @@ end
 # below (which would otherwise destroy any System-Concierge binding absent from
 # the registry).
 entry_skill = ::Ai::Skill.find_by(slug: "system-provision-infrastructure")
-concierge   = ::Ai::Agent.find_by(name: "System Concierge")
+concierge   = ::Ai::Agent.global.find_by(name: "System Concierge")
 if entry_skill && concierge
   desired_pairs << [ concierge.id, entry_skill.id ]
   puts "    + provisioning entry-skill → System Concierge binding queued"
@@ -102,7 +102,7 @@ puts "    ✅ Upserted #{upserted} new/changed binding(s) (#{desired_pairs.size}
 # column on ai_agents) so we don't touch bindings for agents outside the
 # system extension's domain.
 registry_agent_names = registrations.map { |e| e[:agent_name] }.uniq
-registry_agent_ids   = ::Ai::Agent.where(name: registry_agent_names).pluck(:id)
+registry_agent_ids   = ::Ai::Agent.global.where(name: registry_agent_names).pluck(:id)
 desired_set          = desired_pairs.to_set
 
 stale = ::Ai::AgentSkill
@@ -116,7 +116,7 @@ if stale.any?
 end
 
 # Sanity log: bindings per registry-known agent
-::Ai::Agent.where(name: registry_agent_names).order(:name).each do |agent|
+::Ai::Agent.global.where(name: registry_agent_names).order(:name).each do |agent|
   count = ::Ai::AgentSkill.where(ai_agent_id: agent.id).count
   puts "    • #{agent.name.ljust(28)} → #{count} skill(s)"
 end

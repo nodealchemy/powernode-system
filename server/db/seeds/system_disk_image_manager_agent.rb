@@ -46,9 +46,10 @@ disk_image_prompt = <<~PROMPT
   5. **Name the publication, the platform, and the change** in every plan.
 PROMPT
 
-disk_image_agent = admin_account.ai_agents.find_or_initialize_by(
+disk_image_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Disk Image Manager",
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "disk-image-manager"
 )
 disk_image_agent.assign_attributes(
   description: "Disk image CI orchestrator — publication promotion, rollback, retention",

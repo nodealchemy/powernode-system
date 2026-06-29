@@ -159,9 +159,10 @@ system_prompt = <<~PROMPT
   starting context. For deeper queries, dispatch a tool.
 PROMPT
 
-concierge_agent = admin_account.ai_agents.find_or_initialize_by(
+concierge_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "System Concierge",
-  agent_type: "assistant"
+  agent_type: "assistant",
+  source_key: "system-concierge"
 )
 concierge_agent.assign_attributes(
   description: "Operator chat agent for the full system extension surface (fleet, SDWAN, container runtimes, modules, disk image CI) — read-only by default, dispatches state-changing skills with operator confirmation",

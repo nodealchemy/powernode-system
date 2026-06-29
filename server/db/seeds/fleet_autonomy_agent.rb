@@ -58,9 +58,10 @@ fleet_prompt = <<~PROMPT
      action, and the outcome so operators review reasoning, not just effects.
 PROMPT
 
-fleet_agent = admin_account.ai_agents.find_or_initialize_by(
+fleet_agent = System::Seeds::AgentSetupHelpers.find_or_initialize_global_agent(
   name: "Fleet Autonomy",
-  agent_type: "monitor"
+  agent_type: "monitor",
+  source_key: "fleet-autonomy"
 )
 fleet_agent.assign_attributes(
   description: "Self-improving fleet reconciler — runs sensors, gates actions, extracts learnings",

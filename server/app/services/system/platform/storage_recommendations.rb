@@ -113,8 +113,9 @@ module System
         def resolve_system_agent_id(account)
           # Prefer the seeded System Concierge — it's the canonical
           # "system operator" agent on every platform.
-          concierge = ::Ai::Agent.where(account: account)
+          concierge = ::Ai::Agent.for_account(account.id)
                                  .where("metadata ->> 'concierge_kind' = ?", "system_concierge")
+                                 .account_override_first
                                  .first
           return concierge.id if concierge
 

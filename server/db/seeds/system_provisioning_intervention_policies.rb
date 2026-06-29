@@ -28,7 +28,7 @@ end
 
 # Locate the Fleet Autonomy agent — its presence is a soft prerequisite.
 # Without it the policies still apply (scope = global), so we only warn.
-fleet_agent = admin_account.ai_agents.find_by(agent_type: "monitor", name: "Fleet Autonomy")
+fleet_agent = ::Ai::Agent.resolve_for(admin_account.id, name: "Fleet Autonomy", agent_type: "monitor")
 if fleet_agent.nil?
   puts "  ⚠️  Fleet Autonomy agent not seeded — provisioning policies will land at global scope"
 end
