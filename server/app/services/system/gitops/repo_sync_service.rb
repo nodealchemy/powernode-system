@@ -89,6 +89,19 @@ module System
           raise "git #{args.first} failed: #{sanitized.to_s.strip}"
         end
         [ out, err ]
+      ensure
+        cleanup_secret_files!
+      end
+
+      # Delete the one-shot askpass / ssh-key files written by build_git_env so the
+      # git password and SSH key never linger on disk after the command. Runs on
+      # every run_git! exit (success or raise); paths are deterministic.
+      def cleanup_secret_files!
+        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key" ].each do |path|
+          File.delete(path) if File.exist?(path)
+        end
+      rescue StandardError => e
+        Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.message}")
       end
 
       # Builds an env hash with Git auth configured, depending on the
