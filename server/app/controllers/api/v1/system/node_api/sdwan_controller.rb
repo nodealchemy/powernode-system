@@ -196,26 +196,34 @@ module Api
           # this instance has joined. The agent's vrf_applier consumes
           # this list directly; ordering is irrelevant.
           def vrf_assignments_for(instance)
-            ::Sdwan::HostVrfAssignment
-              .where(node_instance_id: instance.id, state: %w[active draining])
-              .includes(:network)
-              .map do |hva|
-                net = hva.network
-                local_addrs = net.peers
+            assignments = ::Sdwan::HostVrfAssignment
+                            .where(node_instance_id: instance.id, state: %w[active draining])
+                            .includes(:network)
+                            .to_a
+
+            # One query for this instance's peer addresses (grouped by network)
+            # instead of net.peers.where(...).pluck per assignment — this runs on
+            # the agent heartbeat config pull, so the per-assignment query was an
+            # N+1 repeated across the fleet.
+            addrs_by_network = ::Sdwan::Peer
                                  .where(node_instance_id: instance.id)
-                                 .pluck(:assigned_address)
-                                 .map { |a| a.to_s.split("/").first }
-                {
-                  vrf_name: hva.vrf_name,
-                  table_id: hva.table_id,
-                  network_handle: net.network_handle,
-                  # Phase N1a follow-up — derive bound_iface from the
-                  # HVA's short_id (single source of truth) so the
-                  # WG iface name matches the disambiguated VRF name.
-                  bound_iface: hva.wg_iface_name,
-                  source_addrs: local_addrs
-                }
-              end
+                                 .pluck(:sdwan_network_id, :assigned_address)
+                                 .group_by(&:first)
+                                 .transform_values { |rows| rows.map { |(_nid, addr)| addr.to_s.split("/").first } }
+
+            assignments.map do |hva|
+              net = hva.network
+              {
+                vrf_name: hva.vrf_name,
+                table_id: hva.table_id,
+                network_handle: net.network_handle,
+                # Phase N1a follow-up — derive bound_iface from the
+                # HVA's short_id (single source of truth) so the
+                # WG iface name matches the disambiguated VRF name.
+                bound_iface: hva.wg_iface_name,
+                source_addrs: addrs_by_network.fetch(hva.sdwan_network_id, [])
+              }
+            end
           end
         end
       end
