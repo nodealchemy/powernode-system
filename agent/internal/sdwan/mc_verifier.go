@@ -40,32 +40,32 @@ import (
 // MCEnvelope is the parsed content of the signed JSON body. Mirrors the
 // `Sdwan::MembershipCredentialSigner#render_envelope` output.
 type MCEnvelope struct {
-	Issuer               string                   `json:"iss"`
-	Subject              string                   `json:"sub"`
-	Audience             string                   `json:"aud"`
-	IssuedAt             int64                    `json:"iat"`
-	NotBefore            int64                    `json:"nbf"`
-	Expires              int64                    `json:"exp"`
-	Revision             int64                    `json:"rev"`
-	WireguardPubKey      string                   `json:"wg_pubkey"`
-	AddressV6            string                   `json:"addr_v6"`
-	ManagedRoutes        []map[string]interface{} `json:"managed_routes"`
-	Tags                 []map[string]interface{} `json:"tags"`
-	Capabilities         []string                 `json:"capabilities"`
-	Endpoints            []map[string]interface{} `json:"endpoints"`
+	Issuer          string                   `json:"iss"`
+	Subject         string                   `json:"sub"`
+	Audience        string                   `json:"aud"`
+	IssuedAt        int64                    `json:"iat"`
+	NotBefore       int64                    `json:"nbf"`
+	Expires         int64                    `json:"exp"`
+	Revision        int64                    `json:"rev"`
+	WireguardPubKey string                   `json:"wg_pubkey"`
+	AddressV6       string                   `json:"addr_v6"`
+	ManagedRoutes   []map[string]interface{} `json:"managed_routes"`
+	Tags            []map[string]interface{} `json:"tags"`
+	Capabilities    []string                 `json:"capabilities"`
+	Endpoints       []map[string]interface{} `json:"endpoints"`
 }
 
 // MCWire — the over-the-wire shape served by the platform alongside the
 // rest of the per-network config. Mirrors
 // `Sdwan::MembershipCredential#to_wire`.
 type MCWire struct {
-	Envelope            string `json:"envelope"`              // canonical JSON of MCEnvelope
-	Signature           string `json:"signature"`             // base64 Ed25519 signature
-	ConstellationHandle string `json:"constellation_handle"`  // signing key locator
+	Envelope            string `json:"envelope"`             // canonical JSON of MCEnvelope
+	Signature           string `json:"signature"`            // base64 Ed25519 signature
+	ConstellationHandle string `json:"constellation_handle"` // signing key locator
 	Revision            int64  `json:"revision"`
-	NotBefore           string `json:"not_before"`            // RFC3339
-	NotAfter            string `json:"not_after"`             // RFC3339
-	RefreshAfter        string `json:"refresh_after"`         // RFC3339
+	NotBefore           string `json:"not_before"`    // RFC3339
+	NotAfter            string `json:"not_after"`     // RFC3339
+	RefreshAfter        string `json:"refresh_after"` // RFC3339
 }
 
 // CachedMC is what the verifier stores per (peer, network) after a

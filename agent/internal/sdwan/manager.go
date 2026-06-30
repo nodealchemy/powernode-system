@@ -110,7 +110,7 @@ func NewManager(client *transport.Client, applier WgApplier, onError func(string
 		OvnControllerApplier: NewOvnControllerApplier(),
 		OvnNbApplier:         NewShellOvnNbApplier(),
 		MCVerifier:           NewMCVerifier(),
-		OnError:         onError,
+		OnError:              onError,
 	}
 }
 

@@ -143,7 +143,7 @@ func TestMCVerifier_RejectsNotYetValid(t *testing.T) {
 
 	now := time.Unix(1_700_000_000, 0)
 	env := MCEnvelope{
-		Issuer:    handle,
+		Issuer: handle,
 		// nbf is well past the clock skew tolerance.
 		NotBefore: now.Add(10 * time.Minute).Unix(),
 		Expires:   now.Add(1 * time.Hour).Unix(),
@@ -163,7 +163,7 @@ func TestMCVerifier_AllowsClockSkewOnNbf(t *testing.T) {
 
 	now := time.Unix(1_700_000_000, 0)
 	env := MCEnvelope{
-		Issuer:    handle,
+		Issuer: handle,
 		// nbf is 30s in the future, well within the 60s tolerance.
 		NotBefore: now.Add(30 * time.Second).Unix(),
 		Expires:   now.Add(1 * time.Hour).Unix(),

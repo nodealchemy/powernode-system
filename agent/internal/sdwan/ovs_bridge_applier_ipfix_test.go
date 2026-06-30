@@ -135,7 +135,7 @@ func TestOvsBridgeApplier_IpfixIPv6TargetBracketed(t *testing.T) {
 
 	desired := []DesiredBridge{
 		{Name: "pwnbr-3", Kind: "ovs", Ipfix: &DesiredIpfix{
-			Targets: []string{"[fd00::1]:4739"},
+			Targets:  []string{"[fd00::1]:4739"},
 			Sampling: 16,
 		}},
 	}

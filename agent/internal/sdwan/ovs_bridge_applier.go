@@ -295,7 +295,7 @@ func (a *ShellOvsBridgeApplier) bringUp(ctx context.Context, name string) error 
 //     auto-garbage-collects orphan IPFIX rows after the last bridge
 //     stops referring to them.
 //   - desired != nil: create a new IPFIX row with the desired targets
-//     + sampling and atomically link it to the bridge in one
+//     plus sampling and atomically link it to the bridge in one
 //     transaction. This is the OVS idiom for "set or replace IPFIX
 //     config". `--may-exist` does NOT apply to create; we always
 //     create-and-link, which produces an identical OVSDB state if the

@@ -92,11 +92,11 @@ type frrSummaryRoot struct {
 }
 
 type frrAfiSummary struct {
-	RouterID  string                     `json:"routerId"`
-	As        int64                      `json:"as"`
-	TableVer  int                        `json:"tableVersion"`
-	RibCount  int                        `json:"ribCount"`
-	Peers     map[string]frrAfiPeerEntry `json:"peers"`
+	RouterID string                     `json:"routerId"`
+	As       int64                      `json:"as"`
+	TableVer int                        `json:"tableVersion"`
+	RibCount int                        `json:"ribCount"`
+	Peers    map[string]frrAfiPeerEntry `json:"peers"`
 }
 
 type frrAfiPeerEntry struct {
