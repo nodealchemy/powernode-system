@@ -16,7 +16,7 @@ module Api
 
           def index
             require_permission("system.sdwan.networks.read")
-            scope = ::Sdwan::Network.where(account_id: @account.id).order(:name)
+            scope = ::Sdwan::Network.where(account_id: @account.id).includes(:peers).order(:name)
             scope = scope.where(status: params[:status]) if params[:status].present?
             networks = paginate(scope)
             render_success(networks: networks.map { |n| serialize_network(n) }, meta: pagination_meta)

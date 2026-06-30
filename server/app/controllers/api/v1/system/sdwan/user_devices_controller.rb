@@ -122,7 +122,7 @@ module Api
             {
               id: d.id,
               access_grant_id: d.sdwan_access_grant_id,
-              network_id: d.network.id,
+              network_id: @grant.sdwan_network_id,
               label: d.label,
               public_key: d.public_key,
               assigned_address: d.assigned_address,

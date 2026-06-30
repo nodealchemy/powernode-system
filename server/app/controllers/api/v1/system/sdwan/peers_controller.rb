@@ -18,7 +18,7 @@ module Api
 
           def index
             require_permission("system.sdwan.peers.read")
-            peers = @network.peers.includes(:node_instance, :keys).order(:created_at)
+            peers = @network.peers.includes(:node_instance, :keys, :subnet_advertisements).order(:created_at)
             render_success(peers: peers.map { |p| serialize_peer(p) }, count: peers.size)
           end
 
@@ -163,7 +163,7 @@ module Api
               tags: Array(p.tags),
               bgp_route_reflector_client: p.bgp_route_reflector_client,
               bgp_router_id_override: p.bgp_router_id_override,
-              advertised_prefix_count: p.subnet_advertisements.active.count
+              advertised_prefix_count: p.subnet_advertisements.count(&:active?)
             }
           end
 

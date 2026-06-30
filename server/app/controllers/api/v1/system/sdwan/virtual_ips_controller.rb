@@ -21,6 +21,8 @@ module Api
             require_permission("system.sdwan.vips.read")
             vips = @network.virtual_ips.order(:name)
             vips = vips.where(state: params[:state]) if params[:state].present?
+            vips = vips.to_a
+            @primary_holders = preload_primary_holders(vips)
             render_success(virtual_ips: vips.map { |v| serialize_vip(v) }, count: vips.size)
           end
 
@@ -159,8 +161,29 @@ module Api
             end
           end
 
+          # Resolve a VIP's primary holder from the per-request preloaded map
+          # (index path) or fall back to the model lookup (single-record paths
+          # where no map was built).
+          def primary_holder_for(v)
+            holder_id = Array(v.holder_peer_ids).first
+            if @primary_holders
+              @primary_holders[holder_id]
+            else
+              v.primary_holder
+            end
+          end
+
+          # One batched Sdwan::Peer load for the whole page instead of a
+          # per-VIP find_by inside VirtualIp#primary_holder.
+          def preload_primary_holders(vips)
+            ids = vips.filter_map { |v| Array(v.holder_peer_ids).first }.uniq
+            return {} if ids.empty?
+
+            ::Sdwan::Peer.where(id: ids).index_by(&:id)
+          end
+
           def serialize_vip(v)
-            primary = v.primary_holder
+            primary = primary_holder_for(v)
             {
               id: v.id,
               network_id: v.sdwan_network_id,
