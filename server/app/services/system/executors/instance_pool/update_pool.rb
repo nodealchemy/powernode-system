@@ -8,7 +8,7 @@ module System
 
         def perform
           pool = ::System::InstancePool.find(params[:pool_id])
-          pool.update!(params[:attributes].to_h.symbolize_keys)
+          pool.update!(attrs)
           { pool_id: pool.id }
         end
 

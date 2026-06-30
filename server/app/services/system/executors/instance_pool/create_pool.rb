@@ -8,7 +8,7 @@ module System
 
         def perform
           pool = ::System::InstancePool.create!(
-            params[:attributes].to_h.symbolize_keys.merge(account: account)
+            attrs.merge(account: account)
           )
           { pool_id: pool.id, name: pool.name, target_size: pool.try(:target_size) }
         end

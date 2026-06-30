@@ -9,7 +9,7 @@ module System
         def perform
           service = ::System::KubernetesClusterProvisionerService.new(
             account: account,
-            attributes: params[:attributes].to_h.symbolize_keys
+            attributes: attrs
           )
           cluster = service.bootstrap!
           { cluster_id: cluster&.id, status: cluster&.status }
