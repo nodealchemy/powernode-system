@@ -94,6 +94,11 @@ module Api
             reports = Array(params[:peers])
 
             updated = reports.map do |r|
+              # The agent retries this heartbeat on failure, so a non-object
+              # element (e.g. a bare string) must be skipped, not raise a
+              # TypeError on r[:peer_id] and 500 the whole report.
+              next nil unless r.respond_to?(:key?)
+
               peer = ::Sdwan::Peer.where(node_instance_id: instance.id).find_by(id: r[:peer_id])
               next nil unless peer
 

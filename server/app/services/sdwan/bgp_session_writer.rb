@@ -82,8 +82,27 @@ module Sdwan
         existing
       else
         attrs[:last_state_change_at] = now
-        ::Sdwan::BgpSession.create!(attrs)
+        create_or_recover_session(local_peer, neighbor_address, attrs, new_state, now)
       end
+    end
+
+    # Insert the new session row, tolerating a concurrent insert. Two overlapping
+    # agent ticks can both miss the find_by above and race to create! the same
+    # (sdwan_peer_id, neighbor_address) row; the unique index rejects the loser
+    # with RecordNotUnique. The agent retries on every tick, so a 500 here storms
+    # — recover by updating the row the race winner just created.
+    def create_or_recover_session(local_peer, neighbor_address, attrs, new_state, now)
+      ::Sdwan::BgpSession.create!(attrs)
+    rescue ActiveRecord::RecordNotUnique
+      winner = ::Sdwan::BgpSession.find_by(
+        sdwan_peer_id: local_peer.id, neighbor_address: neighbor_address
+      )
+      return nil unless winner
+
+      update_attrs = attrs.except(:last_state_change_at)
+      update_attrs[:last_state_change_at] = now if winner.state != new_state
+      winner.update!(update_attrs)
+      winner
     end
 
     # Resolve a neighbor_address (overlay /128 or /32) to a peer_id by
