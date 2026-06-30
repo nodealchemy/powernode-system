@@ -77,9 +77,14 @@ module PowernodeSystem
           version: defined?(PowernodeSystem::VERSION) ? PowernodeSystem::VERSION : nil,
           features_module: defined?(PowernodeSystem::Features) ? PowernodeSystem::Features : nil,
           capabilities: [:kubernetes_deploy],
-          # Contribute the Kubernetes deploy method to the core Ai::Deploy::MethodRegistry
-          # without core ever naming System::. Resolved lazily by class name.
-          providers: { deploy_method_providers: "System::Deploy::MethodProvider" }
+          # Contribute behavior to core through generic seams without core ever naming System::.
+          # Resolved lazily by class name:
+          #   * deploy_method_providers   — Kubernetes deploy method for Ai::Deploy::MethodRegistry
+          #   * provision_label_resolver  — instance/region display labels for PlanSnapshotService
+          providers: {
+            deploy_method_providers: "System::Deploy::MethodProvider",
+            provision_label_resolver: "System::ProvisionLabelResolver"
+          }
         )
       end
     end

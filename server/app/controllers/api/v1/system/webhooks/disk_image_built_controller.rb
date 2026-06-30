@@ -119,8 +119,10 @@ module Api
           end
 
           def dispatch_async(publication)
-            ::WorkerApiClient.new.queue_disk_image_publication_processing(
-              publication_id: publication.id
+            # System owns this worker job; enqueue it through the core client's slug-agnostic
+            # queue_job primitive so core never names a System::*Job.
+            ::WorkerApiClient.new.queue_job(
+              "System::ProcessDiskImagePublicationJob", [ publication.id ], queue: "services"
             )
           rescue ::WorkerApiClient::ApiError => e
             Rails.logger.warn "[DiskImageBuilt] worker dispatch failed (#{e.message}); falling back to inline"

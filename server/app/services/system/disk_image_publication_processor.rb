@@ -171,7 +171,9 @@ module System
     # triggering on-publish keeps history compact between runs.
     def enqueue_retention_sweep(platform)
       return unless defined?(::WorkerApiClient)
-      ::WorkerApiClient.new.queue_disk_image_retention_sweep(platform_id: platform.id)
+      # System owns this worker job; enqueue it through the core client's slug-agnostic
+      # queue_job primitive so core never names a System::*Job.
+      ::WorkerApiClient.new.queue_job("System::ExpireOldDiskImageFileObjectsJob", [], queue: "maintenance")
     rescue StandardError => e
       Rails.logger.info "[DiskImagePublicationProcessor] retention sweep enqueue skipped: #{e.class}: #{e.message}"
     end

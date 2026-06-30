@@ -125,8 +125,10 @@ module Api
           # actually run the manifest fetch + version snapshot + OCI ingest.
           # Webhook acks Gitea immediately.
           def dispatch_async(node_module, tag)
-            response = ::WorkerApiClient.new.queue_module_publication_processing(
-              node_module.id, tag
+            # System owns this worker job; enqueue it through the core client's slug-agnostic
+            # queue_job primitive so core never names a System::*Job.
+            response = ::WorkerApiClient.new.queue_job(
+              "System::ProcessModulePublicationJob", [ node_module.id, tag ], queue: "services"
             )
             "Queued module=#{node_module.name} tag=#{tag} job=#{response&.dig(:job_id) || response&.dig('job_id') || 'unknown'}"
           rescue ::WorkerApiClient::ApiError => e

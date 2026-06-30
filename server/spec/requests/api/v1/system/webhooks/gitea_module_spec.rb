@@ -375,8 +375,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       end
 
       it "enqueues System::ProcessModulePublicationJob and acks immediately without running the processor inline" do
-        worker_double = instance_double(WorkerApiClient,
-                                        queue_module_publication_processing: { job_id: "job-abc" })
+        worker_double = instance_double(WorkerApiClient, queue_job: { job_id: "job-abc" })
         allow(WorkerApiClient).to receive(:new).and_return(worker_double)
 
         # Processor MUST NOT run inline when async dispatch succeeds.
@@ -392,12 +391,14 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
 
         expect(response).to have_http_status(:ok)
         expect(JSON.parse(response.body)["message"]).to include("Queued", "v1.2.3", "job=job-abc")
-        expect(worker_double).to have_received(:queue_module_publication_processing).with(node_module.id, "v1.2.3")
+        # Core client is slug-agnostic: the System extension names its own job via queue_job.
+        expect(worker_double).to have_received(:queue_job)
+          .with("System::ProcessModulePublicationJob", [ node_module.id, "v1.2.3" ], queue: "services")
       end
 
       it "falls back to inline processing when worker dispatch raises" do
         worker_double = instance_double(WorkerApiClient)
-        allow(worker_double).to receive(:queue_module_publication_processing)
+        allow(worker_double).to receive(:queue_job)
           .and_raise(WorkerApiClient::ApiError, "worker unreachable")
         allow(WorkerApiClient).to receive(:new).and_return(worker_double)
 
