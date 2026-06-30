@@ -67,7 +67,7 @@ module Api
             result = ::Sdwan::IpfixIngestService.call(
               account: @account,
               ipfix_collector: @collector,
-              records: records.map(&:to_unsafe_h)
+              records: records.map { |r| r.respond_to?(:to_unsafe_h) ? r.to_unsafe_h : r }
             )
 
             render_success(
@@ -78,6 +78,12 @@ module Api
             )
           rescue ArgumentError => e
             render_error(e.message, status: :unprocessable_content)
+          rescue ActiveRecord::StatementInvalid
+            # webhook-500 safety net: a record that slips past the cheap field
+            # validation but the DB rejects (e.g. an inet/numeric value) must not
+            # 500 and trigger a sidecar retry storm — reject the batch with 422.
+            render_error("flow sample batch rejected: invalid record value",
+                         status: :unprocessable_content)
           end
 
           private

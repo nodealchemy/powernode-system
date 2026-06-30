@@ -18,6 +18,8 @@
 # template management, etc.
 #
 # Phase O6 follow-up of the OVS+OVN dual-profile networking roadmap.
+require "ipaddr"
+
 module Sdwan
   class IpfixIngestService
     # Reasonable upper bound to prevent a sidecar from posting an
@@ -80,13 +82,24 @@ module Sdwan
     # expensive (CIDR parsing, etc.) is left to the model layer's
     # bulk-load behavior.
     def normalize_record(raw, default_observed_at:)
-      r = raw.is_a?(Hash) ? raw : raw.to_h
+      r =
+        if raw.is_a?(Hash)
+          raw
+        elsif raw.respond_to?(:to_unsafe_h)
+          raw.to_unsafe_h
+        else
+          # A non-object array element (a bare string/number) must be rejected,
+          # not crash the batch with NoMethodError on raw.to_h.
+          return [ nil, "record must be a JSON object" ]
+        end
 
       src_ip = (r[:src_ip] || r["src_ip"]).to_s.strip
       return [ nil, "src_ip is required" ]            if src_ip.empty?
+      return [ nil, "src_ip is not a valid IP" ]      unless valid_ip?(src_ip)
 
       dst_ip = (r[:dst_ip] || r["dst_ip"]).to_s.strip
       return [ nil, "dst_ip is required" ]            if dst_ip.empty?
+      return [ nil, "dst_ip is not a valid IP" ]      unless valid_ip?(dst_ip)
 
       protocol = (r[:protocol] || r["protocol"]).to_i
       unless protocol.between?(::Sdwan::FlowSample::PROTOCOL_MIN, ::Sdwan::FlowSample::PROTOCOL_MAX)
@@ -140,6 +153,17 @@ module Sdwan
       return :invalid unless i.between?(::Sdwan::FlowSample::PORT_MIN, ::Sdwan::FlowSample::PORT_MAX)
 
       i
+    end
+
+    # Reject anything Postgres's `inet` column would choke on BEFORE it reaches
+    # insert_all (which bypasses model validation). Without this one bad IP would
+    # raise PG::InvalidTextRepresentation and fail the entire batch, and the
+    # sidecar would retry the poison record forever.
+    def valid_ip?(str)
+      IPAddr.new(str)
+      true
+    rescue IPAddr::Error
+      false
     end
 
     def parse_time(raw)
