@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         policy = ::Sdwan::RoutePolicy.create!(
-          params[:attributes].to_h.symbolize_keys.merge(account: account)
+          attrs.merge(account: account)
         )
         { policy_id: policy.id, name: policy.try(:name) }
       end

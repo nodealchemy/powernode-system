@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         policy = ::Sdwan::RoutePolicy.find(params[:policy_id])
-        policy.update!(params[:attributes].to_h.symbolize_keys)
+        policy.update!(attrs)
         { policy_id: policy.id }
       end
 

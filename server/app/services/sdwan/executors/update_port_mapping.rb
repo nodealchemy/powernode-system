@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         mapping = ::Sdwan::PortMapping.find(params[:mapping_id])
-        mapping.update!(params[:attributes].to_h.symbolize_keys)
+        mapping.update!(attrs)
         { mapping_id: mapping.id }
       end
 

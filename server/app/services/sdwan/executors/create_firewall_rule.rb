@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
-        rule = network.firewall_rules.create!(params[:attributes].to_h.symbolize_keys)
+        rule = network.firewall_rules.create!(attrs)
         { rule_id: rule.id, network_id: network.id }
       end
 

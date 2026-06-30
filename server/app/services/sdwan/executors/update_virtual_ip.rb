@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         vip = ::Sdwan::VirtualIp.find(params[:vip_id])
-        vip.update!(params[:attributes].to_h.symbolize_keys)
+        vip.update!(attrs)
         { vip_id: vip.id }
       end
 

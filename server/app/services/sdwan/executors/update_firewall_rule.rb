@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         rule = ::Sdwan::FirewallRule.find(params[:rule_id])
-        rule.update!(params[:attributes].to_h.symbolize_keys)
+        rule.update!(attrs)
         { rule_id: rule.id }
       end
 

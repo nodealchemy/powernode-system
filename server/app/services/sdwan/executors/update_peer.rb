@@ -9,7 +9,7 @@ module Sdwan
 
       def perform
         peer = ::Sdwan::Peer.find(params[:peer_id])
-        peer.update!(params[:attributes].to_h.symbolize_keys)
+        peer.update!(attrs)
         { peer_id: peer.id, updated_attributes: params[:attributes] }
       end
 

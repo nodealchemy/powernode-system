@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
-        network.update!(params[:attributes].to_h.symbolize_keys)
+        network.update!(attrs)
         { network_id: network.id }
       end
 

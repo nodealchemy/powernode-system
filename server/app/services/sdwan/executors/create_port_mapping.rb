@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
-        mapping = network.port_mappings.create!(params[:attributes].to_h.symbolize_keys)
+        mapping = network.port_mappings.create!(attrs)
         { mapping_id: mapping.id }
       end
 

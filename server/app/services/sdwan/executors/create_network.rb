@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.create!(
-          params[:attributes].to_h.symbolize_keys.merge(account: account)
+          attrs.merge(account: account)
         )
         { network_id: network.id, name: network.name }
       end

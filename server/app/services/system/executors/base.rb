@@ -62,6 +62,15 @@ module System
         nil
       end
 
+      # Create/update attribute payload coerced to a symbol-keyed Hash. The
+      # SDWAN CRUD executors all receive their attributes under
+      # params[:attributes]; this centralizes the `to_h.symbolize_keys`
+      # coercion. Nil-safe (nil.to_h is {}), and returns a fresh Hash each call
+      # so callers can merge/mutate a local copy without touching params.
+      def attrs
+        params[:attributes].to_h.symbolize_keys
+      end
+
       def account
         deferred_operation&.account
       end

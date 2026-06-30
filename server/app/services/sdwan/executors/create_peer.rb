@@ -10,7 +10,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
-        peer = network.peers.create!(params[:attributes].to_h.symbolize_keys)
+        peer = network.peers.create!(attrs)
         { peer_id: peer.id, network_id: network.id, endpoint: peer.try(:endpoint) }
       end
 

@@ -7,7 +7,7 @@ module Sdwan
 
       def perform
         network = ::Sdwan::Network.find(params[:network_id])
-        vip = network.virtual_ips.create!(params[:attributes].to_h.symbolize_keys)
+        vip = network.virtual_ips.create!(attrs)
         { vip_id: vip.id, address: vip.try(:address) }
       end
 

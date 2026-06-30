@@ -21,12 +21,12 @@ module Sdwan
       protected
 
       def perform
-        attrs = (params[:attributes] || {}).to_h.symbolize_keys
-        generate_token = attrs.delete(:generate_token) != false
-        ttl_seconds = (attrs.delete(:token_ttl_seconds) || 7.days.to_i).to_i
+        attributes = attrs
+        generate_token = attributes.delete(:generate_token) != false
+        ttl_seconds = (attributes.delete(:token_ttl_seconds) || 7.days.to_i).to_i
 
         peer = ::System::FederationPeer.create!(
-          attrs.merge(account: account, status: "proposed")
+          attributes.merge(account: account, status: "proposed")
         )
 
         result = { federation_peer_id: peer.id }
