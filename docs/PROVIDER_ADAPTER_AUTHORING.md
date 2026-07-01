@@ -300,6 +300,32 @@ The shared examples (opt-in groups, adopt as your internals stabilize):
 
 End-to-end provider verification runs against a real **Proxmox host**, not the in-memory mock.
 
+### Specs gated on an optional SDK gem (aws / openstack)
+
+`AwsProvider` and `OpenStackProvider` mock the vendor SDK client (`Aws::EC2::Client`,
+`Fog::OpenStack::Compute`), so their specs' `before` blocks reference constants that only exist
+when the SDK gem is installed. Those gems are **intentionally absent from the core bundle** (see
+`server/powernode_system.gemspec`), so under the default bundle these specs self-**skip** (RSpec
+`pending`) rather than fail — ~64 examples across the two files. A green run under the default bundle
+therefore does **not** exercise `AwsProvider` / `OpenStackProvider` (including `run_instances`
+`ClientToken` / `tag_specifications` and the connect/read timeout handling). `GcpProvider`
+(mocked clients) and `AzureProvider` (hand-rolled Faraday client) need no SDK gem and always run.
+
+To actually exercise the SDK-gated specs, run them with the SDK gems layered onto the core bundle:
+
+```bash
+# from anywhere in a checkout where extensions/system/ is mounted in the platform:
+bash extensions/system/scripts/test-provider-gems.sh
+# or a subset (paths relative to server/):
+bash extensions/system/scripts/test-provider-gems.sh \
+  ../extensions/system/server/spec/services/system/providers/aws_provider_spec.rb
+```
+
+The script generates a throwaway supplementary Gemfile (`eval_gemfile "Gemfile"` + `aws-sdk-ec2` +
+`fog-openstack`), installs it, and runs the provider suite — the 64 skips become real assertions.
+CI runs this automatically in the **`provider-specs`** job (`.gitea/workflows/ci.yaml`); the default
+`rspec` job's `services` suite still shows those 64 as `pending`, which is expected there.
+
 ---
 
 ## 8. The error hierarchy — when to raise each

@@ -239,6 +239,103 @@ jobs:
           done
           exit 0
 
+  # Cloud-provider adapter specs WITH their optional SDK gems bundled.
+  #
+  # The `rspec` job's `services` suite runs the provider specs too, but the
+  # aws/openstack ones self-skip there: their `before` blocks stub
+  # `Aws::EC2::Client` / `Fog::OpenStack::Compute`, which aren't in the core
+  # bundle (those gems are intentionally omitted — see
+  # server/powernode_system.gemspec). So ~64 provider examples show `pending`
+  # in that suite and AwsProvider / OpenStackProvider go UN-exercised — a
+  # green `rspec` job is misleading for provider code. This lane layers the
+  # SDK gems onto the core bundle (via extensions/system/scripts/test-provider-gems.sh)
+  # so those specs actually run and provider regressions are caught.
+  provider-specs:
+    needs: ci-hygiene
+    runs-on: ubuntu-24.04
+    # Same postgres/redis sidecars + docker-bridge-gateway addressing as the
+    # `rspec` job above — see the long comment there for why localhost and
+    # service-name DNS both fail on this act runner.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: powernode_test
+        ports:
+          - 0.0.0.0:5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 0.0.0.0:6379:6379
+    env:
+      RAILS_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@172.17.0.1:5432/powernode_test
+      REDIS_URL: redis://172.17.0.1:6379/0
+    steps:
+      - name: Check out the system extension
+        uses: actions/checkout@v4
+        with:
+          path: extensions/system
+
+      - name: Check out the parent platform
+        uses: actions/checkout@v4
+        with:
+          repository: powernode/powernode-platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN }}
+          path: powernode-platform
+          submodules: recursive
+
+      - name: Mount extension into parent
+        run: |
+          rm -rf powernode-platform/extensions/system
+          mv extensions/system powernode-platform/extensions/system
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.8
+          bundler-cache: true
+          working-directory: powernode-platform/server
+
+      - name: Prepare test database
+        working-directory: powernode-platform/server
+        run: |
+          bundle exec rails db:create
+          bundle exec rails db:schema:load
+          # Backfill schema_migrations from extension migrations so rspec
+          # doesn't complain about pending migrations
+          bundle exec rails runner '
+            Dir.glob("../extensions/*/server/db/migrate/*.rb").each do |f|
+              v = File.basename(f)[/\A\d+/]
+              ActiveRecord::Base.connection.execute(
+                "INSERT INTO schema_migrations (version) VALUES ('"'"'#{v}'"'"') ON CONFLICT DO NOTHING"
+              )
+            end
+          '
+
+      # The script generates a throwaway supplementary Gemfile beside the core
+      # Gemfile (eval_gemfile "Gemfile" + aws-sdk-ec2 + fog-openstack), does a
+      # non-frozen install into the already-cached bundle, then runs the four
+      # provider specs. aws/openstack now execute instead of self-skipping.
+      - name: Run provider specs with SDK gems bundled
+        working-directory: powernode-platform
+        run: bash extensions/system/scripts/test-provider-gems.sh
+
+      - name: Reap own sidecars
+        if: always()
+        run: |
+          set +e
+          for port in 6379 5432; do
+            docker ps --format '{{.ID}} {{.Ports}}' \
+              | awk -v p=":$port->" 'index($0, p) {print $1}' \
+              | xargs -r docker rm -f
+          done
+          exit 0
+
   frontend-typecheck:
     runs-on: ubuntu-24.04
     steps:
