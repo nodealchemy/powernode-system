@@ -28,6 +28,17 @@ SECRETS_FILE=/etc/powernode/backend-default.conf
 ADMIN_CREDS=/etc/powernode/admin-credentials.json
 RAILS_DIR=/opt/powernode/server
 
+# --- Derive service hosts (loopback by default for the all-in-one image) ---
+# postgres + redis are sibling modules co-located on this instance, so
+# localhost is the correct DEFAULT for the single-appliance topology. A
+# split/distributed fleet injects POWERNODE_DB_HOST / POWERNODE_REDIS_HOST
+# (via this module's systemd environment) to point the hub at an external
+# postgres/redis WITHOUT rebuilding the image. Auth is unchanged (passwordless
+# trust); serving a remote DB additionally requires opening the server side
+# (postgres-primary listen_addresses / pg_hba), out of scope here.
+DB_HOST=${POWERNODE_DB_HOST:-localhost}
+REDIS_HOST=${POWERNODE_REDIS_HOST:-localhost}
+
 mkdir -p /etc/powernode
 
 # --- Generate secrets if missing (first-boot only) ---
@@ -47,8 +58,8 @@ SECRET_KEY_BASE=$SKB
 ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$ARP
 ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$ARD
 ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$ARS
-DATABASE_URL=postgres://powernode@localhost:5432/powernode_production
-REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgres://powernode@${DB_HOST}:5432/powernode_production
+REDIS_URL=redis://${REDIS_HOST}:6379/0
 POWERNODE_INITIAL_ADMIN_PASSWORD=$ADMIN_PW
 # JWT signing for the platform's user-auth tokens. config/initializers/jwt.rb
 # raises if JWT_SECRET_KEY is unset in production, and production defaults to
@@ -76,9 +87,9 @@ set +a
 cd "$RAILS_DIR"
 
 # --- Wait for postgres (sibling module powernode-postgres) ---
-echo "[rails-start] Waiting for postgres on localhost:5432..."
+echo "[rails-start] Waiting for postgres on ${DB_HOST}:5432..."
 for i in $(seq 1 30); do
-  if /usr/bin/pg_isready -h localhost -p 5432 -U postgres >/dev/null 2>&1; then
+  if /usr/bin/pg_isready -h "$DB_HOST" -p 5432 -U postgres >/dev/null 2>&1; then
     echo "[rails-start] postgres ready"
     break
   fi
@@ -86,14 +97,14 @@ for i in $(seq 1 30); do
 done
 
 # --- Bootstrap postgres role + database ---
-PSQL="/usr/bin/psql -h localhost -U postgres -tA"
+PSQL="/usr/bin/psql -h $DB_HOST -U postgres -tA"
 if ! $PSQL -c "SELECT 1 FROM pg_roles WHERE rolname='powernode'" 2>/dev/null | grep -q 1; then
   echo "[rails-start] Creating powernode role"
-  /usr/bin/psql -h localhost -U postgres -c "CREATE ROLE powernode WITH LOGIN SUPERUSER"
+  /usr/bin/psql -h "$DB_HOST" -U postgres -c "CREATE ROLE powernode WITH LOGIN SUPERUSER"
 fi
 if ! $PSQL -c "SELECT 1 FROM pg_database WHERE datname='powernode_production'" 2>/dev/null | grep -q 1; then
   echo "[rails-start] Creating powernode_production database"
-  /usr/bin/psql -h localhost -U postgres -c "CREATE DATABASE powernode_production OWNER powernode"
+  /usr/bin/psql -h "$DB_HOST" -U postgres -c "CREATE DATABASE powernode_production OWNER powernode"
 fi
 
 # --- Install gems from the module-vendored cache (offline, first-boot) ---
