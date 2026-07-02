@@ -118,3 +118,16 @@
     class: "SystemCloudSyncJob"
     queue: system
     description: "System: hourly cloud-state reconciliation across all accounts"
+
+  # Package repository metadata sync. Daily fetch of upstream apt/rpm package
+  # indexes for enabled repos (account-scoped + shared), upserts
+  # system_packages rows, marks obsoleted entries. Provides the upstream
+  # catalog for the "create module from package" materialization flow.
+  #
+  # Moved here from the core worker/config/sidekiq.yml so it only loads when
+  # the system extension is enabled (core must never name extension classes).
+  system_package_repository_sync:
+    cron: "0 5 * * *"               # every day at 5:00 AM UTC
+    class: "SystemPackageRepositorySyncJob"
+    queue: system
+    description: "System: sync apt/rpm package metadata from enabled upstream repositories"
