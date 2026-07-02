@@ -16,6 +16,13 @@ module System
       # the pattern to a reusable Skill". Configurable via ENV for prod tuning.
       AUTO_EVOLVE_THRESHOLD = (ENV["FLEET_AUTO_EVOLVE_THRESHOLD"] || 3).to_i
 
+      # Calibrated importance by category, mirroring the ralph-loop creation
+      # seam (inc7): reconcile-tick decision patterns seed modest and earn
+      # ranking through reuse (effective_importance) rather than the 0.5
+      # tool default.
+      IMPORTANCE_BY_CATEGORY = { "pattern" => 0.45, "discovery" => 0.35 }.freeze
+      DEFAULT_IMPORTANCE = 0.35
+
       module_function
 
       def record_tick!(account:, decisions:)
@@ -99,6 +106,7 @@ module System
           title: title,
           content: content.truncate(2000),
           category: category,
+          importance_score: IMPORTANCE_BY_CATEGORY.fetch(category, DEFAULT_IMPORTANCE),
           tags: [ "fleet", "autonomy", signal_kind ].compact
         })
       rescue StandardError => e

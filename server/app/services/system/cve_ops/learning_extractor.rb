@@ -14,6 +14,13 @@ module System
     module LearningExtractor
       AUTO_EVOLVE_THRESHOLD = (ENV["CVE_RESPONDER_AUTO_EVOLVE_THRESHOLD"] || 3).to_i
 
+      # Calibrated importance by category, mirroring the ralph-loop creation
+      # seam (inc7): reconcile-tick decision patterns seed modest and earn
+      # ranking through reuse (effective_importance), instead of the 0.5 tool
+      # default that dedup-boosts then drove toward ~0.87.
+      IMPORTANCE_BY_CATEGORY = { "pattern" => 0.45, "discovery" => 0.35 }.freeze
+      DEFAULT_IMPORTANCE = 0.35
+
       module_function
 
       def record_tick!(account:, decisions:)
@@ -33,15 +40,29 @@ module System
       end
 
       def submit_learning(learning_tool, account, signal_kind, gate, decision, group)
-        title = "CVE #{signal_kind} → #{gate || decision}"
+        title = "CVE #{signal_kind} → #{gate || decision}".truncate(120)
         content = build_content(signal_kind, gate, decision, group)
         category = decision == :pending ? "pattern" : "discovery"
 
+        # Idempotent reinforcement (mirrors Fleet's F3-12 upsert). The title is
+        # a deterministic fingerprint of the decision bucket; the same pattern
+        # recurs on every reconcile tick, and creating a fresh row each time
+        # mass-produced near-duplicates. Reinforce the existing row instead and
+        # only create it on first occurrence.
+        if defined?(::Ai::CompoundLearning)
+          existing = ::Ai::CompoundLearning.where(account_id: account.id, title: title).first
+          if existing
+            existing.record_access!
+            return
+          end
+        end
+
         learning_tool.execute(params: {
           action: "create_learning",
-          title: title.truncate(120),
+          title: title,
           content: content.truncate(2000),
           category: category,
+          importance_score: IMPORTANCE_BY_CATEGORY.fetch(category, DEFAULT_IMPORTANCE),
           tags: [ "cve_responder", "autonomy", signal_kind ].compact
         })
       rescue StandardError => e
