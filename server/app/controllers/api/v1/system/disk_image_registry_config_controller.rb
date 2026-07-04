@@ -20,6 +20,10 @@ module Api
       # logged: no Rails.logger call in this controller references
       # registry_user/registry_token, and the audit FleetEvent payload below
       # carries only the worker identity, never the credential.
+      #
+      # DK4: the resolver falls back to the ci_worker's own account's Gitea
+      # provider credential when no AdminSetting/SecretStore/ENV override is
+      # set, so every resolver call passes @current_ci_worker.account.
       class DiskImageRegistryConfigController < ApplicationController
         skip_before_action :authenticate_request, raise: false
         skip_before_action :verify_authenticity_token, raise: false
@@ -31,10 +35,11 @@ module Api
             return render_forbidden("Permission denied: system.platforms.publish_disk_image")
           end
 
-          unless ::System::DiskImageRegistryConfig.configured?
+          unless ::System::DiskImageRegistryConfig.configured?(account: @current_ci_worker.account)
             return render_error(
               "disk-image OCI registry not configured — set the registry host (AdminSetting) " \
-              "and Vault-backed registry_user/registry_token before CI can publish",
+              "and Vault-backed registry_user/registry_token, or connect a Gitea provider " \
+              "credential, before CI can publish",
               :service_unavailable
             )
           end
@@ -42,9 +47,9 @@ module Api
           emit_registry_config_read_event
 
           render_success(
-            registry_host:  ::System::DiskImageRegistryConfig.registry_host,
-            registry_user:  ::System::DiskImageRegistryConfig.registry_user,
-            registry_token: ::System::DiskImageRegistryConfig.registry_token
+            registry_host:  ::System::DiskImageRegistryConfig.registry_host(account: @current_ci_worker.account),
+            registry_user:  ::System::DiskImageRegistryConfig.registry_user(account: @current_ci_worker.account),
+            registry_token: ::System::DiskImageRegistryConfig.registry_token(account: @current_ci_worker.account)
           )
         end
 
