@@ -456,7 +456,7 @@ describe('ModulesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete module/i }));
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolve();
@@ -654,7 +654,7 @@ describe('ModulesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete category/i }));
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolve();
@@ -704,10 +704,10 @@ describe('ModulesTab', () => {
     capturedOnDelete!('mod-a');
     await findModuleDeleteHeading();
 
-    // The overlay is the fixed inset-0 bg-black/50 div behind the card.
-    const overlay = document.querySelector('.fixed.inset-0.bg-black\\/50');
-    expect(overlay).toBeTruthy();
-    fireEvent.click(overlay!);
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const overlay = screen.getByRole('dialog').firstElementChild as HTMLElement;
+    fireEvent.click(overlay);
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Delete Module' })).not.toBeInTheDocument(),
@@ -722,9 +722,8 @@ describe('ModulesTab', () => {
     capturedOnCategoryDelete!('cat-a');
     await findCategoryDeleteHeading();
 
-    const overlays = document.querySelectorAll('.fixed.inset-0.bg-black\\/50');
-    // The category delete dialog is the most recently mounted
-    fireEvent.click(overlays[overlays.length - 1]);
+    const overlay = screen.getByRole('dialog').firstElementChild as HTMLElement;
+    fireEvent.click(overlay);
 
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Delete Category' })).not.toBeInTheDocument(),
