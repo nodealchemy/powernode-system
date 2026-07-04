@@ -291,7 +291,6 @@ export const useSystemWebSocket = ({
     // Only subscribe if user has an account
     if (!user?.account?.id) {
       if (process.env.NODE_ENV === 'development') {
-        // eslint-disable-next-line no-console
         console.warn('[SystemWebSocket] Cannot subscribe: user account not available');
       }
       return;

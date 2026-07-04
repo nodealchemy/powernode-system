@@ -222,7 +222,6 @@ const ControlRow: React.FC<ControlRowProps> = ({
                   placeholder="reason (optional)"
                   disabled={isRevoking}
                   className="w-36 px-2 py-1 border border-theme rounded bg-theme-surface text-theme-primary text-xs disabled:opacity-50"
-                  // eslint-disable-next-line jsx-a11y/no-autofocus
                   autoFocus
                 />
               )}

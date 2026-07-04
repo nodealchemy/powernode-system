@@ -54,7 +54,7 @@ const mockCiWorkersOpenCreate = jest.fn();
 const mockCiWebhooksOpenCreate = jest.fn();
 
 jest.mock('@system/features/system/components/operations', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { useEffect } = require('react');
   return {
     FleetTab: () => {
@@ -66,7 +66,6 @@ jest.mock('@system/features/system/components/operations', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockGitopsOpenCreate });
         return () => props.onActionsReady?.(null);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement('div', { 'data-testid': 'gitops-tab' }, 'GitopsTab');
     },
@@ -74,7 +73,6 @@ jest.mock('@system/features/system/components/operations', () => {
       useEffect(() => {
         props.onActionsReady?.({ refresh: mockCveRefresh });
         return () => props.onActionsReady?.(null);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement('div', { 'data-testid': 'cve-tab' }, 'CveTab');
     },
@@ -84,7 +82,6 @@ jest.mock('@system/features/system/components/operations', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockCiWorkersOpenCreate });
         return () => props.onActionsReady?.(null);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement(
         'div',
@@ -98,7 +95,6 @@ jest.mock('@system/features/system/components/operations', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockCiWebhooksOpenCreate });
         return () => props.onActionsReady?.(null);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement(
         'div',

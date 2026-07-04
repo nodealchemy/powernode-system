@@ -93,7 +93,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-open-details"
           onClick={() => {
             if (typeof props.onOpenDetails === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onOpenDetails as Function)(networkA);
             }
           }}
@@ -104,7 +104,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-delete-a"
           onClick={() => {
             if (typeof props.onDelete === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onDelete as Function)(networkA);
             }
           }}
@@ -115,7 +115,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-delete-b"
           onClick={() => {
             if (typeof props.onDelete === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onDelete as Function)(networkB);
             }
           }}
@@ -135,7 +135,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-created"
           onClick={() => {
             if (typeof props.onCreated === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onCreated as Function)();
             }
           }}
@@ -146,7 +146,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-close-create"
           onClick={() => {
             if (typeof props.onClose === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onClose as Function)();
             }
           }}
@@ -165,7 +165,7 @@ jest.mock('@system/features/system/components/sdwan', () => ({
           data-testid="trigger-close-detail"
           onClick={() => {
             if (typeof props.onClose === 'function') {
-              // eslint-disable-next-line @typescript-eslint/ban-types
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
               (props.onClose as Function)();
             }
           }}

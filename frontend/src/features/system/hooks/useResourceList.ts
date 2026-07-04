@@ -300,7 +300,6 @@ export function usePaginatedResourceList<T extends Identifiable, F = Record<stri
     doFetch(page, filters, perPage);
   // We deliberately don't include `filters` here — those have their own
   // refetch effect below, gated by `refetchOnFilterChange`.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, perPage, doFetch]);
 
   // Filter changes: only refetch when explicitly enabled, AND only when
@@ -319,7 +318,6 @@ export function usePaginatedResourceList<T extends Identifiable, F = Record<stri
     // can land on a page number that doesn't exist for the new filter set.
     setPageState(1);
     doFetch(1, filters, perPage);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey, refetchOnFilterChange]);
 
   const refresh = useCallback(() => {
@@ -542,7 +540,6 @@ export function useInfiniteResourceList<T extends Identifiable, F = Record<strin
     setPage(1);
     setHasMore(true);
     fetchPage(1, filters, initialPerPage, 'replace', gen);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey]);
 
   const loadMore = useCallback(() => {

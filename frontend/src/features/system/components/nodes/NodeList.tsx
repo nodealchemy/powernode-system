@@ -138,7 +138,6 @@ export const NodeList: React.FC<NodeListProps> = ({
     if (refreshKey !== undefined && refreshKey > 0) {
       handleRefresh();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   // Click-to-expand state — Set<id> so multiple rows can be open at once.
