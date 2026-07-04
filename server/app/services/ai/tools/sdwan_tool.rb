@@ -2195,9 +2195,12 @@ module Ai
 
       def delete_ovn_deployment(params)
         dep = ::Sdwan::OvnDeployment.where(account_id: @account.id).find(params[:deployment_id])
-        name = dep.name
+        # OvnDeployment is the per-account OVN control plane row and has no
+        # `name` column/method (unlike acls/switches/ports) — report its
+        # status instead so a botched deployment can still be torn down.
+        status = dep.status
         dep.destroy!
-        success_result(deleted: true, deployment_id: params[:deployment_id], name: name)
+        success_result(deleted: true, deployment_id: params[:deployment_id], status: status)
       rescue ActiveRecord::InvalidForeignKey => e
         error_result("FK blocks destroy: #{e.message}")
       end

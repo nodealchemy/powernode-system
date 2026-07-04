@@ -588,6 +588,23 @@ RSpec.describe Ai::Tools::SdwanTool do
       end
     end
 
+    describe "system_sdwan_delete_ovn_deployment" do
+      it "destroys the deployment without raising (model has no name column)" do
+        r = call("system_sdwan_delete_ovn_deployment", deployment_id: deployment.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:deleted]).to be true
+        expect(Sdwan::OvnDeployment.exists?(deployment.id)).to be false
+      end
+
+      it "rejects a deployment from another account" do
+        other = create(:account)
+        foreign = ::Sdwan::OvnDeployment.create!(account: other, nb_db_endpoint: "tcp:nb.o:6641", sb_db_endpoint: "tcp:sb.o:6642")
+        r = call("system_sdwan_delete_ovn_deployment", deployment_id: foreign.id)
+        expect(r[:success]).to be false
+        expect(Sdwan::OvnDeployment.exists?(foreign.id)).to be true
+      end
+    end
+
     describe "permission + registration" do
       it "maps read actions to system.sdwan.ovn.read and delete to system.sdwan.ovn.manage" do
         expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_list_ovn_deployments")).to eq("system.sdwan.ovn.read")
