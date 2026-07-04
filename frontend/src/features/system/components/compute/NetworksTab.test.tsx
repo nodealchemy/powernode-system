@@ -506,13 +506,13 @@ describe('NetworksTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete network/i }));
 
     await waitFor(() =>
-      expect(screen.getByText('Deleting...')).toBeInTheDocument(),
+      expect(screen.getByText('Processing...')).toBeInTheDocument(),
     );
 
     resolveDelete();
 
     await waitFor(() =>
-      expect(screen.queryByText('Deleting...')).not.toBeInTheDocument(),
+      expect(screen.queryByText('Processing...')).not.toBeInTheDocument(),
     );
   });
 

@@ -366,8 +366,9 @@ describe('PlatformsTab', () => {
       expect(screen.getByRole('heading', { name: 'Delete Platform' })).toBeInTheDocument(),
     );
 
-    // The backdrop is the fixed inset-0 div with the onClick handler
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const backdrop = screen.getByRole('dialog').firstElementChild as HTMLElement;
     fireEvent.click(backdrop);
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Delete Platform' })).not.toBeInTheDocument(),
@@ -435,9 +436,9 @@ describe('PlatformsTab', () => {
     const confirmBtn = screen.getByRole('button', { name: /delete platform/i });
     fireEvent.click(confirmBtn);
 
-    // Button text changes to "Deleting..." while in-flight
+    // Shared ConfirmationModal shows "Processing..." while in-flight
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolveDelete();

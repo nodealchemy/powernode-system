@@ -460,24 +460,25 @@ describe('ProvidersTab', () => {
     fireEvent.click(screen.getByTestId('trigger-delete'));
     fireEvent.click(screen.getByRole('button', { name: 'Delete Provider' }));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Deleting...' })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Processing...' })).toBeDisabled());
 
     resolveDelete();
-    await waitFor(() => expect(screen.queryByText('Deleting...')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Processing...')).not.toBeInTheDocument());
   });
 
-  it('dismisses the delete confirmation when the backdrop is clicked', () => {
+  it('dismisses the delete confirmation when the backdrop is clicked', async () => {
     renderTab();
     fireEvent.click(screen.getByTestId('trigger-delete'));
     expect(screen.getByRole('heading', { name: 'Delete Provider' })).toBeInTheDocument();
 
-    // The backdrop is the fixed inset-0 bg-black/50 overlay behind the modal
-    const backdrop = document.querySelector('.bg-black\\/50') as HTMLElement;
-    if (backdrop) {
-      fireEvent.click(backdrop);
-    }
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const backdrop = screen.getByRole('dialog').firstElementChild as HTMLElement;
+    fireEvent.click(backdrop);
 
-    expect(screen.queryByRole('heading', { name: 'Delete Provider' })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Delete Provider' })).not.toBeInTheDocument(),
+    );
   });
 
   // ===== Warning text =====
