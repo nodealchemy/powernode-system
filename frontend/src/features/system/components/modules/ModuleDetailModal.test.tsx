@@ -233,6 +233,34 @@ describe('ModuleDetailModal', () => {
       renderModal({ isOpen: false });
       expect(mockGetModule).not.toHaveBeenCalled();
     });
+
+    it('does not violate Rules of Hooks when toggled closed -> open on the same instance (regression: hook declared after early-return)', async () => {
+      mockGetModule.mockResolvedValue(BASE_MODULE);
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const { rerender } = renderModal({ isOpen: false });
+        expect(screen.queryByText('Module Details')).not.toBeInTheDocument();
+
+        rerender(
+          <BrowserRouter>
+            <ModuleDetailModal moduleId="mod-001" isOpen={true} onClose={jest.fn()} />
+          </BrowserRouter>,
+        );
+
+        await waitForModuleLoad('ssh-base');
+
+        const hookOrderErrors = consoleErrorSpy.mock.calls.filter(([msg]) =>
+          typeof msg === 'string' && /Rendered (more|fewer) hooks/i.test(msg),
+        );
+        expect(hookOrderErrors).toHaveLength(0);
+      } finally {
+        // resetMocks only clears call history, it doesn't restore the spied
+        // implementation — without this in a finally, a failing assertion
+        // above would leave console.error silently mocked for later tests.
+        consoleErrorSpy.mockRestore();
+      }
+    });
   });
 
   // ===========================================================================
