@@ -103,7 +103,6 @@ export const DnsRecordsModal: React.FC<DnsRecordsModalProps> = ({
       setSelectedZoneId(null);
       setRecords([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, credentialId]);
 
   useEffect(() => {

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { ArchitectureList, ArchitectureFormModal } from '@system/features/system/components/architectures';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemNodeArchitecture } from '@system/features/system/types/system.types';
@@ -15,13 +15,11 @@ export const ArchitecturesTab: React.FC<ArchitecturesTabProps> = ({ onActionsRea
   const { addNotification } = useNotifications();
   const canCreate = hasPermission('system.architectures.create');
   const canDelete = hasPermission('system.architectures.delete');
+  const { confirm, ConfirmationDialog } = useConfirmation();
 
   const [showFormModal, setShowFormModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [editArchitecture, setEditArchitecture] = useState<SystemNodeArchitecture | null>(null);
-  const [architectureToDelete, setArchitectureToDelete] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [deleting, setDeleting] = useState(false);
 
   const handleCreate = useCallback(() => { setEditArchitecture(null); setShowFormModal(true); }, []);
 
@@ -32,20 +30,23 @@ export const ArchitecturesTab: React.FC<ArchitecturesTabProps> = ({ onActionsRea
 
   const handleView = useCallback((a: SystemNodeArchitecture) => { setEditArchitecture(a); setShowFormModal(true); }, []);
   const handleEdit = handleView;
-  const handleDeleteClick = useCallback((id: string) => { setArchitectureToDelete(id); setShowDeleteConfirm(true); }, []);
-  const handleDeleteConfirm = async () => {
-    if (!architectureToDelete) return;
-    setDeleting(true);
-    try {
-      await systemApi.deleteArchitecture(architectureToDelete);
-      addNotification({ type: 'success', message: 'Architecture deleted successfully' });
-      setRefreshKey((k) => k + 1);
-    } catch (error) {
-      addNotification({ type: 'error', message: `Failed to delete architecture: ${error instanceof Error ? error.message : 'An error occurred'}` });
-    } finally {
-      setDeleting(false); setShowDeleteConfirm(false); setArchitectureToDelete(null);
-    }
-  };
+  const handleDeleteClick = useCallback((id: string) => {
+    confirm({
+      title: 'Delete Architecture',
+      message: 'Are you sure you want to delete this architecture? This action cannot be undone. Platforms using this architecture will need to be updated.',
+      confirmLabel: 'Delete Architecture',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await systemApi.deleteArchitecture(id);
+          addNotification({ type: 'success', message: 'Architecture deleted successfully' });
+          setRefreshKey((k) => k + 1);
+        } catch (error) {
+          addNotification({ type: 'error', message: `Failed to delete architecture: ${error instanceof Error ? error.message : 'An error occurred'}` });
+        }
+      }
+    });
+  }, [confirm, addNotification]);
   const handleArchitectureSaved = useCallback(() => { setRefreshKey((k) => k + 1); setEditArchitecture(null); }, []);
 
   return (
@@ -65,28 +66,7 @@ export const ArchitecturesTab: React.FC<ArchitecturesTabProps> = ({ onActionsRea
         editArchitecture={editArchitecture}
       />
 
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={() => setShowDeleteConfirm(false)} />
-          <div className="flex min-h-full items-center justify-center p-4">
-            <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-              <div className="p-6">
-                <h3 className="text-lg font-semibold text-theme-primary mb-2">Delete Architecture</h3>
-                <p className="text-theme-secondary mb-6">
-                  Are you sure you want to delete this architecture? This action cannot be undone.
-                  Platforms using this architecture will need to be updated.
-                </p>
-                <div className="flex justify-end gap-3">
-                  <Button variant="outline" onClick={() => { setShowDeleteConfirm(false); setArchitectureToDelete(null); }}>Cancel</Button>
-                  <Button variant="danger" onClick={handleDeleteConfirm} disabled={deleting}>
-                    {deleting ? 'Deleting...' : 'Delete Architecture'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {ConfirmationDialog}
     </>
   );
 };

@@ -36,7 +36,7 @@ export const FederationGovernancePanel: React.FC<{ refreshKey?: number }> = ({ r
     }
   };
 
-  React.useEffect(() => { run(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [refreshKey]);
+  React.useEffect(() => { run(); }, [refreshKey]);
 
   return (
     <div className="border border-theme rounded p-4">

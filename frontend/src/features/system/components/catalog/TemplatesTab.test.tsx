@@ -378,8 +378,9 @@ describe('TemplatesTab', () => {
     fireListCallbackWith(capturedOnDelete, 'tpl-a');
     expect(screen.getByText(/are you sure you want to delete/i)).toBeInTheDocument();
 
-    // The semi-transparent overlay element that closes the dialog on click
-    const overlay = document.querySelector('.bg-black\\/50') as HTMLElement;
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const overlay = screen.getByRole('dialog').firstElementChild as HTMLElement;
     expect(overlay).not.toBeNull();
     fireEvent.click(overlay);
 
@@ -475,9 +476,10 @@ describe('TemplatesTab', () => {
     const deleteBtn = screen.getByRole('button', { name: /delete template/i });
     fireEvent.click(deleteBtn);
 
-    // While in-flight the button text changes and it's disabled
+    // The shared ConfirmationModal shows "Processing..." while in-flight
+    // (generic wording, consistent with every other useConfirmation caller).
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting/i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing/i })).toBeDisabled(),
     );
 
     // Resolve so the component can settle

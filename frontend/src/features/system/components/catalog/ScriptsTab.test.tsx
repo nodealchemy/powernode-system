@@ -430,7 +430,7 @@ describe('ScriptsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /delete script/i }));
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolve();
@@ -448,7 +448,7 @@ describe('ScriptsTab', () => {
       expect(screen.getByRole('heading', { name: /delete script/i })).toBeInTheDocument(),
     );
 
-    const overlay = document.querySelector('.fixed.inset-0.bg-black\\/50');
+    const overlay = screen.getByRole('dialog').firstElementChild;
     expect(overlay).toBeTruthy();
     fireEvent.click(overlay!);
 

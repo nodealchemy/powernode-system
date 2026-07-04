@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Button } from '@/shared/components/ui/Button';
 import { usePermissions } from '@/shared/hooks/usePermissions';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useConfirmation } from '@/shared/components/ui/ConfirmationModal';
 import { VolumeList, VolumeDetailModal, VolumeFormModal, VolumeAttachModal } from '@system/features/system/components/volumes';
 import { systemApi } from '@system/features/system/services/systemApi';
 import type { SystemProviderVolume } from '@system/features/system/types/system.types';
@@ -15,17 +15,15 @@ export const VolumesTab: React.FC<VolumesTabProps> = ({ onActionsReady }) => {
   const { addNotification } = useNotifications();
   const canCreate = hasPermission('system.volumes.create');
   const canDelete = hasPermission('system.volumes.delete');
+  const { confirm, ConfirmationDialog } = useConfirmation();
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showAttachModal, setShowAttachModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [selectedVolumeId, setSelectedVolumeId] = useState<string | null>(null);
   const [editVolume, setEditVolume] = useState<SystemProviderVolume | null>(null);
   const [attachVolume, setAttachVolume] = useState<SystemProviderVolume | null>(null);
-  const [volumeToDelete, setVolumeToDelete] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [deleting, setDeleting] = useState(false);
   const [, setDetaching] = useState(false);
 
   const handleCreate = useCallback(() => { setEditVolume(null); setShowFormModal(true); }, []);
@@ -37,22 +35,23 @@ export const VolumesTab: React.FC<VolumesTabProps> = ({ onActionsReady }) => {
 
   const handleView = useCallback((v: SystemProviderVolume) => { setSelectedVolumeId(v.id); setShowDetailModal(true); }, []);
   const handleEdit = useCallback((v: SystemProviderVolume) => { setEditVolume(v); setShowFormModal(true); }, []);
-  const handleDeleteClick = useCallback((id: string) => { setVolumeToDelete(id); setShowDeleteConfirm(true); }, []);
-  const handleDeleteConfirm = async () => {
-    if (!volumeToDelete) return;
-    setDeleting(true);
-    try {
-      await systemApi.deleteVolume(volumeToDelete);
-      addNotification({ type: 'success', message: 'Volume deleted successfully' });
-      setRefreshKey((k) => k + 1);
-    } catch (error) {
-      addNotification({ type: 'error', message: `Failed to delete volume: ${error instanceof Error ? error.message : 'An error occurred'}` });
-    } finally {
-      setDeleting(false);
-      setShowDeleteConfirm(false);
-      setVolumeToDelete(null);
-    }
-  };
+  const handleDeleteClick = useCallback((id: string) => {
+    confirm({
+      title: 'Delete Volume',
+      message: 'Are you sure you want to delete this volume? This action cannot be undone and all data on the volume will be permanently lost.',
+      confirmLabel: 'Delete Volume',
+      variant: 'danger',
+      onConfirm: async () => {
+        try {
+          await systemApi.deleteVolume(id);
+          addNotification({ type: 'success', message: 'Volume deleted successfully' });
+          setRefreshKey((k) => k + 1);
+        } catch (error) {
+          addNotification({ type: 'error', message: `Failed to delete volume: ${error instanceof Error ? error.message : 'An error occurred'}` });
+        }
+      }
+    });
+  }, [confirm, addNotification]);
   const handleVolumeSaved = useCallback(() => { setRefreshKey((k) => k + 1); setEditVolume(null); }, []);
   const handleAttach = useCallback((v: SystemProviderVolume) => { setAttachVolume(v); setShowAttachModal(true); }, []);
   const handleDetach = useCallback(async (v: SystemProviderVolume) => {
@@ -114,30 +113,7 @@ export const VolumesTab: React.FC<VolumesTabProps> = ({ onActionsReady }) => {
         onVolumeAttached={() => setRefreshKey((k) => k + 1)}
       />
 
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="fixed inset-0 bg-black/50 transition-opacity" onClick={() => setShowDeleteConfirm(false)} />
-          <div className="flex min-h-full items-center justify-center p-4">
-            <div className="relative w-full max-w-md bg-theme-surface rounded-lg shadow-xl">
-              <div className="p-6">
-                <h3 className="text-lg font-semibold text-theme-primary mb-2">Delete Volume</h3>
-                <p className="text-theme-secondary mb-6">
-                  Are you sure you want to delete this volume? This action cannot be undone
-                  and all data on the volume will be permanently lost.
-                </p>
-                <div className="flex justify-end gap-3">
-                  <Button variant="outline" onClick={() => { setShowDeleteConfirm(false); setVolumeToDelete(null); }}>
-                    Cancel
-                  </Button>
-                  <Button variant="danger" onClick={handleDeleteConfirm} disabled={deleting}>
-                    {deleting ? 'Deleting...' : 'Delete Volume'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {ConfirmationDialog}
     </>
   );
 };

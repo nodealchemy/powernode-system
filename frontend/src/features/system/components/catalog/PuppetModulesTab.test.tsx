@@ -434,7 +434,9 @@ describe('PuppetModulesTab', () => {
     fireEvent.click(screen.getByTestId('trigger-delete'));
     await waitFor(() => expect(screen.getByText('Delete Puppet Module')).toBeInTheDocument());
 
-    const backdrop = document.querySelector('.fixed.inset-0.bg-black\\/50') as HTMLElement;
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const backdrop = screen.getByRole('dialog').firstElementChild as HTMLElement;
     fireEvent.click(backdrop);
     await waitFor(() =>
       expect(screen.queryByText('Delete Puppet Module')).not.toBeInTheDocument(),
@@ -495,9 +497,9 @@ describe('PuppetModulesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /delete module/i }));
 
-    // Button text changes to "Deleting..." while in-flight
+    // Button text changes to "Processing..." while in-flight
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolveDelete();

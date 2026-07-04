@@ -42,7 +42,6 @@ export const AttributionResultModal: React.FC<Props> = ({ instanceId, isOpen, on
     } else {
       setResult(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, instanceId, lookbackHours]);
 
   if (!isOpen) return null;

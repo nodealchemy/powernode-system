@@ -62,7 +62,7 @@ jest.mock('@/shared/hooks/BreadcrumbContext', () => ({
 // --------------------------------------------------------------------------
 
 jest.mock('@system/features/system/components/architectures', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react');
 
   // Fixture used inside the factory (avoids hoisting restriction).
@@ -374,8 +374,9 @@ describe('ArchitecturesTab', () => {
     fireEvent.click(screen.getByTestId('trigger-delete'));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete Architecture' })).toBeInTheDocument());
 
-    // The semi-transparent backdrop overlay
-    const backdrop = document.querySelector('.bg-black\\/50') as HTMLElement;
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const backdrop = screen.getByRole('dialog').firstElementChild as HTMLElement;
     fireEvent.click(backdrop);
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Delete Architecture' })).not.toBeInTheDocument(),
@@ -436,9 +437,11 @@ describe('ArchitecturesTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /delete architecture/i }));
 
-    // Button text changes to "Deleting..." while the promise is pending
+    // The shared ConfirmationModal shows "Processing..." while its onConfirm
+    // promise is pending (generic wording, consistent with every other caller
+    // of useConfirmation across the platform).
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolveDelete();

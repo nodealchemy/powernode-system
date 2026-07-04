@@ -451,9 +451,9 @@ describe('VolumesTab', () => {
 
     await act(async () => { capturedListProps.onDelete?.('vol-available'); });
 
-    // The backdrop is the fixed overlay element — clicking it should close
-    const overlay = document.querySelector('.bg-black\\/50') as HTMLElement;
-    expect(overlay).not.toBeNull();
+    // The shared Modal's outer positioning div closes on a direct click
+    // (event.target === event.currentTarget), same as clicking the backdrop.
+    const overlay = screen.getByRole('dialog').firstElementChild as HTMLElement;
     fireEvent.click(overlay);
 
     await waitFor(() =>
@@ -495,7 +495,7 @@ describe('VolumesTab', () => {
     fireEvent.click(deleteBtn);
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /deleting\.\.\./i })).toBeDisabled(),
+      expect(screen.getByRole('button', { name: /processing\.\.\./i })).toBeDisabled(),
     );
 
     resolveDelete();

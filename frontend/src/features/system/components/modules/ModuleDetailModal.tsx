@@ -190,6 +190,21 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     }
   }, [moduleId, addNotification]);
 
+  // Must stay above the `if (!isOpen) return null` guard below — a hook
+  // declared after an early-return changes the hook count between the
+  // closed and open renders of this same component instance, violating
+  // React's Rules of Hooks (see IMP-079ef9153e7a).
+  const handleCopyWebhookSecret = useCallback(async () => {
+    if (!module?.webhook_secret) return;
+    try {
+      await navigator.clipboard.writeText(module.webhook_secret);
+      setSecretCopied(true);
+      window.setTimeout(() => setSecretCopied(false), 2000);
+    } catch {
+      addNotification({ type: 'error', message: 'Could not copy webhook secret to clipboard' });
+    }
+  }, [module, addNotification]);
+
   if (!isOpen) return null;
 
   const tabs = [
@@ -223,17 +238,6 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
       </div>
     );
   };
-
-  const handleCopyWebhookSecret = useCallback(async () => {
-    if (!module?.webhook_secret) return;
-    try {
-      await navigator.clipboard.writeText(module.webhook_secret);
-      setSecretCopied(true);
-      window.setTimeout(() => setSecretCopied(false), 2000);
-    } catch {
-      addNotification({ type: 'error', message: 'Could not copy webhook secret to clipboard' });
-    }
-  }, [module, addNotification]);
 
   const renderInfoTab = () => {
     if (!module) return null;

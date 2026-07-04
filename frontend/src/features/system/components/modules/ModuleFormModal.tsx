@@ -168,7 +168,6 @@ export const ModuleFormModal: React.FC<ModuleFormModalProps> = ({
       setShowManifestImport(false);
       setManifestYaml('');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, editModule]);
 
   const handleChange = (

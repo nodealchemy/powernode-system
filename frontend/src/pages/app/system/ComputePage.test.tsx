@@ -65,14 +65,13 @@ const mockNetworksOpenCreate = jest.fn();
 // ---------------------------------------------------------------------------
 
 jest.mock('@system/features/system/components/compute', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { useEffect } = require('react');
   return {
     NodesTab: (props: { onActionsReady?: (h: { openCreate: () => void } | null) => void }) => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockNodesOpenCreate });
         return () => props.onActionsReady?.(null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement('div', { 'data-testid': 'nodes-tab' }, 'NodesTab');
     },
@@ -86,7 +85,6 @@ jest.mock('@system/features/system/components/compute', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockVolumesOpenCreate });
         return () => props.onActionsReady?.(null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement(
         'div',
@@ -98,7 +96,6 @@ jest.mock('@system/features/system/components/compute', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockProvidersOpenCreate });
         return () => props.onActionsReady?.(null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement(
         'div',
@@ -110,7 +107,6 @@ jest.mock('@system/features/system/components/compute', () => {
       useEffect(() => {
         props.onActionsReady?.({ openCreate: mockNetworksOpenCreate });
         return () => props.onActionsReady?.(null);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
       return require('react').createElement(
         'div',

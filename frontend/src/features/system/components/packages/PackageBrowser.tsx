@@ -119,7 +119,6 @@ export const PackageBrowser: FC<Props> = ({
       }
     }, 300);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.filters.q]);
 
   const sectionOptions = useMemo<MultiSelectOption[]>(() => {
