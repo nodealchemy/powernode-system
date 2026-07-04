@@ -18,6 +18,13 @@ Rails.application.routes.draw do
         # not git pushes — Gitea's push webhook doesn't fire for these).
         post "module_publications", to: "module_publications#create"
 
+        # === Disk-image registry config (DK1 restoration) ===
+        # CI-direct config fetch, Bearer-authenticated the same way as
+        # module_publications above. build-disk-image.yaml calls this
+        # right before `oras login` + push instead of reading registry
+        # host/user/token out of Gitea Actions secrets.
+        get "disk_image_registry_config", to: "disk_image_registry_config#show"
+
         # === Setup wizard ===
         # Step endpoint contributed via extension.json `setup_steps`; the core
         # setup wizard POSTs the step payload here. Per-extension completion is
