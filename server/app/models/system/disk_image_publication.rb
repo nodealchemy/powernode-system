@@ -20,6 +20,8 @@ module System
   #   verifying → published    (success — emits FleetEvent, flips platform pointer)
   #             → failed       (cosign/sha mismatch — emits failed event)
   #   published → retired      (reaper — soft-delete file_object, retain row)
+  #   failed, verifying → retired (DK3 cleanup rake — abandoned/stuck builds
+  #                                past a grace window, same terminal state)
   #   retired  → purged        (reaper grace expired — hard-delete file_object)
   #
   # `attempt_count` increments on each re-receive so operators can see
@@ -85,7 +87,13 @@ module System
       end
 
       event :retire do
-        transitions from: :published, to: :retired
+        # DK3: also reachable from :failed / :verifying so the stuck-publication
+        # cleanup rake can retire abandoned CI runs (crashed worker mid-verify,
+        # or a build that failed and was never retried) — not just the normal
+        # published → retired reaper path. Same terminal state either way; a
+        # retired row still carries its history and flows into the existing
+        # purgeable scope once its own grace window elapses.
+        transitions from: %i[published failed verifying], to: :retired
         before { self.retired_at = Time.current }
       end
 

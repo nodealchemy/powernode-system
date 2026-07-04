@@ -158,6 +158,15 @@ fleet_policies = {
   # per repo+revision fingerprint, so a standing drift notifies once per TTL.
   "system.gitops_drift_remediate" => "notify_and_proceed",
 
+  # DK3 of the disk-image-CI restoration — DiskImagePublicationFailureStreakSensor
+  # lives in FleetAutonomyService::SENSORS (not Disk Image Manager's own tick),
+  # so it gates as THIS agent — same reason federation_peer_remediate /
+  # gitops_drift_remediate / sdwan_* live here rather than on their specialist
+  # agent. notify_and_proceed: no auto-remediation exists (a broken CI pipeline
+  # needs operator investigation), this only surfaces the streak; deduped
+  # per-platform via the sensor's fingerprint.
+  "system.disk_image_publication_investigate" => "notify_and_proceed",
+
   # Package repository ingestion. Sync is routine + reversible (just
   # refreshes cached metadata); module creation is supply-chain critical
   # (operator audits each new package entering the fleet); refresh requires
