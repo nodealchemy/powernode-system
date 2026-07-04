@@ -268,11 +268,12 @@ export const useSystemWebSocket = ({
         // Connection test response - no action needed
         break;
 
-      case 'error':
+      case 'error': {
         const errorMessage = (data.message as string) || 'System channel error';
         setError(errorMessage);
         refs.onError?.(errorMessage);
         break;
+      }
     }
   }, []);
 
