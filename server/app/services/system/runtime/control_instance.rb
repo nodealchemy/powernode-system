@@ -4,16 +4,19 @@ module System
   module Runtime
     # Executes lifecycle actions on a System::NodeInstance via
     # System::InstanceControlService. The operation.command maps to the
-    # action: "start", "stop", "restart"/"reboot", "terminate", etc.
+    # action InstanceControlService actually understands: "restart" and
+    # "reboot" both drive the "reboot" action; "deprovision" is an alias
+    # for "terminate" (see ExecutionDispatcher::COMMAND_REGISTRY).
     #
     # Operation.operable must be a System::NodeInstance.
     class ControlInstance
       ACTION_FOR_COMMAND = {
         "start" => "start",
         "stop" => "stop",
-        "restart" => "restart",
-        "reboot" => "restart",
-        "terminate" => "terminate"
+        "restart" => "reboot",
+        "reboot" => "reboot",
+        "terminate" => "terminate",
+        "deprovision" => "terminate"
       }.freeze
 
       def self.call(operation:)
