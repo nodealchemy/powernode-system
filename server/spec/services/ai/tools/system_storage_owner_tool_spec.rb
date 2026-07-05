@@ -122,6 +122,38 @@ RSpec.describe Ai::Tools::SystemStorageOwnerTool do
     end
   end
 
+  # IMP-66ac8e46a6fb — assign_storage_owner/chown_status/chown_retry used a bare
+  # ::System::StorageAssignment.find(params[:storage_assignment_id]) with no account
+  # scope, so a caller holding system.storage.assignments.update in their OWN account
+  # could reassign ownership (and dispatch a real chown task) onto ANOTHER account's
+  # StorageAssignment. list_storage_assignments_by_owner already scoped correctly —
+  # the sibling action that DOES scope is the tell.
+  describe "cross-account IDOR guard (IMP-66ac8e46a6fb)" do
+    it "does not let assign_storage_owner mutate another account's assignment" do
+      foreign = other_account_assignment
+      r = call("system_assign_storage_owner", storage_assignment_id: foreign.id, owner_kind: "operator")
+
+      expect(r[:success]).to be false
+      expect(foreign.reload.owner_kind).to eq("root")
+    end
+
+    it "does not let storage_chown_status read another account's assignment" do
+      foreign = other_account_assignment
+      r = call("system_storage_chown_status", storage_assignment_id: foreign.id)
+
+      expect(r[:success]).to be false
+    end
+
+    it "does not let storage_chown_retry force-complete another account's assignment" do
+      foreign = other_account_assignment
+      foreign.update_columns(chown_state: "failed")
+      r = call("system_storage_chown_retry", storage_assignment_id: foreign.id, force_complete: true)
+
+      expect(r[:success]).to be false
+      expect(foreign.reload.chown_state).to eq("failed")
+    end
+  end
+
   # F8-02 (retained): ACTION_PERMISSIONS mapped the mutating actions to
   # "system.storage.update", which has no Permission record, so non-super-admins
   # were permanently denied. Pin the grantable slugs.
