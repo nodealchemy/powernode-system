@@ -14,6 +14,17 @@
 
 **Status:** design (2026-05-30) · **Goal owner:** maintainer
 
+> **2026-07-05 — ops-tier rebuild cross-reference.** Campaign
+> `019f3458-e607-7528-937d-3c159f097901` uses exactly this `direct_kernel` pivot-boot mechanism to
+> rebuild the `ops.ipnode.us` control plane as a replace-never-in-place standalone
+> `powernode-hub` `NodeInstance` on Proxmox: parallel burn-in alongside the untouched existing
+> systemd install, a single dump/restore + DNS-flip cutover (deliberately the campaign's **last**
+> DNS flip), then VIP-based `system_fleet` rolling redeploys for everything after. Same
+> dev/ops/prod tiers as elsewhere in this doc. See the ratification in
+> [`docs/operations/reverse-proxy.md`](../../../docs/operations/reverse-proxy.md#ratified-decisions--campaign-019f3458-2026-07-05)
+> for the full decision record (that section covers TCP/TLS/UDP routing, not this pivot-boot
+> design, but shares the same campaign ratification date/id).
+
 ## Goal
 
 A node should boot a **minimal guest**, then `pivot_root`/`switch_root` into a

@@ -27,6 +27,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [publish-service.md](./publish-service.md) | SREs publishing internal services to their own users | An overlay backend (VIP or host) + an account TLS cert; `system.ingress.manage` | ~5 min per service |
 | [sdwan-network-setup.md](./sdwan-network-setup.md) | Network engineers, multi-tenant operators | At least one NodeInstance with publicly-reachable address | ~30 min |
 | [storage-migration.md](./storage-migration.md) | Storage / SRE operators | Source + target `ProviderVolume`, `system.storage.*` + `system.platform.scale` perms | Varies by data size |
+| [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) | SREs and network operators deciding how to expose a service | None to read; some paths depend on unbuilt campaign increments (marked planned) | ~5 min decision + per-path setup time |
 | [vault-credential-restoration.md](./vault-credential-restoration.md) | Security operators handling Vault DR | Vault snapshot, Shamir unseal keys | ~30 min – 2 hours |
 | [vendored-binary-bump.md](./vendored-binary-bump.md) | Platform maintainers updating Traefik / rpi4-firmware / dracut / kernel pins | Clean working tree; for ARM-only items, Pi 4 or QEMU-aarch64 | 15–60 min per bump |
 
@@ -40,6 +41,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Setting up SDWAN | [sdwan-network-setup.md](./sdwan-network-setup.md) |
 | Publishing a service publicly with TLS | [expose-service.md](./expose-service.md) (after [sdwan-network-setup.md](./sdwan-network-setup.md)) |
 | Publishing a service to your own users at `/svc/<slug>` | [publish-service.md](./publish-service.md) |
+| Deciding whether a service belongs on Traefik or nftables DNAT (TCP/TLS/UDP) | [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) |
 | Migrating a stateful component's data to another volume | [storage-migration.md](./storage-migration.md) |
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
 | Responding to a security CVE | [cve-response.md](./cve-response.md) |
