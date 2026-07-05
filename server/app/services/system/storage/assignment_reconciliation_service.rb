@@ -46,7 +46,13 @@ module System
         return unless @assignment.enabled?
         return if in_backoff?
 
-        @assignment.mark_status!("provisioning")
+        # Preserve error_message across this transition — it's where the
+        # attempt counter + backoff_until from a prior failure live. Wiping
+        # it here (the mark_status! default) would reset attempt to 1 on
+        # every retry, pinning backoff at BACKOFF_BASE forever. It's only
+        # cleared for real once the agent reports back success (see
+        # NodeApi::StorageAssignmentsController#update_status).
+        @assignment.mark_status!("provisioning", error_message: @assignment.error_message)
 
         ensure_peer!
         credential = ensure_credential!
@@ -119,6 +125,8 @@ module System
       end
 
       def dispatch_mount!(credential:, encryption_key:)
+        return if mount_task_already_pending?
+
         payload = TaskPayloadBuilder.build_mount_payload(
           assignment: @assignment, credential: credential, encryption_key: encryption_key
         )
@@ -130,6 +138,17 @@ module System
           options: payload,
           status: "pending"
         )
+      end
+
+      # Reconcile can be triggered from three independent sources
+      # (after_commit, heartbeat missing-mount, drift sweep) that can fire
+      # in close succession — without this guard each one unconditionally
+      # spawns its own storage.mount Task for the same assignment.
+      def mount_task_already_pending?
+        ::System::Task.active
+          .where(account_id: @assignment.account_id, operable: @assignment.node_instance, command: "storage.mount")
+          .where("options @> ?", { assignment_id: @assignment.id }.to_json)
+          .exists?
       end
 
       def dispatch_unmount!
