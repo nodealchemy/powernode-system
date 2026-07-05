@@ -181,7 +181,9 @@ jobs:
           REPO_PATH="${{ github.repository }}"
           TAG="${{ steps.resolve.outputs.tag }}-${{ matrix.arch }}"
           ARTIFACT_REF="${REGISTRY}/${REPO_PATH}:${TAG}"
-          oras login "${REGISTRY}" -u "${ORAS_USERNAME}" -p "${ORAS_PASSWORD}"
+          set +x  # SECURITY: do not xtrace-leak the push token into the CI log
+          echo "${ORAS_PASSWORD}" | oras login "${REGISTRY}" -u "${ORAS_USERNAME}" --password-stdin
+          set -x
           oras push "${ARTIFACT_REF}" \
             --artifact-type application/vnd.powernode.module.v1 \
             --annotation "io.powernode.fsverity_root_hash=${{ steps.compose.outputs.fsverity_root_hash }}" \
@@ -284,7 +286,9 @@ jobs:
           REPO_PATH="${{ github.repository }}"
           TAG="${{ needs.build.outputs.tag }}"
           REF="${REGISTRY}/${REPO_PATH}:${TAG}"
-          oras login "${REGISTRY}" -u "${ORAS_USERNAME}" -p "${ORAS_PASSWORD}"
+          set +x  # SECURITY: do not xtrace-leak the push token into the CI log
+          echo "${ORAS_PASSWORD}" | oras login "${REGISTRY}" -u "${ORAS_USERNAME}" --password-stdin
+          set -x
 
           MANIFESTS_JSON="[]"
           # Arch list intentionally mirrors `strategy.matrix.include` above
@@ -318,7 +322,7 @@ jobs:
           COSIGN_PRIVATE_KEY: ${{ secrets.POWERNODE_COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.POWERNODE_COSIGN_KEY_PASSWORD }}
         run: |
-          set -eux
+          set -eu  # SECURITY: no xtrace — this step handles the cosign private key
           if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
             echo "[warn] POWERNODE_COSIGN_PRIVATE_KEY not set — pushing an unsigned index; server-side cosign verify will fail until this secret is configured"
           else
