@@ -440,6 +440,46 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       end
     end
 
+    # Regression — handle_k3s_ready only rescued NoClusterAvailableError /
+    # AmbiguousClusterError. register_node_join! also raises
+    # CniProfileMismatchError (via enforce_cni_profile_compatibility!) when
+    # a lightweight-profile node tries to join an ovn_kubernetes cluster —
+    # that fell through to core ApiResponse's blanket rescue_from
+    # StandardError as a generic 500, so the k3sd agent retried forever
+    # with no actionable signal.
+    context "phase=ready (k3s_agent) CNI profile mismatch" do
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:k3s_agent_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_agent_module, enabled: true)
+      end
+
+      it "returns 422 (not 500) when a lightweight agent tries to join an ovn_kubernetes cluster" do
+        hw_server = sdwan_test_node_instance(node: node, name: "i-hw-server-#{SecureRandom.hex(3)}")
+        hw_server.update!(network_profile: "heavyweight")
+        ::Sdwan::Peer.create!(account: account, sdwan_network_id: sdwan_network.id,
+                              node_instance: hw_server, publicly_reachable: false)
+        ::System::KubernetesClusterProvisionerService.bootstrap!(
+          node_instance: hw_server, kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30"
+        )
+
+        # node_instance (the auth-bound current_instance) defaults to
+        # network_profile=lightweight — joining the ovn_kubernetes cluster
+        # bootstrapped above as a k3s_agent must surface as a clear 422,
+        # not a generic 500.
+        post url, params: { runtime: "k3s_agent", phase: "ready", role: "agent", version: "v1.30.1" }, as: :json
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(JSON.parse(response.body)["error"]).to include("Mixed-profile")
+      end
+    end
+
     context "phase per-runtime gating" do
       let!(:k3s_server_module) do
         ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|

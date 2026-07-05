@@ -209,6 +209,8 @@ module System
       render_error(e.message, :unprocessable_content)
     rescue ::System::KubernetesClusterProvisionerService::AmbiguousClusterError => e
       render_error(e.message, :conflict)
+    rescue ::System::KubernetesClusterProvisionerService::CniProfileMismatchError => e
+      render_error(e.message, :unprocessable_content)
     end
 
     def handle_k3s_stopped
