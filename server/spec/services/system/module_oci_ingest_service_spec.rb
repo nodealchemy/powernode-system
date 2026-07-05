@@ -192,4 +192,31 @@ RSpec.describe System::ModuleOciIngestService do
       expect(amd64[:oci_digest]).to eq("sha256:#{Digest::SHA256.hexdigest('amd64')}")
     end
   end
+
+  # IMP-8776e1daf159 — found while fixing IMP-133388cddd9c. The `oras push` step
+  # generates SBOM (syft) + VEX (grype) files and pushes them as sibling layers in
+  # the SAME command as the module artifact, but only ever annotates
+  # fsverity_root_hash/fingerprint/module_id/built_at. #fetch_manifest above reads
+  # io.powernode.sbom_uri/provenance_uri/vex_uri straight off the per-arch manifest
+  # annotations, so ModuleArtifact#sbom_uri/vex_uri stay permanently nil in
+  # production. This locks the real CI YAML (not a fixture) against regressing.
+  describe "module-repo build.yaml oras push annotations (IMP-8776e1daf159)" do
+    let(:workflow_path) do
+      Pathname.new(__dir__).join("..", "..", "..", "..", "templates", "module-repo",
+                                  ".gitea", "workflows", "build.yaml")
+    end
+    let(:push_step_script) do
+      workflow = YAML.load_file(workflow_path, aliases: true)
+      step = workflow["jobs"]["build"]["steps"].find { |s| s["name"] == "Push artifact to OCI registry (oras)" }
+      step["run"]
+    end
+
+    it "annotates io.powernode.sbom_uri for the SBOM file pushed as a sibling layer" do
+      expect(push_step_script).to match(/--annotation\s+"io\.powernode\.sbom_uri=/)
+    end
+
+    it "annotates io.powernode.vex_uri for the VEX file pushed as a sibling layer" do
+      expect(push_step_script).to match(/--annotation\s+"io\.powernode\.vex_uri=/)
+    end
+  end
 end

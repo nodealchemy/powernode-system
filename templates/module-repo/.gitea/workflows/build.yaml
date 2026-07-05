@@ -172,6 +172,13 @@ jobs:
           grype --add-cpes-if-none /tmp/staging -o json > /tmp/vex.json || true
 
       - name: Push artifact to OCI registry (oras)
+        # sbom_uri/vex_uri point at the SBOM/VEX sibling layers pushed in this
+        # same command (OrasOciAdapter#fetch_manifest reads them straight off
+        # these annotations — see module_oci_ingest_service.rb). No
+        # io.powernode.provenance_uri here: this workflow doesn't generate a
+        # build-provenance attestation yet, so there is no sibling layer for
+        # it to point at (queued separately rather than annotating a URI to
+        # nothing).
         id: push
         env:
           ORAS_USERNAME: ${{ secrets.GITEA_PUSH_USERNAME }}
@@ -190,6 +197,8 @@ jobs:
             --annotation "io.powernode.fingerprint=${{ steps.resolve.outputs.fingerprint }}" \
             --annotation "io.powernode.module_id=${{ steps.resolve.outputs.module_id }}" \
             --annotation "io.powernode.built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --annotation "io.powernode.sbom_uri=${ARTIFACT_REF}.sbom" \
+            --annotation "io.powernode.vex_uri=${ARTIFACT_REF}.vex" \
             /tmp/module.cfs:application/octet-stream \
             /tmp/sbom.cdx.json:application/vnd.cyclonedx+json \
             /tmp/vex.json:application/vnd.cyclonedx.vex+json
