@@ -69,6 +69,7 @@ module Sdwan
         )
 
         ::Sdwan::KeyDistributor.ensure_key_for!(peer)
+        allocate_vrf!(peer)
 
         promote_network!
         mirror_capability_to_node_instance_peer(peer)
@@ -78,6 +79,25 @@ module Sdwan
     end
 
     private
+
+    # IMP-64684f9a0ae6 — VrfAllocator.allocate! had zero production
+    # callers, so no host ever got a HostVrfAssignment: TopologyCompiler
+    # #vrf_name_for fell back to "", and both vip_applier.go and
+    # Bgp::ConfigCompiler treat an empty vrf_name as "nothing to do" —
+    # VIPs silently never installed, iBGP hosts never got a `router bgp
+    # vrf` block. PeerEnroller is the single "join network" seam (operator
+    # UI, MCP tools, and autonomy actions all route through it), so this
+    # is the one place that needs to allocate. Marked active immediately —
+    # mirrors the OVN ACL/logical-switch composition skills, which are
+    # also server-authoritative desired-state with no separate agent
+    # confirm-back step; the agent's reconcile loop is already tolerant of
+    # the VRF landing on a later tick (see interface_block's vrf_name
+    # comment). Idempotent: a re-enrollment (or a peer rejoining after the
+    # network already has other members) reuses the existing row.
+    def allocate_vrf!(peer)
+      hva = ::Sdwan::VrfAllocator.allocate!(host: @node_instance, network: @network)
+      hva.mark_active! if hva.pending?
+    end
 
     def verify_account_alignment!
       return if @node_instance.account_id == @network.account_id

@@ -194,4 +194,75 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       expect(h1.wg_iface_name).not_to eq(h2.wg_iface_name)
     end
   end
+
+  # IMP-64684f9a0ae6 follow-up: now that Sdwan::PeerEnroller calls
+  # allocate! from inside its own ::Sdwan::Peer.transaction block, a
+  # concurrent-insert race is reachable from a real request for the
+  # first time (previously allocate! had zero production callers, so it
+  # was only ever invoked top-level from seeds/specs). #allocate!'s inner
+  # `HostVrfAssignment.transaction do` was not `requires_new: true`, so
+  # when nested inside a caller's already-open transaction it does not
+  # open a real SAVEPOINT — a RecordNotUnique raised by a concurrent
+  # winner's INSERT aborts the whole outer Postgres transaction, and the
+  # rescue's own recovery query then fails too (a poisoned transaction
+  # rejects all further statements), rolling back far more than the
+  # racing allocation (e.g. the entire peer enrollment).
+  describe "nested-transaction safety (concurrent-insert race recovery)" do
+    it "keeps an already-open outer transaction usable after a real unique-constraint violation" do
+      # A "concurrent winner" already holds table_id/short_id 100/1 on
+      # this host, via a different network — mirrors the real race: our
+      # SELECT ... FOR UPDATE ran before that row existed (Postgres takes
+      # no lock on a zero-row result), so we compute the same candidate
+      # it already claimed.
+      winner = described_class.allocate!(host: host_a, network: net_b)
+      expect(winner.table_id).to eq(100)
+
+      allocator = described_class.new(host: host_a, network: net_a)
+
+      # Force create! to hit the real DB-level unique constraint directly
+      # via raw SQL instead of Rails' own `uniqueness:` model validations.
+      # Going through the normal `create!` path can't reproduce this: the
+      # colliding "winner" row is already visible to this same connection,
+      # so the model's presence validation would catch the collision
+      # first and raise RecordInvalid — masking the exact failure mode a
+      # genuine cross-connection race produces, where the winner's row
+      # isn't visible to the loser's validation SELECT until the instant
+      # its INSERT lands. Raw SQL skips validations and goes straight to
+      # the constraint, so this is a REAL PG::UniqueViolation, not a
+      # simulated one.
+      allow(::Sdwan::HostVrfAssignment).to receive(:create!) do
+        ::Sdwan::HostVrfAssignment.connection.execute(<<~SQL.squish)
+          INSERT INTO system_sdwan_host_vrf_assignments
+            (id, account_id, node_instance_id, sdwan_network_id, table_id, short_id, vrf_name, state, created_at, updated_at)
+          VALUES
+            (gen_random_uuid(), '#{account.id}', '#{host_a.id}', '#{net_a.id}', 100, 1, 'sdwan-1', 'pending', now(), now())
+        SQL
+      end
+
+      outer_survived = false
+      # Mirrors Sdwan::PeerEnroller#call: allocate! invoked from inside
+      # an already-open outer transaction, not top-level.
+      ::Sdwan::HostVrfAssignment.transaction do
+        # net_a's own row was never inserted (the racing INSERT failed),
+        # so the rescue's find_by!(host, net_a) can't find anything —
+        # it raises RecordNotFound. That's the correct, clean failure
+        # mode. Without requires_new: true, the prior real constraint
+        # violation instead poisons this whole transaction, and the
+        # find_by! itself raises PG::InFailedSqlTransaction /
+        # ActiveRecord::StatementInvalid — the wrong exception — because
+        # Postgres refuses to run ANY further statement on the aborted
+        # transaction.
+        expect { allocator.allocate! }.to raise_error(ActiveRecord::RecordNotFound)
+
+        # The real assertion: the outer transaction must still be usable
+        # afterward — a subsequent, unrelated write on the same
+        # connection must succeed instead of raising
+        # PG::InFailedSqlTransaction.
+        Sdwan::Network.create!(account_id: account.id, name: "vrf-net-post-race-#{SecureRandom.hex(3)}")
+        outer_survived = true
+      end
+
+      expect(outer_survived).to be true
+    end
+  end
 end

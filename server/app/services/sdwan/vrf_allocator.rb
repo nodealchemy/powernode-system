@@ -67,16 +67,22 @@ module Sdwan
 
     # Returns the existing or newly minted Sdwan::HostVrfAssignment for
     # (@host, @network). Always idempotent.
+    #
+    # requires_new: true — production callers (Sdwan::PeerEnroller) invoke
+    # this from inside their own already-open transaction. `FOR UPDATE`
+    # takes no lock at all when the host currently has zero rows (there's
+    # nothing to lock — PostgreSQL does not predicate-lock an empty
+    # result under READ COMMITTED), so two concurrent allocations for the
+    # same host CAN both compute the same table_id/short_id candidate and
+    # race on the real INSERT. Without requires_new:, a plain nested
+    # `transaction do` doesn't open a SAVEPOINT — it just joins the
+    # caller's transaction — so the loser's constraint violation aborts
+    # the whole shared Postgres transaction, and even the rescue clause
+    # below can't run a recovery query against it. requires_new: true
+    # isolates the violation to its own savepoint so the rescue's
+    # find_by! (and the caller's transaction) stay usable.
     def allocate!
-      ::Sdwan::HostVrfAssignment.transaction do
-        # Lock all of the host's rows for the duration of this txn so
-        # no concurrent allocator can race us into the same table_id.
-        # FOR UPDATE on a SELECT that returns zero rows still acquires
-        # a predicate-style lock when it shares a unique-index path,
-        # but PostgreSQL gives us the simpler guarantee that any
-        # subsequent INSERT we issue cannot collide with an INSERT
-        # from another transaction holding rows for this host (because
-        # the per-host unique index serializes them).
+      ::Sdwan::HostVrfAssignment.transaction(requires_new: true) do
         existing = ::Sdwan::HostVrfAssignment
                      .lock("FOR UPDATE")
                      .where(node_instance_id: @host.id)
@@ -129,7 +135,10 @@ module Sdwan
     # table_id while in-flight tunnels finish) or removed (when
     # force: true — releases the table_id immediately for reuse).
     def release!(assignment, force: false)
-      ::Sdwan::HostVrfAssignment.transaction do
+      # requires_new: true for the same reason as #allocate! — keeps a
+      # caller's own transaction (once release! gains production
+      # callers) from being poisoned by a failure in here.
+      ::Sdwan::HostVrfAssignment.transaction(requires_new: true) do
         if force
           assignment.mark_removed!
         else
