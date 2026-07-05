@@ -333,6 +333,41 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       end
     end
 
+    # IMP-7966e3692629 — the Gitea-webhook path creates the
+    # NodeModuleVersion + ingests artifacts, but (unlike the CI-direct
+    # module_publications_controller path) never wrote current_version_id.
+    # Agents resolve content via node_module.current_version&.artifact and
+    # the drift sensor/system_fleet_tool key off current_version&.oci_digest,
+    # so a webhook publish landed a fully-ingested version that the fleet
+    # never saw.
+    describe "current_version promotion" do
+      def deliver
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: {
+               "Content-Type" => "application/json",
+               "X-Gitea-Signature" => hmac_for(body)
+             }
+      end
+
+      it "promotes the freshly-ingested version to current_version on success" do
+        expect(node_module.current_version_id).to be_nil
+        deliver
+        expect(response).to have_http_status(:ok)
+
+        version = node_module.versions.order(:version_number).last
+        expect(node_module.reload.current_version_id).to eq(version.id)
+      end
+
+      it "does NOT promote when ingest fails" do
+        System::ModuleOciIngestService.adapter.stub_manifest = { error: "boom" }
+        deliver
+        expect(response).to have_http_status(:ok)
+        expect(node_module.reload.current_version_id).to be_nil
+      end
+    end
+
     # Spec inheritance — earlier behavior was to seed the new version
     # with empty mask/file_spec/package_spec arrays regardless of the
     # parent module's state. The version then carried no useful spec.
