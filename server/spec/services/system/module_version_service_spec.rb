@@ -154,6 +154,38 @@ RSpec.describe System::ModuleVersionService, type: :service do
         service.rollback_to(other_version)
       }.to raise_error(described_class::RollbackError, /does not belong/)
     end
+
+    it 'carries the rolled-back-to version build artifacts onto the new version' do
+      v1.update!(
+        artifacts: { 'erofs' => { 'oci_ref' => 'registry/mod:v1', 'oci_digest' => 'sha256:aaa' } },
+        oci_digest: 'sha256:aaa',
+        fsverity_root_hash: 'fsv-aaa',
+        sbom_uri: 'https://example.com/v1.sbom',
+        provenance_uri: 'https://example.com/v1.prov',
+        vex_uri: 'https://example.com/v1.vex'
+      )
+
+      service.rollback_to(v1)
+
+      rollback_version = node_module.reload.current_version
+      expect(rollback_version.artifacts).to eq(v1.artifacts)
+      expect(rollback_version.artifact).to be_present
+      expect(rollback_version.published?).to be true
+      expect(rollback_version.oci_digest).to eq('sha256:aaa')
+      expect(rollback_version.fsverity_root_hash).to eq('fsv-aaa')
+      expect(rollback_version.sbom_uri).to eq('https://example.com/v1.sbom')
+      expect(rollback_version.provenance_uri).to eq('https://example.com/v1.prov')
+      expect(rollback_version.vex_uri).to eq('https://example.com/v1.vex')
+    end
+
+    it 'does not carry artifacts onto ordinary (non-rollback) versions' do
+      v1.update!(artifacts: { 'erofs' => { 'oci_digest' => 'sha256:aaa' } })
+
+      version = service.create_version(changelog: 'Ordinary edit')
+
+      expect(version.artifacts).to eq({})
+      expect(version.published?).to be false
+    end
   end
 
   describe '#rollback_to_previous' do
