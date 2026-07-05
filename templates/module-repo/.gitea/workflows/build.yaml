@@ -3,8 +3,17 @@
 #   - workflow_dispatch (Powernode platform sends rsync_spec + package_spec)
 #   - tag push (matches v*.* — module author publishes a release)
 #
-# Stage 1: builder image (Containerfile + package_spec)
-# Stage 2: composer (rsync_spec → mkcomposefs → fs-verity → cosign → oras push)
+# Stage 1: builder image (Containerfile + package_spec)          [build, per-arch]
+# Stage 2: composer (rsync_spec → mkcomposefs → fs-verity)        [build, per-arch]
+# Stage 3: assemble multi-arch OCI index + cosign sign + notify   [assemble, once]
+#
+# The server (System::ModuleOciIngestService::OrasOciAdapter) fetches the
+# BARE tag ref expecting an OCI image index (`manifests[]` with one entry
+# per architecture) and verifies a registry-attached signature via
+# `cosign verify <oci_ref>` — a static cosign key, since Gitea isn't on
+# Sigstore Fulcio's trusted-issuer list. The `build` matrix jobs only ever
+# produce per-arch-tagged artifacts, so the `assemble` job below is what
+# creates the bare-tag index and attaches the signature the server expects.
 #
 # Reference: Golden Eclipse plan M1 — two-stage CI design.
 
@@ -41,7 +50,6 @@ on:
 
 permissions:
   contents: read       # checkout
-  id-token: write      # cosign keyless signing via Sigstore Fulcio
   packages: write      # oras push to Gitea registry
 
 env:
@@ -59,6 +67,14 @@ jobs:
             runner: ubuntu-24.04-arm
       fail-fast: false
     runs-on: ${{ matrix.runner }}
+    # Matrix-invariant — every arch leg resolves the same tag/fingerprint/
+    # module_id/module_name, so surfacing them as job outputs is safe (the
+    # usual "last matrix leg wins" hazard only bites when legs disagree).
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      fingerprint: ${{ steps.resolve.outputs.fingerprint }}
+      module_id: ${{ steps.resolve.outputs.module_id }}
+      module_name: ${{ steps.resolve.outputs.module_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,9 +88,9 @@ jobs:
             composefs-tools="${COMPOSEFS_TOOLS_VERSION}*" || \
             sudo apt-get install -y composefs-tools
 
-          # cosign + oras + syft + grype + in-toto from official releases
-          curl -sSLo /usr/local/bin/cosign \
-            "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-${{ matrix.arch }}"
+          # oras + syft + grype from official releases (cosign lives only in
+          # the `assemble` job now — signing happens once, on the multi-arch
+          # index, not per-arch here).
           curl -sSL \
             "https://github.com/oras-project/oras/releases/latest/download/oras_linux_${{ matrix.arch }}.tar.gz" \
             | sudo tar -xz -C /usr/local/bin oras
@@ -84,7 +100,7 @@ jobs:
           curl -sSL \
             "https://github.com/anchore/grype/releases/latest/download/grype_linux_${{ matrix.arch }}.tar.gz" \
             | sudo tar -xz -C /usr/local/bin grype
-          sudo chmod +x /usr/local/bin/cosign /usr/local/bin/oras /usr/local/bin/syft /usr/local/bin/grype
+          sudo chmod +x /usr/local/bin/oras /usr/local/bin/syft /usr/local/bin/grype
 
       - name: Resolve dispatch inputs (or tag-push defaults)
         id: resolve
@@ -93,19 +109,25 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             printf '%s' "${{ inputs.rsync_spec }}"   > rsync_spec.filter
             printf '%s' "${{ inputs.package_spec }}" > package_spec.txt
-            echo "fingerprint=${{ inputs.fingerprint }}" >> $GITHUB_OUTPUT
-            echo "module_id=${{ inputs.module_id }}"     >> $GITHUB_OUTPUT
-            echo "module_name=${{ inputs.module_name }}" >> $GITHUB_OUTPUT
+            FINGERPRINT="${{ inputs.fingerprint }}"
+            MODULE_ID="${{ inputs.module_id }}"
+            MODULE_NAME="${{ inputs.module_name }}"
+            TAG="dispatched-${FINGERPRINT:-${{ github.sha }}}"
           else
             # Tag-push fallback: use whatever the repo committed under spec/
             cp spec/rsync_spec.filter   rsync_spec.filter   2>/dev/null || echo "- *" > rsync_spec.filter
             cp spec/package_spec.txt    package_spec.txt    2>/dev/null || true
-            echo "fingerprint=$(sha256sum rsync_spec.filter package_spec.txt 2>/dev/null | awk '{print $1}' | head -1)" >> $GITHUB_OUTPUT
-            echo "module_id=$(yq '.name' manifest.yaml)" >> $GITHUB_OUTPUT
-            echo "module_name=$(yq '.name' manifest.yaml)" >> $GITHUB_OUTPUT
+            FINGERPRINT="$(sha256sum rsync_spec.filter package_spec.txt 2>/dev/null | awk '{print $1}' | head -1)"
+            MODULE_ID="$(yq '.name' manifest.yaml)"
+            MODULE_NAME="$(yq '.name' manifest.yaml)"
+            # Real tag push — the ref IS the tag; never fall back to a
+            # synthetic "dispatched-*" value here (that's dispatch-only).
+            TAG="${GITHUB_REF#refs/tags/}"
           fi
-          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          echo "tag=${tag:-dispatched-${{ steps.resolve.outputs.fingerprint || github.sha }}}" >> $GITHUB_OUTPUT
+          echo "fingerprint=${FINGERPRINT}" >> "$GITHUB_OUTPUT"
+          echo "module_id=${MODULE_ID}"     >> "$GITHUB_OUTPUT"
+          echo "module_name=${MODULE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"                 >> "$GITHUB_OUTPUT"
 
       # Stage 1: build the fat staging image with package_spec + rootfs/
       - name: Stage 1 — buildah bud (builder image)
@@ -149,14 +171,6 @@ jobs:
         run: |
           grype --add-cpes-if-none /tmp/staging -o json > /tmp/vex.json || true
 
-      - name: Cosign sign-blob (keyless via Sigstore Fulcio)
-        run: |
-          set -eux
-          COSIGN_EXPERIMENTAL=1 cosign sign-blob \
-            --bundle /tmp/module.cosign-bundle \
-            --yes \
-            /tmp/module.cfs
-
       - name: Push artifact to OCI registry (oras)
         id: push
         env:
@@ -176,9 +190,141 @@ jobs:
             --annotation "io.powernode.built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             /tmp/module.cfs:application/octet-stream \
             /tmp/sbom.cdx.json:application/vnd.cyclonedx+json \
-            /tmp/vex.json:application/vnd.cyclonedx.vex+json \
-            /tmp/module.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json
+            /tmp/vex.json:application/vnd.cyclonedx.vex+json
           echo "artifact_ref=${ARTIFACT_REF}" >> $GITHUB_OUTPUT
+
+      - name: Notify Powernode SBOM webhook
+        # Sends the parsed SBOM to the platform so CVE exposure calculation
+        # can use ecosystem-aware version-range matching. The `assemble` job
+        # (below) triggers OCI ingestion once the multi-arch index is signed
+        # and pushed; this per-arch SBOM POST may race ahead of it, so we
+        # retry with backoff if the artifact row isn't in the DB yet.
+        if: success() && steps.push.outputs.artifact_ref != ''
+        env:
+          SBOM_WEBHOOK_URL: ${{ vars.POWERNODE_SBOM_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module_sbom' }}
+          WEBHOOK_SECRET: ${{ secrets.POWERNODE_WEBHOOK_SECRET }}
+        run: |
+          set -eu
+          PAYLOAD=$(jq -c -n \
+            --arg module_id "${{ steps.resolve.outputs.module_id }}" \
+            --arg tag "${{ steps.resolve.outputs.tag }}" \
+            --arg architecture "${{ matrix.arch }}" \
+            --slurpfile sbom /tmp/sbom.cdx.json \
+            '{module_id:$module_id, tag:$tag, architecture:$architecture, sbom:$sbom[0]}')
+          SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.*= //')
+          # Widened vs. the original 0/10/30/60s budget: ingestion is now
+          # triggered from the separate `assemble` job (tooling install +
+          # index assembly + signing + async worker pickup), not from this
+          # same job, so the race window this retries against is measured in
+          # minutes, not seconds.
+          for delay in 0 15 30 60 120 180; do
+            [ "$delay" -gt 0 ] && { echo "[info] retrying SBOM ingestion in ${delay}s"; sleep "$delay"; }
+            RESP=$(curl -sS -X POST "$SBOM_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -H "X-Gitea-Signature: ${SIG}" \
+              --data "$PAYLOAD" || echo '{"message":"network error"}')
+            case "$RESP" in
+              *"SBOM ingested"*)
+                echo "$RESP"
+                exit 0
+                ;;
+              *"Artifact not found"*)
+                echo "[info] artifact not yet ingested, will retry"
+                ;;
+              *)
+                echo "[warn] SBOM webhook returned: $RESP"
+                exit 0
+                ;;
+            esac
+          done
+          echo "[warn] SBOM not ingested after retries; CVE matching will fall back to keyword overlap until next build"
+
+  # Runs once, after every per-arch build leg has pushed its artifact.
+  # Assembles the bare-tag OCI image index the server expects, attaches a
+  # registry-signature via a static cosign key (Gitea isn't Fulcio-trusted,
+  # so keyless signing never verifies server-side — see OrasOciAdapter),
+  # and only THEN fires the module-publish webhook, so ingestion never runs
+  # against a bare tag that doesn't have an index yet.
+  assemble:
+    needs: build
+    # Runs even if a build leg failed — mirrors the old per-arch webhook's
+    # `if: always()`, so the platform still hears about the failure (via
+    # system.module_publish_failed) instead of the publish going silent.
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      # Gate the assembly/signing steps on every build leg having actually
+      # succeeded — a matrix job's outputs come from whichever leg the
+      # runner happens to report last, so a failed leg that never reached
+      # `id: resolve` can leave `needs.build.outputs.tag` empty even though
+      # `if: always()` still runs this job. Only the final notify step (which
+      # must fire on failure too, to report system.module_publish_failed)
+      # stays ungated.
+      - name: Install oras + cosign + jq
+        if: needs.build.result == 'success'
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y jq
+          curl -sSLo /usr/local/bin/cosign \
+            "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+          curl -sSL \
+            "https://github.com/oras-project/oras/releases/latest/download/oras_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+          sudo chmod +x /usr/local/bin/cosign /usr/local/bin/oras
+
+      - name: Assemble + push multi-arch OCI index
+        id: index
+        if: needs.build.result == 'success'
+        env:
+          ORAS_USERNAME: ${{ secrets.GITEA_PUSH_USERNAME }}
+          ORAS_PASSWORD: ${{ secrets.GITEA_PUSH_TOKEN }}
+        run: |
+          set -eux
+          REPO_PATH="${{ github.repository }}"
+          TAG="${{ needs.build.outputs.tag }}"
+          REF="${REGISTRY}/${REPO_PATH}:${TAG}"
+          oras login "${REGISTRY}" -u "${ORAS_USERNAME}" -p "${ORAS_PASSWORD}"
+
+          MANIFESTS_JSON="[]"
+          # Arch list intentionally mirrors `strategy.matrix.include` above
+          # and System::ModuleOciIngestService::SUPPORTED_ARCHS (Ruby) — keep
+          # all three in sync when adding/removing an architecture. A missing
+          # arch here fails loudly (the fetch below 404s under `set -e`),
+          # never silently drops a platform from the index.
+          for arch in amd64 arm64; do
+            oras manifest fetch --descriptor "${REF}-${arch}" > "descriptor-${arch}.json"
+            ENTRY=$(jq --arg arch "$arch" \
+              '{mediaType, digest, size, platform: {architecture: $arch, os: "linux"}, annotations: (.annotations // {})}' \
+              "descriptor-${arch}.json")
+            MANIFESTS_JSON=$(jq --argjson e "$ENTRY" '. + [$e]' <<<"$MANIFESTS_JSON")
+          done
+
+          jq -n --argjson manifests "$MANIFESTS_JSON" \
+            '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: $manifests}' \
+            > index.json
+
+          oras manifest push "${REF}" index.json
+          echo "artifact_ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Cosign sign the multi-arch index (static key)
+        # Gitea's OIDC issuer isn't in Sigstore Fulcio's trusted-issuer list,
+        # so keyless `cosign sign` can never produce a signature the server's
+        # `cosign verify <oci_ref>` (module_oci_ingest_service.rb) accepts.
+        # POWERNODE_COSIGN_PRIVATE_KEY is this repo's half of the static key
+        # pair whose public half is the platform's POWERNODE_COSIGN_PUBLIC_KEY.
+        if: needs.build.result == 'success'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.POWERNODE_COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.POWERNODE_COSIGN_KEY_PASSWORD }}
+        run: |
+          set -eux
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
+            echo "[warn] POWERNODE_COSIGN_PRIVATE_KEY not set — pushing an unsigned index; server-side cosign verify will fail until this secret is configured"
+          else
+            export __COSIGN_KEY_INLINE="${COSIGN_PRIVATE_KEY}"
+            cosign sign --key env://__COSIGN_KEY_INLINE --yes "${{ steps.index.outputs.artifact_ref }}"
+          fi
 
       - name: Notify Powernode webhook
         # SIGNING CONTRACT (module-publish + SBOM callbacks):
@@ -200,53 +346,12 @@ jobs:
           set -eux
           PAYLOAD=$(jq -c -n \
             --arg repo "${{ github.repository }}" \
-            --arg ref  "refs/tags/${{ steps.resolve.outputs.tag }}" \
-            --arg artifact "${{ steps.push.outputs.artifact_ref }}" \
-            --arg fingerprint "${{ steps.resolve.outputs.fingerprint }}" \
+            --arg ref  "refs/tags/${{ needs.build.outputs.tag }}" \
+            --arg artifact "${{ steps.index.outputs.artifact_ref }}" \
+            --arg fingerprint "${{ needs.build.outputs.fingerprint }}" \
             '{repository:{full_name:$repo}, ref:$ref, artifact:$artifact, fingerprint:$fingerprint}')
           SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.*= //')
           curl -fsS -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Gitea-Signature: ${SIG}" \
             --data "$PAYLOAD" || echo "[warn] webhook delivery failed; will retry on next dispatch"
-
-      - name: Notify Powernode SBOM webhook
-        # Sends the parsed SBOM to the platform so CVE exposure calculation
-        # can use ecosystem-aware version-range matching. The existing
-        # `Notify Powernode webhook` step above triggers async OCI ingestion
-        # of the artifact; the SBOM POST may race ahead of it, so we retry
-        # with backoff if the artifact row isn't in the DB yet.
-        if: success() && steps.push.outputs.artifact_ref != ''
-        env:
-          SBOM_WEBHOOK_URL: ${{ vars.POWERNODE_SBOM_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module_sbom' }}
-          WEBHOOK_SECRET: ${{ secrets.POWERNODE_WEBHOOK_SECRET }}
-        run: |
-          set -eu
-          PAYLOAD=$(jq -c -n \
-            --arg module_id "${{ steps.resolve.outputs.module_id }}" \
-            --arg tag "${{ steps.resolve.outputs.tag }}" \
-            --arg architecture "${{ matrix.arch }}" \
-            --slurpfile sbom /tmp/sbom.cdx.json \
-            '{module_id:$module_id, tag:$tag, architecture:$architecture, sbom:$sbom[0]}')
-          SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.*= //')
-          for delay in 0 10 30 60; do
-            [ "$delay" -gt 0 ] && { echo "[info] retrying SBOM ingestion in ${delay}s"; sleep "$delay"; }
-            RESP=$(curl -sS -X POST "$SBOM_WEBHOOK_URL" \
-              -H "Content-Type: application/json" \
-              -H "X-Gitea-Signature: ${SIG}" \
-              --data "$PAYLOAD" || echo '{"message":"network error"}')
-            case "$RESP" in
-              *"SBOM ingested"*)
-                echo "$RESP"
-                exit 0
-                ;;
-              *"Artifact not found"*)
-                echo "[info] artifact not yet ingested, will retry"
-                ;;
-              *)
-                echo "[warn] SBOM webhook returned: $RESP"
-                exit 0
-                ;;
-            esac
-          done
-          echo "[warn] SBOM not ingested after retries; CVE matching will fall back to keyword overlap until next build"

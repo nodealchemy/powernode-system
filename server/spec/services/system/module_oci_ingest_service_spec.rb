@@ -125,4 +125,71 @@ RSpec.describe System::ModuleOciIngestService do
         .to raise_error(described_class::IngestError, /cosign binary not found/)
     end
   end
+
+  # IMP-133388cddd9c — templates/module-repo/.gitea/workflows/build.yaml only ever
+  # pushed per-arch-suffixed tags (`<tag>-amd64`, `<tag>-arm64`); nothing was ever
+  # published under the bare `<tag>` this adapter fetches, so every real publish
+  # 404'd here. Fixed by adding an `assemble` job that builds a real OCI image
+  # index (`manifests[]`, one entry per arch) and pushes it under the bare tag —
+  # verified end-to-end against the real `oras` CLI (v1.2.0) via an OCI image
+  # layout directory (no live registry needed) before wiring it into the
+  # workflow. This spec locks the Ruby side of that contract: the bare-tag
+  # fetch this adapter performs must resolve to exactly the index shape the
+  # fixed CI now produces.
+  describe "OrasOciAdapter#fetch_manifest (IMP-133388cddd9c CI ↔ ingest contract)" do
+    let(:adapter) { described_class::OrasOciAdapter.new }
+    let(:oci_ref) { "registry.example.com/acct/ingest-mod:v1.0.0" }
+
+    def status_double(ok, code: 0)
+      instance_double(Process::Status, success?: ok, exitstatus: code)
+    end
+
+    before do
+      # fetch_manifest checks the binary is on PATH before shelling out to it.
+      allow(Open3).to receive(:capture3).with("which", "oras").and_return(["", "", status_double(true)])
+    end
+
+    it "fails clearly against the pre-fix CI shape (nothing ever published at the bare tag)" do
+      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+        .and_return(["", "Error: #{oci_ref}: not found", status_double(false, code: 1)])
+
+      result = adapter.fetch_manifest(oci_ref)
+      expect(result[:error]).to be_present
+    end
+
+    it "parses the fixed CI's multi-arch OCI index into one descriptor per architecture" do
+      # Exact shape `oras manifest push` emits for the index built by the new
+      # `assemble` job (confirmed via a real oras v1.2.0 run against an
+      # OCI image layout dir).
+      index = {
+        schemaVersion: 2,
+        mediaType: "application/vnd.oci.image.index.v1+json",
+        manifests: %w[amd64 arm64].map do |arch|
+          {
+            mediaType: "application/vnd.oci.image.manifest.v1+json",
+            digest: "sha256:#{Digest::SHA256.hexdigest(arch)}",
+            size: 959,
+            platform: { architecture: arch, os: "linux" },
+            annotations: {
+              "io.powernode.fsverity_root_hash" => "fsv-#{arch}-abc123",
+              "io.powernode.fingerprint" => "fp-#{arch}",
+              "io.powernode.module_id" => "mod-1",
+              "io.powernode.built_at" => "2026-07-01T00:00:00Z"
+            }
+          }
+        end
+      }.to_json
+      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+        .and_return([index, "", status_double(true)])
+
+      result = adapter.fetch_manifest(oci_ref)
+      expect(result[:error]).to be_nil
+      arches = result[:per_arch_descriptors].map { |d| d[:architecture] }.sort
+      expect(arches).to eq(%w[amd64 arm64])
+
+      amd64 = result[:per_arch_descriptors].find { |d| d[:architecture] == "amd64" }
+      expect(amd64[:fsverity_root_hash]).to eq("fsv-amd64-abc123")
+      expect(amd64[:oci_digest]).to eq("sha256:#{Digest::SHA256.hexdigest('amd64')}")
+    end
+  end
 end
