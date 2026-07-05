@@ -17,7 +17,7 @@ This file is the index for AI sessions touching `extensions/system/`. Each domai
 | Skill executors | `docs/SKILL_EXECUTORS.md` | `app/services/system/ai/skills/` (49 executors), `db/seeds/system_skills_seed.rb` |
 | Disk image CI | `docs/DISK_IMAGE_CI.md` | `app/models/system/{disk_image_publication,disk_image_webhook}.rb`, `app/services/system/disk_image_*_service.rb` |
 | CI workers + Gitea Actions | (cross-cuts disk image CI) | `app/services/system/{worker_dispatch,execution_dispatcher}.rb` |
-| Tasks + autonomy reconcile | `docs/ARCHITECTURE.md` §4 | `app/models/system/task.rb`, `app/services/system/runtime_task_dispatcher.rb` |
+| Tasks + autonomy reconcile | `docs/ARCHITECTURE.md` §4 | `app/models/system/task.rb`, `app/services/system/execution_dispatcher.rb` |
 | Honeypot canaries | `docs/ARCHITECTURE.md` §7 | `app/services/system/honeypot/canary_module_service.rb` |
 | Storage (volumes, mounts, migration, chown) | `docs/STORAGE_SUBSYSTEM.md`, `docs/runbooks/storage-migration.md` | `app/models/system/{provider_volume,storage_assignment,storage_migration,storage_credential}.rb`, `app/services/system/storage/`, `app/services/ai/tools/{system_fleet_tool,system_storage_owner_tool}.rb` |
 

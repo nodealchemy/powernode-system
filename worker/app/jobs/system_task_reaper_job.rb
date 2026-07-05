@@ -47,10 +47,14 @@ class SystemTaskReaperJob < BaseJob
   # Pending or scheduled operations whose enqueue might have been missed.
   # Re-issue the regular execute job; idempotency comes from the server's
   # atomic claim (start!) which 409s if the op is no longer claimable.
+  #
+  # Both statuses in one query: ExecutionDispatcher's claim (may_start?)
+  # accepts pending OR scheduled, so re-enqueuing a stuck :scheduled task is
+  # exactly as safe/idempotent as re-enqueuing a stuck :pending one.
   def reap_stuck_pending
     response = api_client.get(
       "/api/v1/system/worker_api/tasks",
-      { status: "pending", stuck_since: STUCK_PENDING_THRESHOLD, per_page: 100 }
+      { status: %w[pending scheduled], stuck_since: STUCK_PENDING_THRESHOLD, per_page: 100 }
     )
     tasks = response.dig("data", "tasks") || []
 
