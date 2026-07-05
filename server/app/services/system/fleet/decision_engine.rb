@@ -723,13 +723,21 @@ module System
       end
 
       # IMP-555e29eeb4ab: maps InstanceStateDriftSensor's actual_status (the
-      # provider-reported state) to the AASM finalizer event that reconciles
-      # the model to match it. Mirrors the "Worker runtime finalizers" half
-      # of NodeInstance's state machine (mark_running is the fourth, used by
-      # heartbeat recovery, not drift).
+      # provider-reported state) to the AASM event that reconciles the model
+      # to match it. "terminated" uses `terminate` rather than the narrower
+      # `mark_terminated` finalizer — mark_terminated only allows from
+      # [terminated, stopped, running, error] (node_instance.rb), so an
+      # instance that drifted into :stopping/:rebooting/etc. between sense
+      # and this proceed (e.g. an operator issued a stop/reboot on the same
+      # instance concurrently) would never converge. `terminate` is legal
+      # from every non-terminal state (F4-02 — "once the provider destroys
+      # the cloud resource, the DB row must always reach :terminated"),
+      # which is exactly this case. stopped/error keep the narrower
+      # finalizers since the sensor only ever senses from :running, which
+      # both mark_stopped and mark_errored already cover.
       CONVERGENCE_EVENT_FOR_ACTUAL_STATUS = {
         "stopped" => :mark_stopped!,
-        "terminated" => :mark_terminated!,
+        "terminated" => :terminate!,
         "error" => :mark_errored!
       }.freeze
 

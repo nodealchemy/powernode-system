@@ -45,6 +45,7 @@ RSpec.describe System::CloudSyncService do
       it "marks the missing instance terminated but leaves the still-present one alone" do
         present = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-present")
         deleted = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-deleted")
+        deleted.update_column(:created_at, 1.hour.ago) # outside the termination-sweep grace period
 
         allow(adapter).to receive(:list_instances).and_return(
           success: true,
@@ -60,6 +61,18 @@ RSpec.describe System::CloudSyncService do
         expect(result.success?).to be true
         expect(deleted.reload.status).to eq("terminated")
         expect(present.reload.status).to eq("running")
+      end
+
+      it "does not terminate a just-provisioned instance the provider hasn't listed yet (eventual consistency)" do
+        fresh = create(:system_node_instance, :running, provider_region: region, cloud_instance_id: "i-brand-new")
+
+        allow(adapter).to receive(:list_instances).and_return(
+          success: true, instances: [], page_count: 1, truncated: false
+        )
+
+        described_class.new.sync_region_instances(region: region, account: account)
+
+        expect(fresh.reload.status).to eq("running")
       end
 
       it "does not terminate an already-terminated instance again" do

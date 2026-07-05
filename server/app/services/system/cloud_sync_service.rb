@@ -8,6 +8,14 @@ module System
   class CloudSyncService
     class SyncError < StandardError; end
 
+    # IMP-555e29eeb4ab: grace period before a local instance absent from the
+    # cloud listing is presumed deleted out-of-band. A NodeInstance can be
+    # assigned its cloud_instance_id immediately after provisioning, before
+    # the provider's list API is guaranteed to reflect it yet (eventual
+    # consistency) — without this window, a brand-new, genuinely-running
+    # instance synced in that narrow gap would be force-terminated.
+    TERMINATION_SWEEP_GRACE_SECONDS = (ENV["CLOUD_SYNC_TERMINATION_GRACE_SECONDS"] || 900).to_i
+
     def self.sync_instance_state(instance:)
       new.sync_instance_state(instance: instance)
     end
@@ -168,14 +176,21 @@ module System
       # the actual hourly scheduled sweep (SystemCloudSyncJob ->
       # sync_region_instances), so it's the only path that ever reconciles a
       # deleted instance. Skipped when the listing was truncated — an unseen
-      # page, not a deletion, would otherwise be misread as "gone".
+      # page, not a deletion, would otherwise be misread as "gone". Goes
+      # through the AASM `terminate!` event (legal from any non-terminal
+      # state) rather than a raw status write, so the transition is audited
+      # (System::LifecycleAuditable) the same as every other real status
+      # change on this model.
       terminated_count = 0
       unless truncated
         local_instances.each do |cloud_instance_id, local_instance|
           next if seen_cloud_instance_ids.include?(cloud_instance_id)
           next if local_instance.status == "terminated"
+          next if local_instance.created_at > TERMINATION_SWEEP_GRACE_SECONDS.seconds.ago
+          next unless local_instance.may_terminate?
 
-          local_instance.update!(status: "terminated", last_synced_at: Time.current)
+          local_instance.terminate!
+          local_instance.update!(last_synced_at: Time.current)
           terminated_count += 1
           updated_count += 1
           synced_count += 1
