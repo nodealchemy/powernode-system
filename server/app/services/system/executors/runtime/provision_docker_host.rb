@@ -8,13 +8,16 @@ module System
 
         def perform
           # Delegates to existing System::DockerDaemonProvisionerService.
-          service = ::System::DockerDaemonProvisionerService.new(
-            account: account,
-            instance_id: params[:instance_id],
-            options: params[:options].to_h.symbolize_keys
-          )
-          result = service.provision!
-          { instance_id: params[:instance_id], status: result&.dig(:status) || "queued" }
+          # The service takes node_instance:/docker_host:/account: — it has
+          # no instance_id:/options: kwargs, so this used to raise
+          # ArgumentError on every call. provision! also returns the created
+          # Devops::DockerHost record, not a result hash to #dig.
+          instance = ::System::NodeInstance.find(params[:instance_id])
+          host = ::System::DockerDaemonProvisionerService.new(
+            node_instance: instance,
+            account: account
+          ).provision!
+          { instance_id: instance.id, host_id: host.id, status: host.status }
         end
 
         def summarize = "Provision Docker daemon on instance #{params[:instance_id]}"
