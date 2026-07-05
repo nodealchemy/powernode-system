@@ -169,12 +169,9 @@ module Api
             ref.sub(%r{\Arefs/tags/}, "")
           end
 
-          def build_oci_ref(node_module, tag)
-            registry = ENV.fetch("POWERNODE_OCI_REGISTRY", "registry.example.com")
-            "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
-          end
-
-          # find_or_create_version was extracted to
+          # build_oci_ref (dead since the async-dispatch refactor extracted it
+          # to System::ModulePublicationProcessor#build_oci_ref — that's the
+          # only implementation now) and find_or_create_version were extracted to
           # System::ModulePublicationProcessor#find_or_create_version
           # so that both the inline and async paths get the same
           # ordering: refresh manifest first, snapshot version with

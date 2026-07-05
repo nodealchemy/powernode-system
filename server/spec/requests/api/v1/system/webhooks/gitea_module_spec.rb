@@ -562,5 +562,51 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
         end
       end
     end
+
+    # IMP-e7e4595d3fa6 — build_oci_ref hardcoded ENV.fetch("POWERNODE_OCI_REGISTRY",
+    # "registry.example.com"), ignoring the platform registry config DK1/DK4 already
+    # built for disk images (AdminSetting -> SecretStore/ENV -> Gitea provider). A
+    # dogfood box with only a Gitea provider credential connected (no hand-set
+    # POWERNODE_OCI_REGISTRY) got a guaranteed-unreachable oci_ref.
+    describe "OCI registry host resolution (module supply-chain config)" do
+      around do |example|
+        original = ENV["POWERNODE_OCI_REGISTRY"]
+        ENV.delete("POWERNODE_OCI_REGISTRY")
+        example.run
+      ensure
+        ENV["POWERNODE_OCI_REGISTRY"] = original
+      end
+
+      it "builds the ingested oci_ref from the platform-configured registry host, not the placeholder" do
+        AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.powernode.org")
+
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: { "Content-Type" => "application/json", "X-Gitea-Signature" => hmac_for(body) }
+        expect(response).to have_http_status(:ok)
+
+        version = node_module.versions.order(:version_number).last
+        oci_ref = version.artifacts.dig(System::NodeModuleVersion::PRIMARY_ARTIFACT_FORMAT, "oci_ref")
+        expect(oci_ref).to start_with("git.powernode.org/")
+        expect(oci_ref).not_to start_with("registry.example.com/")
+      end
+
+      it "derives the host from a connected Gitea provider credential when no AdminSetting override is set" do
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+               external_username: "ci-bot")
+
+        body = push_payload.to_json
+        post "/api/v1/system/webhooks/gitea/module",
+             params: body,
+             headers: { "Content-Type" => "application/json", "X-Gitea-Signature" => hmac_for(body) }
+        expect(response).to have_http_status(:ok)
+
+        version = node_module.versions.order(:version_number).last
+        oci_ref = version.artifacts.dig(System::NodeModuleVersion::PRIMARY_ARTIFACT_FORMAT, "oci_ref")
+        expect(oci_ref).to start_with("git.powernode.org/")
+      end
+    end
   end
 end

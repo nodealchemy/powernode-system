@@ -252,6 +252,125 @@ RSpec.describe System::ModuleBuildDispatchService do
     end
   end
 
+  # IMP-e7e4595d3fa6 — GiteaDispatchAdapter hardcoded DEFAULT_BASE_URL =
+  # "https://registry.example.com" and read POWERNODE_GITEA_TOKEN with no
+  # fallback, so a dogfood box without both hand-set env vars silently
+  # dispatched workflow_dispatch requests to an unreachable placeholder host.
+  # Same failure class DK1/DK4 already fixed for disk images via
+  # DiskImageRegistryConfig (AdminSetting/SecretStore -> ENV -> Gitea
+  # provider credential) — now applied here too. Resolution happens fresh on
+  # every #dispatch call (see resolve_base_url/resolve_token), not cached at
+  # #initialize — the adapter instance is a class-memoized singleton
+  # (.adapter), so caching at construction would pin a rotated secret for
+  # the process lifetime.
+  describe "GiteaDispatchAdapter platform-config resolution" do
+    let(:adapter) { System::ModuleBuildDispatchService::GiteaDispatchAdapter.new }
+
+    around do |example|
+      original = ENV.to_hash.slice("POWERNODE_GITEA_BASE_URL", "POWERNODE_GITEA_TOKEN")
+      ENV.delete("POWERNODE_GITEA_BASE_URL")
+      ENV.delete("POWERNODE_GITEA_TOKEN")
+      example.run
+    ensure
+      original.each { |k, v| ENV[k] = v }
+    end
+
+    it "derives base_url from the platform's Gitea provider instead of the registry.example.com placeholder" do
+      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      expect(adapter.send(:resolve_base_url)).to eq("https://git.powernode.org")
+    end
+
+    it "does not default base_url to the registry.example.com placeholder when nothing is configured" do
+      expect(adapter.send(:resolve_base_url)).not_to eq("https://registry.example.com")
+    end
+
+    it "derives the token from the platform-global registry secret (shared Gitea PAT), not a bare nil" do
+      Security::SecretStore.write(account: nil, scope: System::DiskImageRegistryConfig::SECRET_SCOPE,
+                                   key: "registry_token", value: "platform-token")
+      expect(adapter.send(:resolve_token, nil)).to eq("platform-token")
+    end
+
+    # DK4 parity — this is the whole point of threading `account:` through
+    # dispatch instead of resolving once at #initialize with account: nil
+    # (which would always skip the credential-lookup tier below).
+    it "derives the token from the CALLING account's Gitea provider credential — zero hand-entered secrets" do
+      account = create(:account)
+      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+             encrypted_credentials: Base64.strict_encode64({ "access_token" => "gitea-derived-token" }.to_json))
+      expect(adapter.send(:resolve_token, account)).to eq("gitea-derived-token")
+    end
+
+    it "still honors explicit constructor args over platform config" do
+      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      explicit = System::ModuleBuildDispatchService::GiteaDispatchAdapter.new(
+        base_url: "https://explicit.example.com", token: "explicit-tok"
+      )
+      expect(explicit.send(:resolve_base_url)).to eq("https://explicit.example.com")
+      expect(explicit.send(:resolve_token, nil)).to eq("explicit-tok")
+    end
+
+    it "still honors ENV overrides over platform config" do
+      ENV["POWERNODE_GITEA_BASE_URL"] = "https://env.example.com"
+      ENV["POWERNODE_GITEA_TOKEN"] = "env-tok"
+      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      expect(adapter.send(:resolve_base_url)).to eq("https://env.example.com")
+      expect(adapter.send(:resolve_token, nil)).to eq("env-tok")
+    end
+
+    it "dispatch_build! threads the module's own account through so its Gitea credential resolves" do
+      account = create(:account)
+      platform = create(:system_node_platform, account: account)
+      category = create(:system_node_module_category, account: account)
+      mod = create(:system_node_module, account: account, node_platform: platform, category: category,
+                   variety: "subscription", name: "acct-scoped-mod",
+                   gitea_repo_full_name: "ipnode-acme/acct-scoped-mod")
+      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
+             encrypted_credentials: Base64.strict_encode64({ "access_token" => "gitea-derived-token" }.to_json))
+      stub_request(:post, %r{\Ahttps://git\.powernode\.org/api/v1/repos/})
+        .with(headers: { "Authorization" => "token gitea-derived-token" })
+        .to_return(status: 204, headers: { "X-Gitea-Action-Run-Id" => "77" })
+
+      stub_const("ENV", ENV.to_h.merge("POWERNODE_BUILD_DISPATCH_MODE" => "gitea"))
+      described_class.reset!
+      result = described_class.dispatch_build!(node_module: mod)
+      expect(result.ok?).to be true
+      expect(result.dispatch_id).to eq("77")
+    end
+  end
+
+  # IMP-e7e4595d3fa6 — webhook_callback_url hardcoded http://localhost:3000,
+  # wrong host for any remote CI runner (results silently lost after the
+  # `|| warning`). Now routes through the canonical PublicUrlResolver seam
+  # (SiteSetting public_base_url -> APP_BASE_URL -> host-relative).
+  describe "#webhook_callback_url (private, via .send)" do
+    around do |example|
+      original = ENV["POWERNODE_PACKAGE_BUILD_WEBHOOK_URL"]
+      ENV.delete("POWERNODE_PACKAGE_BUILD_WEBHOOK_URL")
+      example.run
+    ensure
+      ENV["POWERNODE_PACKAGE_BUILD_WEBHOOK_URL"] = original
+    end
+
+    it "resolves via PublicUrlResolver's configured public_base_url, not localhost:3000" do
+      SiteSetting.set("public_base_url", "https://ci.powernode.org", setting_type: "string")
+      url = described_class.new.send(:webhook_callback_url)
+      expect(url).to eq("https://ci.powernode.org/api/v1/system/webhooks/package_build")
+    end
+
+    it "does not hardcode localhost:3000 when nothing is configured (host-relative instead)" do
+      url = described_class.new.send(:webhook_callback_url)
+      expect(url).not_to include("localhost:3000")
+    end
+
+    it "still honors an explicit POWERNODE_PACKAGE_BUILD_WEBHOOK_URL override" do
+      ENV["POWERNODE_PACKAGE_BUILD_WEBHOOK_URL"] = "https://override.example.com/hook"
+      url = described_class.new.send(:webhook_callback_url)
+      expect(url).to eq("https://override.example.com/hook")
+    end
+  end
+
   describe ".module_webhook_enforced?" do
     around do |ex|
       prev = ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"]

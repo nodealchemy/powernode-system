@@ -78,6 +78,17 @@ module System
           registry_user(account: account).present? && registry_token(account: account).present?
       end
 
+      # Full scheme+host base URL of the platform's Gitea provider (e.g.
+      # "https://git.powernode.org") — no account needed, same unscoped
+      # provider lookup as gitea_host below. Callers that need to hit the
+      # Gitea REST API directly (not just build an OCI ref host), such as
+      # ModuleBuildDispatchService's workflow_dispatch call, use this
+      # instead of duplicating the provider lookup + ENV/placeholder
+      # fallback the module path used to hand-roll.
+      def gitea_web_base_url
+        gitea_effective_url
+      end
+
       private
 
       def safe_setting(key)
@@ -99,15 +110,22 @@ module System
       end
 
       def gitea_host
-        provider = gitea_provider
-        return nil unless provider
-
-        url = provider.effective_web_base_url
+        url = gitea_effective_url
         return nil if url.blank?
 
         URI.parse(url).host
       rescue StandardError => e
         Rails.logger.warn("[DiskImageRegistryConfig] Gitea provider host resolution failed: #{e.class}: #{e.message}")
+        nil
+      end
+
+      def gitea_effective_url
+        provider = gitea_provider
+        return nil unless provider
+
+        provider.effective_web_base_url.presence
+      rescue StandardError => e
+        Rails.logger.warn("[DiskImageRegistryConfig] Gitea provider URL resolution failed: #{e.class}: #{e.message}")
         nil
       end
 
