@@ -88,6 +88,42 @@ RSpec.describe System::InstanceControlService do
     end
   end
 
+  describe '#execute — failed stop reverts the transitional status back to running' do
+    # IMP-0d7071dc03f7 — revert_status's "stopping" branch calls mark_running!,
+    # but mark_running's AASM from-list didn't include :stopping, so the
+    # may_mark_running? guard was always false and the row stuck in
+    # "stopping" instead of reverting to the last-known-good "running" state.
+    let(:instance) do
+      create(:system_node_instance, :physical, node: node, status: 'running',
+             private_ip_address: nil, config: { 'ipmi' => { 'host' => '10.0.0.5' } })
+    end
+
+    it 'reverts to running instead of getting stuck in stopping' do
+      result = described_class.execute(instance: instance, action: :stop)
+
+      expect(result.success?).to be false
+      expect(instance.reload.status).to eq('running')
+    end
+  end
+
+  describe '#execute — failed start reverts the transitional status back to stopped' do
+    # IMP-0d7071dc03f7 — revert_status's "starting" branch calls mark_stopped!,
+    # but mark_stopped's AASM from-list didn't include :starting, so the
+    # may_mark_stopped? guard was always false and the row stuck in
+    # "starting" instead of reverting to the last-known-good "stopped" state.
+    let(:instance) do
+      create(:system_node_instance, :physical, node: node, status: 'stopped',
+             config: { 'ipmi' => { 'host' => '10.0.0.5' } })
+    end
+
+    it 'reverts to stopped instead of getting stuck in starting' do
+      result = described_class.execute(instance: instance, action: :start)
+
+      expect(result.success?).to be false
+      expect(instance.reload.status).to eq('stopped')
+    end
+  end
+
   describe '#execute — physical stop still uses the real SSH path when reachable' do
     let(:instance) do
       create(:system_node_instance, :physical, node: node, status: 'running',

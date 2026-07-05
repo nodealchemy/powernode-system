@@ -143,12 +143,21 @@ module System
         transitions from: :pending, to: :provisioning
       end
 
+      # IMP-0d7071dc03f7: :stopping is included so a failed "stop" can revert
+      # to running (InstanceControlService#revert_status) and so an
+      # out-of-band "running" report during a stalled stop reconciles
+      # correctly — same shape as :rebooting already being here for a
+      # failed reboot's revert.
       event :mark_running do
-        transitions from: [ :starting, :rebooting, :provisioning, :pending ], to: :running
+        transitions from: [ :starting, :stopping, :rebooting, :provisioning, :pending ], to: :running
       end
 
+      # IMP-0d7071dc03f7: :starting is included so a failed "start" can
+      # revert to stopped (InstanceControlService#revert_status) — mirrors
+      # :running already being here for out-of-band stop detection while
+      # a row sits in a running-adjacent transitional state.
       event :mark_stopped do
-        transitions from: [ :stopping, :running ], to: :stopped
+        transitions from: [ :stopping, :starting, :running ], to: :stopped
       end
 
       event :mark_terminated do
