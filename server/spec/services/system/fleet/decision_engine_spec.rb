@@ -210,6 +210,77 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-f5f03a7e8d3b: the approval TTL (1h) outlives the F1-12
+    # presumed-dead reap threshold (30 min), so by the time an operator
+    # approves a system.instance_reprovision request the instance has
+    # USUALLY already been reaped running -> error above — "the race is the
+    # norm", not an edge case. reboot_silent_instance hardcoded
+    # action: "reboot", and NodeInstance's AASM :reboot event only
+    # transitions from :running, so the approved self-heal returned
+    # applied:false against exactly the states the reap/sensor loop itself
+    # produces, stranding the instance for manual intervention every time.
+    context "execute_approved! reboot_silent_instance self-heal (IMP-f5f03a7e8d3b)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+      let(:adapter)  { instance_double("System::Providers::BaseProvider", provider_type: "mock", supports?: true) }
+
+      def approved_silent_request(instance)
+        double("Ai::ApprovalRequest", id: SecureRandom.uuid,
+               request_data: {
+                 "payload" => {
+                   "instance_id" => instance.id,
+                   "signal_kind" => "system.instance_silent",
+                   "signal_severity" => "high",
+                   "signal_fingerprint" => "instance_silent:#{instance.id}"
+                 }
+               })
+      end
+
+      before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+      it "self-heals via start when the reap already flipped the instance to error (the normal race outcome)" do
+        instance = create(:system_node_instance, node: node, status: "error", cloud_instance_id: "i-123")
+        allow(adapter).to receive(:start_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("start")
+        expect(instance.reload.status).to eq("running")
+      end
+
+      it "self-heals via start when an operator manually stopped the same silent instance before approving" do
+        instance = create(:system_node_instance, node: node, status: "stopped", cloud_instance_id: "i-123")
+        allow(adapter).to receive(:start_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("start")
+        expect(instance.reload.status).to eq("running")
+      end
+
+      it "returns a status-specific reason instead of silently no-op'ing when stuck in :starting" do
+        instance = create(:system_node_instance, node: node, status: "starting", cloud_instance_id: "i-123")
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be false
+        expect(result[:reason]).to match(/starting/)
+      end
+
+      it "still reboots a genuinely-running instance (baseline, unaffected by the fix)" do
+        instance = create(:system_node_instance, :running, node: node, cloud_instance_id: "i-123")
+        allow(adapter).to receive(:reboot_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("reboot")
+      end
+    end
+
     # Audit finding F3-05: InstanceStateDriftSensor's signal kind had no
     # SIGNAL_BINDINGS entry, so every provider-state drift it detected was
     # discarded as decision :skipped.

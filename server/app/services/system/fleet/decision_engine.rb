@@ -659,17 +659,46 @@ module System
       # F3-01 — provider-side reboot for an approved instance_reprovision.
       # Account-scoped lookup; returns the same applied/reason shape as the
       # other appliers so the decision/event/stamp paths stay uniform.
+      #
+      # IMP-f5f03a7e8d3b: the approval TTL (1h) outlives the F1-12
+      # presumed-dead reap threshold (30 min — reap_presumed_dead! above), so
+      # by the time an operator approves the instance is USUALLY already
+      # flipped running -> error — the race is the norm, not an edge case.
+      # NodeInstance's AASM :reboot event only transitions from :running, so
+      # hardcoding action: "reboot" made the approved self-heal return
+      # applied:false against exactly the state the reap itself produces,
+      # stranding the instance for manual intervention every time. Pick the
+      # AASM-legal action for the instance's CURRENT status instead: reboot
+      # when still running, start when stopped/error (the self-heal intent —
+      # bring it back — is the same; "start" is just the legal verb from a
+      # not-currently-running row). :stopped is reachable here too if an
+      # operator manually stopped the same instance_silent instance before
+      # approving the pending reprovision request — "start" is still the
+      # right call: the approval itself is the operator's decision to bring
+      # it back. A :starting instance (never reached running) has no legal
+      # forward transition from here at all; surfaced as applied:false with
+      # a status-specific reason rather than a generic provider error.
       def reboot_silent_instance(signal, _skill_result)
         id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
 
-        result = ::System::InstanceControlService.execute(instance: instance, action: "reboot")
+        action = if instance.may_reboot?
+                   "reboot"
+                 elsif instance.may_start?
+                   "start"
+                 end
+        unless action
+          return { applied: false, instance_id: instance.id,
+                   reason: "instance in #{instance.status} status — no self-heal action available, needs manual intervention" }
+        end
+
+        result = ::System::InstanceControlService.execute(instance: instance, action: action)
         if result.respond_to?(:success?)
-          { applied: result.success?, action: "reboot", instance_id: instance.id,
+          { applied: result.success?, action: action, instance_id: instance.id,
             reason: (result.respond_to?(:error) ? result.error : nil) }.compact
         else
-          { applied: true, action: "reboot", instance_id: instance.id }
+          { applied: true, action: action, instance_id: instance.id }
         end
       end
 
