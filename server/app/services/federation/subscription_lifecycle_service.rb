@@ -18,9 +18,11 @@ module Federation
   #      grant, and cert. Created in `pending`, transitions to
   #      `active` after the route is written.
   #
-  #   4. Traefik dynamic config — emitted by ServiceRouteWriter.
-  #      For HTTP/TLS subscriptions only; site-local TCP forwards
-  #      get a separate config writer (P4.6.7).
+  #   4. Route config — emitted by ServiceRouteWriter (HTTP/TLS
+  #      subscriptions, Traefik dynamic config) OR
+  #      TcpForwarderConfigWriter (site-local TCP forwards, tcpfwd
+  #      daemon config -- P4.6.7). Exactly one of the two runs per
+  #      subscription, matching ServiceSubscription#site_local?.
   #
   # Failure semantics: if cert issuance fails OR route writing
   # fails OR subscription creation fails, the lifecycle returns
@@ -96,11 +98,13 @@ module Federation
         metadata: { "operator_response" => resp.transform_keys(&:to_s) }
       )
 
-      # Activate first so ServiceRouteWriter sees it in `active` state
-      # when it queries (the writer filters to status=active subs).
+      # Activate first so the config writer sees it in `active` state
+      # when it queries (both writers filter to status=active subs).
       subscription.activate!
 
-      unless site_local
+      if site_local
+        ::Federation::TcpForwarderConfigWriter.write!(account: @account)
+      else
         ::Federation::ServiceRouteWriter.write!(account: @account)
       end
 

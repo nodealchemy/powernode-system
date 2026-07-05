@@ -34,6 +34,10 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
     allow(fake_vault).to receive(:store_credential).and_return(true)
     # Stub the Traefik writer so we don't actually touch the filesystem
     allow(::Federation::ServiceRouteWriter).to receive(:write!).and_return(output_path: "/tmp/stub", route_count: 1)
+    # Stub the tcpfwd writer likewise -- its DEFAULT_CONFIG_PATH lives under
+    # /etc/powernode, which the test process can't write to.
+    allow(::Federation::TcpForwarderConfigWriter).to receive(:write!)
+      .and_return(output_path: "/tmp/stub-tcpfwd", forward_count: 1)
     # Acme::CertificateManager.issue! does account/env lookups for the
     # ACME registration email before calling the lego client. The
     # lifecycle service is the unit under test here — AcmeCertificate
@@ -145,7 +149,7 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
     end
   end
 
-  describe ".activate! for site-local TCP forward (no cert, no Traefik route)" do
+  describe ".activate! for site-local TCP forward (no cert, tcpfwd config not Traefik route)" do
     let(:tcp_response) do
       base_response.merge(protocol: "tcp", backend_port: 5432, backend_host: "fd00:abc::20")
     end
@@ -161,6 +165,29 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
       expect(result.subscription.acme_certificate).to be_nil
       expect(result.subscription.site_local?).to be true
       expect(::Federation::ServiceRouteWriter).not_to have_received(:write!)
+    end
+
+    it "invokes TcpForwarderConfigWriter instead, for the subscriber's account" do
+      described_class.activate!(
+        account: subscriber_account, federation_peer: operator_peer,
+        offering_slug: "managed-pg", local_hostname: "localhost:5432",
+        operator_response: tcp_response,
+        acme_client: stub_client
+      )
+      expect(::Federation::TcpForwarderConfigWriter).to have_received(:write!)
+        .with(account: subscriber_account)
+    end
+  end
+
+  describe ".activate! for a public (non-site-local) subscription" do
+    it "does NOT invoke TcpForwarderConfigWriter" do
+      described_class.activate!(
+        account: subscriber_account, federation_peer: operator_peer,
+        offering_slug: "gitea", local_hostname: "git.alice.tld",
+        operator_response: base_response, dns_credential: dns_cred,
+        acme_client: stub_client
+      )
+      expect(::Federation::TcpForwarderConfigWriter).not_to have_received(:write!)
     end
   end
 
