@@ -371,16 +371,67 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       it "records an unapplied proceed when no applier exists for the kind" do
         Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
-                                       action_category: "system.instance_reboot",
+                                       action_category: "system.gitops_drift_remediate",
                                        policy: "notify_and_proceed", is_active: true)
 
-        d = engine.decide(kind: "system.instance_state_drifted", severity: :high,
-                          payload: { instance_id: instance.id },
-                          fingerprint: "instance_state_drifted:#{instance.id}")
+        d = engine.decide(kind: "system.gitops.drift_detected", severity: :medium,
+                          payload: {},
+                          fingerprint: "gitops_drift:repo-1")
 
         expect(d[:decision]).to eq(:proceed)
         expect(d[:remediation]).to include(applied: false)
         expect(d[:remediation][:reason]).to match(/no applier/)
+      end
+
+      # IMP-555e29eeb4ab: provider-state drift was notify-only — every
+      # instance_state_drifted proceed recorded applied:false forever
+      # because REMEDIATION_APPLIERS had no entry for the kind, so a VM
+      # stopped/killed behind the platform's back stayed "running" in the
+      # model across every hourly CloudSync pass.
+      context "system.instance_state_drifted converges the model to the provider-reported state" do
+        before do
+          Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                         action_category: "system.instance_reboot",
+                                         policy: "notify_and_proceed", is_active: true)
+        end
+
+        def decide_drifted(instance, actual_status)
+          engine.decide(kind: "system.instance_state_drifted", severity: :high,
+                        payload: { "instance_id" => instance.id, "expected_status" => "running",
+                                   "actual_status" => actual_status },
+                        fingerprint: "instance_state_drifted:#{instance.id}:#{actual_status}")
+        end
+
+        it "marks the instance stopped when the provider reports stopped" do
+          d = decide_drifted(instance, "stopped")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "stopped")
+          expect(instance.reload.status).to eq("stopped")
+        end
+
+        it "marks the instance terminated when the provider reports terminated" do
+          d = decide_drifted(instance, "terminated")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "terminated")
+          expect(instance.reload.status).to eq("terminated")
+        end
+
+        it "marks the instance errored when the provider reports error" do
+          d = decide_drifted(instance, "error")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "error")
+          expect(instance.reload.status).to eq("error")
+        end
+
+        it "does not re-apply once the instance already matches the reported state" do
+          instance.update!(status: "stopped")
+
+          d = decide_drifted(instance, "stopped")
+
+          expect(d[:remediation]).to include(applied: false)
+          expect(d[:remediation][:reason]).to match(/already converged/)
+          expect(instance.reload.status).to eq("stopped")
+        end
       end
     end
 

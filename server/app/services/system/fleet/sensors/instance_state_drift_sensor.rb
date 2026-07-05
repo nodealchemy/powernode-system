@@ -57,11 +57,12 @@ module System
           # trigger the drift signal.
           return nil unless %w[stopped terminated error].include?(provider_status)
 
-          severity = provider_status == "running" ? :low : :high
-
+          # provider_status is always one of stopped/terminated/error here
+          # (filtered above) — it can never be "running", so this is always
+          # :high.
           signal(
             kind: "system.instance_state_drifted",
-            severity: severity,
+            severity: :high,
             payload: {
               instance_id: instance.id,
               node_id: instance.node_id,

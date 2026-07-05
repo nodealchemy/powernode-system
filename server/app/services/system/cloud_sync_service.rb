@@ -126,16 +126,23 @@ module System
         )
       end
 
+      # cloud_instance_id is a store_accessor on the config JSONB column, not
+      # a real table column — `.where.not(cloud_instance_id: nil)` raised
+      # PG::UndefinedColumn on every real invocation (never caught: the only
+      # spec/request-spec coverage of this method fully mocked
+      # CloudSyncService, so the raw query was never exercised against a DB).
       local_instances = ::System::NodeInstance
         .where(provider_region: region)
         .where(variety: %w[cloud dynamic])
-        .where.not(cloud_instance_id: nil)
+        .where("config ->> 'cloud_instance_id' IS NOT NULL")
         .index_by(&:cloud_instance_id)
 
       synced_count = 0
       updated_count = 0
+      seen_cloud_instance_ids = Set.new
 
       cloud_instances.each do |cloud_data|
+        seen_cloud_instance_ids << cloud_data[:cloud_instance_id]
         local_instance = local_instances[cloud_data[:cloud_instance_id]]
         next unless local_instance
 
@@ -153,9 +160,32 @@ module System
         synced_count += 1
       end
 
+      # A local row whose cloud_instance_id never showed up in the listing
+      # was deleted out-of-band — the provider has no record of it at all,
+      # distinct from a stopped/errored instance the listing still reports.
+      # Mirrors the NotFound->terminated branch in sync_instance_state,
+      # which only runs on the per-instance path nothing schedules; this is
+      # the actual hourly scheduled sweep (SystemCloudSyncJob ->
+      # sync_region_instances), so it's the only path that ever reconciles a
+      # deleted instance. Skipped when the listing was truncated — an unseen
+      # page, not a deletion, would otherwise be misread as "gone".
+      terminated_count = 0
+      unless truncated
+        local_instances.each do |cloud_instance_id, local_instance|
+          next if seen_cloud_instance_ids.include?(cloud_instance_id)
+          next if local_instance.status == "terminated"
+
+          local_instance.update!(status: "terminated", last_synced_at: Time.current)
+          terminated_count += 1
+          updated_count += 1
+          synced_count += 1
+        end
+      end
+
       Runtime::Result.ok(data: {
         synced_count: synced_count,
         updated_count: updated_count,
+        terminated_count: terminated_count,
         cloud_count: cloud_instances.size,
         page_count: page_count,
         truncated: truncated

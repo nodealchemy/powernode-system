@@ -83,7 +83,9 @@ module System
         # instance_reboot gate (notify_and_proceed in the fleet seed) so the
         # drift is notified, deduped per instance_id, and visible to
         # operators instead of discarded as decision :skipped. No skill —
-        # no reboot executor exists yet.
+        # there is nothing to plan; the REMEDIATION_APPLIERS entry below
+        # (converge_instance_state_drift) is the real remediation, applied
+        # directly on :proceed.
         "system.instance_state_drifted" => {
           skill: nil,
           action_category: "system.instance_reboot"
@@ -639,6 +641,13 @@ module System
         # is unreachable, so on-node task commands cannot apply — the
         # remediation is a provider-side reboot via InstanceControlService.
         "system.instance_silent" => { method: :reboot_silent_instance },
+        # IMP-555e29eeb4ab: provider-state drift (InstanceStateDriftSensor)
+        # had no applier at all — every proceed recorded applied:false, so a
+        # VM stopped/killed behind the platform's back stayed "running" in
+        # the model forever. There is nothing to actuate here (the drift IS
+        # the real state); the remediation is a model-side convergence to
+        # the provider-reported status.
+        "system.instance_state_drifted" => { method: :converge_instance_state_drift },
         # IMP-83471cc28e1a: honeypot quarantine (F3-08) routes through
         # system.instance_terminate but, like instance_silent, has no skill
         # and no on-node task to dispatch — the remediation IS the
@@ -711,6 +720,53 @@ module System
         else
           { applied: true, action: action, instance_id: instance.id }
         end
+      end
+
+      # IMP-555e29eeb4ab: maps InstanceStateDriftSensor's actual_status (the
+      # provider-reported state) to the AASM finalizer event that reconciles
+      # the model to match it. Mirrors the "Worker runtime finalizers" half
+      # of NodeInstance's state machine (mark_running is the fourth, used by
+      # heartbeat recovery, not drift).
+      CONVERGENCE_EVENT_FOR_ACTUAL_STATUS = {
+        "stopped" => :mark_stopped!,
+        "terminated" => :mark_terminated!,
+        "error" => :mark_errored!
+      }.freeze
+
+      # IMP-555e29eeb4ab: the instance_state_drifted applier. Unlike
+      # reboot_silent_instance, there is nothing to actuate — the provider
+      # already transitioned the VM (or is itself reporting error) — so this
+      # just replays the matching AASM finalizer event instead of calling
+      # InstanceControlService, keeping the transition legal and audited
+      # (System::LifecycleAuditable) like every other real status change.
+      def converge_instance_state_drift(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        id = payload["instance_id"] || payload[:instance_id]
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+
+        actual_status = (payload["actual_status"] || payload[:actual_status]).to_s
+        event = CONVERGENCE_EVENT_FOR_ACTUAL_STATUS[actual_status]
+        unless event
+          return { applied: false, instance_id: instance.id,
+                   reason: "no convergence mapping for actual_status=#{actual_status.inspect}" }
+        end
+
+        # Re-check the LIVE status, not the signal's (possibly stale)
+        # snapshot — the sensor may have already re-synced, or an operator
+        # may have acted manually, between sense and this proceed.
+        if instance.status == actual_status
+          return { applied: false, instance_id: instance.id, reason: "already converged to #{actual_status}" }
+        end
+
+        predicate = "may_#{event.to_s.delete_suffix('!')}?"
+        unless instance.public_send(predicate)
+          return { applied: false, instance_id: instance.id,
+                   reason: "instance in #{instance.status} status — no legal transition to #{actual_status}" }
+        end
+
+        instance.public_send(event)
+        { applied: true, instance_id: instance.id, converged_to: instance.status }
       end
 
       # IMP-83471cc28e1a: quarantine the compromised instance behind an
