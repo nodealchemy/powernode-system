@@ -48,6 +48,13 @@ module Sdwan
     class CapacityExhausted < StandardError; end
     class InvalidArguments < StandardError; end
 
+    # Bound on cross-network table_id/short_id/vrf_name race retries
+    # (see #allocate!'s rescue). Account#settings override -> SiteSetting
+    # global -> DEFAULT, so operators can tune it without a deploy (same
+    # resolution order as Ai::FableRouting / Ai::Agent#skill_prompt_token_budget).
+    MAX_CROSS_NETWORK_RETRIES_SETTING = "sdwan_vrf_allocator_max_cross_network_retries"
+    DEFAULT_MAX_CROSS_NETWORK_RETRIES = 5
+
     def self.allocate!(host:, network:)
       new(host: host, network: network).allocate!
     end
@@ -94,6 +101,7 @@ module Sdwan
     # isolates the violation to its own savepoint so the rescue's
     # find_by! (and the caller's transaction) stay usable.
     def allocate!
+      attempts ||= 0
       ::Sdwan::HostVrfAssignment.transaction(requires_new: true) do
         existing = ::Sdwan::HostVrfAssignment
                      .lock("FOR UPDATE")
@@ -134,13 +142,32 @@ module Sdwan
         )
       end
     rescue ActiveRecord::RecordNotUnique
-      # A concurrent transaction beat us to the same (host, network)
-      # row. Return the winner.
-      existing = ::Sdwan::HostVrfAssignment.find_by!(
+      # Two distinct races land here (see the requires_new: true comment
+      # above #allocate!):
+      #
+      #  1. Same (host, network): a concurrent transaction beat us to
+      #     the exact row we wanted — return the winner.
+      #  2. Same host, a DIFFERENT network: the winner claimed the same
+      #     table_id/short_id/vrf_name candidate we computed (a
+      #     zero-row FOR UPDATE takes no lock, so two concurrent
+      #     enrollments of the same host into different networks can
+      #     land on identical candidates). Our own network's row was
+      #     never inserted, so find_by comes back empty here — self-heal
+      #     by retrying instead of surfacing RecordNotFound: the
+      #     winner's row is now committed and visible, so recomputing
+      #     used_table_ids/used_short_ids against fresh state lands on a
+      #     different, uncontested candidate.
+      existing = ::Sdwan::HostVrfAssignment.find_by(
         node_instance_id: @host.id, sdwan_network_id: @network.id
       )
-      existing.readopt! if existing.removed?
-      existing
+      if existing
+        existing.readopt! if existing.removed?
+        return existing
+      end
+
+      attempts += 1
+      raise if attempts >= max_cross_network_retries
+      retry
     end
 
     # Mark the assignment as draining (the default — preserves the
@@ -161,6 +188,26 @@ module Sdwan
     end
 
     private
+
+    # Account#settings override -> SiteSetting global -> DEFAULT (same
+    # resolution order as Ai::FableRouting / Ai::Agent#skill_prompt_token_budget)
+    # so operators can tune the retry bound per-account or platform-wide
+    # without a deploy.
+    def max_cross_network_retries
+      settings = @network.account&.settings
+      if settings.is_a?(Hash)
+        key = MAX_CROSS_NETWORK_RETRIES_SETTING
+        override = settings.key?(key) ? settings[key] : settings[key.to_sym]
+        return override.to_i if override.present?
+      end
+
+      global = SiteSetting.get(MAX_CROSS_NETWORK_RETRIES_SETTING)
+      return global.to_i if global.present?
+
+      DEFAULT_MAX_CROSS_NETWORK_RETRIES
+    rescue StandardError
+      DEFAULT_MAX_CROSS_NETWORK_RETRIES
+    end
 
     # Walks the candidate range in ascending order and returns the
     # lowest unused id that is not in `used_ids` and not reserved.

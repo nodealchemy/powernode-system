@@ -229,7 +229,11 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       # isn't visible to the loser's validation SELECT until the instant
       # its INSERT lands. Raw SQL skips validations and goes straight to
       # the constraint, so this is a REAL PG::UniqueViolation, not a
-      # simulated one.
+      # simulated one. Every call is forced (not just the first) — this
+      # spec is about outer-transaction survival, not the self-heal
+      # retry (see the "cross-network race self-heal" spec below for
+      # that), so we want the retry loop to exhaust and re-raise rather
+      # than quietly succeed.
       allow(::Sdwan::HostVrfAssignment).to receive(:create!) do
         ::Sdwan::HostVrfAssignment.connection.execute(<<~SQL.squish)
           INSERT INTO system_sdwan_host_vrf_assignments
@@ -243,16 +247,17 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       # Mirrors Sdwan::PeerEnroller#call: allocate! invoked from inside
       # an already-open outer transaction, not top-level.
       ::Sdwan::HostVrfAssignment.transaction do
-        # net_a's own row was never inserted (the racing INSERT failed),
-        # so the rescue's find_by!(host, net_a) can't find anything —
-        # it raises RecordNotFound. That's the correct, clean failure
-        # mode. Without requires_new: true, the prior real constraint
-        # violation instead poisons this whole transaction, and the
-        # find_by! itself raises PG::InFailedSqlTransaction /
+        # net_a's own row is never inserted (every forced INSERT above
+        # collides), so the retry loop (IMP-d4ef3cc0655c) exhausts its
+        # bound and re-raises the underlying RecordNotUnique — a clean
+        # failure, not a poisoned transaction. Without requires_new:
+        # true, the prior real constraint violation would instead
+        # poison this whole transaction, and even that re-raise would
+        # come back as PG::InFailedSqlTransaction /
         # ActiveRecord::StatementInvalid — the wrong exception — because
         # Postgres refuses to run ANY further statement on the aborted
         # transaction.
-        expect { allocator.allocate! }.to raise_error(ActiveRecord::RecordNotFound)
+        expect { allocator.allocate! }.to raise_error(ActiveRecord::RecordNotUnique)
 
         # The real assertion: the outer transaction must still be usable
         # afterward — a subsequent, unrelated write on the same
@@ -263,6 +268,80 @@ RSpec.describe Sdwan::VrfAllocator, type: :service do
       end
 
       expect(outer_survived).to be true
+    end
+  end
+
+  # IMP-d4ef3cc0655c: the rescue's find_by!(host, network) only recovers
+  # a same-(host,network) race. A DIFFERENT network's concurrent
+  # enrollment of the SAME host can claim the same table_id/short_id
+  # candidate (see the class-level concurrency-model comment); the
+  # loser's own network row never lands, so find_by! has nothing to
+  # find. It must self-heal by retrying against fresh state instead of
+  # surfacing RecordNotFound and forcing the whole caller to retry.
+  describe "cross-network table_id race self-heal" do
+    it "retries and lands on the next free candidate when a DIFFERENT network wins the race" do
+      # The "winner" already holds table_id/short_id 100/1 via net_b —
+      # already committed, mirroring the state a genuine concurrent
+      # transaction would leave behind once it commits.
+      winner = described_class.allocate!(host: host_a, network: net_b)
+      expect(winner.table_id).to eq(100)
+      expect(winner.short_id).to eq(1)
+
+      allocator = described_class.new(host: host_a, network: net_a)
+
+      # Force ONLY the first create! to hit the real unique-constraint
+      # violation (raw SQL — see the sibling spec above for why this
+      # must be a genuine PG::UniqueViolation). Subsequent calls (the
+      # retry) go through the real create!, proving the retry
+      # recomputes against fresh state rather than looping on the same
+      # forced collision.
+      call_count = 0
+      original_create = ::Sdwan::HostVrfAssignment.method(:create!)
+      allow(::Sdwan::HostVrfAssignment).to receive(:create!) do |**kwargs|
+        call_count += 1
+        if call_count == 1
+          ::Sdwan::HostVrfAssignment.connection.execute(<<~SQL.squish)
+            INSERT INTO system_sdwan_host_vrf_assignments
+              (id, account_id, node_instance_id, sdwan_network_id, table_id, short_id, vrf_name, state, created_at, updated_at)
+            VALUES
+              (gen_random_uuid(), '#{account.id}', '#{host_a.id}', '#{net_a.id}', 100, 1, 'sdwan-1', 'pending', now(), now())
+          SQL
+        else
+          original_create.call(**kwargs)
+        end
+      end
+
+      hva = nil
+      outer_survived = false
+      # Mirrors Sdwan::PeerEnroller#call: allocate! invoked from inside
+      # an already-open outer transaction, not top-level — the retry
+      # must keep working even nested inside a caller's transaction.
+      ::Sdwan::HostVrfAssignment.transaction do
+        hva = allocator.allocate!
+        Sdwan::Network.create!(account_id: account.id, name: "vrf-net-post-race-#{SecureRandom.hex(3)}")
+        outer_survived = true
+      end
+
+      expect(call_count).to eq(2)
+      expect(hva.sdwan_network_id).to eq(net_a.id)
+      expect(hva.table_id).to eq(101)
+      expect(hva.short_id).to eq(2)
+      expect(outer_survived).to be true
+    end
+  end
+
+  # Regression: the retry bound must survive a SiteSetting value that
+  # was created without setting_type: "integer" (the normal/default
+  # type for a hand-created SiteSetting). SiteSetting.get only coerces
+  # to Integer when setting_type == "integer" — an uncoerced String
+  # compared against an Integer attempt count (`attempts >= ...`) raises
+  # ArgumentError, defeating the self-heal path entirely.
+  describe "max_cross_network_retries SiteSetting coercion" do
+    it "coerces a string-typed SiteSetting value to an integer instead of raising" do
+      SiteSetting.create!(key: "sdwan_vrf_allocator_max_cross_network_retries", value: "3", setting_type: "string")
+
+      allocator = described_class.new(host: host_a, network: net_a)
+      expect(allocator.send(:max_cross_network_retries)).to eq(3)
     end
   end
 end
