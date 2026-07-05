@@ -61,4 +61,27 @@ RSpec.describe System::Storage::AssignmentReconciliationService do
       expect(System::Task.where(operable: node_instance, command: "storage.mount").count).to eq(1)
     end
   end
+
+  describe "storage.unmount dispatch dedupe" do
+    before do
+      assignment # materialize — the after_commit trigger dispatches an unrelated storage.mount task
+      assignment.update_columns(enabled: false, status: "mounted", error_message: nil)
+    end
+
+    it "does not spawn a second storage.unmount task when two reconcile triggers race before the first's status transition commits" do
+      # Simulate two independently-loaded assignment objects, mirroring two
+      # concurrent reconcile triggers (after_commit + heartbeat/drift sweep)
+      # that each read status: "mounted" before either one's
+      # mark_status!("unmounting") commits.
+      racer_a = System::StorageAssignment.find(assignment.id)
+      racer_b = System::StorageAssignment.find(assignment.id)
+
+      described_class.reconcile_assignment!(racer_a)
+      expect(System::Task.where(operable: node_instance, command: "storage.unmount").count).to eq(1)
+
+      described_class.reconcile_assignment!(racer_b)
+
+      expect(System::Task.where(operable: node_instance, command: "storage.unmount").count).to eq(1)
+    end
+  end
 end

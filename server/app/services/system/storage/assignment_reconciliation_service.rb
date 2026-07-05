@@ -152,6 +152,8 @@ module System
       end
 
       def dispatch_unmount!
+        return if unmount_task_already_pending?
+
         payload = TaskPayloadBuilder.build_unmount_payload(assignment: @assignment)
 
         ::System::Task.create!(
@@ -162,6 +164,17 @@ module System
           status: "pending"
         )
         @assignment.mark_status!("unmounting")
+      end
+
+      # Same race as mount_task_already_pending? above: two concurrent
+      # reconcile triggers can both read status: "mounted" before either
+      # one's mark_status!("unmounting") commits, so without this guard
+      # each would spawn its own storage.unmount Task for the assignment.
+      def unmount_task_already_pending?
+        ::System::Task.active
+          .where(account_id: @assignment.account_id, operable: @assignment.node_instance, command: "storage.unmount")
+          .where("options @> ?", { assignment_id: @assignment.id }.to_json)
+          .exists?
       end
 
       def record_failure!(error)
