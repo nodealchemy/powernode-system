@@ -40,12 +40,20 @@ module Api
             # spawn from that Node shares, so many NodeInstances carry the same
             # mtls_subject. A plain find_by returns the OLDEST match, which can
             # be a TERMINATED instance that shadows the live one → spurious 401.
-            # Exclude terminated/error (mirrors NodeInstance#active?) and prefer
-            # the most-recent so a dead sibling never wins.
+            # Exclude only terminated (a real dead-end — the provider resource
+            # is gone) and prefer the most-recent so a dead sibling never wins.
+            #
+            # IMP-42cf03360656: error is NOT excluded here (it used to mirror
+            # NodeInstance#active?, which also excludes error). Error is a
+            # recoverable transient status — the AASM already lets an operator
+            # "start" an errored instance back up — so blocking mTLS re-auth
+            # for it meant a reconnecting agent could never re-authenticate to
+            # send the heartbeat that self-heals it (mark_running!), leaving
+            # physical instances permanently stranded after any long partition.
             instance = ::System::NodeInstance.find_by(id: subject_cn) ||
                        ::System::NodeInstance
                          .where(mtls_subject: subject_cn)
-                         .where.not(status: %w[terminated error])
+                         .where.not(status: "terminated")
                          .order(created_at: :desc)
                          .first
             unless instance
@@ -53,7 +61,7 @@ module Api
               return
             end
 
-            unless instance.active?
+            if instance.terminated?
               render_unauthorized("Instance is not active")
               return
             end

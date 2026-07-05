@@ -148,8 +148,18 @@ module System
       # out-of-band "running" report during a stalled stop reconciles
       # correctly — same shape as :rebooting already being here for a
       # failed reboot's revert.
+      #
+      # IMP-42cf03360656: :error is included so a heartbeat that resumes
+      # after a transient partition (or the presumed-dead reap's running ->
+      # error correction — see FleetDecisionEngine#reap_presumed_dead!) can
+      # self-heal the instance back to running. Without :error here,
+      # may_mark_running? was false for every errored row, so
+      # StatusController#heartbeat's `mark_running! if may_mark_running?`
+      # silently no-op'd and a perfectly healthy instance stayed stranded in
+      # :error forever — physical instances (no CloudSync overwrite to
+      # accidentally repair them) needed a manual operator "start".
       event :mark_running do
-        transitions from: [ :starting, :stopping, :rebooting, :provisioning, :pending ], to: :running
+        transitions from: [ :starting, :stopping, :rebooting, :provisioning, :pending, :error ], to: :running
       end
 
       # IMP-0d7071dc03f7: :starting is included so a failed "start" can

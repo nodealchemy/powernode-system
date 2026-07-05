@@ -72,6 +72,19 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(instance.reload.status).to eq("running")
     end
 
+    # IMP-42cf03360656: a transient partition (or the presumed-dead reap)
+    # leaves the instance in status "error". Once the agent's heartbeats
+    # resume, this endpoint must self-heal it back to running instead of
+    # stranding a healthy instance forever.
+    it "recovers a stranded :error instance back to running once heartbeats resume" do
+      instance.update!(status: "error")
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(instance.reload.status).to eq("running")
+    end
+
     it "tolerates a missing module_digests body field" do
       body.delete(:module_digests)
       post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
