@@ -281,6 +281,36 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  describe "system_sdwan_activate_host_bridge" do
+    let(:host) { sdwan_test_node_instance(node: node) }
+    let!(:bridge) { ::Sdwan::HostBridgeAllocator.allocate!(host: host, account: account) }
+
+    it "marks a pending bridge active" do
+      expect(bridge.state).to eq("pending")
+      r = call("system_sdwan_activate_host_bridge", id: bridge.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:host_bridge][:state]).to eq("active")
+      expect(bridge.reload.state).to eq("active")
+    end
+
+    it "rejects a bridge from another account" do
+      other_account = create(:account)
+      other_node = sdwan_test_node(account: other_account)
+      other_host = sdwan_test_node_instance(node: other_node)
+      other_bridge = ::Sdwan::HostBridgeAllocator.allocate!(host: other_host, account: other_account)
+      r = call("system_sdwan_activate_host_bridge", id: other_bridge.id)
+      expect(r[:success]).to be false
+    end
+
+    it "reports an error instead of silently no-op'ing on a removed bridge" do
+      bridge.mark_removed!
+      r = call("system_sdwan_activate_host_bridge", id: bridge.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/readopt/)
+      expect(bridge.reload.state).to eq("removed")
+    end
+  end
+
   # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ────────
 
   describe "system_sdwan_create_ovn_deployment" do

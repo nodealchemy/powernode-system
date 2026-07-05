@@ -1954,9 +1954,20 @@ module Ai
       # bridge stuck in `pending` is invisible to provisioning. Without
       # this MCP action operators had to drop to `rails runner` to
       # invoke `bridge.mark_active!` after create_host_bridge.
+      #
+      # `mark_active` only transitions from pending|active — with
+      # whiny_transitions: false a call against a `draining`/`removed` row
+      # returns false rather than raising, so we surface that as an
+      # error_result instead of reporting success on an unchanged row.
+      # A `removed` bridge needs `readopt` (drift-remediation event), not
+      # `mark_active`, to come back to life.
       def activate_host_bridge(params)
         bridge = ::Sdwan::HostBridge.where(account_id: @account.id).find(params[:id])
-        bridge.mark_active!
+        unless bridge.mark_active!
+          hint = bridge.state == "removed" ? " — use readopt to revive a removed bridge" : ""
+          return error_result("cannot activate a #{bridge.state} host bridge#{hint}")
+        end
+
         success_result(host_bridge: serialize_host_bridge(bridge.reload))
       end
 
