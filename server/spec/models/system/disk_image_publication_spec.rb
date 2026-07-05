@@ -99,6 +99,28 @@ RSpec.describe System::DiskImagePublication, type: :model do
       pub.mark_published
       expect(pub).to be_queued
     end
+
+    it "retired → published via reactivate (rollback/promote), clears retired_at" do
+      published = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
+      published.update!(status: "retired", retired_at: 3.days.ago)
+
+      published.reactivate
+      published.save!
+
+      expect(published).to be_published
+      expect(published.retired_at).to be_nil
+    end
+
+    it "does NOT let mark_published reactivate a retired row — only the dedicated reactivate event can (IMP-d4a546024745)" do
+      # mark_published is also fired by DiskImagePublicationProcessor for the
+      # CI/webhook ingest pipeline; it must stay verifying-only so a replayed
+      # webhook can never resurrect an already-retired git_sha.
+      published = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
+      published.update!(status: "retired", retired_at: Time.current)
+
+      published.mark_published
+      expect(published).to be_retired # transition refused, whiny_transitions:false
+    end
   end
 
   describe "scopes" do

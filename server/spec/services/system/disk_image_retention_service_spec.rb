@@ -104,6 +104,56 @@ RSpec.describe System::DiskImageRetentionService do
       expect(storage).to have_received(:delete_file)
         .with(anything, hash_including(permanent: true)).once
     end
+
+    it "NEVER purges the publication whose image is currently active on the platform, even if still marked retired" do
+      # A rollback/promote can restore a retired publication to active without
+      # (bug) or with (fix) flipping its status back to :published — either
+      # way, purge must never hard-delete the platform's active boot image.
+      active_but_retired = retired!(retired_days_ago: 8)
+      platform.update!(disk_image_file_object_id: active_but_retired.file_object_id)
+
+      result = described_class.sweep!(platform: platform, grace_days: 7)
+
+      expect(result.purged_count).to eq(0)
+      expect(active_but_retired.reload.status).to eq("retired")
+      expect(storage).not_to have_received(:delete_file)
+        .with(anything, hash_including(permanent: true))
+    end
+  end
+
+  describe "regression: rollback to a retired publication survives the next purge sweep (IMP-d4a546024745)" do
+    it "does not let the following day's purge sweep hard-delete the image rolled back to active" do
+      v1 = publish!(age_days: 4)
+      v2 = publish!(age_days: 3)
+      v3 = publish!(age_days: 2)
+      v4 = publish!(age_days: 1)
+      platform.update!(disk_image_file_object_id: v4.file_object_id)
+
+      described_class.sweep!(platform: platform) # keep=2 -> retires v1, v2
+
+      expect(v1.reload.status).to eq("retired")
+      expect(v2.reload.status).to eq("retired")
+
+      ::System::Executors::DiskImage::RollbackPublication.execute(
+        { target_publication_id: v1.id, platform_id: platform.id },
+        deferred_operation: nil
+      )
+
+      expect(platform.reload.disk_image_file_object_id).to eq(v1.file_object_id)
+      # Pins the model-level half of the fix independently of the
+      # purge_expired! guard below — without DiskImagePublication#reactivate,
+      # v1 would stay status=retired here even though it's the active image.
+      expect(v1.reload.status).to eq("published")
+      expect(v1.retired_at).to be_nil
+
+      travel 8.days do
+        result = described_class.sweep!(platform: platform, grace_days: 7)
+
+        expect(v1.reload.status).not_to eq("purged")
+        expect(v1.purged_at).to be_nil
+        expect(platform.reload.disk_image_file_object_id).to eq(v1.file_object_id)
+      end
+    end
   end
 
   describe ".sweep_account!" do

@@ -80,8 +80,17 @@ module System
       to_retire.length
     end
 
+    # Excludes the publication currently active on the platform, mirroring
+    # the retire_excess! guard above. Belt-and-suspenders: rollback/promote
+    # are expected to flip a reactivated publication's status back to
+    # :published (see DiskImagePublication#reactivate), but this guard
+    # keeps a purge sweep from ever hard-deleting the active boot image even
+    # if that transition is ever skipped or a row is left in a stale state.
     def purge_expired!(platform, grace_days, deleted_by_user:)
-      to_purge = platform.disk_image_publications.purgeable(grace_days: grace_days).to_a
+      to_purge = platform.disk_image_publications
+                         .purgeable(grace_days: grace_days)
+                         .to_a
+                         .reject { |pub| pub.file_object_id == platform.disk_image_file_object_id }
       to_purge.each do |pub|
         pub.purge!(deleted_by_user: deleted_by_user)
       rescue StandardError => e

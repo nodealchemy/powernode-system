@@ -12,10 +12,14 @@ module System
           previous_file_object_id = platform.disk_image_file_object_id
 
           ::ApplicationRecord.transaction do
-            # If the publication had been retired, restore its file_object
-            # before flipping the platform pointer.
-            if pub.retired? && pub.file_object&.deleted_at?
-              pub.file_object.update!(deleted_at: nil, deleted_reason: nil, deleted_by_id: nil)
+            if pub.retired?
+              # Restore its file_object (soft-deleted) and reactivate the row
+              # back to :published — otherwise it stays status=retired even
+              # though it's now the platform's active image, and the next
+              # purge sweep would treat it as purgeable.
+              pub.file_object.update!(deleted_at: nil, deleted_reason: nil, deleted_by_id: nil) if pub.file_object&.deleted_at?
+              pub.reactivate
+              pub.save!
             end
 
             platform.update!(
