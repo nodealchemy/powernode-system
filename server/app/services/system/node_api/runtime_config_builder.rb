@@ -77,9 +77,18 @@ module System
 
       # Phase O4 — derive the k3s_server bootstrap_config payload.
       # Looks up the cluster the host belongs to (via
-      # Devops::KubernetesNode) and pulls cni_plugin from there.
-      # Falls back to "flannel" (the K3s default, safe for any
-      # unenrolled host) when the host has no cluster yet.
+      # Devops::KubernetesNode) and pulls cni_plugin from there. When
+      # the host has no cluster yet — true for every host on its
+      # first tick, since the agent installs (picking up
+      # --flannel-backend=* / --disable-network-policy) BEFORE
+      # KubernetesClusterProvisionerService#bootstrap! creates the
+      # cluster row — falls back to the SAME network_profile
+      # auto-default #bootstrap! will use when it later records
+      # cni_plugin. The two call sites MUST agree here: K3s only
+      # reads its CNI flags at install time and the cluster's
+      # cni_plugin is immutable once bootstrapped, so predicting
+      # "flannel" unconditionally would leave a heavyweight host
+      # running Flannel forever while the DB claims ovn_kubernetes.
       #
       # K3s overlay (2026-05-19) — when the cluster carries a
       # pod_cidr (set at bootstrap when the SDWAN network has
@@ -95,7 +104,8 @@ module System
                     .joins(:kubernetes_cluster)
                     .first
                     &.kubernetes_cluster
-        cni_plugin = cluster&.cni_plugin || "flannel"
+        cni_plugin = cluster&.cni_plugin ||
+                     ::System::KubernetesClusterProvisionerService.auto_default_cni_for(instance)
 
         payload = { cni_plugin: cni_plugin, flannel_iface: "", flannel_backend: "", cluster_cidr: "" }
 

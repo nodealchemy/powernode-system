@@ -87,6 +87,20 @@ module System
       new(node_instance: node_instance).mark_node_stopped!
     end
 
+    # Phase O4 — single source of truth for the network_profile → CNI
+    # auto-default, shared with RuntimeConfigBuilder. The agent installs
+    # K3s (picking up --flannel-backend=* / --disable-network-policy)
+    # BEFORE any Devops::KubernetesCluster row exists — bootstrap! is
+    # the call that creates it — so RuntimeConfigBuilder must predict
+    # the same auto-default #bootstrap! will later record, or the
+    # installed CNI and the recorded cni_plugin permanently disagree
+    # (K3s only reads its CNI flags at install time; the cluster row's
+    # cni_plugin is immutable once bootstrapped).
+    def self.auto_default_cni_for(node_instance)
+      profile = node_instance.respond_to?(:network_profile) ? node_instance.network_profile.to_s : ""
+      NETWORK_PROFILE_TO_CNI.fetch(profile, DEFAULT_CNI_PLUGIN)
+    end
+
     def initialize(node_instance: nil, kubeconfig: nil, server_token: nil,
                    agent_token: nil, k8s_version: nil, role: nil,
                    target_cluster_id: nil, cni_plugin: nil)
@@ -529,7 +543,6 @@ module System
     # Returns one of Devops::KubernetesCluster::CNI_PLUGINS.
     def resolve_bootstrap_cni_plugin!(node_instance, explicit_plugin)
       profile = node_instance.respond_to?(:network_profile) ? node_instance.network_profile.to_s : ""
-      profile_default = NETWORK_PROFILE_TO_CNI.fetch(profile, DEFAULT_CNI_PLUGIN)
 
       if explicit_plugin.present?
         explicit = explicit_plugin.to_s
@@ -557,7 +570,7 @@ module System
         return explicit
       end
 
-      profile_default
+      self.class.auto_default_cni_for(node_instance)
     end
 
     # Phase O4 — refuse to add a node whose network_profile is

@@ -212,6 +212,35 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       expect(cfg["flannel_backend"]).to eq("host-gw")
       expect(cfg["cluster_cidr"]).to eq("10.42.0.0/16")
     end
+
+    # Regression — a heavyweight-profile host must be predicted as
+    # cni_plugin=ovn_kubernetes BEFORE any cluster row exists, matching
+    # what KubernetesClusterProvisionerService#bootstrap! records via
+    # NETWORK_PROFILE_TO_CNI once the agent later reports credentials.
+    # Before the fix, this pre-cluster fallback was unconditionally
+    # "flannel" regardless of network_profile — so a heavyweight host's
+    # agent installed K3s with bundled Flannel (install-time is the
+    # only time --flannel-backend=* can be set) while the DB recorded
+    # cni_plugin=ovn_kubernetes once bootstrap! ran, permanently
+    # drifting the two apart (the immutability validator locks the
+    # wrong recorded value in, and enforce_cni_profile_compatibility!
+    # then wrongly blocks lightweight workers from joining what is
+    # really a flannel cluster).
+    it "predicts cni_plugin ovn_kubernetes for a heavyweight-profile host before any cluster exists" do
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100)
+      end
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: node,
+        node_module: ::System::NodeModule.find_by(account: account, name: "k3s-server")
+      ) { |a| a.enabled = true }
+      node_instance.update!(network_profile: "heavyweight")
+
+      get "/api/v1/system/node_api/runtime/k3s_server/config"
+      expect(response).to have_http_status(:ok)
+      cfg = JSON.parse(response.body).dig("data", "bootstrap_config")
+      expect(cfg["cni_plugin"]).to eq("ovn_kubernetes")
+    end
   end
 
   describe "POST /api/v1/system/node_api/runtime/handshake" do
