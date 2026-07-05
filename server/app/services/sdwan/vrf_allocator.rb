@@ -57,6 +57,18 @@ module Sdwan
         .release!(assignment, force: force)
     end
 
+    # Shared by PeerEnroller (new enrollments) and VrfBackfillService
+    # (IMP-07014982a6d3 — one-time backfill for peers enrolled before
+    # allocation was wired in): allocate! plus the "mark active
+    # immediately" step both callers need. A freshly allocated row
+    # starts life `pending`; mirrors PeerEnroller#allocate_vrf!'s
+    # comment on why activation doesn't wait for an agent confirm-back.
+    def self.allocate_and_activate!(host:, network:)
+      hva = allocate!(host: host, network: network)
+      hva.mark_active! if hva.pending?
+      hva
+    end
+
     def initialize(host:, network:)
       raise InvalidArguments, "host is required" if host.nil?
       raise InvalidArguments, "network is required" if network.nil?

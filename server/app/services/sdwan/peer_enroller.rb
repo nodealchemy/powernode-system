@@ -95,8 +95,7 @@ module Sdwan
     # comment). Idempotent: a re-enrollment (or a peer rejoining after the
     # network already has other members) reuses the existing row.
     def allocate_vrf!(peer)
-      hva = ::Sdwan::VrfAllocator.allocate!(host: @node_instance, network: @network)
-      hva.mark_active! if hva.pending?
+      ::Sdwan::VrfAllocator.allocate_and_activate!(host: @node_instance, network: @network)
     end
 
     def verify_account_alignment!
