@@ -74,9 +74,9 @@ module System
       new(node_instance: node_instance, target_cluster_id: target_cluster_id).join_request!
     end
 
-    def self.register_node_join!(node_instance:, role:, k8s_version: nil)
-      new(node_instance: node_instance, role: role, k8s_version: k8s_version)
-        .register_node_join!
+    def self.register_node_join!(node_instance:, role:, k8s_version: nil, target_cluster_id: nil)
+      new(node_instance: node_instance, role: role, k8s_version: k8s_version,
+          target_cluster_id: target_cluster_id).register_node_join!
     end
 
     def self.mark_node_ready!(node_instance:, k8s_version: nil)
@@ -286,39 +286,10 @@ module System
       # Multi-cluster awareness (Phase 2.5): when target_cluster_id is
       # provided, resolve to that specific cluster. Otherwise fall
       # back to single-cluster behavior (most recent active cluster
-      # in the account).
-      cluster = if @target_cluster_id.present?
-        c = ::Devops::KubernetesCluster
-              .where(account_id: account.id, id: @target_cluster_id)
-              .first
-        unless c
-          raise NoClusterAvailableError,
-                "target cluster #{@target_cluster_id} not found in account #{account.id} — " \
-                "verify cluster_id, or omit target_cluster_id to auto-select most recent"
-        end
-        if c.status == "error"
-          raise NoClusterAvailableError,
-                "target cluster #{@target_cluster_id} is in error state; refusing to join"
-        end
-        c
-      else
-        candidates = ::Devops::KubernetesCluster
-                       .where(account_id: account.id)
-                       .where.not(status: "error")
-                       .order(created_at: :desc)
-                       .to_a
-        # Refuse to auto-select among multiple clusters — a node joining the
-        # wrong cluster is an isolation breach. The agent must pass
-        # target_cluster_id. A single active cluster is unambiguous and is
-        # still resolved without a target.
-        if candidates.size > 1
-          emit_ambiguous_join_refused!(candidates.size)
-          raise AmbiguousClusterError,
-                "account #{account.id} has #{candidates.size} active clusters; " \
-                "pass target_cluster_id to choose one (auto-select refused)"
-        end
-        candidates.first
-      end
+      # in the account) — refusing to auto-select among several.
+      # Shared with register_node_join! so a ready re-fire can never
+      # resolve a different cluster than the join it followed.
+      cluster = resolve_membership_cluster!(account)
 
       unless cluster
         raise NoClusterAvailableError,
@@ -358,6 +329,50 @@ module System
       Rails.logger.warn("[KubernetesClusterProvisionerService] refusal event emit failed: #{e.class}: #{e.message}")
     end
 
+    # Shared multi-cluster-safe cluster resolution for join_request! and
+    # register_node_join! — the two callers must never disagree, or a
+    # node could join one cluster and then get silently re-registered
+    # against another on its next ready re-fire. When @target_cluster_id
+    # is present, resolve to that specific cluster (raising if unknown or
+    # errored). Otherwise fall back to single-cluster auto-select,
+    # refusing (AmbiguousClusterError) when the account has more than one
+    # non-error cluster — guessing "most recent" would silently move a
+    # node's membership onto the wrong cluster.
+    def resolve_membership_cluster!(account)
+      if @target_cluster_id.present?
+        c = ::Devops::KubernetesCluster
+              .where(account_id: account.id, id: @target_cluster_id)
+              .first
+        unless c
+          raise NoClusterAvailableError,
+                "target cluster #{@target_cluster_id} not found in account #{account.id} — " \
+                "verify cluster_id, or omit target_cluster_id to auto-select most recent"
+        end
+        if c.status == "error"
+          raise NoClusterAvailableError,
+                "target cluster #{@target_cluster_id} is in error state; refusing to join"
+        end
+        return c
+      end
+
+      candidates = ::Devops::KubernetesCluster
+                     .where(account_id: account.id)
+                     .where.not(status: "error")
+                     .order(created_at: :desc)
+                     .to_a
+      # Refuse to auto-select among multiple clusters — a node joining (or
+      # re-registering against) the wrong cluster is an isolation breach.
+      # The caller must pass target_cluster_id. A single active cluster
+      # is unambiguous and is still resolved without one.
+      if candidates.size > 1
+        emit_ambiguous_join_refused!(candidates.size)
+        raise AmbiguousClusterError,
+              "account #{account.id} has #{candidates.size} active clusters; " \
+              "pass target_cluster_id to choose one (auto-select refused)"
+      end
+      candidates.first
+    end
+
     # ──────────────────────────────────────────────────────────────────
     # register_node_join! — agent confirms it joined
     # ──────────────────────────────────────────────────────────────────
@@ -367,11 +382,15 @@ module System
       raise ArgumentError, "role required (server|agent)" unless @role
 
       account = @node_instance.account
-      cluster = ::Devops::KubernetesCluster
-                  .where(account_id: account.id)
-                  .where.not(status: "error")
-                  .order(created_at: :desc)
-                  .first
+
+      # Same multi-cluster-safe resolution as join_request! — phase=ready
+      # re-fires this on every k3s version bump / rolling upgrade / state
+      # loss, so this MUST resolve the node's actual cluster (via
+      # target_cluster_id, sourced from the agent's own cached
+      # join/bootstrap cluster_id) rather than re-guessing "most recent
+      # cluster in the account" and silently relocating an already-joined
+      # node the moment a second cluster exists.
+      cluster = resolve_membership_cluster!(account)
       raise NoClusterAvailableError, "no cluster to register against" unless cluster
 
       # Phase O4 — refuse to add a node whose network_profile mismatches
@@ -387,12 +406,22 @@ module System
       node = ::Devops::KubernetesNode.find_by(node_instance_id: @node_instance.id)
       created_new_node = false
       if node
+        previous_cluster = node.kubernetes_cluster
         node.update!(
           kubernetes_cluster: cluster,
           role: @role,
           k8s_version: @k8s_version,
           last_heartbeat_at: Time.current
         )
+        # Deliberate retarget (explicit target_cluster_id pointing
+        # somewhere other than the node's current membership) is the
+        # only way `cluster` can now differ from the prior one —
+        # auto-select refuses among multiple candidates above. Keep
+        # both clusters' node_count honest when it happens.
+        if previous_cluster && previous_cluster.id != cluster.id
+          previous_cluster.decrement!(:node_count) if previous_cluster.node_count.to_i > 0
+          cluster.increment!(:node_count)
+        end
       else
         node = ::Devops::KubernetesNode.create!(
           kubernetes_cluster: cluster,

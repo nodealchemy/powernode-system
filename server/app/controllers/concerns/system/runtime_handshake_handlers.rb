@@ -173,20 +173,30 @@ module System
     # Generic K3s ready handler — applies to both server (HA
     # additional control-plane joining) and agent (worker
     # joining).
+    #
+    # phase=ready re-fires on every k3s version change / rolling
+    # upgrade / state loss, so cluster_id (the agent's own cached
+    # join/bootstrap cluster_id — see k3sd.HandshakeRequest.ClusterID)
+    # is forwarded as target_cluster_id. Without it,
+    # register_node_join! would have to guess "most recent cluster in
+    # the account" on every re-fire, silently relocating an
+    # already-joined node the moment a second cluster exists.
     def handle_k3s_ready
       role = params[:role].to_s.presence ||
              (params[:runtime] == "k3s_server" ? "server" : "agent")
+      version = params[:version].to_s.presence || params[:k8s_version].to_s.presence
 
       # First time we see this NodeInstance ready, register the
       # join (if not already). Idempotent.
       ::System::KubernetesClusterProvisionerService.register_node_join!(
         node_instance: current_instance,
         role: role,
-        k8s_version: params[:version].to_s.presence || params[:k8s_version].to_s.presence
+        k8s_version: version,
+        target_cluster_id: params[:cluster_id].presence
       )
       node = ::System::KubernetesClusterProvisionerService.mark_node_ready!(
         node_instance: current_instance,
-        k8s_version: params[:version].to_s.presence || params[:k8s_version].to_s.presence
+        k8s_version: version
       )
 
       render_success(data: {
@@ -197,6 +207,8 @@ module System
       })
     rescue ::System::KubernetesClusterProvisionerService::NoClusterAvailableError => e
       render_error(e.message, :unprocessable_content)
+    rescue ::System::KubernetesClusterProvisionerService::AmbiguousClusterError => e
+      render_error(e.message, :conflict)
     end
 
     def handle_k3s_stopped

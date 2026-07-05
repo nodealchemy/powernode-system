@@ -379,6 +379,67 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       end
     end
 
+    # Regression — phase=ready forwards params[:cluster_id] (the k3sd
+    # agent's own cached join/bootstrap cluster_id) as target_cluster_id
+    # so a ready re-fire resolves the node's actual cluster instead of
+    # guessing "most recent cluster in the account".
+    context "phase=ready (k3s_agent) multi-cluster targeting" do
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:k3s_agent_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_agent_module, enabled: true)
+      end
+
+      def bootstrap_extra_k3s_cluster!(name:, kubeconfig:, server_token:, agent_token:)
+        extra_instance = sdwan_test_node_instance(node: node, name: name)
+        ::Sdwan::Peer.create!(account: account, sdwan_network_id: sdwan_network.id,
+                              node_instance: extra_instance, publicly_reachable: false)
+        ::System::KubernetesClusterProvisionerService.bootstrap!(
+          node_instance: extra_instance, kubeconfig: kubeconfig, server_token: server_token,
+          agent_token: agent_token, k8s_version: "v1.30"
+        )
+      end
+
+      it "pins a ready re-fire to cluster_id instead of drifting to a newer cluster" do
+        cluster_a = bootstrap_extra_k3s_cluster!(name: "i-srv-a", kubeconfig: "kc-A",
+                                                  server_token: "tok-A", agent_token: "agent-A")
+        ::System::KubernetesClusterProvisionerService.register_node_join!(
+          node_instance: node_instance, role: "agent", k8s_version: "v1.30"
+        )
+        # A second, newer cluster now exists in the account.
+        bootstrap_extra_k3s_cluster!(name: "i-srv-b", kubeconfig: "kc-B",
+                                      server_token: "tok-B", agent_token: "agent-B")
+
+        post url, params: {
+          runtime: "k3s_agent", phase: "ready",
+          role: "agent", version: "v1.30.1", cluster_id: cluster_a.id
+        }, as: :json
+
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "cluster_id")).to eq(cluster_a.id)
+      end
+
+      it "refuses an ambiguous ready re-fire (409) when cluster_id is omitted and multiple clusters exist" do
+        bootstrap_extra_k3s_cluster!(name: "i-srv-c", kubeconfig: "kc-C",
+                                      server_token: "tok-C", agent_token: "agent-C")
+        ::System::KubernetesClusterProvisionerService.register_node_join!(
+          node_instance: node_instance, role: "agent", k8s_version: "v1.30"
+        )
+        bootstrap_extra_k3s_cluster!(name: "i-srv-d", kubeconfig: "kc-D",
+                                      server_token: "tok-D", agent_token: "agent-D")
+
+        post url, params: { runtime: "k3s_agent", phase: "ready", role: "agent", version: "v1.30.1" }, as: :json
+
+        expect(response).to have_http_status(:conflict)
+      end
+    end
+
     context "phase per-runtime gating" do
       let!(:k3s_server_module) do
         ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
