@@ -24,7 +24,7 @@ flowchart LR
     subgraph CI["Gitea Actions"]
         Build[Stage 1<br/>Containerfile build]
         Compose[Stage 2<br/>erofs encode]
-        Sign[cosign sign<br/>keyless via Fulcio]
+        Sign[cosign sign<br/>static key]
     end
     Reg[(OCI registry<br/>registry.example.com)]
     subgraph Plat["Powernode platform"]
@@ -216,6 +216,8 @@ On save, the UI returns a `webhook_secret`. **Copy it immediately** — it's dis
 
 In Gitea: open repo → Settings → Actions → Secrets → add `POWERNODE_WEBHOOK_SECRET` with the value from above.
 
+**Also add the cosign signing secret.** The canonical workflow signs with a static cosign key rather than keyless/Fulcio (Gitea Actions isn't on Sigstore Fulcio's trusted-issuer list — see Step 7). Ask your platform operator for the repo's `POWERNODE_COSIGN_PRIVATE_KEY` (and `POWERNODE_COSIGN_KEY_PASSWORD` if the key is password-protected) — the private half of the platform's `POWERNODE_COSIGN_PUBLIC_KEY` — and add both as Actions secrets alongside `POWERNODE_WEBHOOK_SECRET`. Skipping this pushes an unsigned index; the workflow warns but doesn't fail, and the platform's `cosign verify` rejects it later.
+
 **Note on MCP:** `system_create_module_from_package` does exist as an MCP action but materialises a module from an existing `PackageRepository` (signature: `repository_id`, `package_name`, `architectures`, `recommends_selected`, `category_id`, `dispatch_build`). It is **not** a Gitea-repo-to-NodeModule registration shortcut. The Gitea-driven flow uses the UI form today; a dedicated MCP wrapper for it may land later.
 
 ## Step 6 — Push to Gitea
@@ -248,8 +250,10 @@ The workflow runs:
    erofs blob with fs-verity root hash
 3. **syft + grype** — generates SBOM + VEX; the SBOM is ingested by the
    platform's CVE pipeline
-4. **cosign keyless sign** — Sigstore Fulcio issues an ephemeral cert bound
-   to the Gitea Actions OIDC token; signs the OCI manifest
+4. **cosign sign (static key)** — Gitea Actions isn't on Sigstore Fulcio's
+   trusted-issuer list, so the `assemble` job signs with
+   `POWERNODE_COSIGN_PRIVATE_KEY` (the repo secret from Step 5) instead of a
+   keyless/OIDC-bound cert
 5. **`oras push`** — pushes to `registry.example.com/<account>/modules/my-redis-module:v0.1.0`
 6. **Webhook** — POSTs to platform's `/api/v1/system/webhooks/gitea/module`
    with HMAC signed by `POWERNODE_WEBHOOK_SECRET`
@@ -346,10 +350,12 @@ platform.system_delete_module({ name: "my-redis" })   // cascade-deletes version
 
 ## Troubleshooting
 
-**Workflow fails at cosign step with `unable to fetch token from OIDC issuer`** —
-Gitea Actions OIDC isn't configured. In Gitea: Admin Panel → Settings →
-enable Actions OIDC; check `.gitea/workflows/build.yaml` has `id-token: write`
-permissions.
+**Workflow fails at the cosign sign step (bad key/password error)** —
+`POWERNODE_COSIGN_PRIVATE_KEY` (or `POWERNODE_COSIGN_KEY_PASSWORD`) doesn't
+match what your platform operator provisioned. Re-copy both secrets exactly
+(watch for a trailing newline pasted into the Gitea Actions secret box) and
+re-trigger. If the secrets are entirely absent, the step logs a `[warn]` and
+pushes an unsigned index instead of failing — see the next entry.
 
 **Workflow succeeds but no NodeModuleVersion row appears** — webhook failed
 to authenticate. Two common causes:
@@ -358,9 +364,13 @@ to authenticate. Two common causes:
 - Platform's webhook controller IP-banned the Gitea runner (check
   `journalctl -u powernode-backend@default | grep gitea_module`)
 
-**`cosign_verified: false`** in version row — identity / issuer regex mismatch.
-Edit the module record's regex fields to match the Gitea Actions OIDC subject
-exactly. Re-trigger workflow.
+**`cosign_verified: false`** in version row — on the default static-key path
+this means the repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to
+the platform's `POWERNODE_COSIGN_PUBLIC_KEY` (or the secret was missing, so
+the index pushed unsigned). Confirm the key pair with your platform operator
+and re-trigger. Only the keyless fallback path checks the identity/issuer
+regex — irrelevant unless you've deliberately switched off static-key
+verification.
 
 **Instance reconciles but module doesn't appear in `running_module_digests`** —
 agent's heartbeat is reporting a different list than what's assigned. Two
