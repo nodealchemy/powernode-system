@@ -64,6 +64,7 @@ module System
             }
           )
         end
+        promote_current_version(node_module, node_module_version)
         register_skills_for(node_module)
         emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag)
         Result.new(
@@ -136,6 +137,18 @@ module System
       Rails.logger.info "[ModulePublicationProcessor] manifest refreshed at tag #{tag}: " \
                         "#{result.resolved_dependencies.size} dependency reference(s)"
       result.resolved_dependencies
+    end
+
+    # Mirrors module_publications_controller's auto-promote: a publish
+    # that survives cosign verification + OCI ingest has already cleared
+    # every gate the platform enforces, so withholding current_version_id
+    # buys nothing but drift between what's published and what the fleet
+    # resolves (agents read node_module.current_version&.artifact; the
+    # drift sensor + system_fleet_tool key off current_version&.oci_digest).
+    def promote_current_version(node_module, version)
+      return if node_module.current_version_id == version.id
+
+      node_module.update_columns(current_version_id: version.id, updated_at: Time.current)
     end
 
     def register_skills_for(node_module)
