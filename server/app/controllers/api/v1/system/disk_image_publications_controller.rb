@@ -70,11 +70,14 @@ module Api
             return render_error("Target publication has no file_object — was it ever published?", 422)
           end
 
-          # Gate-check before running the destructive transaction. The
-          # executor stub records the intent; the controller still owns the
-          # actual rollback logic on the :proceed path because the multi-step
-          # transaction (restore file_object, retire prior, emit event) is
-          # tightly coupled to controller state.
+          # Gate-check before running the destructive transaction. On the
+          # :proceed path the gate has ALREADY run the mutation — auto-
+          # approved/core-mode decisions execute the executor synchronously
+          # (Ai::DeferredOperation#execute_now!) — so the controller just
+          # shapes its response from the executor's result instead of
+          # duplicating the transaction (see System::Executors::DiskImage::
+          # RollbackPublication, the same executor SystemFleetTool#revert_
+          # disk_image delegates to for the MCP path).
           gate_result = ::Ai::AutonomyGate.evaluate(
             action_category: "system.disk_image_publication_rollback",
             executor_class: "System::Executors::DiskImage::RollbackPublication",
@@ -94,42 +97,15 @@ module Api
             return render_error(gate_result.error || "Action blocked by policy",
                                 status: :unprocessable_content)
           end
-          # :proceed — fall through to the existing transaction.
 
-          previous_active_id = @platform.disk_image_file_object_id
-
-          ::ApplicationRecord.transaction do
-            # Restore the file_object if it was soft-deleted (target was retired).
-            if target.retired? && target.file_object&.deleted_at?
-              target.file_object.update!(deleted_at: nil, deleted_reason: nil, deleted_by_id: nil)
-            end
-
-            @platform.update!(
-              disk_image_file_object_id:     target.file_object_id,
-              disk_image_sha256:             target.sha256,
-              disk_image_size_bytes:         target.size_bytes,
-              disk_image_oci_ref:            target.oci_ref,
-              disk_image_git_sha:            target.git_sha,
-              disk_image_publication_status: "published",
-              disk_image_publication_error:  nil
-            )
-
-            # If we rolled back from a published row, retire it (the
-            # operator chose another version explicitly).
-            if previous_active_id.present? && previous_active_id != target.file_object_id
-              prior_pub = @platform.disk_image_publications
-                                    .where(file_object_id: previous_active_id, status: "published")
-                                    .first
-              prior_pub&.update!(status: "retired", retired_at: Time.current)
-            end
-          end
-
-          emit_rolled_back_event(target, previous_active_id)
+          data = gate_result.result&.dig(:data) || {}
+          previous_file_object_id = data[:previous_file_object_id]
+          emit_rolled_back_event(target, previous_file_object_id)
           render_success(
             data: {
               platform_id:                @platform.id,
               activated_publication_id:   target.id,
-              prior_file_object_id:       previous_active_id
+              prior_file_object_id:       previous_file_object_id
             }
           )
         end
