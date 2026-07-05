@@ -316,7 +316,7 @@ module System
 
         response = http.request(request)
         if response.code.to_i.between?(200, 299)
-          { ok: true, dispatch_id: response.headers["x-gitea-action-run-id"] || "gitea-#{SecureRandom.hex(8)}" }
+          { ok: true, dispatch_id: response["x-gitea-action-run-id"] || "gitea-#{SecureRandom.hex(8)}" }
         else
           { ok: false, error: "Gitea returned #{response.code}: #{response.body[0..200]}" }
         end
