@@ -1609,6 +1609,20 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         r = call("system_set_default_disk_image_publication", publication_id: other_pub.id)
         expect(r[:success]).to be false
       end
+
+      it "copies disk_image_file_object_id/sha256/size_bytes so provisioning actually boots the new image, not just display metadata" do
+        promoted = create(:system_disk_image_publication, :published,
+                           account: account, node_platform: platform_record_for_pubs,
+                           oci_ref: "registry.example.com/test:promoted", git_sha: "promoted-sha")
+
+        r = call("system_set_default_disk_image_publication", publication_id: promoted.id)
+        expect(r[:success]).to be true
+
+        platform_record_for_pubs.reload
+        expect(platform_record_for_pubs.disk_image_file_object_id).to eq(promoted.file_object_id)
+        expect(platform_record_for_pubs.disk_image_sha256).to eq(promoted.sha256)
+        expect(platform_record_for_pubs.disk_image_size_bytes).to eq(promoted.size_bytes)
+      end
     end
 
     describe "system_set_disk_image_retention" do

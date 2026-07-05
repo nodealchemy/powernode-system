@@ -3325,12 +3325,18 @@ module Ai
         end
 
         platform = publication.node_platform
-        platform.update!(
-          disk_image_oci_ref: publication.oci_ref,
-          disk_image_git_sha: publication.git_sha,
-          disk_image_publication_status: "published",
-          disk_image_publication_error: nil
+
+        # Delegate to the same column-flip executor used by system_revert_disk_image
+        # (RollbackPublication) rather than hand-updating the platform here — a bare
+        # oci_ref/git_sha update flips only display metadata while the download/
+        # provision path boots off disk_image_file_object_id, which PromotePublication
+        # copies (plus sha256/size_bytes, retired-publication reactivation, and
+        # retiring the previously-active publication).
+        ::System::Executors::DiskImage::PromotePublication.execute(
+          { publication_id: publication.id },
+          deferred_operation: nil
         )
+        platform.reload
 
         success_result(
           set_default: true,
