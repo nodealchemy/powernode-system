@@ -2122,6 +2122,14 @@ module Ai
                                           .find_by(id: params[:node_instance_id])
         return error_result("Instance not found: #{params[:node_instance_id]}") unless instance
 
+        # The instance's config["storage_volume"] holds a single binding — a
+        # second attach without an explicit detach would otherwise silently
+        # overwrite it, unbinding whatever disk is currently mounted.
+        existing_binding_id = bound_storage_volume_id(instance)
+        if existing_binding_id.present? && existing_binding_id != v.id.to_s
+          return error_result("Instance already has a storage_volume binding (volume #{existing_binding_id}) — detach it first")
+        end
+
         vt_kind = v.volume_type&.volume_type.to_s
         is_network_fs = %w[nfs smb iscsi].include?(vt_kind)
         deployment_name = params[:deployment_name].to_s.presence || "manual"
@@ -2141,8 +2149,9 @@ module Ai
           instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
         else
           return error_result("Volume already attached to another instance") if v.attached?
+          return error_result("Volume is not available to attach (status: #{v.status})") unless v.can_attach?
           device_name = next_block_device_for(instance)
-          v.attach_to!(instance, device_name)
+          return error_result("Attach failed — volume state changed") unless v.attach_to!(instance, device_name)
           binding = {
             volume_id: v.id, volume_name: v.name, size_gb: v.size_gb,
             transport: "block", mount_type: "device",
@@ -2166,6 +2175,8 @@ module Ai
           instance = ::System::NodeInstance.where(account_id: @account.id)
                                             .find_by(id: params[:node_instance_id])
           return error_result("Instance not found") unless instance
+          bound_volume_id = bound_storage_volume_id(instance)
+          return error_result("Volume not attached to this instance") unless bound_volume_id == v.id.to_s
           new_config = (instance.config || {}).except("storage_volume")
           instance.update!(config: new_config)
           success_result(detached: true, volume_id: v.id, instance_id: instance.id)
@@ -2548,6 +2559,13 @@ module Ai
         when "nfs" then "nfs://#{params[:nfs_server]}#{params[:nfs_export_path]}"
         else nil
         end
+      end
+
+      # The volume_id currently bound in this instance's single
+      # config["storage_volume"] slot, or nil if unbound. Shared by
+      # attach_volume's clobber guard and detach_volume's ownership check.
+      def bound_storage_volume_id(instance)
+        instance.config&.dig("storage_volume", "volume_id")&.to_s
       end
 
       def next_block_device_for(instance)

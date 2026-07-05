@@ -286,6 +286,88 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit IMP-dc49b9151852 — attach_volume ignored ProviderVolume#attach_to!'s
+  # return value and unconditionally stamped the instance's config binding, so
+  # a volume stuck in creating/error status "attached" successfully while the
+  # row never flipped to in-use — the agent mounts a device that was never
+  # attached. Attaching a second volume also silently clobbered the single
+  # storage_volume binding instead of refusing, and detach_volume's network-FS
+  # path cleared the binding without checking it belonged to the given volume.
+  describe "attach_volume / detach_volume binding integrity (IMP-dc49b9151852)" do
+    let(:instance) { create(:system_node_instance, account: account) }
+
+    describe "block-volume attach" do
+      it "does not strand the instance when the volume is not available (status creating)" do
+        volume = create(:system_provider_volume, account: account, status: "creating")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config["storage_volume"]).to be_nil
+        expect(volume.reload.node_instance_id).to be_nil
+        expect(volume.status).to eq("creating")
+      end
+
+      it "does not strand the instance when the volume is in error status" do
+        volume = create(:system_provider_volume, account: account, status: "error")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config["storage_volume"]).to be_nil
+        expect(volume.reload.node_instance_id).to be_nil
+      end
+
+      it "attaches a genuinely available volume and records the FK" do
+        volume = create(:system_provider_volume, account: account, status: "available")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be true
+        expect(volume.reload.node_instance_id).to eq(instance.id)
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(volume.id)
+      end
+    end
+
+    describe "clobber guard" do
+      it "refuses to overwrite an existing storage_volume binding with a different volume" do
+        first = create(:system_provider_volume, account: account, status: "available")
+        second = create(:system_provider_volume, account: account, status: "available")
+        call("system_attach_volume", volume_id: first.id, node_instance_id: instance.id)
+
+        r = call("system_attach_volume", volume_id: second.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(first.id)
+        expect(second.reload.node_instance_id).to be_nil
+      end
+    end
+
+    describe "network-FS detach" do
+      let(:nfs_type) { create(:system_provider_volume_type, account: account, volume_type: "nfs") }
+      let(:bound_volume) { create(:system_provider_volume, account: account, volume_type: nfs_type) }
+      let(:other_volume) { create(:system_provider_volume, account: account, volume_type: nfs_type) }
+
+      it "refuses to clear the binding when it references a different volume" do
+        instance.update!(config: { "storage_volume" => { "volume_id" => bound_volume.id, "transport" => "nfs" } })
+
+        r = call("system_detach_volume", volume_id: other_volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(bound_volume.id)
+      end
+
+      it "clears the binding when it references the given volume" do
+        instance.update!(config: { "storage_volume" => { "volume_id" => bound_volume.id, "transport" => "nfs" } })
+
+        r = call("system_detach_volume", volume_id: bound_volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be true
+        expect(instance.reload.config["storage_volume"]).to be_nil
+      end
+    end
+  end
+
   # Audit F4-08 — agents could provision, terminate, and drain but not
   # start/stop/reboot, even though InstanceControlService and the AASM fully
   # support these operations. For GPU-cost-sensitive missions stop/start is
