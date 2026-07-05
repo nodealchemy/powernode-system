@@ -73,7 +73,14 @@ module Sdwan
       output_path = File.join(@dynamic_dir, "local-services-#{@account.id}.yaml")
       File.write(output_path, yaml)
 
-      { output_path: output_path, route_count: services.size }
+      # route_count/skipped_service_ids reflect what render_yaml actually put
+      # in the YAML (@rendered_service_ids/@skipped_service_ids), NOT
+      # services.size — a caller exposing one service when its host/cert
+      # can't be resolved must be able to tell "0 routers written" from
+      # "1 router written" rather than reading a route_count that always
+      # equals the exposed-service count regardless of what was skipped.
+      { output_path: output_path, route_count: @rendered_service_ids.size,
+        skipped_service_ids: @skipped_service_ids }
     rescue StandardError => e
       raise WriteError, "ServiceExposureWriter failed: #{e.class}: #{e.message}"
     end
@@ -81,15 +88,24 @@ module Sdwan
     # Renders the Traefik dynamic hash. Public for testability (no filesystem
     # side effects). A service whose host can't be resolved is skipped — a
     # hostless PathPrefix router would hijack /svc/<slug> on every served host.
+    # Records which services were rendered vs skipped (@rendered_service_ids /
+    # @skipped_service_ids) so #write! can report an accurate route_count.
     def render_yaml(services)
       routers = {}
       backends = {}
       middlewares = {}
+      @rendered_service_ids = []
+      @skipped_service_ids  = []
 
       services.each do |svc|
         host = host_for(svc)
-        next if host.blank? && log_skip(svc)
+        if host.blank?
+          log_skip(svc)
+          @skipped_service_ids << svc.id
+          next
+        end
 
+        @rendered_service_ids << svc.id
         add_service!(svc, host, routers, backends, middlewares)
       end
 
