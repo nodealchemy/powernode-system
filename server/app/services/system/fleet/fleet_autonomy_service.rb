@@ -218,7 +218,18 @@ module System
         ::System::Fleet::Sensors::SdwanCredentialExpirySensor,
         # Storage assignments stuck pending/degraded/failed
         # → storage_assignment_reconcile gate.
-        ::System::Fleet::Sensors::StorageAssignmentDriftSensor
+        ::System::Fleet::Sensors::StorageAssignmentDriftSensor,
+        # DK3 of the disk-image-CI restoration — a platform whose last N
+        # publications all failed. Pragmatic placement: this is disk-image
+        # domain (normally Disk Image Manager's queue), but it fires here
+        # because Fleet Autonomy's SENSORS array is the only sensor tick
+        # that runs today; a dedicated DiskImageOps tick is a noted
+        # follow-up if/when Disk Image Manager grows its own sense pass.
+        # Mirrors the GitopsDriftSensor precedent (surfaced signal without
+        # owning the tick it runs in) → system.disk_image_publication_investigate
+        # gate, which is seeded on THIS agent (fleet_autonomy_agent.rb) for
+        # the same reason federation_peer_remediate/sdwan_* live there.
+        ::System::Fleet::Sensors::DiskImagePublicationFailureStreakSensor
       ].freeze
 
       def permitted_actions

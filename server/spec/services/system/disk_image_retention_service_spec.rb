@@ -156,6 +156,86 @@ RSpec.describe System::DiskImageRetentionService do
     end
   end
 
+  # DK3 — cleanup sweep for CI runs abandoned mid-flight, distinct from the
+  # published→retired→purged GC above (no "keep newest N"; any stuck
+  # failed/verifying row past the grace window is retired).
+  describe ".retire_stuck!" do
+    def stuck!(status:, created_days_ago:)
+      create(:system_disk_image_publication, status: status,
+             account: account, node_platform: platform).tap do |pub|
+        pub.update_columns(created_at: created_days_ago.days.ago)
+      end
+    end
+
+    it "retires a failed publication older than the grace window" do
+      old_failed = stuck!(status: "failed", created_days_ago: 10)
+
+      result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(result.retired_count).to eq(1)
+      expect(old_failed.reload.status).to eq("retired")
+      expect(old_failed.retired_at).to be_present
+    end
+
+    it "retires a stuck verifying publication older than the grace window" do
+      old_verifying = stuck!(status: "verifying", created_days_ago: 10)
+
+      result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(result.retired_count).to eq(1)
+      expect(old_verifying.reload.status).to eq("retired")
+    end
+
+    it "leaves fresh failed/verifying rows within the grace window alone" do
+      fresh_failed    = stuck!(status: "failed", created_days_ago: 1)
+      fresh_verifying = stuck!(status: "verifying", created_days_ago: 1)
+
+      result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(result.retired_count).to eq(0)
+      expect(fresh_failed.reload.status).to eq("failed")
+      expect(fresh_verifying.reload.status).to eq("verifying")
+    end
+
+    it "leaves published rows alone" do
+      published = publish!(age_days: 30)
+
+      result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(result.retired_count).to eq(0)
+      expect(published.reload.status).to eq("published")
+    end
+
+    it "is idempotent — a second run finds nothing left to retire" do
+      stuck!(status: "failed", created_days_ago: 10)
+      described_class.retire_stuck!(account: account, grace_days: 7)
+
+      second = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(second.retired_count).to eq(0)
+    end
+
+    it "records a per-publication error and keeps sweeping the rest" do
+      partial_upload = create(:file_object, account: account, filename: "partial.img",
+                              file_size: 10, content_type: "application/octet-stream",
+                              checksum_sha256: "a" * 64)
+      bad  = stuck!(status: "failed", created_days_ago: 10)
+      bad.update_columns(file_object_id: partial_upload.id)
+      good = stuck!(status: "failed", created_days_ago: 10)
+
+      allow(storage).to receive(:delete_file) do |file_object, **_kw|
+        raise "backend gone" if file_object.id == partial_upload.id
+        true
+      end
+
+      result = described_class.retire_stuck!(account: account, grace_days: 7)
+
+      expect(result.errors).to contain_exactly(a_string_matching(/retire \(stuck\) failed for #{bad.id}/))
+      expect(good.reload.status).to eq("retired")
+      expect(bad.reload.status).to eq("failed")
+    end
+  end
+
   describe ".sweep_account!" do
     it "sweeps every platform in the account and returns per-platform results" do
       platform # realize the lazy let BEFORE the sweep enumerates platforms

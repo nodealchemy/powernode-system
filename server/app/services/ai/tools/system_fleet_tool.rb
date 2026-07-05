@@ -1382,9 +1382,10 @@ module Ai
       def refresh_instance_modules(params)
         instance = account_instances.find(params[:instance_id])
         task = ::System::Task.create!(
-          account: @account, node_instance: instance,
-          kind: "reconcile_modules", status: "pending",
-          source: "mcp_refresh", payload: { triggered_by_user_id: @user&.id, triggered_at: Time.current.iso8601 }
+          account: @account, operable: instance,
+          command: "sync_modules", status: "pending",
+          initiated_by: @user,
+          options: { "source" => "mcp_refresh", "triggered_by_user_id" => @user&.id, "triggered_at" => Time.current.iso8601 }
         )
         success_result(refreshed: true, instance_id: instance.id, task_id: task.id, task_status: task.status)
       rescue ActiveRecord::RecordInvalid => e

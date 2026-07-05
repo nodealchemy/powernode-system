@@ -343,15 +343,62 @@ jobs:
       #     CI uploads bytes directly to storage backend via signed PUT URL.
       #     Avoids OCI registry pull on the platform side.
 
+      - name: Fetch OCI registry config from platform
+        # DK2: registry_host/user/token now come from the platform's
+        # disk_image_registry_config endpoint (System::DiskImageRegistryConfig
+        # — AdminSetting host + Vault-backed Security::SecretStore creds)
+        # instead of the POWERNODE_REGISTRY_* Gitea Action secrets those
+        # replace. Fail-fast: an unreachable endpoint, a non-200 (503 =
+        # registry unconfigured), or an empty/placeholder host stops the job
+        # here — a silent fallback would push (or 404) against a bogus
+        # registry.
+        if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
+        env:
+          POWERNODE_API_BASE: ${{ secrets.POWERNODE_API_BASE }}
+          POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+        run: |
+          : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
+          http_code=$(curl -sS -m 15 -o /tmp/registry-config.json -w '%{http_code}' \
+            "$POWERNODE_API_BASE/api/v1/system/disk_image_registry_config" \
+            -H "Authorization: Bearer $POWERNODE_CI_WORKER_TOKEN") \
+            || { echo "::error::could not reach $POWERNODE_API_BASE/api/v1/system/disk_image_registry_config"; exit 1; }
+          if [ "$http_code" != "200" ]; then
+            echo "::error::disk_image_registry_config fetch failed (http=$http_code) from $POWERNODE_API_BASE"
+            echo "::error::$(jq -r '.error // .message // "no error body"' /tmp/registry-config.json 2>/dev/null)"
+            echo "::error::registry not configured (AdminSetting host + Vault-backed registry_user/registry_token) — refusing to push"
+            exit 1
+          fi
+
+          host=$(jq -r '.data.registry_host // empty' /tmp/registry-config.json)
+          user=$(jq -r '.data.registry_user // empty' /tmp/registry-config.json)
+          token=$(jq -r '.data.registry_token // empty' /tmp/registry-config.json)
+
+          if [ -z "$host" ] || [ "$host" = "registry.example.com" ]; then
+            echo "::error::registry_host from the platform is empty or the placeholder 'registry.example.com' — refusing to push"
+            exit 1
+          fi
+
+          # Mask BEFORE writing to GITHUB_ENV — user/token are secrets and
+          # must never surface unmasked in this or later steps' logs.
+          echo "::add-mask::$user"
+          echo "::add-mask::$token"
+          {
+            echo "REGISTRY_HOST=$host"
+            echo "REGISTRY_USER=$user"
+            echo "REGISTRY_TOKEN=$token"
+          } >>"$GITHUB_ENV"
+          echo "Fetched registry config: host=$host"
+
       - name: Push disk images to OCI registry (cosign-signed + attested)
         if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
-          POWERNODE_REGISTRY_USER: ${{ secrets.POWERNODE_REGISTRY_USER }}
-          POWERNODE_REGISTRY_TOKEN: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
+          ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
+          POWERNODE_REGISTRY_USER: ${{ env.REGISTRY_USER }}
+          POWERNODE_REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
         run: |
           if [ -n "$POWERNODE_REGISTRY_USER" ] && [ -n "$POWERNODE_REGISTRY_TOKEN" ]; then
-            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" || true
+            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" \
+              || { echo "::error::oras login to $ORAS_REGISTRY failed"; exit 1; }
           fi
 
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
@@ -404,11 +451,9 @@ jobs:
             else
               echo "  (attestation-bundle missing — pushing without attestation layer)"
             fi
-            if oras push "${push_args[@]}"; then
-              echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
-            else
-              echo "WARN: oras push failed for $platform — webhook will fire but platform OCI pull will 404"
-            fi
+            oras push "${push_args[@]}" \
+              || { echo "::error::oras push failed for $platform to $ref"; exit 1; }
+            echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
           done
 
       - name: Notify platform of new disk images (HMAC webhook — OCI-pull mode)
@@ -416,7 +461,7 @@ jobs:
         env:
           POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
           POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
+          ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
         run: |
           for entry in "ubuntu-24.04-rpi4:disk-image-rpi4/powernode-rpi4.img" \
                        "ubuntu-24.04-arm64-uefi:disk-image-arm64-uefi/powernode-arm64-uefi.img"; do
@@ -668,18 +713,57 @@ jobs:
           docker rm -f "$C" >/dev/null 2>&1 || true
           sudo chown -R "$(id -u):$(id -g)" build
 
+      - name: Fetch OCI registry config from platform
+        # DK2: see the matching step in the arm64 `build` job above for the
+        # full rationale — same platform endpoint, same fail-fast contract.
+        if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
+        env:
+          POWERNODE_API_BASE: ${{ secrets.POWERNODE_API_BASE }}
+          POWERNODE_CI_WORKER_TOKEN: ${{ secrets.POWERNODE_CI_WORKER_TOKEN }}
+        run: |
+          : "${POWERNODE_API_BASE:=https://ops.powernode.org}"
+          http_code=$(curl -sS -m 15 -o /tmp/registry-config.json -w '%{http_code}' \
+            "$POWERNODE_API_BASE/api/v1/system/disk_image_registry_config" \
+            -H "Authorization: Bearer $POWERNODE_CI_WORKER_TOKEN") \
+            || { echo "::error::could not reach $POWERNODE_API_BASE/api/v1/system/disk_image_registry_config"; exit 1; }
+          if [ "$http_code" != "200" ]; then
+            echo "::error::disk_image_registry_config fetch failed (http=$http_code) from $POWERNODE_API_BASE"
+            echo "::error::$(jq -r '.error // .message // "no error body"' /tmp/registry-config.json 2>/dev/null)"
+            echo "::error::registry not configured (AdminSetting host + Vault-backed registry_user/registry_token) — refusing to push"
+            exit 1
+          fi
+
+          host=$(jq -r '.data.registry_host // empty' /tmp/registry-config.json)
+          user=$(jq -r '.data.registry_user // empty' /tmp/registry-config.json)
+          token=$(jq -r '.data.registry_token // empty' /tmp/registry-config.json)
+
+          if [ -z "$host" ] || [ "$host" = "registry.example.com" ]; then
+            echo "::error::registry_host from the platform is empty or the placeholder 'registry.example.com' — refusing to push"
+            exit 1
+          fi
+
+          echo "::add-mask::$user"
+          echo "::add-mask::$token"
+          {
+            echo "REGISTRY_HOST=$host"
+            echo "REGISTRY_USER=$user"
+            echo "REGISTRY_TOKEN=$token"
+          } >>"$GITHUB_ENV"
+          echo "Fetched registry config: host=$host"
+
       - name: Push amd64 image to OCI registry (cosign-signed + attested)
         if: env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
-          POWERNODE_REGISTRY_USER: ${{ secrets.POWERNODE_REGISTRY_USER }}
-          POWERNODE_REGISTRY_TOKEN: ${{ secrets.POWERNODE_REGISTRY_TOKEN }}
+          ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
+          POWERNODE_REGISTRY_USER: ${{ env.REGISTRY_USER }}
+          POWERNODE_REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
         run: |
           platform="ubuntu-24.04-amd64-uefi"
           img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"
           [ -f "$img" ] || { echo "FATAL: $img not built"; exit 1; }
           if [ -n "$POWERNODE_REGISTRY_USER" ] && [ -n "$POWERNODE_REGISTRY_TOKEN" ]; then
-            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" || true
+            oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" \
+              || { echo "::error::oras login to $ORAS_REGISTRY failed"; exit 1; }
           fi
           sha="$(sha256sum "$img" | awk '{print $1}')"
           size="$(stat -c '%s' "$img")"
@@ -700,18 +784,16 @@ jobs:
           if [ -f "$img.attestation-bundle" ]; then
             push_args+=("$img.attestation-bundle:application/vnd.dev.cosign.attestation.v1+json")
           fi
-          if oras push "${push_args[@]}"; then
-            echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
-          else
-            echo "WARN: oras push failed — webhook fires but platform OCI pull will 404"
-          fi
+          oras push "${push_args[@]}" \
+            || { echo "::error::oras push failed for $platform to $ref"; exit 1; }
+          echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
 
       - name: Notify platform of new amd64 image (HMAC webhook — OCI-pull mode)
         if: env.POWERNODE_DISK_IMAGE_WEBHOOK_URL != '' && env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
           POWERNODE_DISK_IMAGE_WEBHOOK_URL: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_URL }}
           POWERNODE_DISK_IMAGE_WEBHOOK_SECRET: ${{ secrets.POWERNODE_DISK_IMAGE_WEBHOOK_SECRET }}
-          ORAS_REGISTRY: ${{ secrets.POWERNODE_REGISTRY_HOST || 'registry.example.com' }}
+          ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
         run: |
           platform="ubuntu-24.04-amd64-uefi"
           img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"

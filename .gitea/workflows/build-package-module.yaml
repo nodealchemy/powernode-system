@@ -216,7 +216,7 @@ jobs:
             # build-platform-modules.yaml so the agent's OCI puller handles both identically).
             oras push "$OCI_REF" \
               --artifact-type "application/vnd.powernode.module.v1" \
-              "$BLOB:application/vnd.powernode.erofs" || true
+              "$BLOB:application/vnd.powernode.erofs"
 
             # cosign sign-blob (keyless via Fulcio in CI; 30s timeout for OIDC fetch)
             BUNDLE=$(timeout 30 cosign sign-blob --yes --bundle - "$BLOB" 2>/dev/null || echo "")

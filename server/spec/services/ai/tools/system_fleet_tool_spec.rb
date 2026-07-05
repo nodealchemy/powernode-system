@@ -846,6 +846,30 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-2818: system_refresh_instance_modules built a System::Task with columns
+  # that don't exist (node_instance/kind/source/payload), so the resulting
+  # ActiveModel::UnknownAttributeError slipped past the RecordInvalid rescue → 500.
+  # The action was only ever permission-tested (never executed), which is how it shipped.
+  describe "system_refresh_instance_modules (IMP-2818)" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "refresh") }
+    let(:instance) { create(:system_node_instance, :running, node: node) }
+
+    it "queues a sync_modules task against the instance instead of raising" do
+      result = nil
+      expect { result = call("system_refresh_instance_modules", instance_id: instance.id) }
+        .to change(::System::Task, :count).by(1)
+
+      expect(result[:success]).to be true
+      expect(result[:data][:refreshed]).to be true
+      expect(result[:data][:task_id]).to be_present
+
+      task = ::System::Task.order(:created_at).last
+      expect(task).to have_attributes(
+        command: "sync_modules", status: "pending", operable: instance, account: account
+      )
+    end
+  end
+
   # F4-05: without operation_id passthrough, ProvisioningService's retry-
   # idempotency guard is unreachable from the agent surface — a retried MCP
   # call provisions a duplicate billable VM.

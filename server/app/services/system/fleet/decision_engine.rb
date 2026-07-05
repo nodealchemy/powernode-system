@@ -280,6 +280,17 @@ module System
         "system.gitops.drift_detected" => {
           skill: nil,
           action_category: "system.gitops_drift_remediate"
+        },
+        # DK3 — DiskImagePublicationFailureStreakSensor. No remediation
+        # applier: a broken CI pipeline needs operator investigation, not
+        # an automated retry. notify_and_proceed (seeded on Fleet Autonomy,
+        # not Disk Image Manager, since the sensor fires from THIS agent's
+        # tick) surfaces the streak instead of dropping it as :skipped for
+        # lack of a binding — mirrors sdwan_credential_refresh_stalled
+        # (an automated path already failed upstream; surface, don't retry).
+        "system.disk_image_publication_failure_streak" => {
+          skill: nil,
+          action_category: "system.disk_image_publication_investigate"
         }
       }.freeze
 

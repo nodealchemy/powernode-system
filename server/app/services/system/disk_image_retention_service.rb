@@ -42,6 +42,17 @@ module System
         end
         per_platform
       end
+
+      # DK3: retires CI-run rows abandoned mid-flight (crashed worker
+      # mid-verify, or a build that failed and was never retried) — a
+      # distinct sweep from the published→retired→purged GC above (no
+      # "keep newest N" logic; any :failed/:verifying row older than the
+      # grace window is stuck). The resulting :retired rows flow into the
+      # normal purge_expired! sweep once THEIR own grace window elapses.
+      # Backs the system:retire_stuck_disk_image_publications rake task.
+      def retire_stuck!(account:, grace_days: DEFAULT_GRACE_DAYS)
+        new.retire_stuck!(account: account, grace_days: grace_days)
+      end
     end
 
     def sweep!(platform:, grace_days:, deleted_by_user: nil)
@@ -54,6 +65,23 @@ module System
       emit_swept_event(platform, retired_count, purged_count) if (retired_count + purged_count).positive?
 
       Result.new(retired_count: retired_count, purged_count: purged_count, errors: @errors || [])
+    end
+
+    def retire_stuck!(account:, grace_days:)
+      cutoff = grace_days.days.ago
+      retired_count = 0
+
+      ::System::DiskImagePublication
+        .where(account: account, status: %w[failed verifying])
+        .where("created_at < ?", cutoff)
+        .find_each do |pub|
+          pub.retire!
+          retired_count += 1
+        rescue StandardError => e
+          record_error("retire (stuck) failed for #{pub.id}: #{e.message}")
+        end
+
+      Result.new(retired_count: retired_count, purged_count: 0, errors: @errors || [])
     end
 
     private

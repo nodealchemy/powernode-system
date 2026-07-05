@@ -94,6 +94,20 @@ RSpec.describe System::DiskImagePublication, type: :model do
       expect(retired.purged_at).to be_present
     end
 
+    it "failed → retired stamps retired_at (DK3 stuck-cleanup path)" do
+      failed = create(:system_disk_image_publication, :failed, account: account, node_platform: platform)
+      failed.retire!
+      expect(failed).to be_retired
+      expect(failed.retired_at).to be_present
+    end
+
+    it "verifying → retired stamps retired_at (DK3 stuck-cleanup path)" do
+      pub.start_verifying!
+      pub.retire!
+      expect(pub).to be_retired
+      expect(pub.retired_at).to be_present
+    end
+
     it "rejects invalid transitions silently (whiny_transitions: false)" do
       # queued → published is invalid; should not raise, status stays queued.
       pub.mark_published

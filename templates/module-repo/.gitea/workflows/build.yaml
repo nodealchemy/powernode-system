@@ -342,7 +342,11 @@ jobs:
         # secret) to the value shown on the module's detail view in the
         # Powernode UI. Same secret also goes in the Gitea repo's native push
         # webhook config so push events verify too.
-        if: always()
+        #
+        # NB: runs only on success (default) — a failed build/oras-push must NOT
+        # announce an artifact_ref the registry never received, or the platform
+        # ingests a guaranteed-failed publication and mints an artifact-less
+        # NodeModuleVersion (IMP-4982). Failed CI runs are reconciled separately.
         env:
           WEBHOOK_URL: ${{ vars.POWERNODE_WEBHOOK_URL || 'https://platform.example.com/api/v1/system/webhooks/gitea/module' }}
           WEBHOOK_SECRET: ${{ secrets.POWERNODE_WEBHOOK_SECRET }}
