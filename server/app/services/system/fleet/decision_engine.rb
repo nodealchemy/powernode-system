@@ -627,7 +627,15 @@ module System
         # F3-01: the instance_reprovision executor. A silent instance's agent
         # is unreachable, so on-node task commands cannot apply — the
         # remediation is a provider-side reboot via InstanceControlService.
-        "system.instance_silent" => { method: :reboot_silent_instance }
+        "system.instance_silent" => { method: :reboot_silent_instance },
+        # IMP-83471cc28e1a: honeypot quarantine (F3-08) routes through
+        # system.instance_terminate but, like instance_silent, has no skill
+        # and no on-node task to dispatch — the remediation IS the
+        # provider-side terminate. Without this entry the approved gate's
+        # apply_remediation! fell through to the "no applier" branch and the
+        # compromised instance was never terminated despite the operator
+        # approving the quarantine.
+        "system.honeypot_access" => { method: :quarantine_honeypot_instance }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -662,6 +670,28 @@ module System
             reason: (result.respond_to?(:error) ? result.error : nil) }.compact
         else
           { applied: true, action: "reboot", instance_id: instance.id }
+        end
+      end
+
+      # IMP-83471cc28e1a: quarantine the compromised instance behind an
+      # approved honeypot-access signal. HoneypotAccessSensor#signals_for can
+      # emit a module-only signal (no hosting instance found at sense time)
+      # when nothing currently runs the accessed canary — nothing to
+      # terminate, so that's applied: false with a clear reason rather than
+      # an error. Same applied/reason shape as the other appliers.
+      def quarantine_honeypot_instance(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
+        return { applied: false, reason: "no instance to quarantine (module-only honeypot signal)" } if id.blank?
+
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+
+        result = ::System::InstanceControlService.execute(instance: instance, action: "terminate")
+        if result.respond_to?(:success?)
+          { applied: result.success?, action: "terminate", instance_id: instance.id,
+            reason: (result.respond_to?(:error) ? result.error : nil) }.compact
+        else
+          { applied: true, action: "terminate", instance_id: instance.id }
         end
       end
 
