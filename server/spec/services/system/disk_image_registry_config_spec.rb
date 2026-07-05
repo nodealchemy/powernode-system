@@ -167,6 +167,20 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
     end
   end
 
+  # IMP-e7e4595d3fa6 — full scheme+host Gitea base URL, needed by callers
+  # (ModuleBuildDispatchService::GiteaDispatchAdapter) that hit the Gitea
+  # REST API directly rather than just building an OCI ref host.
+  describe ".gitea_web_base_url" do
+    it "returns nil when no Gitea provider is configured" do
+      expect(described_class.gitea_web_base_url).to be_nil
+    end
+
+    it "returns the full scheme+host URL of the configured Gitea provider" do
+      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      expect(described_class.gitea_web_base_url).to eq("https://git.powernode.org")
+    end
+  end
+
   describe "an inactive Gitea credential is not used" do
     let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.powernode.org") }
 

@@ -91,8 +91,14 @@ module System
       Result.new(ok?: false, error: message, resolved_dependencies: [])
     end
 
+    # Registry host resolves through the same platform config DK1/DK4 built
+    # for disk images (AdminSetting -> SecretStore/ENV -> Gitea provider
+    # credential) — it's the same Gitea-hosted OCI registry, just a
+    # different repo path. ENV.fetch stays as a final, dev-only fallback for
+    # a box with neither AdminSetting nor a Gitea credential configured.
     def build_oci_ref(node_module, tag)
-      registry = ENV.fetch("POWERNODE_OCI_REGISTRY", "registry.example.com")
+      registry = ::System::DiskImageRegistryConfig.registry_host(account: node_module.account).presence ||
+                 ENV.fetch("POWERNODE_OCI_REGISTRY", ::System::DiskImageRegistryConfig::PLACEHOLDER_HOST)
       "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
     end
 

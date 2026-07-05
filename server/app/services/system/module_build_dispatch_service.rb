@@ -161,7 +161,7 @@ module System
         }
       }
 
-      dispatch = self.class.adapter.dispatch(payload)
+      dispatch = self.class.adapter.dispatch(payload, account: node_module.account)
       return failure("dispatch failed: #{dispatch[:error]}") unless dispatch[:ok]
 
       Result.new(
@@ -219,7 +219,7 @@ module System
             requested_by:      requested_by&.id
           }
         }
-        result = self.class.adapter.dispatch(payload)
+        result = self.class.adapter.dispatch(payload, account: repository.account)
         {
           dispatch_id:  result[:dispatch_id] || dispatch_id,
           architecture: arch,
@@ -246,11 +246,13 @@ module System
       self.class.webhook_secret_for(closure_id)
     end
 
+    # Platform config, not env-secrets: routes through the canonical
+    # PublicUrlResolver seam (SiteSetting public_base_url -> APP_BASE_URL ->
+    # host-relative) rather than the hardcoded http://localhost:3000 default,
+    # which was never reachable from a remote CI runner.
     def webhook_callback_url
-      ENV.fetch(
-        "POWERNODE_PACKAGE_BUILD_WEBHOOK_URL",
-        "http://localhost:3000/api/v1/system/webhooks/package_build"
-      )
+      ENV["POWERNODE_PACKAGE_BUILD_WEBHOOK_URL"].presence ||
+        ::PublicUrlResolver.url_for("/api/v1/system/webhooks/package_build")
     end
 
     def failure(msg)
@@ -267,7 +269,7 @@ module System
         @dispatched = []
       end
 
-      def dispatch(payload)
+      def dispatch(payload, account: nil)
         dispatch_id = "local-#{SecureRandom.hex(8)}"
         @dispatched << payload.merge(dispatch_id: dispatch_id, dispatched_at: Time.current)
         { ok: true, dispatch_id: dispatch_id }
@@ -280,27 +282,40 @@ module System
 
     # ----------------------------------------------------------------------
     # Gitea dispatch adapter — production. POSTs to Gitea's workflow_dispatch
-    # endpoint. Uses the per-repo OAuth/PAT that platform Gitea integration
-    # stores under Devops::GitProviderCredential (not yet wired here — flagged
-    # as M1 follow-up).
+    # endpoint. base_url/token resolve through the same platform config
+    # DK1/DK4 built for disk images (System::DiskImageRegistryConfig:
+    # AdminSetting/SecretStore -> ENV -> the calling account's Gitea provider
+    # credential) instead of hand-set env vars defaulting to an unreachable
+    # registry.example.com placeholder. The Gitea PAT doubles as both the
+    # OCI registry login token and the API bearer token, so registry_token
+    # is the right source here.
+    #
+    # Resolved fresh on every #dispatch call (NOT cached in an ivar at
+    # #initialize) — this instance is a class-memoized singleton
+    # (.adapter ||= build_adapter), so caching here would pin the token/host
+    # for the process lifetime and silently defeat rotation (AdminSetting/
+    # SecretStore/Gitea-credential changes wouldn't take effect until a
+    # restart). #initialize's base_url/token only ever come from an explicit
+    # constructor arg (tests) and always win over platform config.
     # ----------------------------------------------------------------------
     class GiteaDispatchAdapter
-      DEFAULT_BASE_URL = "https://registry.example.com"
-
       def initialize(base_url: nil, token: nil)
-        @base_url = base_url || ENV.fetch("POWERNODE_GITEA_BASE_URL", DEFAULT_BASE_URL)
-        @token    = token    || ENV.fetch("POWERNODE_GITEA_TOKEN", nil)
+        @explicit_base_url = base_url
+        @explicit_token    = token
       end
 
-      def dispatch(payload)
-        return { ok: false, error: "POWERNODE_GITEA_TOKEN not set" } unless @token
+      def dispatch(payload, account: nil)
+        base_url = resolve_base_url
+        token    = resolve_token(account)
+        return { ok: false, error: "Gitea API base URL not configured" } unless base_url.present?
+        return { ok: false, error: "Gitea API token not configured" } unless token.present?
 
         require "net/http"
         require "uri"
 
         repo = payload.fetch(:repository)
         workflow = payload.fetch(:workflow)
-        url = URI.parse("#{@base_url}/api/v1/repos/#{repo}/actions/workflows/#{workflow}/dispatches")
+        url = URI.parse("#{base_url}/api/v1/repos/#{repo}/actions/workflows/#{workflow}/dispatches")
         body = {
           ref: payload.fetch(:ref),
           inputs: payload.fetch(:inputs)
@@ -309,7 +324,7 @@ module System
         http = Net::HTTP.new(url.host, url.port)
         http.use_ssl = url.scheme == "https"
         request = Net::HTTP::Post.new(url.request_uri,
-                                      "Authorization" => "token #{@token}",
+                                      "Authorization" => "token #{token}",
                                       "Content-Type" => "application/json",
                                       "Accept" => "application/json")
         request.body = body
@@ -322,6 +337,18 @@ module System
         end
       rescue StandardError => e
         { ok: false, error: "Gitea HTTP failed: #{e.message}" }
+      end
+
+      private
+
+      def resolve_base_url
+        @explicit_base_url || ENV["POWERNODE_GITEA_BASE_URL"].presence ||
+          ::System::DiskImageRegistryConfig.gitea_web_base_url
+      end
+
+      def resolve_token(account)
+        @explicit_token || ENV["POWERNODE_GITEA_TOKEN"].presence ||
+          ::System::DiskImageRegistryConfig.registry_token(account: account)
       end
     end
   end
