@@ -219,6 +219,39 @@ RSpec.describe System::ModuleBuildDispatchService do
     end
   end
 
+  # IMP-2311b4253454 — production Gitea dispatch reads response.headers, but
+  # Net::HTTPResponse has no #headers (header access is response["..."]) so
+  # every SUCCESSFUL dispatch raises NoMethodError, gets caught by the
+  # blanket rescue, and is reported back as ok:false.
+  describe "GiteaDispatchAdapter" do
+    let(:adapter) { System::ModuleBuildDispatchService::GiteaDispatchAdapter.new(base_url: "https://gitea.example.com", token: "tok") }
+    let(:payload) do
+      { repository: "ipnode-acme/build-mod", workflow: "build.yaml", ref: "main",
+        inputs: { module_id: SecureRandom.uuid } }
+    end
+
+    it "reports ok:true (not a headers NoMethodError) when Gitea accepts the dispatch" do
+      stub_request(:post, "https://gitea.example.com/api/v1/repos/ipnode-acme/build-mod/actions/workflows/build.yaml/dispatches")
+        .to_return(status: 204, headers: { "X-Gitea-Action-Run-Id" => "42" })
+
+      result = adapter.dispatch(payload)
+
+      expect(result[:error]).to be_nil
+      expect(result[:ok]).to be true
+      expect(result[:dispatch_id]).to eq("42")
+    end
+
+    it "falls back to a generated dispatch_id when Gitea omits the run-id header" do
+      stub_request(:post, "https://gitea.example.com/api/v1/repos/ipnode-acme/build-mod/actions/workflows/build.yaml/dispatches")
+        .to_return(status: 204)
+
+      result = adapter.dispatch(payload)
+
+      expect(result[:ok]).to be true
+      expect(result[:dispatch_id]).to start_with("gitea-")
+    end
+  end
+
   describe ".module_webhook_enforced?" do
     around do |ex|
       prev = ENV["POWERNODE_MODULE_WEBHOOK_ENFORCE"]
