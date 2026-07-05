@@ -71,6 +71,9 @@ module Ai
 
         # Task control
         "system_cancel_task"            => "system.infra_tasks.control",
+        # IMP-8153d1952ff8 — operator recourse on a wedged :running task,
+        # same gate as cancel (system.infra_tasks.control).
+        "system_abort_task"             => "system.infra_tasks.control",
 
         # Module diff (read — same level as get_module)
         "system_module_diff"            => "system.modules.read",
@@ -533,6 +536,17 @@ module Ai
           "system_cancel_task" => {
             description: "Cancel a pending task",
             parameters: { id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" } }
+          },
+          # IMP-8153d1952ff8 — the abort AASM event (legal from :running) was
+          # exposed only to the worker dispatch chain, leaving a wedged
+          # provision/build/ssh task stuck for up to the reaper's 60-min
+          # STUCK_RUNNING threshold with no operator recourse.
+          "system_abort_task" => {
+            description: "Abort a running task (operator recourse on a wedged provision/build/ssh task — errors once the task has already left :running)",
+            parameters: {
+              id: { type: "string", required: true, description: "UUID of the running System::Task to abort" },
+              reason: { type: "string", required: false, description: "Optional reason recorded on the task's error_message/audit events" }
+            }
           },
 
           # === Module diff preview (Track F-11) ===
@@ -1156,6 +1170,7 @@ module Ai
         when "system_list_tasks"               then list_tasks(params)
         when "system_get_task"                 then get_task(params)
         when "system_cancel_task"              then cancel_task(params)
+        when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
         when "system_deploy_platform"          then deploy_platform(params)
         # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
@@ -1925,6 +1940,19 @@ module Ai
           success_result(cancelled: true, task: serialize_task(task.reload))
         else
           error_result("Task cannot be cancelled from #{task.status}")
+        end
+      end
+
+      # IMP-8153d1952ff8 — operator recourse on a wedged :running task.
+      # Mirrors cancel_task's may_x?/bang shape; the abort AASM event was
+      # already legal from :running, just unexposed on this surface.
+      def abort_task(params)
+        task = ::System::Task.where(account: @account).find(params[:id])
+        if task.respond_to?(:abort!) && task.may_abort?
+          task.abort!(params[:reason])
+          success_result(aborted: true, task: serialize_task(task.reload))
+        else
+          error_result("Task cannot be aborted from #{task.status}")
         end
       end
 

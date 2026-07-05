@@ -845,6 +845,48 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # IMP-8153d1952ff8 — the AASM abort event (legal from :running) existed but
+  # was unexposed on both the operator REST API and this MCP surface, leaving
+  # a wedged provision/build/ssh task with no recourse short of the hourly
+  # reaper's 60-min STUCK_RUNNING threshold.
+  describe "system_abort_task" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "aborttsk") }
+    let!(:running_task) do
+      System::Task.create!(
+        account: account, command: "ssh_command", status: "running", started_at: Time.current,
+        operable_type: "System::Node", operable_id: node.id
+      )
+    end
+
+    it "aborts a running task" do
+      r = call("system_abort_task", id: running_task.id, reason: "operator abort")
+      expect(r[:success]).to be true
+      expect(r[:data][:aborted]).to be true
+      expect(r[:data][:task][:status]).to eq("aborted")
+      expect(running_task.reload.error_message).to eq("operator abort")
+    end
+
+    it "errors when the task is not abortable (state-machine guard)" do
+      pending_task = System::Task.create!(
+        account: account, command: "sync", status: "pending",
+        operable_type: "System::Node", operable_id: node.id
+      )
+      r = call("system_abort_task", id: pending_task.id)
+      expect(r[:success]).to be false
+      expect(pending_task.reload.status).to eq("pending")
+    end
+
+    it "denies callers without system.infra_tasks.control" do
+      denied = described_class.new(
+        account: account,
+        user: create(:user, account: account, permissions: %w[system.infra_tasks.read])
+      )
+      r = denied.execute(params: { action: "system_abort_task", id: running_task.id })
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("permission denied")
+    end
+  end
+
   describe "system_get_task" do
     let(:node) { create(:system_node, account: account, node_template: template, name: "gettask") }
     let!(:task) do
