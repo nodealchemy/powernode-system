@@ -92,6 +92,8 @@ module Ai
         "system_sdwan_create_ovn_deployment"       => "system.sdwan.ovn.manage",
         "system_sdwan_create_ovn_logical_switch"   => "system.sdwan.ovn.manage",
         "system_sdwan_create_ovn_logical_switch_port" => "system.sdwan.ovn.manage",
+        "system_sdwan_activate_ovn_logical_switch"      => "system.sdwan.ovn.manage",
+        "system_sdwan_activate_ovn_logical_switch_port" => "system.sdwan.ovn.manage",
         "system_sdwan_compile_ovn_plan"            => "system.sdwan.ovn.read",
         "system_sdwan_create_ipfix_collector"      => "system.sdwan.ipfix.manage",
         "system_sdwan_list_ipfix_collectors"       => "system.sdwan.ipfix.read",
@@ -629,6 +631,18 @@ module Ai
               mac: { type: "string", required: false, description: "MAC in `xx:xx:xx:xx:xx:xx` form; auto-generated when blank" }
             }
           },
+          "system_sdwan_activate_ovn_logical_switch" => {
+            description: "Mark an OvnLogicalSwitch as `active` so the compiler's `compilable` scope picks it up. Newly created switches land in `pending`; without activation `system_sdwan_compile_ovn_plan` silently omits them (and their ports/ACLs) with zero errors. Use this after create_ovn_logical_switch when the agent isn't yet reporting back its applied state.",
+            parameters: {
+              logical_switch_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitch id" }
+            }
+          },
+          "system_sdwan_activate_ovn_logical_switch_port" => {
+            description: "Mark an OvnLogicalSwitchPort as `active` so the compiler's `compilable` scope picks it up. Newly created ports land in `pending`; without activation they're excluded from the compiled plan even when their parent switch is active. Use this after create_ovn_logical_switch_port when the agent isn't yet reporting back its applied state.",
+            parameters: {
+              port_id: { type: "string", required: true, description: "Sdwan::OvnLogicalSwitchPort id" }
+            }
+          },
           "system_sdwan_compile_ovn_plan" => {
             description: "Compile the structured ovn-nbctl command plan for an OvnDeployment via Sdwan::OvnCompiler. Returns the full plan (deployment_id, plan: array of {cmd, args}, compiled_at). The compiler does NOT execute — it returns the plan as data for an executor or operator to replay against the NB DB.",
             parameters: {
@@ -794,6 +808,8 @@ module Ai
         when "system_sdwan_create_ovn_deployment"          then create_ovn_deployment(params)
         when "system_sdwan_create_ovn_logical_switch"      then create_ovn_logical_switch(params)
         when "system_sdwan_create_ovn_logical_switch_port" then create_ovn_logical_switch_port(params)
+        when "system_sdwan_activate_ovn_logical_switch"      then activate_ovn_logical_switch(params)
+        when "system_sdwan_activate_ovn_logical_switch_port" then activate_ovn_logical_switch_port(params)
         when "system_sdwan_compile_ovn_plan"               then compile_ovn_plan(params)
         when "system_sdwan_create_ovn_acl"                 then create_ovn_acl(params)
         when "system_sdwan_list_ovn_acls"                  then list_ovn_acls(params)
@@ -2021,6 +2037,34 @@ module Ai
         success_result(ovn_logical_switch_port: serialize_ovn_logical_switch_port(port))
       end
 
+      # Mark an OvnLogicalSwitch as `active`. Mirrors activate_host_bridge:
+      # create_ovn_logical_switch lands rows in `pending`, and OvnCompiler's
+      # `compilable` scope only emits `active` switches. Without this action
+      # the documented create -> compile sequence silently yields an empty
+      # plan with zero errors — switches never had an activation path via
+      # MCP (only host bridges did, added for exactly this trap).
+      #
+      # `mark_active` only transitions from pending|active — with
+      # whiny_transitions: false a call against a `removed` row returns
+      # false rather than raising, so we surface that as an error_result
+      # instead of reporting success on an unchanged row.
+      def activate_ovn_logical_switch(params)
+        switch = account_ovn_logical_switches.find(params[:logical_switch_id])
+        return error_result("cannot activate a #{switch.state} logical switch") unless switch.mark_active!
+
+        success_result(ovn_logical_switch: serialize_ovn_logical_switch(switch))
+      end
+
+      # Mark an OvnLogicalSwitchPort as `active`. Same trap as switches: a
+      # port stuck in `pending` is invisible to the compiler even when its
+      # parent switch is active.
+      def activate_ovn_logical_switch_port(params)
+        port = account_ovn_logical_switch_ports.find(params[:port_id])
+        return error_result("cannot activate a #{port.state} logical switch port") unless port.mark_active!
+
+        success_result(ovn_logical_switch_port: serialize_ovn_logical_switch_port(port))
+      end
+
       def compile_ovn_plan(params)
         deployment = account_ovn_deployments.find(params[:deployment_id])
         plan = ::Sdwan::OvnCompiler.compile_for_deployment(deployment)
@@ -2052,7 +2096,7 @@ module Ai
       end
 
       def delete_ovn_logical_switch_port(params)
-        port = ::Sdwan::OvnLogicalSwitchPort.where(account_id: @account.id).find(params[:port_id])
+        port = account_ovn_logical_switch_ports.find(params[:port_id])
         name = port.name
         port.destroy!
         success_result(deleted: true, port_id: params[:port_id], name: name)
@@ -2066,6 +2110,10 @@ module Ai
 
       def account_ovn_logical_switches
         ::Sdwan::OvnLogicalSwitch.where(account_id: @account.id)
+      end
+
+      def account_ovn_logical_switch_ports
+        ::Sdwan::OvnLogicalSwitchPort.where(account_id: @account.id)
       end
 
       def serialize_ovn_logical_switch_with_ports(s)
