@@ -15,6 +15,12 @@ module System
       #
       # Reference: Golden Eclipse plan M4 — providers/local_qemu/domain_xml_builder.
       class DomainXmlBuilder
+        # OVMF firmware paths for boot_mode: "uefi_disk". Override via env
+        # when the host's OVMF package lands somewhere other than the
+        # Debian/Ubuntu default (e.g. Fedora's /usr/share/edk2/ovmf/).
+        DEFAULT_OVMF_CODE_PATH = ENV.fetch("POWERNODE_OVMF_CODE_PATH", "/usr/share/OVMF/OVMF_CODE_4M.fd")
+        DEFAULT_OVMF_VARS_TEMPLATE_PATH = ENV.fetch("POWERNODE_OVMF_VARS_TEMPLATE_PATH", "/usr/share/OVMF/OVMF_VARS_4M.fd")
+
         # Build the domain XML.
         #
         # @param instance [System::NodeInstance]
@@ -27,18 +33,31 @@ module System
         # @param image_base [String] absolute filesystem path or HTTP URL
         #   to the M3 build dir; e.g. "/var/lib/powernode/images" or
         #   "https://platform/.well-known/powernode/images"
+        # @param boot_mode ["direct_kernel"|"uefi_disk"] default "direct_kernel"
+        #   (Powernode-as-OS kernel+initrd boot, unchanged from before this
+        #   param existed). "uefi_disk" (increment 12a — UKI pivot-boot
+        #   local de-risk) boots via OVMF from disk_image_path instead —
+        #   no <kernel>/<initrd>/<cmdline> at all.
+        # @param disk_image_path [String] required when boot_mode is
+        #   "uefi_disk" — absolute host path to the pulled UEFI/UKI disk
+        #   image. Like image_base for direct_kernel, this builder only
+        #   consumes the path; pulling the image onto the host is the
+        #   caller's job.
         # @return [String] libvirt domain XML
-        def self.build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:, provider: nil)
+        def self.build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:,
+                       provider: nil, boot_mode: "direct_kernel", disk_image_path: nil)
           new(provider: provider).build(instance: instance, domain_name: domain_name,
                     fw_cfg_entries: fw_cfg_entries, arch: arch,
-                    memory_mb: memory_mb, vcpus: vcpus, image_base: image_base)
+                    memory_mb: memory_mb, vcpus: vcpus, image_base: image_base,
+                    boot_mode: boot_mode, disk_image_path: disk_image_path)
         end
 
         def initialize(provider: nil)
           @provider = provider
         end
 
-        def build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:)
+        def build(instance:, domain_name:, fw_cfg_entries:, arch:, memory_mb:, vcpus:, image_base:,
+                 boot_mode: "direct_kernel", disk_image_path: nil)
           @instance = instance
           # Persist the deterministic MAC on first generate so the rest of the
           # platform (audit, lease lookups) can reference it without re-deriving.
@@ -50,14 +69,19 @@ module System
           machine = arch_str == "aarch64" ? "virt" : "q35"
           emulator = arch_str == "aarch64" ? "/usr/bin/qemu-system-aarch64" : "/usr/bin/qemu-system-x86_64"
 
-          # Direct kernel boot: load kernel + initrd off the host filesystem.
-          # If image_base is an HTTP URL the operator has pre-fetched these
-          # to a local cache; this builder consumes paths only.
-          kernel_path = "#{image_base}/#{arch}/kernel-initrd/kernel"
-          initrd_path = "#{image_base}/#{arch}/kernel-initrd/initramfs.cpio.zst"
-
           fw_cfg_xml = build_fw_cfg_qemu_args(fw_cfg_entries)
-          cmdline = build_kernel_cmdline(fw_cfg_entries)
+
+          os_xml = if boot_mode.to_s == "uefi_disk"
+                     uefi_os_xml(arch_str: arch_str, machine: machine, domain_name: domain_name)
+                   else
+                     direct_kernel_os_xml(arch_str: arch_str, machine: machine, image_base: image_base,
+                                          arch: arch, fw_cfg_entries: fw_cfg_entries)
+                   end
+          boot_disk_xml = if boot_mode.to_s == "uefi_disk"
+                            uefi_boot_disk_xml(disk_image_path)
+                          else
+                            disk_xml(domain_name)
+                          end
 
           # libvirt domain type — kvm when /dev/kvm exists, qemu otherwise
           # (TCG software emulation; slower but works in nested-virt-disabled
@@ -72,12 +96,7 @@ module System
               <memory unit='MiB'>#{memory_mb}</memory>
               <currentMemory unit='MiB'>#{memory_mb}</currentMemory>
               <vcpu placement='static'>#{vcpus}</vcpu>
-              <os>
-                <type arch='#{arch_str}' machine='#{machine}'>hvm</type>
-                <kernel>#{escape(kernel_path)}</kernel>
-                <initrd>#{escape(initrd_path)}</initrd>
-                <cmdline>#{escape(cmdline)}</cmdline>
-              </os>
+              #{os_xml}
               <features>
                 <acpi/>
                 <apic/>
@@ -89,7 +108,7 @@ module System
               <on_crash>destroy</on_crash>
               <devices>
                 <emulator>#{emulator}</emulator>
-                #{disk_xml(domain_name)}
+                #{boot_disk_xml}
                 #{network_xml}
                 #{modules_share_xml}
                 #{console_xml}
@@ -105,6 +124,58 @@ module System
         end
 
         private
+
+        # Direct kernel boot: load kernel + initrd off the host filesystem.
+        # If image_base is an HTTP URL the operator has pre-fetched these
+        # to a local cache; this builder consumes paths only.
+        def direct_kernel_os_xml(arch_str:, machine:, image_base:, arch:, fw_cfg_entries:)
+          kernel_path = "#{image_base}/#{arch}/kernel-initrd/kernel"
+          initrd_path = "#{image_base}/#{arch}/kernel-initrd/initramfs.cpio.zst"
+          cmdline = build_kernel_cmdline(fw_cfg_entries)
+
+          <<~XML.rstrip
+              <os>
+                <type arch='#{arch_str}' machine='#{machine}'>hvm</type>
+                <kernel>#{escape(kernel_path)}</kernel>
+                <initrd>#{escape(initrd_path)}</initrd>
+                <cmdline>#{escape(cmdline)}</cmdline>
+              </os>
+          XML
+        end
+
+        # UEFI/UKI disk boot (increment 12a): OVMF loader + a per-domain
+        # writable NVRAM copy (libvirt clones the template on first boot).
+        # No kernel/initrd/cmdline — the disk's own bootloader (systemd-boot
+        # inside the UKI) takes it from here.
+        def uefi_os_xml(arch_str:, machine:, domain_name:)
+          nvram_dir = ENV.fetch("POWERNODE_NVRAM_DIR", "/var/lib/libvirt/qemu/nvram")
+          nvram_path = File.join(nvram_dir, "#{domain_name}_VARS.fd")
+
+          <<~XML.rstrip
+              <os>
+                <type arch='#{arch_str}' machine='#{machine}'>hvm</type>
+                <loader readonly='yes' type='pflash'>#{escape(DEFAULT_OVMF_CODE_PATH)}</loader>
+                <nvram template='#{escape(DEFAULT_OVMF_VARS_TEMPLATE_PATH)}'>#{escape(nvram_path)}</nvram>
+                <boot dev='hd'/>
+              </os>
+          XML
+        end
+
+        # The UEFI/UKI disk image itself as the sole boot device — raw
+        # format (the disk-image CI pipeline signs + ships plain .img
+        # bytes, see DiskImagePublication).
+        def uefi_boot_disk_xml(disk_image_path)
+          raise ArgumentError, "disk_image_path required for boot_mode=uefi_disk" if disk_image_path.blank?
+
+          <<~XML.strip
+              <disk type='file' device='disk'>
+                  <driver name='qemu' type='raw'/>
+                  <source file='#{escape(disk_image_path)}'/>
+                  <target dev='vda' bus='virtio'/>
+                  <boot order='1'/>
+                </disk>
+          XML
+        end
 
         # virtio-fw-cfg entries are passed via QEMU's `-fw_cfg` arg. Each
         # entry becomes one <qemu:arg value='...'/> pair. Names must start

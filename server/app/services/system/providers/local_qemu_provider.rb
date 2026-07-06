@@ -37,6 +37,17 @@ module System
         instance_record = params[:instance]
         return build_error_response("instance: required") unless instance_record
 
+        # boot_mode: "direct_kernel" (default, unchanged M4 behavior) or
+        # "uefi_disk" (increment 12a — local KVM de-risk for the UKI
+        # pivot-boot rehearsal; see DomainXmlBuilder). disk_image_path is
+        # only meaningful for uefi_disk — DomainXmlBuilder itself does no
+        # network/pull I/O, it just consumes a host path, same as
+        # direct_kernel's image_base.
+        boot_mode = params[:boot_mode].presence || "direct_kernel"
+        if boot_mode == "uefi_disk" && params[:disk_image_path].blank?
+          return build_error_response("disk_image_path: required for boot_mode=uefi_disk")
+        end
+
         # Resolve fw-cfg seed (bootstrap token + ca + image_base + uuid).
         seed = LocalQemu::CloudSeed.build(instance: instance_record,
                                           options: params[:options] || {})
@@ -49,6 +60,8 @@ module System
           memory_mb: params[:memory_mb] || 2048,
           vcpus: params[:vcpus] || 2,
           image_base: seed[:image_base],
+          boot_mode: boot_mode,
+          disk_image_path: params[:disk_image_path],
           # Per-provider network_mode/bridge_name live in Provider#config and
           # take precedence over POWERNODE_NETWORK_MODE/POWERNODE_BRIDGE_NAME
           # env vars when set. The provider record is reachable through the

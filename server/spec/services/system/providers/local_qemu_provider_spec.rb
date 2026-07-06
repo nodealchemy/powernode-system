@@ -104,6 +104,54 @@ RSpec.describe System::Providers::LocalQemuProvider do
     end
   end
 
+  # Increment 12a — local KVM de-risk boot for the UKI pivot-boot rehearsal.
+  # boot_mode: "uefi_disk" boots straight off a pre-built UEFI/UKI disk
+  # image via OVMF, instead of the default direct-kernel path.
+  describe "#create_instance (uefi_disk boot mode)" do
+    let(:disk_image_path) { "/var/lib/powernode/images/uefi/ubuntu-24.04-amd64-uefi.img" }
+
+    it "boots via OVMF loader + nvram from a disk instead of kernel/initrd" do
+      result = provider.create_instance(
+        name: "uefi-domain",
+        instance: instance,
+        boot_mode: "uefi_disk",
+        disk_image_path: disk_image_path
+      )
+      expect(result[:success]).to be true
+
+      xml = runner.invocations.first[:args][:xml]
+      expect(xml).to include("<loader readonly='yes' type='pflash'>")
+      expect(xml).to include("<nvram template=")
+      expect(xml).to include("<source file='#{disk_image_path}'/>")
+      expect(xml).not_to include("<kernel>")
+      expect(xml).not_to include("<initrd>")
+      expect(xml).not_to include("<cmdline>")
+    end
+
+    it "still seeds fw-cfg identity entries (the UKI image boots the same powernode-agent)" do
+      provider.create_instance(
+        name: "uefi-fwcfg-test", instance: instance,
+        boot_mode: "uefi_disk", disk_image_path: disk_image_path
+      )
+      xml = runner.invocations.first[:args][:xml]
+      expect(xml).to include("opt/com.powernode/instance_uuid")
+      expect(xml).to include("opt/com.powernode/bootstrap_token")
+    end
+
+    it "fails fast when disk_image_path is missing" do
+      result = provider.create_instance(name: "uefi-no-disk", instance: instance, boot_mode: "uefi_disk")
+      expect(result[:success]).to be false
+      expect(result[:error]).to match(/disk_image_path: required/)
+    end
+
+    it "defaults to direct_kernel boot when boot_mode is omitted (back-compat)" do
+      provider.create_instance(name: "default-boot-mode", instance: instance)
+      xml = runner.invocations.first[:args][:xml]
+      expect(xml).to include("<kernel>")
+      expect(xml).not_to include("<loader readonly='yes' type='pflash'>")
+    end
+  end
+
   describe "#terminate_instance" do
     it "destroys then undefines" do
       result = provider.terminate_instance("doomed")
