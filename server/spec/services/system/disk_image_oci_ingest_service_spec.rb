@@ -83,4 +83,98 @@ RSpec.describe System::DiskImageOciIngestService do
       expect(File.read(result.local_path)).to eq(image_bytes)
     end
   end
+
+  # Layer 4 of the disk-image publish pipeline: run 990 pushed the OCI
+  # artifact successfully but the platform-side `verify_and_pull!` 401ed
+  # ("failed to resolve manifest") because `oras pull` never authenticated
+  # to the private Gitea registry — only the CI push side had an `oras
+  # login` step. This covers the smoke-mode fallback path (LocalDiskImageAdapter,
+  # the default adapter outside production — matches the failing publications'
+  # "oras pull failed (smoke-mode)" error), stubbing Open3 so no real oras
+  # binary or registry is touched.
+  describe "registry authentication before oras pull (smoke-mode fallback)" do
+    let(:image_bytes) { "fake-disk-image-bytes-#{SecureRandom.hex(4)}" }
+    let(:pub) do
+      create(:system_disk_image_publication, account: account, node_platform: platform,
+             oci_ref: "git.powernode.org/powernode/disk-images/ubuntu-24.04-amd64-uefi:0279b76",
+             sha256: Digest::SHA256.hexdigest(image_bytes))
+    end
+
+    # Stubs Open3.capture3 to fake `oras login` / `oras pull`, routing on
+    # the command name (ignoring a leading env hash, which the adapter
+    # passes positionally). `oras pull` writes image_bytes into the
+    # requested --output dir so the caller's sha256 check passes.
+    def stub_oras(login_calls:, pull_calls:)
+      allow(Open3).to receive(:capture3) do |*args, **kwargs|
+        cmd = args.reject { |a| a.is_a?(Hash) }
+        case cmd[0..1]
+        when %w[oras login]
+          login_calls << { cmd: cmd, stdin_data: kwargs[:stdin_data] }
+          [ "", "", instance_double(Process::Status, success?: true) ]
+        when %w[oras pull]
+          pull_calls << { cmd: cmd }
+          output_dir = cmd[cmd.index("--output") + 1]
+          FileUtils.mkdir_p(output_dir)
+          File.binwrite(File.join(output_dir, "disk.img"), image_bytes)
+          [ "", "", instance_double(Process::Status, success?: true) ]
+        else
+          raise "unexpected Open3.capture3 call: #{cmd.inspect}"
+        end
+      end
+    end
+
+    context "when DiskImageRegistryConfig is configured for the account" do
+      before do
+        allow(System::DiskImageRegistryConfig).to receive(:configured?).with(account: account).and_return(true)
+        allow(System::DiskImageRegistryConfig).to receive(:registry_host).with(account: account).and_return("git.powernode.org")
+        allow(System::DiskImageRegistryConfig).to receive(:registry_user).with(account: account).and_return("ci-bot")
+        allow(System::DiskImageRegistryConfig).to receive(:registry_token).with(account: account).and_return("s3cr3t-token")
+      end
+
+      it "logs in via stdin (--registry-config) before pulling, and never puts the token in argv" do
+        login_calls = []
+        pull_calls  = []
+        stub_oras(login_calls: login_calls, pull_calls: pull_calls)
+
+        result = described_class.verify_and_pull!(publication: pub)
+
+        expect(login_calls.size).to eq(1)
+        login_cmd = login_calls.first[:cmd]
+        expect(login_cmd).to include("oras", "login", "git.powernode.org", "--username", "ci-bot", "--password-stdin")
+        expect(login_calls.first[:stdin_data]).to eq("s3cr3t-token")
+        # The token must never appear as a literal argv element.
+        expect(login_cmd).not_to include("s3cr3t-token")
+
+        expect(pull_calls.size).to eq(1)
+        pull_cmd = pull_calls.first[:cmd]
+        expect(pull_cmd).to include("--registry-config")
+        registry_config_path = pull_cmd[pull_cmd.index("--registry-config") + 1]
+        expect(login_cmd[login_cmd.index("--registry-config") + 1]).to eq(registry_config_path)
+
+        expect(result.ok?).to be true
+        expect(result.error).to be_nil
+      end
+    end
+
+    context "when DiskImageRegistryConfig is not configured for the account" do
+      before do
+        allow(System::DiskImageRegistryConfig).to receive(:configured?).with(account: account).and_return(false)
+      end
+
+      it "still pulls unauthenticated (public registries / fixtures keep working)" do
+        login_calls = []
+        pull_calls  = []
+        stub_oras(login_calls: login_calls, pull_calls: pull_calls)
+
+        result = described_class.verify_and_pull!(publication: pub)
+
+        expect(login_calls).to be_empty
+        expect(pull_calls.size).to eq(1)
+        expect(pull_calls.first[:cmd]).not_to include("--registry-config")
+
+        expect(result.ok?).to be true
+        expect(result.error).to be_nil
+      end
+    end
+  end
 end
