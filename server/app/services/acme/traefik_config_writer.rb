@@ -33,8 +33,6 @@ module Acme
   class TraefikConfigWriter
     class WriteError < StandardError; end
 
-    SYSTEM_PREFIX = "/etc/traefik"
-
     # File name for the shared dynamic config holding the mTLS TLS option
     # set + the passTLSClientCert middleware. Per-account YAMLs reference
     # these by `<name>@file`, so this file must exist before any per-account
@@ -84,60 +82,16 @@ module Acme
       # certless request through). The pass-tls-client-cert MIDDLEWARE works at
       # the entrypoint level and stays here. Every router uses the SAME
       # mtls-optional option, so there is no per-SNI conflict.
+      # Lifted to Core::IngressConfigWriter (campaign 019f3458 increment 8 —
+      # zero System:: dependency, needed unconditionally in core mode too).
+      # Delegating instead of duplicating keeps the two writers from drifting;
+      # output is unchanged (same config shape, byte-for-byte).
       def write_static_config!(dynamic_dir: nil, output_path: nil)
-        dynamic_dir ||= default_dynamic_dir
-        out = output_path || default_static_config_path
-        FileUtils.mkdir_p(File.dirname(out))
-        config = {
-          "entryPoints" => {
-            "web" => {
-              "address" => ":80",
-              # Redirect ALL plaintext :80 traffic to :443. The
-              # entry-point-level redirector applies before any router
-              # match, so we don't need per-cert HTTP routers — the
-              # protocol upgrade is universal. Browsers that default
-              # to HTTP for typed URLs (Chrome's "type without https://")
-              # get bounced to HTTPS automatically.
-              "http" => {
-                "redirections" => {
-                  "entryPoint" => {
-                    "to"        => "websecure",
-                    "scheme"    => "https",
-                    "permanent" => true
-                  }
-                }
-              }
-            },
-            # Single HTTPS entrypoint. The pass-tls-client-cert middleware
-            # (applied here, entrypoint-level) forwards the verified CN for
-            # every router. The clientAuth TLS option is NOT set here — it is
-            # set per-router (see render_routers), because Traefik only honors
-            # clientAuth options bound to a router's HostSNI. Certless browser
-            # traffic and cert-bearing agent/worker traffic share one port.
-            "websecure" => {
-              "address" => ":443",
-              "http"    => {
-                "middlewares" => [ "pass-tls-client-cert@file" ]
-              }
-            }
-          },
-          "providers" => {
-            "file" => {
-              "directory" => dynamic_dir,
-              "watch"     => true
-            }
-          },
-          "log"       => { "level" => ENV["POWERNODE_TRAEFIK_LOG_LEVEL"].presence || "INFO" },
-          "accessLog" => {},
-          "api"       => { "dashboard" => false, "insecure" => false }
-        }
-        File.write(out, YAML.dump(config))
-        out
+        ::Core::IngressConfigWriter.write_static_config!(dynamic_dir: dynamic_dir, output_path: output_path)
       end
 
       def default_static_config_path
-        return ENV["POWERNODE_TRAEFIK_STATIC_CONFIG"] if ENV["POWERNODE_TRAEFIK_STATIC_CONFIG"].present?
-        File.join(File.dirname(default_dynamic_dir), "traefik.yaml")
+        ::Core::IngressConfigWriter.default_static_config_path
       end
 
       # Writes the platform's internal CA chain to disk so Traefik can use
@@ -266,42 +220,20 @@ module Acme
         File.join(cert_dir || default_cert_dir, certificate.account_id, "#{certificate.id}.chain.pem")
       end
 
-      # Resolves the dynamic-config dir per the precedence above.
+      # Path resolution — lifted to Core::IngressConfigWriter (same env
+      # precedence: POWERNODE_TRAEFIK_*_DIR -> /etc/traefik/* if usable ->
+      # <Rails.root>/tmp/traefik/<env>/*). Delegated so core mode and
+      # extension mode resolve identically.
       def default_dynamic_dir
-        return ENV["POWERNODE_TRAEFIK_DYNAMIC_DIR"] if ENV["POWERNODE_TRAEFIK_DYNAMIC_DIR"].present?
-        return "#{SYSTEM_PREFIX}/dynamic" if can_use_system_prefix?
-        rails_fallback_dir("dynamic")
+        ::Core::IngressConfigWriter.default_dynamic_dir
       end
 
       def default_cert_dir
-        return ENV["POWERNODE_TRAEFIK_CERT_DIR"] if ENV["POWERNODE_TRAEFIK_CERT_DIR"].present?
-        return "#{SYSTEM_PREFIX}/certs" if can_use_system_prefix?
-        rails_fallback_dir("certs")
+        ::Core::IngressConfigWriter.default_cert_dir
       end
 
       def default_ca_dir
-        return ENV["POWERNODE_TRAEFIK_CA_DIR"] if ENV["POWERNODE_TRAEFIK_CA_DIR"].present?
-        return "#{SYSTEM_PREFIX}/ca" if can_use_system_prefix?
-        rails_fallback_dir("ca")
-      end
-
-      private
-
-      def can_use_system_prefix?
-        File.directory?(SYSTEM_PREFIX) && File.writable?(SYSTEM_PREFIX)
-      end
-
-      def rails_fallback_dir(sub)
-        if defined?(::Rails) && ::Rails.respond_to?(:root) && ::Rails.root
-          # Segment by Rails.env so test runs don't pollute development
-          # state (and vice versa). Production deployments override via
-          # POWERNODE_TRAEFIK_*_DIR env, so this fallback only hits in
-          # dev + test.
-          env = (::Rails.respond_to?(:env) && ::Rails.env) ? ::Rails.env.to_s : "shared"
-          ::Rails.root.join("tmp", "traefik", env, sub).to_s
-        else
-          File.join(Dir.tmpdir, "powernode-traefik", sub)
-        end
+        ::Core::IngressConfigWriter.default_ca_dir
       end
     end
 
@@ -352,12 +284,16 @@ module Acme
     # The HTTP services dict mapping logical name → backend URL. Both
     # endpoints are env-configurable so the same writer works in dev
     # (localhost:3000 + :3001) and in production (SDWAN VIPs etc).
+    # Lifted to Core::IngressConfigWriter (campaign 019f3458 increment 8 —
+    # pure ENV, zero System:: dependency); delegated here so external callers
+    # (Sdwan::ServiceExposureWriter, Acme::IngressRoutePresenter, specs) keep
+    # working unchanged.
     def self.backend_url
-      ENV["POWERNODE_PROXY_BACKEND_URL"].presence || "http://127.0.0.1:3000"
+      ::Core::IngressConfigWriter.backend_url
     end
 
     def self.frontend_url
-      ENV["POWERNODE_PROXY_FRONTEND_URL"].presence || "http://127.0.0.1:3001"
+      ::Core::IngressConfigWriter.frontend_url
     end
 
     # The standalone worker's Rack app (default :4567), which hosts the Sidekiq
@@ -365,7 +301,7 @@ module Acme
     # middleware). Only the /sidekiq prefix gets a router below — the worker's
     # private /api/v1 API on the same port is intentionally NOT routed publicly.
     def self.worker_web_url
-      ENV["POWERNODE_PROXY_WORKER_WEB_URL"].presence || "http://127.0.0.1:4567"
+      ::Core::IngressConfigWriter.worker_web_url
     end
 
     # Additional hostnames Traefik should route to the same backend/frontend
@@ -382,9 +318,10 @@ module Acme
     # Comma-separated; whitespace trimmed; empty entries dropped. Merged with the
     # operator-managed allowlist (trusted_proxy_hosts) so hosts added via
     # scripts/manage-proxy-hosts.sh are routed by the bundled proxy too.
+    # Lifted to Core::IngressConfigWriter — AdminSetting is already core, so
+    # this had zero System:: dependency to begin with.
     def self.extra_hosts
-      from_env = ENV["POWERNODE_PROXY_EXTRA_HOSTS"].to_s.split(",")
-      (from_env + trusted_proxy_hosts).map(&:strip).reject(&:empty?).uniq
+      ::Core::IngressConfigWriter.extra_hosts
     end
 
     # Hostnames from the operator-managed reverse-proxy allowlist
@@ -397,22 +334,7 @@ module Acme
     # localhost is already a cert CN). Best-effort — returns [] (never raises) if
     # AdminSetting is unavailable (e.g. migrations not yet run / core mode).
     def self.trusted_proxy_hosts
-      return [] unless defined?(::AdminSetting)
-
-      cfg = ::AdminSetting.reverse_proxy_url_config
-      return [] unless cfg.is_a?(Hash)
-
-      hosts = Array(cfg[:trusted_hosts]) | Array(cfg["trusted_hosts"])
-      hosts.filter_map do |raw|
-        h = raw.to_s.strip
-        next if h.empty? || h.include?("*")          # wildcards need HostRegexp — skip
-        h = h.sub(/:\d+\z/, "") if h.count(":") <= 1 # strip :port (leave IPv6 literals alone)
-        next if h.empty? || %w[localhost 127.0.0.1 ::1].include?(h)
-
-        h
-      end.uniq
-    rescue StandardError
-      []
+      ::Core::IngressConfigWriter.trusted_proxy_hosts
     end
 
     # The single TLS option (clientAuth) applied to every router. Exposed so
@@ -450,11 +372,7 @@ module Acme
     # pre-computed list so the env is parsed once per request instead of once
     # per cert.
     def self.host_rule_for(primary_host, extra_hosts: nil)
-      extras = extra_hosts || self.extra_hosts
-      hosts = [ primary_host ] + extras
-      return "Host(`#{primary_host}`)" if hosts.size == 1
-      formatted = hosts.map { |h| "Host(`#{h}`)" }.join(" || ")
-      "(#{formatted})"
+      ::Core::IngressConfigWriter.host_rule_for(primary_host, extra_hosts: extra_hosts)
     end
 
     # Pure, side-effect-free projection of the router metadata for a single
@@ -647,27 +565,10 @@ module Acme
       self.class.host_rule_for(primary_host)
     end
 
+    # Lifted to Core::IngressConfigWriter (same 3 fixed upstreams, zero
+    # System:: dependency) — delegated so output stays identical.
     def render_services
-      {
-        "powernode-backend" => {
-          "loadBalancer" => {
-            "servers" => [ { "url" => self.class.backend_url } ],
-            "passHostHeader" => true
-          }
-        },
-        "powernode-frontend" => {
-          "loadBalancer" => {
-            "servers" => [ { "url" => self.class.frontend_url } ],
-            "passHostHeader" => true
-          }
-        },
-        "powernode-worker-web" => {
-          "loadBalancer" => {
-            "servers" => [ { "url" => self.class.worker_web_url } ],
-            "passHostHeader" => true
-          }
-        }
-      }
+      ::Core::IngressConfigWriter.render_services
     end
   end
 end

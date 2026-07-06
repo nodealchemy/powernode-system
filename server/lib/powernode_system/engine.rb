@@ -81,9 +81,20 @@ module PowernodeSystem
           # Resolved lazily by class name:
           #   * deploy_method_providers   — Kubernetes deploy method for Ai::Deploy::MethodRegistry
           #   * provision_label_resolver  — instance/region display labels for PlanSnapshotService
+          #   * ingress_certs / ingress_routers — per-account ACME certs + the advanced
+          #     mTLS/federation/worker/node_api/Sidekiq routers for
+          #     Core::IngressConfigWriter (docs/operations/reverse-proxy.md §7-8,
+          #     campaign 019f3458 increment 8). Both keys resolve to the SAME class —
+          #     Acme::TraefikConfigWriter already owns cert selection and router
+          #     rendering together as one cohesive per-account write; Core only
+          #     engages the seam (and delegates the ENTIRE write, for byte-identical
+          #     output) when BOTH keys resolve to the same registered object. Nil
+          #     ⇒ core mode (self-signed baseline cert + 4 generic routers).
           providers: {
             deploy_method_providers: "System::Deploy::MethodProvider",
-            provision_label_resolver: "System::ProvisionLabelResolver"
+            provision_label_resolver: "System::ProvisionLabelResolver",
+            ingress_certs: "Acme::TraefikConfigWriter",
+            ingress_routers: "Acme::TraefikConfigWriter"
           }
         )
       end
