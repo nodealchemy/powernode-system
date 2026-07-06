@@ -11,6 +11,7 @@ module System
         def sense
           ::System::NodeModuleVersion
             .joins(node_module: :account)
+            .includes(node_module: :account)
             .where(accounts: { id: account.id })
             .where(promotion_state: "staging")
             .find_each.filter_map do |version|
