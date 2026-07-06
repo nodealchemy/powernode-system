@@ -1,13 +1,18 @@
 # frozen_string_literal: true
 
 module Sdwan
-  # First-class publishable service: identity + overlay backend + an optional
-  # LOCAL-exposure facet (/svc/<slug> on the account's own host via the bundled
-  # Traefik, gated by ForwardAuth). The FEDERATED facet is
-  # System::Federation::ServiceOffering (belongs_to :service); federated peers
-  # consume it via Federation::ServiceRouteWriter on their side. The local plane
-  # is emitted by Sdwan::ServiceExposureWriter on this side. Backend is
-  # VIP-backed so Traefik dials the service over the overlay (no loopback hop).
+  # First-class publishable service: identity + overlay backend + two optional
+  # exposure facets. LOCAL (/svc/<slug> on the account's own host via the
+  # bundled Traefik, gated by ForwardAuth, HTTP(S)-only). PUBLIC (Path B —
+  # `public_enabled`: a public HostSNI tcp.router on the SAME websecure
+  # entrypoint, TLS-carrying-TCP-only i.e. `protocol == "tls"`; `edge_mode`
+  # passthrough/terminate + `client_auth` none/required, ratified in
+  # docs/operations/reverse-proxy.md + docs/runbooks/traefik-tcp-exposure-vs-dnat.md).
+  # The FEDERATED facet is System::Federation::ServiceOffering (belongs_to
+  # :service); federated peers consume it via Federation::ServiceRouteWriter on
+  # their side. Both the local and public facets are emitted by
+  # Sdwan::ServiceExposureWriter on this side. Backend is VIP-backed so Traefik
+  # dials the service over the overlay (no loopback hop).
   class Service < ApplicationRecord
     self.table_name = "system_sdwan_services"
 
@@ -15,6 +20,12 @@ module Sdwan
     STATUSES   = %w[active disabled].freeze
     AUTH_MODES = %w[public authenticated scoped].freeze
     HTTP_PROTOCOLS = %w[https http].freeze
+    # Path B (public TLS-carrying TCP via Traefik SNI) requires a protocol that
+    # actually carries a TLS ClientHello with SNI. Plain "tcp" does not — that
+    # traffic stays on nftables DNAT permanently (increment 6), never Traefik.
+    SNI_PROTOCOL = "tls"
+    EDGE_MODES = %w[passthrough terminate].freeze
+    CLIENT_AUTH_MODES = %w[none required].freeze
     # Platform router prefixes a published service must never alias — /svc/<slug>
     # is namespaced, but guard the slug too so it can't round-trip to one.
     RESERVED_SLUGS = %w[api agent cable sidekiq svc].freeze
@@ -36,14 +47,19 @@ module Sdwan
     validates :backend_port, presence: true,
                              numericality: { only_integer: true, in: 1..65_535 }
     validates :local_auth_mode, inclusion: { in: AUTH_MODES }
+    validates :edge_mode, inclusion: { in: EDGE_MODES }
+    validates :client_auth, inclusion: { in: CLIENT_AUTH_MODES }
     validate :slug_not_reserved
     validate :backend_present
     validate :local_exposure_requires_http
+    validate :public_exposure_requires_sni
+    validate :client_auth_requires_terminate
     validate :scoped_requires_permission_or_group
     validate :local_certificate_belongs_to_account
 
     scope :active,          -> { where(status: "active") }
     scope :locally_exposed, -> { where(status: "active", local_enabled: true) }
+    scope :publicly_exposed, -> { where(status: "active", public_enabled: true) }
 
     # Canonical local path prefix. /svc/ namespaces published services so they
     # never collide with the platform routers (/api, /cable, /sidekiq, /agent).
@@ -54,6 +70,13 @@ module Sdwan
     # Deterministic Traefik router/service key for the local exposure.
     def local_router_slug
       "localsvc-#{id}"
+    end
+
+    # Deterministic Traefik tcp.router/service key for the public (Path B)
+    # TLS-carrying TCP exposure. Distinct namespace from local_router_slug
+    # ("localsvc-") and federation's "sub-" so the three never collide.
+    def public_router_slug
+      "pubsvc-#{id}"
     end
 
     # The upstream URL Traefik dials over the overlay (IPv6 hosts bracketed for
@@ -92,6 +115,33 @@ module Sdwan
       return if HTTP_PROTOCOLS.include?(protocol)
 
       errors.add(:local_enabled, "local /svc path exposure requires an http or https protocol")
+    end
+
+    # Path B (public TLS-carrying TCP) only ever rides Traefik SNI routing —
+    # that requires the traffic to present a TLS ClientHello with SNI before
+    # Traefik can route it. Plain "tcp" (no SNI) and everything else stays on
+    # nftables DNAT (Sdwan::PortMapping, increment 6) permanently; it is never
+    # eligible for public_enabled here.
+    def public_exposure_requires_sni
+      return unless public_enabled
+      return if protocol == SNI_PROTOCOL
+
+      errors.add(:public_enabled,
+                 "public TLS-carrying TCP exposure requires the tls protocol (SNI-routable); " \
+                 "non-SNI tcp belongs on Sdwan::PortMapping/nftables DNAT instead")
+    end
+
+    # mTLS client-cert enforcement at the Traefik edge only works when Traefik
+    # actually terminates the TLS connection — a "passthrough" router forwards
+    # the encrypted stream untouched, so Traefik never sees (and cannot verify)
+    # a client certificate on that path.
+    def client_auth_requires_terminate
+      return if client_auth == "none"
+      return if edge_mode == "terminate"
+
+      errors.add(:client_auth,
+                 "required client-cert enforcement needs edge_mode terminate " \
+                 "(Traefik cannot inspect a client certificate on an undecrypted passthrough stream)")
     end
 
     def scoped_requires_permission_or_group

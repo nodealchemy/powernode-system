@@ -69,6 +69,48 @@ RSpec.describe Sdwan::Service, type: :model do
       expect(build_service(backend_port: 70_000)).not_to be_valid
     end
 
+    it "defaults edge_mode to passthrough and client_auth to none" do
+      svc = build_service
+      expect(svc.edge_mode).to eq("passthrough")
+      expect(svc.client_auth).to eq("none")
+      expect(svc.public_enabled).to be(false)
+    end
+
+    it "allows public (Path B) exposure only for the tls protocol" do
+      expect(build_service(protocol: "tcp", public_enabled: true)).not_to be_valid
+      expect(build_service(protocol: "https", public_enabled: true)).not_to be_valid
+      expect(build_service(protocol: "tls", public_enabled: true)).to be_valid
+    end
+
+    it "does not require SNI-shape when public_enabled is false" do
+      expect(build_service(protocol: "tcp", public_enabled: false)).to be_valid
+    end
+
+    it "rejects an edge_mode outside the enum" do
+      expect(build_service(protocol: "tls", public_enabled: true, edge_mode: "bogus")).not_to be_valid
+    end
+
+    it "rejects a client_auth outside the enum" do
+      expect(build_service(protocol: "tls", public_enabled: true, client_auth: "bogus")).not_to be_valid
+    end
+
+    it "requires edge_mode terminate for required client_auth" do
+      passthrough_required = build_service(protocol: "tls", public_enabled: true,
+                                            edge_mode: "passthrough", client_auth: "required")
+      expect(passthrough_required).not_to be_valid
+      expect(passthrough_required.errors[:client_auth].join).to match(/terminate/)
+
+      terminate_required = build_service(protocol: "tls", public_enabled: true,
+                                          edge_mode: "terminate", client_auth: "required")
+      expect(terminate_required).to be_valid
+    end
+
+    it "allows client_auth none under passthrough (the common case)" do
+      expect(
+        build_service(protocol: "tls", public_enabled: true, edge_mode: "passthrough", client_auth: "none")
+      ).to be_valid
+    end
+
     it "rejects a local_certificate owned by another account" do
       # Two explicitly-distinct accounts: the lazy `Account.first` let can't be
       # relied on here (in a clean DB the cert's account would become first).
@@ -88,6 +130,7 @@ RSpec.describe Sdwan::Service, type: :model do
       svc.save!
       expect(svc.local_path_prefix).to eq("/svc/grafana")
       expect(svc.local_router_slug).to eq("localsvc-#{svc.id}")
+      expect(svc.public_router_slug).to eq("pubsvc-#{svc.id}")
     end
 
     it "builds the backend URL from a static host" do
