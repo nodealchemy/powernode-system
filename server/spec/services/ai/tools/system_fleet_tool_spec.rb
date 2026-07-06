@@ -2240,4 +2240,81 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       end
     end
   end
+
+  # Increment 9 (campaign 019f3458) — revert_binding! (R) / cleanup (C).
+  describe "system_revert_storage_migration_binding / system_cleanup_storage_migration" do
+    let(:nfs_volume_type) { create(:system_provider_volume_type, account: account, volume_type: "nfs", name: "nfs-pool") }
+    let(:source_volume) do
+      create(:system_provider_volume, account: account, volume_type: nfs_volume_type, name: "vol-a",
+                                       config: { "nfs" => { "server" => "nas1", "export_path" => "/v1/Powernode" } })
+    end
+    let(:target_volume) do
+      create(:system_provider_volume, account: account, volume_type: nfs_volume_type, name: "vol-b",
+                                       config: { "nfs" => { "server" => "nas2", "export_path" => "/v2/Powernode" } })
+    end
+    let(:instance) { create(:system_node_instance, account: account) }
+    let(:failed_migration) do
+      ::System::StorageMigration.create!(
+        account: account, node_instance: instance, source_volume: source_volume, target_volume: target_volume,
+        role: "postgres", status: "failed", failed_at: Time.current,
+        source_subpath: "deployments/test/postgres", target_subpath: "deployments/test/postgres", plan: {}
+      )
+    end
+
+    it "requests a revert on a reachable (failed) migration" do
+      r = call("system_revert_storage_migration_binding", id: failed_migration.id, reason: "diverged mount")
+      expect(r[:success]).to be true
+      expect(r[:data][:storage_migration][:metadata]["revert_status"]).to eq("requested")
+    end
+
+    it "surfaces the model's reachability error for a non-revertible migration" do
+      active = ::System::StorageMigration.create!(
+        account: account, node_instance: instance, source_volume: source_volume, target_volume: target_volume,
+        role: "postgres", status: "syncing",
+        source_subpath: "deployments/test2/postgres", target_subpath: "deployments/test2/postgres", plan: {}
+      )
+      r = call("system_revert_storage_migration_binding", id: active.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/Cannot revert binding/)
+    end
+
+    it "requests cleanup immediately, bypassing the grace window" do
+      r = call("system_cleanup_storage_migration", id: failed_migration.id, immediate: true)
+      expect(r[:success]).to be true
+      expect(r[:data][:storage_migration][:metadata]["cleanup_status"]).to eq("requested")
+    end
+
+    it "refuses cleanup within the (default 24h) grace window without immediate: true" do
+      r = call("system_cleanup_storage_migration", id: failed_migration.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/grace window/i)
+    end
+
+    it "denies both actions to a caller without system.platform.scale" do
+      denied = described_class.new(
+        account: account,
+        user: create(:user, account: account, permissions: %w[system.platform.read])
+      )
+      revert_result = denied.execute(params: { action: "system_revert_storage_migration_binding", id: failed_migration.id })
+      cleanup_result = denied.execute(params: { action: "system_cleanup_storage_migration", id: failed_migration.id })
+      expect(revert_result[:error]).to include("permission denied")
+      expect(cleanup_result[:error]).to include("permission denied")
+    end
+
+    # Pins CURRENT (gap) behavior, not desired behavior — see improvement
+    # 019f34a3 ("requires_approval is unenforced on the MCP tools/call
+    # dispatch path"). The action_definitions entry declares
+    # requires_approval: true, but calling .execute directly runs the
+    # destructive op immediately — there is no approval gate in the
+    # dispatch path today. If 019f34a3 is ever closed by wiring an actual
+    # gate in here (or in the shared dispatcher), THIS spec should start
+    # failing and needs to be updated to assert the gate instead.
+    it "documents that requires_approval is declared but NOT enforced by direct .execute (019f34a3)" do
+      defn = described_class.action_definitions.fetch("system_cleanup_storage_migration")
+      expect(defn[:requires_approval]).to be true
+
+      r = call("system_cleanup_storage_migration", id: failed_migration.id, immediate: true)
+      expect(r[:success]).to be true # ran immediately — no approval step intervened
+    end
+  end
 end

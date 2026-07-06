@@ -100,6 +100,13 @@ module Ai
         "system_approve_storage_migration"      => "system.platform.scale",
         "system_cancel_storage_migration"       => "system.platform.scale",
         "system_report_storage_migration_progress" => "system.platform.scale",
+        # Increment 9 — revert_binding! (R) / cleanup (C). Same
+        # permission tier as the rest of the lifecycle family; there is
+        # no finer-grained "destructive storage op" permission today
+        # (see the definitions: requires_approval note on
+        # system_cleanup_storage_migration re: the 019f34a3 gap).
+        "system_revert_storage_migration_binding" => "system.platform.scale",
+        "system_cleanup_storage_migration"        => "system.platform.scale",
 
         # Lifecycle skill wrappers (MCP.2) — surface platform_maintenance
         # + platform_resilience as MCP-callable actions so external
@@ -696,6 +703,34 @@ module Ai
               note: { type: "string", required: false, description: "Free-text progress note recorded in the audit log" }
             }
           },
+          # Increment 9 (campaign 019f3458) — revert_binding! (R) / cleanup (C).
+          "system_revert_storage_migration_binding" => {
+            description: "Request the on-node agent re-point the consumer's canonical mount back to the SOURCE volume (inverse of cutover). Reachable from status=failed (any cutover-phase failure), or status=completed when promote_target_binding! silently failed (the half-cutover). Target data is left intact. Records intent only — the node does the actual mount work.",
+            # DESCRIPTIVE ONLY — per improvement 019f34a3 ("requires_approval
+            # is unenforced on the MCP tools/call dispatch path"), this flag
+            # is not currently gated by the generic MCP dispatch layer (that
+            # enforcement exists for BaseSkillExecutor-based skills, not raw
+            # SystemFleetTool actions like this one). "Explicit operator
+            # action" is enforced today the same way cleanup enforces it:
+            # nothing in this codebase calls this automatically.
+            requires_approval: true,
+            parameters: {
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to revert" },
+              reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" }
+            }
+          },
+          "system_cleanup_storage_migration" => {
+            description: "DESTRUCTIVE — deletes the migration's target-side scratch artifacts only: the target_subpath partial copy + snapshot_subpath scratch + node transient mounts. NEVER touches source data, the source/target volume, or sibling subpaths. Reachable only from status=failed or status=cancelled (once preparing was reached). Explicit operator action — never auto-run on failure. Subject to a grace window (system.storage.migration.cleanup_grace_hours, SiteSetting/Account#settings-resolved, default 24h); pass immediate: true to override.",
+            # DESCRIPTIVE ONLY — see system_revert_storage_migration_binding's
+            # note on improvement 019f34a3. Do not read this flag as an
+            # enforced access-control gate.
+            requires_approval: true,
+            parameters: {
+              id: { type: "string", required: true, description: "UUID of the StorageMigration to clean up" },
+              reason: { type: "string", required: false, description: "Optional reason recorded in the migration's audit log" },
+              immediate: { type: "boolean", required: false, description: "Skip the cleanup grace window and clean up now" }
+            }
+          },
 
           # === Lifecycle skill wrappers (MCP.2) ===
           "system_platform_maintenance" => {
@@ -1175,6 +1210,8 @@ module Ai
         when "system_approve_storage_migration"      then approve_storage_migration(params)
         when "system_cancel_storage_migration"       then cancel_storage_migration(params)
         when "system_report_storage_migration_progress" then report_storage_migration_progress(params)
+        when "system_revert_storage_migration_binding"   then revert_storage_migration_binding(params)
+        when "system_cleanup_storage_migration"          then cleanup_storage_migration(params)
         # Lifecycle skill wrappers (MCP.2)
         when "system_platform_maintenance"     then platform_maintenance(params)
         when "system_platform_resilience"      then platform_resilience(params)
@@ -2340,6 +2377,33 @@ module Ai
           bytes_verified: params[:bytes_verified]&.to_i,
           note: params[:note]
         )
+        success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      # Increment 9 (R) — records revert intent; the on-node agent
+      # (migration.Runner#stepRevert) picks it up on its next poll tick
+      # and reports back via node_api's revert_complete.
+      def revert_storage_migration_binding(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+        m.revert_binding!(reason: params[:reason], user: @user)
+        success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
+      rescue ArgumentError => e
+        error_result(e.message)
+      end
+
+      # Increment 9 (C) — DESTRUCTIVE, target-side + subpath-scoped
+      # only (never source, never the volume). Grace-window resolved
+      # via Account#settings override → SiteSetting global default →
+      # DEFAULT_CLEANUP_GRACE_HOURS (config-driven-config convention).
+      def cleanup_storage_migration(params)
+        m = ::System::StorageMigration.find_by(id: params[:id], account: @account)
+        return error_result("Migration not found") unless m
+        immediate = ActiveModel::Type::Boolean.new.cast(params[:immediate])
+        grace_hours = ::System::StorageMigration.cleanup_grace_hours(account: @account)
+        m.request_cleanup!(reason: params[:reason], user: @user, grace_hours: grace_hours, immediate: immediate)
         success_result(storage_migration: serialize_storage_migration(m.reload, full: true))
       rescue ArgumentError => e
         error_result(e.message)
