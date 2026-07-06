@@ -65,14 +65,18 @@ for any HTTP(S) backend you publish under a hostname.
 - **Verification:** `openssl s_client -connect <host>:443 -servername <host>` for the served
   leaf; `GET /api/v1/system/ingress_routes` for the derived router list.
 
-## Path B — Public TLS-carrying TCP via Traefik SNI (built — enablement pending)
+## Path B — Public TLS-carrying TCP via Traefik SNI (built)
 
-**Status: substrate built (increment 5 of campaign 019f3458): `Sdwan::Service` carries
-`public_enabled`/`edge_mode`/`client_auth` with the validations below, and
-`Sdwan::ServiceExposureWriter` renders the HostSNI `tcp.routers`. Not yet operator-usable:
-`public_enabled` is deliberately not settable anywhere — exposure semantics are
-executor-owned and no Path-B-owning approval-gated executor exists yet (tracked as
-improvement `019f34f9`, a prerequisite of increment 10's edge smoke).**
+**Status: built (increment 5 substrate + the increment 10 prerequisite owning executor,
+campaign 019f3458): `Sdwan::Service` carries `public_enabled`/`edge_mode`/`client_auth`
+with the validations below, `Sdwan::ServiceExposureWriter` renders the HostSNI
+`tcp.routers`, and `System::Ai::Skills::ExposeServicePublicTcpExecutor` (MCP actions
+`system_expose_service_public_tcp` / `system_unexpose_service_public_tcp`) is the sole
+owner of flipping `public_enabled`, in either direction — `system_update_service`'s inline
+CRUD still refuses to touch it. EXPOSE validates protocol `tls`, a resolvable HostSNI
+host, and — under `edge_mode: terminate` — a matching valid `System::AcmeCertificate`,
+before enabling; UNEXPOSE has no preconditions (improvement `019f34f9`, the increment 10
+edge-smoke prerequisite).**
 
 Use this path for a **non-HTTP TCP service you want to publish under a public hostname**, where
 the protocol itself negotiates TLS with SNI (e.g. a raw TLS-wrapped protocol, not bare HTTP/2 or
@@ -90,7 +94,11 @@ tunneled over TLS with SNI.
 - **Entrypoint:** the **existing** `websecure` (`:443`) entrypoint only — SNI-routed `tcp.routers`
   share the port with HTTP(S) traffic; Traefik demuxes by inspecting the ClientHello's SNI before
   deciding HTTP vs. raw TCP passthrough. No new entrypoint is created.
-- **Verification (once an owning executor can enable it):** `openssl s_client -connect <host>:443 -servername <host>` should
+- **Enable/disable:** `system_expose_service_public_tcp` (approval-gated) flips `public_enabled`
+  on after validating protocol/host/cert as above; `system_unexpose_service_public_tcp`
+  (also approval-gated — unlike Path E's fail-safe unexpose) turns it off. Both regenerate the
+  reverse proxy.
+- **Verification:** `openssl s_client -connect <host>:443 -servername <host>` should
   complete a TLS handshake (passthrough: your backend's cert; terminate: Traefik's cert), then
   carry your protocol's own bytes.
 
@@ -214,11 +222,11 @@ the reverse.
 **Status: built and live.** Use this for HTTP(S) services meant only for **this account's own
 authenticated users**, not the public internet and not federated peers. See
 [`publish-service.md`](./publish-service.md) for the full procedure — it's the local facet of the
-same `Sdwan::Service` model that Path B will extend for public TLS-carrying TCP. `local_enabled`
+same `Sdwan::Service` model whose public facet Path B uses for TLS-carrying TCP. `local_enabled`
 local exposure is HTTP-only by model validation (`local_exposure_requires_http` in
 `sdwan/service.rb`) — you cannot locally expose a raw TCP/TLS service at a `/svc/<slug>` path,
-because `PathPrefix` routing requires HTTP semantics; publish it via Path B (once built) or
-federate it via Path D instead.
+because `PathPrefix` routing requires HTTP semantics; publish it via Path B
+(`system_expose_service_public_tcp`) or federate it via Path D instead.
 
 ## Quick-reference table
 
@@ -227,7 +235,7 @@ federate it via Path D instead.
 | HTTP(S), platform's own routes | A | `Acme::TraefikConfigWriter` fixed routers | Built |
 | HTTP(S), publish under a public hostname | A | `system_expose_service_publicly` (VIP+DNAT+ACME) | Built |
 | HTTP(S), site-local only, own users | E | `Sdwan::Service` local facet + ForwardAuth | Built |
-| TLS-carrying TCP, publish under a public hostname | B | `Sdwan::Service.edge_mode` + Traefik SNI router | Built — enablement pending (improvement 019f34f9) |
+| TLS-carrying TCP, publish under a public hostname | B | `Sdwan::Service.edge_mode` + Traefik SNI router + `system_expose_service_public_tcp` | Built |
 | Federated subscription, `protocol: tls` | D | `Federation::ServiceRouteWriter` (Traefik SNI passthrough) | Built |
 | Federated subscription, `protocol: tcp` | D | `Federation::TcpForwarderConfigWriter` → `tcpfwd` | Built |
 | Site-local subscription (any protocol) | D | `tcpfwd` (already excluded from Traefik) | Built |
