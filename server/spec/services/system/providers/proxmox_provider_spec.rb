@@ -256,6 +256,54 @@ RSpec.describe System::Providers::ProxmoxProvider do
       end
     end
 
+    context "when no explicit storage is given, prefers the operator-configured default_storage" do
+      # The uefi_disk path imports the boot image into `storage` — that storage
+      # must support `import` content, which an `images`-only auto-pick can miss.
+      # Honoring the provider's default_storage avoids landing on the wrong pool.
+      let(:proxmox_provider) { instance_double("System::Provider", config: { "default_storage" => "dna-data" }) }
+      let(:connection) do
+        instance_double("System::ProviderConnection",
+          access_key: "root@pam!powernode",
+          secret_key: "00000000-0000-0000-0000-000000000000",
+          endpoint_url: "https://pve.example:8006",
+          config: { "verify_ssl" => "false" },
+          account: nil,
+          provider: proxmox_provider)
+      end
+      let(:params) { base_params.except(:storage).merge(image_id: "dna-data:import/uefi-uki.raw") }
+
+      before { allow(System::ProviderCredential).to receive(:for).and_return(nil) }
+
+      it "creates the boot disk on default_storage and never auto-picks by content" do
+        result = provider.create_instance(params)
+        expect(result[:success]).to be true
+
+        expect(client).not_to have_received(:get).with("/api2/json/nodes/dna/storage")
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("scsi0" => a_string_including("dna-data:0,import-from=dna-data:import/uefi-uki.raw"))
+        )
+      end
+    end
+
+    context "when params[:node] isn't a PVE node string, places on the region node (not first-online)" do
+      # region.region_code is "dna" (a 16-core node); first-online could be a
+      # smaller node, which is where an 8-vcpu VM would fail to start.
+      let(:params) { base_params.except(:node).merge(image_id: "dna-data:import/uefi-uki.raw") }
+
+      before do
+        allow(client).to receive(:get).with("/api2/json/nodes").and_return(
+          [ { "node" => "lna", "status" => "online" }, { "node" => "dna", "status" => "online" } ]
+        )
+      end
+
+      it "creates the VM on the region node (dna), not the first-online node (lna)" do
+        provider.create_instance(params)
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu", anything)
+        expect(client).not_to have_received(:post).with("/api2/json/nodes/lna/qemu", anything)
+      end
+    end
+
     context "resolving the default disk image from the node's NodePlatform" do
       let(:node_platform) do
         instance_double("System::NodePlatform",
@@ -269,7 +317,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       let(:params) { base_params.merge(node: node_record) }
       let(:file_object) { instance_double("FileManagement::Object") }
       let(:storage_service) { instance_double(FileStorageService) }
-      let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.img" }
+      let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.raw" }
       let(:expected_volid) { "dna-data:import/#{expected_filename}" }
 
       before do
@@ -332,6 +380,66 @@ RSpec.describe System::Providers::ProxmoxProvider do
             hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
           )
         end
+      end
+    end
+
+    context "when the platform's disk image lives in a storage backend that yields a non-fetchable URL (e.g. local storage)" do
+      # LocalStorage#download_url returns a host-less relative path
+      # (/api/v1/files/:id/download) that PVE's download-url task cannot GET.
+      # In that case we stream the bytes straight into PVE's multipart upload
+      # endpoint (content=import) — the same dev->PVE push direction the API
+      # token already uses — instead of asking PVE to fetch an unfetchable URL.
+      let(:node_platform) do
+        instance_double("System::NodePlatform",
+          name: "ubuntu-24.04-amd64-uefi",
+          disk_image_file_object_id: "0199aaaa-0000-7000-8000-000000000000",
+          disk_image_sha256: "b" * 64,
+          disk_image_git_sha: "af4e84d",
+          account: instance_double("Account"))
+      end
+      let(:node_record) { instance_double("System::Node", node_platform: node_platform) }
+      let(:params) { base_params.merge(node: node_record) }
+      let(:file_object) { instance_double("FileManagement::Object") }
+      let(:storage_service) { instance_double(FileStorageService) }
+      let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.raw" }
+      let(:expected_volid) { "dna-data:import/#{expected_filename}" }
+
+      before do
+        allow(client).to receive(:get).with("/api2/json/nodes").and_return(
+          [ { "node" => "dna", "status" => "online" } ]
+        )
+        allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return([])
+        allow(::FileManagement::Object).to receive(:find_by).with(id: node_platform.disk_image_file_object_id)
+                                                            .and_return(file_object)
+        allow(FileStorageService).to receive(:new).with(node_platform.account).and_return(storage_service)
+        allow(storage_service).to receive(:file_url)
+          .with(file_object, download: true, expires_in: 1.hour)
+          .and_return("/api/v1/files/0199aaaa-0000-7000-8000-000000000000/download")
+        allow(storage_service).to receive(:stream_file).with(file_object).and_yield("uki-bytes")
+        allow(client).to receive(:upload_file)
+          .and_return("UPID:dna:001:001:001:imgcopy:200:user!tok:")
+      end
+
+      it "streams the local bytes into PVE's multipart upload (content=import) instead of download-url, then creates the VM" do
+        result = provider.create_instance(params)
+        expect(result[:success]).to be true
+
+        expect(client).not_to have_received(:post).with(
+          "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+        )
+        expect(client).to have_received(:upload_file).with(
+          node: "dna",
+          storage: "dna-data",
+          filename: expected_filename,
+          io: anything,
+          content: "import",
+          checksum: "b" * 64,
+          checksum_algorithm: "sha256"
+        )
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
+        )
       end
     end
 

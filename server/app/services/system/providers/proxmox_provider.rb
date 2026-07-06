@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "proxmox/client"
+require "tempfile"
+require "uri"
 
 module System
   module Providers
@@ -1016,9 +1018,24 @@ module System
       #      cloud_init — that channel is API-token-safe.
       def create_uefi_disk_vm_instance(params, preset:)
         c = require_client!
-        node = pve_node_name(params) || first_online_node!(c)
+        # Place on the caller's chosen PVE node: an explicit string wins, else
+        # the region (regions model PVE nodes, so region_code IS the node name)
+        # or the operator's default_node — only then fall back to "first online",
+        # which can otherwise land the VM on an undersized/wrong node.
+        node = pve_node_name(params) ||
+               region&.region_code.presence ||
+               pve_credential("default_node", "default_node").presence ||
+               first_online_node!(c)
         vmid = params[:vmid] || allocate_next_vmid!(c)
-        storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
+        # uefi_disk imports the boot image into `storage` AND creates the boot
+        # disk there, so the storage must support BOTH `import` and `images`.
+        # Prefer the operator-configured default_storage (set precisely so the
+        # right pool is used); the content-based fallback requires `import`
+        # (the scarcer, mandatory capability here) — selecting by `images`
+        # alone can land on an images-only pool that rejects the import.
+        storage = params[:storage] ||
+                  pve_credential("default_storage", "default_storage").presence ||
+                  first_shared_storage_with_content!(c, node: node, content: "import")
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
         ip_config = params[:ip_config] || "ip=dhcp"
         image_volid = resolve_uefi_disk_image!(c, params, node: node, storage: storage)
@@ -1090,9 +1107,15 @@ module System
       # published disk image reuses the already-imported PVE volid instead
       # of re-downloading it on every VM create (see
       # pve_storage_volid_exists?).
+      #
+      # Extension is `.raw`: PVE's `import` content type only accepts
+      # raw/qcow2/vmdk (an `.img` name is rejected — "invalid filename or wrong
+      # extension" — by both the upload and download-url endpoints), and the
+      # disk-image pipeline publishes raw UEFI/UKI images (verified: no qcow2
+      # magic, exact power-of-two byte size).
       def uefi_disk_image_filename(platform)
         sha = platform.disk_image_git_sha.presence || platform.disk_image_sha256.to_s.first(12)
-        "#{platform.name}-#{sha}.img".gsub(/[^A-Za-z0-9_.\-]/, "_")
+        "#{platform.name}-#{sha}.raw".gsub(/[^A-Za-z0-9_.\-]/, "_")
       end
 
       def pve_storage_volid_exists?(c, node:, storage:, volid:)
@@ -1125,17 +1148,60 @@ module System
                 "#{platform.disk_image_file_object_id} does not resolve to a FileObject"
         end
 
-        download_url = ::FileStorageService.new(platform.account)
-                                            .file_url(file_object, download: true, expires_in: 1.hour)
+        svc = ::FileStorageService.new(platform.account)
+        download_url = svc.file_url(file_object, download: true, expires_in: 1.hour)
+        checksum = platform.disk_image_sha256.presence
 
-        body = { "content" => "import", "filename" => filename, "url" => download_url }
-        if platform.disk_image_sha256.present?
-          body["checksum"] = platform.disk_image_sha256
-          body["checksum-algorithm"] = "sha256"
+        if pve_fetchable_url?(download_url)
+          # PVE can GET the bytes itself (e.g. an S3/GCS presigned https URL) —
+          # cheapest path: let its download-url storage task pull them directly.
+          body = { "content" => "import", "filename" => filename, "url" => download_url }
+          if checksum
+            body["checksum"] = checksum
+            body["checksum-algorithm"] = "sha256"
+          end
+          upid = c.post("/api2/json/nodes/#{node}/storage/#{storage}/download-url", body)
+          c.wait_task(node: node, upid: upid)
+        else
+          # The backend yielded a URL PVE cannot fetch — a host-less relative
+          # path (local FileStorage) or a file:// URL (NFS). Stream the bytes
+          # from our storage straight into PVE's multipart upload endpoint
+          # (content=import), the same token-authenticated dev->PVE direction
+          # the rest of the adapter uses. No URL/signing scheme required.
+          upload_import_from_storage!(c, node: node, storage: storage, filename: filename,
+                                      svc: svc, file_object: file_object, checksum: checksum)
         end
+      end
 
-        upid = c.post("/api2/json/nodes/#{node}/storage/#{storage}/download-url", body)
-        c.wait_task(node: node, upid: upid)
+      # Streams a FileObject's bytes through a temp file into PVE's multipart
+      # upload endpoint. The temp file is a chunked, memory-safe staging buffer
+      # (FileStorageService#stream_file yields fixed-size chunks) so a multi-GB
+      # image never has to be resident in memory at once.
+      def upload_import_from_storage!(c, node:, storage:, filename:, svc:, file_object:, checksum:)
+        Tempfile.create([ "pve-import-", File.extname(filename).presence || ".img" ]) do |tmp|
+          tmp.binmode
+          svc.stream_file(file_object) { |chunk| tmp.write(chunk) }
+          tmp.flush
+          tmp.rewind
+
+          upid = c.upload_file(
+            node: node, storage: storage, filename: filename, io: tmp,
+            content: "import",
+            checksum: checksum,
+            checksum_algorithm: (checksum ? "sha256" : nil)
+          )
+          c.wait_task(node: node, upid: upid) if upid_like?(upid)
+        end
+      end
+
+      # True only for an absolute http(s) URL with a host — the shape PVE's
+      # download-url task can actually GET. Relative paths (local FileStorage's
+      # "/api/v1/files/:id/download") and file:// URLs (NFS) return false.
+      def pve_fetchable_url?(url)
+        u = URI.parse(url.to_s)
+        u.is_a?(URI::HTTP) && u.host.present?
+      rescue URI::InvalidURIError
+        false
       end
 
       # Stages QEMU fw_cfg entries as files on the cluster-shared snippets
