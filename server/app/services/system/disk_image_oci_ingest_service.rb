@@ -82,7 +82,8 @@ module System
         expected_sha256:       publication.sha256,
         identity_regexp:       platform.cosign_identity_regexp,
         issuer_regexp:         platform.cosign_issuer_regexp,
-        expected_payload_json: build_payload_predicate(publication)
+        expected_payload_json: build_payload_predicate(publication),
+        registry_credentials:  registry_credentials_for(publication.account)
       )
     end
 
@@ -90,6 +91,22 @@ module System
 
     def failure(message)
       Result.new(ok?: false, error: message)
+    end
+
+    # The private Gitea OCI registry 401s an unauthenticated `oras pull`
+    # (only push-time auth existed before — see DiskImageRegistryConfig).
+    # Resolve the same host/user/token the CI push used, scoped to the
+    # publication's account, and hand it to the adapter so it can log in
+    # before pulling. nil when unconfigured — the adapter falls back to
+    # the prior unauthenticated pull (public registries / test fixtures).
+    def registry_credentials_for(account)
+      return nil unless ::System::DiskImageRegistryConfig.configured?(account: account)
+
+      {
+        host:  ::System::DiskImageRegistryConfig.registry_host(account: account),
+        user:  ::System::DiskImageRegistryConfig.registry_user(account: account),
+        token: ::System::DiskImageRegistryConfig.registry_token(account: account)
+      }
     end
 
     # The expected attestation predicate is what CI signed at build time.
@@ -108,6 +125,50 @@ module System
       }
     end
 
+    # ─── OrasRegistryAuth ──────────────────────────────────────────────
+    #
+    # Shared by both adapters' `oras pull` step. `oras` does not read
+    # ORAS_REGISTRY_USERNAME/PASSWORD env vars — it needs an explicit
+    # `oras login` (see .gitea/workflows/build-platform-modules.yaml,
+    # the CI push side of this same registry). Without it, `oras pull`
+    # against the private Gitea registry 401s ("failed to resolve
+    # manifest") — that's the outage this module fixes.
+    #
+    # When registry_credentials is present, logs in to a throwaway
+    # `--registry-config` file scoped to this single pull — never
+    # touches the process's shared ~/.docker/config.json (Puma serves
+    # many accounts/publications concurrently) — and the token never
+    # touches argv (piped to `--password-stdin`). When nil (registry
+    # not configured — dev fixtures, public registries), falls through
+    # to the prior unauthenticated pull unchanged.
+    module OrasRegistryAuth
+      private
+
+      # Returns the same [stdout, stderr, status] tuple Open3.capture3
+      # would for the pull step, so callers don't need to branch on
+      # auth vs no-auth.
+      def oras_pull_with_optional_auth(oci_ref, output_dir, registry_credentials, env: {})
+        return Open3.capture3(env, "oras", "pull", oci_ref, "--output", output_dir) if registry_credentials.blank?
+
+        Dir.mktmpdir("powernode-oras-auth-") do |auth_dir|
+          registry_config_path = File.join(auth_dir, "registry-config.json")
+
+          login_out, login_err, login_status = Open3.capture3(
+            env, "oras", "login", registry_credentials[:host],
+            "--username", registry_credentials[:user],
+            "--password-stdin", "--registry-config", registry_config_path,
+            stdin_data: registry_credentials[:token].to_s
+          )
+          unless login_status.success?
+            raw = login_err.strip.presence || login_out.strip
+            return [ "", "oras login failed: #{::System::ShellOutputSanitizer.redact(raw)}", login_status ]
+          end
+
+          Open3.capture3(env, "oras", "pull", oci_ref, "--output", output_dir, "--registry-config", registry_config_path)
+        end
+      end
+    end
+
     # ─── LocalDiskImageAdapter ─────────────────────────────────────────
     #
     # Test + dev path. Accepts oci_ref shaped as:
@@ -121,7 +182,9 @@ module System
     # No cosign verification at all — test code that exercises the cosign
     # trust path stubs OrasDiskImageAdapter directly.
     class LocalDiskImageAdapter
-      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:)
+      include OrasRegistryAuth
+
+      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil)
         path = resolve_local_path(oci_ref)
 
         # If the path resolved isn't on disk, try oras pull as a smoke-mode
@@ -141,7 +204,7 @@ module System
                 "/bin", "/sbin", ENV["PATH"]
               ].compact.uniq.join(":")
             }
-            _out, err, status = Open3.capture3(augmented_env, "oras", "pull", oci_ref, "--output", work)
+            _out, err, status = oras_pull_with_optional_auth(oci_ref, work, registry_credentials, env: augmented_env)
             unless status.success?
               FileUtils.remove_entry(work)
               return Result.new(ok?: false, error: "oras pull failed (smoke-mode): #{::System::ShellOutputSanitizer.redact(err.strip)}")
@@ -199,10 +262,12 @@ module System
     # Failure at any step returns an error Result; caller marks the
     # publication :failed and emits a FleetEvent.
     class OrasDiskImageAdapter
-      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:)
+      include OrasRegistryAuth
+
+      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil)
         work = Dir.mktmpdir("powernode-disk-image-ingest-")
 
-        out, err, status = Open3.capture3("oras", "pull", oci_ref, "--output", work)
+        out, err, status = oras_pull_with_optional_auth(oci_ref, work, registry_credentials)
         unless status.success?
           FileUtils.remove_entry(work)
           raw = err.strip.presence || out.strip
