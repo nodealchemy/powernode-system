@@ -55,6 +55,10 @@ type AssignedMigration struct {
 	Plan            map[string]any              `json:"plan"`
 	SourceBinding   *mount.StorageVolumeBinding `json:"source_binding"`
 	TargetBinding   *mount.StorageVolumeBinding `json:"target_binding"`
+	// SnapshotBinding is target-side (same volume as TargetBinding, its
+	// own scratch subpath) — see StorageMigration's cleanup docs for
+	// why it's never source-side. Only consumed by stepCleanup.
+	SnapshotBinding *mount.StorageVolumeBinding `json:"snapshot_binding"`
 	// ConsumerMountPoint is the canonical path the consumer module
 	// (e.g. postgres) reads its data from. The agent re-points this
 	// from source → target during cutover. Empty means the migration
@@ -64,6 +68,15 @@ type AssignedMigration struct {
 	// the remount and starts after. Empty means no consumer to coord
 	// with (the agent just remounts).
 	ConsumerUnits []string `json:"consumer_units"`
+	// RevertRequested / CleanupRequested (increment 9) are set by the
+	// platform once an operator explicitly calls
+	// system_revert_storage_migration_binding /
+	// system_cleanup_storage_migration. Checked in #advance BEFORE the
+	// status-driven switch, since both fire on migrations whose status
+	// is terminal (failed/cancelled/completed) — states the normal
+	// switch treats as "nothing to do".
+	RevertRequested  bool `json:"revert_requested"`
+	CleanupRequested bool `json:"cleanup_requested"`
 }
 
 // Runner drives one or more migrations forward each tick. Stateless
@@ -111,7 +124,22 @@ func (r *Runner) Tick(ctx context.Context) error {
 // next status to the server) or returns an error to be surfaced via
 // OnError. On the next tick the server's status reflects whatever
 // happened; the runner picks up from there.
+//
+// Revert/cleanup (increment 9) are checked FIRST and unconditionally
+// — they're requested on migrations whose status is terminal
+// (failed/cancelled/completed), which the switch below always no-ops
+// on. A migration only ever carries one of these flags at a time
+// (the platform-side reachability gates are mutually exclusive:
+// revert needs failed/completed, cleanup needs failed/cancelled — the
+// only overlap, failed, requests one intent at a time in practice).
 func (r *Runner) advance(ctx context.Context, m AssignedMigration) error {
+	if m.RevertRequested {
+		return r.stepRevert(ctx, m)
+	}
+	if m.CleanupRequested {
+		return r.stepCleanup(ctx, m)
+	}
+
 	switch m.Status {
 	case "approved":
 		return r.stepPrepare(ctx, m)
@@ -283,6 +311,208 @@ func (r *Runner) stepCutover(ctx context.Context, m AssignedMigration) error {
 	return r.reportTransition(m.ID, "completed", "cutover complete", nil)
 }
 
+// stepRevert re-points the consumer's canonical mount back to SOURCE —
+// the exact inverse of stepCutover's steps 1-4, reusing SourceBinding
+// instead of TargetBinding. Reachable regardless of m.Status (the
+// platform only ever sets RevertRequested on a failed migration, or a
+// completed one whose promote_target_binding! silently failed) — see
+// #advance. Idempotent: if the canonical mount is already source (the
+// common case — most cutover-phase failures happen before the mount
+// ever actually moved), the umount/remount is a harmless no-op.
+//
+// No consumer_mount_point/consumer_units means the migration predates
+// consumer coordination (or has none) — nothing to revert.
+//
+// Deliberately no effectiveSubpath guard here (unlike cleanupArtifact):
+// revert only ever mounts SOURCE and never deletes anything, so an
+// empty-subpath binding is at worst a confusing remount, not data loss.
+func (r *Runner) stepRevert(ctx context.Context, m AssignedMigration) error {
+	canonical := m.ConsumerMountPoint
+	units := m.ConsumerUnits
+
+	if canonical == "" || m.SourceBinding == nil {
+		return r.reportRevertComplete(m.ID, []map[string]any{
+			{"note": "no consumer coordination fields — nothing to revert"},
+		})
+	}
+
+	for i := len(units) - 1; i >= 0; i-- {
+		if err := systemd.Action(ctx, r.MountRunner, units[i], systemd.Stop); err != nil {
+			_ = r.reportRevertFail(m.ID, fmt.Sprintf("stop %s: %v", units[i], err))
+			return fmt.Errorf("stop %s: %w", units[i], err)
+		}
+	}
+
+	if mounted, _ := mount.IsMountpoint(ctx, r.MountRunner, canonical); mounted {
+		if err := r.MountRunner.Run(ctx, "umount", canonical); err != nil {
+			_ = r.reportRevertFail(m.ID, fmt.Sprintf("umount canonical: %v", err))
+			return fmt.Errorf("umount canonical: %w", err)
+		}
+	}
+
+	rebound := *m.SourceBinding
+	rebound.MountPoint = canonical
+	if err := mount.ReconcileStorageVolume(ctx, r.MountRunner, &rebound); err != nil {
+		_ = r.reportRevertFail(m.ID, fmt.Sprintf("mount source at canonical: %v", err))
+		return fmt.Errorf("mount source at canonical: %w", err)
+	}
+
+	for _, u := range units {
+		if err := systemd.Action(ctx, r.MountRunner, u, systemd.Start); err != nil {
+			r.OnError("revert:start_unit", fmt.Errorf("start %s: %w", u, err))
+		}
+	}
+
+	return r.reportRevertComplete(m.ID, []map[string]any{
+		{"path": describeBindingPath(m.SourceBinding), "mount_point": canonical},
+	})
+}
+
+// stepCleanup deletes ONLY the target-side scratch artifacts —
+// TargetBinding (the target_subpath partial copy) and SnapshotBinding
+// (the snapshot_subpath scratch tree). SourceBinding is never read
+// here, by construction — there is no code path in this function that
+// can touch source. Each artifact is mounted, its contents deleted,
+// then unmounted. A binding that fails to mount (export/subpath
+// already gone) is reported as already-clean rather than failing the
+// whole cleanup — C4's idempotency requirement.
+//
+// Subpath-scoping is NOT guaranteed by mount.ReconcileStorageVolume —
+// package mount treats subpath as optional everywhere (no non-empty
+// guard anywhere in storage_volume.go); an empty subpath mounts the
+// export ROOT, same as any other. The platform guards this server-side
+// (serialize_for_agent only emits snapshot_binding when
+// snapshot_subpath is present), but the destructive point itself needs
+// its own guard rather than trust that upstream never regresses:
+// cleanupArtifact refuses (hard error, before any mount) any binding
+// whose effective subpath is empty. See effectiveSubpath.
+func (r *Runner) stepCleanup(ctx context.Context, m AssignedMigration) error {
+	specs := []struct {
+		label   string
+		binding *mount.StorageVolumeBinding
+	}{
+		{"target_subpath", m.TargetBinding},
+		{"snapshot_subpath", m.SnapshotBinding},
+	}
+
+	artifacts := make([]map[string]any, 0, len(specs))
+	for _, spec := range specs {
+		artifact, err := r.cleanupArtifact(ctx, spec.label, spec.binding)
+		artifacts = append(artifacts, artifact)
+		if err != nil {
+			_ = r.reportCleanupFail(m.ID, fmt.Sprintf("%s: %v", spec.label, err))
+			return fmt.Errorf("cleanup %s: %w", spec.label, err)
+		}
+	}
+
+	return r.reportCleanupComplete(m.ID, artifacts)
+}
+
+// cleanupArtifact mounts one target-side binding, deletes everything
+// under the mount (the exact contents of that subpath — nothing
+// above it, since the mount itself is subpath-scoped), and unmounts.
+// `find -mindepth 1 -delete` is used instead of `rm -rf dir/*` so
+// dotfiles are included and there's no shell-glob edge case.
+func (r *Runner) cleanupArtifact(ctx context.Context, label string, b *mount.StorageVolumeBinding) (map[string]any, error) {
+	if b == nil || b.VolumeID == "" || b.MountPoint == "" {
+		return map[string]any{"label": label, "path": "", "already_clean": true}, nil
+	}
+
+	path := describeBindingPath(b)
+
+	// Agent-side belt (the server-side suspender is serialize_for_agent
+	// only emitting snapshot_binding when snapshot_subpath is present):
+	// refuse outright, before any mount is attempted, if this binding
+	// has no effective subpath. mount.ReconcileStorageVolume mounts the
+	// export ROOT in that case — `find -mindepth 1 -delete` would then
+	// erase every other deployment's data on shared NFS, the exact
+	// cross-tenant hazard the approved semantics name. This is a loud
+	// refusal, not already_clean — a future serialization regression or
+	// any bug upstream of this point must surface immediately rather
+	// than silently becoming data loss.
+	if effectiveSubpath(b) == "" {
+		return map[string]any{"label": label, "path": path, "already_clean": false},
+			fmt.Errorf("refusing to clean up %s: binding has no subpath — mounting it would reach the export root, not a subpath (volume=%s)", label, b.VolumeID)
+	}
+
+	if err := mount.ReconcileStorageVolume(ctx, r.MountRunner, b); err != nil {
+		// Export/subpath unreachable or already gone — treat as
+		// already-clean (missing artifact) rather than a hard failure.
+		return map[string]any{"label": label, "path": path, "already_clean": true, "mount_error": err.Error()}, nil
+	}
+
+	// A delete failure here is a REAL failure, not "already clean" —
+	// the mount succeeded (there's something there), so failing to
+	// delete it must surface as a hard error. Reporting "completed"
+	// while data silently survived would defeat the point of a
+	// destructive operation the operator is relying on.
+	if err := r.MountRunner.Run(ctx, "find", b.MountPoint, "-mindepth", "1", "-delete"); err != nil {
+		_ = r.MountRunner.Run(ctx, "umount", b.MountPoint) // best-effort; delete error takes precedence
+		return map[string]any{"label": label, "path": path, "already_clean": false}, fmt.Errorf("delete %s: %w", path, err)
+	}
+
+	// Local scratch-mount teardown failing doesn't undo the deletion
+	// that already happened — soft/non-fatal, mirrors stepCutover's
+	// scratch-unmount handling.
+	if err := r.MountRunner.Run(ctx, "umount", b.MountPoint); err != nil {
+		r.OnError(fmt.Sprintf("cleanup:%s:umount", label), err)
+	}
+
+	return map[string]any{"label": label, "path": path, "already_clean": false}, nil
+}
+
+// describeBindingPath renders the exact server-side path a binding
+// refers to, for the audit trail ("audit entry per artifact naming
+// the exact path").
+func describeBindingPath(b *mount.StorageVolumeBinding) string {
+	if b == nil {
+		return ""
+	}
+	if b.NFS != nil {
+		if b.NFS.FullExportPath != "" {
+			return b.NFS.FullExportPath
+		}
+		subpath := b.NFS.Subpath
+		if subpath == "" {
+			subpath = b.Subpath
+		}
+		export := strings.TrimRight(b.NFS.ExportPath, "/")
+		if subpath != "" {
+			export = export + "/" + strings.TrimLeft(subpath, "/")
+		}
+		return b.NFS.Server + ":" + export
+	}
+	if b.SMB != nil {
+		return b.SMB.Server + "/" + b.SMB.Share + "/" + b.Subpath
+	}
+	return b.VolumeID + ":" + b.Subpath
+}
+
+// effectiveSubpath mirrors describeBindingPath's field resolution per
+// transport — the subpath the binding will actually mount at. Empty
+// means mount.ReconcileStorageVolume mounts the export ROOT rather
+// than a subpath (package mount has no non-empty guard on subpath
+// anywhere — verified in storage_volume.go). Used only by
+// cleanupArtifact's pre-mount refusal; stepRevert has no equivalent
+// guard because it never deletes anything — mounting an empty-subpath
+// SOURCE binding at the canonical mount point is unusual but not
+// destructive.
+func effectiveSubpath(b *mount.StorageVolumeBinding) string {
+	if b == nil {
+		return ""
+	}
+	if b.NFS != nil && b.NFS.Subpath != "" {
+		return b.NFS.Subpath
+	}
+	if b.SMB != nil && b.SMB.Subpath != "" {
+		return b.SMB.Subpath
+	}
+	if b.ISCSI != nil && b.ISCSI.Subpath != "" {
+		return b.ISCSI.Subpath
+	}
+	return b.Subpath
+}
+
 func (r *Runner) fetchAssigned() ([]AssignedMigration, error) {
 	resp, err := r.Client.GetJSON("/api/v1/system/node_api/storage_migrations")
 	if err != nil {
@@ -342,6 +572,43 @@ func (r *Runner) reportFail(id, reason string) error {
 		return err
 	}
 	defer resp.Body.Close()
+	return nil
+}
+
+func (r *Runner) reportRevertComplete(id string, artifacts []map[string]any) error {
+	return r.postIntentComplete(id, "revert_complete", map[string]any{"status": "completed", "artifacts": artifacts})
+}
+
+func (r *Runner) reportRevertFail(id, reason string) error {
+	return r.postIntentComplete(id, "revert_complete", map[string]any{"status": "failed", "reason": reason})
+}
+
+func (r *Runner) reportCleanupComplete(id string, artifacts []map[string]any) error {
+	return r.postIntentComplete(id, "cleanup_complete", map[string]any{"status": "completed", "artifacts": artifacts})
+}
+
+func (r *Runner) reportCleanupFail(id, reason string) error {
+	return r.postIntentComplete(id, "cleanup_complete", map[string]any{"status": "failed", "reason": reason})
+}
+
+// postIntentComplete posts a revert/cleanup outcome to the matching
+// node_api member action. Shared by all four report* helpers above —
+// same shape as reportTransition/reportFail, different endpoint.
+func (r *Runner) postIntentComplete(id, action string, body map[string]any) error {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", action, err)
+	}
+	path := fmt.Sprintf("/api/v1/system/node_api/storage_migrations/%s/%s", url.PathEscape(id), action)
+	resp, err := r.Client.PostJSON(path, raw)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return fmt.Errorf("%s status %d: %s", action, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
 	return nil
 }
 
