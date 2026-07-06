@@ -839,6 +839,18 @@ jobs:
           if [[ -n "$APT_HASH" ]]; then
             ORAS_PUSH_ARGS+=(--annotation "org.powernode.apt-closure-sha256=$APT_HASH")
           fi
+          # Verifiable built-from-SHA provenance (operator amendment
+          # 2026-07-05): every module in this matrix — powernode-system-base
+          # in particular, since its ENTIRE payload is the cross-compiled Go
+          # agent binary (Stage 1.5 above) — is assembled from this exact
+          # checked-out commit. Annotating it lets anyone with oras/cosign
+          # inspect the pushed artifact and independently verify which
+          # commit's agent/ tree produced the binary inside it, without
+          # needing a hosted attestation document. This is deliberately a
+          # lightweight, directly-verifiable annotation, NOT a full SLSA
+          # provenance attestation (io.powernode.provenance_uri) — that
+          # remains queued as 019f3112-f719-7152-aeac-51a3e833259f.
+          ORAS_PUSH_ARGS+=(--annotation "org.powernode.built_from_sha=${GITHUB_SHA}")
           oras push "${ORAS_PUSH_ARGS[@]}"
 
           # Also tag this build as `:latest` so the drift-check's
@@ -887,12 +899,17 @@ jobs:
           EROFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
           EROFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
           MANIFEST_B64=$(base64 -w0 "modules/${{ matrix.module }}/manifest.yaml")
+          # NodeModuleVersion.artifacts is JSONB (no fixed schema), so
+          # built_from_sha rides through untouched — see the matching
+          # oras push annotation above for the artifact-side copy of the
+          # same provenance value.
           payload=$(jq -nc \
             --arg name       "${{ matrix.module }}" \
             --arg tag        "${{ steps.push.outputs.tag }}" \
             --arg ref        "${{ steps.push.outputs.erofs_ref }}" \
             --arg root       "$EROFS_ROOT" \
             --arg size       "$EROFS_SIZE" \
+            --arg sha        "${GITHUB_SHA}" \
             --arg manifest   "$MANIFEST_B64" \
             '{
                module_name: $name,
@@ -900,10 +917,11 @@ jobs:
                manifest_yaml_b64: $manifest,
                artifacts: {
                  erofs: {
-                   oci_ref:       $ref,
-                   fsverity_root: $root,
-                   size:          ($size | tonumber),
-                   media_type:    "application/vnd.powernode.erofs"
+                   oci_ref:        $ref,
+                   fsverity_root:  $root,
+                   size:           ($size | tonumber),
+                   media_type:     "application/vnd.powernode.erofs",
+                   built_from_sha: $sha
                  }
                }
              }')
