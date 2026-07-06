@@ -72,6 +72,22 @@ install() {
     ln -sf ../powernode-federation-accept.service \
         "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-federation-accept.service"
 
+    # NoCloud federation-payload stager — runs Before powernode-federation-accept.
+    # PVE spawns under a non-root API token can't use fw-cfg, so the provider
+    # ships the federation payload on a cloud-init NoCloud CD-ROM (ide2 cloudinit)
+    # instead. The UKI pivot-boot image has no cloud-init to process it, so this
+    # oneshot mounts that CD-ROM read-only and copies its user-data VERBATIM to
+    # /etc/powernode/federation-payload.json — the agent's file fallback (see
+    # agent/internal/federation/config.go). Safe no-op when no such CD-ROM is
+    # present (bare-metal / local_qemu / direct-kernel). Full rationale in the
+    # script header. Needs isofs + optical drivers (added in build.sh /
+    # dracut.conf.d) to see + mount the drive.
+    inst_simple "${moddir}/powernode-cidata-payload.sh" /sbin/powernode-cidata-payload
+    inst_simple "${moddir}/powernode-cidata-payload.service" \
+        /etc/systemd/system/powernode-cidata-payload.service
+    ln -sf ../powernode-cidata-payload.service \
+        "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-cidata-payload.service"
+
     # Default DHCP for any en*/eth* interface — pre-enrollment fallback so
     # systemd-networkd brings the link up before the agent's first dial-home.
     # The agent overrides this with instance-specific policy after enrollment.
@@ -163,8 +179,9 @@ install() {
     ln -sf ../boot.mount \
         "${initdir}/etc/systemd/system/local-fs.target.wants/boot.mount"
 
-    # Tools we lean on at boot.
-    inst_multiple ip mount umount mkdir cp ln rm sleep sha256sum
+    # Tools we lean on at boot. chmod: powernode-cidata-payload.sh pins the
+    # staged federation-payload.json to 0600 (it embeds a single-use token).
+    inst_multiple ip mount umount mkdir cp ln rm chmod sleep sha256sum
 
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the

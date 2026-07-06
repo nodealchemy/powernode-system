@@ -1,0 +1,25 @@
+[Unit]
+Description=Powernode NoCloud federation-payload stager (pre-pivot)
+Documentation=https://github.com/nodealchemy/powernode-platform
+# Same gate as powernode-federation-accept.service — skip on recovery boots
+# (powernode.boot=0) where enrollment is intentionally suppressed.
+ConditionKernelCommandLine=powernode.boot=1
+DefaultDependencies=no
+# Run after block devices are coldplugged (basic.target) and BEFORE
+# federation-accept, so the file fallback at /etc/powernode/federation-payload.json
+# is in place when the agent looks for it. No network dependency: this only
+# touches a local CD-ROM. federation-accept additionally waits on
+# network-online, so this comfortably completes first.
+After=basic.target
+Before=powernode-federation-accept.service
+Wants=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/sbin/powernode-cidata-payload
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
