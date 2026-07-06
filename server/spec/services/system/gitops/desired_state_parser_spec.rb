@@ -71,5 +71,44 @@ RSpec.describe System::Gitops::DesiredStateParser do
       expect(result.ok?).to be true
       expect(result.desired_state.empty?).to be true
     end
+
+    it "parses the pools + platforms sections (declarative instance topology)" do
+      File.write(File.join(work_tree, "fleet.yaml"), <<~YAML)
+        pools:
+          web-warm:
+            name: web-warm
+            node_template: web-server
+            target_size: 3
+            min_size: 1
+            max_size: 5
+        platforms:
+          hub-api:
+            name: hub-api
+            service_role: api
+            node_template: web-server
+            target_replicas: 2
+      YAML
+
+      result = described_class.parse!(work_tree_path: work_tree)
+      expect(result.ok?).to be true
+      expect(result.desired_state.pools.keys).to eq([ "web-warm" ])
+      expect(result.desired_state.platforms.keys).to eq([ "hub-api" ])
+      expect(result.desired_state.pools["web-warm"]["target_size"]).to eq(3)
+      expect(result.desired_state.platforms["hub-api"]["target_replicas"]).to eq(2)
+    end
+
+    it "reports empty? false when only a pools section is present" do
+      File.write(File.join(work_tree, "fleet.yaml"), <<~YAML)
+        pools:
+          web-warm:
+            name: web-warm
+            node_template: web-server
+            target_size: 1
+      YAML
+
+      result = described_class.parse!(work_tree_path: work_tree)
+      expect(result.ok?).to be true
+      expect(result.desired_state.empty?).to be false
+    end
   end
 end

@@ -30,6 +30,7 @@ module System
       MODULE_VARIETIES = %w[subscription role config instance].freeze
       TEMPLATE_STRING_KEYS = %w[description node_platform provider_region instance_type].freeze
       ASSIGNMENT_BOOLEAN_KEYS = %w[enabled].freeze
+      POOL_INTEGER_KEYS = %w[target_size min_size max_size].freeze
 
       def self.call(raw)
         new(raw).call
@@ -45,6 +46,8 @@ module System
         validate_templates
         validate_assignments
         validate_modules
+        validate_pools
+        validate_platforms
         validate_fleet_block
 
         if @errors.empty?
@@ -56,7 +59,7 @@ module System
 
       private
 
-      ALLOWED_TOP_LEVEL = %w[templates assignments modules provider_configs fleet].freeze
+      ALLOWED_TOP_LEVEL = %w[templates assignments modules provider_configs pools platforms fleet].freeze
 
       def validate_top_level
         @raw.each_key do |k|
@@ -134,6 +137,69 @@ module System
           end
           if attrs.key?("priority") && !attrs["priority"].is_a?(Integer)
             @errors["#{path}.priority"] << "must be an integer (got #{attrs['priority'].class})"
+          end
+        end
+      end
+
+      # Pools = declarative instance topology (→ System::InstancePool). The
+      # enum lists are pulled from the model so this validator can't drift from
+      # the DB check constraints / model validations.
+      def validate_pools
+        pools = @raw["pools"]
+        return if pools.nil?
+        unless pools.is_a?(Hash)
+          @errors["pools"] << "must be a mapping of name → attributes"
+          return
+        end
+
+        pools.each do |name, attrs|
+          path = "pools.#{name}"
+          unless attrs.is_a?(Hash)
+            @errors[path] << "must be a hash"
+            next
+          end
+
+          POOL_INTEGER_KEYS.each do |k|
+            next unless attrs.key?(k)
+            unless attrs[k].is_a?(Integer)
+              @errors["#{path}.#{k}"] << "must be an integer (got #{attrs[k].class})"
+            end
+          end
+          if attrs.key?("lifecycle_class") &&
+             !::System::InstancePool::LIFECYCLE_CLASSES.include?(attrs["lifecycle_class"].to_s)
+            @errors["#{path}.lifecycle_class"] << "must be one of #{::System::InstancePool::LIFECYCLE_CLASSES.join('|')}"
+          end
+          if attrs.key?("status") &&
+             !::System::InstancePool::STATUSES.include?(attrs["status"].to_s)
+            @errors["#{path}.status"] << "must be one of #{::System::InstancePool::STATUSES.join('|')}"
+          end
+        end
+      end
+
+      # Platforms = PlatformDeployment.target_replicas bridge. service_role is
+      # constrained to the model's SERVICE_ROLES; target_replicas must be a
+      # non-negative integer (numericality is re-checked at save time).
+      def validate_platforms
+        platforms = @raw["platforms"]
+        return if platforms.nil?
+        unless platforms.is_a?(Hash)
+          @errors["platforms"] << "must be a mapping of name → attributes"
+          return
+        end
+
+        platforms.each do |name, attrs|
+          path = "platforms.#{name}"
+          unless attrs.is_a?(Hash)
+            @errors[path] << "must be a hash"
+            next
+          end
+
+          if attrs.key?("service_role") &&
+             !::System::PlatformDeployment::SERVICE_ROLES.include?(attrs["service_role"].to_s)
+            @errors["#{path}.service_role"] << "must be one of #{::System::PlatformDeployment::SERVICE_ROLES.join('|')}"
+          end
+          if attrs.key?("target_replicas") && !attrs["target_replicas"].is_a?(Integer)
+            @errors["#{path}.target_replicas"] << "must be an integer (got #{attrs['target_replicas'].class})"
           end
         end
       end

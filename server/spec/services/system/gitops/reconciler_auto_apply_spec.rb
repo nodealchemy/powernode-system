@@ -190,6 +190,92 @@ RSpec.describe System::Gitops::Reconciler, "#reconcile! auto-apply" do
     end
   end
 
+  context "auto_apply repo + pool create (declarative instance topology)" do
+    let!(:template) do
+      create(:system_node_template, account: account, name: "web-server", node_platform: platform)
+    end
+
+    before do
+      File.write(File.join(work_tree, "fleet.yaml"), <<~YAML)
+        pools:
+          web-warm:
+            name: web-warm
+            node_template: web-server
+            target_size: 2
+            min_size: 1
+            max_size: 4
+      YAML
+    end
+
+    it "auto-applies the pool create → status implemented + pool exists" do
+      result = described_class.reconcile!(repository: repo)
+
+      expect(result.ok?).to be true
+      pool_proposal = Ai::AgentProposal.where(account: account)
+                        .find { |p| p.proposed_changes.dig("diff", "kind") == "pool" }
+      expect(pool_proposal.status).to eq("implemented")
+      pool = ::System::InstancePool.find_by(account: account, name: "web-warm")
+      expect(pool).to be_present
+      expect(pool.target_size).to eq(2)
+      expect(pool.node_template_id).to eq(template.id)
+    end
+  end
+
+  context "auto_apply repo + platform create (target_replicas bridge)" do
+    let!(:template) do
+      create(:system_node_template, account: account, name: "web-server", node_platform: platform)
+    end
+
+    before do
+      File.write(File.join(work_tree, "fleet.yaml"), <<~YAML)
+        platforms:
+          hub-api:
+            name: hub-api
+            service_role: api
+            node_template: web-server
+            target_replicas: 3
+      YAML
+    end
+
+    it "auto-applies the platform create, bridging target_replicas" do
+      result = described_class.reconcile!(repository: repo)
+
+      expect(result.ok?).to be true
+      dep = ::System::PlatformDeployment.find_by(account: account, name: "hub-api")
+      expect(dep).to be_present
+      expect(dep.target_replicas).to eq(3)
+      expect(dep.service_role).to eq("api")
+    end
+  end
+
+  context "auto_apply repo + pool destroy (safety model: destroy stays pending_review)" do
+    let!(:template) do
+      create(:system_node_template, account: account, name: "web-server", node_platform: platform)
+    end
+    let!(:stale_pool) do
+      ::System::InstancePool.create!(account: account, name: "stale-pool", node_template: template,
+                                     target_size: 1, min_size: 0, max_size: 2)
+    end
+
+    before do
+      # fleet.yaml omits the live pool → DiffEngine emits :destroy. Even with
+      # auto_apply on, a destroy must never auto-execute.
+      File.write(File.join(work_tree, "fleet.yaml"), "pools: {}\n")
+    end
+
+    it "leaves the pool destroy proposal pending_review and the pool intact" do
+      result = described_class.reconcile!(repository: repo)
+
+      expect(result.ok?).to be true
+      pool_proposal = Ai::AgentProposal.where(account: account)
+                        .find { |p| p.proposed_changes.dig("diff", "kind") == "pool" && p.proposed_changes.dig("diff", "change") == "destroy" }
+      expect(pool_proposal).to be_present
+      expect(pool_proposal.status).to eq("pending_review")
+      expect(result.applied_proposal_ids).not_to include(pool_proposal.id)
+      expect(::System::InstancePool.where(account: account, name: "stale-pool")).to exist
+    end
+  end
+
   context "ApplyService raises a stale conflict" do
     before do
       # Two create diffs so we can prove one failure does not abort the others.

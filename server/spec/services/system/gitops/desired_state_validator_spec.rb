@@ -57,6 +57,54 @@ RSpec.describe System::Gitops::DesiredStateValidator do
       expect(result.errors["modules.mod-a.priority"]).to include(/must be an integer/)
     end
 
+    it "accepts a valid pools section" do
+      raw = { "pools" => { "web-warm" => { "target_size" => 3, "min_size" => 1, "max_size" => 5,
+                                           "lifecycle_class" => "ephemeral", "status" => "active" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be true
+    end
+
+    it "rejects non-integer pool sizes" do
+      raw = { "pools" => { "web-warm" => { "target_size" => "3" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be false
+      expect(result.errors["pools.web-warm.target_size"]).to include(/must be an integer/)
+    end
+
+    it "rejects an unknown pool.lifecycle_class value" do
+      raw = { "pools" => { "web-warm" => { "lifecycle_class" => "reserved" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be false
+      expect(result.errors["pools.web-warm.lifecycle_class"]).to include(/ephemeral\|spot/)
+    end
+
+    it "rejects an unknown pool.status value" do
+      raw = { "pools" => { "web-warm" => { "status" => "running" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be false
+      expect(result.errors["pools.web-warm.status"]).to include(/active\|paused\|draining\|archived/)
+    end
+
+    it "accepts a valid platforms section" do
+      raw = { "platforms" => { "hub-api" => { "service_role" => "api", "target_replicas" => 2 } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be true
+    end
+
+    it "rejects an unknown platform.service_role value" do
+      raw = { "platforms" => { "hub-api" => { "service_role" => "database" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be false
+      expect(result.errors["platforms.hub-api.service_role"]).to include(/api\|worker/)
+    end
+
+    it "rejects non-integer platform.target_replicas" do
+      raw = { "platforms" => { "hub-api" => { "target_replicas" => "2" } } }
+      result = described_class.call(raw)
+      expect(result.ok?).to be false
+      expect(result.errors["platforms.hub-api.target_replicas"]).to include(/must be an integer/)
+    end
+
     it "rejects unknown fleet.* keys" do
       raw = { "fleet" => { "weird_key" => "x" } }
       result = described_class.call(raw)

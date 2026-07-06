@@ -22,11 +22,17 @@ module System
     # with a stale-conflict error. Operator must re-sync to get a fresh
     # proposal reflecting current reality.
     #
-    # v1 scope: handles template/module/assignment kinds. Destroy + provider
+    # v1 scope: handles template/module/assignment/pool/platform kinds.
+    # Create + update are applied; destroys stay conservative (a destroy is
+    # never auto-applied — the Reconciler leaves it pending_review — and for
+    # templates/modules/pools/platforms an approved destroy still returns an
+    # explicit "not yet implemented" error so a live pool / platform
+    # deployment is never torn down without a deliberate follow-up). Provider
     # config + advanced module features (versions, file_spec) ship as
     # follow-up slices — explicit error returns guide operators.
     #
-    # Reference: extensions/system/docs/plans/missing-features.md (Phase 6b).
+    # Reference: extensions/system/docs/plans/missing-features.md (Phase 6b);
+    # GitOps instance/pool/platform kinds (campaign increment 17).
     class ApplyService
       Result = Struct.new(:ok?, :applied_action, :resource_id, :error,
                           :stale_conflict, keyword_init: true)
@@ -77,6 +83,8 @@ module System
         return apply_template(change: change, diff: diff)   if kind == "template"
         return apply_module(change: change, diff: diff)     if kind == "module"
         return apply_assignment(change: change, diff: diff) if kind == "assignment"
+        return apply_pool(change: change, diff: diff)       if kind == "pool"
+        return apply_platform(change: change, diff: diff)   if kind == "platform"
         return informational(diff: diff)                    if kind == "provider_config" || change == "informational"
 
         raise UnsupportedDiffError, "unsupported diff kind=#{kind.inspect}"
@@ -189,6 +197,112 @@ module System
         else
           raise UnsupportedDiffError, "unsupported assignment change=#{change.inspect}"
         end
+      end
+
+      POOL_SCALAR_KEYS = %w[target_size min_size max_size lifecycle_class status].freeze
+
+      # Declarative instance topology → System::InstancePool. Create binds the
+      # pool to a NodeTemplate by name (create-time only) and sets the desired
+      # sizes/lifecycle/status; update rotates only those scalar knobs. Destroy
+      # is conservative (never torn down without manual confirmation) —
+      # consistent with template/module and the Reconciler's destroy gate.
+      def apply_pool(change:, diff:)
+        case change
+        when "create"
+          desired = desired_hash(diff)
+          template = resolve_node_template!(desired["node_template"] || desired[:node_template], kind: "pool")
+          pool = ::System::InstancePool.create!(
+            {
+              account: @proposal.account,
+              name: diff["name"] || diff[:name],
+              node_template: template
+            }.merge(pool_scalar_attrs(desired))
+          )
+          Result.new(ok?: true, applied_action: "created pool", resource_id: pool.id)
+        when "update"
+          pool = ::System::InstancePool
+                 .where(account_id: @proposal.account_id)
+                 .find_by(id: diff["resource_id"] || diff[:resource_id])
+          raise StaleConflictError, "instance pool #{(diff['resource_id'] || diff[:resource_id]).inspect} no longer exists" unless pool
+
+          updates = pool_scalar_attrs(desired_hash(diff))
+          pool.update!(updates) if updates.any?
+          Result.new(ok?: true, applied_action: "updated pool", resource_id: pool.id)
+        when "destroy"
+          raise UnsupportedDiffError,
+                "pool destroy not yet implemented (v1 conservative — tearing down an instance pool terminates its warm members; requires manual confirmation)"
+        else
+          raise UnsupportedDiffError, "unsupported pool change=#{change.inspect}"
+        end
+      end
+
+      # PlatformDeployment.target_replicas bridge. Create requires a
+      # service_role + a NodeTemplate binding; update rotates the desired
+      # replica count (and service_role). Destroy is conservative — removing a
+      # deployment row breaks federation peer discovery.
+      def apply_platform(change:, diff:)
+        case change
+        when "create"
+          desired = desired_hash(diff)
+          service_role = desired["service_role"] || desired[:service_role]
+          if service_role.blank?
+            raise UnsupportedDiffError,
+                  "platform create requires desired.service_role (one of #{::System::PlatformDeployment::SERVICE_ROLES.join('|')})"
+          end
+          template = resolve_node_template!(desired["node_template"] || desired[:node_template], kind: "platform")
+
+          attrs = {
+            account: @proposal.account,
+            name: diff["name"] || diff[:name],
+            node_template: template,
+            service_role: service_role
+          }
+          target_replicas = desired["target_replicas"] || desired[:target_replicas]
+          attrs[:target_replicas] = target_replicas unless target_replicas.nil?
+
+          dep = ::System::PlatformDeployment.create!(attrs)
+          Result.new(ok?: true, applied_action: "created platform deployment", resource_id: dep.id)
+        when "update"
+          dep = ::System::PlatformDeployment
+                .where(account_id: @proposal.account_id)
+                .find_by(id: diff["resource_id"] || diff[:resource_id])
+          raise StaleConflictError, "platform deployment #{(diff['resource_id'] || diff[:resource_id]).inspect} no longer exists" unless dep
+
+          updates = desired_hash(diff)
+                    .slice("service_role", :service_role, "target_replicas", :target_replicas)
+                    .symbolize_keys
+          dep.update!(updates) if updates.any?
+          Result.new(ok?: true, applied_action: "updated platform deployment", resource_id: dep.id)
+        when "destroy"
+          raise UnsupportedDiffError,
+                "platform destroy not yet implemented (v1 conservative — removing a PlatformDeployment breaks federation peer discovery; requires manual confirmation)"
+        else
+          raise UnsupportedDiffError, "unsupported platform change=#{change.inspect}"
+        end
+      end
+
+      def desired_hash(diff)
+        (diff["desired"] || diff[:desired]) || {}
+      end
+
+      def pool_scalar_attrs(desired)
+        desired
+          .slice(*POOL_SCALAR_KEYS, *POOL_SCALAR_KEYS.map(&:to_sym))
+          .symbolize_keys
+      end
+
+      # Resolve a NodeTemplate binding referenced by name in a create diff.
+      # Mirrors apply_template's node_platform resolution: a missing reference
+      # is an authoring error (UnsupportedDiffError); a name that resolves to
+      # nothing live is a StaleConflictError (operator must re-sync).
+      def resolve_node_template!(name, kind:)
+        if name.blank?
+          raise UnsupportedDiffError,
+                "#{kind} create requires desired.node_template — fleet.yaml entry missing the template reference"
+        end
+        template = ::System::NodeTemplate.find_by(account_id: @proposal.account_id, name: name)
+        raise StaleConflictError, "node_template #{name.inspect} not found in this account" unless template
+        template
       end
 
       def informational(diff:)

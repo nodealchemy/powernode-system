@@ -7,10 +7,12 @@ module System
     # created, updated, or destroyed.
     #
     # Coverage: templates (NodeTemplate), assignments (NodeModuleAssignment),
-    # modules (NodeModule). Provider configs are flagged but not diffed
-    # (operator-only state).
+    # modules (NodeModule), pools (InstancePool — declarative instance
+    # topology), platforms (PlatformDeployment — target_replicas bridge).
+    # Provider configs are flagged but not diffed (operator-only state).
     #
-    # Reference: comprehensive stabilization sweep P5.
+    # Reference: comprehensive stabilization sweep P5; GitOps instance/pool/
+    # platform kinds (campaign increment 17).
     class DiffEngine
       Diff = Struct.new(:kind, :resource_id, :name, :change, :current, :desired, keyword_init: true) do
         def to_h
@@ -35,6 +37,8 @@ module System
         diffs.concat(diff_templates)
         diffs.concat(diff_assignments)
         diffs.concat(diff_modules)
+        diffs.concat(diff_pools)
+        diffs.concat(diff_platforms)
         diffs.concat(diff_provider_configs)
         Result.new(ok?: true, diffs: diffs)
       rescue StandardError => e
@@ -61,6 +65,35 @@ module System
           live_scope: ::System::NodeModule.where(account: @account),
           identity_proc: ->(record) { record.name },
           state_proc: ->(record) { record.attributes.slice("name", "priority", "variety", "config") }
+        )
+      end
+
+      def diff_pools
+        # Declarative instance topology — the pool's target/min/max sizes,
+        # lifecycle_class, and status are the operator-declared knobs; the
+        # replenisher actualizes them into live NodeInstances. Bindings
+        # (node_template/region/instance_type) are create-time only, not
+        # compared here (mirrors templates, whose node_platform is set at
+        # creation and not GitOps-rotated).
+        compare_collection(
+          kind: "pool",
+          desired: @desired_state.pools,
+          live_scope: ::System::InstancePool.where(account: @account),
+          identity_proc: ->(record) { record.name },
+          state_proc: ->(record) { record.attributes.slice("name", "target_size", "min_size", "max_size", "lifecycle_class", "status") }
+        )
+      end
+
+      def diff_platforms
+        # PlatformDeployment.target_replicas bridge — service_role + the
+        # desired replica count are the declarative fields. node_template /
+        # virtual_ip bindings are create-time only.
+        compare_collection(
+          kind: "platform",
+          desired: @desired_state.platforms,
+          live_scope: ::System::PlatformDeployment.where(account: @account),
+          identity_proc: ->(record) { record.name },
+          state_proc: ->(record) { record.attributes.slice("name", "service_role", "target_replicas") }
         )
       end
 

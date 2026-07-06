@@ -6,18 +6,23 @@ module System
   module Gitops
     # Parses the `fleet.yaml` (or other path_prefix-located YAML) inside a
     # GitOps work tree into a structured DesiredState. Handles top-level
-    # keys: `templates`, `assignments`, `modules`, `provider_configs`.
+    # keys: `templates`, `assignments`, `modules`, `provider_configs`,
+    # `pools` (declarative instance topology → InstancePool), and
+    # `platforms` (PlatformDeployment.target_replicas bridge).
     #
     # Schema is intentionally simple — every section is a map of name →
     # attributes. Reconcilers consume this object directly.
     #
-    # Reference: comprehensive stabilization sweep P5.
+    # Reference: comprehensive stabilization sweep P5; GitOps instance/pool/
+    # platform kinds (campaign increment 17).
     class DesiredStateParser
       Result = Struct.new(:ok?, :desired_state, :error, keyword_init: true)
 
-      DesiredState = Struct.new(:templates, :assignments, :modules, :provider_configs, keyword_init: true) do
+      DesiredState = Struct.new(:templates, :assignments, :modules, :provider_configs,
+                                :pools, :platforms, keyword_init: true) do
         def empty?
-          templates.empty? && assignments.empty? && modules.empty? && provider_configs.empty?
+          templates.empty? && assignments.empty? && modules.empty? &&
+            provider_configs.empty? && pools.empty? && platforms.empty?
         end
       end
 
@@ -62,7 +67,9 @@ module System
             templates: parse_section(raw["templates"]),
             assignments: parse_section(raw["assignments"]),
             modules: parse_section(raw["modules"]),
-            provider_configs: parse_section(raw["provider_configs"])
+            provider_configs: parse_section(raw["provider_configs"]),
+            pools: parse_section(raw["pools"]),
+            platforms: parse_section(raw["platforms"])
           )
         )
       rescue Psych::SyntaxError => e

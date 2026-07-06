@@ -142,6 +142,104 @@ RSpec.describe System::Gitops::DiffEngine do
       end
     end
 
+    context "pools (declarative instance topology → InstancePool)" do
+      let(:template) { create(:system_node_template, account: account, name: "web-server", node_platform: platform) }
+      let!(:existing_pool) do
+        ::System::InstancePool.create!(account: account, name: "web-warm", node_template: template,
+                                       target_size: 3, min_size: 1, max_size: 5)
+      end
+
+      it "detects a target_size change as an update" do
+        desired_state = build_desired_state(
+          pools: { "web-warm" => { "name" => "web-warm", "target_size" => 5, "min_size" => 1,
+                                   "max_size" => 5, "lifecycle_class" => "ephemeral", "status" => "active" } }
+        )
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        diff = result.diffs.find { |d| d.kind == "pool" }
+        expect(diff.change).to eq(:update)
+        expect(diff.current["target_size"]).to eq(3)
+        expect(diff.desired["target_size"]).to eq(5)
+      end
+
+      it "detects a new pool" do
+        desired_state = build_desired_state(
+          pools: {
+            "web-warm" => { "name" => "web-warm", "target_size" => 3, "min_size" => 1, "max_size" => 5,
+                            "lifecycle_class" => "ephemeral", "status" => "active" },
+            "api-warm" => { "name" => "api-warm", "node_template" => "web-server", "target_size" => 2,
+                            "min_size" => 0, "max_size" => 4, "lifecycle_class" => "ephemeral", "status" => "active" }
+          }
+        )
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        create_diff = result.diffs.find { |d| d.kind == "pool" && d.change == :create }
+        expect(create_diff).to be_present
+        expect(create_diff.name).to eq("api-warm")
+      end
+
+      it "flags a live pool absent from desired as a destroy candidate" do
+        desired_state = build_desired_state(pools: {})
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        destroy_diff = result.diffs.find { |d| d.kind == "pool" && d.change == :destroy }
+        expect(destroy_diff).to be_present
+        expect(destroy_diff.name).to eq("web-warm")
+      end
+
+      it "produces no diff when current matches desired" do
+        desired_state = build_desired_state(
+          pools: { "web-warm" => { "name" => "web-warm", "target_size" => 3, "min_size" => 1,
+                                   "max_size" => 5, "lifecycle_class" => "ephemeral", "status" => "active" } }
+        )
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        expect(result.diffs.select { |d| d.kind == "pool" }).to be_empty
+      end
+    end
+
+    context "platforms (PlatformDeployment.target_replicas bridge)" do
+      let!(:existing_deployment) do
+        create(:system_platform_deployment, account: account, name: "hub-api",
+                                             service_role: "api", target_replicas: 1)
+      end
+
+      it "detects a target_replicas change as an update" do
+        desired_state = build_desired_state(
+          platforms: { "hub-api" => { "name" => "hub-api", "service_role" => "api", "target_replicas" => 3 } }
+        )
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        diff = result.diffs.find { |d| d.kind == "platform" }
+        expect(diff.change).to eq(:update)
+        expect(diff.current["target_replicas"]).to eq(1)
+        expect(diff.desired["target_replicas"]).to eq(3)
+      end
+
+      it "detects a new platform deployment" do
+        desired_state = build_desired_state(
+          platforms: {
+            "hub-api"    => { "name" => "hub-api", "service_role" => "api", "target_replicas" => 1 },
+            "hub-worker" => { "name" => "hub-worker", "service_role" => "worker", "target_replicas" => 2 }
+          }
+        )
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        create_diff = result.diffs.find { |d| d.kind == "platform" && d.change == :create }
+        expect(create_diff).to be_present
+        expect(create_diff.name).to eq("hub-worker")
+      end
+
+      it "flags a live deployment absent from desired as a destroy candidate" do
+        desired_state = build_desired_state(platforms: {})
+
+        result = described_class.diff!(account: account, desired_state: desired_state)
+        destroy_diff = result.diffs.find { |d| d.kind == "platform" && d.change == :destroy }
+        expect(destroy_diff).to be_present
+        expect(destroy_diff.name).to eq("hub-api")
+      end
+    end
+
     context "graceful failure" do
       it "returns ok:false with a captured error message" do
         # Force an internal error by passing nil account
@@ -169,9 +267,10 @@ RSpec.describe System::Gitops::DiffEngine do
     end
   end
 
-  def build_desired_state(templates: {}, modules: {}, assignments: {}, provider_configs: {})
+  def build_desired_state(templates: {}, modules: {}, assignments: {}, provider_configs: {}, pools: {}, platforms: {})
     System::Gitops::DesiredStateParser::DesiredState.new(
-      templates: templates, modules: modules, assignments: assignments, provider_configs: provider_configs
+      templates: templates, modules: modules, assignments: assignments,
+      provider_configs: provider_configs, pools: pools, platforms: platforms
     )
   end
 end
