@@ -21,7 +21,8 @@ for the full ratification.
 - [`sdwan-network-setup.md`](./sdwan-network-setup.md) — overlay network + hub peer + VIP primitives.
 - [`federation-setup.md`](./federation-setup.md) — federation peering + subscriptions.
 - [`../../../docs/operations/reverse-proxy.md`](../../../docs/operations/reverse-proxy.md) — bundled
-  Traefik architecture, the ratified decisions, and the (unbuilt) core/extension ingress seam.
+  Traefik architecture, the ratified decisions, and the core/extension ingress seam (built by
+  increment 8: `Core::IngressConfigWriter` + the `ingress_certs`/`ingress_routers` provider seam).
 
 ## The decision rule, in one paragraph
 
