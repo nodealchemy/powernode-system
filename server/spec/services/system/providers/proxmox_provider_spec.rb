@@ -465,6 +465,127 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # Federation payload delivery differs by boot_mode. The UKI pivot-boot image
+  # (uefi_disk) has NO cloud-init, so the cicustom user-data can't be a
+  # #cloud-config — the initramfs powernode-cidata-payload.service copies it
+  # VERBATIM to /etc/powernode/federation-payload.json. It must therefore be
+  # the RAW spawn_payload JSON. The cloud_init path is unchanged (full
+  # #cloud-config that cloud-init processes). (IMP-019f3831)
+  describe "#create_instance federation payload render (boot_mode-specific)" do
+    let(:acceptance_token) { "SINGLE-USE-FEDERATION-ACCEPTANCE-TOKEN-render" }
+    let(:spawn_payload) do
+      {
+        "parent_url"       => "https://parent.powernode.internal",
+        "acceptance_token" => acceptance_token,
+        "spawn_mode"       => "managed_child",
+        "parent_peer_id"   => "peerabcd1234",
+        "contract_version" => "v1"
+      }
+    end
+    # Captures every File.write so we can inspect the cicustom snippet content
+    # without touching the real shared NFS snippets export.
+    let(:written_files) { {} }
+
+    before do
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+      allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:write) do |path, content, **_opts|
+        written_files[path] = content
+        content.to_s.bytesize
+      end
+    end
+
+    def written_user_data
+      key = written_files.keys.find { |k| k.end_with?("-user.yml") }
+      key && written_files[key]
+    end
+
+    context "boot_mode: uefi_disk (UKI pivot-boot, no cloud-init)" do
+      let(:params) do
+        {
+          name: "uefi-fed-vm",
+          instance_type: "pve.vm.small",
+          boot_mode: "uefi_disk",
+          image_id: "dna-data:import/uefi-uki.raw",
+          node: "dna",
+          storage: "dna-data",
+          start: false,
+          options: { spawn_payload: spawn_payload }
+        }
+      end
+
+      before do
+        allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("200")
+        allow(client).to receive(:post)
+          .with("/api2/json/nodes/dna/qemu", anything)
+          .and_return("UPID:dna:001:001:001:qmcreate:200:user!tok:")
+      end
+
+      it "delivers the cicustom user-data as the RAW spawn_payload JSON (no #cloud-config wrapper)" do
+        provider.create_instance(params)
+
+        body = written_user_data
+        expect(body).to be_present
+        # Airtight bare-JSON assertion: a #cloud-config YAML document could not
+        # parse back to exactly the payload hash.
+        expect(JSON.parse(body)).to eq(spawn_payload)
+        expect(body).not_to start_with("#cloud-config")
+        # None of CloudSeed's cloud-init machinery leaks in.
+        expect(body).not_to match(/packages|runcmd|write_files|pnadmin|netplan/)
+      end
+
+      it "byte-matches what CloudSeed embeds as the federation-payload.json fallback (agent file-fallback parity)" do
+        provider.create_instance(params)
+        # Same JSON the cloud_init path buries in its write_files entry, and
+        # exactly what the agent's LoadConfig file fallback parses.
+        expect(written_user_data).to eq(JSON.dump(spawn_payload))
+      end
+
+      it "still never sets the `args` config key (no fw-cfg escape hatch)" do
+        provider.create_instance(params)
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+        )
+      end
+    end
+
+    context "boot_mode: cloud_init (full cloud image — regression: unchanged)" do
+      let(:params) do
+        {
+          name: "cloud-fed-vm",
+          instance_type: "pve.vm.small",
+          image_id: "dna-data:import/noble.qcow2",
+          node: "dna",
+          storage: "dna-data",
+          start: false,
+          options: { spawn_payload: spawn_payload }
+        }
+      end
+
+      before do
+        allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("300")
+        allow(client).to receive(:post)
+          .with("/api2/json/nodes/dna/qemu", anything)
+          .and_return("UPID:dna:001:001:001:qmcreate:300:user!tok:")
+      end
+
+      it "still renders the full #cloud-config, byte-identical to CloudSeed.render" do
+        provider.create_instance(params)
+
+        body = written_user_data
+        expect(body).to be_present
+        expect(body).to start_with("#cloud-config")
+        expect(body).to eq(
+          System::Providers::Proxmox::CloudSeed.render(
+            spawn_payload: spawn_payload,
+            hostname: "cloud-fed-vm"
+          )
+        )
+      end
+    end
+  end
+
   describe "#create_instance boot_mode dispatch" do
     it "raises on an unknown boot_mode instead of silently defaulting" do
       params = {

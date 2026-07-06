@@ -3,6 +3,7 @@
 require_relative "proxmox/client"
 require "tempfile"
 require "uri"
+require "json"
 
 module System
   module Providers
@@ -638,7 +639,7 @@ module System
 
         # Federation spawn auto-render — see apply_default_federation_user_data.
         # The spawn payload itself reaches the agent via the fw-cfg block below.
-        params = apply_default_federation_user_data(params)
+        params = apply_default_federation_user_data(params, boot_mode: "cloud_init")
 
         stage_cicustom(body, params, vmid: vmid)
 
@@ -710,29 +711,48 @@ module System
 
       # Federation spawn auto-render: when SpawnPlatformService forwards a
       # spawn_payload via options[:spawn_payload] and the caller didn't
-      # provide explicit user_data, render a #cloud-config that downloads
-      # the agent + enables the systemd service. Operators can override by
-      # passing params[:user_data] (or :ssh_authorized_keys to inject keys
-      # into the auto-rendered output).
+      # provide explicit user_data, populate params[:user_data] for the
+      # cicustom channel. Operators can override by passing params[:user_data]
+      # (or :ssh_authorized_keys to inject keys into the cloud_init output).
       #
-      # SINGLE SOURCE OF TRUTH for both create_vm_instance (cloud_init) and
-      # create_uefi_disk_vm_instance (uefi_disk) — both deliver the
-      # federation payload via this cloud-init channel; only their fw-cfg
-      # posture differs (uefi_disk never uses it).
-      def apply_default_federation_user_data(params)
+      # The RENDER shape is boot_mode-specific:
+      #
+      #   cloud_init — full Ubuntu cloud image WITH cloud-init. Render the
+      #     #cloud-config that installs the agent, defines its systemd unit,
+      #     creates pnadmin, applies netplan, and runcmd's federation-accept.
+      #     cloud-init processes all of it, including the write_files entry
+      #     that drops the federation payload at PayloadFilePath.
+      #
+      #   uefi_disk — pre-built UKI pivot-boot image with NO cloud-init. None
+      #     of the #cloud-config machinery would ever run: packages/users/
+      #     netplan/systemd-unit are dead weight, and the runcmd that enrolls
+      #     never fires (there's no userland cloud-init pass pre-pivot). The
+      #     only consumer is the initramfs powernode-cidata-payload.service,
+      #     which copies this user-data VERBATIM to PayloadFilePath. So render
+      #     the payload as-is: the RAW spawn_payload JSON, byte-identical to
+      #     what CloudSeed embeds in its federation-payload.json write_files
+      #     entry (extensions/system/agent/internal/federation/config.go's
+      #     LoadConfig file fallback parses exactly this). No #cloud-config
+      #     wrapper — the initramfs side needs zero YAML parsing, just a copy.
+      def apply_default_federation_user_data(params, boot_mode: "cloud_init")
         return params if params[:user_data].present?
 
         sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
         return params unless sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
 
-        params.merge(
-          user_data: ::System::Providers::Proxmox::CloudSeed.render(
-            spawn_payload:       sp,
-            hostname:            params[:hostname] || params[:name],
-            agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
-            ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
-          )
-        )
+        user_data =
+          if boot_mode == "uefi_disk"
+            JSON.dump(sp)
+          else
+            ::System::Providers::Proxmox::CloudSeed.render(
+              spawn_payload:       sp,
+              hostname:            params[:hostname] || params[:name],
+              agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
+              ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
+            )
+          end
+
+        params.merge(user_data: user_data)
       end
 
       # Builds the qemu create body. The scsi0 disk uses size=0 with
@@ -1050,7 +1070,7 @@ module System
           image_volid: image_volid
         )
 
-        params = apply_default_federation_user_data(params)
+        params = apply_default_federation_user_data(params, boot_mode: "uefi_disk")
         stage_cicustom(body, params, vmid: vmid)
 
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
