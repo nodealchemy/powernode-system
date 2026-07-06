@@ -178,11 +178,20 @@ build_kernel_initrd() {
   # isofs: powernode-cidata-payload.sh mounts the PVE cloud-init NoCloud CD-ROM
   # (ISO9660) to stage the federation payload for token-auth Proxmox spawns.
   # CONFIG_ISO9660_FS=m on Ubuntu generic, so it must be force-included (dracut
-  # wouldn't auto-detect it — there's no iso9660 rootfs). The optical + IDE bus
-  # drivers it rides on (sr_mod, cdrom, ata_piix) are CONFIG_*=y builtins on
-  # Ubuntu generic kernels — already in the kernel, so NOT listed here (and per
-  # dracut.conf.d/powernode-amd64.conf, builtins must not be listed as drivers).
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs"
+  # wouldn't auto-detect it — there's no iso9660 rootfs).
+  # ahci: the SATA controller driver for that same CD-ROM. The Proxmox provider
+  # spawns VMs with machine type q35 (ProxmoxProvider::DEFAULT_MACHINE_TYPE), and
+  # on q35 the cloud-init CD-ROM (attached as ide2,media=cdrom) is presented by
+  # QEMU through the ich9-ahci SATA controller — q35 has no legacy PIIX3 IDE, so
+  # the *builtin* ata_piix never binds it and /dev/sr0 never enumerates without
+  # ahci. ahci is CONFIG_SATA_AHCI=m (a loadable module, NOT a builtin), so it
+  # must be force-included or powernode-cidata-payload.sh exits at its
+  # `[ ! -b /dev/sr0 ]` guard and the federation payload is never staged (child
+  # then falls back to the node-claim poll loop and never enrolls). Its block/
+  # char deps (sr_mod, cdrom, libata) ARE CONFIG_*=y builtins — already in the
+  # kernel, so NOT listed here (per dracut.conf.d/powernode-amd64.conf, builtins
+  # must not be listed as drivers); dracut auto-pulls ahci's module dep libahci.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
