@@ -41,7 +41,7 @@ flowchart TD
     Q1 -- no --> Q2{Federated subscription?}
     Q2 -- yes --> Q3{tcp or tls protocol?}
     Q3 -- tls --> PathD1["Path D: Federation::ServiceRouteWriter<br/>(Traefik SNI passthrough)"]
-    Q3 -- tcp --> PathD2["Path D: tcpfwd daemon<br/>(planned — increment 3/4)"]
+    Q3 -- tcp --> PathD2["Path D: tcpfwd daemon"]
     Q2 -- no --> Q4{Site-local only,<br/>this account's own users?}
     Q4 -- yes --> PathE["Path E: /svc/slug local plane"]
     Q4 -- no --> Q5{Presents TLS ClientHello<br/>with SNI?}
@@ -98,8 +98,9 @@ tunneled over TLS with SNI.
 - Any **UDP** service (DNS, QUIC-as-UDP, custom UDP protocols) — Traefik's TCP routers cannot
   carry UDP, and none will ever be added for it.
 - **Plaintext (non-SNI) TCP** — nothing to inspect for routing, so Traefik has no way to
-  multiplex it onto a shared entrypoint. This is also where today's buggy `tcp`-protocol
-  federation subscriptions belong once increment 4 lands (see the drift note below).
+  multiplex it onto a shared entrypoint. (Federated `tcp`-protocol *subscriptions* are the
+  exception: they ride the `tcpfwd` daemon — see Path D — not DNAT; this path is for
+  publishing your own plaintext-TCP services.)
 - **Source-IP-sensitive services** — anything where the real client IP must reach the backend
   unmodified. Traefik (like any L7/L4 proxy terminating or passing through a shared entrypoint)
   can obscure or rewrite the apparent source; DNAT preserves it because the kernel rewrites only
@@ -123,8 +124,9 @@ tunneled over TLS with SNI.
 
 ## Path D — Federated subscriptions: `tcpfwd` vs. Traefik passthrough
 
-**Status: mixed — `tls`-protocol subscriptions are built (with known bugs, fixed in increment 4);
-`tcp`-protocol subscriptions have no working path yet (increment 3).**
+**Status: built — `tls`-protocol subscriptions ride Traefik SNI passthrough (bugs fixed in
+increment 4); `tcp`-protocol subscriptions ride the `tcpfwd` daemon (increment 3's writer +
+increment 4's cutover + agent wiring).**
 
 A subscriber consuming a remote operator's `System::Federation::ServiceOffering` gets a
 `System::Federation::ServiceSubscription` with a `protocol` of `https`, `http`, `tcp`, or `tls`.
@@ -132,34 +134,48 @@ A subscriber consuming a remote operator's `System::Federation::ServiceOffering`
 (`extensions/system/server/app/services/federation/service_route_writer.rb`) renders the
 subscriber-side Traefik dynamic config for the non-HTTP protocols:
 
-- **`tls` protocol (SNI-carrying)** → Traefik `tcp.routers` with `HostSNI`. **Confirmed bugs as
-  of 2026-07-05** (re-verified against the file for this campaign):
-  - The `tls` branch never sets `passthrough: true` (`service_route_writer.rb:155` only sets
-    `router["tls"] = {}`) — silent mis-termination. **Fix: increment 4.**
-  - The `tls` branch never sets `entryPoints` (`service_route_writer.rb:151-156`) — the router
-    binds every TCP-capable entrypoint, including the plaintext `web` (`:80`) entrypoint, not just
-    `websecure`. **Fix: increment 4** (`entryPoints: [websecure]`).
-- **`tcp` protocol (plaintext, no SNI)** → today, `add_tcp_route!` still emits a `HostSNI` rule
-  for it (`service_route_writer.rb:90-91, 152`), which **can never match** — there is no TLS
-  ClientHello to read SNI from. This is a dead path today. **Fix: increment 4** stops emitting
-  `tcp`-protocol subscriptions to Traefik entirely and routes them via the daemon below instead.
-  **Increment 3** must land first to give it somewhere to go.
+- **`tls` protocol (SNI-carrying)** → Traefik `tcp.routers` with `HostSNI`. Three bugs were
+  confirmed as of 2026-07-05 and **fixed in increment 4**:
+  - The `tls` branch never set `passthrough: true` (`add_tcp_route!` only set
+    `router["tls"] = {}`) — silent mis-termination. **Fixed:** the branch now sets
+    `"tls" => { "passthrough" => true }`.
+  - The `tls` branch never set `entryPoints` — the router bound every TCP-capable entrypoint,
+    including the plaintext `web` (`:80`) entrypoint, not just `websecure`. **Fixed:** the router
+    now sets `entryPoints: ["websecure"]` explicitly.
+  - `add_tcp_route!` was invoked for both `"tcp"` and `"tls"` protocols. **Fixed:** the dispatch
+    (`render_yaml`'s case statement) is narrowed to `"tls"` only — see next bullet.
+- **`tcp` protocol (plaintext, no SNI)** → previously, `add_tcp_route!` emitted a `HostSNI` rule
+  for it, which **could never match** — there is no TLS ClientHello to read SNI from. **Fixed:**
+  `ServiceRouteWriter` no longer emits a Traefik router for `tcp`-protocol subscriptions at all
+  (`active_traefik_subs` excludes them alongside site-local subs); they route via the `tcpfwd`
+  daemon below instead.
 - **Site-local subscriptions** (`ServiceSubscription#site_local?` — `local_hostname` starting
-  `localhost:` or `127.0.0.1:`) are already excluded from `ServiceRouteWriter`'s output
+  `localhost:` or `127.0.0.1:`) are excluded from `ServiceRouteWriter`'s output
   (`active_traefik_subs` rejects them) — they were always meant for the forwarder daemon, not
   Traefik.
-- **`powernode-tcp-forwarder` (`tcpfwd`)** — the Go agent's site-local TCP forwarder
-  (`extensions/system/agent/internal/tcpfwd/`) is implemented and tested on the agent side: it
-  reads a JSON `Config` (`{"forwards": [{"listen", "backend", "protocol", "subscription_id"}]}`,
-  `protocol` must be `"tcp"` in v1) and proxies each `(listen, backend)` pair. **The server-side
-  writer that produces this config — `Federation::TcpForwarderConfigWriter` — does not exist
-  anywhere in the tree** (confirmed: zero grep hits, full worktree, 2026-07-05). Building it is
-  campaign increment **3** (in-repo plan reference P4.6.7); it is the target for both `tcp`-protocol
-  federated subscriptions and any future UDP forwarding needs (`tcpfwd` v2, explicitly deferred).
+- **`powernode-tcp-forwarder` (`tcpfwd`)** — the Go agent's TCP forwarder
+  (`extensions/system/agent/internal/tcpfwd/`) reads a JSON `Config`
+  (`{"forwards": [{"listen", "backend", "protocol", "subscription_id"}]}`, `protocol` must be
+  `"tcp"` in v1) and proxies each `(listen, backend)` pair. The `powernode-agent service` loop
+  (`extensions/system/agent/internal/runtime/service.go`) loads this config at startup from
+  `tcpfwd.DefaultConfigPath` (`/etc/powernode/tcpfwd/forwards.json`) — load-at-start only; reload
+  on a changed file is not yet supported and requires an agent restart. The server-side writer —
+  `Federation::TcpForwarderConfigWriter`
+  (`extensions/system/server/app/services/federation/tcp_forwarder_config_writer.rb`, built in
+  increment 3) — as of increment 4 selects both site-local subscriptions and any `tcp`-protocol
+  subscription (site-local or not), matching `ServiceRouteWriter`'s narrowed exclusion so exactly
+  one writer runs per subscription. It remains the target for any future UDP forwarding needs
+  (`tcpfwd` v2, explicitly deferred).
+  - **Listen-address note for non-site-local `tcp` subscriptions:** unlike site-local
+    `local_hostname` (which already embeds a port, e.g. `localhost:5432`), a non-site-local
+    subscription's `local_hostname` is a bare hostname with no port (it was written for
+    `Host()`/`HostSNI()` rules). `TcpForwarderConfigWriter` pairs it verbatim with the
+    subscription's own `backend_port` to form the bind address — a conservative choice with no
+    plan/runbook precedent (flagged for follow-up; see the increment 4 report).
 
-**Rule of thumb once increments 3-4 land:** a federation subscription with `protocol: "tls"` rides
-Traefik SNI passthrough; a subscription with `protocol: "tcp"` (or a site-local one, either
-protocol) rides `tcpfwd`. Never the reverse.
+**Rule of thumb:** a federation subscription with `protocol: "tls"` rides Traefik SNI passthrough;
+a subscription with `protocol: "tcp"` (or a site-local one, either protocol) rides `tcpfwd`. Never
+the reverse.
 
 ## Path E — Site-local `/svc/<slug>` plane
 
@@ -180,8 +196,8 @@ federate it via Path D instead.
 | HTTP(S), publish under a public hostname | A | `system_expose_service_publicly` (VIP+DNAT+ACME) | Built |
 | HTTP(S), site-local only, own users | E | `Sdwan::Service` local facet + ForwardAuth | Built |
 | TLS-carrying TCP, publish under a public hostname | B | `Sdwan::Service.edge_mode` + Traefik SNI router | Planned — increment 5 |
-| Federated subscription, `protocol: tls` | D | `Federation::ServiceRouteWriter` (Traefik SNI passthrough) | Built, buggy — fixed in increment 4 |
-| Federated subscription, `protocol: tcp` | D | `Federation::TcpForwarderConfigWriter` → `tcpfwd` | Not built — increment 3 (writer), 4 (cutover) |
+| Federated subscription, `protocol: tls` | D | `Federation::ServiceRouteWriter` (Traefik SNI passthrough) | Built |
+| Federated subscription, `protocol: tcp` | D | `Federation::TcpForwarderConfigWriter` → `tcpfwd` | Built |
 | Site-local subscription (any protocol) | D | `tcpfwd` (already excluded from Traefik) | Built |
 | UDP (any use case) | C | `Sdwan::PortMapping` → `NatCompiler` → nftables DNAT | Built |
 | Plaintext (non-SNI) TCP | C | Same as UDP | Built |
@@ -194,9 +210,11 @@ federate it via Path D instead.
 - **Path C:** `nft list table inet powernode_sdwan` on the hub peer; confirm the DNAT rule for
   the mapping's `listen_port`/`protocol` targets the expected overlay address.
 - **Path D:** for `tls` subscriptions, `openssl s_client -connect <subscriber-host>:443 -servername
-  <local_hostname>` should reach the remote offering's backend once passthrough is fixed
-  (increment 4); for `tcp`/site-local, once `tcpfwd` is wired (increment 3), confirm the forwarder
-  process has the expected `(listen, backend)` pairs loaded (agent logs / `tcpfwd` config file).
+  <local_hostname>` should reach the remote offering's backend via SNI passthrough; for
+  `tcp`/site-local, confirm the forwarder process has the expected `(listen, backend)` pairs
+  loaded (agent logs / `tcpfwd` config file at `tcpfwd.DefaultConfigPath`) — note the daemon only
+  loads at agent-service startup (no reload-on-change yet), so a config change needs an agent
+  restart to take effect.
 - **Path E:** see [`publish-service.md`](./publish-service.md#verify) — unauthenticated request
   should 401 via ForwardAuth, authenticated should reach the backend.
 
