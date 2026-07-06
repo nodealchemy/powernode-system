@@ -49,7 +49,9 @@ RSpec.describe Ai::Tools::SystemIngressTool do
         "system_get_service",
         "system_update_service",
         "system_delete_service",
-        "system_unexpose_service_local"
+        "system_unexpose_service_local",
+        "system_expose_service_public_tcp",
+        "system_unexpose_service_public_tcp"
       )
     end
 
@@ -120,6 +122,28 @@ RSpec.describe Ai::Tools::SystemIngressTool do
 
       expect(local_executor).to have_received(:execute).with(service_id: "svc-1", auth_mode: "authenticated")
       expect(result.dig(:data, :local_path)).to eq("/svc/grafana")
+    end
+
+    it "routes system_expose_service_public_tcp to ExposeServicePublicTcpExecutor, forcing enabled: true" do
+      public_tcp_executor = instance_double("System::Ai::Skills::ExposeServicePublicTcpExecutor")
+      stub_executor("System::Ai::Skills::ExposeServicePublicTcpExecutor",
+                    public_tcp_executor, { success: true, data: { public_enabled: true } })
+
+      result = tool.execute(params: { action: "system_expose_service_public_tcp", service_id: "svc-1" })
+
+      expect(public_tcp_executor).to have_received(:execute).with(service_id: "svc-1", enabled: true)
+      expect(result.dig(:data, :public_enabled)).to be true
+    end
+
+    it "routes system_unexpose_service_public_tcp to ExposeServicePublicTcpExecutor, forcing enabled: false" do
+      public_tcp_executor = instance_double("System::Ai::Skills::ExposeServicePublicTcpExecutor")
+      stub_executor("System::Ai::Skills::ExposeServicePublicTcpExecutor",
+                    public_tcp_executor, { success: true, data: { public_enabled: false } })
+
+      result = tool.execute(params: { action: "system_unexpose_service_public_tcp", service_id: "svc-1" })
+
+      expect(public_tcp_executor).to have_received(:execute).with(service_id: "svc-1", enabled: false)
+      expect(result.dig(:data, :public_enabled)).to be false
     end
 
     it "ignores undeclared extra params instead of raising ArgumentError (fix #3)" do
@@ -230,17 +254,18 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(svc.reload.local_enabled).to be false
     end
 
-    # Path B (public_enabled) — campaign 019f3458 increment 5. edge_mode/
-    # client_auth are inert TLS-transport plumbing (identity + backend, same
-    # risk class as protocol/backend_port) and are wired through inline CRUD
-    # like everything else in this section. public_enabled is the actual
-    # exposure-semantics toggle (same risk class as local_enabled, arguably
-    # higher — public internet, not just this account's ForwardAuth-gated
-    # users) and is deliberately NOT wired here — no existing approval-gated
-    # executor owns Path B today (system_expose_service_publicly is Path A's
-    # HTTP+VIP+DNAT flow; system_expose_service_local is Path E's /svc plane;
-    # neither touches edge_mode/client_auth/public_enabled). See the
-    # increment 5 completion report for the gap disposition.
+    # Path B (public_enabled) — campaign 019f3458 increments 5 + 10-prereq.
+    # edge_mode/client_auth are inert TLS-transport plumbing (identity +
+    # backend, same risk class as protocol/backend_port) and are wired through
+    # inline CRUD like everything else in this section. public_enabled is the
+    # actual exposure-semantics toggle (same risk class as local_enabled,
+    # arguably higher — public internet, not just this account's
+    # ForwardAuth-gated users) and is deliberately NOT wired here in EITHER
+    # direction — it is owned end to end by ExposeServicePublicTcpExecutor
+    # (system_expose_service_public_tcp / system_unexpose_service_public_tcp),
+    # not this inline CRUD surface. See that executor's spec + the request
+    # spec's "system_expose_service_public_tcp / system_unexpose_service_public_tcp"
+    # block for its coverage.
     it "creates a service with edge_mode/client_auth (inert plumbing, not exposure)" do
       result = tool.execute(params: {
         action: "system_create_service", slug: "tls-svc", name: "TLS Svc", protocol: "tls",

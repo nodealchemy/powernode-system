@@ -2,17 +2,19 @@
 
 require "rails_helper"
 
-# REQUEST-level coverage for expose_service_publicly / expose_service_local,
-# driven through the REAL MCP dispatch path:
+# REQUEST-level coverage for expose_service_publicly / expose_service_local /
+# expose_service_public_tcp (Path B), driven through the REAL MCP dispatch path:
 #
 #   POST /api/v1/mcp/message (tools/call)
 #     -> Ai::Tools::McpPlatformToolRegistrar.execute_tool (permission floor)
 #     -> Ai::Tools::SystemIngressTool#call (per-action permission + routing)
-#     -> System::Ai::Skills::{ExposeServicePubliclyExecutor,ExposeServiceLocalExecutor}
+#     -> System::Ai::Skills::{ExposeServicePubliclyExecutor,ExposeServiceLocalExecutor,
+#                             ExposeServicePublicTcpExecutor}
 #
 # The existing specs at
 #   extensions/system/server/spec/services/system/ai/skills/expose_service_publicly_executor_spec.rb
 #   extensions/system/server/spec/services/system/ai/skills/expose_service_local_executor_spec.rb
+#   extensions/system/server/spec/services/system/ai/skills/expose_service_public_tcp_executor_spec.rb
 #   extensions/system/server/spec/services/ai/tools/system_ingress_tool_spec.rb
 # already cover orchestration/routing/permission-gating logic directly against
 # the executor/tool objects. This spec instead asserts the HTTP/JSON-RPC
@@ -24,7 +26,8 @@ require "rails_helper"
 # ReverseProxyComposeExecutor, Sdwan::ServiceExposureWriter) are stubbed at the
 # same instance boundary the service-level specs use — this spec is about the
 # transport/auth/routing layer, not re-proving orchestration internals.
-RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly / expose_service_local)",
+RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly / expose_service_local / " \
+               "expose_service_public_tcp)",
                type: :request do
   let(:mcp_endpoint) { "/api/v1/mcp/message" }
 
@@ -240,6 +243,131 @@ RSpec.describe "MCP tools/call — system_ingress_tool (expose_service_publicly 
         payload = tool_payload(body)
         expect(payload["success"]).to be false
         expect(payload["error"]).to match(/requires slug, name, and backend_port/)
+      end
+    end
+  end
+
+  # ==========================================================================
+  # system_expose_service_public_tcp / system_unexpose_service_public_tcp
+  # (Path B, campaign 019f3458 increment 10 prerequisite — improvement
+  # 019f34f9). Both actions route to the SAME executor,
+  # ExposeServicePublicTcpExecutor, which is the sole owner of
+  # Sdwan::Service#public_enabled in both directions (system_update_service's
+  # inline CRUD refuses to touch it — see its own "does NOT flip
+  # public_enabled" spec in spec/services/ai/tools/system_ingress_tool_spec.rb).
+  # ==========================================================================
+  describe "system_expose_service_public_tcp / system_unexpose_service_public_tcp" do
+    let(:dns_cred) { create(:system_acme_dns_credential, :valid, account: account) }
+    let!(:cert) do
+      create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
+                                               common_name: "tls.example.test")
+    end
+
+    def create_tls_service!(**attrs)
+      ::Sdwan::Service.create!({
+        account: account, slug: "tls-svc-#{SecureRandom.hex(3)}", name: "TLS Service",
+        protocol: "tls", backend_host: "10.30.0.7", backend_port: 5432, local_certificate: cert
+      }.merge(attrs))
+    end
+
+    before do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_return(output_path: "/tmp/local-services.yaml", route_count: 1)
+    end
+
+    describe "happy path" do
+      it "enables public exposure over the real MCP path" do
+        svc = create_tls_service!
+
+        call_tool("system_expose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
+
+        expect(response).to have_http_status(:ok)
+        body = json_response
+        expect(body["result"]).not_to have_key("isError")
+
+        payload = tool_payload(body)
+        expect(payload["success"]).to be true
+        expect(payload.dig("data", "public_enabled")).to be true
+        expect(svc.reload.public_enabled).to be true
+      end
+
+      it "disables public exposure over the real MCP path" do
+        svc = create_tls_service!(public_enabled: true)
+
+        call_tool("system_unexpose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
+
+        expect(response).to have_http_status(:ok)
+        body = json_response
+        expect(body["result"]).not_to have_key("isError")
+
+        payload = tool_payload(body)
+        expect(payload["success"]).to be true
+        expect(payload.dig("data", "public_enabled")).to be false
+        expect(svc.reload.public_enabled).to be false
+      end
+    end
+
+    describe "permission denial" do
+      it "returns success: false naming system.ingress.manage when the caller has only the read floor" do
+        svc = create_tls_service!
+        read_only_user = user_with_permissions("system.ingress.read", account: account)
+
+        call_tool("system_expose_service_public_tcp", { "service_id" => svc.id },
+                  headers: headers_for(read_only_user))
+
+        expect(response).to have_http_status(:ok)
+        body = json_response
+        expect(body.dig("result", "isError")).to be true
+        payload = tool_payload(body)
+        expect(payload["success"]).to be false
+        expect(payload["error"]).to match(/permission denied: system\.ingress\.manage/)
+        expect(svc.reload.public_enabled).to be false
+      end
+    end
+
+    describe "malformed input" do
+      it "rejects a non-tls protocol with a clear message" do
+        svc = create_tls_service!(protocol: "https", backend_vip_id: nil, backend_host: "10.0.0.1")
+
+        call_tool("system_expose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
+
+        body = json_response
+        expect(body.dig("result", "isError")).to be true
+        payload = tool_payload(body)
+        expect(payload["success"]).to be false
+        expect(payload["error"]).to match(/requires the tls protocol/)
+      end
+    end
+
+    # Approval gating — DOCUMENTS CURRENT BEHAVIOR, same pinning as the
+    # expose_service_publicly / expose_service_local block below (019f34a3:
+    # requires_approval is declared on the descriptor but nothing on this
+    # dispatch path enforces it — SystemIngressTool#call -> BaseSkillExecutor
+    # #execute never checks it or creates an Ai::ApprovalRequest).
+    describe "approval gating (documents current behavior — see 019f34a3)" do
+      it "executes system_expose_service_public_tcp immediately, with no ApprovalRequest created" do
+        expect(System::Ai::Skills::ExposeServicePublicTcpExecutor.descriptor[:requires_approval]).to be true
+        svc = create_tls_service!
+
+        expect do
+          call_tool("system_expose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
+        end.not_to change { ::Ai::ApprovalRequest.count }
+
+        body = json_response
+        expect(body["result"]).not_to have_key("isError")
+        expect(tool_payload(body)["success"]).to be true
+      end
+
+      it "executes system_unexpose_service_public_tcp immediately, with no ApprovalRequest created" do
+        svc = create_tls_service!(public_enabled: true)
+
+        expect do
+          call_tool("system_unexpose_service_public_tcp", { "service_id" => svc.id }, headers: headers_for(manager))
+        end.not_to change { ::Ai::ApprovalRequest.count }
+
+        body = json_response
+        expect(body["result"]).not_to have_key("isError")
+        expect(tool_payload(body)["success"]).to be true
       end
     end
   end

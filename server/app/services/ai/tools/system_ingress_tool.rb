@@ -15,6 +15,8 @@
 #   - system_expose_service_publicly     → ExposeServicePubliclyExecutor (executor)
 #   - system_expose_service_local        → ExposeServiceLocalExecutor    (executor, approval-gated)
 #   - system_acme_provision_certificate  → AcmeCertificateProvisionExecutor (executor)
+#   - system_expose_service_public_tcp   → ExposeServicePublicTcpExecutor (executor, approval-gated) — Path B ON
+#   - system_unexpose_service_public_tcp → ExposeServicePublicTcpExecutor (executor, approval-gated) — Path B OFF
 #   - system_create_service / list / get / update / delete                (inline CRUD)
 #   - system_unexpose_service_local                                       (inline)
 #
@@ -23,6 +25,10 @@
 # `system_expose_service_local` executor. Inline CRUD owns identity + overlay
 # backend plumbing + read + lifecycle, and `system_unexpose_service_local`
 # is the fail-safe "turn it off" (no approval — disabling is deny-by-default).
+# Path B (public_enabled) diverges from that fail-safe pattern: BOTH directions
+# — expose and unexpose — are owned end to end by ExposeServicePublicTcpExecutor,
+# never inline CRUD, because disabling a live public route carries real risk
+# too (unlike turning off a ForwardAuth-gated local exposure).
 module Ai
   module Tools
     class SystemIngressTool < BaseTool
@@ -38,7 +44,9 @@ module Ai
         "system_delete_service"             => "system.ingress.manage",
         "system_unexpose_service_local"     => "system.ingress.manage",
         "system_list_services"              => "system.ingress.read",
-        "system_get_service"                => "system.ingress.read"
+        "system_get_service"                => "system.ingress.read",
+        "system_expose_service_public_tcp"   => "system.ingress.manage",
+        "system_unexpose_service_public_tcp" => "system.ingress.manage"
       }.freeze
 
       # Maps each executor-backed action to the executor class that implements it.
@@ -46,7 +54,21 @@ module Ai
         "system_reverse_proxy_compose"      => "System::Ai::Skills::ReverseProxyComposeExecutor",
         "system_expose_service_publicly"    => "System::Ai::Skills::ExposeServicePubliclyExecutor",
         "system_expose_service_local"       => "System::Ai::Skills::ExposeServiceLocalExecutor",
-        "system_acme_provision_certificate" => "System::Ai::Skills::AcmeCertificateProvisionExecutor"
+        "system_acme_provision_certificate" => "System::Ai::Skills::AcmeCertificateProvisionExecutor",
+        "system_expose_service_public_tcp"   => "System::Ai::Skills::ExposeServicePublicTcpExecutor",
+        "system_unexpose_service_public_tcp" => "System::Ai::Skills::ExposeServicePublicTcpExecutor"
+      }.freeze
+
+      # Both public-TCP actions route to the SAME executor
+      # (ExposeServicePublicTcpExecutor) — the MCP action name IS the
+      # enable/disable signal, so it is forced here rather than left to
+      # caller-supplied params (a "system_unexpose_service_public_tcp" call
+      # must always disable, regardless of what params say). Empty for every
+      # other action — `run_executor` merges this on top of the normal
+      # declared-input filtering with no behavior change for them.
+      ACTION_EXECUTOR_OVERRIDES = {
+        "system_expose_service_public_tcp"   => { enabled: true },
+        "system_unexpose_service_public_tcp" => { enabled: false }
       }.freeze
 
       # Inline (non-executor) CRUD/lifecycle actions → private handler methods.
@@ -94,15 +116,18 @@ module Ai
             required_group:      { type: "string",  required: false },
             strip_prefix:        { type: "boolean", required: false },
             local_enabled:       { type: "boolean", required: false },
-            # Path B (public TLS-carrying TCP, campaign 019f3458 increment 5).
-            # edge_mode/client_auth are inert TLS-transport plumbing, wired
-            # through create/update like protocol/backend_port. public_enabled
-            # is read-only here (list filter + visibility) — it is the actual
-            # exposure-semantics toggle and has no owning executor yet; see
+            # Path B (public TLS-carrying TCP, campaign 019f3458 increment 5 +
+            # increment 10 prerequisite). edge_mode/client_auth are inert
+            # TLS-transport plumbing, wired through create/update like
+            # protocol/backend_port. public_enabled is read-only here (list
+            # filter + visibility) — it is owned end to end by
+            # system_expose_service_public_tcp / system_unexpose_service_public_tcp
+            # (ExposeServicePublicTcpExecutor), never this CRUD surface; see
             # system_update_service's action_definitions entry below.
             edge_mode:           { type: "string",  required: false },
             client_auth:         { type: "string",  required: false },
-            public_enabled:      { type: "boolean", required: false }
+            public_enabled:      { type: "boolean", required: false },
+            enabled:             { type: "boolean", required: false }
           }
         }
       end
@@ -159,8 +184,20 @@ module Ai
               certificate_id:      { type: "string",  required: false, description: "System::AcmeCertificate id whose CN to mount under (default: account primary)" }
             }
           },
+          "system_expose_service_public_tcp" => {
+            description: "Enable a service's public (Path B) TLS-carrying TCP exposure via Traefik HostSNI routing — validates protocol tls, a resolvable host, and (under edge_mode terminate) a matching valid ACME certificate, then flips public_enabled on and regenerates the reverse proxy. Approval-gated; the sole owner of turning Path B ON (in either direction — see system_unexpose_service_public_tcp).",
+            parameters: {
+              service_id: { type: "string", required: true, description: "Sdwan::Service id (protocol must be tls)" }
+            }
+          },
+          "system_unexpose_service_public_tcp" => {
+            description: "Disable a service's public (Path B) TLS-carrying TCP exposure and regenerate the reverse proxy. Approval-gated (unlike the fail-safe, no-approval system_unexpose_service_local) — the sole owner of turning Path B OFF; system_update_service refuses public_enabled in either direction.",
+            parameters: {
+              service_id: { type: "string", required: true, description: "Sdwan::Service id" }
+            }
+          },
           "system_create_service" => {
-            description: "Create an Sdwan::Service (identity + overlay backend). Does NOT expose it — use system_expose_service_local to publish it at /svc/<slug>. For Path B (public TLS-carrying TCP), edge_mode/client_auth may be pre-provisioned here, but public_enabled itself has no owning tool yet (see system_update_service's description).",
+            description: "Create an Sdwan::Service (identity + overlay backend). Does NOT expose it — use system_expose_service_local to publish it at /svc/<slug>, or system_expose_service_public_tcp for Path B public TLS-carrying TCP. edge_mode/client_auth may be pre-provisioned here; public_enabled itself is owned by system_expose_service_public_tcp / system_unexpose_service_public_tcp, not this action.",
             parameters: {
               slug:           { type: "string",  required: true,  description: "URL slug (lowercase alnum + hyphen, <=64, not a reserved platform path)" },
               name:           { type: "string",  required: true,  description: "Service display name" },
@@ -188,7 +225,7 @@ module Ai
             }
           },
           "system_update_service" => {
-            description: "Update an Sdwan::Service's identity + backend plumbing (name, protocol, status, backend, Path B edge_mode/client_auth). Exposure semantics (local_enabled, auth mode, and public_enabled) are NOT settable here. local_enabled is owned by system_expose_service_local; public_enabled (Path B) has no owning executor yet — a known gap, not silently bypassable through this tool. Regenerates the reverse proxy when the service is locally and/or publicly exposed.",
+            description: "Update an Sdwan::Service's identity + backend plumbing (name, protocol, status, backend, Path B edge_mode/client_auth). Exposure semantics (local_enabled, auth mode, and public_enabled) are NOT settable here. local_enabled is owned by system_expose_service_local; public_enabled (Path B) is owned by system_expose_service_public_tcp / system_unexpose_service_public_tcp — deliberately not settable through this CRUD action in either direction. Regenerates the reverse proxy when the service is locally and/or publicly exposed.",
             parameters: {
               service_id:     { type: "string",  required: true,  description: "Sdwan::Service id" },
               name:           { type: "string",  required: false, description: "New display name" },
@@ -342,7 +379,7 @@ module Ai
 
       def run_executor(action, params)
         klass = ACTION_EXECUTORS.fetch(action).constantize
-        inputs = executor_inputs(klass, params)
+        inputs = executor_inputs(klass, params).merge(ACTION_EXECUTOR_OVERRIDES.fetch(action, {}))
         klass.new(account: @account, agent: @agent, user: @user).execute(**inputs)
       end
 

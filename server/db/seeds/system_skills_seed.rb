@@ -695,6 +695,17 @@ SKILLS_DATA = [
     tags: %w[platform sdwan service expose local forward-auth reverse-proxy svc],
     system_prompt: "Publish an internal/overlay service to the site's OWN authenticated users at a /svc/<slug> path (NOT the public internet — use Expose Service Publicly for that). Creates/updates an Sdwan::Service, turns on its local-exposure facet (auth mode public/authenticated/scoped), and regenerates the reverse proxy. Approval-gated."
   },
+  {
+    name: "Expose Service Public TCP",
+    slug: "system-expose-service-public-tcp",
+    description: "Toggle a backend service's public (Path B) TLS-carrying TCP exposure via Traefik HostSNI routing — validates protocol tls, a resolvable host, and (under edge_mode terminate) a matching valid ACME certificate before enabling; disabling has no preconditions.",
+    category: "devops",
+    subdomain: "platform-deployment",
+    executor: "System::Ai::Skills::ExposeServicePublicTcpExecutor",
+    invocation_mode: "one_shot",
+    tags: %w[platform sdwan service expose public path-b tls tcp traefik hostsni reverse-proxy],
+    system_prompt: "Enable or disable a service's public Path B (TLS-carrying TCP via Traefik SNI) exposure. EXPOSE (enabled: true, default) validates protocol tls, a resolvable HostSNI host, and — under edge_mode terminate — a matching valid ACME certificate, then flips Sdwan::Service#public_enabled on and regenerates the reverse proxy. UNEXPOSE (enabled: false) simply disables it. NOT for HTTP(S) (use Expose Service Publicly) or the site-local /svc plane (use Expose Service Locally). Approval-gated in both directions."
+  },
   # ─── Phase 3 (Federation & Multi-Site) — SDWAN-first federation ────────
   # Five executors landed in Phase 3. Their descriptors all declare the
   # tighter internal category "federation"; the platform Ai::Skill enum has
