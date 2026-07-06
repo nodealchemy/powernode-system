@@ -130,6 +130,10 @@ module System
           instance: instance, node: node,
           payload: { cloud_instance_id: cloud_result[:cloud_instance_id] }
         )
+        # Increment 13 — provision-time SDWAN auto-enrollment. Best-effort:
+        # an overlay-join failure must never fail an otherwise-successful
+        # provision, same posture as the metering/event calls above.
+        auto_enroll_sdwan_peer!(instance, node)
 
         Runtime::Result.ok(data: {
           instance: instance,
@@ -225,6 +229,15 @@ module System
     # silently pretend a transition happened) and skip re-metering so an
     # idempotent retry can't double-close the instance's accrued hours.
     def finalize_termination!(instance)
+      # Increment 13 — detach unconditionally, ahead of the may_terminate?
+      # guard: every call into finalize_termination! (fresh terminate, the
+      # idempotent NotFound/ResourceNotFoundError paths, and a redundant
+      # retry against an already-terminated row) means the underlying
+      # instance is gone or going — a leaked SDWAN peer must not survive
+      # any of those, and Sdwan::PeerDetacher is itself a no-op once the
+      # peer is already gone.
+      auto_detach_sdwan_peer!(instance)
+
       unless instance.may_terminate?
         Rails.logger.warn("[ProvisioningService] Instance #{instance.name} already #{instance.status} — skipping terminate transition and meter event")
         return
@@ -409,6 +422,70 @@ module System
       ::Billing::ProvisioningMeterService.record_event(node_instance: instance, event: event)
     rescue StandardError => e
       Rails.logger.warn("[ProvisioningService] meter #{event} failed: #{e.class}: #{e.message}")
+    end
+
+    # Increment 13 — resolves the opt-in SDWAN overlay for a just-provisioned
+    # node. Precedence: instance-pool metadata (System::InstancePool#metadata
+    # ["sdwan_network_id"]) overrides the NodeTemplate default, so a single
+    # shared template can seed pools bound to different overlays. Neither
+    # NodeTemplate nor InstancePool need a migration — both already carry a
+    # JSONB config/metadata blob (mirrors the existing node_template.config
+    # ["init_script"] / pool.metadata["ready_ttl_seconds"] idiom used
+    # elsewhere in this file and in InstancePoolService).
+    #
+    # Returns nil when no opt-in is configured, or when the configured id
+    # doesn't resolve to an Sdwan::Network in this node's account (a
+    # cross-account id can never come from this account's own UI/API, but a
+    # dangling id after a network was deleted must not raise here).
+    def sdwan_network_for(node)
+      pool_config = node.config.is_a?(Hash) ? node.config : {}
+      pool_id = pool_config["instance_pool_id"] || pool_config[:instance_pool_id]
+
+      if pool_id.present?
+        pool = ::System::InstancePool.find_by(id: pool_id)
+        pool_metadata = pool&.metadata.is_a?(Hash) ? pool.metadata : {}
+        pool_network_id = pool_metadata["sdwan_network_id"] || pool_metadata[:sdwan_network_id]
+        return ::Sdwan::Network.find_by(id: pool_network_id, account_id: node.account_id) if pool_network_id.present?
+      end
+
+      template_config = node.node_template&.config.is_a?(Hash) ? node.node_template.config : {}
+      template_network_id = template_config["sdwan_network_id"] || template_config[:sdwan_network_id]
+      return nil if template_network_id.blank?
+
+      ::Sdwan::Network.find_by(id: template_network_id, account_id: node.account_id)
+    end
+
+    # Best-effort — an overlay-join failure (or the Sdwan extension being
+    # absent from a given deployment) must never fail an otherwise-successful
+    # provision. Mirrors the `defined?(::Billing::ProvisioningQuotaGuard)`
+    # extension-boundary guard used earlier in this file.
+    def auto_enroll_sdwan_peer!(instance, node)
+      return unless defined?(::Sdwan::PeerEnroller)
+
+      network = sdwan_network_for(node)
+      return unless network
+
+      # Idempotent — a redundant call (e.g. a retried finalize) must not
+      # double-enroll the same instance into the same overlay.
+      return if ::Sdwan::Peer.exists?(sdwan_network_id: network.id, node_instance_id: instance.id)
+
+      ::Sdwan::PeerEnroller.call(network: network, node_instance: instance)
+    rescue StandardError => e
+      Rails.logger.error("[ProvisioningService] SDWAN auto-enroll failed for instance #{instance.id}: #{e.class}: #{e.message}")
+    end
+
+    # Best-effort inverse of auto_enroll_sdwan_peer! — called from
+    # finalize_termination! for every terminate path (pool drain, pool
+    # recycle, direct operator/MCP terminate). Sdwan::PeerDetacher is itself
+    # a no-op when the instance has no SDWAN membership, so the exists?
+    # guard here is purely to skip the (cheap) call in the common case.
+    def auto_detach_sdwan_peer!(instance)
+      return unless defined?(::Sdwan::PeerDetacher)
+      return unless ::Sdwan::Peer.exists?(node_instance_id: instance.id)
+
+      ::Sdwan::PeerDetacher.call(node_instance: instance)
+    rescue StandardError => e
+      Rails.logger.error("[ProvisioningService] SDWAN auto-detach failed for instance #{instance.id}: #{e.class}: #{e.message}")
     end
 
     def normalize_status(status)

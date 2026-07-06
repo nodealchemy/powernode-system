@@ -166,6 +166,20 @@ FactoryBot.define do
     end
   end
 
+  # System::NodeInstancePeer — central peer registry row for a node-instance
+  # that has self-announced as an agent peer (mention picker, fleet autonomy,
+  # SDWAN capability mirroring). account_id is a real column here (unlike
+  # NodeInstance, it is NOT delegated), so it defaults from node_instance
+  # but can be overridden directly.
+  factory :system_node_instance_peer, class: "System::NodeInstancePeer" do
+    association :node_instance, factory: :system_node_instance
+    account { node_instance.account }
+    sequence(:handle) { |n| "peer-#{n}" }
+    status { "registered" }
+    enabled { false }
+    capabilities { {} }
+  end
+
   # System::ProviderVolumeType
   factory :system_provider_volume_type, class: "System::ProviderVolumeType" do
     association :account

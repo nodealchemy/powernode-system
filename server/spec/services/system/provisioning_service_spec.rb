@@ -273,4 +273,150 @@ RSpec.describe System::ProvisioningService do
       end
     end
   end
+
+  # Increment 13 — SDWAN provision-time auto-enrollment. Opt-in is per
+  # NodeTemplate#config["sdwan_network_id"] (pool metadata overrides when the
+  # node belongs to a pool). ProvisioningService.provision_instance /
+  # terminate_instance are the single choke points every provisioning path
+  # (InstancePoolService, MCP system_fleet_tool, agent_fleet_mission_service,
+  # federation spawner, ...) already funnels through — wiring enrollment here
+  # covers pool AND non-pool instances without touching each caller.
+  describe "SDWAN provision-time auto-enrollment" do
+    let(:sdwan_account) { account }
+    let(:network) { create(:sdwan_network, account: sdwan_account) }
+
+    before do
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-sdwan-1", status: "running")
+    end
+
+    context "when the node_template declares sdwan_network_id" do
+      before { node.node_template.update!(config: { "sdwan_network_id" => network.id }) }
+
+      it "enrolls an Sdwan::Peer for the provisioned instance" do
+        result = provision
+
+        instance = result.data[:instance]
+        peer = Sdwan::Peer.find_by(node_instance_id: instance.id, sdwan_network_id: network.id)
+        expect(peer).not_to be_nil
+      end
+
+      it "still returns a successful provision result" do
+        result = provision
+        expect(result.success?).to be(true)
+      end
+    end
+
+    context "when neither template nor pool declares sdwan_network_id" do
+      it "does not create any Sdwan::Peer" do
+        expect { provision }.not_to change(Sdwan::Peer, :count)
+      end
+    end
+
+    context "when the instance belongs to a pool whose metadata declares sdwan_network_id" do
+      let(:pool_region)   { create(:system_provider_region) }
+      let(:pool_type)     { create(:system_provider_instance_type) }
+      let(:pool) do
+        System::InstancePool.create!(
+          account: account, node_template: node.node_template, name: "sdwan-pool",
+          target_size: 1, min_size: 0, max_size: 2, lifecycle_class: "ephemeral",
+          status: "active", provider_region: pool_region, provider_instance_type: pool_type,
+          metadata: { "sdwan_network_id" => network.id }
+        )
+      end
+
+      before { node.update!(config: { "instance_pool_id" => pool.id }) }
+
+      it "enrolls via the pool's metadata even though the template has no flag" do
+        result = provision
+
+        instance = result.data[:instance]
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id, sdwan_network_id: network.id)).to be(true)
+      end
+
+      it "pool metadata takes precedence over a conflicting template flag" do
+        other_network = create(:sdwan_network, account: account)
+        node.node_template.update!(config: { "sdwan_network_id" => other_network.id })
+
+        result = provision
+
+        instance = result.data[:instance]
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id, sdwan_network_id: network.id)).to be(true)
+        expect(Sdwan::Peer.exists?(node_instance_id: instance.id, sdwan_network_id: other_network.id)).to be(false)
+      end
+    end
+
+    context "when PeerEnroller raises" do
+      before do
+        node.node_template.update!(config: { "sdwan_network_id" => network.id })
+        allow(Sdwan::PeerEnroller).to receive(:call).and_raise(StandardError, "enroll boom")
+      end
+
+      it "does not fail the provision" do
+        result = provision
+        expect(result.success?).to be(true)
+      end
+
+      it "logs the failure instead of raising" do
+        allow(Rails.logger).to receive(:error)
+        provision
+        expect(Rails.logger).to have_received(:error).with(/SDWAN auto-enroll failed/)
+      end
+    end
+
+    it "is idempotent — never enrolls a second peer for the same instance+network" do
+      node.node_template.update!(config: { "sdwan_network_id" => network.id })
+      result = provision
+      instance = result.data[:instance]
+
+      expect do
+        described_class.new.send(:auto_enroll_sdwan_peer!, instance, node)
+      end.not_to change(Sdwan::Peer, :count)
+    end
+  end
+
+  describe "SDWAN detach on terminate" do
+    let(:network) { create(:sdwan_network, account: account) }
+    let(:instance) do
+      create(:system_node_instance, node: node, status: "running",
+             config: { "cloud_instance_id" => "i-detach-1" })
+    end
+
+    before do
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter)
+      allow(adapter).to receive(:terminate_instance).and_return({ success: true })
+      Sdwan::PeerEnroller.call(network: network, node_instance: instance)
+    end
+
+    def terminate
+      described_class.terminate_instance(instance: instance)
+    end
+
+    it "detaches the peer on successful terminate" do
+      expect { terminate }.to change(Sdwan::Peer, :count).by(-1)
+    end
+
+    it "still finalizes termination when there is no SDWAN peer" do
+      Sdwan::PeerDetacher.call(node_instance: instance) # pre-clear
+      result = terminate
+      expect(result.success?).to be(true)
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    it "does not fail termination when detach raises" do
+      allow(Sdwan::PeerDetacher).to receive(:call).and_raise(StandardError, "detach boom")
+
+      result = terminate
+
+      expect(result.success?).to be(true)
+      expect(instance.reload.status).to eq("terminated")
+    end
+
+    it "also detaches on the idempotent NotFound (already-gone) terminate path" do
+      allow(adapter).to receive(:terminate_instance)
+        .and_return({ success: false, error_code: "NotFound", error: "gone" })
+
+      expect { terminate }.to change(Sdwan::Peer, :count).by(-1)
+    end
+  end
 end
