@@ -680,6 +680,123 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # ─── Campaign 019f3458 increment 6: hardened DNAT tier param wiring ───
+
+  describe "system_sdwan_create_port_mapping (hardening params)" do
+    let(:network)    { create(:sdwan_network, account: account) }
+    let(:hub_peer)   { create(:sdwan_peer, :hub, account: account, network: network) }
+    let(:target)     { create(:sdwan_peer, account: account, network: network) }
+
+    it "accepts rate_limit, max_connections, and source_cidrs and surfaces them on the full serializer" do
+      r = call(
+        "system_sdwan_create_port_mapping",
+        network_id: network.id, hub_peer_id: hub_peer.id, target_peer_id: target.id,
+        name: "hardened-mapping", listen_port: 6000, protocol: "tcp",
+        rate_limit: 100, max_connections: 25, source_cidrs: [ "203.0.113.0/24" ]
+      )
+      expect(r[:success]).to be true
+      pm = r[:data][:port_mapping]
+      expect(pm[:rate_limit]).to eq(100)
+      expect(pm[:max_connections]).to eq(25)
+      expect(pm[:source_cidrs]).to eq([ "203.0.113.0/24" ])
+
+      persisted = ::Sdwan::PortMapping.find(pm[:id])
+      expect(persisted.rate_limit).to eq(100)
+      expect(persisted.max_connections).to eq(25)
+      expect(persisted.source_cidrs).to eq([ "203.0.113.0/24" ])
+    end
+
+    it "defaults all three to unrestricted (nil/[]) when omitted" do
+      r = call(
+        "system_sdwan_create_port_mapping",
+        network_id: network.id, hub_peer_id: hub_peer.id, target_peer_id: target.id,
+        name: "plain-mapping", listen_port: 6001, protocol: "tcp"
+      )
+      expect(r[:success]).to be true
+      pm = r[:data][:port_mapping]
+      expect(pm[:rate_limit]).to be_nil
+      expect(pm[:max_connections]).to be_nil
+      expect(pm[:source_cidrs]).to eq([])
+    end
+
+    it "rejects an invalid CIDR through the tool path with the model's per-entry error" do
+      r = call(
+        "system_sdwan_create_port_mapping",
+        network_id: network.id, hub_peer_id: hub_peer.id, target_peer_id: target.id,
+        name: "bad-cidr-mapping", listen_port: 6002, protocol: "tcp",
+        source_cidrs: [ "not-a-cidr" ]
+      )
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/invalid CIDR entry/)
+      expect(::Sdwan::PortMapping.exists?(name: "bad-cidr-mapping")).to be false
+    end
+
+    it "rejects a non-positive rate_limit through the tool path" do
+      r = call(
+        "system_sdwan_create_port_mapping",
+        network_id: network.id, hub_peer_id: hub_peer.id, target_peer_id: target.id,
+        name: "bad-rate-mapping", listen_port: 6003, protocol: "tcp",
+        rate_limit: 0
+      )
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/greater than 0/)
+    end
+
+    it "keeps the manage permission gate unchanged" do
+      expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_create_port_mapping"))
+        .to eq("system.sdwan.port_mappings.manage")
+    end
+  end
+
+  describe "system_sdwan_update_port_mapping (hardening params)" do
+    let(:network)  { create(:sdwan_network, account: account) }
+    let!(:mapping) { create(:sdwan_port_mapping, account: account, network: network) }
+
+    it "updates rate_limit, max_connections, and source_cidrs via options" do
+      r = call(
+        "system_sdwan_update_port_mapping",
+        port_mapping_id: mapping.id,
+        options: { rate_limit: 200, max_connections: 40, source_cidrs: [ "2001:db8::/32" ] }
+      )
+      expect(r[:success]).to be true
+      pm = r[:data][:port_mapping]
+      expect(pm[:rate_limit]).to eq(200)
+      expect(pm[:max_connections]).to eq(40)
+      expect(pm[:source_cidrs]).to eq([ "2001:db8::/32" ])
+    end
+
+    it "clears hardening back to unrestricted with nil/[]" do
+      mapping.update!(rate_limit: 50, max_connections: 10, source_cidrs: [ "203.0.113.0/24" ])
+
+      r = call(
+        "system_sdwan_update_port_mapping",
+        port_mapping_id: mapping.id,
+        options: { rate_limit: nil, max_connections: nil, source_cidrs: [] }
+      )
+      expect(r[:success]).to be true
+      pm = r[:data][:port_mapping]
+      expect(pm[:rate_limit]).to be_nil
+      expect(pm[:max_connections]).to be_nil
+      expect(pm[:source_cidrs]).to eq([])
+    end
+
+    it "rejects an invalid CIDR through the update path without persisting it" do
+      r = call(
+        "system_sdwan_update_port_mapping",
+        port_mapping_id: mapping.id,
+        options: { source_cidrs: [ "999.999.999.999/24" ] }
+      )
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/invalid CIDR entry/)
+      expect(mapping.reload.source_cidrs).to eq([])
+    end
+
+    it "keeps the manage permission gate unchanged" do
+      expect(described_class::ACTION_PERMISSIONS.fetch("system_sdwan_update_port_mapping"))
+        .to eq("system.sdwan.port_mappings.manage")
+    end
+  end
+
   # ─── Registry wiring ─────────────────────────────────────────────────
 
   describe "PlatformApiToolRegistry registration" do

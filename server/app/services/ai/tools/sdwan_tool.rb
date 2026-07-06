@@ -557,14 +557,17 @@ module Ai
               target_virtual_ip_id: { type: "string", required: false, description: "UUID of the target virtual IP to DNAT to (mutually exclusive with target_peer_id)" },
               target_port: { type: "integer", required: false, description: "Defaults to listen_port if omitted" },
               description: { type: "string", required: false, description: "Free-form description of the mapping" },
-              enabled: { type: "boolean", required: false, description: "Whether the mapping is active (default true)" }
+              enabled: { type: "boolean", required: false, description: "Whether the mapping is active (default true)" },
+              rate_limit: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max NEW CONNECTIONS per second (conntrack flows — the nat chain only sees each connection's first packet, so this throttles connection-establishment rate, not request/packet throughput). Omit for unrestricted (default)." },
+              max_connections: { type: "integer", required: false, description: "Hardened DNAT tier (increment 6): max concurrent connections before excess are dropped. Omit for unrestricted (default)." },
+              source_cidrs: { type: "array", required: false, description: "Hardened DNAT tier (increment 6): allow-list of source CIDR strings (v4 and/or v6). Traffic from any other source is dropped. Omit/empty for unrestricted (default)." }
             }
           },
           "system_sdwan_update_port_mapping" => {
-            description: "Update a port mapping's name, target, ports, protocol, or enabled state.",
+            description: "Update a port mapping's name, target, ports, protocol, enabled state, or hardening (rate_limit/max_connections/source_cidrs).",
             parameters: {
               port_mapping_id: { type: "string", required: true, description: "UUID of the SDWAN port mapping to update" },
-              options: { type: "object", required: true, description: "Hash of fields to update: name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata" }
+              options: { type: "object", required: true, description: "Hash of fields to update: name, description, target_peer_id, target_virtual_ip_id, listen_port, target_port, protocol, enabled, metadata, rate_limit, max_connections, source_cidrs. Pass rate_limit/max_connections as null or source_cidrs as [] to clear back to unrestricted." }
             }
           },
           "system_sdwan_delete_port_mapping" => {
@@ -1645,8 +1648,11 @@ module Ai
           target_port: params[:target_port],
           protocol: params[:protocol] || "tcp",
           description: params[:description],
-          enabled: params.fetch(:enabled, true)
-        }
+          enabled: params.fetch(:enabled, true),
+          rate_limit: params[:rate_limit],
+          max_connections: params[:max_connections],
+          source_cidrs: params[:source_cidrs]
+        }.compact
         m = net.port_mappings.new(attrs)
         if m.save
           success_result(port_mapping: serialize_port_mapping_full(m))
@@ -1663,7 +1669,8 @@ module Ai
 
         opts = params[:options] || {}
         if m.update(opts.slice(:name, :description, :target_peer_id, :target_virtual_ip_id,
-                                :listen_port, :target_port, :protocol, :enabled, :metadata))
+                                :listen_port, :target_port, :protocol, :enabled, :metadata,
+                                :rate_limit, :max_connections, :source_cidrs))
           success_result(port_mapping: serialize_port_mapping_full(m))
         else
           error_result(m.errors.full_messages.join("; "))
@@ -1707,7 +1714,10 @@ module Ai
         serialize_port_mapping(m).merge(
           description: m.description,
           metadata: m.metadata,
-          resolved_target_address: m.resolved_target_address
+          resolved_target_address: m.resolved_target_address,
+          rate_limit: m.rate_limit,
+          max_connections: m.max_connections,
+          source_cidrs: m.source_cidrs
         )
       end
 
