@@ -148,20 +148,29 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-arm64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64" -o "$OUT"
-          # .sha256 sidecar is optional: verify when the agent host serves it,
-          # warn+skip when it doesn't. Mirrors the .cosign-bundle handling below.
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256" 2>/dev/null; then
-            (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256") \
-              || { echo "FATAL: sha256 mismatch for $OUT"; exit 1; }
+          # .sha256 sidecar is optional. The /agent route can answer a MISSING
+          # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
+          # tell present-and-valid from absent — validate the fetched content is
+          # a real sha256sum line, and compare hashes directly (the remote line
+          # references the remote filename, which differs from $OUT after the
+          # rename, so `sha256sum -c` would spuriously fail).
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256" 2>/dev/null \
+             && grep -qiE '^[0-9a-f]{64}([[:space:]]|$)' "$OUT.sha256"; then
+            want=$(awk '{print $1; exit}' "$OUT.sha256"); got=$(sha256sum "$OUT" | awk '{print $1}')
+            [ "$want" = "$got" ] || { echo "FATAL: sha256 mismatch for $OUT (want=$want got=$got)"; exit 1; }
+            echo "OK: agent binary sha256 verified."
           else
-            echo "WARN: .sha256 sidecar absent — skipping integrity check."
+            echo "WARN: .sha256 sidecar absent/invalid — skipping integrity check."
           fi
+          # Same 200-HTML guard for the cosign bundle: only verify when the
+          # fetched payload is actually a JSON bundle.
           if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.cosign-bundle" \
-                 -o "$OUT.cosign-bundle" 2>/dev/null; then
+                 -o "$OUT.cosign-bundle" 2>/dev/null \
+             && head -c1 "$OUT.cosign-bundle" | grep -q '{'; then
             cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
               || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
           else
-            echo "WARN: .cosign-bundle absent — skipping signature verify."
+            echo "WARN: .cosign-bundle absent/invalid — skipping signature verify."; rm -f "$OUT.cosign-bundle"
           fi
           chmod +x "$OUT"
 
@@ -648,21 +657,29 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-amd64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64" -o "$OUT"
-          # .sha256 sidecar is optional: verify integrity when the agent host
-          # serves it, warn+skip when it doesn't (the /agent route serves the
-          # bare binary). Mirrors the .cosign-bundle handling below.
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256" 2>/dev/null; then
-            (cd "$(dirname "$OUT")" && sha256sum -c "$(basename "$OUT").sha256") \
-              || { echo "FATAL: sha256 mismatch for $OUT"; exit 1; }
+          # .sha256 sidecar is optional. The /agent route can answer a MISSING
+          # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
+          # tell present-and-valid from absent — validate the fetched content is
+          # a real sha256sum line, and compare hashes directly (the remote line
+          # references the remote filename, which differs from $OUT after the
+          # rename, so `sha256sum -c` would spuriously fail).
+          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256" 2>/dev/null \
+             && grep -qiE '^[0-9a-f]{64}([[:space:]]|$)' "$OUT.sha256"; then
+            want=$(awk '{print $1; exit}' "$OUT.sha256"); got=$(sha256sum "$OUT" | awk '{print $1}')
+            [ "$want" = "$got" ] || { echo "FATAL: sha256 mismatch for $OUT (want=$want got=$got)"; exit 1; }
+            echo "OK: agent binary sha256 verified."
           else
-            echo "WARN: .sha256 sidecar absent — skipping integrity check."
+            echo "WARN: .sha256 sidecar absent/invalid — skipping integrity check."
           fi
+          # Same 200-HTML guard for the cosign bundle: only verify when the
+          # fetched payload is actually a JSON bundle.
           if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.cosign-bundle" \
-                 -o "$OUT.cosign-bundle" 2>/dev/null; then
+                 -o "$OUT.cosign-bundle" 2>/dev/null \
+             && head -c1 "$OUT.cosign-bundle" | grep -q '{'; then
             cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
               || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
           else
-            echo "WARN: .cosign-bundle absent — skipping signature verify."
+            echo "WARN: .cosign-bundle absent/invalid — skipping signature verify."; rm -f "$OUT.cosign-bundle"
           fi
           chmod +x "$OUT"
 
