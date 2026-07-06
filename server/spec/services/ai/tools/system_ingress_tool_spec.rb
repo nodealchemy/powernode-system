@@ -230,6 +230,70 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(svc.reload.local_enabled).to be false
     end
 
+    # Path B (public_enabled) — campaign 019f3458 increment 5. edge_mode/
+    # client_auth are inert TLS-transport plumbing (identity + backend, same
+    # risk class as protocol/backend_port) and are wired through inline CRUD
+    # like everything else in this section. public_enabled is the actual
+    # exposure-semantics toggle (same risk class as local_enabled, arguably
+    # higher — public internet, not just this account's ForwardAuth-gated
+    # users) and is deliberately NOT wired here — no existing approval-gated
+    # executor owns Path B today (system_expose_service_publicly is Path A's
+    # HTTP+VIP+DNAT flow; system_expose_service_local is Path E's /svc plane;
+    # neither touches edge_mode/client_auth/public_enabled). See the
+    # increment 5 completion report for the gap disposition.
+    it "creates a service with edge_mode/client_auth (inert plumbing, not exposure)" do
+      result = tool.execute(params: {
+        action: "system_create_service", slug: "tls-svc", name: "TLS Svc", protocol: "tls",
+        backend_host: "10.0.0.9", backend_port: 5432, edge_mode: "terminate", client_auth: "required"
+      })
+      expect(result[:success]).to be true
+      svc = ::Sdwan::Service.find(result.dig(:data, :service, :id))
+      expect(svc.edge_mode).to eq("terminate")
+      expect(svc.client_auth).to eq("required")
+      expect(svc.public_enabled).to be false
+    end
+
+    it "updates edge_mode/client_auth via system_update_service" do
+      svc = create_service!(slug: "tls-upd", protocol: "tls", edge_mode: "passthrough", client_auth: "none")
+      result = tool.execute(params: {
+        action: "system_update_service", service_id: svc.id, edge_mode: "terminate", client_auth: "required"
+      })
+      expect(result[:success]).to be true
+      expect(svc.reload.edge_mode).to eq("terminate")
+      expect(svc.client_auth).to eq("required")
+    end
+
+    it "does NOT flip public_enabled through update_service (no owning executor yet — gap, not a tool)" do
+      svc = create_service!(slug: "pub-noflip", protocol: "tls", public_enabled: false)
+      tool.execute(params: { action: "system_update_service", service_id: svc.id, public_enabled: true })
+      expect(svc.reload.public_enabled).to be false
+    end
+
+    it "regenerates the reverse proxy on update when the service is publicly exposed" do
+      svc = create_service!(slug: "pub-upd", protocol: "tls", public_enabled: true, edge_mode: "passthrough")
+      tool.execute(params: { action: "system_update_service", service_id: svc.id, edge_mode: "terminate" })
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
+    end
+
+    it "regenerates the reverse proxy on delete when the service was publicly exposed" do
+      svc = create_service!(slug: "pub-del", protocol: "tls", public_enabled: true)
+      tool.execute(params: { action: "system_delete_service", service_id: svc.id })
+      expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
+    end
+
+    it "filters list_services by public_enabled and surfaces the new fields on read" do
+      create_service!(slug: "pub-one", protocol: "tls", public_enabled: true, edge_mode: "terminate", client_auth: "required")
+      create_service!(slug: "local-one", local_enabled: true)
+
+      only_public = tool.execute(params: { action: "system_list_services", public_enabled: true })
+      expect(only_public.dig(:data, :count)).to eq(1)
+
+      svc_data = only_public.dig(:data, :services, 0)
+      expect(svc_data[:public_enabled]).to be true
+      expect(svc_data[:edge_mode]).to eq("terminate")
+      expect(svc_data[:client_auth]).to eq("required")
+    end
+
     it "unexposes a service (fail-safe off) and regenerates" do
       svc = create_service!(slug: "off", local_enabled: true)
       result = tool.execute(params: { action: "system_unexpose_service_local", service_id: svc.id })

@@ -93,7 +93,16 @@ module Ai
             required_permission: { type: "string",  required: false },
             required_group:      { type: "string",  required: false },
             strip_prefix:        { type: "boolean", required: false },
-            local_enabled:       { type: "boolean", required: false }
+            local_enabled:       { type: "boolean", required: false },
+            # Path B (public TLS-carrying TCP, campaign 019f3458 increment 5).
+            # edge_mode/client_auth are inert TLS-transport plumbing, wired
+            # through create/update like protocol/backend_port. public_enabled
+            # is read-only here (list filter + visibility) — it is the actual
+            # exposure-semantics toggle and has no owning executor yet; see
+            # system_update_service's action_definitions entry below.
+            edge_mode:           { type: "string",  required: false },
+            client_auth:         { type: "string",  required: false },
+            public_enabled:      { type: "boolean", required: false }
           }
         }
       end
@@ -151,7 +160,7 @@ module Ai
             }
           },
           "system_create_service" => {
-            description: "Create an Sdwan::Service (identity + overlay backend). Does NOT expose it — use system_expose_service_local to publish it at /svc/<slug>.",
+            description: "Create an Sdwan::Service (identity + overlay backend). Does NOT expose it — use system_expose_service_local to publish it at /svc/<slug>. For Path B (public TLS-carrying TCP), edge_mode/client_auth may be pre-provisioned here, but public_enabled itself has no owning tool yet (see system_update_service's description).",
             parameters: {
               slug:           { type: "string",  required: true,  description: "URL slug (lowercase alnum + hyphen, <=64, not a reserved platform path)" },
               name:           { type: "string",  required: true,  description: "Service display name" },
@@ -159,14 +168,17 @@ module Ai
               protocol:       { type: "string",  required: false, description: "https | http | tcp | tls (default https)" },
               backend_vip_id: { type: "string",  required: false, description: "Sdwan::VirtualIp id of the overlay backend (this or backend_host)" },
               backend_host:   { type: "string",  required: false, description: "Static backend host/IP (this or backend_vip_id)" },
-              status:         { type: "string",  required: false, description: "active | disabled (default active)" }
+              status:         { type: "string",  required: false, description: "active | disabled (default active)" },
+              edge_mode:      { type: "string",  required: false, description: "Path B TLS-carrying TCP: passthrough | terminate (default passthrough; inert until public_enabled)" },
+              client_auth:    { type: "string",  required: false, description: "Path B mTLS enforcement: none | required (default none; required needs edge_mode terminate)" }
             }
           },
           "system_list_services" => {
             description: "List this account's Sdwan::Service records, newest first.",
             parameters: {
-              status:        { type: "string",  required: false, description: "Filter by status (active | disabled)" },
-              local_enabled: { type: "boolean", required: false, description: "Filter by local-exposure state" }
+              status:         { type: "string",  required: false, description: "Filter by status (active | disabled)" },
+              local_enabled:  { type: "boolean", required: false, description: "Filter by local-exposure state" },
+              public_enabled: { type: "boolean", required: false, description: "Filter by public (Path B) exposure state" }
             }
           },
           "system_get_service" => {
@@ -176,7 +188,7 @@ module Ai
             }
           },
           "system_update_service" => {
-            description: "Update an Sdwan::Service's identity + backend plumbing (name, protocol, status, backend). Exposure semantics (enabling, auth mode) are owned by system_expose_service_local. Regenerates the reverse proxy when the service is locally exposed.",
+            description: "Update an Sdwan::Service's identity + backend plumbing (name, protocol, status, backend, Path B edge_mode/client_auth). Exposure semantics (local_enabled, auth mode, and public_enabled) are NOT settable here. local_enabled is owned by system_expose_service_local; public_enabled (Path B) has no owning executor yet — a known gap, not silently bypassable through this tool. Regenerates the reverse proxy when the service is locally and/or publicly exposed.",
             parameters: {
               service_id:     { type: "string",  required: true,  description: "Sdwan::Service id" },
               name:           { type: "string",  required: false, description: "New display name" },
@@ -184,7 +196,9 @@ module Ai
               status:         { type: "string",  required: false, description: "active | disabled" },
               backend_vip_id: { type: "string",  required: false, description: "New overlay backend VIP id" },
               backend_host:   { type: "string",  required: false, description: "New static backend host/IP" },
-              backend_port:   { type: "integer", required: false, description: "New backend port" }
+              backend_port:   { type: "integer", required: false, description: "New backend port" },
+              edge_mode:      { type: "string",  required: false, description: "Path B TLS-carrying TCP: passthrough | terminate" },
+              client_auth:    { type: "string",  required: false, description: "Path B mTLS enforcement: none | required (required needs edge_mode terminate)" }
             }
           },
           "system_delete_service" => {
@@ -225,8 +239,13 @@ module Ai
 
       # ── Sdwan::Service inline CRUD + lifecycle ──────────────────────────
       # Mirrors SdwanTool's resource-CRUD shape (find/serialize/success_result).
-      # Exposure semantics are deliberately NOT mutable here — see the class
-      # header's ownership rule.
+      # Exposure semantics (local_enabled, auth mode, and public_enabled — Path
+      # B, campaign 019f3458 increment 5) are deliberately NOT mutable here —
+      # see the class header's ownership rule. edge_mode/client_auth ARE
+      # mutable here: they are inert TLS-transport plumbing (same class as
+      # protocol/backend_port) with zero effect until a service is actually
+      # public_enabled, which no tool can flip yet (queued gap, not silently
+      # bypassable through this CRUD surface).
 
       def create_service(params)
         svc = account_services.create!(
@@ -236,7 +255,12 @@ module Ai
           backend_vip_id: params[:backend_vip_id],
           backend_host:   params[:backend_host],
           backend_port:   params[:backend_port],
-          status:         params[:status].presence || "active"
+          status:         params[:status].presence || "active",
+          # presence-or-default (not the column default) — an explicit nil
+          # here would fail the model's inclusion validation, same reason
+          # status/protocol already follow this pattern.
+          edge_mode:      params[:edge_mode].presence || "passthrough",
+          client_auth:    params[:client_auth].presence || "none"
         )
         success_result(service: serialize_service(svc))
       end
@@ -245,6 +269,7 @@ module Ai
         scope = account_services.order(created_at: :desc)
         scope = scope.where(status: params[:status]) if params[:status].present?
         scope = scope.where(local_enabled: params[:local_enabled]) unless params[:local_enabled].nil?
+        scope = scope.where(public_enabled: params[:public_enabled]) unless params[:public_enabled].nil?
         success_result(services: scope.map { |s| serialize_service(s) }, count: scope.size)
       end
 
@@ -256,26 +281,26 @@ module Ai
       def update_service(params)
         svc = account_services.find(params[:service_id])
         updates = {}
-        %i[name protocol status backend_vip_id backend_host backend_port].each do |k|
+        %i[name protocol status backend_vip_id backend_host backend_port edge_mode client_auth].each do |k|
           updates[k] = params[k] if params.key?(k) && !params[k].nil?
         end
         svc.update!(updates)
-        regen_local_services! if svc.local_enabled?
+        regen_reverse_proxy! if svc.local_enabled? || svc.public_enabled?
         success_result(service: serialize_service(svc.reload))
       end
 
       def delete_service(params)
         svc = account_services.find(params[:service_id])
-        was_exposed = svc.local_enabled?
+        was_exposed = svc.local_enabled? || svc.public_enabled?
         svc.destroy!
-        regen_local_services! if was_exposed
+        regen_reverse_proxy! if was_exposed
         success_result(deleted: true, id: svc.id)
       end
 
       def unexpose_service_local(params)
         svc = account_services.find(params[:service_id])
         svc.update!(local_enabled: false)
-        regen_local_services!
+        regen_reverse_proxy!
         success_result(service: serialize_service(svc.reload), local_exposure: "disabled")
       end
 
@@ -283,9 +308,11 @@ module Ai
         ::Sdwan::Service.where(account_id: @account.id)
       end
 
-      # Re-emit this account's local-services Traefik YAML so a CRUD-driven
-      # change to a locally-exposed service is reflected without restart.
-      def regen_local_services!
+      # Re-emit this account's Traefik YAML (local /svc routers AND/OR public
+      # Path B tcp.routers — Sdwan::ServiceExposureWriter renders both facets)
+      # so a CRUD-driven change to an exposed service is reflected without
+      # restart.
+      def regen_reverse_proxy!
         ::Sdwan::ServiceExposureWriter.write!(account: @account)
       end
 
@@ -306,7 +333,10 @@ module Ai
           local_required_group:      svc.local_required_group,
           local_strip_prefix:        svc.local_strip_prefix,
           local_certificate_id:      svc.local_certificate_id,
-          local_path:                svc.local_path_prefix
+          local_path:                svc.local_path_prefix,
+          public_enabled:            svc.public_enabled,
+          edge_mode:                 svc.edge_mode,
+          client_auth:               svc.client_auth
         }
       end
 
