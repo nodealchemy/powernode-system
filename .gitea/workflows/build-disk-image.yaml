@@ -303,21 +303,26 @@ jobs:
           docker rm -f "$C" >/dev/null 2>&1 || true
           sudo chown -R "$(id -u):$(id -g)" build
 
-      - name: Cosign sign disk images (keyless, Fulcio)
+      - name: Cosign sign disk images (static key)
         working-directory: initramfs/build/arm64
         env:
-          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
-          # 30s timeout — cosign keyless tries interactive OIDC device flow
-          # when no ambient OIDC token is present (Gitea Actions doesn't
-          # publish one by default). The timeout makes the workflow
-          # fail-fast instead of hanging for 5 minutes per image.
-          # Platform-side LocalDiskImageAdapter (smoke mode) skips cosign
-          # verify so missing bundles don't block ingestion.
+          # Static-key signing (COSIGN_PRIVATE_KEY) — keyless mode against
+          # Sigstore's public-good Fulcio doesn't work for Gitea-hosted CI
+          # (Gitea isn't on Fulcio's trusted-issuer list, and this runner has
+          # no ambient OIDC token to begin the device flow anyway). Mirrors
+          # the static-key pattern already proven in build-platform-modules.yaml.
+          # Signing now works reliably, so a failure here is a real problem —
+          # an unsigned image must not publish.
+          # FUTURE: migrate to a self-hosted Sigstore stack (private
+          # Fulcio+Rekor+TUF trusting the Gitea OIDC issuer) to return to
+          # keyless signing — tracked as a future goal.
           for img in disk-image-rpi4/powernode-rpi4.img disk-image-arm64-uefi/powernode-arm64-uefi.img; do
             if [ -f "$img" ]; then
-              timeout 30s cosign sign-blob --yes --bundle "${img}.cosign-bundle" "$img" \
-                || echo "WARN: cosign signing skipped/failed for $img (smoke mode tolerates this)"
+              cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "${img}.cosign-bundle" "$img" \
+                || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
             fi
           done
 
@@ -404,6 +409,8 @@ jobs:
           ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
           POWERNODE_REGISTRY_USER: ${{ env.REGISTRY_USER }}
           POWERNODE_REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           if [ -n "$POWERNODE_REGISTRY_USER" ] && [ -n "$POWERNODE_REGISTRY_TOKEN" ]; then
             oras login -u "$POWERNODE_REGISTRY_USER" -p "$POWERNODE_REGISTRY_TOKEN" "$ORAS_REGISTRY" \
@@ -420,11 +427,14 @@ jobs:
             size="$(stat -c '%s' "$img")"
             ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
 
-            # 1. Sign blob (signature on the bytes themselves) — 30s
-            #    timeout because cosign's keyless OIDC device flow hangs
-            #    in non-interactive CI without an ambient OIDC token.
-            timeout 30s cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" \
-              || echo "WARN: cosign sign-blob skipped/failed for $img (smoke mode tolerates this)"
+            # 1. Sign blob (signature on the bytes themselves) — static key
+            #    (COSIGN_PRIVATE_KEY). Keyless mode against Sigstore's public-good
+            #    Fulcio doesn't work here (Gitea isn't a trusted OIDC issuer, and
+            #    this runner has no ambient OIDC token). Signing now works
+            #    reliably, so a failure is a real problem — an unsigned image
+            #    must not publish.
+            cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
+              || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
 
             # 2. Attest payload (signature on the publication metadata —
             #    catches webhook-payload tampering even if HMAC was leaked).
@@ -440,14 +450,18 @@ jobs:
             "built_at":      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-            timeout 30s cosign attest-blob --yes --predicate /tmp/payload-${platform}.json \
-              --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed for $img"
+            cosign attest-blob --yes --key env://COSIGN_PRIVATE_KEY --predicate /tmp/payload-${platform}.json \
+              --bundle "$img.attestation-bundle" "$img" \
+              || { echo "::error::cosign attest-blob failed for $img"; exit 1; }
 
-            # 3. Push everything to OCI registry as a single artifact.
-            #    cosign-bundle and attestation-bundle layers are optional
-            #    (smoke mode skips cosign signing because there's no ambient
-            #    OIDC token). Build the layer list dynamically so a missing
-            #    bundle doesn't error out the whole push.
+            # 3. Push everything to OCI registry as a single artifact. The
+            #    cosign-bundle + attestation-bundle layers are always present
+            #    by this point (both signing steps above hard-fail otherwise) —
+            #    the platform's OrasDiskImageAdapter (disk_image_oci_ingest_service.rb)
+            #    fails ingest closed on a missing attestation-bundle, so a partial
+            #    push would only defer the failure to ingest time. The existence
+            #    checks below are defensive belt-and-suspenders, not a smoke-mode
+            #    accommodation.
             push_args=("$ref" "--artifact-type" "application/vnd.powernode.disk-image.v1"
                        "$img:application/octet-stream")
             if [ -f "$img.cosign-bundle" ]; then
@@ -774,6 +788,8 @@ jobs:
           ORAS_REGISTRY: ${{ env.REGISTRY_HOST }}
           POWERNODE_REGISTRY_USER: ${{ env.REGISTRY_USER }}
           POWERNODE_REGISTRY_TOKEN: ${{ env.REGISTRY_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           platform="ubuntu-24.04-amd64-uefi"
           img="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.img"
@@ -785,15 +801,21 @@ jobs:
           sha="$(sha256sum "$img" | awk '{print $1}')"
           size="$(stat -c '%s' "$img")"
           ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
-          timeout 30s cosign sign-blob --yes --bundle "$img.cosign-bundle" "$img" \
-            || echo "WARN: cosign sign-blob skipped/failed (smoke mode tolerates this)"
+          # Static-key signing (COSIGN_PRIVATE_KEY) — see the matching arm64
+          # push step above for full rationale. Both sign + attest hard-fail:
+          # signing now works reliably, and the platform's OrasDiskImageAdapter
+          # fails ingest closed on a missing attestation-bundle anyway, so a
+          # WARN-and-continue here would only defer the same failure to ingest.
+          cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
+            || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
           jq -nc --arg p "$platform" --arg sha "$sha" --argjson sz "$size" \
             --arg gs "${{ github.sha }}" --arg ref "$ref" --arg arch "amd64" \
             --arg ba "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{platform_name:$p,sha256:$sha,size_bytes:$sz,git_sha:$gs,oci_ref:$ref,arch:$arch,built_at:$ba}' \
             >/tmp/payload-amd64.json
-          timeout 30s cosign attest-blob --yes --predicate /tmp/payload-amd64.json \
-            --bundle "$img.attestation-bundle" "$img" || echo "WARN: cosign attest-blob failed"
+          cosign attest-blob --yes --key env://COSIGN_PRIVATE_KEY --predicate /tmp/payload-amd64.json \
+            --bundle "$img.attestation-bundle" "$img" \
+            || { echo "::error::cosign attest-blob failed for $img"; exit 1; }
           push_args=("$ref" "--artifact-type" "application/vnd.powernode.disk-image.v1" "$img:application/octet-stream")
           if [ -f "$img.cosign-bundle" ]; then
             push_args+=("$img.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json")
