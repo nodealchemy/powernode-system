@@ -26,6 +26,11 @@ type EnrolledIdentity struct {
 	MTLSSubject   string
 	NotAfter      time.Time
 	CertificateID string
+	// PlatformURL is the control-plane URL this identity was enrolled
+	// against. Persisted to meta.json so a later boot (notably the
+	// post-switch_root service, started with no --platform-url flag) can
+	// adopt the on-disk cert without running the discovery resolver.
+	PlatformURL string
 }
 
 // Client speaks to the platform's /node_api/enroll endpoint.
@@ -172,6 +177,7 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 		MTLSSubject:   er.Data.MTLSSubject,
 		NotAfter:      notAfter,
 		CertificateID: er.Data.CertificateID,
+		PlatformURL:   c.PlatformURL,
 	}, nil
 }
 

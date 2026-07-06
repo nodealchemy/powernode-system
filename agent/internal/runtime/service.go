@@ -494,15 +494,34 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 // trades the bootstrap token for an mTLS cert at /node_api/enroll, and
 // persists the result so subsequent invocations skip enrollment.
 //
-// Order matters: identity discovery happens first so we can resolve the
-// platform URL even when no flag was passed. Without a URL,
-// transport.LoadFromPKIDir errors out and we can't take the fast path —
-// causing a re-enroll attempt that burns the (already-consumed) bootstrap
-// token. This is the post-switch_root path: cert exists on the bind-mounted
-// /persist but no flag is set in the unit's ExecStart.
+// An already-enrolled on-disk identity ALWAYS wins over discovery. The
+// post-switch_root service is started with no --platform-url flag, so
+// running the resolver first would reach the anonymous ClaimStrategy — which
+// polls /node_api/claim forever (unbounded, deadline-detached) and never
+// returns, so the cert federation-accept wrote to the bind-mounted /persist
+// would never be adopted. We therefore check for a usable on-disk cert up
+// front (step 0), keying off the platform URL the enrollment persisted to
+// meta.json, and only fall through to discovery + enroll on a genuine first
+// boot with no cert.
 //
 // Returns a transport.Client ready for mTLS-authenticated platform calls.
 func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transport.Client, error) {
+	// 0. Adopt an already-enrolled on-disk identity before any discovery.
+	// Prefer the explicit --platform-url flag; otherwise use the URL the
+	// enrollment persisted to meta.json (the host the node enrolled against).
+	// A valid cert on disk short-circuits the resolver entirely, so a
+	// post-pivot service never blocks in ClaimStrategy while holding a cert.
+	adoptURL := s.cfg.PlatformURL
+	if adoptURL == "" {
+		adoptURL = enroll.ReadPlatformURL(paths)
+	}
+	if adoptURL != "" {
+		if c, err := transport.LoadFromPKIDir(adoptURL, paths); err == nil {
+			s.cfg.PlatformURL = adoptURL
+			return c, nil
+		}
+	}
+
 	// 1. Resolve platform URL — flag override first, then identity discovery.
 	platformURL := s.cfg.PlatformURL
 	var ident *identity.Identity

@@ -89,3 +89,47 @@ func TestPKIDirLegacyAlias(t *testing.T) {
 			PKIDir, PKIDirInitramfs)
 	}
 }
+
+// TestSave_PersistsPlatformURL_RoundTrip covers the post-pivot cert-adoption
+// fix's data path: Save writes the enrolled platform URL into meta.json and
+// ReadPlatformURL reads it back, so the service can reconstruct its client
+// without the discovery resolver.
+func TestSave_PersistsPlatformURL_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	paths := PathsUnder(dir)
+	kp, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("GenerateKeypair: %v", err)
+	}
+	id := &EnrolledIdentity{
+		Keypair:     kp,
+		CertPEM:     []byte("CERT"),
+		CAChainPEM:  []byte("CA-CHAIN"),
+		CABundlePEM: []byte("CA-BUNDLE"),
+		InstanceID:  "inst-1",
+		PlatformURL: "https://platform.example.test",
+	}
+	if err := Save(id, paths); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if got := ReadPlatformURL(paths); got != id.PlatformURL {
+		t.Errorf("ReadPlatformURL = %q, want %q", got, id.PlatformURL)
+	}
+}
+
+// TestReadPlatformURL_MissingOrLegacy asserts ReadPlatformURL degrades to ""
+// (never panics) when the meta file is absent or predates the platform_url
+// field — in which case bootstrap correctly falls through to discovery.
+func TestReadPlatformURL_MissingOrLegacy(t *testing.T) {
+	dir := t.TempDir()
+	paths := PathsUnder(dir)
+	if got := ReadPlatformURL(paths); got != "" {
+		t.Errorf("ReadPlatformURL(no meta) = %q, want empty", got)
+	}
+	if err := os.WriteFile(paths.Meta, []byte(`{"instance_id":"x"}`), 0o644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+	if got := ReadPlatformURL(paths); got != "" {
+		t.Errorf("ReadPlatformURL(legacy meta) = %q, want empty", got)
+	}
+}

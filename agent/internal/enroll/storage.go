@@ -1,6 +1,7 @@
 package enroll
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -114,10 +115,36 @@ func Save(id *EnrolledIdentity, paths PKIPaths) error {
 	}
 
 	meta := fmt.Sprintf(
-		"{\"instance_id\":%q,\"mtls_subject\":%q,\"certificate_id\":%q,\"not_after\":%q}\n",
-		id.InstanceID, id.MTLSSubject, id.CertificateID, id.NotAfter.UTC().Format("2006-01-02T15:04:05Z"),
+		"{\"instance_id\":%q,\"mtls_subject\":%q,\"certificate_id\":%q,\"not_after\":%q,\"platform_url\":%q}\n",
+		id.InstanceID, id.MTLSSubject, id.CertificateID, id.NotAfter.UTC().Format("2006-01-02T15:04:05Z"), id.PlatformURL,
 	)
 	return writeFileAtomic(paths.Meta, []byte(meta), 0o644)
+}
+
+// ReadPlatformURL returns the control-plane URL persisted in the PKI
+// meta.json (written by Save at enroll time), or "" if absent/unreadable.
+// It lets the post-pivot service adopt an already-enrolled on-disk identity
+// without running the discovery resolver — whose ClaimStrategy would
+// otherwise block forever on a spawn that already holds a valid cert.
+func ReadPlatformURL(paths PKIPaths) string {
+	data, err := os.ReadFile(paths.Meta)
+	if err != nil {
+		return ""
+	}
+	// Flat single-line JSON — a targeted substring scan avoids pulling
+	// encoding/json onto the boot path (same rationale as readInstanceID).
+	// URLs contain no `"`, so extract-until-next-quote is unambiguous.
+	marker := []byte(`"platform_url":"`)
+	i := bytes.Index(data, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := data[i+len(marker):]
+	end := bytes.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return string(rest[:end])
 }
 
 // writeFileAtomic writes via tmp + rename so a crash mid-write doesn't
