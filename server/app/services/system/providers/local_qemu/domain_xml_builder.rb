@@ -156,7 +156,6 @@ module System
                 <type arch='#{arch_str}' machine='#{machine}'>hvm</type>
                 <loader readonly='yes' type='pflash'>#{escape(DEFAULT_OVMF_CODE_PATH)}</loader>
                 <nvram template='#{escape(DEFAULT_OVMF_VARS_TEMPLATE_PATH)}'>#{escape(nvram_path)}</nvram>
-                <boot dev='hd'/>
               </os>
           XML
         end

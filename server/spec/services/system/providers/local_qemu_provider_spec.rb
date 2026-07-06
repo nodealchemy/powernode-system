@@ -144,6 +144,18 @@ RSpec.describe System::Providers::LocalQemuProvider do
       expect(result[:error]).to match(/disk_image_path: required/)
     end
 
+    it "never emits both an os/boot element and a per-device disk boot element (libvirt rejects the combination)" do
+      result = provider.create_instance(
+        name: "uefi-single-boot-source", instance: instance,
+        boot_mode: "uefi_disk", disk_image_path: disk_image_path
+      )
+      expect(result[:success]).to be true
+
+      xml = runner.invocations.first[:args][:xml]
+      expect(xml).to include("<boot order='1'/>")
+      expect(xml).not_to match(/<boot dev=/)
+    end
+
     it "defaults to direct_kernel boot when boot_mode is omitted (back-compat)" do
       provider.create_instance(name: "default-boot-mode", instance: instance)
       xml = runner.invocations.first[:args][:xml]
