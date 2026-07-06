@@ -45,7 +45,7 @@ flowchart TD
     Q2 -- no --> Q4{Site-local only,<br/>this account's own users?}
     Q4 -- yes --> PathE["Path E: /svc/slug local plane"]
     Q4 -- no --> Q5{Presents TLS ClientHello<br/>with SNI?}
-    Q5 -- yes --> PathB["Path B: public TLS-carrying TCP<br/>via Traefik SNI (planned — increment 5)"]
+    Q5 -- yes --> PathB["Path B: public TLS-carrying TCP<br/>via Traefik SNI"]
     Q5 -- no --> PathC["Path C: Sdwan::PortMapping →<br/>NatCompiler → nftables DNAT"]
 ```
 
@@ -65,19 +65,21 @@ for any HTTP(S) backend you publish under a hostname.
 - **Verification:** `openssl s_client -connect <host>:443 -servername <host>` for the served
   leaf; `GET /api/v1/system/ingress_routes` for the derived router list.
 
-## Path B — Public TLS-carrying TCP via Traefik SNI (planned — increment 5)
+## Path B — Public TLS-carrying TCP via Traefik SNI (built — enablement pending)
 
-**Status: planned — increment 5 of campaign 019f3458. `Sdwan::Service` has no `edge_mode`,
-`public_enabled`, or `client_auth` column today** (verified: `extensions/system/server/app/models/sdwan/service.rb`
-has no such fields as of 2026-07-05) — none of this is usable yet. This section documents the
-ratified design so operators know what's coming and don't try to hand-roll it.
+**Status: substrate built (increment 5 of campaign 019f3458): `Sdwan::Service` carries
+`public_enabled`/`edge_mode`/`client_auth` with the validations below, and
+`Sdwan::ServiceExposureWriter` renders the HostSNI `tcp.routers`. Not yet operator-usable:
+`public_enabled` is deliberately not settable anywhere — exposure semantics are
+executor-owned and no Path-B-owning approval-gated executor exists yet (tracked as
+improvement `019f34f9`, a prerequisite of increment 10's edge smoke).**
 
 Use this path for a **non-HTTP TCP service you want to publish under a public hostname**, where
 the protocol itself negotiates TLS with SNI (e.g. a raw TLS-wrapped protocol, not bare HTTP/2 or
 HTTP/1.1 — those are Path A). Examples: a custom TLS-wrapped RPC service, a database protocol
 tunneled over TLS with SNI.
 
-- **`edge_mode` (planned column on `Sdwan::Service`):**
+- **`edge_mode` (column on `Sdwan::Service`, default `passthrough`):**
   - `passthrough` (**default**) — Traefik forwards the encrypted stream untouched; your backend
     terminates TLS itself. Lowest operational risk; Traefik never sees plaintext.
   - `terminate` (**opt-in**) — Traefik terminates TLS via its own ACME-issued cert, then forwards
@@ -88,7 +90,7 @@ tunneled over TLS with SNI.
 - **Entrypoint:** the **existing** `websecure` (`:443`) entrypoint only — SNI-routed `tcp.routers`
   share the port with HTTP(S) traffic; Traefik demuxes by inspecting the ClientHello's SNI before
   deciding HTTP vs. raw TCP passthrough. No new entrypoint is created.
-- **Verification (once built):** `openssl s_client -connect <host>:443 -servername <host>` should
+- **Verification (once an owning executor can enable it):** `openssl s_client -connect <host>:443 -servername <host>` should
   complete a TLS handshake (passthrough: your backend's cert; terminate: Traefik's cert), then
   carry your protocol's own bytes.
 
@@ -115,9 +117,39 @@ tunneled over TLS with SNI.
 - **MCP surface:** `system_sdwan_create_port_mapping` (used standalone, or composed by
   `system_expose_service_publicly` for the HTTP(S) public-expose flow's own `:443`/`:80` DNAT
   hop — see [`expose-service.md`](./expose-service.md)).
-- **Planned hardening (increment 6):** `rate_limit` / `max_connections` / `source_cidrs` columns
-  on `Sdwan::PortMapping` — not present today; this is the permanent home for that hardening, not
-  a stepping stone toward moving these services onto Traefik later.
+- **Hardening (built — increment 6):** `Sdwan::PortMapping` carries three optional, independent
+  enforcement axes, compiled by `Sdwan::NatCompiler` into guard rules that precede the mapping's
+  DNAT line in the nft chain (a dropped packet never reaches `dnat to ...`):
+  - `rate_limit` — integer **new connections per second** (conntrack flows/second — NOT
+    requests or packets: the DNAT chain is `nat prerouting`, which only each connection's
+    FIRST packet traverses, so the budget throttles connection-establishment rate; a single
+    keep-alive connection can carry any number of requests unthrottled). Compiles to nft's
+    negated rate-limit idiom, `limit rate over <n>/second drop` (only traffic exceeding the
+    budget matches and drops; traffic within budget falls through). Stored as a plain integer
+    rather than a free-form rate string (e.g. `"10/second"`) because nft's rate grammar
+    supports multiple units and byte-rate forms that would need a real parser to validate
+    strictly — an integer/second is unambiguous and substitutes directly into the fixed
+    `<n>/second` form.
+  - `max_connections` — integer concurrent-connection cap. Compiles to the standard nftables
+    connlimit idiom, `ct count over <n> drop`.
+  - `source_cidrs` — allow-list of source CIDR strings (v4 and/or v6; same jsonb-array shape as
+    `System::FederationGrant#source_cidrs`). Because a single nft match clause can't mix `ip`
+    and `ip6` literals, a mapping compiles to **one guard per address family**: the family with
+    entries gets a negated-membership drop (`ip[6] saddr != { ... } drop` — only listed sources
+    survive), and the family with *no* entries gets a full `meta nfproto ipv4|ipv6 drop` — an
+    allow-list naming only v4 CIDRs means v6 traffic is not allowed at all, not silently
+    unrestricted.
+  - **All three are `NULL`/empty by default — absence means unrestricted**, and compiling a
+    mapping with none of them set produces byte-identical output to a mapping with the columns
+    absent (no hardcoded platform-wide default; a future default, if any, belongs in
+    `SiteSetting`, not a bare constant).
+  - **nft version note:** `ct count over` and the negated `limit rate over` form are standard
+    nftables statements with no unusual version floor beyond what the platform already requires
+    for the base DNAT chain (`type nat hook prerouting`); no additional minimum was identified
+    during increment 6. `meta nfproto` is likewise a baseline nftables match.
+  - **MCP surface:** `system_sdwan_create_port_mapping` / `system_sdwan_update_port_mapping`
+    accept `rate_limit`, `max_connections`, `source_cidrs`; pass `rate_limit`/`max_connections`
+    as `null` or `source_cidrs` as `[]` on update to clear a mapping back to unrestricted.
 - **Verification:** inspect the compiled ruleset for the hub peer (`Sdwan::NatCompiler.compile_for_peer`)
   or `nft list table inet powernode_sdwan` on the hub host; confirm the DNAT rule's
   `dnat to [<target>]:<port>` matches the mapping's `resolved_target_address`/`effective_target_port`.
@@ -195,7 +227,7 @@ federate it via Path D instead.
 | HTTP(S), platform's own routes | A | `Acme::TraefikConfigWriter` fixed routers | Built |
 | HTTP(S), publish under a public hostname | A | `system_expose_service_publicly` (VIP+DNAT+ACME) | Built |
 | HTTP(S), site-local only, own users | E | `Sdwan::Service` local facet + ForwardAuth | Built |
-| TLS-carrying TCP, publish under a public hostname | B | `Sdwan::Service.edge_mode` + Traefik SNI router | Planned — increment 5 |
+| TLS-carrying TCP, publish under a public hostname | B | `Sdwan::Service.edge_mode` + Traefik SNI router | Built — enablement pending (improvement 019f34f9) |
 | Federated subscription, `protocol: tls` | D | `Federation::ServiceRouteWriter` (Traefik SNI passthrough) | Built |
 | Federated subscription, `protocol: tcp` | D | `Federation::TcpForwarderConfigWriter` → `tcpfwd` | Built |
 | Site-local subscription (any protocol) | D | `tcpfwd` (already excluded from Traefik) | Built |
