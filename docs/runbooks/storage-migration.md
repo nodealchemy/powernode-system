@@ -45,6 +45,14 @@ planned / approved / preparing ──cancel──▶ cancelled (terminal)
   (i.e. before the sync starts).
 - On `cutover → completed`, `promote_target_binding!` swaps the instance's
   `storage_volume` binding from source to target.
+- **`status` is terminal, but the binding/target-data story isn't** (increment
+  9): `revert_binding!` and cleanup are orthogonal to `status` and live in
+  `metadata` — see Phase 5. A `failed` migration always has the node still
+  bound to source (`promote_target_binding!` only ever runs on `completed`);
+  the real hazard is a **cutover-phase failure** that already re-pointed the
+  node's live mount at target before failing (`metadata.cutover_diverged`), or
+  a **`completed` migration whose promote silently failed**
+  (`metadata.promote_failed`, the "half-cutover" in Failure modes below).
 
 For the full architecture see [../STORAGE_SUBSYSTEM.md](../STORAGE_SUBSYSTEM.md).
 
@@ -58,6 +66,8 @@ For the full architecture see [../STORAGE_SUBSYSTEM.md](../STORAGE_SUBSYSTEM.md)
 | 4. Cutover → Complete | Bind instance to target volume | `system_report_storage_migration_progress` (`status: "completed"`) |
 | — Monitor | Read status, bytes, audit log | `system_get_storage_migration` / `system_list_storage_migrations` |
 | — Cancel (pre-sync) | `→ cancelled` | `system_cancel_storage_migration` |
+| 5a. Revert (increment 9) | Agent re-points the mount back to source | `system_revert_storage_migration_binding` |
+| 5b. Cleanup (increment 9) | **Destructive** — delete target-side scratch artifacts | `system_cleanup_storage_migration` |
 
 ---
 
@@ -218,6 +228,72 @@ modes.
 
 ---
 
+## Phase 5 — Revert / Cleanup (increment 9) ⚠️
+
+Two operator-explicit operations that don't advance `status` — they fix the
+*binding* (revert) or delete *target-side leftovers* (cleanup). Both are
+agent-dispatched: the model records intent, the on-node agent does the actual
+mount/delete work on its next poll tick, and reports back.
+
+### Revert — put the node back on source
+
+Reachable when `status: "failed"` (covers any cutover-phase failure — safe to
+call even if the mount never actually moved, since re-mounting an
+already-source binding is a no-op), or when `status: "completed"` **and**
+`metadata.promote_failed` is set (the half-cutover case below).
+
+```javascript
+platform.system_revert_storage_migration_binding({
+  id: "<migration-id>", reason: "cutover failed mid-remount, node diverged"
+})
+// → { storage_migration: { metadata: { revert_status: "requested", ... }, ... } }
+```
+
+**Expected outcome:** `metadata.revert_status` walks `requested → completed`
+as the agent re-points the canonical mount back to source and restarts the
+consumer units; `metadata.reverted_at` is set; one audit entry per artifact
+the agent touched. Target data is left intact — revert does not delete
+anything.
+
+### Cleanup — DESTRUCTIVE, target-side only ⚠️
+
+Reachable only from `failed`, or `cancelled` once `preparing` was actually
+reached (an early cancel before preparing never touched the target — nothing
+to clean). **Explicit operator action only — nothing in this codebase
+auto-runs cleanup on failure**, because the partial target data is often the
+most useful forensic evidence while triaging *why* the migration failed.
+
+```javascript
+// Within the grace window (default 24h after failed_at/cancelled_at), this
+// is refused unless you pass immediate: true.
+platform.system_cleanup_storage_migration({
+  id: "<migration-id>", reason: "triaged, safe to remove partial copy"
+})
+// → error: "Cleanup grace window not yet elapsed — 19h remaining (pass immediate: true to override)"
+
+platform.system_cleanup_storage_migration({
+  id: "<migration-id>", reason: "triaged, safe to remove partial copy", immediate: true
+})
+// → { storage_migration: { metadata: { cleanup_status: "requested", ... }, ... } }
+```
+
+**Expected outcome:** `metadata.cleanup_status` walks `requested → completed`;
+`metadata.cleaned_at` is set; the audit log gains one entry per artifact
+naming the exact path deleted (or `already clean` if it was already gone —
+cleanup is idempotent/re-entrant). **Scope is absolute**: only the migration's
+`target_subpath` (the partial rsync copy) and `snapshot_subpath` (scratch) are
+touched — never source data, never the source or target `ProviderVolume`
+itself, never a sibling subpath. This matters because the target volume is
+never `attach_volume`-bound during a migration, so a volume-level delete could
+otherwise reach *other deployments'* live data on shared NFS.
+
+The grace window is `system.storage.migration.cleanup_grace_hours`
+(SiteSetting global default, Account#settings per-account override, baked-in
+default 24h) — override immediately with `immediate: true` when you've already
+triaged the failure and confirmed the partial copy is safe to remove.
+
+---
+
 ## Cancelling (pre-sync only) ⚠️
 
 A migration can be cancelled **only** while `planned`, `approved`, or `preparing`:
@@ -278,8 +354,8 @@ platform.system_storage_chown_retry({
 | `Source/target volume not found` | A volume id is wrong or belongs to another account | Volumes are account-scoped. Re-check ids with `system_list_volumes` / `system_get_volume`. |
 | `Cannot approve in status=<x>` | `system_approve_storage_migration` on a non-`planned` row | Approve is only legal from `planned`. If it's already `approved`/past, proceed to Phase 3; if terminal, start a new migration. |
 | `Illegal transition <a> → <b>` | `report_progress` `status:` is not a legal next state | Follow the forward path `approved→preparing→syncing→verifying→cutover→completed` (or `→failed` from any non-terminal). Read current status with `system_get_storage_migration`. |
-| **Half-cutover** — status `completed` but instance still bound to source | `promote_target_binding!` raised internally and was caught (it logs a warning + audit `promote_target_binding! warning: …` rather than re-raising) | Inspect the migration's `audit_log` for the warning and `system_get_instance` → `config.storage_volume.volume_id`. Re-issue the binding (re-attach the target) so the instance mounts the migrated data; the data itself is already at the target. |
-| Migration stuck in `failed` (terminal) | `mark_failed!` / a `status: "failed"` report landed it there | `failed` is terminal — there is no resume. Read `error_message` + `audit_log` to root-cause, then create a **new** migration with `system_migrate_storage_component`. |
+| **Half-cutover** — status `completed` but instance still bound to source | `promote_target_binding!` raised internally and was caught (it logs a warning + audit `promote_target_binding! warning: …`, and — increment 9 — sets `metadata.promote_failed: true` rather than re-raising) | Inspect the migration's `audit_log` for the warning and `system_get_instance` → `config.storage_volume.volume_id`. Call `system_revert_storage_migration_binding` (reachable here because `metadata.promote_failed` is set) — the node's mount is already physically on target from cutover, but the binding never got persisted, so revert re-points it back to source cleanly. Do **not** hand-edit `config.storage_volume` — the model doesn't know about a manual edit and future reconciliation could fight it. |
+| Migration stuck in `failed` (terminal) | `mark_failed!` / a `status: "failed"` report landed it there | `failed` is terminal for `status` — there is no resume — but it is **not** the end of the story (increment 9): if `metadata.cutover_diverged` is set, the node's live mount may already be re-pointed at target even though the DB says source — call `system_revert_storage_migration_binding` to reconcile it (safe even if nothing actually moved). **Before starting a new migration, note that `failed` silently leaves the target's partial rsync copy in place** — a second migration into the same `target_subpath` would write over it, which is usually fine (rsync resumes) but can double-write into a half-verified tree. Either explicitly clean it up first with `system_cleanup_storage_migration` (past the grace window, or `immediate: true` once you've triaged the failure), or confirm the new target is a different subpath, then create a **new** migration with `system_migrate_storage_component`. |
 | chown stuck `failed` / `manual_required` | On-node `chown` failed, or provider is external/unmanaged (object stores are no-ops; external NFS → `manual_required`) | `system_storage_chown_status` for `chown_last_error`; fix the cause and `system_storage_chown_retry`. For unreachable providers, chown manually then retry with `force_complete: true`. |
 | `system_test_nfs_export` shows `port_2049_open: false` or empty `exports` | NFS server unreachable, firewall blocking 111/2049, or export not advertised | Fix network/firewall/exports on the server before `system_create_volume`. `export_path_match: false` means the export path you expect isn't advertised. |
 | `system_delete_volume` refused | Volume still attached | `delete` requires the volume be `available`/`error` **and** unattached (`ProviderVolume#can_delete?`). `system_detach_volume` first, then delete. |
@@ -295,5 +371,5 @@ platform.system_storage_chown_retry({
 - [README.md](./README.md) — runbook index (audience + prereqs per runbook)
 - [../ARCHITECTURE.md](../ARCHITECTURE.md) — fleet substrate overview
 
-_Last verified: 2026-06-26_
+_Last verified: 2026-07-05_
 </content>

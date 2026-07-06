@@ -374,6 +374,8 @@ dispatched by `app/services/ai/tools/system_fleet_tool.rb` (volumes + migrations
 | `system_approve_storage_migration` | `planned → approved` | `id` |
 | `system_cancel_storage_migration` | Cancel pre-sync only | `id`, `reason` |
 | `system_report_storage_migration_progress` | Advance phase + record bytes | `id`, `status`, `bytes_copied`, `bytes_total`, `bytes_verified`, `note` |
+| `system_revert_storage_migration_binding` | (Increment 9) Request the agent re-point the mount back to source | `id`, `reason` |
+| `system_cleanup_storage_migration` | (Increment 9) **DESTRUCTIVE** — delete target-side scratch artifacts only | `id`, `reason`, `immediate` |
 
 ### Ownership + chown
 
@@ -400,13 +402,14 @@ For the curated MCP reference see [MCP_API_REFERENCE.md](./MCP_API_REFERENCE.md)
 
 ## Dangerous operations
 
-Three storage operations change or destroy data-bearing state and warrant
+Four storage operations change or destroy data-bearing state and warrant
 operator care. The end-to-end procedure + per-failure remediation lives in
 [runbooks/storage-migration.md](./runbooks/storage-migration.md).
 
 | Operation | Why it's dangerous | Guardrail |
 |-----------|--------------------|-----------|
-| **Migration cutover** (`cutover → completed`) | Swaps the instance's `storage_volume` binding source→target; a failure in `promote_target_binding!` leaves a silent half-cutover (data at target, instance bound to source) | Defensive rescue + audit warning; operator must verify the binding post-cutover |
+| **Migration cutover** (`cutover → completed`) | Swaps the instance's `storage_volume` binding source→target; a failure in `promote_target_binding!` leaves a silent half-cutover (data at target, instance bound to source) | Defensive rescue + audit warning (`metadata.promote_failed`); `system_revert_storage_migration_binding` reconciles it (increment 9) |
+| **`system_cleanup_storage_migration`** (increment 9) | Deletes the migration's target-side data — the `target_subpath` partial copy + `snapshot_subpath` scratch | **Subpath-scoped only** — never the source, never the volume itself (the target volume is never attached during a migration, so a volume-level delete could reach other deployments' data on shared NFS); explicit operator action only, never auto-run on failure; gated by a grace window (`system.storage.migration.cleanup_grace_hours`, default 24h, `immediate: true` to override); reachable only from `failed`/`cancelled` (post-preparing); idempotent (missing artifact = already clean); one audit entry per artifact naming the exact path |
 | **chown** (`system_assign_storage_owner`) | Recursive `chown` over an entire mount; wrong owner makes a service unable to read its own data | Loud `:unresolved` inference, `effective_export_uid/gid` masks the change until complete, `failed`/`manual_required` states + retry |
 | **`system_delete_volume`** | Removes backing storage | Refuses while the volume is attached (`can_delete?` = `available`/`error` **and** unattached) |
 

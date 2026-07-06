@@ -19,7 +19,12 @@ module System
     #   - One NFS export hosting many stateful deployments concurrently
     #   - Migrating any single <deployment>/<role> to a different volume
     #     without touching the others
-    #   - Snapshot/rollback per-component (the migrations/ tree)
+    #   - Target-side cleanup + binding revert per-component, scoped to
+    #     the migrations/ tree and the target/snapshot subpaths only
+    #     (System::StorageMigration#revert_binding! / #request_cleanup!,
+    #     increment 9 — this comment previously advertised "snapshot/
+    #     rollback" before either existed; the migrations/<date>/... path
+    #     itself still isn't consumed by any snapshot step in v1)
     #
     # Plan reference: NFS multi-tenant storage + per-component migration.
     class StorageLayout
