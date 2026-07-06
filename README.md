@@ -1,11 +1,11 @@
 # Powernode System Extension
 
-This is the substrate layer that sets Powernode apart: PXE-to-production bare
-metal, a signed module supply chain, SDWAN, and fleet autonomy — the full path
-from a powered-off machine to a governed node in a running fleet. The
-[Powernode platform][platform] is the control plane; this extension is what it
-stands on. See the platform repo for the end-to-end demo and how the two fit
-together.
+This extension provides the substrate layer beneath the Powernode platform:
+PXE-to-production bare metal, a signed module supply chain, SDWAN, and fleet
+autonomy — the full path from a powered-off machine to a governed node in a
+running fleet. The [Powernode platform][platform] is the control plane; this
+extension implements what it runs on. See the platform repo for the
+end-to-end demo and how the two fit together.
 
 A self-contained extension for the [Powernode platform][platform] that provides
 node lifecycle management, declarative module composition, on-node
@@ -56,13 +56,14 @@ it via the standard extension contract.
 
 ### AI-driven autonomy
 
-- **17 fleet sensors** detecting silent instances, module drift, cert expiry,
+- **21 fleet sensors** detecting silent instances, module drift, cert expiry,
   promotion readiness, config drift, SLO violations, honeypot canary access,
   external workload pressure (cross-extension stigmergic coordination), instance
   state drift, GitOps drift, package repository drift, project SLO breaches,
-  SDWAN health (peer reachability, BGP session, VIP reachability, drift,
-  credential expiry), and storage assignment drift
-- **48 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
+  disk-image publication failure streaks, SDWAN health (peer reachability, BGP
+  session, VIP reachability, drift, credential expiry), and storage assignment
+  drift
+- **50 AI Skill executors** spanning read-shape (concierge chat), fleet autonomy
   (drift remediation, CVE response, module composition, rolling upgrades),
   SDWAN topology composition + remediation, container runtime provisioning,
   package + module authoring, architecture catalog, federation, and platform
@@ -142,8 +143,8 @@ extensions/system/
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | 8 subsystems, threat model, state machines, API surfaces |
 | [`docs/USE_CASE_MATRIX.md`](./docs/USE_CASE_MATRIX.md) | What works / doesn't / what to expect for 10 NodeInstance container scenarios — **READ FIRST when designing a deployment** |
 | [`docs/CONTAINER_RUNTIMES.md`](./docs/CONTAINER_RUNTIMES.md) | Phase 1 Docker + Phase 2 K3s lifecycle + operator troubleshooting |
-| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (48 executors with descriptors and example I/O) |
-| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | All 17 fleet sensors + intervention policy reference table |
+| [`docs/SKILL_EXECUTORS.md`](./docs/SKILL_EXECUTORS.md) | Skill executor catalog (descriptors and example I/O) |
+| [`docs/FLEET_SENSORS.md`](./docs/FLEET_SENSORS.md) | Fleet sensors + intervention policy reference table |
 | [`docs/DISK_IMAGE_CI.md`](./docs/DISK_IMAGE_CI.md) | Webhook + CI worker + OCI artifact pipeline |
 | [`docs/MCP_API_REFERENCE.md`](./docs/MCP_API_REFERENCE.md) | All `system_*` / `system_sdwan_*` / `kubernetes_*` / `docker_*` MCP tool actions |
 
@@ -282,7 +283,7 @@ viewer in active sweep).
   permission gates)
 - **M6** — AI Skills catalog (8 executors)
 - **M7** — FleetAutonomyService (gate_action!, 8 sensors at M7 completion; now
-  expanded to 17 across the autonomy + cross-domain pressure exchange surface,
+  expanded to 21 across the autonomy + cross-domain pressure exchange surface,
   DecisionEngine, approval chains)
 - **M8** — Compound learning extraction (LearningExtractor wired into tick
   loop, auto-evolve trigger after 3 matching learnings)
