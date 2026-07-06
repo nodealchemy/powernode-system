@@ -29,21 +29,27 @@ module Federation
   #             customRequestHeaders:
   #               Authorization: Bearer <federation_grant_token>
   #
-  #   TCP/TLS subscription:
+  #   TLS subscription (only protocol left on the tcp.routers path as
+  #   of increment 4 — see the exclusion note below):
   #     tcp:
   #       routers:
   #         sub-<id>:
-  #           rule: HostSNI(`<local_hostname>`) | HostSNI(`*`)
+  #           rule: HostSNI(`<local_hostname>`)
   #           service: sub-<id>-backend
-  #           tls: {} (tls protocol only)
+  #           entryPoints: [websecure]
+  #           tls: { passthrough: true }
   #       services:
   #         sub-<id>-backend:
   #           loadBalancer:
   #             servers: [{ address: <backend_vip>:<backend_port> }]
   #
-  # Site-local subscriptions (powernode-tcp-forwarder) are EXCLUDED
-  # — they don't go through Traefik. They get their own config writer
-  # (P4.6.7) targeting the forwarder daemon.
+  # Site-local subscriptions (powernode-tcp-forwarder) AND tcp-protocol
+  # subscriptions are EXCLUDED — neither goes through Traefik. Site-local
+  # ones never did (no public exposure needed); tcp-protocol ones were
+  # dropped in increment 4 because plaintext TCP carries no TLS
+  # ClientHello for Traefik's HostSNI rule to match against (dead route).
+  # Both get routed instead via Federation::TcpForwarderConfigWriter
+  # (P4.6.7) targeting the tcpfwd forwarder daemon.
   #
   # Plan reference: Decentralized Federation §L.4 + P4.6.3.
   class ServiceRouteWriter
@@ -87,7 +93,9 @@ module Federation
         case sub.protocol
         when "https", "http"
           add_http_route!(sub, http_routers, http_services, http_middlewares)
-        when "tcp", "tls"
+        when "tls"
+          # tcp-protocol subs never reach here -- active_traefik_subs
+          # excludes them (increment 4 cutover to tcpfwd).
           add_tcp_route!(sub, tcp_routers, tcp_services)
         end
       end
@@ -112,7 +120,7 @@ module Federation
     def active_traefik_subs
       ::System::Federation::ServiceSubscription
         .where(account: @account, status: "active")
-        .reject(&:site_local?)
+        .reject { |sub| sub.site_local? || sub.protocol == "tcp" }
     end
 
     def add_http_route!(sub, routers, services, middlewares)
@@ -144,16 +152,22 @@ module Federation
       }
     end
 
+    # Only "tls" protocol subs reach this method (render_yaml's case
+    # statement narrows to "tls"; "tcp" is excluded upstream by
+    # active_traefik_subs). SNI passthrough on the existing websecure
+    # entrypoint only -- see the ratified decision in
+    # docs/operations/reverse-proxy.md and the runbook
+    # docs/runbooks/traefik-tcp-exposure-vs-dnat.md (Path D).
     def add_tcp_route!(sub, routers, services)
       router_key = "sub-#{sub.id}"
       service_key = "#{router_key}-backend"
 
-      router = {
+      routers[router_key] = {
         "rule" => "HostSNI(`#{sub.local_hostname}`)",
-        "service" => service_key
+        "service" => service_key,
+        "entryPoints" => [ "websecure" ],
+        "tls" => { "passthrough" => true }
       }
-      router["tls"] = {} if sub.protocol == "tls"
-      routers[router_key] = router
 
       services[service_key] = {
         "loadBalancer" => {

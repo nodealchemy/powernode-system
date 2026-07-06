@@ -7,10 +7,14 @@ require "securerandom"
 module Federation
   # Subscriber-side writer: generates the on-node config for the
   # powernode-tcp-forwarder agent daemon (Go package
-  # extensions/system/agent/internal/tcpfwd) from active, SITE-LOCAL
-  # System::Federation::ServiceSubscription rows -- the ones
-  # ServiceRouteWriter deliberately excludes because they never go
-  # through Traefik (see ServiceRouteWriter's class comment + P4.6.7).
+  # extensions/system/agent/internal/tcpfwd) from active
+  # System::Federation::ServiceSubscription rows that ServiceRouteWriter
+  # deliberately excludes -- SITE-LOCAL ones (never go through Traefik)
+  # AND, as of increment 4's cutover, any TCP-PROTOCOL subscription
+  # regardless of site-local-ness (Traefik's HostSNI rule can never
+  # match plaintext TCP, so tcp-protocol subs never had a working
+  # Traefik path to begin with -- see ServiceRouteWriter's class
+  # comment + P4.6.7/increment 4).
   #
   # Output shape (must match tcpfwd/doc.go + config.go#Validate
   # exactly -- this Ruby writer and the Go loader are two independent
@@ -31,29 +35,44 @@ module Federation
   # Traefik's dynamic config) -- a tcpfwd daemon runs on the
   # subscriber's own node, so there is exactly one canonical on-node
   # path. DEFAULT_CONFIG_PATH/CONFIG_PATH_ENV_VAR is that contract;
-  # the agent side does not consume it yet (see finding below).
+  # the agent side loads it at startup as of increment 4 (see
+  # agent/internal/tcpfwd/config.go's DefaultConfigPath, wired into
+  # agent/internal/runtime/service.go's Run()).
   #
-  # Empty-set semantics: zero active site-local subscriptions still
+  # Empty-set semantics: zero active eligible subscriptions still
   # produces {"forwards": []} (config.go#Validate accepts an empty
-  # list) rather than deleting/omitting the file -- the daemon side
-  # treats "config missing" as a startup error but "config present
-  # with zero forwards" as a valid (idle) steady state.
+  # list) rather than deleting/omitting the file. The agent's service
+  # loop tolerates a MISSING file (skips starting the daemon -- idle
+  # steady state for a node the platform never configured), but
+  # writing an explicit empty config keeps "platform manages this
+  # node, zero forwards right now" distinguishable from "never
+  # configured", and a malformed file still surfaces loudly via the
+  # agent's OnError path.
   #
-  # Known finding (increment 3, confirmed by grep): as of this
-  # writing, package tcpfwd has zero references anywhere in the agent
-  # tree outside internal/tcpfwd/ itself -- no `service` subcommand
-  # wiring, no config-path constant. The daemon is not yet started by
-  # `powernode-agent service`. Wiring it in is increment-4+ territory;
-  # this writer only needs to emit a spec-correct file at a sensible,
-  # env-overridable path for that future consumer.
+  # Listen-address fork (increment 4, NOT plan-specified -- flagged in
+  # the increment's report): site-local local_hostname already embeds
+  # a port ("localhost:5432"), so listen_address can use it verbatim.
+  # A non-site-local tcp-protocol subscription's local_hostname is a
+  # BARE hostname with no port (it was written for Host()/HostSNI()
+  # rules, which don't take a port) -- there is no plan or runbook
+  # text describing what such a subscription's tcpfwd bind address
+  # should be. This writer's conservative choice: pair local_hostname
+  # verbatim with the subscription's own backend_port (both fields
+  # already stored on the row; no wildcard/0.0.0.0 bind invented). See
+  # listen_address for the exact logic and the report's recommendation
+  # for a follow-up decision.
   #
   # Plan reference: Decentralized Federation §L.5 + P4.6.7.
   class TcpForwarderConfigWriter
     class WriteError < StandardError; end
 
-    # Canonical on-node path the (not-yet-wired) powernode-tcp-forwarder
-    # daemon will read from. Override via CONFIG_PATH_ENV_VAR for
-    # non-standard installs/tests.
+    # Canonical on-node path the powernode-tcp-forwarder daemon reads
+    # from (wired into the agent's service loop in increment 4). MUST
+    # stay byte-for-byte identical to the Go side's
+    # tcpfwd.DefaultConfigPath (agent/internal/tcpfwd/config.go) --
+    # two independent implementations of the same on-disk contract,
+    # with no shared build-time check tying them together. Override
+    # via CONFIG_PATH_ENV_VAR for non-standard installs/tests.
     DEFAULT_CONFIG_PATH = "/etc/powernode/tcpfwd/forwards.json"
     CONFIG_PATH_ENV_VAR = "POWERNODE_TCPFWD_CONFIG_PATH"
 
@@ -73,7 +92,7 @@ module Federation
     end
 
     def write!
-      subs = active_site_local_subs
+      subs = active_forwarder_subs
       config = render_config(subs)
 
       FileUtils.mkdir_p(File.dirname(@config_path))
@@ -92,15 +111,19 @@ module Federation
 
     private
 
-    def active_site_local_subs
+    # Site-local subs (never touch Traefik) OR tcp-protocol subs
+    # (increment 4 cutover -- ServiceRouteWriter excludes these too;
+    # exactly one writer runs per subscription, matching
+    # ServiceRouteWriter#active_traefik_subs's exclusion).
+    def active_forwarder_subs
       ::System::Federation::ServiceSubscription
         .where(account: @account, status: "active")
-        .select(&:site_local?)
+        .select { |sub| sub.site_local? || sub.protocol == "tcp" }
     end
 
     def render_forward(sub)
       {
-        "listen" => listen_address(sub.local_hostname),
+        "listen" => listen_address(sub),
         "backend" => backend_address(sub.backend_vip, sub.backend_port),
         # v1 forwarder supports TCP only (config.go#Validate rejects
         # anything else) -- hard-coded regardless of the subscription's
@@ -114,13 +137,23 @@ module Federation
     end
 
     # site-local local_hostname is "localhost:<port>" or
-    # "127.0.0.1:<port>" (ServiceSubscription#site_local?). The
+    # "127.0.0.1:<port>" (ServiceSubscription#site_local?) -- the port
+    # is already embedded, so the split below yields it directly. The
     # forwarder always binds the loopback interface -- never the
     # literal string "localhost" -- so normalize that case, preserving
     # the port. The "127.0.0.1:<port>" case already needs no change.
-    def listen_address(local_hostname)
-      host, port = local_hostname.to_s.split(":", 2)
+    #
+    # A non-site-local tcp-protocol subscription's local_hostname has
+    # NO embedded port (it's a bare hostname meant for Host()/HostSNI()
+    # rules, which are port-less) -- split yields a nil port, so we
+    # fall back to the subscription's own backend_port. See this
+    # class's doc comment ("Listen-address fork") for why this is the
+    # conservative, plan-unspecified choice rather than an invented
+    # wildcard bind.
+    def listen_address(sub)
+      host, port = sub.local_hostname.to_s.split(":", 2)
       host = "127.0.0.1" if host == "localhost"
+      port ||= sub.backend_port
       "#{host}:#{port}"
     end
 

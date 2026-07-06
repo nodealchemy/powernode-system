@@ -83,6 +83,31 @@ RSpec.describe Federation::TcpForwarderConfigWriter, type: :service do
       end
     end
 
+    context "with an active NON-site-local tcp-protocol subscription (increment 4 cutover)" do
+      let!(:tcp_sub) do
+        create(:system_federation_service_subscription, :active, :tcp, account: account,
+                                                                        local_hostname: "pg.alice.tld",
+                                                                        backend_vip: "fd00:abc::20",
+                                                                        backend_port: 5432,
+                                                                        acme_certificate: nil)
+      end
+
+      it "includes it -- ServiceRouteWriter's HostSNI routing can never match plaintext TCP, so it rides tcpfwd instead" do
+        result = described_class.write!(account: account, config_path: config_path)
+        expect(result[:forward_count]).to eq(1)
+        parsed = JSON.parse(File.read(result[:output_path]))
+        expect(parsed["forwards"].first["subscription_id"]).to eq(tcp_sub.id)
+      end
+
+      it "derives listen by pairing local_hostname (bare, no embedded port for non-site-local subs) with backend_port" do
+        result = described_class.write!(account: account, config_path: config_path)
+        parsed = JSON.parse(File.read(result[:output_path]))
+        forward = parsed["forwards"].first
+        expect(forward["listen"]).to eq("pg.alice.tld:5432")
+        expect(forward["backend"]).to eq("[fd00:abc::20]:5432")
+      end
+    end
+
     context "with site-local subscriptions in non-active states" do
       let!(:pending_sub) do
         create(:system_federation_service_subscription, :site_local, account: account,

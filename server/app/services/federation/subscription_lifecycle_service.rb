@@ -20,9 +20,11 @@ module Federation
   #
   #   4. Route config — emitted by ServiceRouteWriter (HTTP/TLS
   #      subscriptions, Traefik dynamic config) OR
-  #      TcpForwarderConfigWriter (site-local TCP forwards, tcpfwd
-  #      daemon config -- P4.6.7). Exactly one of the two runs per
-  #      subscription, matching ServiceSubscription#site_local?.
+  #      TcpForwarderConfigWriter (site-local subscriptions OR
+  #      tcp-protocol subscriptions of either kind, tcpfwd daemon
+  #      config -- P4.6.7 + increment 4 cutover). Exactly one of the
+  #      two runs per subscription, matching
+  #      ServiceSubscription#site_local? || protocol == "tcp".
   #
   # Failure semantics: if cert issuance fails OR route writing
   # fails OR subscription creation fails, the lifecycle returns
@@ -102,7 +104,11 @@ module Federation
       # when it queries (both writers filter to status=active subs).
       subscription.activate!
 
-      if site_local
+      # tcp-protocol subs never had a working Traefik path (HostSNI
+      # can't match plaintext TCP) -- increment 4 routes them via
+      # tcpfwd regardless of site-local-ness, matching
+      # ServiceRouteWriter's narrowed exclusion.
+      if site_local || protocol == "tcp"
         ::Federation::TcpForwarderConfigWriter.write!(account: @account)
       else
         ::Federation::ServiceRouteWriter.write!(account: @account)

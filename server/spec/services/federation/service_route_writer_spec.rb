@@ -67,7 +67,7 @@ RSpec.describe Federation::ServiceRouteWriter, type: :service do
       end
     end
 
-    context "with an active tcp subscription" do
+    context "with an active tcp-protocol subscription" do
       let!(:tcp_sub) do
         create(:system_federation_service_subscription, :active, :tcp, account: account,
                                                                         protocol: "tcp",
@@ -77,15 +77,11 @@ RSpec.describe Federation::ServiceRouteWriter, type: :service do
                                                                         acme_certificate: nil)
       end
 
-      it "emits a TCPRouter with HostSNI + load-balancer address" do
+      it "emits NO Traefik router at all -- tcp-protocol subs route via tcpfwd instead (increment 4 cutover; HostSNI can never match plaintext TCP)" do
         result = described_class.write!(account: account, dynamic_dir: tmp_dir)
+        expect(result[:route_count]).to eq(0)
         parsed = YAML.load_file(result[:output_path])
-        router = parsed["tcp"]["routers"]["sub-#{tcp_sub.id}"]
-        expect(router["rule"]).to eq("HostSNI(`pg.alice.tld`)")
-        expect(router).not_to have_key("tls")  # tcp (not tls) → no tls block
-
-        backend = parsed["tcp"]["services"]["sub-#{tcp_sub.id}-backend"]
-        expect(backend["loadBalancer"]["servers"]).to eq([ { "address" => "fd00:abc::20:5432" } ])
+        expect(parsed).to eq({})
       end
     end
 
@@ -98,11 +94,16 @@ RSpec.describe Federation::ServiceRouteWriter, type: :service do
                                                                   backend_port: 8883)
       end
 
-      it "emits a TCPRouter with tls block" do
+      it "emits a TCPRouter with SNI passthrough on the websecure entrypoint only" do
         result = described_class.write!(account: account, dynamic_dir: tmp_dir)
         parsed = YAML.load_file(result[:output_path])
         router = parsed["tcp"]["routers"]["sub-#{tls_sub.id}"]
-        expect(router["tls"]).to eq({})
+        expect(router["rule"]).to eq("HostSNI(`mqtt.alice.tld`)")
+        expect(router["tls"]).to eq("passthrough" => true)
+        expect(router["entryPoints"]).to eq([ "websecure" ])
+
+        backend = parsed["tcp"]["services"]["sub-#{tls_sub.id}-backend"]
+        expect(backend["loadBalancer"]["servers"]).to eq([ { "address" => "fd00:abc::30:8883" } ])
       end
     end
 

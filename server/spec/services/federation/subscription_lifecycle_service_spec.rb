@@ -179,7 +179,7 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
     end
   end
 
-  describe ".activate! for a public (non-site-local) subscription" do
+  describe ".activate! for a public (non-site-local) https subscription" do
     it "does NOT invoke TcpForwarderConfigWriter" do
       described_class.activate!(
         account: subscriber_account, federation_peer: operator_peer,
@@ -188,6 +188,26 @@ RSpec.describe Federation::SubscriptionLifecycleService, type: :service do
         acme_client: stub_client
       )
       expect(::Federation::TcpForwarderConfigWriter).not_to have_received(:write!)
+    end
+  end
+
+  describe ".activate! for a NON-site-local tcp-protocol subscription (increment 4 cutover)" do
+    let(:tcp_response) do
+      base_response.merge(protocol: "tcp", backend_port: 5432, backend_host: "fd00:abc::30")
+    end
+
+    it "routes via TcpForwarderConfigWriter, not ServiceRouteWriter, even though the hostname isn't site-local" do
+      result = described_class.activate!(
+        account: subscriber_account, federation_peer: operator_peer,
+        offering_slug: "managed-pg-public", local_hostname: "pg.alice.tld",
+        operator_response: tcp_response,
+        acme_client: stub_client
+      )
+      expect(result.ok?).to be true
+      expect(result.subscription.site_local?).to be false
+      expect(::Federation::ServiceRouteWriter).not_to have_received(:write!)
+      expect(::Federation::TcpForwarderConfigWriter).to have_received(:write!)
+        .with(account: subscriber_account)
     end
   end
 
