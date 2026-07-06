@@ -204,6 +204,176 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  describe "#create_instance (uefi_disk boot mode)" do
+    # Increment 12a — UKI pivot-boot rehearsal. uefi_disk boots a VM from a
+    # pre-built, signed UEFI/UKI disk image imported via the PVE storage API
+    # (token-friendly), never the `args` escape hatch (root@pam-only).
+    let(:base_params) do
+      {
+        name: "uefi-vm",
+        instance_type: "pve.vm.small",
+        boot_mode: "uefi_disk",
+        node: "dna",
+        storage: "dna-data",
+        start: false
+      }
+    end
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("200")
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/qemu", anything)
+        .and_return("UPID:dna:001:001:001:qmcreate:200:user!tok:")
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+    end
+
+    context "with an explicit params[:image_id] (already-imported PVE volid)" do
+      let(:params) { base_params.merge(image_id: "dna-data:import/uefi-uki.img") }
+
+      it "skips disk import and creates the VM with bios=ovmf + the given volid" do
+        result = provider.create_instance(params)
+        expect(result[:success]).to be true
+
+        expect(client).not_to have_received(:post).with(
+          "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+        )
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including(
+            "bios"  => "ovmf",
+            "scsi0" => a_string_including("import-from=dna-data:import/uefi-uki.img")
+          )
+        )
+      end
+
+      it "never sets the `args` config key — no fw-cfg escape hatch, no root@pam requirement" do
+        provider.create_instance(params)
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_excluding("args")
+        )
+      end
+    end
+
+    context "resolving the default disk image from the node's NodePlatform" do
+      let(:node_platform) do
+        instance_double("System::NodePlatform",
+          name: "ubuntu-24.04-amd64-uefi",
+          disk_image_file_object_id: "0199aaaa-0000-7000-8000-000000000000",
+          disk_image_sha256: "a" * 64,
+          disk_image_git_sha: "af4e84d",
+          account: instance_double("Account"))
+      end
+      let(:node_record) { instance_double("System::Node", node_platform: node_platform) }
+      let(:params) { base_params.merge(node: node_record) }
+      let(:file_object) { instance_double("FileManagement::Object") }
+      let(:storage_service) { instance_double(FileStorageService) }
+      let(:expected_filename) { "ubuntu-24.04-amd64-uefi-af4e84d.img" }
+      let(:expected_volid) { "dna-data:import/#{expected_filename}" }
+
+      before do
+        # params[:node] is the System::Node AR record here (not a string), so
+        # pve_node_name filters it out and the cluster-picker fallback fires.
+        allow(client).to receive(:get).with("/api2/json/nodes").and_return(
+          [ { "node" => "dna", "status" => "online" } ]
+        )
+        allow(::FileManagement::Object).to receive(:find_by).with(id: node_platform.disk_image_file_object_id)
+                                                            .and_return(file_object)
+        allow(FileStorageService).to receive(:new).with(node_platform.account).and_return(storage_service)
+        allow(storage_service).to receive(:file_url)
+          .with(file_object, download: true, expires_in: 1.hour)
+          .and_return("https://ops.example/files/uefi-uki-signed-download")
+      end
+
+      context "when the volid isn't already imported on the target storage" do
+        before do
+          allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return([])
+          allow(client).to receive(:post)
+            .with("/api2/json/nodes/dna/storage/dna-data/download-url", anything)
+            .and_return("UPID:dna:001:001:001:imgdl:200:user!tok:")
+        end
+
+        it "imports the disk image via the PVE storage download-url task, then creates the VM" do
+          result = provider.create_instance(params)
+          expect(result[:success]).to be true
+
+          expect(client).to have_received(:post).with(
+            "/api2/json/nodes/dna/storage/dna-data/download-url",
+            hash_including(
+              "content"  => "import",
+              "filename" => expected_filename,
+              "url"      => "https://ops.example/files/uefi-uki-signed-download",
+              "checksum" => "a" * 64,
+              "checksum-algorithm" => "sha256"
+            )
+          )
+          expect(client).to have_received(:post).with(
+            "/api2/json/nodes/dna/qemu",
+            hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
+          )
+        end
+      end
+
+      context "when the volid is already imported (idempotent re-provision)" do
+        before do
+          allow(client).to receive(:get).with("/api2/json/nodes/dna/storage/dna-data/content").and_return(
+            [ { "volid" => expected_volid } ]
+          )
+        end
+
+        it "skips the download-url import and reuses the existing volid" do
+          provider.create_instance(params)
+          expect(client).not_to have_received(:post).with(
+            "/api2/json/nodes/dna/storage/dna-data/download-url", anything
+          )
+          expect(client).to have_received(:post).with(
+            "/api2/json/nodes/dna/qemu",
+            hash_including("scsi0" => a_string_including("import-from=#{expected_volid}"))
+          )
+        end
+      end
+    end
+
+    context "with no image_id and no NodePlatform default image configured" do
+      let(:node_platform) { instance_double("System::NodePlatform", disk_image_file_object_id: nil) }
+      let(:node_record) { instance_double("System::Node", node_platform: node_platform) }
+      let(:params) { base_params.merge(node: node_record) }
+
+      before do
+        # Node resolution (params[:node] is an AR-shaped double, not a
+        # string) runs before image resolution — same ordering as the
+        # cloud_init path's `params.fetch(:image_id)`.
+        allow(client).to receive(:get).with("/api2/json/nodes").and_return(
+          [ { "node" => "dna", "status" => "online" } ]
+        )
+      end
+
+      it "raises a ProviderError with an actionable message" do
+        expect { provider.create_instance(params) }.to raise_error(
+          System::Providers::BaseProvider::ProviderError, /uefi_disk boot_mode requires a boot image/
+        )
+      end
+    end
+  end
+
+  describe "#create_instance boot_mode dispatch" do
+    it "raises on an unknown boot_mode instead of silently defaulting" do
+      params = {
+        name: "bad-boot-mode-vm",
+        instance_type: "pve.vm.small",
+        image_id: "dna-data:import/noble.qcow2",
+        node: "dna",
+        storage: "dna-data",
+        boot_mode: "not-a-real-mode"
+      }
+
+      expect { provider.create_instance(params) }.to raise_error(
+        System::Providers::BaseProvider::ProviderError, /Unknown boot_mode/
+      )
+    end
+  end
+
   # Security regression: the QEMU fw_cfg entries staged on the cluster-shared
   # NFS snippets export embed the single-use federation acceptance_token in
   # cleartext (fw_cfg["opt/com.powernode/acceptance_token"]). They MUST be

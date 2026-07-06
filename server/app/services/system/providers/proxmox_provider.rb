@@ -220,6 +220,19 @@ module System
           #                     enrolls → pulls modules → assembles /sysroot
           #                     overlay → switch_root /sysroot /sbin/init.
           #                     Modules ARE the OS.
+          #
+          #   "uefi_disk"     — UKI pivot-boot path (increment 12a). Boots a
+          #                     VM from a pre-built, signed UEFI/UKI disk
+          #                     image, imported into PVE storage via the
+          #                     token-friendly `download-url` storage task
+          #                     (see resolve_uefi_disk_image!) rather than
+          #                     the operator-supplied volid the cloud_init
+          #                     path expects. Deliberately NEVER touches the
+          #                     `args` config field — no fw-cfg escape
+          #                     hatch, no root@pam requirement. Federation
+          #                     payload delivery (when needed) rides the
+          #                     same cloud-init/cicustom channel as
+          #                     cloud_init, which is API-token-safe.
           boot_mode = (params[:boot_mode] || params.dig(:options, :boot_mode)).to_s
           boot_mode = "cloud_init" if boot_mode.empty?
           case boot_mode
@@ -227,8 +240,10 @@ module System
             create_vm_instance(params, preset: preset)
           when "direct_kernel"
             create_direct_kernel_vm_instance(params, preset: preset)
+          when "uefi_disk"
+            create_uefi_disk_vm_instance(params, preset: preset)
           else
-            raise ProviderError, "Unknown boot_mode: #{boot_mode.inspect} (want cloud_init|direct_kernel)"
+            raise ProviderError, "Unknown boot_mode: #{boot_mode.inspect} (want cloud_init|direct_kernel|uefi_disk)"
           end
         elsif mode == "lxc"
           create_lxc_instance(params, preset: preset)
@@ -619,26 +634,9 @@ module System
           image_volid: image_volid
         )
 
-        # Federation spawn auto-render: when SpawnPlatformService forwards a
-        # spawn_payload via options[:spawn_payload] and the caller didn't
-        # provide explicit user_data, render a #cloud-config that downloads
-        # the agent + enables the systemd service. The spawn payload itself
-        # reaches the agent via the fw-cfg block below. Operators can
-        # override by passing params[:user_data] (or :ssh_authorized_keys
-        # to inject keys into the auto-rendered output).
-        if params[:user_data].blank?
-          sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
-          if sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
-            params = params.merge(
-              user_data: ::System::Providers::Proxmox::CloudSeed.render(
-                spawn_payload:       sp,
-                hostname:            params[:hostname] || params[:name],
-                agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
-                ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
-              )
-            )
-          end
-        end
+        # Federation spawn auto-render — see apply_default_federation_user_data.
+        # The spawn payload itself reaches the agent via the fw-cfg block below.
+        params = apply_default_federation_user_data(params)
 
         stage_cicustom(body, params, vmid: vmid)
 
@@ -706,6 +704,33 @@ module System
         # VM and operators have to manually `qm start`. Opt out with
         # start: false for staging flows attaching extra disks first.
         finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # Federation spawn auto-render: when SpawnPlatformService forwards a
+      # spawn_payload via options[:spawn_payload] and the caller didn't
+      # provide explicit user_data, render a #cloud-config that downloads
+      # the agent + enables the systemd service. Operators can override by
+      # passing params[:user_data] (or :ssh_authorized_keys to inject keys
+      # into the auto-rendered output).
+      #
+      # SINGLE SOURCE OF TRUTH for both create_vm_instance (cloud_init) and
+      # create_uefi_disk_vm_instance (uefi_disk) — both deliver the
+      # federation payload via this cloud-init channel; only their fw-cfg
+      # posture differs (uefi_disk never uses it).
+      def apply_default_federation_user_data(params)
+        return params if params[:user_data].present?
+
+        sp = params.dig(:options, :spawn_payload) || params[:spawn_payload]
+        return params unless sp.is_a?(Hash) && sp["parent_url"].to_s.length > 0
+
+        params.merge(
+          user_data: ::System::Providers::Proxmox::CloudSeed.render(
+            spawn_payload:       sp,
+            hostname:            params[:hostname] || params[:name],
+            agent_url:           params[:agent_url] || params.dig(:options, :agent_url),
+            ssh_authorized_keys: Array(params[:ssh_keys]) + Array(params.dig(:options, :ssh_authorized_keys))
+          )
+        )
       end
 
       # Builds the qemu create body. The scsi0 disk uses size=0 with
@@ -970,6 +995,147 @@ module System
 
         instance_id = "#{node}/qemu/#{vmid}"
         finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # ============================================================
+      # UEFI-disk-boot VM creation (increment 12a — UKI pivot-boot)
+      # ============================================================
+
+      # Boots a VM from a pre-built, signed UEFI/UKI disk image — no
+      # kernel/initrd args, no root@pam requirement. Shares its qemu body
+      # shape with create_vm_instance (both go through build_qemu_vm_body
+      # + the same import-from mechanism); the only real differences are:
+      #
+      #   1. Image resolution — cloud_init requires the caller to already
+      #      have an imported volid at params[:image_id]; uefi_disk can
+      #      resolve + import one itself from the node's NodePlatform
+      #      default disk image (see resolve_uefi_disk_image!).
+      #   2. No `args` at all — never stages fw-cfg, never checks
+      #      POWERNODE_PVE_USE_FWCFG. Federation payload delivery (when
+      #      needed) rides the cloud-init/cicustom channel below, same as
+      #      cloud_init — that channel is API-token-safe.
+      def create_uefi_disk_vm_instance(params, preset:)
+        c = require_client!
+        node = pve_node_name(params) || first_online_node!(c)
+        vmid = params[:vmid] || allocate_next_vmid!(c)
+        storage = params[:storage] || first_shared_storage_with_content!(c, node: node, content: "images")
+        bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
+        ip_config = params[:ip_config] || "ip=dhcp"
+        image_volid = resolve_uefi_disk_image!(c, params, node: node, storage: storage)
+
+        body = build_qemu_vm_body(
+          params,
+          preset:      preset,
+          vmid:        vmid,
+          storage:     storage,
+          bridge:      bridge,
+          ip_config:   ip_config,
+          image_volid: image_volid
+        )
+
+        params = apply_default_federation_user_data(params)
+        stage_cicustom(body, params, vmid: vmid)
+
+        create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
+        c.wait_task(node: node, upid: create_upid)
+
+        resize_boot_disk!(c, node: node, vmid: vmid, params: params, preset: preset)
+
+        ssh_keys = Array(params[:ssh_keys]).compact.reject(&:empty?)
+        set_ssh_keys!(c, node: node, kind: "qemu", vmid: vmid, ssh_keys: ssh_keys) if ssh_keys.any?
+
+        apply_protection!(c, node: node, vmid: vmid, params: params)
+
+        instance_id = "#{node}/qemu/#{vmid}"
+        finalize_create(instance_id, start: params.fetch(:start, true))
+      end
+
+      # Resolves the boot-disk volid for uefi_disk: an explicit
+      # params[:image_id] always wins (operator/caller already imported
+      # one); otherwise resolves the node's NodePlatform default disk image
+      # (disk_image_file_object_id/_sha256/_git_sha, set by publish +
+      # promote) and imports it into PVE storage if not already present.
+      #
+      # params[:node] here is the *other* branch of the semantic collision
+      # documented on pve_node_name: ProvisioningService passes the
+      # System::Node AR record, which pve_node_name filters out (it wants a
+      # node-name String) but which this method needs for `.node_platform`.
+      def resolve_uefi_disk_image!(c, params, node:, storage:)
+        return params[:image_id] if params[:image_id].present?
+
+        platform = uefi_disk_node_platform(params)
+        unless platform&.disk_image_file_object_id.present?
+          raise ProviderError,
+                "uefi_disk boot_mode requires a boot image: pass params[:image_id] (an " \
+                "already-imported PVE volid, e.g. 'storage:import/file.img') or configure + " \
+                "publish a default disk image on the node's NodePlatform " \
+                "(system_node_platforms.disk_image_file_object_id)"
+        end
+
+        filename = uefi_disk_image_filename(platform)
+        volid = "#{storage}:import/#{filename}"
+        return volid if pve_storage_volid_exists?(c, node: node, storage: storage, volid: volid)
+
+        import_uefi_disk_image!(c, node: node, storage: storage, platform: platform, filename: filename)
+        volid
+      end
+
+      def uefi_disk_node_platform(params)
+        node_record = params[:node]
+        return nil unless node_record.respond_to?(:node_platform)
+        node_record.node_platform
+      end
+
+      # Deterministic per-build filename so re-provisioning the same
+      # published disk image reuses the already-imported PVE volid instead
+      # of re-downloading it on every VM create (see
+      # pve_storage_volid_exists?).
+      def uefi_disk_image_filename(platform)
+        sha = platform.disk_image_git_sha.presence || platform.disk_image_sha256.to_s.first(12)
+        "#{platform.name}-#{sha}.img".gsub(/[^A-Za-z0-9_.\-]/, "_")
+      end
+
+      def pve_storage_volid_exists?(c, node:, storage:, volid:)
+        content = c.get("/api2/json/nodes/#{node}/storage/#{storage}/content") || []
+        content.any? { |item| item["volid"] == volid }
+      rescue Proxmox::Client::Error
+        false
+      end
+
+      # Imports the platform's published disk image into PVE storage via
+      # the `download-url` storage task — an API-token-friendly PVE
+      # primitive (unlike the `args` config field, it carries no
+      # root@pam requirement). The image bytes are already ingested +
+      # cosign-verified into a FileObject at publish time
+      # (DiskImageOciIngestService, DiskImagePublicationProcessor); we
+      # reuse that stored copy via a signed download URL rather than
+      # re-pulling from the OCI registry (which would need registry
+      # creds + a second cosign verify pass PVE has no way to run).
+      #
+      # content=import is the PVE 8.1+ content type for foreign disk-image
+      # import; the resulting volid (`storage:import/filename`) is what
+      # build_qemu_vm_body's `import-from=` then clones into the VM's
+      # actual boot disk at create time (same two-step mechanism the
+      # cloud_init path already uses with an operator-supplied volid).
+      def import_uefi_disk_image!(c, node:, storage:, platform:, filename:)
+        file_object = ::FileManagement::Object.find_by(id: platform.disk_image_file_object_id)
+        unless file_object
+          raise ProviderError,
+                "NodePlatform #{platform.name.inspect} disk_image_file_object_id " \
+                "#{platform.disk_image_file_object_id} does not resolve to a FileObject"
+        end
+
+        download_url = ::FileStorageService.new(platform.account)
+                                            .file_url(file_object, download: true, expires_in: 1.hour)
+
+        body = { "content" => "import", "filename" => filename, "url" => download_url }
+        if platform.disk_image_sha256.present?
+          body["checksum"] = platform.disk_image_sha256
+          body["checksum-algorithm"] = "sha256"
+        end
+
+        upid = c.post("/api2/json/nodes/#{node}/storage/#{storage}/download-url", body)
+        c.wait_task(node: node, upid: upid)
       end
 
       # Stages QEMU fw_cfg entries as files on the cluster-shared snippets
