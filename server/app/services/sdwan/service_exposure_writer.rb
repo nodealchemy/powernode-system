@@ -46,6 +46,15 @@ module Sdwan
     ENTRYPOINT   = "websecure"
     TLS_RESOLVER = "mtls-optional@file"
 
+    # Path B (public TLS-carrying TCP, campaign 019f3458 increment 5): the
+    # REQUIRED-client-cert counterpart of TLS_RESOLVER, applied only when a
+    # public_enabled service opts into `client_auth == "required"` under
+    # `edge_mode == "terminate"` (model validation ties the two together —
+    # Traefik cannot inspect a client cert on an undecrypted passthrough
+    # stream). Defined in Acme::TraefikConfigWriter.shared_mtls_config
+    # alongside mtls-optional, same shared CA bundle.
+    PUBLIC_MTLS_REQUIRED_OPTION = "mtls-required@file"
+
     class << self
       def write!(account:, dynamic_dir: nil)
         new(account: account, dynamic_dir: dynamic_dir).write!
@@ -80,17 +89,25 @@ module Sdwan
 
     # Renders the Traefik dynamic hash. Public for testability (no filesystem
     # side effects). A service whose host can't be resolved is skipped — a
-    # hostless PathPrefix router would hijack /svc/<slug> on every served host.
+    # hostless PathPrefix/HostSNI router would hijack traffic on every served
+    # host. Each service independently opts into the local (HTTP, `http.*`)
+    # and/or public (TLS-carrying TCP, `tcp.*`) facet — the two are mutually
+    # exclusive in practice (local requires an http/https protocol, public
+    # requires tls), but this method makes no assumption of that and just
+    # dispatches on each flag.
     def render_yaml(services)
       routers = {}
       backends = {}
       middlewares = {}
+      tcp_routers = {}
+      tcp_backends = {}
 
       services.each do |svc|
         host = host_for(svc)
         next if host.blank? && log_skip(svc)
 
-        add_service!(svc, host, routers, backends, middlewares)
+        add_service!(svc, host, routers, backends, middlewares) if svc.local_enabled?
+        add_public_tcp_route!(svc, host, tcp_routers, tcp_backends) if svc.public_enabled?
       end
 
       top = {}
@@ -98,14 +115,18 @@ module Sdwan
         top["http"] = { "routers" => routers, "services" => backends }
         top["http"]["middlewares"] = middlewares if middlewares.any?
       end
+      top["tcp"] = { "routers" => tcp_routers, "services" => tcp_backends } if tcp_routers.any?
       YAML.dump(top)
     end
 
     private
 
+    # Union of both exposure facets — a service opts into either, both (not
+    # possible today; mutually exclusive by protocol validation), or neither.
     def exposed_services
-      ::Sdwan::Service.locally_exposed
+      ::Sdwan::Service.active
                       .where(account_id: @account.id)
+                      .where("local_enabled OR public_enabled")
                       .includes(:local_certificate, :backend_vip)
                       .to_a
     end
@@ -132,6 +153,50 @@ module Sdwan
       }
     end
 
+    # Path B — public TLS-carrying TCP via Traefik SNI (campaign 019f3458
+    # increment 5). Traefik demuxes this alongside the platform's own HTTP(S)
+    # routers on the SAME websecure entrypoint by inspecting the ClientHello's
+    # SNI; no new entrypoint is ever added (ratified in
+    # docs/operations/reverse-proxy.md + the runbook's Path B section).
+    #
+    #   edge_mode "passthrough" (default) — Traefik forwards the encrypted
+    #     stream untouched; the backend terminates TLS itself.
+    #   edge_mode "terminate" — Traefik terminates. No `passthrough`/`certFile`
+    #     key is set here: Traefik resolves the serving cert by matching the
+    #     router's HostSNI against the `tls.certificates` entries
+    #     Acme::TraefikConfigWriter already emits for every valid
+    #     System::AcmeCertificate (reused, not duplicated). `client_auth ==
+    #     "required"` layers on the shared REQUIRED-client-cert TLS option
+    #     (model validation already ties that to edge_mode terminate, since
+    #     Traefik cannot inspect a client cert on an undecrypted passthrough
+    #     stream).
+    #
+    # Same address-form TCP backend regardless of edge_mode — Traefik's TCP
+    # loadBalancer dials a bare host:port, not a URL (mirrors
+    # Federation::ServiceRouteWriter#add_tcp_route!).
+    def add_public_tcp_route!(svc, host, routers, backends)
+      key = svc.public_router_slug
+
+      router = {
+        "rule" => "HostSNI(`#{host}`)",
+        "service" => key,
+        "entryPoints" => [ ENTRYPOINT ]
+      }
+      router["tls"] =
+        if svc.edge_mode == "terminate"
+          svc.client_auth == "required" ? { "options" => PUBLIC_MTLS_REQUIRED_OPTION } : {}
+        else
+          { "passthrough" => true }
+        end
+      routers[key] = router
+
+      backends[key] = {
+        "loadBalancer" => {
+          "servers" => [ { "address" => "#{svc.backend_address}:#{svc.backend_port}" } ]
+        }
+      }
+    end
+
     # Chain order: ForwardAuth → StripPrefix → X-Forwarded-Prefix. Authenticate on
     # the full original path first; then strip the /svc/<slug> prefix so the
     # backend sees "/"; then advertise the stripped prefix so subpath-aware apps
@@ -144,7 +209,14 @@ module Sdwan
         middlewares[mw] = {
           "forwardAuth" => {
             "address" => "#{self.class.forward_auth_base_url}?service=#{svc.id}",
-            "authResponseHeaders" => FORWARD_AUTH_HEADERS,
+            # .dup: FORWARD_AUTH_HEADERS is a shared frozen constant. Emitting the
+            # SAME Array instance into 2+ services' middleware hashes makes
+            # YAML.dump anchor/alias it (Psych detects the repeated object_id) —
+            # Psych::AliasesNotEnabled then rejects re-parsing via YAML.safe_load
+            # (discovered rendering 2 authenticated-mode services in one call;
+            # Traefik's own YAML parser tolerates aliases, but no Ruby-side
+            # re-parse should have to).
+            "authResponseHeaders" => FORWARD_AUTH_HEADERS.dup,
             "trustForwardHeader" => false
           }
         }

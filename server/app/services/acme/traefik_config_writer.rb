@@ -212,6 +212,18 @@ module Acme
                   # traffic share :443 with cert-bearing agent/worker traffic.
                   "clientAuthType" => "VerifyClientCertIfGiven"
                 }
+              },
+              # REQUIRED-client-cert counterpart, for Sdwan::Service Path B
+              # (public TLS-carrying TCP, campaign 019f3458 increment 5)
+              # `client_auth == "required"` under `edge_mode == "terminate"`.
+              # Same CA bundle as mtls-optional — only clientAuthType differs.
+              # Router-bound (like mtls-optional), never entrypoint-level, so
+              # it applies only to the specific HostSNI that opts in.
+              "mtls-required" => {
+                "clientAuth" => {
+                  "caFiles"        => [ ca_path ],
+                  "clientAuthType" => "RequireAndVerifyClientCert"
+                }
               }
             }
           },

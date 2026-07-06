@@ -228,6 +228,19 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
         expect(File.exist?(File.join(tmp_ca_dir, "client-auth-bundle.pem"))).to be true
       end
+
+      # Path B (public TLS-carrying TCP, increment 5) needs a REQUIRED-client-cert
+      # counterpart to mtls-optional, for Sdwan::Service#client_auth == "required"
+      # under edge_mode terminate. Same shared file, same CA bundle — only the
+      # clientAuthType differs, following the existing shared-TLS-option pattern.
+      it "also emits a mtls-required option (RequireAndVerifyClientCert) sharing the same CA bundle" do
+        out = described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
+        parsed = YAML.load_file(out)
+        expect(parsed.dig("tls", "options", "mtls-required", "clientAuth", "clientAuthType"))
+          .to eq("RequireAndVerifyClientCert")
+        expect(parsed.dig("tls", "options", "mtls-required", "clientAuth", "caFiles"))
+          .to eq([ File.join(tmp_ca_dir, "client-auth-bundle.pem") ])
+      end
     end
 
     describe ".write_client_auth_bundle! (two-file split)" do
