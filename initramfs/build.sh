@@ -161,7 +161,14 @@ build_kernel_initrd() {
   # identity.cfg; boot.mount needs vfat (+ codepage/iocharset NLS modules) to
   # mount it at /boot. Absent → "unknown filesystem type vfat" and the agent
   # never reads /boot/identity.cfg.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1"
+  # isofs: powernode-cidata-payload.sh mounts the PVE cloud-init NoCloud CD-ROM
+  # (ISO9660) to stage the federation payload for token-auth Proxmox spawns.
+  # CONFIG_ISO9660_FS=m on Ubuntu generic, so it must be force-included (dracut
+  # wouldn't auto-detect it — there's no iso9660 rootfs). The optical + IDE bus
+  # drivers it rides on (sr_mod, cdrom, ata_piix) are CONFIG_*=y builtins on
+  # Ubuntu generic kernels — already in the kernel, so NOT listed here (and per
+  # dracut.conf.d/powernode-amd64.conf, builtins must not be listed as drivers).
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
