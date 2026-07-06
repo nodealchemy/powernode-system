@@ -489,6 +489,12 @@ Rails.application.routes.draw do
             member do
               post :approve
               post :cancel
+              # Increment 9 — operator-facing wrappers over the MCP
+              # actions (system_revert_storage_migration_binding /
+              # system_cleanup_storage_migration), mirroring how
+              # #create already delegates to system_migrate_storage_component.
+              post :revert
+              post :cleanup
             end
           end
         end
@@ -848,6 +854,13 @@ Rails.application.routes.draw do
             member do
               post :progress
               post :fail
+              # Increment 9 — revert_binding! (R) / cleanup (C). Only
+              # reachable when the migration carries a pending intent
+              # (see #index's pending_binding_intent union) — the
+              # agent's runner checks RevertRequested/CleanupRequested
+              # before its normal status-driven advance.
+              post :revert_complete
+              post :cleanup_complete
             end
           end
 

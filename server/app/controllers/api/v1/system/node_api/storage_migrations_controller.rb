@@ -21,16 +21,22 @@ module Api
         #
         # Plan reference: E8.2 — agent-execution surface.
         class StorageMigrationsController < BaseController
-          before_action :set_migration, only: %i[progress]
+          before_action :set_migration, only: %i[progress revert_complete cleanup_complete]
 
           # GET /api/v1/system/node_api/storage_migrations
           # Returns active (non-terminal) migrations assigned to this
-          # instance. The agent's runner walks them in order, advancing
-          # each through the contract states.
+          # instance, UNIONED with any TERMINAL migration that has a
+          # pending revert/cleanup intent (increment 9) — the agent's
+          # poll loop otherwise never sees terminal rows at all, but
+          # revert/cleanup are only ever requested on a failed/
+          # cancelled/completed-with-a-swallowed-promote migration.
+          # The runner walks them in order, advancing each through the
+          # contract states (or the revert/cleanup step, checked first
+          # — see migration.Runner#advance).
           def index
             migrations = ::System::StorageMigration
               .where(node_instance_id: current_instance.id)
-              .active
+              .merge(::System::StorageMigration.active.or(::System::StorageMigration.pending_binding_intent))
               .includes(:source_volume, :target_volume)
               .order(:created_at)
 
@@ -86,6 +92,36 @@ module Api
             render_error("Migration not found", status: :not_found)
           end
 
+          # POST /api/v1/system/node_api/storage_migrations/:id/revert_complete
+          # Body: { status: "completed"|"failed", reason?, artifacts?: [...] }
+          # The agent calls this once migration.Runner#stepRevert has
+          # re-pointed the canonical mount back to source (or given up).
+          def revert_complete
+            if params[:status].to_s == "failed"
+              @migration.revert_failed!(reason: params[:reason].to_s.presence || "agent reported revert failure")
+            else
+              @migration.revert_completed!(artifacts: artifact_params)
+            end
+            render_success(storage_migration: serialize_for_agent(@migration.reload))
+          rescue ArgumentError => e
+            render_error(e.message, status: :unprocessable_content)
+          end
+
+          # POST /api/v1/system/node_api/storage_migrations/:id/cleanup_complete
+          # Body: { status: "completed"|"failed", reason?, artifacts?: [...] }
+          # The agent calls this once migration.Runner#stepCleanup has
+          # deleted the target-side scratch artifacts (or given up).
+          def cleanup_complete
+            if params[:status].to_s == "failed"
+              @migration.cleanup_failed!(reason: params[:reason].to_s.presence || "agent reported cleanup failure")
+            else
+              @migration.cleanup_completed!(artifacts: artifact_params)
+            end
+            render_success(storage_migration: serialize_for_agent(@migration.reload))
+          rescue ArgumentError => e
+            render_error(e.message, status: :unprocessable_content)
+          end
+
           private
 
           def set_migration
@@ -98,6 +134,14 @@ module Api
 
           def progress_details
             params.permit(:bytes_copied, :bytes_total, :bytes_verified).to_h.compact
+          end
+
+          # Array-of-hash report from the agent describing exactly what
+          # it touched (path, mount_point, already_clean, ...) — the
+          # model turns each entry into its own audit_log line so the
+          # trail names the exact artifact + actor.
+          def artifact_params
+            params.permit(artifacts: %i[label path mount_point already_clean mount_error note]).to_h["artifacts"] || []
           end
 
           # Serialize a migration for the agent's runner. We include the
@@ -119,9 +163,32 @@ module Api
               plan: m.plan,
               source_binding: volume_binding(m.source_volume, m.source_subpath),
               target_binding: volume_binding(m.target_volume, m.target_subpath),
+              # snapshot_subpath is target-side (see StorageMigration's
+              # cleanup docs) — same volume as target_binding, own
+              # scratch subpath. Currently unmounted/unused by any
+              # sync step (v1 has no separate snapshot phase) but
+              # cleanup deletes it regardless, defensively.
+              #
+              # SAFETY: only emitted when snapshot_subpath is actually
+              # present. volume_binding(volume, nil) would still build a
+              # binding — with a blank NFS subpath, mount.ReconcileStorageVolume
+              # mounts the export ROOT, not a subpath — and cleanup would
+              # then `find -delete` across the WHOLE export, reaching
+              # every other deployment's data on shared NFS. A blank/nil
+              # snapshot_subpath (legitimately possible: the column
+              # predates this field and is nullable) must never produce
+              # a mountable binding.
+              snapshot_binding: m.snapshot_subpath.present? ? volume_binding(m.target_volume, m.snapshot_subpath) : nil,
+              # Increment 9 — set once an operator has explicitly
+              # requested one via the MCP surface (revert_binding! /
+              # request_cleanup!). Reachable here even when m.status is
+              # terminal — see #index's pending_binding_intent union.
+              revert_requested: m.metadata["revert_status"] == "requested",
+              cleanup_requested: m.metadata["cleanup_status"] == "requested",
               # Canonical consumer mount point — where the consumer
               # module (e.g. postgres) reads its data from. This is the
-              # path the agent re-points at the target during cutover.
+              # path the agent re-points at the target during cutover
+              # (and back to source during a revert).
               consumer_mount_point: consumer_mount_point_for(m),
               # systemd units the agent stops before umount + starts
               # after the new mount lands.

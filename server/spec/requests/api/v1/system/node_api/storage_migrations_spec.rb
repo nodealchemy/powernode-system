@@ -10,10 +10,16 @@ require "rails_helper"
 # Coverage:
 #   GET    /index            — scoped to current instance, filters
 #                              terminal status, includes consumer
-#                              coordination fields
+#                              coordination fields; (increment 9)
+#                              surfaces a terminal migration once
+#                              revert/cleanup has been requested
 #   POST   /:id/progress     — accepts valid transitions, rejects
 #                              illegal ones with 422
 #   POST   /:id/fail         — marks failed + appends audit entry
+#   POST   /:id/revert_complete  — (increment 9) agent reports the
+#                              mount is back on source
+#   POST   /:id/cleanup_complete — (increment 9) agent reports the
+#                              target-side scratch artifacts are gone
 RSpec.describe "Api::V1::System::NodeApi::StorageMigrations", type: :request do
   let(:account)       { create(:account) }
   let(:platform)      { create(:system_node_platform, account: account) }
@@ -162,6 +168,110 @@ RSpec.describe "Api::V1::System::NodeApi::StorageMigrations", type: :request do
            headers: headers, as: :json
 
       expect(response).to have_http_status(:not_found)
+    end
+  end
+
+  # Increment 9 (campaign 019f3458) — revert_binding! (R) / cleanup (C).
+  describe "GET /index — pending revert/cleanup intent on terminal migrations" do
+    it "surfaces a terminal migration once revert has been requested, alongside revert_requested/cleanup_requested flags" do
+      failed = ::System::StorageMigration.create!(migration_attrs.merge(status: "failed", failed_at: Time.current))
+      failed.revert_binding!(reason: "diverged mount")
+      plain_failed = ::System::StorageMigration.create!(migration_attrs.merge(status: "failed", failed_at: Time.current))
+
+      get "/api/v1/system/node_api/storage_migrations", headers: headers
+      payload = JSON.parse(response.body).dig("data", "storage_migrations")
+      ids = payload.map { |m| m["id"] }
+
+      expect(ids).to include(failed.id)
+      expect(ids).not_to include(plain_failed.id) # still excluded — no pending intent
+      surfaced = payload.find { |m| m["id"] == failed.id }
+      expect(surfaced["revert_requested"]).to be true
+      expect(surfaced["cleanup_requested"]).to be false
+    end
+
+    it "surfaces a terminal migration once cleanup has been requested, and includes the snapshot_binding" do
+      failed = ::System::StorageMigration.create!(
+        migration_attrs.merge(status: "failed", failed_at: Time.current, snapshot_subpath: "migrations/2026/test/postgres")
+      )
+      failed.request_cleanup!(immediate: true)
+
+      get "/api/v1/system/node_api/storage_migrations", headers: headers
+      payload = JSON.parse(response.body).dig("data", "storage_migrations").find { |m| m["id"] == failed.id }
+
+      expect(payload["cleanup_requested"]).to be true
+      expect(payload["snapshot_binding"]).to include("transport" => "nfs")
+    end
+
+    # SAFETY: a blank snapshot_subpath must never yield a mountable
+    # binding — mounting with no subpath mounts the NFS export ROOT,
+    # and cleanup's `find -delete` would then reach every other
+    # deployment's data on shared NFS. snapshot_subpath predates this
+    # increment and the column is nullable, so this is reachable in
+    # practice (an old migration row, or one created outside the
+    # standard system_migrate_storage_component path).
+    it "never emits a snapshot_binding when snapshot_subpath is blank" do
+      failed = ::System::StorageMigration.create!(
+        migration_attrs.merge(status: "failed", failed_at: Time.current, snapshot_subpath: nil)
+      )
+      failed.request_cleanup!(immediate: true)
+
+      get "/api/v1/system/node_api/storage_migrations", headers: headers
+      payload = JSON.parse(response.body).dig("data", "storage_migrations").find { |m| m["id"] == failed.id }
+
+      expect(payload["snapshot_binding"]).to be_nil
+    end
+  end
+
+  describe "POST /:id/revert_complete" do
+    it "marks the revert completed and records one audit entry per artifact" do
+      m = ::System::StorageMigration.create!(migration_attrs.merge(status: "failed", failed_at: Time.current))
+      m.revert_binding!(reason: "diverged mount")
+
+      post "/api/v1/system/node_api/storage_migrations/#{m.id}/revert_complete",
+           params: { status: "completed", artifacts: [ { path: "a:/x/deployments/test/postgres", mount_point: "/var/lib/postgresql" } ] },
+           headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      m.reload
+      expect(m.metadata["revert_status"]).to eq("completed")
+      expect(m.audit_log.last["message"]).to include("a:/x/deployments/test/postgres")
+    end
+
+    it "marks the revert failed when the agent reports status: failed" do
+      m = ::System::StorageMigration.create!(migration_attrs.merge(status: "failed", failed_at: Time.current))
+      m.revert_binding!(reason: "diverged mount")
+
+      post "/api/v1/system/node_api/storage_migrations/#{m.id}/revert_complete",
+           params: { status: "failed", reason: "mount source unreachable" },
+           headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(m.reload.metadata["revert_status"]).to eq("failed")
+    end
+  end
+
+  describe "POST /:id/cleanup_complete" do
+    it "marks the cleanup completed and records one audit entry per artifact" do
+      m = ::System::StorageMigration.create!(migration_attrs.merge(status: "failed", failed_at: Time.current))
+      m.request_cleanup!(immediate: true)
+
+      post "/api/v1/system/node_api/storage_migrations/#{m.id}/cleanup_complete",
+           params: {
+             status: "completed",
+             artifacts: [
+               { label: "target_subpath", path: "b:/y/deployments/test/postgres", already_clean: false },
+               { label: "snapshot_subpath", path: "", already_clean: true }
+             ]
+           },
+           headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      m.reload
+      expect(m.metadata["cleanup_status"]).to eq("completed")
+      expect(m.metadata["cleaned_at"]).to be_present
+      messages = m.audit_log.last(2).map { |e| e["message"] }
+      expect(messages).to include(a_string_matching("b:/y/deployments/test/postgres"))
+      expect(messages).to include(a_string_matching(/already clean/))
     end
   end
 end

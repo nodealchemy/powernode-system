@@ -20,15 +20,23 @@ module Api
         #     Advance status planned → approved (agent picks up next tick).
         #   POST   /api/v1/system/platform/storage_migrations/:id/cancel
         #     Cancel a not-yet-syncing migration.
+        #   POST   /api/v1/system/platform/storage_migrations/:id/revert
+        #     (Increment 9) Request the agent re-point the mount back to
+        #     source. Reachable from `failed`, or `completed` when
+        #     promote_target_binding! was swallowed.
+        #   POST   /api/v1/system/platform/storage_migrations/:id/cleanup
+        #     (Increment 9) DESTRUCTIVE — delete target-side scratch
+        #     artifacts only. Body: { reason?, immediate? }.
         #
         # Permissions:
         #   system.platform.read   — index + show
-        #   system.platform.scale  — create + approve + cancel
+        #   system.platform.scale  — create + approve + cancel + revert + cleanup
         #
-        # Plan reference: E8 / E8.2 frontend slice.
+        # Plan reference: E8 / E8.2 frontend slice; Increment 9 (campaign
+        # 019f3458) — revert_binding! / cleanup.
         class StorageMigrationsController < ApplicationController
           before_action :authenticate_request
-          before_action :set_migration, only: %i[show approve cancel]
+          before_action :set_migration, only: %i[show approve cancel revert cleanup]
 
           def index
             return forbidden unless current_user&.has_permission?("system.platform.read")
@@ -87,6 +95,34 @@ module Api
             render_error(e.message, status: :unprocessable_content)
           end
 
+          # POST /api/v1/system/platform/storage_migrations/:id/revert
+          # Increment 9 (R) — request the on-node agent re-point the
+          # canonical mount back to source. Reachable from `failed`, or
+          # from `completed` when promote_target_binding! was swallowed.
+          def revert
+            return forbidden unless current_user&.has_permission?("system.platform.scale")
+
+            result = call_mcp_action("system_revert_storage_migration_binding",
+              id: @migration.id, reason: params[:reason]
+            )
+            return render_error(result[:error] || "Revert request failed", status: :unprocessable_content) unless result[:success]
+            render_success(storage_migration: result[:storage_migration])
+          end
+
+          # POST /api/v1/system/platform/storage_migrations/:id/cleanup
+          # Increment 9 (C) — DESTRUCTIVE, target-side, subpath-scoped
+          # only. Explicit operator action; never auto-run on failure.
+          # Body: { reason?, immediate? }.
+          def cleanup
+            return forbidden unless current_user&.has_permission?("system.platform.scale")
+
+            result = call_mcp_action("system_cleanup_storage_migration",
+              id: @migration.id, reason: params[:reason], immediate: params[:immediate]
+            )
+            return render_error(result[:error] || "Cleanup request failed", status: :unprocessable_content) unless result[:success]
+            render_success(storage_migration: result[:storage_migration])
+          end
+
           private
 
           def forbidden
@@ -102,11 +138,40 @@ module Api
           # all the right validations + subpath computation. Re-using it
           # via the registry avoids duplicating ~50 lines of logic and
           # keeps the operator path consistent with the agent / AI path.
+          #
+          # BUGFIX (increment 9, campaign 019f3458) — two latent bugs found
+          # while wiring #revert/#cleanup through this same helper, neither
+          # ever exercised because this controller had zero request-spec
+          # coverage before this increment:
+          #
+          # 1. PlatformApiToolRegistry has no `.new`/`#execute` of its own —
+          #    it's a registry of tool CLASSES (`TOOLS`, `find_tool`), not a
+          #    callable itself. The previous body
+          #    (`PlatformApiToolRegistry.new(...).execute(action, params)`)
+          #    raised ArgumentError ("wrong number of arguments") on every
+          #    call, including #create's (silently swallowed by the rescue
+          #    below into a generic error response). The correct pattern
+          #    (matching every other MCP-tool caller in this codebase) is:
+          #    resolve the tool CLASS via find_tool, instantiate it, and call
+          #    #execute(params:) with the action folded into params
+          #    (BaseTool#call reads params[:action] to dispatch).
+          # 2. BaseTool#success_result(data) wraps its argument as
+          #    `{ success: true, data: data }` — the caller-supplied keys
+          #    (e.g. `storage_migration:`) live under `data`, not at the top
+          #    level. #create's `result[:storage_migration]` (and this
+          #    method's callers generally) expect a flat shape, so we merge
+          #    `data` up a level here rather than touch every call site.
           def call_mcp_action(action, params)
-            registry = ::Ai::Tools::PlatformApiToolRegistry.new(
-              account: current_account, user: current_user
-            )
-            registry.execute(action, params).then { |r| r.is_a?(Hash) ? r.with_indifferent_access : { success: false, error: "Unexpected MCP response" } }
+            tool_class = ::Ai::Tools::PlatformApiToolRegistry.find_tool(action)
+            return { success: false, error: "Unknown MCP action: #{action}" } unless tool_class
+
+            result = tool_class.new(account: current_account, user: current_user)
+                               .execute(params: params.merge(action: action))
+            return { success: false, error: "Unexpected MCP response" } unless result.is_a?(Hash)
+
+            result = result.with_indifferent_access
+            data = result[:data].is_a?(Hash) ? result[:data] : {}
+            data.with_indifferent_access.merge(success: result[:success], error: result[:error])
           rescue StandardError => e
             Rails.logger.warn("[PlatformStorageMigrationsController] MCP call failed: #{e.message}")
             { success: false, error: e.message }
