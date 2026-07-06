@@ -20,6 +20,13 @@
 # time, so a single DNAT rule follows the VIP across failovers.
 #
 # Slice 7b of the SDWAN plan.
+#
+# Campaign 019f3458 increment 6 (hardened DNAT tier): rate_limit,
+# max_connections, and source_cidrs are optional enforcement axes
+# compiled by Sdwan::NatCompiler into the nft DNAT chain. All three are
+# nil/empty by default — absence means unrestricted; there is no
+# hardcoded platform-wide cap. See
+# docs/runbooks/traefik-tcp-exposure-vs-dnat.md Path C.
 module Sdwan
   class PortMapping < ApplicationRecord
     self.table_name = "system_sdwan_port_mappings"
@@ -43,9 +50,16 @@ module Sdwan
     }, allow_nil: true
     validates :protocol, inclusion: { in: PROTOCOLS }
     validates :sdwan_peer_id, uniqueness: { scope: %i[listen_port protocol] }
+    validates :rate_limit, numericality: {
+      only_integer: true, greater_than: 0
+    }, allow_nil: true
+    validates :max_connections, numericality: {
+      only_integer: true, greater_than: 0
+    }, allow_nil: true
     validate  :exactly_one_target
     validate  :hub_belongs_to_network
     validate  :target_within_network
+    validate  :source_cidrs_must_be_valid
 
     scope :enabled, -> { where(enabled: true) }
     scope :for_hub, ->(peer_id) { where(sdwan_peer_id: peer_id) }
@@ -76,6 +90,18 @@ module Sdwan
       end
     end
 
+    # Splits source_cidrs into { v4: [...], v6: [...] } for
+    # Sdwan::NatCompiler, which needs separate nft match clauses per
+    # address family — a single `saddr` clause cannot mix `ip` and
+    # `ip6` literals. Invalid entries are excluded defensively (model
+    # validation should already have rejected them at save time, but a
+    # compile must never raise on stale/legacy data).
+    def source_cidrs_by_family
+      entries = Array(source_cidrs).select { |cidr| valid_cidr?(cidr) }
+      v4, v6 = entries.partition { |cidr| !cidr.include?(":") }
+      { v4: v4, v6: v6 }
+    end
+
     private
 
     def exactly_one_target
@@ -99,6 +125,35 @@ module Sdwan
       if target_virtual_ip && target_virtual_ip.sdwan_network_id != sdwan_network_id
         errors.add(:target_virtual_ip_id, "target VIP must belong to the same network")
       end
+    end
+
+    # Same jsonb-array-of-CIDR-strings shape and IPAddr-based validity
+    # check as System::FederationGrant#source_cidrs
+    # (server/app/models/system/federation_grant.rb) — mirrored here
+    # for consistency across the two "restrict by source IP" columns.
+    # Unlike that sibling's batched (first 3) message, each invalid
+    # entry gets its own error so an operator/AI caller sees exactly
+    # which CIDR(s) failed.
+    def source_cidrs_must_be_valid
+      unless source_cidrs.is_a?(Array)
+        errors.add(:source_cidrs, "must be an array (got #{source_cidrs.class.name})")
+        return
+      end
+
+      source_cidrs.each do |entry|
+        next if valid_cidr?(entry)
+
+        errors.add(:source_cidrs, "contains an invalid CIDR entry: #{entry.inspect}")
+      end
+    end
+
+    def valid_cidr?(cidr)
+      return false unless cidr.is_a?(String) && cidr.present?
+
+      IPAddr.new(cidr)
+      true
+    rescue IPAddr::InvalidAddressError, ArgumentError
+      false
     end
   end
 end

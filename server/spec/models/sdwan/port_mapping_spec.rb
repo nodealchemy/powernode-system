@@ -98,4 +98,143 @@ RSpec.describe Sdwan::PortMapping, type: :model do
       expect(m.resolved_target_address).to eq(target.assigned_address.split("/").first)
     end
   end
+
+  # ─── Campaign 019f3458 increment 6: hardened DNAT tier ─────────────────
+
+  describe "rate_limit validation" do
+    def build_mapping(rate_limit:)
+      described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                         sdwan_peer_id: hub.id, target_peer_id: target.id,
+                         name: "rl-#{SecureRandom.hex(2)}", listen_port: 8080, protocol: "tcp",
+                         rate_limit: rate_limit)
+    end
+
+    it "allows nil (unrestricted)" do
+      expect(build_mapping(rate_limit: nil)).to be_valid
+    end
+
+    it "allows a positive integer" do
+      expect(build_mapping(rate_limit: 100)).to be_valid
+    end
+
+    it "rejects zero" do
+      m = build_mapping(rate_limit: 0)
+      expect(m).not_to be_valid
+      expect(m.errors[:rate_limit].join).to match(/greater than 0/)
+    end
+
+    it "rejects a negative value" do
+      m = build_mapping(rate_limit: -5)
+      expect(m).not_to be_valid
+      expect(m.errors[:rate_limit].join).to match(/greater than 0/)
+    end
+
+    it "rejects a non-integer value" do
+      m = build_mapping(rate_limit: 1.5)
+      expect(m).not_to be_valid
+      expect(m.errors[:rate_limit].join).to match(/must be an integer/)
+    end
+  end
+
+  describe "max_connections validation" do
+    def build_mapping(max_connections:)
+      described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                         sdwan_peer_id: hub.id, target_peer_id: target.id,
+                         name: "mc-#{SecureRandom.hex(2)}", listen_port: 8081, protocol: "tcp",
+                         max_connections: max_connections)
+    end
+
+    it "allows nil (unrestricted)" do
+      expect(build_mapping(max_connections: nil)).to be_valid
+    end
+
+    it "allows a positive integer" do
+      expect(build_mapping(max_connections: 50)).to be_valid
+    end
+
+    it "rejects zero" do
+      m = build_mapping(max_connections: 0)
+      expect(m).not_to be_valid
+      expect(m.errors[:max_connections].join).to match(/greater than 0/)
+    end
+
+    it "rejects a negative value" do
+      m = build_mapping(max_connections: -1)
+      expect(m).not_to be_valid
+      expect(m.errors[:max_connections].join).to match(/greater than 0/)
+    end
+  end
+
+  describe "source_cidrs validation" do
+    def build_mapping(source_cidrs:)
+      described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                         sdwan_peer_id: hub.id, target_peer_id: target.id,
+                         name: "cidr-#{SecureRandom.hex(2)}", listen_port: 8082, protocol: "tcp",
+                         source_cidrs: source_cidrs)
+    end
+
+    it "defaults to an empty array (unrestricted)" do
+      m = described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                              sdwan_peer_id: hub.id, target_peer_id: target.id,
+                              name: "cidr-default", listen_port: 8083, protocol: "tcp")
+      expect(m.source_cidrs).to eq([])
+      expect(m).to be_valid
+    end
+
+    it "accepts a valid v4 CIDR" do
+      expect(build_mapping(source_cidrs: [ "203.0.113.0/24" ])).to be_valid
+    end
+
+    it "accepts a valid v6 CIDR" do
+      expect(build_mapping(source_cidrs: [ "2001:db8::/32" ])).to be_valid
+    end
+
+    it "accepts a mix of v4 and v6 entries" do
+      expect(build_mapping(source_cidrs: [ "203.0.113.0/24", "2001:db8::/32" ])).to be_valid
+    end
+
+    it "rejects a malformed entry with a clear per-entry message" do
+      m = build_mapping(source_cidrs: [ "not-a-cidr" ])
+      expect(m).not_to be_valid
+      expect(m.errors[:source_cidrs].join).to match(/invalid CIDR entry.*"not-a-cidr"/)
+    end
+
+    it "rejects an out-of-range prefix length" do
+      m = build_mapping(source_cidrs: [ "10.0.0.0/33" ])
+      expect(m).not_to be_valid
+      expect(m.errors[:source_cidrs].join).to match(/invalid CIDR entry/)
+    end
+
+    it "reports one error per invalid entry" do
+      m = build_mapping(source_cidrs: [ "bad-one", "also-bad" ])
+      expect(m).not_to be_valid
+      expect(m.errors[:source_cidrs].size).to eq(2)
+    end
+
+    it "rejects a non-array value" do
+      m = build_mapping(source_cidrs: "203.0.113.0/24")
+      expect(m).not_to be_valid
+      expect(m.errors[:source_cidrs].join).to match(/must be an array/)
+    end
+  end
+
+  describe "#source_cidrs_by_family" do
+    def build_mapping(source_cidrs:)
+      described_class.new(account_id: account.id, sdwan_network_id: network.id,
+                         sdwan_peer_id: hub.id, target_peer_id: target.id,
+                         name: "fam-#{SecureRandom.hex(2)}", listen_port: 8084, protocol: "tcp",
+                         source_cidrs: source_cidrs)
+    end
+
+    it "returns empty v4/v6 arrays when source_cidrs is empty" do
+      expect(build_mapping(source_cidrs: []).source_cidrs_by_family).to eq(v4: [], v6: [])
+    end
+
+    it "splits mixed entries by family" do
+      m = build_mapping(source_cidrs: [ "203.0.113.0/24", "2001:db8::/32", "198.51.100.5" ])
+      result = m.source_cidrs_by_family
+      expect(result[:v4]).to contain_exactly("203.0.113.0/24", "198.51.100.5")
+      expect(result[:v6]).to contain_exactly("2001:db8::/32")
+    end
+  end
 end
