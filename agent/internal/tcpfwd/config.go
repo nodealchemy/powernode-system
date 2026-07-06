@@ -6,6 +6,20 @@ import (
 	"os"
 )
 
+// DefaultConfigPath is the canonical on-node path the powernode-agent
+// service loop (agent/internal/runtime/service.go's Run()) loads this
+// daemon's forwards config from at startup. Mirrors
+// internal/federation/config.go's PayloadFilePath precedent: a plain
+// exported const rather than a flag, since this is a fixed on-node
+// contract, not an operator-tunable setting.
+//
+// MUST stay byte-for-byte identical to the Ruby-side writer's
+// Federation::TcpForwarderConfigWriter::DEFAULT_CONFIG_PATH
+// (extensions/system/server/app/services/federation/tcp_forwarder_config_writer.rb)
+// -- these are two independent implementations of the same on-disk
+// contract, with no shared build-time check tying them together.
+const DefaultConfigPath = "/etc/powernode/tcpfwd/forwards.json"
+
 // Forward is one (listen, backend) pair the forwarder manages.
 // SubscriptionID correlates connection audit logs back to the
 // ServiceSubscription row that produced this forward rule.

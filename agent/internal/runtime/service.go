@@ -28,6 +28,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks/handlers"
 	"github.com/nodealchemy/powernode-system/agent/internal/sdwan"
+	"github.com/nodealchemy/powernode-system/agent/internal/tcpfwd"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
@@ -403,6 +404,30 @@ func (s *Service) Run(ctx context.Context) error {
 	} else {
 		spawn("task_lease", func() {
 			taskLoop.Run(ctx)
+		})
+	}
+
+	// Increment 4 — site-local + tcp-protocol federation subscription
+	// forwarder (see tcpfwd.DefaultConfigPath's doc comment for the
+	// shared contract with Federation::TcpForwarderConfigWriter).
+	// Missing-file-tolerant: a node with no active tcpfwd-eligible
+	// subscriptions has no config file yet, which is a legitimate idle
+	// steady state, not an error — log nothing and skip starting the
+	// daemon. A malformed/invalid config file IS a real misconfiguration
+	// and surfaces via OnError like the other *_init failures above.
+	// Load-at-start only: internal/tcpfwd has no reload mechanism yet,
+	// so picking up new/changed forwards requires an agent restart
+	// until that's built.
+	if fwdCfg, err := tcpfwd.LoadConfig(tcpfwd.DefaultConfigPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			s.cfg.OnError("tcpfwd_config_load", err)
+		}
+	} else {
+		forwarder := tcpfwd.New(fwdCfg, nil)
+		spawn("tcpfwd", func() {
+			if err := forwarder.Run(ctx); err != nil {
+				s.cfg.OnError("tcpfwd", err)
+			}
 		})
 	}
 
