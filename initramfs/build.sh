@@ -145,6 +145,20 @@ build_kernel_initrd() {
       exit 1
     fi
   fi
+  # [[ -x ]] alone only proves the file is executable, not that it's a real
+  # binary — a curl fetch that silently lands on an HTTP 200 SPA-fallback
+  # page (the platform's /agent route answers a missing artifact that way,
+  # not with a 404) produces an executable-bit-set HTML file that passed
+  # every check above. Verify the ELF magic before it gets baked into the
+  # image: this is the last chokepoint before a silently non-functional boot.
+  if [[ "$(head -c4 "$agent_bin" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]]; then
+    log "FATAL: $agent_bin is not an ELF binary (magic byte check failed)"
+    log "  First bytes: $(head -c64 "$agent_bin" | tr -cd '[:print:]\n' | head -c120)"
+    log "  This usually means the fetch URL served a fallback page (e.g. SPA"
+    log "  HTML for a missing route) instead of the real binary — check"
+    log "  POWERNODE_AGENT_BINARY_URL and the /agent route's 404 behavior."
+    exit 1
+  fi
   cp "$agent_bin" /tmp/powernode-agent
 
   local conf_args=("-c" "${shared_conf}")

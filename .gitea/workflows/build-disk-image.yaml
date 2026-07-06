@@ -148,6 +148,17 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-arm64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64" -o "$OUT"
+          # The /agent route answers ANY missing path with 200 + SPA HTML, not
+          # a 404 (see the sidecar comments below) — so `curl -f` succeeding
+          # proves nothing about the main binary either. Verify the ELF magic
+          # before anything downstream (sha256/cosign checks, build.sh) treats
+          # this as a real binary.
+          if [ "$(head -c4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+            echo "FATAL: fetched $OUT is not an ELF binary — the /agent route likely"
+            echo "       served its SPA-fallback HTML instead of powernode-agent-linux-arm64."
+            echo "First bytes:"; head -c200 "$OUT"
+            exit 1
+          fi
           # .sha256 sidecar is optional. The /agent route can answer a MISSING
           # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
           # tell present-and-valid from absent — validate the fetched content is
@@ -671,6 +682,17 @@ jobs:
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-amd64"
           curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64" -o "$OUT"
+          # The /agent route answers ANY missing path with 200 + SPA HTML, not
+          # a 404 (see the sidecar comments below) — so `curl -f` succeeding
+          # proves nothing about the main binary either. Verify the ELF magic
+          # before anything downstream (sha256/cosign checks, build.sh) treats
+          # this as a real binary.
+          if [ "$(head -c4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+            echo "FATAL: fetched $OUT is not an ELF binary — the /agent route likely"
+            echo "       served its SPA-fallback HTML instead of powernode-agent-linux-amd64."
+            echo "First bytes:"; head -c200 "$OUT"
+            exit 1
+          fi
           # .sha256 sidecar is optional. The /agent route can answer a MISSING
           # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
           # tell present-and-valid from absent — validate the fetched content is
