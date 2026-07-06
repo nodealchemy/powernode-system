@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "faraday"
+require "faraday/multipart"
 require "json"
 
 module System
@@ -28,7 +29,14 @@ module System
         DEFAULT_READ_TIMEOUT     = 60
         DEFAULT_TASK_TIMEOUT     = 300   # seconds
         DEFAULT_TASK_POLL_EVERY  = 2     # seconds
+        # Multipart uploads stream the whole file body inside a single request,
+        # so they need a far longer read timeout than a normal API call — a
+        # multi-GB disk image can take minutes even on a fast LAN.
+        DEFAULT_UPLOAD_TIMEOUT   = 1_800 # seconds
         TASK_TERMINAL_STATUS     = "stopped"
+        # How many consecutive "no such task" polls to tolerate before giving up —
+        # covers the brief window where a just-returned UPID isn't yet queryable.
+        TASK_NOT_READY_MAX_RETRIES = 15
 
         class Error < StandardError; end
         class AuthError < Error; end
@@ -84,6 +92,35 @@ module System
           request(:delete, path, params: params)
         end
 
+        # Multipart file upload to a PVE storage (POST .../storage/{storage}/upload).
+        #
+        # Unlike download-url (where PVE fetches a URL itself), this pushes the
+        # bytes from us to PVE over the same token-authenticated, dev->PVE
+        # direction the rest of the API uses — so it works for source bytes that
+        # live on storage PVE has no way to reach (e.g. the platform's local
+        # FileStorage). `content` is the PVE content type: "iso" | "vztmpl" |
+        # "import" (import = foreign disk image, PVE 8.1+/9.x).
+        #
+        # @param io [IO] an open, rewound, binary-mode readable of the file bytes
+        # @return [String] the UPID of the resulting async task (poll via wait_task)
+        def upload_file(node:, storage:, filename:, io:, content: "import",
+                        checksum: nil, checksum_algorithm: nil, timeout: DEFAULT_UPLOAD_TIMEOUT)
+          payload = {
+            "content"  => content,
+            "filename" => Faraday::Multipart::FilePart.new(io, "application/octet-stream", filename)
+          }
+          payload["checksum"] = checksum if checksum
+          payload["checksum-algorithm"] = checksum_algorithm if checksum_algorithm
+
+          response = upload_connection(timeout: timeout)
+                     .post("/api2/json/nodes/#{node}/storage/#{storage}/upload", payload)
+          handle_response(response)
+        rescue Faraday::ConnectionFailed => e
+          raise Error, "PVE connection failed: #{e.message}"
+        rescue Faraday::TimeoutError => e
+          raise Error, "PVE upload timed out: #{e.message}"
+        end
+
         # ------------------------------------------------------------------
         # UPID handling — PVE async operations return a UPID string; the
         # caller polls /tasks/{upid}/status until status == "stopped".
@@ -108,8 +145,24 @@ module System
         def wait_task(node:, upid:, timeout: DEFAULT_TASK_TIMEOUT, poll_every: DEFAULT_TASK_POLL_EVERY)
           deadline = monotonic_now + timeout
           encoded = encode_upid(upid)
+          not_ready = 0
           loop do
-            status = get("/api2/json/nodes/#{node}/tasks/#{encoded}/status")
+            begin
+              status = get("/api2/json/nodes/#{node}/tasks/#{encoded}/status")
+            rescue Error => e
+              # A just-returned UPID isn't always immediately queryable: PVE can
+              # briefly answer 400 "no such task" before the worker registers the
+              # task. Tolerate a bounded burst of that at the start rather than
+              # failing the whole operation; any other error (auth/rate-limit/…)
+              # or persistence past the grace window propagates unchanged.
+              raise unless task_not_yet_registered?(e)
+              not_ready += 1
+              raise if not_ready > TASK_NOT_READY_MAX_RETRIES
+              raise TaskTimeoutError, "Timed out after #{timeout}s waiting for #{upid}" if monotonic_now > deadline
+              sleep(poll_every)
+              next
+            end
+            not_ready = 0
             if status["status"] == TASK_TERMINAL_STATUS
               exit_status = status["exitstatus"]
               if exit_status == "OK"
@@ -161,6 +214,12 @@ module System
 
         def monotonic_now
           Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        end
+
+        # True for the transient PVE 400 "no such task" a freshly-returned UPID
+        # can produce before the task registers — safe to keep polling on.
+        def task_not_yet_registered?(error)
+          error.message.to_s.match?(/no such task/i)
         end
 
         def request(verb, path, params: nil, body: nil)
@@ -221,6 +280,23 @@ module System
             f.headers["Authorization"] = "PVEAPIToken=#{@token_id}=#{@token_secret}"
             f.headers["Accept"] = "application/json"
             f.options.timeout = @read_timeout
+            f.options.open_timeout = @connect_timeout
+            f.adapter Faraday.default_adapter
+          end
+        end
+
+        # Separate connection for multipart uploads: the :multipart middleware
+        # must be registered (it isn't on the JSON/url_encoded `connection`), and
+        # the read timeout is much larger to accommodate streaming a whole disk
+        # image. Not memoized — each upload gets a fresh, correctly-sized conn.
+        def upload_connection(timeout:)
+          Faraday.new(url: @endpoint, ssl: { verify: @verify_ssl }) do |f|
+            f.request :multipart
+            f.request :url_encoded
+            f.response :json, content_type: /\bjson$/
+            f.headers["Authorization"] = "PVEAPIToken=#{@token_id}=#{@token_secret}"
+            f.headers["Accept"] = "application/json"
+            f.options.timeout = timeout
             f.options.open_timeout = @connect_timeout
             f.adapter Faraday.default_adapter
           end
