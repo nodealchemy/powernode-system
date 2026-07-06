@@ -2,6 +2,7 @@
 
 require "yaml"
 require "fileutils"
+require "openssl"
 
 module Acme
   # Generates Traefik dynamic configuration from active AcmeCertificate
@@ -505,34 +506,76 @@ module Acme
       }
     end
 
-    # True only when the cert's on-disk PEM material is actually present and
-    # non-empty. A `valid` AcmeCertificate row can still point at a missing or
-    # blank/stub .crt (e.g. a materialize where lego returned an empty
-    # cert_pem), which makes Traefik log "failed to find any PEM data in
-    # certificate input" on every reload. Gating the tls.certificates entry on
-    # this stops that. Deliberately gates ONLY the cert entry, never the routers
-    # — the read-side ingress projection (routers_for / IngressRoutePresenter)
-    # has no filesystem access and must stay identical to the write path, so a
-    # host with a broken cert keeps its routers and falls back to the
-    # default-store cert (surfacing the TLS mismatch rather than 404ing).
+    # True only when the cert's on-disk PEM material is actually present,
+    # non-blank, and structurally parses. A `valid` AcmeCertificate row can
+    # still point at a missing/blank/stub .crt or .key (e.g. a materialize
+    # where lego returned an empty cert_pem, or a partial write), which makes
+    # Traefik log "failed to find any PEM data in certificate input" on every
+    # reload — or worse, fail to build the tls.Certificate for that entry.
+    # Gating the tls.certificates entry on this stops that. Both files get the
+    # same scrutiny (existence, non-blank, real ASN.1/DER parse via OpenSSL)
+    # because a bad key is exactly as unusable to Traefik as a bad cert — the
+    # two are only ever consumed as a pair. Deliberately gates ONLY the cert
+    # entry, never the routers — the read-side ingress projection (routers_for
+    # / IngressRoutePresenter) has no filesystem access and must stay
+    # identical to the write path, so a host with a broken cert keeps its
+    # routers and falls back to the default-store cert (surfacing the TLS
+    # mismatch rather than 404ing). Any skip is logged loudly (warn) with the
+    # cert id + reason so a broken materialize doesn't fail silently.
     def cert_materialized?(cert)
       cert_path = self.class.cert_file_path(cert, cert_dir: @cert_dir)
       key_path  = self.class.key_file_path(cert, cert_dir: @cert_dir)
-      return false unless File.file?(cert_path) && File.file?(key_path)
 
-      File.read(cert_path).include?("-----BEGIN")
+      cert_pem = read_file(cert_path)
+      return skip_cert!(cert, "cert file missing or unreadable at #{cert_path}") if cert_pem.nil?
+      return skip_cert!(cert, "cert file is blank at #{cert_path}") if cert_pem.blank?
+
+      key_pem = read_file(key_path)
+      return skip_cert!(cert, "key file missing or unreadable at #{key_path}") if key_pem.nil?
+      return skip_cert!(cert, "key file is blank at #{key_path}") if key_pem.blank?
+
+      begin
+        OpenSSL::X509::Certificate.new(cert_pem)
+      rescue OpenSSL::OpenSSLError, ArgumentError => e
+        return skip_cert!(cert, "cert file fails to parse (#{e.class}: #{e.message}) at #{cert_path}")
+      end
+
+      begin
+        OpenSSL::PKey.read(key_pem)
+      rescue OpenSSL::OpenSSLError, ArgumentError => e
+        return skip_cert!(cert, "key file fails to parse (#{e.class}: #{e.message}) at #{key_path}")
+      end
+
+      true
+    end
+
+    def read_file(path)
+      return nil unless File.file?(path)
+
+      File.read(path)
     rescue SystemCallError
+      nil
+    end
+
+    def skip_cert!(cert, reason)
+      Rails.logger.warn(
+        "[Acme::TraefikConfigWriter#cert_materialized?] skipping tls.certificates entry for " \
+        "cert #{cert.id} (account #{cert.account_id}): #{reason}"
+      )
       false
     end
 
-    # Nine routers per cert, all on the single `websecure` (:443) entrypoint.
-    # Every router carries `tls.options=mtls-optional@file`
-    # (VerifyClientCertIfGiven): a client cert is verified against the internal
-    # CA when presented but never required. The pass-tls-client-cert middleware
-    # (entrypoint-level) forwards the CN. Because EVERY router on a given host
-    # uses the SAME option, there is no per-SNI conflict. Path specificity sets
-    # priority: Traefik orders by rule length, so the long mTLS-bearing API
-    # prefixes match before the bare `/api` and the Host-only frontend catchall.
+    # One router per `ROUTER_SPECS` entry, per cert, all on the single
+    # `websecure` (:443) entrypoint. (Count deliberately not restated here —
+    # ROUTER_SPECS above is the single source of truth; a hardcoded number in
+    # this comment previously drifted out of sync with it.) Every router
+    # carries `tls.options=mtls-optional@file` (VerifyClientCertIfGiven): a
+    # client cert is verified against the internal CA when presented but never
+    # required. The pass-tls-client-cert middleware (entrypoint-level)
+    # forwards the CN. Because EVERY router on a given host uses the SAME
+    # option, there is no per-SNI conflict. Path specificity sets priority:
+    # Traefik orders by rule length, so the long mTLS-bearing API prefixes
+    # match before the bare `/api` and the Host-only frontend catchall.
     #
     #   - <slug>-node-api       — Host(`cn`) && PathPrefix(`/api/v1/system/node_api`)
     #                              (agent client cert)
@@ -547,6 +590,8 @@ module Acme
     #   - <slug>-agent          — Host(`cn`) && PathPrefix(`/agent`)      (static binary)
     #   - <slug>-cable          — Host(`cn`) && PathPrefix(`/cable`)      (ActionCable WS;
     #                              dual auth — worker CN if a cert is present, else user JWT)
+    #   - <slug>-sidekiq        — Host(`cn`) && PathPrefix(`/sidekiq`)    (Sidekiq Web dashboard;
+    #                              routes to powernode-worker-web, auth via SidekiqWebAuth middleware)
     #   - <slug>-frontend       — Host(`cn`)                             (catchall)
     #
     # Controllers decide what kind of identity the (optional) cert belongs to:

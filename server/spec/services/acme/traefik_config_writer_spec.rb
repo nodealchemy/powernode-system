@@ -3,6 +3,7 @@
 require "rails_helper"
 require "tmpdir"
 require "yaml"
+require "openssl"
 
 RSpec.describe Acme::TraefikConfigWriter, type: :service do
   let(:account) { create(:account) }
@@ -16,17 +17,39 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
     FileUtils.rm_rf(tmp_cert_dir)    if Dir.exist?(tmp_cert_dir)
   end
 
-  # Writes minimal on-disk PEM material for a cert the way Acme::CertificateManager
-  # would after issuance. The writer only advertises certs whose on-disk PEM exists
-  # and is non-empty, so examples that expect a cert in tls.certificates must
-  # materialize it first. (A `valid` row with no/blank PEM is intentionally skipped —
-  # see "skips a valid cert whose on-disk PEM is blank".)
-  def materialize_cert(cert, cert_dir:)
+  # A real self-signed cert + matching key, generated once per spec run (not
+  # per example — content doesn't need to be unique, only structurally valid).
+  # The writer's cert_materialized? guard runs the SAME structural parse
+  # (OpenSSL::X509::Certificate.new / OpenSSL::PKey.read) Traefik effectively
+  # requires, so a placeholder string like "-----BEGIN CERTIFICATE-----\nfake"
+  # would now be (correctly) rejected as invalid — tests that want a cert to
+  # actually render must use real PEM material.
+  rsa_key = OpenSSL::PKey::RSA.new(2048)
+  name = OpenSSL::X509::Name.parse("/CN=traefik-writer-spec")
+  x509 = OpenSSL::X509::Certificate.new
+  x509.version = 2
+  x509.serial = 1
+  x509.subject = name
+  x509.issuer = name
+  x509.public_key = rsa_key
+  x509.not_before = Time.now
+  x509.not_after = Time.now + 3600
+  x509.sign(rsa_key, OpenSSL::Digest.new("SHA256"))
+  VALID_CERT_PEM = x509.to_pem
+  VALID_KEY_PEM = rsa_key.to_pem
+
+  # Writes real on-disk PEM material for a cert the way Acme::CertificateManager
+  # would after issuance. The writer only advertises certs whose on-disk PEM
+  # exists, is non-blank, and structurally parses, so examples that expect a
+  # cert in tls.certificates must materialize it first. (A `valid` row with
+  # missing/blank/invalid PEM is intentionally skipped — see the
+  # "empty-cert guard" examples below.)
+  def materialize_cert(cert, cert_dir:, cert_pem: VALID_CERT_PEM, key_pem: VALID_KEY_PEM)
     cert_path = described_class.cert_file_path(cert, cert_dir: cert_dir)
     key_path  = described_class.key_file_path(cert, cert_dir: cert_dir)
     FileUtils.mkdir_p(File.dirname(cert_path))
-    File.write(cert_path, "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n")
-    File.write(key_path, "-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----\n")
+    File.write(cert_path, cert_pem)
+    File.write(key_path, key_pem)
   end
 
   describe ".write!" do
@@ -104,6 +127,127 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         expect(result[:cert_count]).to eq(2)
         expect(parsed["http"]["routers"]).not_to be_empty
       end
+
+      # G3 — empty-cert guard hardening. The blank-cert-file case above
+      # predates this campaign increment; these examples cover the rest of
+      # the failure surface the increment widens the guard to: missing files,
+      # blank/whitespace-only content, and content that carries PEM markers
+      # but fails to actually parse (a bad entry Traefik can choke on).
+      describe "empty-cert guard hardening (G3)" do
+        it "skips a valid cert whose cert file is missing entirely" do
+          File.delete(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).to include(described_class.cert_file_path(cert1, cert_dir: tmp_cert_dir))
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+          expect(parsed["http"]["routers"]).not_to be_empty
+        end
+
+        it "skips a valid cert whose key file is missing entirely (cert file itself is fine)" do
+          File.delete(described_class.key_file_path(cert2, cert_dir: tmp_cert_dir))
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "skips a valid cert whose cert file is empty" do
+          File.write(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir), "")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "skips a valid cert whose cert file is whitespace-only" do
+          File.write(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir), "   \n\t \n")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "skips a valid cert whose key file is empty/whitespace-only (cert file itself is fine)" do
+          # A cert with no usable private key can't terminate TLS no matter
+          # how good the cert file is — the guard must inspect the key too,
+          # not just the cert.
+          File.write(described_class.key_file_path(cert2, cert_dir: tmp_cert_dir), "  \n")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "skips a valid cert whose cert PEM has BEGIN/END markers but fails structural parse" do
+          # Carries the "-----BEGIN"/"-----END" substrings a naive marker
+          # check would accept, but the body is not valid DER — only an
+          # actual OpenSSL::X509::Certificate.new parse catches this.
+          File.write(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir),
+                     "-----BEGIN CERTIFICATE-----\nnot-valid-base64-der!!\n-----END CERTIFICATE-----\n")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "skips a valid cert whose key PEM has BEGIN/END markers but fails structural parse" do
+          File.write(described_class.key_file_path(cert2, cert_dir: tmp_cert_dir),
+                     "-----BEGIN PRIVATE KEY-----\nnot-valid-base64-der!!\n-----END PRIVATE KEY-----\n")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+          cert_files = parsed["tls"]["certificates"].map { |e| e["certFile"] }
+
+          expect(cert_files).not_to include(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir))
+        end
+
+        it "a skipped cert does not affect other certs' tls entry, routers, or the shared services section" do
+          File.write(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir), "")
+
+          result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+          parsed = YAML.load_file(result[:output_path])
+
+          expect(parsed["tls"]["certificates"]).to eq(
+            [
+              {
+                "certFile" => described_class.cert_file_path(cert1, cert_dir: tmp_cert_dir),
+                "keyFile"  => described_class.key_file_path(cert1, cert_dir: tmp_cert_dir),
+                "stores"   => [ "default" ]
+              }
+            ]
+          )
+          # both certs still get their full router set — skip is cert-entry-only.
+          slug1 = described_class.router_slug_for(cert1.common_name)
+          slug2 = described_class.router_slug_for(cert2.common_name)
+          expect(parsed["http"]["routers"].keys).to include("#{slug1}-frontend", "#{slug2}-frontend")
+          expect(parsed["http"]["services"].keys)
+            .to contain_exactly("powernode-backend", "powernode-frontend", "powernode-worker-web")
+        end
+
+        it "logs a warning identifying the skipped cert id and the reason" do
+          File.write(described_class.cert_file_path(cert2, cert_dir: tmp_cert_dir), "")
+          allow(Rails.logger).to receive(:warn)
+
+          described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+
+          expect(Rails.logger).to have_received(:warn).with(
+            satisfy { |msg| msg.include?(cert2.id) && msg.match?(/skip/i) }
+          )
+        end
+      end
     end
 
     it "creates the dynamic_dir if missing" do
@@ -113,6 +257,68 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
                                        cert_dir: tmp_cert_dir)
       expect(Dir.exist?(missing_dir)).to be true
       expect(File.exist?(result[:output_path])).to be true
+    end
+  end
+
+  # Byte-identical regression pin for the G3 empty-cert guard: a cert with
+  # good on-disk PEM must render EXACTLY as it did before the guard existed.
+  # Increment 8 (core/extension ingress split) diffs writer output across a
+  # refactor, so this fixture must stay byte-stable — it asserts the raw
+  # file content, not just a parsed-hash shape, so key ordering is pinned too.
+  describe "regression: a well-formed cert renders byte-identically" do
+    let(:cert) do
+      create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
+                                               common_name: "byte-stable.example.test")
+    end
+
+    around do |example|
+      original = ENV["POWERNODE_PROXY_EXTRA_HOSTS"]
+      ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS")
+      example.run
+    ensure
+      original.nil? ? ENV.delete("POWERNODE_PROXY_EXTRA_HOSTS") : (ENV["POWERNODE_PROXY_EXTRA_HOSTS"] = original)
+    end
+
+    it "matches the exact expected YAML byte-for-byte" do
+      materialize_cert(cert, cert_dir: tmp_cert_dir)
+      allow(::AdminSetting).to receive(:reverse_proxy_url_config).and_return({})
+
+      result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+      slug = described_class.router_slug_for(cert.common_name)
+      host = "Host(`byte-stable.example.test`)"
+
+      expected = {
+        "tls" => {
+          "certificates" => [
+            {
+              "certFile" => described_class.cert_file_path(cert, cert_dir: tmp_cert_dir),
+              "keyFile"  => described_class.key_file_path(cert, cert_dir: tmp_cert_dir),
+              "stores"   => [ "default" ]
+            }
+          ]
+        },
+        "http" => {
+          "routers" => {
+            "#{slug}-node-api"       => { "rule" => "#{host} && PathPrefix(`/api/v1/system/node_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-federation-api" => { "rule" => "#{host} && PathPrefix(`/api/v1/system/federation_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-internal-api"   => { "rule" => "#{host} && PathPrefix(`/api/v1/internal`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-worker-api"     => { "rule" => "#{host} && PathPrefix(`/api/v1/system/worker_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-worker-auth"    => { "rule" => "#{host} && PathPrefix(`/api/v1/worker_auth`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-api"            => { "rule" => "#{host} && PathPrefix(`/api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-agent"          => { "rule" => "#{host} && PathPrefix(`/agent`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-cable"          => { "rule" => "#{host} && PathPrefix(`/cable`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-sidekiq"        => { "rule" => "#{host} && PathPrefix(`/sidekiq`)", "service" => "powernode-worker-web", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-frontend"       => { "rule" => host, "service" => "powernode-frontend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } }
+          },
+          "services" => {
+            "powernode-backend"    => { "loadBalancer" => { "servers" => [ { "url" => described_class.backend_url } ], "passHostHeader" => true } },
+            "powernode-frontend"   => { "loadBalancer" => { "servers" => [ { "url" => described_class.frontend_url } ], "passHostHeader" => true } },
+            "powernode-worker-web" => { "loadBalancer" => { "servers" => [ { "url" => described_class.worker_web_url } ], "passHostHeader" => true } }
+          }
+        }
+      }
+
+      expect(File.read(result[:output_path])).to eq(YAML.dump(expected))
     end
   end
 
