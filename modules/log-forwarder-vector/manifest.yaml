@@ -49,6 +49,21 @@ services:
       timeout_seconds: 3
       initial_delay_seconds: 10
 
+# The `vector` service account is declared here so ManifestImportService
+# flows it through System::Identity::UserAllocator, which pins it to its
+# reserved fleet-global UID/GID (vector = 70460, see reserved_identities.rb
+# / reserved.go) — consistent on every instance. Same pattern as
+# reverse-proxy-traefik's traefik user; uid/gid intentionally omitted
+# (platform-allocated).
+groups:
+  - name: vector
+users:
+  - name: vector
+    primary_group: vector
+    shell: /usr/sbin/nologin
+    home: /var/lib/vector
+    gecos: "Vector log forwarder"
+
 security:
   # Vector reads journald via its dbus socket + agent log files. CAP_DAC_
   # READ_SEARCH lets it bypass mode-0640 log files owned by other users

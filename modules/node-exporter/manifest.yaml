@@ -37,6 +37,21 @@ services:
       timeout_seconds: 5
       initial_delay_seconds: 15
 
+# The `prometheus` service account is declared here so ManifestImportService
+# flows it through System::Identity::UserAllocator, which pins it to its
+# reserved fleet-global UID/GID (prometheus = 70410, see
+# reserved_identities.rb / reserved.go) — consistent on every instance.
+# Same pattern as reverse-proxy-traefik's traefik user; uid/gid
+# intentionally omitted (platform-allocated).
+groups:
+  - name: prometheus
+users:
+  - name: prometheus
+    primary_group: prometheus
+    shell: /usr/sbin/nologin
+    home: /var/lib/prometheus
+    gecos: "Prometheus node exporter"
+
 security:
   # node_exporter reads /proc and /sys but doesn't need extra caps beyond
   # the systemd unit's User= sandboxing.
