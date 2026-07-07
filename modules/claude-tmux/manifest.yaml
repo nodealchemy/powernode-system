@@ -28,6 +28,14 @@ file_spec:
   - "/usr/bin/npx"
   - "/usr/bin/claude"
   - "/usr/lib/node_modules/**"
+  # apt's nodejs/tmux packages can pull in shared libraries (e.g. a
+  # shared libnode.so build, ICU) under the multiarch lib dir — carve
+  # the whole tree rather than enumerate individual .so files, so a
+  # Debian/apt version bump can't silently strand the module with a
+  # dynamic-linker failure at runtime. Mirrors runtime-ruby's broader
+  # /usr/lib/** carve for the same reason (a language runtime's
+  # shared-library surface isn't something to hand-enumerate).
+  - "/usr/lib/x86_64-linux-gnu/**"
   - "/etc/systemd/system/claude-tmux.service"
   - "/usr/local/bin/claude-tmux-fetch-credential.sh"
   - "/usr/local/bin/claude-tmux-start.sh"
