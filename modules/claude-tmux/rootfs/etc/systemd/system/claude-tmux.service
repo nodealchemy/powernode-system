@@ -1,0 +1,46 @@
+[Unit]
+Description=Claude Code CLI (managed tmux session)
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/bin/claude
+
+[Service]
+# tmux daemonizes itself (the client forks the tmux server and exits) —
+# Type=forking is the correct fit, not Type=simple. Systemd waits for the
+# ExecStart process to exit, then tracks the surviving tmux server process
+# in the unit's cgroup; Restart=on-failure fires once the cgroup empties
+# (the server crashed or was killed) rather than on every ExecStart exit.
+Type=forking
+User=pnadmin
+Group=pnadmin
+Environment=HOME=/home/pnadmin
+
+# RuntimeDirectory gives us a private, auto-created, auto-cleaned tmpfs
+# dir (0700, owned by User=/Group=) at /run/claude-tmux for the
+# short-lived credential handoff file — never a world-readable path.
+RuntimeDirectory=claude-tmux
+RuntimeDirectoryMode=0700
+
+# Fetches the Anthropic API key from the platform's Vault-backed node_api
+# over mTLS and writes it to $RUNTIME_DIRECTORY/api_key (0600). Runs as
+# root (the "+" prefix) because only root can read the agent's mTLS
+# private key at /persist/var/lib/powernode/pki/node.key (0600) — the
+# credential file it writes back is chowned to pnadmin so the unprivileged
+# tmux session (User=pnadmin below) can read it exactly once.
+ExecStartPre=+/usr/local/bin/claude-tmux-fetch-credential.sh
+
+# Starts (or, on restart, no-ops into) the "claude-code" tmux session and
+# launches `claude` inside it. The credential file is read-then-deleted
+# from within the pane's own shell (never passed as a systemd/tmux argv,
+# which would otherwise leak into `ps`).
+ExecStart=/usr/local/bin/claude-tmux-start.sh
+ExecStop=/usr/bin/tmux -L claude-tmux kill-session -t claude-code
+
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
