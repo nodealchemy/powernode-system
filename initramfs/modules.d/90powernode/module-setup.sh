@@ -183,6 +183,12 @@ install() {
     # staged federation-payload.json to 0600 (it embeds a single-use token).
     inst_multiple ip mount umount mkdir cp ln rm chmod sleep sha256sum
 
+    # nftables `nft` — the reconciler's module egress-policy applier shells out
+    # to `nft` to create per-module filter chains. Absent from the initramfs,
+    # egress apply failed with `nft: executable file not found in $PATH` on
+    # every module. The nf_tables kernel module is force-included via build.sh.
+    inst_multiple nft
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.

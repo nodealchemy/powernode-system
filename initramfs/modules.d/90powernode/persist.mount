@@ -9,7 +9,13 @@ Before=powernode-agent.service powernode-mount.service local-fs.target
 What=tmpfs
 Where=/persist
 Type=tmpfs
-Options=mode=0755,size=64M
+# /persist backs the OCI module cache (/persist/cache/modules): the pivot
+# pulls the assigned erofs blobs here and they stay loop-mounted (the overlay
+# union references them), so the WHOLE module set must fit simultaneously. The
+# hub set is ~830MB today; 64M ENOSPC'd every pull. Size is a cap (tmpfs only
+# consumes RAM for what's stored), 4G on the 16G pve.vm.large host — ample
+# headroom for growth, well under half of RAM.
+Options=mode=0755,size=4G
 
 [Install]
 WantedBy=local-fs.target
