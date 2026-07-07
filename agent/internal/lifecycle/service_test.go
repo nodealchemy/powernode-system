@@ -192,6 +192,98 @@ func TestAttachServices_WritesUnits_RunsReloadAndStart(t *testing.T) {
 	}
 }
 
+// readUnit returns the on-disk body of a written unit file.
+func readUnit(t *testing.T, dir, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("read unit %s: %v", name, err)
+	}
+	return string(b)
+}
+
+// procIsMounted guards the /proc-based native assertion so the test
+// doesn't flake in sandboxes where /proc isn't a real mount.
+func procIsMounted() bool {
+	b, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[1] == "/proc" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPivotAwareRootMode_ByMountState reproduces the layer-3 boot-model
+// bug: the reconcile attach path must pick RootModeNative when running in
+// a pivot_root union (probe path is a distinct mount) and RootModeChroot
+// under cloud_init (probe absent / not a distinct mount).
+func TestPivotAwareRootMode_ByMountState(t *testing.T) {
+	orig := pivotProbePath
+	t.Cleanup(func() { pivotProbePath = orig })
+
+	// A plain tmpdir shares its parent's filesystem → not a distinct
+	// mount → cloud_init model → chroot.
+	pivotProbePath = t.TempDir()
+	if got := PivotAwareRootMode(); got != RootModeChroot {
+		t.Errorf("PivotAwareRootMode() non-distinct probe = %v; want RootModeChroot", got)
+	}
+
+	// Absent path → not a distinct mount → chroot.
+	pivotProbePath = filepath.Join(t.TempDir(), "absent")
+	if got := PivotAwareRootMode(); got != RootModeChroot {
+		t.Errorf("PivotAwareRootMode() absent probe = %v; want RootModeChroot", got)
+	}
+
+	// A known-distinct mount (/proc) → pivot_root model → native.
+	if procIsMounted() {
+		pivotProbePath = "/proc"
+		if got := PivotAwareRootMode(); got != RootModeNative {
+			t.Errorf("PivotAwareRootMode() distinct-mount probe (/proc) = %v; want RootModeNative", got)
+		}
+	}
+}
+
+// TestAttachServicesMode_NativeOmitsSysroot proves the fix: a native-mode
+// attach (post-pivot) renders units WITHOUT RootDirectory=/sysroot (which
+// switch_root already consumed), while chroot-mode keeps it. Before the
+// fix the reconcile path always rendered chroot, so post-pivot units
+// pointed at a nonexistent /sysroot and never started.
+func TestAttachServicesMode_NativeOmitsSysroot(t *testing.T) {
+	svc := []manifest.Service{{Name: "redis", StartCommand: "/usr/bin/redis-server", RestartPolicy: "always"}}
+	unit := "powernode-mod-x-redis.service"
+
+	dirN := setUnitDir(t)
+	if _, err := AttachServicesMode(context.Background(), &mount.RecorderRunner{}, "mod-x", svc, RootModeNative); err != nil {
+		t.Fatalf("native attach: %v", err)
+	}
+	if body := readUnit(t, dirN, unit); strings.Contains(body, "RootDirectory=/sysroot") {
+		t.Errorf("native-mode unit must NOT set RootDirectory=/sysroot:\n%s", body)
+	}
+
+	dirC := setUnitDir(t)
+	if _, err := AttachServicesMode(context.Background(), &mount.RecorderRunner{}, "mod-x", svc, RootModeChroot); err != nil {
+		t.Fatalf("chroot attach: %v", err)
+	}
+	if body := readUnit(t, dirC, unit); !strings.Contains(body, "RootDirectory=/sysroot") {
+		t.Errorf("chroot-mode unit must set RootDirectory=/sysroot:\n%s", body)
+	}
+
+	// The compat AttachServices wrapper (used by the cloud_init `init`
+	// CLI) must still default to chroot.
+	dirD := setUnitDir(t)
+	if _, err := AttachServices(context.Background(), &mount.RecorderRunner{}, "mod-x", svc); err != nil {
+		t.Fatalf("default attach: %v", err)
+	}
+	if body := readUnit(t, dirD, unit); !strings.Contains(body, "RootDirectory=/sysroot") {
+		t.Errorf("AttachServices (compat) must default to chroot:\n%s", body)
+	}
+}
+
 func TestAttachServices_Idempotent_NoReloadOnUnchangedContent(t *testing.T) {
 	_ = setUnitDir(t)
 	services := []manifest.Service{

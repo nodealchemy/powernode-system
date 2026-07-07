@@ -521,7 +521,14 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	if len(mf.Services) == 0 {
 		return nil
 	}
-	if _, err := lifecycle.AttachServices(ctx, r.cfg.MountRunner, mod.ID, mf.Services); err != nil {
+	// Boot-model-aware: the reconcile loop runs post-pivot on a hub
+	// (module union IS /, render native) AND on cloud_init hosts (guest
+	// OS is /, chroot into /sysroot). PivotAwareRootMode picks by whether
+	// /persist reads as a distinct mount. A chroot-rendered unit on a
+	// pivoted host stamps RootDirectory=/sysroot — which switch_root
+	// already consumed — so the service never starts (the hub enrolls but
+	// runs no app modules).
+	if _, err := lifecycle.AttachServicesMode(ctx, r.cfg.MountRunner, mod.ID, mf.Services, lifecycle.PivotAwareRootMode()); err != nil {
 		r.cfg.OnError("reconciler:attach_services",
 			fmt.Errorf("module %s: %w", mod.ID, err))
 	}

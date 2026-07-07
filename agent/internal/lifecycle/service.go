@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
@@ -69,13 +70,38 @@ func UnitPath(moduleID, svcName string) string {
 // Returns the ordered list of (unit-name, started?) tuples so the
 // caller can log + heartbeat per-service health.
 type AttachResult struct {
-	Unit     string
-	Started  bool
-	Skipped  bool   // already running with identical unit content
-	StepErr  error  // non-nil for the step that failed; preceding steps still ran
+	Unit    string
+	Started bool
+	Skipped bool  // already running with identical unit content
+	StepErr error // non-nil for the step that failed; preceding steps still ran
 }
 
+// AttachServices renders each unit in the cloud_init chroot mode
+// (RootDirectory=/sysroot) into the live unit dir, then daemon-reloads
+// and starts. Thin wrapper over AttachServicesMode preserved for the
+// operator `init` CLI (cloud_init hosts) and existing callers/tests.
+//
+// The reconcile loop must NOT use this directly — it runs in BOTH boot
+// models and has to pick the mode by boot context (see
+// AttachServicesMode + PivotAwareRootMode). A chroot-rendered unit on a
+// pivoted host stamps RootDirectory=/sysroot, which no longer exists
+// after switch_root, so the service never starts.
 func AttachServices(ctx context.Context, runner mount.Runner, moduleID string, services []manifest.Service) ([]AttachResult, error) {
+	return AttachServicesMode(ctx, runner, moduleID, services, RootModeChroot)
+}
+
+// AttachServicesMode is AttachServices with an explicit root mode. Both
+// modes write units into the LIVE unit dir (UnitDir()), daemon-reload,
+// and start immediately — the difference is only how each unit resolves
+// its filesystem root:
+//   - RootModeChroot: cloud_init model, RootDirectory=/sysroot (the guest
+//     OS is /, modules chroot into the overlay-composed union at /sysroot).
+//   - RootModeNative: direct_kernel/pivot_root model, no RootDirectory —
+//     the module union itself became / via switch_root, so ExecStart/proc/
+//     passwd resolve natively. This is the correct mode for the post-pivot
+//     reconcile loop; RootModeChroot there points every unit at a /sysroot
+//     that no longer exists and the service can't start.
+func AttachServicesMode(ctx context.Context, runner mount.Runner, moduleID string, services []manifest.Service, mode RootMode) ([]AttachResult, error) {
 	if runner == nil {
 		return nil, errors.New("lifecycle.AttachServices: nil runner")
 	}
@@ -98,7 +124,7 @@ func AttachServices(ctx context.Context, runner mount.Runner, moduleID string, s
 	for _, svc := range ordered {
 		unitName := UnitName(moduleID, svc.Name)
 		path := filepath.Join(dir, unitName)
-		body := RenderUnit(svc, moduleID)
+		body := RenderUnitMode(svc, moduleID, mode)
 
 		written, err := writeIfChanged(path, body)
 		if err != nil {
@@ -266,6 +292,53 @@ const (
 	// paths, /proc, and /etc/passwd resolve natively in the union.
 	RootModeNative
 )
+
+// pivotProbePath is the path whose distinct-mount status signals the
+// direct_kernel/pivot_root boot model. Package var so tests can point it
+// at a known-distinct mount (e.g. /proc) or a plain dir. Defaults to
+// /persist, which the initramfs mounts as its own tmpfs pre-pivot and
+// prepare-root rbinds forward into the union post-pivot — so it reads as
+// a distinct mount for the whole pivot_root lifecycle, and is absent (not
+// a distinct mount) on a cloud_init/cloud VM.
+var pivotProbePath = "/persist"
+
+// PivotAwareRootMode picks the unit render mode for the CURRENT root by
+// boot model: RootModeNative when running inside a pivot_root-composed
+// module union (the union is /), RootModeChroot for the cloud_init model
+// (guest OS is /, modules chroot into /sysroot).
+//
+// The signal is whether pivotProbePath (/persist) reads as a distinct
+// mount — the same device-number heuristic enroll.ResolveDefaultPKIDir
+// uses to decide the PKI path for this exact boot-model question. The
+// post-pivot reconcile loop MUST render native: a chroot unit's
+// RootDirectory=/sysroot points at a path that no longer exists after
+// switch_root, so systemd can't start the service.
+func PivotAwareRootMode() RootMode {
+	if isDistinctMount(pivotProbePath) {
+		return RootModeNative
+	}
+	return RootModeChroot
+}
+
+// isDistinctMount reports whether path is a mountpoint distinct from its
+// parent (different st_dev). Mirrors enroll.isDistinctMount — kept local
+// to avoid a lifecycle→enroll import for a 6-line syscall helper.
+func isDistinctMount(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	pst, pok := parent.Sys().(*syscall.Stat_t)
+	if !ok || !pok {
+		return false
+	}
+	return st.Dev != pst.Dev
+}
 
 // RenderUnit renders a unit in the default chroot mode (cloud_init model).
 // Equivalent to RenderUnitMode(svc, moduleID, RootModeChroot).
