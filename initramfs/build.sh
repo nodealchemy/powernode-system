@@ -204,7 +204,12 @@ build_kernel_initrd() {
   # Post-pivot capabilities.go's erofs_available gate ALSO skips module
   # reconcile when erofs is unmountable, so its absence silently yields a hub
   # that enrolls but runs none of its 11 modules.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs"
+  # ext4: persist.mount now mounts the baked ext4 "persist" partition (label
+  # persist) for reboot-surviving PKI + module cache — the initramfs must be
+  # able to mount ext4. CONFIG_EXT4_FS=m on Ubuntu 24.04, and there's no ext4
+  # rootfs at build time, so dracut won't auto-include it; force it (same class
+  # as erofs/isofs/ahci above).
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
