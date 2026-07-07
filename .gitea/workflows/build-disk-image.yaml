@@ -592,7 +592,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v3
         with:
-          name: powernode-disk-images-${{ github.sha }}
+          name: powernode-disk-images-arm64-${{ github.sha }}
           path: |
             initramfs/build/arm64/disk-image-rpi4/
             initramfs/build/arm64/disk-image-arm64-uefi/
