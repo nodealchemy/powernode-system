@@ -332,10 +332,21 @@ var rootFSType = func(path string) (int64, error) {
 // returned native pre-pivot. Probing /'s filesystem type directly encodes
 // "is the module union my root" and is timing-independent.
 func PivotAwareRootMode() RootMode {
-	if t, err := rootFSType(rootProbePath); err == nil && t == overlayfsMagic {
+	if RootIsOverlay() {
 		return RootModeNative
 	}
 	return RootModeChroot
+}
+
+// RootIsOverlay reports whether "/" is currently the composed overlay union —
+// i.e. switch_root into the module union has already happened. False in the
+// pre-pivot initramfs (/ is rootfs/ramfs) and in the cloud_init model (/ is the
+// guest's ext4/xfs). Timing-independent: it probes /'s filesystem type rather
+// than any mount-staging side effect. Callers outside the unit-render path use
+// it as the "have I pivoted yet?" signal.
+func RootIsOverlay() bool {
+	t, err := rootFSType(rootProbePath)
+	return err == nil && t == overlayfsMagic
 }
 
 // RenderUnit renders a unit in the default chroot mode (cloud_init model).

@@ -161,6 +161,75 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 	}
 }
 
+// TestReconcilerRunOnceDefersModuleMountsPrePivot pins #88's fix: in the
+// pre-pivot initramfs of a pivot boot (powernode.boot on the cmdline AND / not
+// yet the overlay union), RunOnce must NOT pull or loop-mount any module —
+// ComposeForPivot is the authoritative mounter there, and racing it strands the
+// pivot on reboot with "loop already mounted or mount point busy".
+func TestReconcilerRunOnceDefersModuleMountsPrePivot(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+
+	// Simulate the pivot-boot kernel cmdline (note bootstrap_token, which must
+	// NOT trip the token-precise powernode.boot match) and a not-yet-pivoted /.
+	cmdlineFile := filepath.Join(tmpRoot, "cmdline")
+	if err := os.WriteFile(cmdlineFile,
+		[]byte("console=ttyS0,115200 powernode.boot=1 powernode.bootstrap_token=xyz ip=dhcp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origCmdline, origOverlay := pivotBootCmdlinePath, rootIsOverlayFn
+	t.Cleanup(func() { pivotBootCmdlinePath = origCmdline; rootIsOverlayFn = origOverlay })
+	pivotBootCmdlinePath = cmdlineFile
+	rootIsOverlayFn = func() bool { return false } // pre-pivot: / not overlay
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"nginx", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"nginx", "priority":100, "effective_priority":100,
+					"digest":"abc123", "services": []}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if len(puller.calls) != 0 {
+		t.Errorf("expected NO module pulls pre-pivot (ComposeForPivot owns it), got: %v", puller.calls)
+	}
+	for _, inv := range runner.Invocations {
+		if inv.Name == "mount" {
+			t.Fatalf("expected NO mount invocations pre-pivot, got: %v", runner.Invocations)
+		}
+	}
+}
+
 func TestReconcilerRunOnceNoOpsWhenStateMatches(t *testing.T) {
 	tmpRoot := t.TempDir()
 	statePath := filepath.Join(tmpRoot, "state.json")
