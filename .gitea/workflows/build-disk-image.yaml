@@ -44,6 +44,11 @@ permissions:
 
 jobs:
   build:
+    # Disabled 2026-07-07: no arm64 fleet in active use (dev/ops-tier work
+    # is amd64-uefi only), and the emulated QEMU arm64 build is by far the
+    # slowest, most resource-hungry job in this workflow. Remove this
+    # `if: false` to re-enable once arm64 targets are back in scope.
+    if: false
     # ubuntu-24.04 unprivileged runner. Filesystem creation uses offline
     # tools (mtools mformat/mcopy for FAT32, mkfs.ext4 -E offset for ext4)
     # so /dev/loop-control is not required. The disk-image-rpi4 script
