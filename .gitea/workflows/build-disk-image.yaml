@@ -641,8 +641,13 @@ jobs:
           # runner is native, so dracut runs without emulation. linux-image-generic
           # carries the comprehensive module set the hostonly=no initramfs needs to
           # boot arbitrary fleet hardware.
+          # fdisk ships /usr/sbin/sfdisk — dracut stages it into the initramfs for
+          # persist-setup's bounded p2 grow. It is NOT pulled in transitively (only
+          # libfdisk1 is), and dracut-install's failure to find it is non-fatal, so
+          # without this the initramfs silently ships without sfdisk and /persist
+          # never grows past its ~baked size → ENOSPC on the module cache post-pivot.
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            gdisk mtools dosfstools e2fsprogs \
+            gdisk mtools dosfstools e2fsprogs util-linux fdisk \
             systemd-ukify systemd-boot-efi python3-pefile \
             dracut-core linux-image-generic systemd-resolved \
             curl jq zstd
@@ -651,6 +656,13 @@ jobs:
           for tool in sgdisk mformat mkfs.ext4 ukify dracut cosign oras curl jq zstd; do
             if path=$(command -v "$tool"); then echo "  ✓ $tool → $path"; else echo "  ✗ $tool MISSING"; fi
           done
+          # HARD-FAIL on the persist-setup grow toolchain. dracut-install errors are
+          # non-fatal (they only warn), so a missing binary here would otherwise ship
+          # a broken initramfs green. sfdisk regressed exactly this way once.
+          for tool in sfdisk resize2fs partx blkid blockdev udevadm; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "  ✗ $tool MISSING — persist bounded-grow would silently fail"; exit 1; }
+          done
+          echo "  ✓ persist grow toolchain present (sfdisk resize2fs partx blkid blockdev udevadm)"
           # build.sh resolves kver from a /lib/modules/<v> that has a matching
           # /boot/vmlinuz-<v>. Fail loud here if linux-image-generic didn't land
           # both (a placeholder kernel would yield a non-bootable UKI).
