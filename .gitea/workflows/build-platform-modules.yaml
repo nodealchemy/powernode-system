@@ -145,6 +145,12 @@ jobs:
           # provides `base.os` capability. Future variants like
           # base-os-debian-trixie + base-os-alpine follow the same pattern.
           - base-os-ubuntu-noble
+          # Increment 20 (campaign 019f3458) — managed Claude Code CLI in a
+          # systemd-supervised tmux session. General-purpose (any fleet
+          # instance, any template) like the block above; listed separately
+          # because Stage 1.5 npm-installs its CLI payload rather than
+          # apt-installing it (package_spec only covers apt packages).
+          - claude-tmux
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
@@ -421,7 +427,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby')
+        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby' || matrix.module == 'claude-tmux')
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -701,6 +707,33 @@ jobs:
                 mkdir -p /tmp/fat/sbin
                 ln -sf /usr/lib/systemd/systemd /tmp/fat/sbin/init
               fi
+              ;;
+            claude-tmux)
+              # The Claude Code CLI (@anthropic-ai/claude-code) is an npm
+              # package with no apt equivalent — package_spec (mmdebstrap,
+              # Stage 1) already installed tmux + nodejs + npm into
+              # /tmp/fat from apt; this step npm-installs the CLI itself
+              # directly into that same tree via --prefix, using the
+              # RUNNER's own node/npm (same cross-install technique as the
+              # runtime-ruby case above's `gem install --install-dir`).
+              # Pure-JS-plus-prebuilt-native-optionalDependencies package,
+              # same linux/x64 target as the runner — no chroot needed.
+              if ! command -v npm >/dev/null 2>&1; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y --no-install-recommends nodejs npm
+              fi
+              mkdir -p /tmp/fat/usr
+              npm install -g --prefix /tmp/fat/usr --no-audit --no-fund @anthropic-ai/claude-code
+              # Guard what actually SHIPS: the CLI is this module's entire
+              # payload (beyond tmux) — a failed/partial npm install must
+              # not silently carve an empty module.
+              if [ ! -e /tmp/fat/usr/bin/claude ] && [ ! -e /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code ]; then
+                echo "[stage-1.5] FATAL: @anthropic-ai/claude-code did not install into /tmp/fat/usr"; exit 1
+              fi
+              echo "=== claude-tmux: npm install result ==="
+              ls -la /tmp/fat/usr/bin/claude* 2>/dev/null || true
+              ls -d /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true
               ;;
           esac
 

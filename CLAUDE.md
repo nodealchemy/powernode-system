@@ -111,6 +111,7 @@ This is a git submodule. Per root CLAUDE.md:
 - `docs/STORAGE_SUBSYSTEM.md` — storage data plane: volumes, mounts, chown ownership model, volume-to-volume migration state machine + MCP surface
 - `docs/SMOKE_TEST.md` — platform-level smoke catalog (18 seeded scripts, 8 passes: boot, container runtimes, SDWAN, federation, ACME, storage, credentials, hardware/CI extras)
 - `docs/CONTAINER_RUNTIMES.md` — Phase 1 Docker + Phase 2 K3s operator guide + troubleshooting
+- `docs/CLAUDE_TMUX_MODULE.md` — claude-tmux NodeModule: managed Claude Code CLI in a systemd-supervised tmux session, Vault-backed credential injection at boot, operator runbook
 - `docs/USE_CASE_MATRIX.md` — what works / what doesn't / what to expect for 10 NodeInstance container use cases (READ FIRST when designing a deployment)
 - `docs/SKILL_EXECUTORS.md` — 49 executor reference; `docs/SKILL_EXECUTOR_CATALOG.md` is the auto-generated catalog (regenerate via `rails system:skills:generate_catalog` — never hand-edit)
 - `docs/CONCIERGE_PROVISIONING_GUIDE.md` — operator guide for running a provisioning mission through the System Concierge (phase pipeline, inline approval card, monitoring)

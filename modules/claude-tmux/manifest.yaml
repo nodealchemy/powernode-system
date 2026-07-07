@@ -1,0 +1,81 @@
+schema_version: 1
+
+name: claude-tmux
+display_name: "Claude Code CLI in a managed tmux session"
+description: >
+  Runs the Claude Code CLI (@anthropic-ai/claude-code) inside a named,
+  systemd-supervised tmux session on the instance — survives SSH
+  disconnects; the operator reconnects with `tmux attach -t claude-code`.
+  The Anthropic API key is fetched from platform-side Vault storage over
+  the mTLS-authenticated node_api at service start; it is never baked
+  into this module's image, never written to an env file, and never
+  logged. Reusable standalone — any fleet instance can carry this module
+  regardless of template.
+license: MIT
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+file_spec:
+  - "/usr/bin/tmux"
+  - "/usr/share/tmux/**"
+  - "/usr/bin/node"
+  - "/usr/bin/nodejs"
+  - "/usr/bin/npm"
+  - "/usr/bin/npx"
+  - "/usr/bin/claude"
+  - "/usr/lib/node_modules/**"
+  # apt's nodejs/tmux packages can pull in shared libraries (e.g. a
+  # shared libnode.so build, ICU) under the multiarch lib dir — carve
+  # the whole tree rather than enumerate individual .so files, so a
+  # Debian/apt version bump can't silently strand the module with a
+  # dynamic-linker failure at runtime. Mirrors runtime-ruby's broader
+  # /usr/lib/** carve for the same reason (a language runtime's
+  # shared-library surface isn't something to hand-enumerate).
+  - "/usr/lib/x86_64-linux-gnu/**"
+  - "/etc/systemd/system/claude-tmux.service"
+  - "/usr/local/bin/claude-tmux-fetch-credential.sh"
+  - "/usr/local/bin/claude-tmux-start.sh"
+
+# claude-tmux only ships its own service unit + scripts + the CLI
+# runtime — no other module's paths.
+protected_spec: []
+
+# tmux + Node.js runtime come from apt (mmdebstrap); the Claude Code CLI
+# itself is an npm package with no apt equivalent, so it is npm-installed
+# into this module's rootfs at CI build time (see the claude-tmux case in
+# .gitea/workflows/build-platform-modules.yaml Stage 1.5) rather than
+# listed here.
+package_spec:
+  - tmux
+  - nodejs
+  - npm
+  - ca-certificates
+
+dependencies:
+  requires:
+    - powernode/system-base@^1.0
+  provides:
+    - dev.claude-cli
+    - dev.tmux-session
+
+init:
+  start:   "systemctl start claude-tmux"
+  stop:    "systemctl stop claude-tmux"
+  restart: "systemctl restart claude-tmux"
+
+reboot_required: false
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

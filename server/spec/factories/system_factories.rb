@@ -1111,4 +1111,8 @@ FactoryBot.define do
       backend_port { 5432 }
     end
   end
+
+  factory :system_claude_code_credential, class: "System::ClaudeCodeCredential" do
+    association :node_instance, factory: :system_node_instance
+  end
 end

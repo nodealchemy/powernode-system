@@ -23,6 +23,10 @@ RSpec.describe Security::VaultCredentialProvider, type: :service do
     it "still exposes the pre-existing wireguard_node_key (no regression)" do
       expect(described_class::CREDENTIAL_TYPES).to include(wireguard_node_key: "wireguard-node-keys")
     end
+
+    it "exposes claude_code_api_key (increment 20 — claude-tmux NodeModule)" do
+      expect(described_class::CREDENTIAL_TYPES).to include(claude_code_api_key: "claude-code-api-keys")
+    end
   end
 
   describe "Phase N0 credential round-trip via Sdwan::ConstellationSigningKey holder" do

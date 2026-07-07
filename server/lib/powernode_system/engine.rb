@@ -306,6 +306,9 @@ module PowernodeSystem
           resource :acme_dns, actions: %i[read manage], grant: { admin: :all }
           resource :dns, actions: %i[read manage], grant: { admin: :all }
 
+          # Per-NodeInstance Claude Code CLI credential (claude-tmux module).
+          resource :node_instance_credentials, actions: %i[read manage], grant: { admin: :all }
+
           # Storage assignments + mount points (storage seed).
           # admin -> all; manager -> assignments {read,create,update,assign,rotate_credential}
           # (NOT delete); member -> assignments read.

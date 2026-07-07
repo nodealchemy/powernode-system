@@ -65,7 +65,51 @@ module Api
             )
           end
 
+          # GET /api/v1/system/node_api/config/claude_code_credential
+          #
+          # Returns the Claude Code CLI credential (Anthropic API key) for
+          # THIS mTLS-authenticated instance — consumed by the claude-tmux
+          # NodeModule's boot-time fetch script. Scoped strictly to
+          # current_instance (resolved by BaseController#authenticate_instance!
+          # from the verified mTLS subject), so one instance can never read
+          # another instance's credential.
+          #
+          # 404 when no credential has been configured for this instance yet
+          # (operator sets one via ClaudeCodeCredentialsController).
+          #
+          # IMPORTANT (CryptoMaterialSafety): the plaintext is read from
+          # Vault and returned ONLY in this response body — never logged,
+          # never cached, never persisted anywhere else on the platform side.
+          def claude_code_credential
+            credential = ::System::ClaudeCodeCredential.find_by(node_instance: current_instance)
+            return render_not_found("Claude Code credential") unless credential
+
+            plaintext = vault_provider.get_credential(
+              credential_type: :claude_code_api_key,
+              credential_id: credential.id,
+              record: credential
+            )
+            api_key = plaintext.is_a?(Hash) ? plaintext["api_key"] : nil
+            return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
+
+            if defined?(::System::Fleet::EventBroadcaster)
+              ::System::Fleet::EventBroadcaster.emit!(
+                account: current_account,
+                kind: "system.claude_code_credential_issued",
+                severity: :low,
+                payload: { "instance_id" => current_instance.id },
+                source: "node_api.config"
+              )
+            end
+
+            render_success(api_key: api_key)
+          end
+
           private
+
+          def vault_provider
+            @vault_provider ||= ::Security::VaultCredentialProvider.new(account_id: current_account.id)
+          end
 
           def serialize_instance
             {
