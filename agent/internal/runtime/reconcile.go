@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -156,51 +154,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
-// Injectable seams for prePivotInitramfs — tests override these to simulate a
-// boot context without a real kernel cmdline or overlay mount.
-var (
-	pivotBootCmdlinePath = "/proc/cmdline"
-	rootIsOverlayFn      = lifecycle.RootIsOverlay
-)
-
-// prePivotInitramfs reports whether this reconcile is running in the pre-pivot
-// initramfs of a direct_kernel/uefi_disk boot, where ComposeForPivot — not this
-// general reconcile loop — is the authoritative path that pulls, mounts, and
-// unions the assigned modules into /sysroot before switch_root.
-//
-// In that window powernode-agent.service (this loop) and powernode-mount.service
-// (ComposeForPivot) both loop-mount the same erofs blobs at
-// /run/powernode/modules/<digest>. MountModule's IsMountpoint→mount check is not
-// atomic across the two PROCESSES, so one loses with "already mounted or mount
-// point busy", ComposeForPivot fails, and the node is stranded in the initramfs
-// on reboot. The disk-backed module cache makes this near-certain: the blobs are
-// already local, so there's no pull delay to stagger the two mounters. Deferring
-// entirely to ComposeForPivot removes the race class.
-//
-// True iff the pivot-boot marker (powernode.boot) is on the kernel cmdline AND /
-// is not yet the overlay union. Post-pivot (/ is overlay) MountModule is a safe
-// idempotent no-op — ComposeForPivot has already finished, no concurrent writer.
-// cloud_init (no powernode.boot) mounts modules normally.
-func prePivotInitramfs() bool {
-	raw, err := os.ReadFile(pivotBootCmdlinePath)
-	if err != nil || !cmdlineHasKey(string(raw), "powernode.boot") {
-		return false
-	}
-	return !rootIsOverlayFn()
-}
-
-// cmdlineHasKey reports whether a /proc/cmdline-style string contains key as a
-// whole token (bare or key=value) — token-precise so "powernode.boot" does not
-// match "powernode.bootstrap_token".
-func cmdlineHasKey(cmdline, key string) bool {
-	for _, f := range strings.Fields(cmdline) {
-		if f == key || strings.HasPrefix(f, key+"=") {
-			return true
-		}
-	}
-	return false
-}
-
 // RunOnce runs one reconcile cycle synchronously. Used by both Run()
 // and the Phase 2 `update`/`sync` CLI commands.
 //
@@ -217,16 +170,6 @@ func cmdlineHasKey(cmdline, key string) bool {
 func (r *Reconciler) RunOnce(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	// In the pre-pivot initramfs, ComposeForPivot owns pulling/mounting/unioning
-	// the assigned modules — running this reconcile here would race it for the
-	// same erofs loop-mounts and break the pivot on reboot (see prePivotInitramfs).
-	if prePivotInitramfs() {
-		fmt.Fprintln(os.Stderr, "[reconcile] pre-pivot initramfs: deferring module reconcile to ComposeForPivot")
-		r.lastReconcileAt = time.Now()
-		r.lastError = nil
-		return nil
-	}
 
 	// E8: realize the durable-storage binding before module attaches,
 	// so any module unit start (e.g. postgres) finds its data
