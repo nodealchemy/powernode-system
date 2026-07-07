@@ -191,7 +191,20 @@ build_kernel_initrd() {
   # char deps (sr_mod, cdrom, libata) ARE CONFIG_*=y builtins — already in the
   # kernel, so NOT listed here (per dracut.conf.d/powernode-amd64.conf, builtins
   # must not be listed as drivers); dracut auto-pulls ahci's module dep libahci.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci"
+  # erofs: the on-disk format EVERY NodeModule rootfs is published as — the
+  # agent's mount/ loop-mounts each module blob with `mount -t erofs`
+  # (internal/mount/erofs.go). Pre-pivot ComposeForPivot builds the union root
+  # from these erofs lowers, so without erofs the initramfs can mount NO module
+  # — including base-os-ubuntu-noble, which itself ships as an erofs blob AND
+  # carries the full /lib/modules tree: chicken-and-egg, the module that would
+  # provide erofs.ko can't be mounted without erofs.ko. Result is an agent-only
+  # pivot with zero app modules (postgres/Rails/…) composed. erofs is
+  # CONFIG_EROFS_FS=m on Ubuntu 24.04, so — like isofs/ahci above — it must be
+  # force-included; dracut won't auto-detect it (no erofs rootfs at build time).
+  # Post-pivot capabilities.go's erofs_available gate ALSO skips module
+  # reconcile when erofs is unmountable, so its absence silently yields a hub
+  # that enrolls but runs none of its 11 modules.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
