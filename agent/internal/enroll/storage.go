@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Two filesystem layouts host the agent's mTLS material:
@@ -29,18 +30,23 @@ const (
 )
 
 // ResolveDefaultPKIDir returns the PKI directory appropriate for the
-// current filesystem layout. Picks the persist-layer path when
-// /persist/var/lib/powernode is reachable (the initramfs + post-pivot
-// contexts, which rbind-mount /persist forward across switch_root),
-// otherwise falls back to the FHS path for cloud-VM hosts.
+// current filesystem layout. Picks the persist-layer path when /persist
+// is its own mount (the initramfs mounts a dedicated /persist tmpfs, and
+// prepare-root rbind-mounts it forward across switch_root — so it's a
+// distinct mount in both the initramfs and post-pivot contexts),
+// otherwise falls back to the FHS path for cloud-VM hosts with no
+// /persist mount.
 //
-// Resolving at runtime (instead of baking a constant into systemd units
-// and cobra flag defaults) avoids the cross-context PKI-drift bug where
-// federation-accept writes to one path but the mount-gate or post-pivot
-// service expects another — that drift previously held back the
-// pivot_root dogfood until both halves were taught to agree.
+// The signal is /persist being a MOUNT, not the leaf /persist/var/lib/
+// powernode directory pre-existing: on a virgin /persist tmpfs that leaf
+// doesn't exist until federation-accept's enroll.Save creates it, so the
+// old dirExists(leaf) check was chicken-and-egg — it resolved to the FHS
+// path on first boot, federation-accept wrote the cert there, and the
+// mount-gate (powernode-mount.service waits on /persist/var/lib/powernode/
+// pki/node.crt) never fired, so the node never pivoted and fell into the
+// anonymous claim loop. Testing the mount itself is stable from boot.
 func ResolveDefaultPKIDir() string {
-	if dirExists("/persist/var/lib/powernode") {
+	if isDistinctMount("/persist") {
 		return PKIDirInitramfs
 	}
 	return PKIDirFHS
@@ -52,9 +58,27 @@ func ResolveDefaultPKIPaths() PKIPaths {
 	return PathsUnder(ResolveDefaultPKIDir())
 }
 
-func dirExists(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && info.IsDir()
+// isDistinctMount reports whether path is the root of its own mount — it
+// sits on a different filesystem than its parent directory. Comparing
+// st_dev against the parent is a cheap, dependency-free mount test that
+// needs no /proc parse or shelling out; an rbind target inherits its
+// source's device number, so a forward-bound /persist reads as distinct
+// post-pivot too. A missing path (no /persist at all) reports false.
+func isDistinctMount(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	pst, pok := parent.Sys().(*syscall.Stat_t)
+	if !ok || !pok {
+		return false
+	}
+	return st.Dev != pst.Dev
 }
 
 // PKIPaths are the canonical filenames within PKIDir.

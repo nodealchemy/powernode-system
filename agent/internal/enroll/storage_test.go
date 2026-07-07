@@ -3,17 +3,14 @@ package enroll
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// TestResolveDefaultPKIDir_FHS asserts the resolver picks the FHS path
-// when /persist/var/lib/powernode isn't present. This is the cloud-VM
-// case (ProxmoxProvider file-fallback spawn, Vultr/AWS/GCP cutovers).
-//
-// We can't truly hide /persist from the running test process — it may
-// exist on the developer's host — so we exercise the path predicate
-// (dirExists) directly to keep the test hermetic, then assert the
-// resolver returns one of the two canonical constants either way.
+// TestResolveDefaultPKIDir_PicksOneOfTheTwoConstants asserts the resolver
+// returns one of the two canonical constants. We can't fake /persist being
+// its own mount from an unprivileged test, so we exercise the mount
+// predicate (isDistinctMount) directly below to cover both directions.
 func TestResolveDefaultPKIDir_PicksOneOfTheTwoConstants(t *testing.T) {
 	got := ResolveDefaultPKIDir()
 	if got != PKIDirInitramfs && got != PKIDirFHS {
@@ -24,43 +21,57 @@ func TestResolveDefaultPKIDir_PicksOneOfTheTwoConstants(t *testing.T) {
 
 func TestResolveDefaultPKIDir_AgreesWithFilesystem(t *testing.T) {
 	expected := PKIDirFHS
-	if dirExists("/persist/var/lib/powernode") {
+	if isDistinctMount("/persist") {
 		expected = PKIDirInitramfs
 	}
 	if got := ResolveDefaultPKIDir(); got != expected {
-		t.Fatalf("ResolveDefaultPKIDir returned %q; want %q based on /persist/var/lib/powernode presence",
+		t.Fatalf("ResolveDefaultPKIDir returned %q; want %q based on /persist being a distinct mount",
 			got, expected)
 	}
 }
 
-// TestDirExists exercises the predicate directly so the resolver's
-// decision is testable in both directions without monkey-patching the
-// running OS's /persist tree.
-func TestDirExists(t *testing.T) {
+// TestIsDistinctMount exercises the mount predicate directly. The false
+// cases (a dir on the same fs as its parent, and a missing path) are
+// deterministic; the true case is cross-checked against /proc/mounts so
+// it only asserts when /proc is genuinely mounted (minimal sandboxes may
+// not mount it).
+func TestIsDistinctMount(t *testing.T) {
+	// A subdir of the test tmp tree shares its parent's filesystem.
 	tmpDir := t.TempDir()
-	present := filepath.Join(tmpDir, "present")
-	if err := os.MkdirAll(present, 0o755); err != nil {
+	child := filepath.Join(tmpDir, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if !dirExists(present) {
-		t.Fatalf("dirExists(%q) returned false; expected true", present)
+	if isDistinctMount(child) {
+		t.Errorf("isDistinctMount(%q) = true; want false (same fs as parent)", child)
 	}
 
-	absent := filepath.Join(tmpDir, "absent")
-	if dirExists(absent) {
-		t.Fatalf("dirExists(%q) returned true; expected false (path does not exist)", absent)
+	// A path that doesn't exist is not a mount.
+	if isDistinctMount(filepath.Join(tmpDir, "absent")) {
+		t.Error("isDistinctMount(absent) = true; want false (path does not exist)")
 	}
 
-	// File (not directory) — must return false; the resolver should not
-	// be fooled into treating a stray /persist/var/lib/powernode FILE
-	// as a valid persist layer.
-	file := filepath.Join(tmpDir, "file")
-	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	// Positive case: /proc is its own mount on a real Linux host.
+	if mountpointListed("/proc") {
+		if !isDistinctMount("/proc") {
+			t.Error("isDistinctMount(/proc) = false; want true (/proc is a mount)")
+		}
+	} else {
+		t.Log("/proc not listed in /proc/mounts; skipping positive assertion")
 	}
-	if dirExists(file) {
-		t.Fatalf("dirExists(%q) returned true; expected false (regular file, not dir)", file)
+}
+
+func mountpointListed(mp string) bool {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
 	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) >= 2 && f[1] == mp {
+			return true
+		}
+	}
+	return false
 }
 
 // TestResolveDefaultPKIPaths is a smoke test for the convenience wrapper —
