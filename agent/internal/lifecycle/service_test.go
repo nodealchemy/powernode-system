@@ -202,49 +202,37 @@ func readUnit(t *testing.T, dir, name string) string {
 	return string(b)
 }
 
-// procIsMounted guards the /proc-based native assertion so the test
-// doesn't flake in sandboxes where /proc isn't a real mount.
-func procIsMounted() bool {
-	b, err := os.ReadFile("/proc/mounts")
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 2 && f[1] == "/proc" {
-			return true
-		}
-	}
-	return false
-}
+// TestPivotAwareRootMode_ByRootFSType pins the corrected boot-model signal:
+// native iff the running root "/" is the composed overlay union; chroot in
+// the pre-pivot initramfs (rootfs/ramfs) and under cloud_init (ext4/xfs).
+// The prior /persist-distinctness heuristic could not tell the pre-pivot
+// initramfs (where /persist is ALSO a distinct mount) from the post-pivot
+// union, and wrongly returned native there. This injects the root
+// filesystem type to lock the corrected contract.
+func TestPivotAwareRootMode_ByRootFSType(t *testing.T) {
+	orig := rootFSType
+	t.Cleanup(func() { rootFSType = orig })
 
-// TestPivotAwareRootMode_ByMountState reproduces the layer-3 boot-model
-// bug: the reconcile attach path must pick RootModeNative when running in
-// a pivot_root union (probe path is a distinct mount) and RootModeChroot
-// under cloud_init (probe absent / not a distinct mount).
-func TestPivotAwareRootMode_ByMountState(t *testing.T) {
-	orig := pivotProbePath
-	t.Cleanup(func() { pivotProbePath = orig })
-
-	// A plain tmpdir shares its parent's filesystem → not a distinct
-	// mount → cloud_init model → chroot.
-	pivotProbePath = t.TempDir()
-	if got := PivotAwareRootMode(); got != RootModeChroot {
-		t.Errorf("PivotAwareRootMode() non-distinct probe = %v; want RootModeChroot", got)
+	cases := []struct {
+		name  string
+		ftype int64
+		err   error
+		want  RootMode
+	}{
+		{"overlay union (post-switch_root)", overlayfsMagic, nil, RootModeNative},
+		{"ramfs initramfs (pre-pivot)", 0x858458f6, nil, RootModeChroot},
+		{"tmpfs initramfs (pre-pivot)", 0x01021994, nil, RootModeChroot},
+		{"ext4 cloud_init guest", 0xef53, nil, RootModeChroot},
+		{"statfs error falls back to chroot", 0, os.ErrNotExist, RootModeChroot},
 	}
-
-	// Absent path → not a distinct mount → chroot.
-	pivotProbePath = filepath.Join(t.TempDir(), "absent")
-	if got := PivotAwareRootMode(); got != RootModeChroot {
-		t.Errorf("PivotAwareRootMode() absent probe = %v; want RootModeChroot", got)
-	}
-
-	// A known-distinct mount (/proc) → pivot_root model → native.
-	if procIsMounted() {
-		pivotProbePath = "/proc"
-		if got := PivotAwareRootMode(); got != RootModeNative {
-			t.Errorf("PivotAwareRootMode() distinct-mount probe (/proc) = %v; want RootModeNative", got)
-		}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			rootFSType = func(string) (int64, error) { return tc.ftype, tc.err }
+			if got := PivotAwareRootMode(); got != tc.want {
+				t.Errorf("PivotAwareRootMode() [%s] = %v; want %v", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 

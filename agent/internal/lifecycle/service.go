@@ -293,51 +293,49 @@ const (
 	RootModeNative
 )
 
-// pivotProbePath is the path whose distinct-mount status signals the
-// direct_kernel/pivot_root boot model. Package var so tests can point it
-// at a known-distinct mount (e.g. /proc) or a plain dir. Defaults to
-// /persist, which the initramfs mounts as its own tmpfs pre-pivot and
-// prepare-root rbinds forward into the union post-pivot — so it reads as
-// a distinct mount for the whole pivot_root lifecycle, and is absent (not
-// a distinct mount) on a cloud_init/cloud VM.
-var pivotProbePath = "/persist"
+// rootProbePath is the mount whose filesystem type signals whether the
+// module union has become the running root. Package var so tests can point
+// it at a known path. Defaults to "/", the running process's root — which
+// post-switch_root IS the composed overlay union.
+var rootProbePath = "/"
+
+// overlayfsMagic is the statfs f_type for overlayfs (OVERLAYFS_SUPER_MAGIC,
+// linux/magic.h). The composed module union is an overlayfs; the initramfs
+// root is rootfs/ramfs and a cloud_init guest root is ext4/xfs — none of
+// which report this magic.
+const overlayfsMagic = 0x794c7630
+
+// rootFSType returns the statfs f_type of path. Package var so tests can
+// inject a boot context without needing a real overlay mount.
+var rootFSType = func(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Type), nil
+}
 
 // PivotAwareRootMode picks the unit render mode for the CURRENT root by
-// boot model: RootModeNative when running inside a pivot_root-composed
-// module union (the union is /), RootModeChroot for the cloud_init model
-// (guest OS is /, modules chroot into /sysroot).
+// asking whether switch_root has actually happened — i.e. whether "/" is
+// now the composed overlay union:
+//   - RootModeNative when / is the overlay union (direct_kernel/pivot_root:
+//     the union became / via switch_root, so ExecStart/proc/passwd resolve
+//     natively);
+//   - RootModeChroot otherwise — the pre-pivot initramfs (where / is
+//     rootfs/ramfs and the union is composed at /sysroot) and the cloud_init
+//     model (guest OS is /, modules chroot into /sysroot).
 //
-// The signal is whether pivotProbePath (/persist) reads as a distinct
-// mount — the same device-number heuristic enroll.ResolveDefaultPKIDir
-// uses to decide the PKI path for this exact boot-model question. The
-// post-pivot reconcile loop MUST render native: a chroot unit's
-// RootDirectory=/sysroot points at a path that no longer exists after
-// switch_root, so systemd can't start the service.
+// An earlier heuristic keyed on whether /persist read as a distinct mount,
+// but persist.mount stages /persist as a distinct tmpfs for the WHOLE
+// pivot_root lifecycle (pre-pivot initramfs AND post-pivot union), so it
+// could not tell the initramfs reconcile from the pivoted union and wrongly
+// returned native pre-pivot. Probing /'s filesystem type directly encodes
+// "is the module union my root" and is timing-independent.
 func PivotAwareRootMode() RootMode {
-	if isDistinctMount(pivotProbePath) {
+	if t, err := rootFSType(rootProbePath); err == nil && t == overlayfsMagic {
 		return RootModeNative
 	}
 	return RootModeChroot
-}
-
-// isDistinctMount reports whether path is a mountpoint distinct from its
-// parent (different st_dev). Mirrors enroll.isDistinctMount — kept local
-// to avoid a lifecycle→enroll import for a 6-line syscall helper.
-func isDistinctMount(path string) bool {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	parent, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		return false
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	pst, pok := parent.Sys().(*syscall.Stat_t)
-	if !ok || !pok {
-		return false
-	}
-	return st.Dev != pst.Dev
 }
 
 // RenderUnit renders a unit in the default chroot mode (cloud_init model).
