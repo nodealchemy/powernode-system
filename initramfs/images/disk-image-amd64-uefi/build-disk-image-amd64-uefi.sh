@@ -41,7 +41,13 @@ CA_PEM_FILE="${CA_PEM_FILE:-}"
 # on failure (a security/UX hazard on fielded devices). ttyS0 last = primary
 # console, so the agent's output lands on serial for headless debugging while
 # tty0 still shows kernel logs on devices with a display.
-CMDLINE="${POWERNODE_CMDLINE:-console=tty0 console=ttyS0,115200 powernode.boot=1 ip=dhcp}"
+#
+# max_loop=64: the pivot compose loop-mounts one erofs lower-layer per assigned
+# module (11 for the hub today, growing). The loop driver's default static pool
+# is 8; while modern kernels grow it on demand via /dev/loop-control, that's
+# config-dependent — pin a generous pool so module #9+ never risks failing to
+# loop-mount. Additive headroom only.
+CMDLINE="${POWERNODE_CMDLINE:-console=tty0 console=ttyS0,115200 powernode.boot=1 ip=dhcp max_loop=64}"
 UKIFY="${UKIFY:-ukify}"
 EFI_STUB="${EFI_STUB:-/usr/lib/systemd/boot/efi/linuxx64.efi.stub}"
 
