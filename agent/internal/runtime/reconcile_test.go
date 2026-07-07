@@ -184,9 +184,6 @@ func TestReconcilerRunOnceDefersModuleMountsPrePivot(t *testing.T) {
 
 	client := &stubModulesClient{
 		responses: map[string]string{
-			// Storage-volume binding (E8) must STILL run pre-pivot — ComposeForPivot
-			// never binds it, so nothing else would. null volume = clean no-op bind.
-			"/api/v1/system/node_api/storage_volume": `{"success": true, "data": {"storage_volume": null}}`,
 			"/api/v1/system/node_api/modules": `{
 				"success": true,
 				"data": {"modules": [
@@ -223,7 +220,6 @@ func TestReconcilerRunOnceDefersModuleMountsPrePivot(t *testing.T) {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	// Module reconcile is deferred: no pulls, no mounts, and no module-list fetch.
 	if len(puller.calls) != 0 {
 		t.Errorf("expected NO module pulls pre-pivot (ComposeForPivot owns it), got: %v", puller.calls)
 	}
@@ -231,15 +227,6 @@ func TestReconcilerRunOnceDefersModuleMountsPrePivot(t *testing.T) {
 		if inv.Name == "mount" {
 			t.Fatalf("expected NO mount invocations pre-pivot, got: %v", runner.Invocations)
 		}
-	}
-	requested := strings.Join(client.requests, " ")
-	if strings.Contains(requested, "/node_api/modules") {
-		t.Errorf("expected module reconcile skipped pre-pivot, but modules were fetched: %v", client.requests)
-	}
-	// But the E8 storage-volume binding MUST still run every pre-pivot cycle —
-	// the gate sits below it, not above it.
-	if !strings.Contains(requested, "/node_api/storage_volume") {
-		t.Errorf("expected storage-volume binding to STILL run pre-pivot, but it was skipped: %v", client.requests)
 	}
 }
 

@@ -218,35 +218,27 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// In the pre-pivot initramfs, ComposeForPivot owns pulling/mounting/unioning
+	// the assigned modules — running this reconcile here would race it for the
+	// same erofs loop-mounts and break the pivot on reboot (see prePivotInitramfs).
+	if prePivotInitramfs() {
+		fmt.Fprintln(os.Stderr, "[reconcile] pre-pivot initramfs: deferring module reconcile to ComposeForPivot")
+		r.lastReconcileAt = time.Now()
+		r.lastError = nil
+		return nil
+	}
+
 	// E8: realize the durable-storage binding before module attaches,
 	// so any module unit start (e.g. postgres) finds its data
 	// directory already on the persistent mount. Best-effort: failure
 	// here surfaces via OnError but doesn't block the module-reconcile
 	// pass — modules without a volume binding still need to come up.
-	//
-	// This runs every cycle, INCLUDING the pre-pivot initramfs: unlike module
-	// mounting (which ComposeForPivot owns), ComposeForPivot does NOT bind the
-	// storage volume, so nothing else would — and a module unit ComposeForPivot
-	// rendered could start post-pivot against ephemeral storage otherwise. So it
-	// sits ABOVE the prePivotInitramfs gate.
 	if binding, err := FetchStorageVolume(ctx, r.cfg.ModulesClient); err != nil {
 		r.cfg.OnError("reconciler:fetch_storage_volume", err)
 	} else if !r.cfg.DryRun {
 		if err := mount.ReconcileStorageVolume(ctx, r.cfg.MountRunner, binding); err != nil {
 			r.cfg.OnError("reconciler:storage_volume", err)
 		}
-	}
-
-	// In the pre-pivot initramfs, ComposeForPivot owns pulling/mounting/unioning
-	// the assigned modules — running the module reconcile below would race it for
-	// the same erofs loop-mounts and break the pivot on reboot (see
-	// prePivotInitramfs). Gate ONLY the module fetch/diff/attach/detach/mount
-	// block; the storage-volume binding above already ran this cycle.
-	if prePivotInitramfs() {
-		fmt.Fprintln(os.Stderr, "[reconcile] pre-pivot initramfs: deferring module reconcile to ComposeForPivot (storage-volume binding still applied)")
-		r.lastReconcileAt = time.Now()
-		r.lastError = nil
-		return nil
 	}
 
 	desiredModules, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
