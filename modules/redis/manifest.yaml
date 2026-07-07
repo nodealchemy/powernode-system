@@ -5,6 +5,14 @@ description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
 license: BSD-3-Clause
 package_spec:
   - redis-server
+# The apt package's own redis-server.service auto-enables via the distro's
+# systemd preset, but it's a dead unit in this boot model: /var is omitted
+# from file_spec below (see comment there), so its expected data/log/run
+# dirs don't exist at boot and it fails with a permission/path error. The
+# platform's ACTUAL redis instance runs under the services: entry below, via
+# redis-start.sh's own data-dir prep. rootfs/etc/systemd/system/
+# redis-server.service -> /dev/null masks the distro unit (same on-disk
+# state `systemctl mask` produces) so it never races the real one.
 # Ship the full apt-installed tree under the four standard FHS roots.
 # /usr covers redis-server + redis-cli + libs under /usr/lib. /lib +
 # /lib64 cover early-boot libs (libc, libsystemd, libssl) that the
