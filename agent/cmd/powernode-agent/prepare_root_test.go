@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestPrepareRootDispatch_RoutesBySource locks the #67 fix: `prepare-root
 // --source oci` must delegate to the dynamic OCI composer (the platform's real
@@ -65,5 +69,124 @@ func TestPrepareRootDispatch_RoutesBySource(t *testing.T) {
 	}
 	if ociCalls != 0 || nineCalls != 0 {
 		t.Errorf("source=bogus: ociCalls=%d nineCalls=%d; want 0/0", ociCalls, nineCalls)
+	}
+}
+
+// TestEnsureCanonicalInit_SynthesizesSbinInit locks the last-mile switch_root
+// fix: the composed module rootfs may ship systemd only at
+// /usr/lib/systemd/systemd with NO /sbin/init. The mount unit's
+// `systemctl switch-root /sysroot /sbin/init` chase-validates that init path
+// and fails the whole unit (no pivot) when it's absent. The composer must
+// therefore guarantee a canonical /sbin/init resolving to whatever init the
+// module rootfs actually provides.
+func TestEnsureCanonicalInit_SynthesizesSbinInit(t *testing.T) {
+	// Rootfs that ships systemd only at usr/lib/systemd/systemd — the exact
+	// shape observed on the real erofs hub modules (no /sbin/init).
+	sysroot := t.TempDir()
+	realInit := filepath.Join(sysroot, "usr/lib/systemd/systemd")
+	if err := os.MkdirAll(filepath.Dir(realInit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(realInit, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ensureCanonicalInit(sysroot)
+	if err != nil {
+		t.Fatalf("ensureCanonicalInit: %v", err)
+	}
+	if got != "/usr/lib/systemd/systemd" {
+		t.Errorf("resolved init=%q; want /usr/lib/systemd/systemd (new-root-absolute)", got)
+	}
+
+	// /sbin/init must now exist and resolve to the real init, so
+	// `switch-root /sysroot /sbin/init` succeeds.
+	sbinInit := filepath.Join(sysroot, "sbin/init")
+	lst, err := os.Lstat(sbinInit)
+	if err != nil {
+		t.Fatalf("stat %s: %v", sbinInit, err)
+	}
+	if lst.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("%s is not a symlink (mode=%v)", sbinInit, lst.Mode())
+	}
+	target, err := os.Readlink(sbinInit)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", sbinInit, err)
+	}
+	if target != "/usr/lib/systemd/systemd" {
+		t.Errorf("/sbin/init -> %q; want /usr/lib/systemd/systemd (new-root-absolute)", target)
+	}
+}
+
+// TestEnsureCanonicalInit_LeavesExistingSbinInit: when the rootfs already
+// ships /sbin/init, it's honored as-is with no symlink munging.
+func TestEnsureCanonicalInit_LeavesExistingSbinInit(t *testing.T) {
+	sysroot := t.TempDir()
+	sbinInit := filepath.Join(sysroot, "sbin/init")
+	if err := os.MkdirAll(filepath.Dir(sbinInit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sbinInit, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ensureCanonicalInit(sysroot)
+	if err != nil {
+		t.Fatalf("ensureCanonicalInit: %v", err)
+	}
+	if got != "/sbin/init" {
+		t.Errorf("resolved init=%q; want /sbin/init", got)
+	}
+	// Must remain a regular file, not have been replaced by a symlink.
+	lst, err := os.Lstat(sbinInit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lst.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("%s was replaced by a symlink; existing /sbin/init must be left intact", sbinInit)
+	}
+}
+
+// TestEnsureCanonicalInit_ReplacesDanglingSbinInit: a dangling /sbin/init
+// symlink (points nowhere) must not block synthesis — it's os.Stat-invisible
+// yet would EEXIST a naive os.Symlink. The fix must replace it.
+func TestEnsureCanonicalInit_ReplacesDanglingSbinInit(t *testing.T) {
+	sysroot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sysroot, "sbin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Dangling: target does not exist.
+	if err := os.Symlink("/nonexistent/init", filepath.Join(sysroot, "sbin/init")); err != nil {
+		t.Fatal(err)
+	}
+	realInit := filepath.Join(sysroot, "usr/lib/systemd/systemd")
+	if err := os.MkdirAll(filepath.Dir(realInit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(realInit, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ensureCanonicalInit(sysroot)
+	if err != nil {
+		t.Fatalf("ensureCanonicalInit: %v", err)
+	}
+	if got != "/usr/lib/systemd/systemd" {
+		t.Errorf("resolved init=%q; want /usr/lib/systemd/systemd", got)
+	}
+	target, err := os.Readlink(filepath.Join(sysroot, "sbin/init"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/usr/lib/systemd/systemd" {
+		t.Errorf("dangling /sbin/init not repaired: -> %q; want /usr/lib/systemd/systemd", target)
+	}
+}
+
+// TestEnsureCanonicalInit_NoInit: a rootfs with no init anywhere is a hard
+// error (better a loud compose failure than a silent no-pivot).
+func TestEnsureCanonicalInit_NoInit(t *testing.T) {
+	if _, err := ensureCanonicalInit(t.TempDir()); err == nil {
+		t.Error("expected error for rootfs with no init, got nil")
 	}
 }

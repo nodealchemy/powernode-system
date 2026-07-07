@@ -468,18 +468,44 @@ func bindAndCheckSysroot(sysroot string) error {
 		}
 	}
 
-	candidates := []string{
-		filepath.Join(sysroot, "sbin/init"),
-		filepath.Join(sysroot, "lib/systemd/systemd"),
-		filepath.Join(sysroot, "usr/lib/systemd/systemd"),
+	initPath, err := ensureCanonicalInit(sysroot)
+	if err != nil {
+		return err
 	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			fmt.Printf("[prepare-root] OK — init=%s\n", p)
-			return nil
+	fmt.Printf("[prepare-root] OK — init=%s (switch-root via /sbin/init)\n", initPath)
+	return nil
+}
+
+// ensureCanonicalInit locates the init in the composed root and guarantees a
+// canonical /sbin/init that resolves to it, returning init's new-root-absolute
+// path. The mount unit's `systemctl switch-root /sysroot /sbin/init`
+// chase-validates that exact path and fails the whole unit (→ no pivot) when
+// it's absent — and real erofs module rootfs ship systemd only at
+// /usr/lib/systemd/systemd with no /sbin/init compat symlink. Synthesizing the
+// link here makes switch-root layout-agnostic. The returned/target path is
+// new-root-absolute (leading "/") because /sysroot becomes / after the pivot.
+func ensureCanonicalInit(sysroot string) (string, error) {
+	rels := []string{"sbin/init", "lib/systemd/systemd", "usr/lib/systemd/systemd"}
+	for _, rel := range rels {
+		if _, err := os.Stat(filepath.Join(sysroot, rel)); err != nil {
+			continue
 		}
+		if rel == "sbin/init" {
+			return "/sbin/init", nil
+		}
+		sbinInit := filepath.Join(sysroot, "sbin/init")
+		if err := os.MkdirAll(filepath.Join(sysroot, "sbin"), 0o755); err != nil {
+			return "", fmt.Errorf("mkdir %s/sbin: %w", sysroot, err)
+		}
+		// Clear any pre-existing (possibly dangling) entry so Symlink won't EEXIST.
+		_ = os.Remove(sbinInit)
+		target := "/" + rel
+		if err := os.Symlink(target, sbinInit); err != nil {
+			return "", fmt.Errorf("symlink /sbin/init -> %s: %w", target, err)
+		}
+		return target, nil
 	}
-	return fmt.Errorf("no init found in %s (tried %v)", sysroot, candidates)
+	return "", fmt.Errorf("no init found in %s (tried %v)", sysroot, rels)
 }
 
 func isMountedAt(path string) bool {
