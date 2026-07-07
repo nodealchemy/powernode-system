@@ -965,7 +965,13 @@ module System
           # boot=order= is unset deliberately.
           "onboot"   => params.fetch(:onboot, 1),
           "serial0"  => "socket",
-          "vga"      => params[:vga] || "std"
+          # Unlike cloud_init's build_qemu_vm_body (vga defaults to "std" —
+          # generic cloud images have a real getty@tty1 recovery path),
+          # direct_kernel images are custom minimal pivot-boot builds with no
+          # such fallback, and OVMF/kernel boot-hang diagnosis depends on
+          # capturing EVERYTHING (including pre-kernel firmware output) via
+          # the serial0 socket. Default to serial-only; still overridable.
+          "vga"      => params[:vga] || "serial0"
         }
 
         # Optional persist disk — when the operator wants the agent's
@@ -1059,6 +1065,14 @@ module System
         bridge = params[:network_bridge] || DEFAULT_NETWORK_BRIDGE
         ip_config = params[:ip_config] || "ip=dhcp"
         image_volid = resolve_uefi_disk_image!(c, params, node: node, storage: storage)
+
+        # Unlike cloud_init (build_qemu_vm_body's own default, "std" — generic
+        # cloud images have a real getty@tty1 recovery path via noVNC),
+        # uefi_disk images are custom minimal pivot-boot builds with no such
+        # fallback, and diagnosing an OVMF/UKI/switch-root hang depends on
+        # capturing everything — including pre-kernel firmware output — via
+        # the serial0 socket. Default to serial-only; still overridable.
+        params = params.merge(vga: params[:vga] || "serial0")
 
         body = build_qemu_vm_body(
           params,

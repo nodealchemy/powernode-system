@@ -254,6 +254,22 @@ RSpec.describe System::Providers::ProxmoxProvider do
           hash_excluding("args")
         )
       end
+
+      it "defaults vga to serial0 — no getty@tty1 recovery path exists for these minimal pivot-boot images, so diagnosis depends on capturing everything (including pre-kernel firmware output) via the serial0 socket" do
+        provider.create_instance(params)
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("vga" => "serial0", "serial0" => "socket")
+        )
+      end
+
+      it "still honors an explicit params[:vga] override" do
+        provider.create_instance(params.merge(vga: "std"))
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("vga" => "std")
+        )
+      end
     end
 
     context "when no explicit storage is given, prefers the operator-configured default_storage" do
