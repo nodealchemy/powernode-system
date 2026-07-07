@@ -423,6 +423,105 @@ func TestMountModule_WithBlob_IssuesErofsMount(t *testing.T) {
 	}
 }
 
+// raceRunner models a concurrent sibling racing MountModule: the `mount`
+// command fails, and `findmnt` returns a scripted mounted/not-mounted result
+// per successive call (so the pre-check can read "not mounted" while the
+// post-failure recheck reads "mounted", i.e. the sibling completed the mount in
+// between). Any call past the script reuses the last scripted value.
+type raceRunner struct {
+	mountErr       error
+	findmntMounted []bool
+	findmntCalls   int
+	mountCalls     int
+}
+
+func (r *raceRunner) Run(_ context.Context, name string, _ ...string) error {
+	if name == "mount" {
+		r.mountCalls++
+		return r.mountErr
+	}
+	return nil
+}
+
+func (r *raceRunner) Output(_ context.Context, name string, _ ...string) ([]byte, error) {
+	if name != "findmnt" {
+		return nil, nil
+	}
+	i := r.findmntCalls
+	r.findmntCalls++
+	mounted := false
+	switch {
+	case i < len(r.findmntMounted):
+		mounted = r.findmntMounted[i]
+	case len(r.findmntMounted) > 0:
+		mounted = r.findmntMounted[len(r.findmntMounted)-1]
+	}
+	if mounted {
+		return []byte("mountpoint erofs ro\n"), nil
+	}
+	return nil, nil
+}
+
+func stageBlob(t *testing.T, l Layout, digest string) {
+	t.Helper()
+	if err := os.MkdirAll(l.ModulesCacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(l.ModuleCachePath(digest), []byte("fake erofs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMountModule_ConcurrentSiblingWonRace_ReturnsNil(t *testing.T) {
+	// A sibling caller mounts the same digest between our pre-check and our mount:
+	// pre-check says "not mounted", our `mount` fails "already mounted / busy",
+	// the recheck now says "mounted" → MountModule must treat that as success
+	// (the digest-addressed path can only hold this exact content).
+	l := DefaultLayout()
+	l.Root = t.TempDir()
+	l = l.Resolve()
+	digest := "sha256:abc"
+	stageBlob(t, l, digest)
+
+	rr := &raceRunner{
+		mountErr:       fmt.Errorf("exit status 32: /dev/loop6 already mounted or mount point busy"),
+		findmntMounted: []bool{false, true}, // pre-check: no; recheck: yes
+	}
+	if err := MountModule(context.Background(), rr, l, Module{Digest: digest, ID: "m1"}); err != nil {
+		t.Fatalf("expected nil (sibling won the race), got: %v", err)
+	}
+	if rr.mountCalls != 1 {
+		t.Errorf("expected exactly one mount attempt, got %d", rr.mountCalls)
+	}
+	if rr.findmntCalls != 2 {
+		t.Errorf("expected pre-check + one recheck (2 findmnt calls), got %d", rr.findmntCalls)
+	}
+}
+
+func TestMountModule_MountFailsAndStillNotMounted_ReturnsError(t *testing.T) {
+	// A genuine mount failure (not a lost race): mount fails and the recheck still
+	// reports "not mounted" → MountModule must return the original error, not mask
+	// it as success.
+	l := DefaultLayout()
+	l.Root = t.TempDir()
+	l = l.Resolve()
+	digest := "sha256:def"
+	stageBlob(t, l, digest)
+
+	wantErr := fmt.Errorf("exit status 1: mount: unknown filesystem type 'erofs'")
+	rr := &raceRunner{
+		mountErr:       wantErr,
+		findmntMounted: []bool{false, false}, // never mounted
+	}
+	err := MountModule(context.Background(), rr, l, Module{Digest: digest, ID: "m1"})
+	if err == nil {
+		t.Fatal("expected the original mount error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown filesystem type") {
+		t.Errorf("expected original mount error to propagate, got: %v", err)
+	}
+}
+
 // ---------- helpers ----------
 
 func contains(haystack []string, needle string) bool {

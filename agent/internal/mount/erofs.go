@@ -34,8 +34,11 @@ import (
 const ErofsMediaType = "application/vnd.powernode.erofs"
 
 // MountModule loop-mounts a module's erofs image at the per-module
-// path under l.ModulesMountRoot. Idempotent — returns nil if the
-// path is already an erofs mount.
+// path under l.ModulesMountRoot. Idempotent — returns nil if the path
+// is already an erofs mount, INCLUDING when a concurrent sibling caller
+// wins the race between the pre-check and the mount (rechecked after a
+// failed mount; the path is digest-addressed, so an existing mount there
+// is this exact content).
 //
 // Mount syntax (universal since kernel 5.4):
 //
@@ -69,12 +72,28 @@ func MountModule(ctx context.Context, runner Runner, l Layout, m Module) error {
 		return fmt.Errorf("erofs blob missing at %s — pull it before mounting: %w", blobPath, err)
 	}
 
-	return runner.Run(ctx, "mount",
+	if err := runner.Run(ctx, "mount",
 		"-t", "erofs",
 		"-o", "loop,ro",
 		blobPath,
 		mountpoint,
-	)
+	); err != nil {
+		// A concurrent sibling caller can win the gap between the IsMountpoint
+		// check above and this mount — e.g. in the pre-pivot initramfs, the
+		// reconcile loop and ComposeForPivot both mount the assigned modules, and
+		// with a warm disk-backed cache there's no pull delay to stagger them, so
+		// one loses here with "already mounted / mount point busy". The mountpoint
+		// is content-addressed by digest, so a mount already present at this exact
+		// path can only be this exact erofs content: recheck, and if it's now a
+		// mount the sibling satisfied our postcondition — return success. This is
+		// what makes the idempotency this doc promises actually hold against a
+		// concurrent second caller (a bare IsMountpoint-then-mount can't).
+		if mounted, checkErr := IsMountpoint(ctx, runner, mountpoint); checkErr == nil && mounted {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // UnmountModule reverses MountModule. Idempotent. The kernel cleans up
