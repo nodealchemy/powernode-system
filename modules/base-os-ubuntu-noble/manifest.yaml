@@ -2,7 +2,7 @@ schema_version: 1
 
 name: base-os-ubuntu-noble
 display_name: "Powernode Base — Ubuntu 24.04 (Noble) userland"
-description: "OS-specific layer on top of powernode-system-base — Ubuntu 24.04 LTS minbase userland: systemd as PID 1, systemd-networkd for DHCP, openssh-server, ca-certificates, libssl, coreutils, the standard Debian filesystem layout. Inherits /sbin/powernode-agent from the minimal powernode-system-base via overlay union; this module only owns the OS-specific bits. Sibling modules for Debian (trixie), Alpine, and other base images will provide the same `base.os` capability."
+description: "OS-specific layer on top of powernode-system-base — Ubuntu 24.04 LTS minbase userland: systemd as PID 1, openssh-server, ca-certificates, libssl, coreutils, the standard Debian filesystem layout. dbus/networkd/resolved are masked — IP comes from the kernel cmdline (ip=dhcp) during the initramfs stage and DNS from a static resolv.conf, so none of the three ever run post-pivot. Inherits /sbin/powernode-agent from the minimal powernode-system-base via overlay union; this module only owns the OS-specific bits. Sibling modules for Debian (trixie), Alpine, and other base images will provide the same `base.os` capability."
 license: "MIT"
 
 mask:
@@ -59,8 +59,13 @@ package_spec:
   # On Ubuntu Noble, systemd-networkd and systemd-resolved are NOT separate
   # binary packages — they ship inside the `systemd` package. Listing them
   # explicitly causes `Unable to locate package` failures during mmdebstrap.
-  # Enable the services post-install (already handled by rootfs/etc/systemd
-  # presets); just install systemd + systemd-sysv to get all binaries.
+  # Install systemd + systemd-sysv for the binaries; dbus/networkd/resolved
+  # are then MASKED via rootfs/etc/systemd/system/*.service -> /dev/null
+  # (see rootfs/) — this boot model gets its IP from the kernel cmdline
+  # (ip=dhcp) during the initramfs stage and DNS from a static resolv.conf,
+  # so none of the three ever need to run post-pivot. Masking (not just
+  # omitting the enable symlink) blocks any Wants=/Requires= from another
+  # unit from pulling them in anyway.
   - systemd
   - systemd-sysv
   - dbus
@@ -92,10 +97,13 @@ dependencies:
   # powernode-system-base-alpine, etc. Operators don't pin the slug;
   # they declare the capability they need and the resolver picks the
   # variant compatible with the node it's being assigned to.
+  # net.systemd-networkd dropped 2026-07-07: systemd-networkd is now masked
+  # (see rootfs/etc/systemd/system/systemd-networkd.service) — no consumer
+  # ever matched on this tag (grepped clean), and advertising it while the
+  # unit is masked would be a false capability claim.
   provides:
     - base.os
     - base.os.ubuntu-noble
-    - net.systemd-networkd
     - sshd
     - init.systemd
 

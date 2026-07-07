@@ -689,9 +689,11 @@ jobs:
               # OS-specific layer: Ubuntu's apt-installed userland
               # comes from Stage 1's mmdebstrap (package_spec). The
               # rootfs/ overlay adds the Powernode-curated systemd
-              # units (powernode-agent.service, ssh-host-keygen.service,
-              # powernode-network-reload.service) + sshd config +
-              # systemd-networkd DHCP profile.
+              # units (powernode-agent.service, ssh-host-keygen.service)
+              # + sshd config, and MASKS dbus/systemd-networkd/
+              # systemd-resolved (-> /dev/null) — this boot model gets
+              # its IP from the kernel cmdline during the initramfs
+              # stage, not from any of the three running post-pivot.
               #
               # No agent binary baked here — it's inherited from
               # powernode-system-base via overlay union when both are
