@@ -21,11 +21,15 @@ RemainAfterExit=yes
 # the initramfs sshd as fallback.
 ExecStartPre=/bin/sh -c 'i=0; while [ ! -f /persist/var/lib/powernode/pki/node.crt ] && [ "$i" -lt 120 ]; do sleep 1; i=$((i+1)); done; test -f /persist/var/lib/powernode/pki/node.crt'
 
-# Build the overlay union at /sysroot. Modules in priority order, low to high
-# (system-base provides Ubuntu base + sshd; nginx layered on top adds web tier).
-# The agent reverses this list when building lowerdir so highest priority is
-# top of the overlayfs stack.
-ExecStart=/sbin/powernode-agent prepare-root --modules system-base,nginx
+# Compose the overlay union at /sysroot from the platform's REAL assigned
+# module set, pulled dynamically over OCI (erofs blobs + cosign/fs-verity
+# verify + overlay union + identity/native units) — the same ComposeForPivot
+# the boot orchestrator uses. Enrollment already happened (federation-accept +
+# the cert the ExecStartPre above gates on); --source oci reuses that enrolled
+# PKI to pull + compose. Replaces the legacy hardcoded 9p `--modules
+# system-base,nginx` path, which needed a libvirt 9p share absent on real
+# hypervisors and only ever composed a 2-module stub.
+ExecStart=/sbin/powernode-agent prepare-root --source oci
 
 # Re-exec systemd into the new root. --no-block because the very act of
 # switch-root kills this unit's executor — waiting would deadlock.

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -310,6 +311,7 @@ func loadCapabilityToken(path string) (*a2a.Token, error) {
 // which kills the initramfs systemd and re-execs in the new rootfs.
 func prepareRootCmd() *cobra.Command {
 	var (
+		source        string
 		modulesSource string
 		sysroot       string
 		modules       []string
@@ -317,16 +319,73 @@ func prepareRootCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "prepare-root",
-		Short: "Mount module rootfs as overlayfs at /sysroot, ready for switch-root",
+		Short: "Mount the module union at /sysroot, ready for switch-root",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPrepareRoot(modulesSource, sysroot, ninePTag, modules)
+			return dispatchPrepareRoot(source, modulesSource, sysroot, ninePTag, modules)
 		},
 	}
-	c.Flags().StringVar(&modulesSource, "modules-source", "/run/powernode/modules", "where the 9p share is mounted")
+	c.Flags().StringVar(&source, "source", "9p", "module source: \"oci\" (pull the platform-assigned set + erofs/overlay compose) or \"9p\" (legacy libvirt 9p rootfs share)")
+	c.Flags().StringVar(&modulesSource, "modules-source", "/run/powernode/modules", "where the 9p share is mounted (source=9p only)")
 	c.Flags().StringVar(&sysroot, "sysroot", "/sysroot", "target mount point for the union")
-	c.Flags().StringSliceVar(&modules, "modules", []string{"system-base"}, "module names in priority order, low to high")
-	c.Flags().StringVar(&ninePTag, "9p-tag", "powernode_modules", "9p share tag (must match libvirt <target dir=...>)")
+	c.Flags().StringSliceVar(&modules, "modules", []string{"system-base"}, "module names in priority order, low to high (source=9p only)")
+	c.Flags().StringVar(&ninePTag, "9p-tag", "powernode_modules", "9p share tag (source=9p only; must match libvirt <target dir=...>)")
 	return c
+}
+
+// runPrepareRootOCIFn / runPrepareRoot9pFn are package vars so tests can
+// verify --source routing without performing real mounts.
+var (
+	runPrepareRootOCIFn = runPrepareRootOCI
+	runPrepareRoot9pFn  = runPrepareRoot
+)
+
+// dispatchPrepareRoot routes prepare-root by --source. "oci" composes the
+// real platform-assigned module set (ComposeForPivot) — the direct_kernel/
+// UKI path; "9p" (default) is the legacy libvirt 9p rootfs-share path.
+func dispatchPrepareRoot(source, modulesSource, sysroot, ninePTag string, modules []string) error {
+	switch source {
+	case "oci":
+		return runPrepareRootOCIFn(sysroot)
+	case "9p", "":
+		return runPrepareRoot9pFn(modulesSource, sysroot, ninePTag, modules)
+	default:
+		return fmt.Errorf("prepare-root: unknown --source %q (want \"oci\" or \"9p\")", source)
+	}
+}
+
+// runPrepareRootOCI composes the module union at sysroot from the platform's
+// real NodeModuleAssignment set (queried dynamically, NOT a hardcoded list)
+// and leaves it ready for switch-root. It reuses runtime.ComposeForPivot —
+// the same pull + cosign/fs-verity verify + erofs loop-mount + overlay-union +
+// identity/native-unit render the boot orchestrator uses — then binds the
+// durable/API mounts into the union (ComposeForPivot intentionally leaves that
+// to the boot/initramfs mount plan). It does NOT re-enroll: enrollment already
+// happened (federation-accept + the cert powernode-mount.service gates on);
+// the platform URL comes from the enrolled PKI dir, with identity discovery as
+// a fallback — the same resolution the long-lived `service` loop uses.
+func runPrepareRootOCI(sysroot string) error {
+	pkiDir := enroll.ResolveDefaultPKIDir()
+	platformURL := enroll.ReadPlatformURL(enroll.PathsUnder(pkiDir))
+	if platformURL == "" {
+		if ident, err := identity.DefaultResolver().Resolve(context.Background()); err == nil && ident != nil {
+			platformURL = ident.PlatformURL
+		}
+	}
+	if platformURL == "" {
+		return errors.New("prepare-root --source oci: could not resolve platform URL (enrolled URL empty and identity discovery failed)")
+	}
+	fmt.Printf("[prepare-root] source=oci platform=%s pki=%s sysroot=%s\n", platformURL, pkiDir, sysroot)
+
+	composer, err := runtime.NewPivotComposer(platformURL, pkiDir, func(stage string, cerr error) {
+		fmt.Fprintf(os.Stderr, "[prepare-root:compose:%s] %v\n", stage, cerr)
+	})
+	if err != nil {
+		return fmt.Errorf("build oci pivot composer: %w", err)
+	}
+	if err := composer.ComposeForPivot(context.Background(), sysroot); err != nil {
+		return fmt.Errorf("compose oci module union at %s: %w", sysroot, err)
+	}
+	return bindAndCheckSysroot(sysroot)
 }
 
 func runPrepareRoot(modulesSource, sysroot, ninePTag string, modules []string) error {
@@ -385,8 +444,16 @@ func runPrepareRoot(modulesSource, sysroot, ninePTag string, modules []string) e
 		return fmt.Errorf("mount overlay at %s: %w (output: %s)", sysroot, err, out)
 	}
 
-	// 6. Bind-mount /persist, /dev, /sys, /proc, /run into /sysroot.
-	// rbind so submounts (like /sys/firmware/qemu_fw_cfg) come along.
+	// 6+7. Bind the durable/API mounts into the union + sanity-check init.
+	return bindAndCheckSysroot(sysroot)
+}
+
+// bindAndCheckSysroot rbind-mounts /persist + the API filesystems into the
+// composed union at sysroot (so PKI/agent state + /dev,/sys,/proc,/run survive
+// switch-root) and verifies an init exists in the new root. Shared by both
+// prepare-root sources (9p + oci). rbind carries submounts (e.g.
+// /sys/firmware/qemu_fw_cfg) along.
+func bindAndCheckSysroot(sysroot string) error {
 	for _, src := range []string{"/persist", "/dev", "/sys", "/proc", "/run"} {
 		dst := filepath.Join(sysroot, src)
 		if err := os.MkdirAll(dst, 0o755); err != nil {
@@ -401,24 +468,18 @@ func runPrepareRoot(modulesSource, sysroot, ninePTag string, modules []string) e
 		}
 	}
 
-	// 7. Sanity-check: there's an init in the new root.
 	candidates := []string{
 		filepath.Join(sysroot, "sbin/init"),
 		filepath.Join(sysroot, "lib/systemd/systemd"),
 		filepath.Join(sysroot, "usr/lib/systemd/systemd"),
 	}
-	var found string
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
-			found = p
-			break
+			fmt.Printf("[prepare-root] OK — init=%s\n", p)
+			return nil
 		}
 	}
-	if found == "" {
-		return fmt.Errorf("no init found in %s (tried %v)", sysroot, candidates)
-	}
-	fmt.Printf("[prepare-root] OK — init=%s\n", found)
-	return nil
+	return fmt.Errorf("no init found in %s (tried %v)", sysroot, candidates)
 }
 
 func isMountedAt(path string) bool {
