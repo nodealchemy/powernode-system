@@ -160,6 +160,47 @@ RSpec.describe System::ProvisioningService do
     end
   end
 
+  # Layer-1 fix (campaign 019f3458): TemplateApplyService previously had zero
+  # callers in the real provisioning path, so a node's actual module
+  # assignments never reflected its template's full closure. Wired into the
+  # one choke point every provider adapter flows through.
+  describe "template application (layer-1 fix — TemplateApplyService wiring)" do
+    let(:node_module) { create(:system_node_module, account: account) }
+
+    before do
+      create(:system_template_module, node_template: node.node_template, node_module: node_module)
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-tmpl-1", status: "running")
+    end
+
+    it "materializes NodeModuleAssignment rows from the node_template's expansion closure" do
+      result = provision
+
+      expect(result.success?).to be(true)
+      expect(node.node_module_assignments.pluck(:node_module_id)).to contain_exactly(node_module.id)
+    end
+
+    it "does not fail an otherwise-successful provision when TemplateApplyService reports ok: false" do
+      allow_any_instance_of(System::TemplateApplyService).to receive(:apply!)
+        .and_return(System::TemplateApplyService::Result.new(
+          ok: false, created: [], skipped: [], purged: [], warnings: [], errors: [ "boom" ]
+        ))
+
+      result = provision
+
+      expect(result.success?).to be(true)
+      expect(node.node_module_assignments).to be_empty
+    end
+
+    it "does not fail an otherwise-successful provision when TemplateApplyService raises" do
+      allow_any_instance_of(System::TemplateApplyService).to receive(:apply!).and_raise(StandardError, "kaboom")
+
+      result = provision
+
+      expect(result.success?).to be(true)
+    end
+  end
+
   describe "fleet-event observability" do
     it "emits a system.instance_provisioned event on success" do
       allow(adapter).to receive(:create_instance)

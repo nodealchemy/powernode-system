@@ -117,6 +117,8 @@ module System
           status: normalize_status(cloud_result[:status])
         )
 
+        apply_node_template(node)
+
         if options[:allocate_public_ip] && cloud_result[:public_ip_address].blank?
           associate_public_ip(provider_adapter, instance, cloud_result[:cloud_instance_id])
         end
@@ -412,6 +414,22 @@ module System
       end
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.warn("[ProvisioningService] Failed to associate IP: #{e.message}")
+    end
+
+    # Layer-1 fix (campaign 019f3458): TemplateApplyService previously had no
+    # caller anywhere in the real provisioning path, so a node's assignments
+    # never reflected its template's full closure. Called unconditionally —
+    # TemplateApplyService#apply! already no-ops gracefully (ok: false) when
+    # a node has no template, so no guard is needed here. Best-effort:
+    # a template-apply failure must never turn a successful provision into
+    # a failed one.
+    def apply_node_template(node)
+      result = ::System::TemplateApplyService.new(node).apply!
+      unless result.ok?
+        Rails.logger.warn("[ProvisioningService] template apply reported failure for node #{node.name}: #{result.errors.join(', ')}")
+      end
+    rescue StandardError => e
+      Rails.logger.warn("[ProvisioningService] template apply raised for node #{node.name}: #{e.class}: #{e.message}")
     end
 
     # M1 Self-Serve Hardening — emit a Billing::ProvisioningUsageRecord for
