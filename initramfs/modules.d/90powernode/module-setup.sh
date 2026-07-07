@@ -157,30 +157,27 @@ install() {
     # implementation expects this dir to exist before it executes.
     mkdir -p "${initdir}/sysroot"
 
-    # /persist — DISK-BACKED (label "persist", the baked ext4 p2), replacing the
-    # old tmpfs so PKI + module cache survive reboots. Still a SEPARATE
-    # filesystem, so rbind-mounting /persist into /sysroot/persist carries
-    # contents forward across switch-root (switch-root frees the initramfs
-    # rootfs, so /persist-as-a-subdir would vanish). persist-grow.service grows
-    # the baked-small partition to its bounded size Before persist.mount;
-    # persist-fallback.service tmpfs-mounts /persist only when no persist-labeled
-    # partition exists (mutually exclusive via ConditionPathExists on the label).
-    inst_simple "${moddir}/persist.mount" /etc/systemd/system/persist.mount
-    inst_simple "${moddir}/persist-grow.service" /etc/systemd/system/persist-grow.service
-    inst_simple "${moddir}/persist-fallback.service" /etc/systemd/system/persist-fallback.service
+    # /persist — DISK-BACKED (baked ext4 p2, label "persist") so PKI + module
+    # cache survive reboots. Still a SEPARATE filesystem, so rbind-mounting
+    # /persist into /sysroot/persist carries contents forward across switch-root
+    # (switch-root frees the initramfs rootfs, so /persist-as-a-subdir would
+    # vanish). A SINGLE oneshot (persist-setup.service) does the whole thing:
+    # `udevadm settle` → if the "persist" label resolves, grow + mount ext4;
+    # else tmpfs fallback. Centralized to kill a udev race — the earlier
+    # persist.mount/persist-grow/persist-fallback trio used one-shot
+    # ConditionPathExists checks, and the negated fallback could tmpfs-mount
+    # /persist before udev linked the by-label symlink.
+    inst_simple "${moddir}/persist-setup.service" /etc/systemd/system/persist-setup.service
     mkdir -p "${initdir}/etc/systemd/system/local-fs.target.wants"
-    ln -sf ../persist.mount \
-        "${initdir}/etc/systemd/system/local-fs.target.wants/persist.mount"
-    ln -sf ../persist-grow.service \
-        "${initdir}/etc/systemd/system/local-fs.target.wants/persist-grow.service"
-    ln -sf ../persist-fallback.service \
-        "${initdir}/etc/systemd/system/local-fs.target.wants/persist-fallback.service"
+    ln -sf ../persist-setup.service \
+        "${initdir}/etc/systemd/system/local-fs.target.wants/persist-setup.service"
     mkdir -p "${initdir}/persist"
 
-    # persist-prepare (the agent's bounded-grow subcommand) shells out to these:
-    # sfdisk resizes the partition, partx refreshes the kernel's view, resize2fs
-    # grows the ext4 fs, blkid resolves the label, blockdev reads the size.
-    inst_multiple sfdisk resize2fs partx blkid blockdev
+    # persist-setup shells out to: udevadm (settle for the coldplug queue),
+    # blkid (resolve the label), blockdev (read the size), sfdisk (bounded
+    # partition resize), partx (refresh the kernel view), resize2fs (grow the
+    # ext4 fs), mount (mount ext4 or tmpfs; already staged below for prepare-root).
+    inst_multiple udevadm sfdisk resize2fs partx blkid blockdev
 
     # /boot — FAT32 boot partition (label BOOT) holding identity.cfg +
     # powernode-ca.pem: the claim-flow identity source for UEFI-disk /

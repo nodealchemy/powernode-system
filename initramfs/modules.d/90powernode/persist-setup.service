@@ -1,0 +1,25 @@
+[Unit]
+Description=Powernode /persist bring-up (disk-backed ext4, tmpfs fallback)
+Documentation=https://github.com/nodealchemy/powernode-platform
+DefaultDependencies=no
+ConditionPathIsMountPoint=!/persist
+# After udevd so the `udevadm settle` inside persist-setup can drain the
+# coldplug queue. The wait+decide lives INSIDE the command (settle + poll for
+# /dev/disk/by-label/persist), NOT in a one-shot ConditionPathExists — that's
+# what fixes the udev race: the old persist.mount/persist-grow/persist-fallback
+# trio sampled the label's existence once and the negated fallback could
+# tmpfs-mount /persist before udev linked the symlink.
+After=systemd-udevd.service
+Before=powernode-agent.service powernode-mount.service local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Waits for udev, then decides ONCE: grow + mount the ext4 "persist" partition
+# (PKI + module cache survive reboots) if its label resolves, else tmpfs.
+ExecStart=/sbin/powernode-agent persist-setup
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=local-fs.target

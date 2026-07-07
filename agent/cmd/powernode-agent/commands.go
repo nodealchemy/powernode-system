@@ -538,6 +538,8 @@ var (
 	persistLookupLabelFn    = lookupDeviceByLabel
 	persistPartitionBytesFn = blockDeviceBytes
 	persistRunFn            = runCmdWithStdin
+	persistWaitForLabelFn   = waitForLabel
+	persistIsMountedFn      = isMountedAt
 )
 
 // persistDefaultSizeGB is the bounded target for /persist, overridable via
@@ -675,6 +677,87 @@ func runCmdWithStdin(name, stdin string, args ...string) error {
 		return fmt.Errorf("%s: %w (output: %s)", name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// persistSetupCmd is the race-free /persist bring-up: one oneshot invocation
+// that WAITS for udev to settle, then decides once — disk-backed ext4 when the
+// persist label resolves, tmpfs fallback when it doesn't. It replaces the
+// earlier persist.mount + persist-grow.service + persist-fallback.service trio,
+// whose one-shot ConditionPathExists= checks raced udev (the negated fallback
+// condition could tmpfs-mount /persist before the by-label symlink appeared,
+// then persist.mount was skipped as "already a mountpoint").
+func persistSetupCmd() *cobra.Command {
+	var (
+		label      string
+		mountPoint string
+		sizeGB     int
+	)
+	c := &cobra.Command{
+		Use:   "persist-setup",
+		Short: "Wait for udev, then mount /persist (disk-backed ext4, else tmpfs)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPersistSetup(label, mountPoint, sizeGB)
+		},
+	}
+	c.Flags().StringVar(&label, "label", "persist", "filesystem label of the persist partition")
+	c.Flags().StringVar(&mountPoint, "mount", "/persist", "mount point")
+	c.Flags().IntVar(&sizeGB, "size-gb", persistDefaultSizeGB(), "bounded ext4 target size in GB (env POWERNODE_PERSIST_SIZE_GB)")
+	return c
+}
+
+// persistTmpfsSizeArg is the size cap for the tmpfs fallback (RAM-backed; only
+// used when there's no persist partition — physical/edge images predating the
+// layout). Matches the disk target so behavior is predictable either way.
+const persistTmpfsSizeArg = "mode=0755,size=4G"
+
+func runPersistSetup(label, mountPoint string, targetGB int) error {
+	if mountPoint == "" {
+		mountPoint = "/persist"
+	}
+	if persistIsMountedFn(mountPoint) {
+		fmt.Printf("[persist-setup] %s already mounted — no-op\n", mountPoint)
+		return nil
+	}
+	// Block until udev has settled so the by-label symlink is present if the
+	// partition exists at all. This is the whole point: a single decision AFTER
+	// the wait, so neither the disk path nor the fallback can race udev.
+	dev := persistWaitForLabelFn(label)
+	if dev != "" {
+		if err := runPersistPrepare(label, targetGB); err != nil {
+			// Grow is best-effort; still mount the (unresized) partition so PKI +
+			// cache land on real disk rather than falling back to tmpfs.
+			fmt.Fprintf(os.Stderr, "[persist-setup] grow failed (mounting anyway): %v\n", err)
+		}
+		if err := persistRunFn("mount", "", "-t", "ext4", "-o", "rw,noatime", dev, mountPoint); err != nil {
+			return fmt.Errorf("persist-setup: mount ext4 %s at %s: %w", dev, mountPoint, err)
+		}
+		fmt.Printf("[persist-setup] OK — %s (ext4, disk-backed) at %s\n", dev, mountPoint)
+		return nil
+	}
+	// No persist partition: tmpfs fallback (not reboot-surviving).
+	if err := persistRunFn("mount", "", "-t", "tmpfs", "-o", persistTmpfsSizeArg, "tmpfs", mountPoint); err != nil {
+		return fmt.Errorf("persist-setup: tmpfs fallback at %s: %w", mountPoint, err)
+	}
+	fmt.Printf("[persist-setup] no %q partition — tmpfs fallback at %s\n", label, mountPoint)
+	return nil
+}
+
+// waitForLabel blocks until udev has processed coldplug (so by-label symlinks
+// exist for present devices), then resolves the label. Returns "" if no such
+// partition exists. `udevadm settle` drains the udev queue; the follow-up poll
+// covers kernels/initramfs where settle returns before the symlink is linked.
+func waitForLabel(label string) string {
+	_ = exec.Command("udevadm", "settle", "--timeout=20").Run()
+	if dev, _ := lookupDeviceByLabel(label); dev != "" {
+		return dev
+	}
+	for i := 0; i < 10; i++ {
+		time.Sleep(time.Second)
+		if dev, _ := lookupDeviceByLabel(label); dev != "" {
+			return dev
+		}
+	}
+	return ""
 }
 
 // --- enroll ------------------------------------------------------------------
