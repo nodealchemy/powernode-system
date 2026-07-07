@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -520,6 +521,160 @@ func isMountedAt(path string) bool {
 		}
 	}
 	return false
+}
+
+// --- persist-prepare (#69: disk-backed /persist) ----------------------------
+//
+// The boot disk image bakes an ext4 partition labeled "persist" (see the
+// disk-image build script) intended to hold PKI + module cache across reboots.
+// It ships small; this grows it to a bounded target on first boot so the mTLS
+// identity and OCI cache survive power cycles (claim-by-id is single-bind — a
+// wiped cert can't re-claim). Runs in the initramfs BEFORE persist.mount, which
+// does the actual mount. Grow-only + idempotent: a no-op once already sized.
+
+// Injectable seams — unit tests stub these so the grow-decision logic is
+// exercised without touching real block devices.
+var (
+	persistLookupLabelFn    = lookupDeviceByLabel
+	persistPartitionBytesFn = blockDeviceBytes
+	persistRunFn            = runCmdWithStdin
+)
+
+// persistDefaultSizeGB is the bounded target for /persist, overridable via
+// POWERNODE_PERSIST_SIZE_GB. Bounded (not grow-to-fill) so later increments can
+// carve additional volumes from the same boot disk; 12G is ample over today's
+// ~1GB module cache + tiny PKI, with headroom for module growth.
+func persistDefaultSizeGB() int {
+	if v := strings.TrimSpace(os.Getenv("POWERNODE_PERSIST_SIZE_GB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 12
+}
+
+func persistPrepareCmd() *cobra.Command {
+	var (
+		label  string
+		sizeGB int
+	)
+	c := &cobra.Command{
+		Use:   "persist-prepare",
+		Short: "Grow the persist partition to a bounded size (idempotent, pre-mount)",
+		Long: `Grows the boot disk's baked persist partition (ext4, label "persist") to a
+bounded target size on first boot, then no-ops on every subsequent boot. Runs
+in the initramfs before persist.mount; it only resizes — persist.mount mounts.
+If no persist-labeled partition exists, it's a silent no-op (the tmpfs fallback
+mount applies).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPersistPrepare(label, sizeGB)
+		},
+	}
+	c.Flags().StringVar(&label, "label", "persist", "filesystem label of the persist partition")
+	c.Flags().IntVar(&sizeGB, "size-gb", persistDefaultSizeGB(), "bounded target size in GB (env POWERNODE_PERSIST_SIZE_GB)")
+	return c
+}
+
+func runPersistPrepare(label string, targetGB int) error {
+	if targetGB <= 0 {
+		targetGB = persistDefaultSizeGB()
+	}
+	dev, err := persistLookupLabelFn(label)
+	if err != nil {
+		return fmt.Errorf("persist-prepare: look up label %q: %w", label, err)
+	}
+	if dev == "" {
+		fmt.Printf("[persist-prepare] no partition labeled %q — skipping (tmpfs fallback applies)\n", label)
+		return nil
+	}
+	curBytes, err := persistPartitionBytesFn(dev)
+	if err != nil {
+		return fmt.Errorf("persist-prepare: size of %s: %w", dev, err)
+	}
+	targetBytes := int64(targetGB) * 1024 * 1024 * 1024
+	if curBytes >= targetBytes {
+		fmt.Printf("[persist-prepare] %s already %.1fG (>= %dG target) — no-op\n",
+			dev, float64(curBytes)/(1024*1024*1024), targetGB)
+		return nil
+	}
+	disk, partNum, err := splitPartitionDevice(dev)
+	if err != nil {
+		return fmt.Errorf("persist-prepare: %w", err)
+	}
+	fmt.Printf("[persist-prepare] growing %s (partition %d of %s) to %dG\n", dev, partNum, disk, targetGB)
+
+	// Resize the PARTITION in place: empty start keeps the existing start sector,
+	// absolute "<N>G" sets a deterministic (idempotent) size. --no-reread avoids
+	// the BLKRRPART that fails on a busy disk; partx -u refreshes the kernel view.
+	spec := fmt.Sprintf(", %dG\n", targetGB)
+	if err := persistRunFn("sfdisk", spec, "--no-reread", "--force", "-N", strconv.Itoa(partNum), disk); err != nil {
+		return fmt.Errorf("persist-prepare: sfdisk resize %s part %d: %w", disk, partNum, err)
+	}
+	if err := persistRunFn("partx", "", "-u", disk); err != nil {
+		// Non-fatal: some kernels already reflect the new size. resize2fs will
+		// fail loudly below if the device size genuinely didn't update.
+		fmt.Fprintf(os.Stderr, "[persist-prepare] partx -u %s: %v (continuing)\n", disk, err)
+	}
+	// Grow the filesystem to fill the enlarged partition.
+	if err := persistRunFn("resize2fs", "", dev); err != nil {
+		return fmt.Errorf("persist-prepare: resize2fs %s: %w", dev, err)
+	}
+	fmt.Printf("[persist-prepare] OK — %s grown to %dG\n", dev, targetGB)
+	return nil
+}
+
+// splitPartitionDevice splits a partition device into its parent disk and
+// 1-based partition number: /dev/sda2 -> (/dev/sda, 2); /dev/nvme0n1p2 ->
+// (/dev/nvme0n1, 2); /dev/mmcblk0p1 -> (/dev/mmcblk0, 1).
+func splitPartitionDevice(dev string) (disk string, partNum int, err error) {
+	i := len(dev)
+	for i > 0 && dev[i-1] >= '0' && dev[i-1] <= '9' {
+		i--
+	}
+	if i == len(dev) || i == 0 {
+		return "", 0, fmt.Errorf("cannot parse partition number from %q", dev)
+	}
+	n, err := strconv.Atoi(dev[i:])
+	if err != nil {
+		return "", 0, fmt.Errorf("bad partition number in %q: %w", dev, err)
+	}
+	base := dev[:i]
+	// nvme/mmc style: the base ends in "<digit>p"; strip the separator "p".
+	if strings.HasSuffix(base, "p") && len(base) >= 2 && base[len(base)-2] >= '0' && base[len(base)-2] <= '9' {
+		base = base[:len(base)-1]
+	}
+	return base, n, nil
+}
+
+func lookupDeviceByLabel(label string) (string, error) {
+	out, err := exec.Command("blkid", "-L", label).Output()
+	if err != nil {
+		// blkid exits 2 when the label isn't found — treat as "absent", not error.
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 2 {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func blockDeviceBytes(dev string) (int64, error) {
+	out, err := exec.Command("blockdev", "--getsize64", dev).Output()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+}
+
+func runCmdWithStdin(name, stdin string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %w (output: %s)", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // --- enroll ------------------------------------------------------------------

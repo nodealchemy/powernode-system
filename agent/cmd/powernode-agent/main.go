@@ -72,6 +72,7 @@ See https://docs.powernode.org/agent for full documentation.`,
 		syncCmd(),
 		initCmd(),
 		volumeSetupCmd(),
+		persistPrepareCmd(),
 		puppetCmd(),
 		versionCmd(),
 	)
