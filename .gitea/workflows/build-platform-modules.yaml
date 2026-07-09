@@ -687,11 +687,14 @@ jobs:
               ;;
             base-os-ubuntu-noble)
               # OS-specific layer: Ubuntu's apt-installed userland
-              # comes from Stage 1's mmdebstrap (package_spec). The
-              # rootfs/ overlay adds the Powernode-curated systemd
-              # units (powernode-agent.service, ssh-host-keygen.service,
-              # powernode-network-reload.service) + sshd config +
-              # systemd-networkd DHCP profile.
+              # comes from Stage 1's mmdebstrap (package_spec, which
+              # now includes systemd-resolved explicitly — it's a
+              # separate binary package on Noble, not bundled into
+              # `systemd` like networkd is). The rootfs/ overlay adds
+              # the Powernode-curated systemd units (powernode-agent.
+              # service, ssh-host-keygen.service, powernode-network-
+              # reload.service) + sshd config + systemd-networkd DHCP
+              # profile + the /etc/resolv.conf -> resolved-stub symlink.
               #
               # No agent binary baked here — it's inherited from
               # powernode-system-base via overlay union when both are

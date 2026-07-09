@@ -56,13 +56,18 @@ package_spec:
   - bash
   - coreutils
   - util-linux
-  # On Ubuntu Noble, systemd-networkd and systemd-resolved are NOT separate
-  # binary packages — they ship inside the `systemd` package. Listing them
-  # explicitly causes `Unable to locate package` failures during mmdebstrap.
-  # Enable the services post-install (already handled by rootfs/etc/systemd
-  # presets); just install systemd + systemd-sysv to get all binaries.
+  # On Ubuntu Noble, systemd-networkd ships inside the `systemd` package —
+  # listing it separately causes `Unable to locate package` failures during
+  # mmdebstrap. systemd-resolved is NOT part of `systemd`; it's its own
+  # binary package (confirmed via `apt-cache search resolved` / `dpkg -S` —
+  # the prior comment here claiming otherwise was wrong, which is why
+  # un-masking rootfs/etc/systemd/system/systemd-resolved.service alone
+  # never worked: there was no apt-installed unit underneath it to reveal).
+  # Must be listed explicitly to get the unit, the binary, and its
+  # sysusers.d/tmpfiles.d fragments.
   - systemd
   - systemd-sysv
+  - systemd-resolved
   - dbus
   - iputils-ping
   - iproute2
@@ -119,6 +124,16 @@ services: []
 # for lack of these users — the reason 019f3baf masked them; declaring the
 # users lets the three run, which is what gives the pivoted hub working DHCP
 # (networkd) and DNS resolution (resolved) so the agent can reach the platform.
+# NOTE: verified in a standalone Containerfile build that all three owning
+# packages (dbus, systemd, systemd-resolved) already create their account
+# at build time via their own postinst — so this declaration isn't
+# load-bearing for account *existence*. It's load-bearing for UID
+# *stability*: apt's postinst assigns these dynamically in install order
+# (observed messagebus=100, systemd-network=998, systemd-resolve=993 in one
+# run), which isn't guaranteed identical between mmdebstrap (what CI
+# actually uses — see .gitea/workflows/build-platform-modules.yaml) and a
+# Containerfile/buildah build, or even across two mmdebstrap runs if the
+# package set changes. The platform UID allocator pins these instead.
 groups:
   - name: messagebus
   - name: systemd-network
