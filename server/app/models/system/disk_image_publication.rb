@@ -117,10 +117,28 @@ module System
     end
 
     # Hard-delete the FileObject + flip status to :purged.
+    #
+    # Two FKs reference file_objects: our own file_object_id AND any
+    # successor publication's prior_file_object_id (set at publish time so
+    # rollback can restore the previous pointer). Both must be cleared
+    # BEFORE the hard-delete or PG raises ActiveRecord::InvalidForeignKey
+    # (fk_rails_416646d33d) and the row never reaches :purged — quota is
+    # never reclaimed.
     def purge!(deleted_by_user: nil)
-      if file_object_id.present?
+      fo = file_object
+      if fo
+        if fo.id == node_platform.disk_image_file_object_id
+          raise "cannot purge #{id}: file_object #{fo.id} is the platform's active disk image"
+        end
+
+        ::ApplicationRecord.transaction do
+          self.class.where(prior_file_object_id: fo.id).update_all(prior_file_object_id: nil)
+          self.class.where(file_object_id: fo.id).update_all(file_object_id: nil)
+        end
+        self.file_object_id = nil
+
         ::FileStorageService.new(account)
-                            .delete_file(file_object, permanent: true, deleted_by_user: deleted_by_user)
+                            .delete_file(fo, permanent: true, deleted_by_user: deleted_by_user)
       end
       purge
       save!

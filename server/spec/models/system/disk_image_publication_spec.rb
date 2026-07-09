@@ -94,6 +94,46 @@ RSpec.describe System::DiskImagePublication, type: :model do
       expect(retired.purged_at).to be_present
     end
 
+    # Regression for fk_rails_416646d33d: purge! used to hard-delete the
+    # file_object BEFORE clearing the back-reference a successor publication
+    # keeps in prior_file_object_id, raising ActiveRecord::InvalidForeignKey
+    # and leaving retention purge permanently unable to reclaim quota.
+    it "retired → purged hard-deletes the file_object even when a successor references it as prior_file_object_id" do
+      fo = create(:file_object, account: account, filename: "old.img", checksum_sha256: "b" * 64)
+      retired = create(:system_disk_image_publication, :retired,
+                        account: account, node_platform: platform, file_object: fo)
+      successor = create(:system_disk_image_publication, :published,
+                          account: account, node_platform: platform, prior_file_object_id: fo.id)
+
+      fake_storage_service = instance_double(::FileStorageService)
+      allow(::FileStorageService).to receive(:new).and_return(fake_storage_service)
+      allow(fake_storage_service).to receive(:delete_file) do |file_object, **kw|
+        file_object.destroy! if kw[:permanent]
+        true
+      end
+
+      expect { retired.purge! }.not_to raise_error
+
+      expect(retired.reload).to be_purged
+      expect(retired.purged_at).to be_present
+      expect(retired.file_object_id).to be_nil
+      expect(successor.reload.prior_file_object_id).to be_nil
+      expect(::FileManagement::Object.exists?(fo.id)).to be false
+    end
+
+    it "purge! refuses to delete the file_object that is the platform's active disk image" do
+      active = create(:system_disk_image_publication, :published, account: account, node_platform: platform)
+      platform.update!(disk_image_file_object_id: active.file_object_id)
+      active.update!(status: "retired", retired_at: Time.current)
+
+      fake_storage_service = instance_double(::FileStorageService, delete_file: true)
+      allow(::FileStorageService).to receive(:new).and_return(fake_storage_service)
+
+      expect { active.purge! }.to raise_error(/active disk image/)
+      expect(fake_storage_service).not_to have_received(:delete_file)
+      expect(active.reload).to be_retired
+    end
+
     it "failed → retired stamps retired_at (DK3 stuck-cleanup path)" do
       failed = create(:system_disk_image_publication, :failed, account: account, node_platform: platform)
       failed.retire!
