@@ -106,5 +106,23 @@ RSpec.describe "Worker API: disk_image_publications", type: :request do
       expect(data["account_id"]).to eq(account.id)
       expect(data["per_platform"]).to be_present
     end
+
+    # DK3: this is the only path the daily System::ExpireOldDiskImageFileObjectsJob
+    # exercises (it POSTs with no platform_id). Before the fix, sweep_retention
+    # only called sweep_account! (published→retired→purged GC) — a publication
+    # stranded in :verifying (e.g. by the Bug 2 quota-exceeded case) was never
+    # reaped by anything on the daily cron.
+    it "also retires stale :verifying publications past grace when platform_id absent (daily reaper)" do
+      stuck = create(:system_disk_image_publication, account: account, node_platform: platform, status: "verifying")
+      stuck.update_columns(created_at: 10.days.ago)
+
+      post "/api/v1/system/worker_api/disk_image_publications/sweep_retention",
+           params: { grace_days: 7 }.to_json, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(stuck.reload.status).to eq("retired")
+      data = JSON.parse(response.body)["data"]
+      expect(data["stuck_retired"]).to eq(1)
+    end
   end
 end

@@ -22,7 +22,10 @@ module Api
         #   POST /worker_api/disk_image_publications/sweep_retention
         #     — Called by System::ExpireOldDiskImageFileObjectsJob.
         #     Iterates an account's platforms, retires + purges per
-        #     platform.disk_image_retention_count.
+        #     platform.disk_image_retention_count. When called account-wide
+        #     (no platform_id, the only mode the daily job uses) also runs
+        #     the DK3 stuck-cleanup sweep (retire_stuck!) so publications
+        #     abandoned mid-verify don't strand forever.
         #
         # All four enforce worker.account_id == publication.account_id
         # (or platform.account_id for the sweep) so a leaked CI worker
@@ -174,9 +177,17 @@ module Api
               result = ::System::DiskImageRetentionService.sweep!(platform: platform, grace_days: grace_days)
               render_success(data: { platform_id: platform.id, retired: result.retired_count, purged: result.purged_count })
             else
+              # DK3: this is the only branch System::ExpireOldDiskImageFileObjectsJob
+              # exercises (it POSTs with no platform_id). sweep_account! alone only
+              # handles the published→retired→purged GC path — a publication
+              # stranded in :verifying/:failed by a crashed worker or an ingest
+              # error was never reaped by anything on the daily cron. Run the
+              # DK3 stuck-cleanup sweep here too so those rows retire, then flow
+              # into the normal purge on a later grace-expired sweep.
+              stuck = ::System::DiskImageRetentionService.retire_stuck!(account: current_worker.account, grace_days: grace_days)
               per_platform = ::System::DiskImageRetentionService.sweep_account!(account: current_worker.account, grace_days: grace_days)
               summary = per_platform.transform_values { |r| { retired: r.retired_count, purged: r.purged_count } }
-              render_success(data: { account_id: current_worker.account_id, per_platform: summary })
+              render_success(data: { account_id: current_worker.account_id, per_platform: summary, stuck_retired: stuck.retired_count })
             end
           end
         end
