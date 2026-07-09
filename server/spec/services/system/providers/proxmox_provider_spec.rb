@@ -204,6 +204,30 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  describe "#apply_protection! (options override)" do
+    let(:cfg_path) { "/api2/json/nodes/dna/qemu/100/config" }
+
+    it "protects by default when no flag is given (durable VMs)" do
+      expect(client).to receive(:put).with(cfg_path, { "protection" => 1 })
+      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: {})
+    end
+
+    it "skips protection when opted out via nested options (the MCP path)" do
+      expect(client).not_to receive(:put)
+      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { options: { protection: false } })
+    end
+
+    it "skips protection when opted out top-level" do
+      expect(client).not_to receive(:put)
+      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { protection: false })
+    end
+
+    it "still protects when options explicitly request it" do
+      expect(client).to receive(:put).with(cfg_path, { "protection" => 1 })
+      provider.send(:apply_protection!, client, node: "dna", vmid: 100, params: { options: { protection: true } })
+    end
+  end
+
   describe "#create_instance (uefi_disk boot mode)" do
     # Increment 12a — UKI pivot-boot rehearsal. uefi_disk boots a VM from a
     # pre-built, signed UEFI/UKI disk image imported via the PVE storage API

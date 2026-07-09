@@ -872,9 +872,15 @@ module System
         c.wait_task(node: node, upid: resize_upid) if upid_like?(resize_upid)
       end
 
-      # Set protection (default: ON for VMs since these are durable resources)
+      # Set protection (default: ON for VMs since these are durable resources).
+      # The flag may arrive top-level (params[:protection]) or nested under the
+      # caller's options (params[:options][:protection]) — build_provider_params
+      # nests MCP-supplied options, so check both, else ephemeral rehearsal/pool
+      # VMs could never opt out of protection and would block termination.
       def apply_protection!(c, node:, vmid:, params:)
-        return unless params.fetch(:protection, true)
+        protection = params.key?(:protection) ? params[:protection] : params.dig(:options, :protection)
+        protection = true if protection.nil?
+        return unless protection
 
         c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "protection" => 1 })
       end
