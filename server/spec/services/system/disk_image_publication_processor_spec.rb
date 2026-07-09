@@ -57,5 +57,43 @@ RSpec.describe System::DiskImagePublicationProcessor do
         expect(result).not_to respond_to(:success?)
       end
     end
+
+    # Live evidence: 10 publications stranded in :verifying because process!
+    # only rescued ActiveRecord::RecordInvalid/RecordNotSaved. A
+    # FileStorageService::QuotaExceededError (a plain StandardError raised
+    # mid-upload, after start_verifying! already ran) bubbled past
+    # mark_failed! and the row was never marked failed.
+    context "when upload_to_storage! raises a non-AR StandardError" do
+      it "marks the publication failed instead of stranding it in :verifying" do
+        tempfile = Tempfile.new("disk-image-spec")
+        tempfile.write("bytes")
+        tempfile.flush
+        local_path = tempfile.path
+        ok_ingest = System::DiskImageOciIngestService::Result.new(
+          ok?: true, error: nil, local_path: local_path,
+          cosign_bundle_b64: nil, attestation_bundle_b64: nil
+        )
+        allow(System::DiskImageOciIngestService).to receive(:verify_and_pull!).and_return(ok_ingest)
+
+        fake_storage = instance_double(FileStorageService)
+        allow(FileStorageService).to receive(:new).and_return(fake_storage)
+        allow(fake_storage).to receive(:upload_file)
+          .and_raise(FileStorageService::QuotaExceededError, "Storage quota exceeded")
+
+        expect {
+          described_class.process!(publication: publication)
+        }.not_to raise_error
+
+        expect(publication.reload.status).to eq("failed")
+        expect(publication.error_message.to_s).to include("QuotaExceededError")
+        expect(
+          System::FleetEvent.where(account: account, kind: "system.disk_image_publish_failed")
+                             .where("payload ->> 'publication_id' = ?", publication.id)
+                             .exists?
+        ).to be true
+      ensure
+        tempfile&.close!
+      end
+    end
   end
 end

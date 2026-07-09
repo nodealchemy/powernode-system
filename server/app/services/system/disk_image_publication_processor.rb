@@ -52,6 +52,14 @@ module System
       Result.new(ok?: true, publication: publication, file_object: file_object)
     rescue ::ActiveRecord::RecordInvalid, ::ActiveRecord::RecordNotSaved => e
       mark_failed!(publication, "DB invariant violation: #{e.message}")
+    rescue ::StandardError => e
+      # Anything else raised during ingest/upload (FileStorageService::
+      # QuotaExceededError, IOError, network/oras/cosign failures) used to
+      # bubble past mark_failed! and strand the row in :verifying forever
+      # (10 stranded rows found in live evidence). Route it through the
+      # same mark_failed! path so it surfaces via system.disk_image_
+      # publish_failed instead of silently hanging.
+      mark_failed!(publication, "#{e.class}: #{e.message}")
     ensure
       cleanup_local_file(ingest)
     end
