@@ -235,6 +235,11 @@
           "description": "Pinned Ruby version to source-compile (runtime-ruby module). Keep in sync with server/.ruby-version.",
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "node_version": {
+          "description": "Pinned Node.js version to fetch as a prebuilt linux-x64 binary (runtime-node module). Keep in sync with frontend/.nvmrc.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         }
       }
     }

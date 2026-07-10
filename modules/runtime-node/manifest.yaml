@@ -1,0 +1,45 @@
+schema_version: 1
+name: runtime-node
+display_name: Powernode Base Node.js Runtime
+description: Node.js 24.13.0 (official prebuilt linux-x64 binary) + npm/npx, installed to /usr/local. Sibling of runtime-ruby — the dev-cell composes this so `npm ci`, the mcp-proxy, and scripts/validate.sh's `npx tsc` run against the platform's exact Node toolchain.
+
+# No apt packages. Node ships as a self-contained prebuilt tarball extracted
+# into /usr/local by the runtime-node case arm in
+# .gitea/workflows/build-platform-modules.yaml (mirrors runtime-ruby, minus the
+# source compile). Noble's apt `nodejs` is v18 — no npm, too old for the
+# frontend (engines >=24.9.0, lockfile v3), and it SIGABRTs on V8 snapshot init
+# in the pivot environment even as bare root — so apt is a dead end and the
+# module ships the official Node 24 binary instead. (imp 605b / BUG-E)
+package_spec: []
+
+# Ship ONLY the Node install. Unlike runtime-ruby (which ships the whole
+# build-essential toolchain its native-gem consumers need), the Node binary is
+# self-contained and links against base-os's libc/libstdc++ at runtime, so we
+# carve just /usr/local/** — /usr/local/bin/{node,npm,npx} + the bundled
+# node_modules under /usr/local/lib. This avoids duplicating the mmdebstrap base
+# that base-os-ubuntu-noble already provides at a lower union layer.
+file_spec:
+  - /usr/local/**
+
+mask: []
+dependency_spec: []
+protected_spec: []
+reboot_required: false
+
+dependencies:
+  requires: []
+  # Capability tag the dev-cell (and any future Node workload) matches against.
+  # Like runtime-ruby, this is an FS-only substrate module (services: []) — the
+  # modules layered on top declare their own services.
+  provides:
+    - runtime.node
+
+services: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # Keep in sync with frontend/.nvmrc (and package.json engines). The build
+  # fetches https://nodejs.org/dist/v<node_version>/node-v<node_version>-linux-x64.tar.xz,
+  # verifies the pinned sha256 (in the workflow case arm — bump both together),
+  # and extracts it to /usr/local.
+  node_version: "24.13.0"

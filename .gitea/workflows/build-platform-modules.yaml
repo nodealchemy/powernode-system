@@ -654,6 +654,41 @@ jobs:
               echo "$BUNDLER_OUT"
               echo "$BUNDLER_OUT" | grep -q "2.7.1" || { echo "[stage-1.5] FATAL: expected bundler 2.7.1, got: $BUNDLER_OUT"; exit 1; }
               ;;
+            runtime-node)
+              # Noble's apt `nodejs` is v18 (no npm, too old for the frontend's
+              # engines >=24.9.0, and it SIGABRTs on V8 snapshot init in the
+              # pivot environment even as bare root). Ship the official prebuilt
+              # Node binary instead — no source compile (unlike runtime-ruby),
+              # just fetch + verify + extract the linux-x64 tarball into
+              # /usr/local. (imp 605b / BUG-E)
+              NODE_VER=$(jq -r '.build.node_version // "24.13.0"' /tmp/manifest.json)
+
+              # Pinned sha256 for node-v${NODE_VER}-linux-x64.tar.gz from
+              # https://nodejs.org/dist/v${NODE_VER}/SHASUMS256.txt (the .gz, not
+              # .xz — gzip needs no xz-utils on the runner). Bump this alongside
+              # build.node_version + frontend/.nvmrc on any version change; a
+              # mismatch fails the build rather than shipping an unverified
+              # runtime. Fetch on the RUNNER (the mmdebstrap minbase rootfs has
+              # no guaranteed DNS), then extract the already-verified local file.
+              NODE_SHA256="6223aad1a81f9d1e7b682c59d12e2de233f7b4c37475cd40d1c89c42b737ffa8"
+              curl -fsSL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.gz" -o /tmp/node.tar.gz
+              echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c -
+
+              # Extract into /tmp/fat/usr/local, stripping the
+              # node-v*-linux-x64/ top dir, so /usr/local/bin/{node,npm,npx} +
+              # /usr/local/lib/node_modules land where file_spec (/usr/local/**)
+              # carves them into the shipped erofs.
+              mkdir -p /tmp/fat/usr/local
+              tar -xzf /tmp/node.tar.gz -C /tmp/fat/usr/local --strip-components=1
+
+              # Verify what shipped. The prebuilt binary links against glibc +
+              # libstdc++ (the runner has both; base-os provides them at runtime)
+              # so it runs on the runner for a version check.
+              NODE_OUT=$(/tmp/fat/usr/local/bin/node -v)
+              echo "[stage-1.5] node: $NODE_OUT"
+              echo "$NODE_OUT" | grep -q "v${NODE_VER}" || { echo "[stage-1.5] FATAL: expected node v${NODE_VER}, got: $NODE_OUT"; exit 1; }
+              test -x /tmp/fat/usr/local/bin/npm || { echo "[stage-1.5] FATAL: npm missing from node tarball"; exit 1; }
+              ;;
             powernode-hub-backend)
               mkdir -p /tmp/fat/opt/powernode
               rsync -a \
