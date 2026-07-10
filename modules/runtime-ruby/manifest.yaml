@@ -1,22 +1,33 @@
 schema_version: 1
 name: runtime-ruby
 display_name: Powernode Base Ruby Runtime
-description: Ruby (noble default — currently 3.2) + bundler + system dependencies for Rails workloads
+description: Ruby 3.2.8 (source-compiled — Noble's apt default is 3.2.3) + bundler 2.7.1 + system dependencies for Rails workloads
 license: MIT
 package_spec:
-  - ruby
-  - ruby-dev
-  - bundler
   - build-essential
   - libpq-dev
   - libssl-dev
   - libyaml-dev
   - zlib1g-dev
-# Ship the full apt-installed tree under the four standard FHS roots.
-# /usr covers ruby + bundler + gcc/g++ toolchain (build-essential) +
-# Ruby stdlib + bundled gems + dev headers (ruby-dev, libpq-dev,
-# libssl-dev, libyaml-dev). /lib + /lib64 cover libc + libruby + ssl
-# + crypto runtime libs. /etc carries package-installed configs.
+  # Standard Ruby build deps — Noble's apt `ruby`/`ruby-dev`/`bundler` are
+  # deliberately NOT listed: they'd ship 3.2.3, but the platform pins
+  # 3.2.8 (server/.ruby-version), so the build workflow compiles Ruby
+  # from source instead (see the runtime-ruby case arm in
+  # .gitea/workflows/build-platform-modules.yaml).
+  - libffi-dev
+  - libreadline-dev
+  - libgdbm-dev
+  - libncurses-dev
+  - libgmp-dev
+  - autoconf
+  - bison
+# Ship the full tree under the four standard FHS roots. /usr covers the
+# source-compiled Ruby 3.2.8 + bundler 2.7.1 (both installed to
+# /usr/local by the build workflow — /usr/** already covers /usr/local/**)
+# + the gcc/g++ toolchain (build-essential) + Ruby stdlib/bundled gems +
+# dev headers (libpq-dev, libssl-dev, libyaml-dev, libffi-dev, ...). /lib
+# + /lib64 cover libc + libruby + ssl + crypto runtime libs. /etc carries
+# package-installed configs.
 # This module is FS-only (services: []) — it's the substrate lower
 # layer hub-backend + hub-worker overlay-stack on top of, so the
 # blob needs every transitive dep for `bundle exec puma`/`sidekiq`
@@ -26,12 +37,6 @@ file_spec:
   - /lib/**
   - /lib64/**
   - /etc/**
-  # Bundler 2.7.1 (gem-installed at build to match the platform Gemfile.lock's
-  # `BUNDLED WITH`) lands under /var/lib/gems on Debian/Ubuntu — ship it so the
-  # on-node `bundle install --local` finds the exact matching bundler and never
-  # self-installs a different version over the (absent) network. Keep this in
-  # sync with server/worker Gemfile.lock BUNDLED WITH (see build workflow).
-  - /var/lib/gems/**
 mask: []
 dependency_spec: []
 protected_spec: []
@@ -51,3 +56,7 @@ services: []
 
 build:
   apt_snapshot: "20260415T000000Z"
+  # Keep in sync with server/.ruby-version — the dev-cell composes this
+  # module precisely so scripts/validate.sh runs against the platform's
+  # EXACT toolchain, not just an ABI-compatible 3.2.x.
+  ruby_version: "3.2.8"

@@ -564,21 +564,98 @@ jobs:
 
           case "$MODULE" in
             runtime-ruby)
-              # Ship the EXACT bundler the platform Gemfile.lock pins (BUNDLED
-              # WITH 2.7.1) into the runtime gem dir, so the on-node `bundle
-              # install --local` finds the matching bundler and never self-installs
-              # a different version over the (absent) network. noble's apt bundler
-              # is 2.4.20; bundler is pure-ruby, so the runner's gem can install
-              # 2.7.1 cross-version into noble ruby 3.2's gem dir (/var/lib/gems/
-              # 3.2.0, shipped via the manifest file_spec). Keep 2.7.1 in sync with
-              # server/worker Gemfile.lock BUNDLED WITH.
+              # Noble's apt `ruby` is 3.2.3; the platform pins 3.2.8
+              # (server/.ruby-version), and the dev-cell module composes
+              # this runtime specifically so scripts/validate.sh runs
+              # against the app's EXACT toolchain — an ABI-compatible
+              # 3.2.x isn't enough. package_spec therefore no longer
+              # lists ruby/ruby-dev/bundler (Noble's apt build); it lists
+              # build-essential + the standard Ruby source-build deps
+              # instead (libssl-dev, libyaml-dev, libffi-dev,
+              # libreadline-dev, libgdbm-dev, libncurses-dev, libgmp-dev,
+              # autoconf, bison — all already in /tmp/fat from Stage 1's
+              # mmdebstrap), and this arm compiles Ruby from source.
+              RUBY_VER=$(jq -r '.build.ruby_version // "3.2.8"' /tmp/manifest.json)
+              RUBY_MINOR="${RUBY_VER%.*}"
+
+              # --- Resolve on the RUNNER, never inside the chroot -----
+              # mmdebstrap's minbase rootfs has no guaranteed working DNS,
+              # so /tmp/fat can't be relied on to reach the network.
+              # Fetch + verify the Ruby source tarball and the bundler
+              # .gem here, then hand the chroot already-verified local
+              # files — it never touches the network itself.
+              #
+              # Pinned sha256 for ruby-${RUBY_VER}.tar.gz, published at
+              # https://www.ruby-lang.org/en/news/2025/03/26/ruby-3-2-8-released/
+              # (cross-checked against an independent download). Bump
+              # this alongside `build.ruby_version` in manifest.yaml on
+              # any version change — a mismatch fails the build rather
+              # than shipping an unverified interpreter.
+              RUBY_SHA256="77acdd8cfbbe1f8e573b5e6536e03c5103df989dc05fa68c70f011833c356075"
+              curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_MINOR}/ruby-${RUBY_VER}.tar.gz" -o /tmp/ruby-src.tar.gz
+              echo "${RUBY_SHA256}  /tmp/ruby-src.tar.gz" | sha256sum -c -
+
+              # Bundler 2.7.1 (matching the platform Gemfile.lock's
+              # BUNDLED WITH, same pin hub-backend/hub-worker install
+              # below). `gem fetch` downloads the .gem without installing
+              # it — use the runner's own ruby (apt-installed on demand)
+              # just to resolve it.
               if ! command -v gem >/dev/null 2>&1; then
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
                 apt-get install -y --no-install-recommends ruby
               fi
-              gem install bundler -v 2.7.1 --no-document --install-dir /tmp/fat/var/lib/gems/3.2.0
-              echo "=== runtime-ruby bundler 2.7.1: $(ls -d /tmp/fat/var/lib/gems/3.2.0/gems/bundler-2.7.1 2>/dev/null || echo MISSING) ==="
+              ( cd /tmp && gem fetch bundler -v 2.7.1 )
+              test -s /tmp/bundler-2.7.1.gem || { echo "[stage-1.5] FATAL: bundler-2.7.1.gem fetch failed"; exit 1; }
+
+              # --- Compile INSIDE /tmp/fat -----------------------------
+              # Ruby must link against the EXACT libssl/libyaml/zlib this
+              # module ships (not the runner's own), so build inside the
+              # chroot. configure/make redirect heavily to /dev/null and
+              # friends, and a bare mmdebstrap rootfs has no populated
+              # /dev — bind-mount /dev,/proc,/sys from the runner for the
+              # duration of the build and tear them back down (via a
+              # trap, so a failed build doesn't leave dangling mounts)
+              # before Stage 2's composer reads /tmp/fat.
+              mkdir -p /tmp/fat/usr/src /tmp/fat/dev /tmp/fat/proc /tmp/fat/sys
+              cp /tmp/ruby-src.tar.gz "/tmp/fat/usr/src/ruby-${RUBY_VER}.tar.gz"
+              cp /tmp/bundler-2.7.1.gem /tmp/fat/usr/src/bundler-2.7.1.gem
+              mount --bind /dev /tmp/fat/dev
+              mount -t proc proc /tmp/fat/proc
+              mount -t sysfs sysfs /tmp/fat/sys
+              cleanup_ruby_chroot_mounts() {
+                # -l (lazy): don't hard-fail cleanup on a transient busy
+                # mount from a not-yet-reaped chroot subprocess.
+                umount -l /tmp/fat/dev /tmp/fat/proc /tmp/fat/sys 2>/dev/null || true
+              }
+              trap cleanup_ruby_chroot_mounts EXIT
+
+              echo "[stage-1.5] compiling ruby ${RUBY_VER} inside /tmp/fat chroot…"
+              chroot /tmp/fat /bin/sh -c "
+                set -e
+                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                cd /usr/src
+                tar xzf ruby-${RUBY_VER}.tar.gz
+                cd ruby-${RUBY_VER}
+                ./configure --prefix=/usr/local --disable-install-doc --enable-shared
+                make -j\$(nproc)
+                make install
+                ldconfig
+              "
+              chroot /tmp/fat /usr/local/bin/gem install --local /usr/src/bundler-2.7.1.gem --no-document
+
+              cleanup_ruby_chroot_mounts
+              trap - EXIT
+              rm -rf /tmp/fat/usr/src
+
+              # --- Verify what actually shipped ------------------------
+              echo "[stage-1.5] verifying compiled toolchain…"
+              RUBY_OUT=$(chroot /tmp/fat /usr/local/bin/ruby -v)
+              echo "$RUBY_OUT"
+              echo "$RUBY_OUT" | grep -q "ruby ${RUBY_VER}" || { echo "[stage-1.5] FATAL: expected ruby ${RUBY_VER}, got: $RUBY_OUT"; exit 1; }
+              BUNDLER_OUT=$(chroot /tmp/fat /usr/local/bin/bundler -v)
+              echo "$BUNDLER_OUT"
+              echo "$BUNDLER_OUT" | grep -q "2.7.1" || { echo "[stage-1.5] FATAL: expected bundler 2.7.1, got: $BUNDLER_OUT"; exit 1; }
               ;;
             powernode-hub-backend)
               mkdir -p /tmp/fat/opt/powernode

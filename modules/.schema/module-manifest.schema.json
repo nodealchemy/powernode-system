@@ -230,7 +230,12 @@
         },
         "firmware_repo": { "type": "string" },
         "firmware_ref":  { "type": "string" },
-        "k3s_version":   { "type": "string" }
+        "k3s_version":   { "type": "string" },
+        "ruby_version": {
+          "description": "Pinned Ruby version to source-compile (runtime-ruby module). Keep in sync with server/.ruby-version.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
       }
     }
   }
