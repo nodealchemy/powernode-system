@@ -123,6 +123,14 @@ module System
     # or "recycled" (default path). Callers own the claimed-state guard.
     def release!(instance:, pool:)
       if pool&.metadata.is_a?(Hash) && pool.metadata["reuse_without_reset"]
+        # A1' security (F5): reuse-without-reset returns the member to service
+        # WITHOUT terminating, so finalize_termination!'s revoke never runs.
+        # Revoke the prior consumer's dev-cell deploy key + Vault secret here so
+        # a read-write repo key can't survive into the next acquirer. (No-op
+        # unless this member ever bootstrapped a dev-cell key; a re-boot mints a
+        # fresh key via rotate-on-bootstrap.)
+        revoke_dev_cell_deploy_key!(instance)
+
         # pool_warming_started_at doubles as the ready-TTL anchor in
         # recycle_stale_members! (F2-05) — without restarting it, a member
         # older than ready_ttl is stale-recycled on the next reaper tick
@@ -229,9 +237,24 @@ module System
     # Recycle stale members — called by the reaper between replenishes.
     #   - warming members past warming_timeout → errored (provisioning got stuck)
     #   - ready members past ready_ttl → draining (stale, recycle for fresh state)
+    #   - ready members whose on-node agent heartbeat has gone stale → same
+    #     draining/recycle treatment as ready_ttl, even if the TTL window
+    #     hasn't elapsed yet (ready members hold no workload, so recycling
+    #     one early is safe)
     #   - claimed members past claimed_ttl → flagged + FleetEvent (F1-10;
     #     never auto-terminated — a long claim may be a live workload, so
     #     reclamation is an operator decision)
+    #   - claimed members whose on-node agent heartbeat has gone stale →
+    #     same flag-only treatment as claimed_ttl (NOT auto-terminate — see
+    #     the flag-only rationale below). Demoted from an earlier
+    #     auto-terminate design: a claimed member is in-use, and a
+    #     fleet-wide heartbeat gap (backend reload/migration, SDWAN
+    #     reconvergence) can blow past a 3-minute monitoring threshold
+    #     while every claimed cell is perfectly healthy. Auto-terminating
+    #     on that signal would kill live work on a false positive. Mirrors
+    #     the platform's presumed-dead ladder (fleet/decision_engine.rb),
+    #     which uses a much longer window (30min) + status==running and
+    #     still never auto-terminates.
     #   - errored members → terminated (cleanup)
     def recycle_stale_members!(pool:)
       now = Time.current
@@ -242,14 +265,63 @@ module System
       claimed_ttl = pool.metadata["claimed_ttl_seconds"]&.to_i ||
                     DEFAULT_CLAIMED_TTL_SECONDS
 
+      # Heartbeat-driven staleness — additive to the TTL windows above. A
+      # ready/claimed member whose on-node agent has stopped heartbeating is
+      # broken regardless of how long it's sat in that pool_state; waiting
+      # out the full ready/claimed TTL leaves a dead member sitting in the
+      # pool (ready, acquirable by the next consumer) or silently unusable
+      # under a consumer (claimed) in the meantime. Reuses NodeInstance's
+      # existing liveness definition (HEARTBEAT_STALE_AFTER) instead of
+      # inventing a second one. `last_heartbeat_at IS NOT NULL` deliberately
+      # excludes members that have never heartbeated yet (e.g. one that just
+      # flipped to ready a moment before its first heartbeat lands) — those
+      # stay governed by the existing warming/ready TTL paths instead.
+      #
+      # Coercion — both metadata overrides can arrive as JSON-serialized
+      # strings (not just native bool/int) depending on how the caller
+      # wrote them, so treat both "false" (string) and false (bool) as
+      # opt-out, and never call numeric coercion on the boolean flag (a
+      # bare `false.to_i` raises NoMethodError, killing every recycle
+      # phase in this transaction — `&.to_i` does NOT save you here since
+      # safe-nav only short-circuits on nil, not false).
+      heartbeat_reap_enabled = ![false, "false"].include?(pool.metadata["reap_on_stale_heartbeat"])
+      # A garbage or non-positive override ("abc" → 0, literal 0, or
+      # negative) must fall back to the default rather than being taken
+      # literally — a 0-or-negative threshold makes `last_heartbeat_at <
+      # now - threshold` true for virtually every member, i.e. "everything
+      # is stale".
+      raw_heartbeat_stale_after_seconds = pool.metadata["heartbeat_stale_after_seconds"].to_i
+      heartbeat_stale_after_seconds = raw_heartbeat_stale_after_seconds.positive? ?
+                                      raw_heartbeat_stale_after_seconds :
+                                      ::System::NodeInstance::HEARTBEAT_STALE_AFTER.to_i
+
       stale_warming = pool.warming_members
                           .where("pool_warming_started_at < ?", now - warming_timeout)
       stale_ready = pool.ready_members
                         .where("pool_warming_started_at < ?", now - ready_ttl)
+      stale_ready = stale_ready.or(
+        pool.ready_members.where(
+          "last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?",
+          now - heartbeat_stale_after_seconds
+        )
+      ) if heartbeat_reap_enabled
       stale_claimed = pool.claimed_members
                           .where("pool_acquired_at < ?", now - claimed_ttl)
+      heartbeat_stale_claimed = if heartbeat_reap_enabled
+        pool.claimed_members.where(
+          "last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?",
+          now - heartbeat_stale_after_seconds
+        )
+      else
+        pool.node_instances.none
+      end
 
-      counts = { warming_to_errored: 0, ready_to_draining: 0, claimed_flagged: 0 }
+      counts = {
+        warming_to_errored: 0,
+        ready_to_draining: 0,
+        claimed_flagged: 0,
+        claimed_heartbeat_flagged: 0
+      }
 
       ::ActiveRecord::Base.transaction do
         # F2-02 — same locking discipline as drain!: SKIP LOCKED skips
@@ -278,6 +350,30 @@ module System
             )
           end
           counts[:ready_to_draining] += 1
+
+          # Observability parity with the claimed-flag event below — a
+          # ready member holds no workload, so recycling it is safe and
+          # stays silent-by-default (folded into ready_to_draining), but
+          # when the TRIGGER is a dead heartbeat specifically (as opposed
+          # to plain ready_ttl expiry) it's worth its own signal: a mass
+          # heartbeat-driven ready-recycle right after an outage would
+          # otherwise be invisible outside the aggregate log line.
+          if heartbeat_reap_enabled && m.last_heartbeat_at.present? &&
+             m.last_heartbeat_at < now - heartbeat_stale_after_seconds
+            ::System::Fleet::EventBroadcaster.emit!(
+              account: pool.account,
+              kind: "system.pool.ready_stale_heartbeat_recycled",
+              severity: :medium,
+              payload: {
+                pool_id: pool.id,
+                pool_name: pool.name,
+                heartbeat_stale_after_seconds: heartbeat_stale_after_seconds,
+                last_heartbeat_at: m.last_heartbeat_at&.iso8601
+              },
+              source: "instance_pool_service",
+              node_instance_id: m.id
+            )
+          end
         end
 
         # F1-10 — flag, never terminate: the claim may still back a live
@@ -288,15 +384,8 @@ module System
         # before the current pool_acquired_at belongs to an earlier
         # claim and is re-raised.
         stale_claimed.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
-          flagged_at = begin
-            raw = m.config&.dig("pool_claimed_stale_flagged_at")
-            raw.present? ? Time.zone.parse(raw) : nil
-          rescue ArgumentError
-            nil
-          end
-          next if flagged_at && flagged_at >= m.pool_acquired_at
+          next unless flag_claimed_stale!(member: m, now: now)
 
-          m.update!(config: (m.config || {}).merge("pool_claimed_stale_flagged_at" => now.iso8601))
           ::System::Fleet::EventBroadcaster.emit!(
             account: pool.account,
             kind: "system.pool.claimed_stale",
@@ -312,6 +401,34 @@ module System
           )
           counts[:claimed_flagged] += 1
         end
+
+        # Heartbeat-driven claimed flag — demoted from an earlier
+        # auto-terminate design (see the class-level comment above this
+        # method for the incident that prompted the demotion). A claimed
+        # member whose heartbeat has gone stale gets EXACTLY the same
+        # flag-only treatment as the claimed_ttl path above, including
+        # its per-claim-cycle guard (a member already flagged this cycle
+        # by either trigger isn't double-flagged/double-notified) — the
+        # only difference is the FleetEvent kind, so operators can tell a
+        # TTL-triggered flag from a heartbeat-triggered one.
+        heartbeat_stale_claimed.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
+          next unless flag_claimed_stale!(member: m, now: now)
+
+          ::System::Fleet::EventBroadcaster.emit!(
+            account: pool.account,
+            kind: "system.pool.claimed_stale_heartbeat_flagged",
+            severity: :medium,
+            payload: {
+              pool_id: pool.id,
+              pool_name: pool.name,
+              heartbeat_stale_after_seconds: heartbeat_stale_after_seconds,
+              last_heartbeat_at: m.last_heartbeat_at&.iso8601
+            },
+            source: "instance_pool_service",
+            node_instance_id: m.id
+          )
+          counts[:claimed_heartbeat_flagged] += 1
+        end
       end
 
       counts.values.sum.positive? &&
@@ -323,6 +440,39 @@ module System
     private
 
     attr_reader :account
+
+    # Best-effort + guarded revoke of a member's dev-cell deploy key on the
+    # reuse-without-reset release path (the recycle path already revokes via
+    # ProvisioningService#finalize_termination!). A revoke failure must never
+    # block the member returning to the pool.
+    def revoke_dev_cell_deploy_key!(instance)
+      return unless defined?(::System::DevCellDeployKey)
+
+      ::System::DevCellDeployKey.revoke_for!(instance)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[InstancePoolService] dev-cell deploy-key revoke failed (instance=#{instance&.id}): #{e.class}: #{e.message}"
+      )
+    end
+
+    # Shared per-claim-cycle flag guard for the claimed_ttl and
+    # claimed-heartbeat stale paths (F1-10 and its heartbeat-triggered
+    # sibling): stamps pool_claimed_stale_flagged_at unless the current
+    # claim has already been flagged this cycle (by either trigger).
+    # Returns true if the member was (re-)flagged and the caller should
+    # emit its FleetEvent + bump its counter; false if skipped.
+    def flag_claimed_stale!(member:, now:)
+      flagged_at = begin
+        raw = member.config&.dig("pool_claimed_stale_flagged_at")
+        raw.present? ? Time.zone.parse(raw) : nil
+      rescue ArgumentError
+        nil
+      end
+      return false if flagged_at && flagged_at >= member.pool_acquired_at
+
+      member.update!(config: (member.config || {}).merge("pool_claimed_stale_flagged_at" => now.iso8601))
+      true
+    end
 
     def resolve_pool!(pool_name:, pool_id:, lifecycle_class:)
       if pool_id

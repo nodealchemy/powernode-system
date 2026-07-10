@@ -25,7 +25,7 @@ RSpec.describe System::InstancePoolService, type: :service do
 
   # Helper — seed a fully-warm pool member at a given state, bypassing
   # the standard provisioning flow (which would dispatch worker jobs).
-  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil)
+  def seed_pool_member(state:, warming_started_at: 1.minute.ago, acquired_at: nil, last_heartbeat_at: nil)
     node = create(:system_node, account: account, node_template: node_template,
                                  lifecycle_class: "ephemeral")
     create(:system_node_instance,
@@ -38,7 +38,8 @@ RSpec.describe System::InstancePoolService, type: :service do
            instance_pool_id: pool.id,
            pool_state: state,
            pool_warming_started_at: warming_started_at,
-           pool_acquired_at: acquired_at)
+           pool_acquired_at: acquired_at,
+           last_heartbeat_at: last_heartbeat_at)
   end
 
   describe ".acquire!" do
@@ -318,6 +319,156 @@ RSpec.describe System::InstancePoolService, type: :service do
 
         expect(result[:claimed_flagged]).to eq(1)
         expect(m.reload.pool_state).to eq("claimed")
+      end
+    end
+
+    # A4 — pool-side glue composing NodeInstance#stale_heartbeat? with the
+    # existing TTL-driven recycle paths: a member whose on-node agent has
+    # stopped heartbeating gets reaped even while still within its TTL
+    # window.
+    context "stale on-node agent heartbeat" do
+      it "does not recycle a ready member with a fresh heartbeat" do
+        m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                             last_heartbeat_at: 30.seconds.ago)
+        described_class.recycle_stale_members!(pool: pool)
+        expect(m.reload.pool_state).to eq("ready")
+      end
+
+      it "recycles a ready member with a stale heartbeat even within its ready TTL" do
+        m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                             last_heartbeat_at: 5.minutes.ago)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(m.reload.pool_state).to eq("draining")
+        expect(result[:ready_to_draining]).to eq(1)
+        expect(::System::ProvisioningService).to have_received(:terminate_instance).with(instance: m)
+
+        # Observability parity with the claimed-flag event — surfaces a
+        # heartbeat-driven ready recycle distinctly from a plain ready_ttl one.
+        event = System::FleetEvent.where(account: account, kind: "system.pool.ready_stale_heartbeat_recycled").last
+        expect(event).to be_present
+        expect(event.node_instance_id).to eq(m.id)
+      end
+
+      it "flags (not terminates) a claimed member with a stale heartbeat, same as the claimed_ttl path" do
+        m = seed_pool_member(state: "claimed", warming_started_at: 5.minutes.ago,
+                             acquired_at: 5.minutes.ago, last_heartbeat_at: 5.minutes.ago)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(m.reload.pool_state).to eq("claimed") # never auto-terminated
+        expect(result[:claimed_heartbeat_flagged]).to eq(1)
+        expect(result[:claimed_flagged]).to eq(0) # within claimed_ttl — flagged via the heartbeat path, not the TTL path
+        expect(m.config["pool_claimed_stale_flagged_at"]).to be_present
+        expect(::System::ProvisioningService).not_to have_received(:terminate_instance)
+
+        event = System::FleetEvent.where(account: account, kind: "system.pool.claimed_stale_heartbeat_flagged").last
+        expect(event).to be_present
+        expect(event.node_instance_id).to eq(m.id)
+      end
+
+      it "does not recycle a warming member with no heartbeat — still governed by warming TTL" do
+        m = seed_pool_member(state: "warming", warming_started_at: 5.minutes.ago, last_heartbeat_at: nil)
+        described_class.recycle_stale_members!(pool: pool)
+        expect(m.reload.pool_state).to eq("warming")
+      end
+
+      it "does not recycle a ready member that has never heartbeated" do
+        m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago, last_heartbeat_at: nil)
+        described_class.recycle_stale_members!(pool: pool)
+        expect(m.reload.pool_state).to eq("ready")
+      end
+
+      it "is disabled via pool.metadata[reap_on_stale_heartbeat] = false" do
+        pool.update!(metadata: { "reap_on_stale_heartbeat" => false })
+        ready = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                                 last_heartbeat_at: 10.minutes.ago)
+        claimed = seed_pool_member(state: "claimed", warming_started_at: 5.minutes.ago,
+                                   acquired_at: 5.minutes.ago, last_heartbeat_at: 10.minutes.ago)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(ready.reload.pool_state).to eq("ready")
+        expect(claimed.reload.pool_state).to eq("claimed")
+        expect(result[:claimed_heartbeat_flagged]).to eq(0)
+      end
+
+      it "is disabled via pool.metadata[reap_on_stale_heartbeat] = \"false\" (JSON string form)" do
+        pool.update!(metadata: { "reap_on_stale_heartbeat" => "false" })
+        ready = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                                 last_heartbeat_at: 10.minutes.ago)
+        claimed = seed_pool_member(state: "claimed", warming_started_at: 5.minutes.ago,
+                                   acquired_at: 5.minutes.ago, last_heartbeat_at: 10.minutes.ago)
+
+        result = described_class.recycle_stale_members!(pool: pool)
+
+        expect(ready.reload.pool_state).to eq("ready")
+        expect(claimed.reload.pool_state).to eq("claimed")
+        expect(result[:claimed_heartbeat_flagged]).to eq(0)
+      end
+
+      it "respects per-pool heartbeat_stale_after_seconds metadata override" do
+        pool.update!(metadata: { "heartbeat_stale_after_seconds" => 30 })
+        m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                             last_heartbeat_at: 45.seconds.ago)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(m.reload.pool_state).to eq("draining")
+      end
+
+      # Coercion (HIGH) — a garbage or non-positive heartbeat_stale_after_seconds
+      # override must fall back to the built-in default rather than being taken
+      # literally as a threshold of ~0 seconds, which would treat virtually every
+      # heartbeated member as stale.
+      context "heartbeat_stale_after_seconds coercion" do
+        it "falls back to the default when the override is a non-numeric string" do
+          pool.update!(metadata: { "heartbeat_stale_after_seconds" => "abc" })
+          # Fresher than the 3min default, but would be "stale" under a
+          # buggy ~0-second threshold.
+          m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                               last_heartbeat_at: 30.seconds.ago)
+
+          described_class.recycle_stale_members!(pool: pool)
+
+          expect(m.reload.pool_state).to eq("ready")
+        end
+
+        it "falls back to the default when the override is literal 0" do
+          pool.update!(metadata: { "heartbeat_stale_after_seconds" => 0 })
+          m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                               last_heartbeat_at: 30.seconds.ago)
+
+          described_class.recycle_stale_members!(pool: pool)
+
+          expect(m.reload.pool_state).to eq("ready")
+        end
+
+        it "falls back to the default when the override is negative" do
+          pool.update!(metadata: { "heartbeat_stale_after_seconds" => -30 })
+          m = seed_pool_member(state: "ready", warming_started_at: 1.minute.ago,
+                               last_heartbeat_at: 30.seconds.ago)
+
+          described_class.recycle_stale_members!(pool: pool)
+
+          expect(m.reload.pool_state).to eq("ready")
+        end
+      end
+
+      # Coercion (HIGH) — reap_on_stale_heartbeat must never raise, even when
+      # it holds a boolean false (a naive `.to_i` coercion on that value would
+      # raise NoMethodError and kill every recycle phase in the transaction).
+      it "never raises when reap_on_stale_heartbeat is boolean false" do
+        pool.update!(metadata: { "reap_on_stale_heartbeat" => false })
+        seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
+
+        expect {
+          described_class.recycle_stale_members!(pool: pool)
+        }.not_to raise_error
       end
     end
 
