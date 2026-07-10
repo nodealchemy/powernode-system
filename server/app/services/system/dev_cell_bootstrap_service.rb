@@ -96,7 +96,11 @@ module System
       # (default-deny everything else) even across re-boots / prior grants.
       result.peer.grant_mcp_tools!(DEV_LOOP_MCP_TOOLS, mode: :replace)
 
-      { mcp_url: "#{@platform_base_url}/mcp" }
+      # The MCP streamable-HTTP endpoint is /api/v1/mcp/message (routes.rb:
+      # `post "message" => streamable_http#message`), NOT a bare /mcp. The
+      # dev-cell mcp-proxy forwards to this URL verbatim; a bare /mcp 404s and
+      # the executor can't pull/complete dev-loop tasks. (BUG-P)
+      { mcp_url: "#{@platform_base_url}/api/v1/mcp/message" }
     end
 
     # ---- Gitea: per-repo deploy key + branch protection -------------------
