@@ -71,6 +71,15 @@ package_spec:
   - dbus
   - iputils-ping
   - iproute2
+  # nftables provides /usr/sbin/nft — the on-node agent's per-module reconcile
+  # (runtime.attachModule → policy.Apply → security.ApplyEgressAllowlist) shells
+  # out to `nft` to install the default-deny egress chain BEFORE it renders the
+  # module's systemd units. Without nft in the pivoted rootfs, policy.Apply
+  # errors ("nft: executable file not found in $PATH"), attachModule returns
+  # early, AttachServices never runs, and every module's units are left as the
+  # stale pre-render skeleton (empty ExecStart) → services never start. The
+  # initramfs stages its own nft, so this only bit post-switch_root. (imp 605b)
+  - nftables
   - openssh-server
   - ca-certificates
   - curl
