@@ -407,7 +407,20 @@ users:
 
 security:
   capabilities: []
-  egress_allow: []
+  # Unrestricted egress (the documented, reviewed wildcard escape hatch in
+  # agent/internal/security/egress.go). A dev-cell is by nature an unbounded
+  # egress sandbox: it clones arbitrary Gitea repos, `bundle`s from rubygems,
+  # `npm install`s from the npm registry, reaches the platform + Gitea over
+  # the SDWAN, etc. An empty allowlist ([]) means default-DROP — the agent's
+  # per-module reconcile installs an nftables OUTPUT chain (policy drop)
+  # allowing only established/loopback/DNS + the platform URL, which would
+  # firewall provision's git-clone/bundle/npm. Once nft actually ships in the
+  # pivoted rootfs (base-os nftables, imp 605b) that default-drop takes effect
+  # for the first time, so the dev-cell must opt into unrestricted egress
+  # explicitly. IPv4 wildcard (the rule emitter uses `ip daddr`); the SDWAN
+  # overlay + provisioning endpoints are IPv4. (imp 605b follow-on)
+  egress_allow:
+    - "0.0.0.0/0"
   privileged: false
   user_namespace: true
 
