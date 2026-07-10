@@ -34,6 +34,17 @@ mkdir -p "$DATA" "$RUN" "$LOG" "$PGROOT"
 chown -R postgres:postgres "$PGROOT" "$RUN" "$LOG"
 chmod 700 "$DATA"
 
+# On pivot cells PGROOT is /persist/var/lib/postgresql, but the powernode
+# agent owns /persist/var and /persist/var/lib (0700 root) for its PKI at
+# /persist/var/lib/powernode. The postgres uid therefore cannot TRAVERSE those
+# parents to reach + initdb its data dir → "could not access directory ...:
+# Permission denied" (EACCES). Grant traversal-only (o+x, NOT o+r) on the
+# parent chain so postgres can descend to its own dir; the 0700 PKI directory
+# itself stays unreadable/unlistable to non-root. (imp 605b follow-on / BUG-G)
+if mountpoint -q /persist 2>/dev/null; then
+  chmod o+x /persist /persist/var /persist/var/lib 2>/dev/null || true
+fi
+
 if [ ! -f "$DATA/PG_VERSION" ]; then
   # The apt postgresql-16 install leaves a PARTIAL default cluster baked
   # into the module's erofs layer (base/, global/, pg_*/ dirs but no

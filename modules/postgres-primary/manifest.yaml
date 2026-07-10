@@ -118,7 +118,14 @@ security:
     - CAP_SETPCAP
   egress_allow: []
   privileged: false
-  user_namespace: true
+  # PrivateUsers=no. postgres-start.sh runs as root then `runuser`s to the
+  # postgres user and `chown -R postgres` the data dir — a cross-uid operation.
+  # PrivateUsers=yes runs the unit in a user namespace where the postgres host
+  # uid is UNMAPPED, so that chown fails EINVAL and runuser can't map the
+  # target uid. The declared caps above already give root what it needs; the
+  # user namespace is fundamentally incompatible with this chown+drop model.
+  # (Same class as the dev-cell fix — imp 605b follow-on.)
+  user_namespace: false
 
 build:
   apt_snapshot: "20260415T000000Z"
