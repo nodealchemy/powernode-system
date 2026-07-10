@@ -241,21 +241,85 @@ module System
       )
     end
 
-    # Prefer the repo's own Gitea-configured SSH URL (correct host + port even
-    # when the SSH host differs from the web host); fall back to deriving it
-    # from the provider's web host.
+    # Reachable SSH clone URL for the deploy-key clone/push.
+    #
+    # The clone host+port MUST match the host key pinned in
+    # dev_cell_gitea_known_hosts (StrictHostKeyChecking), and Gitea
+    # self-reports its CONTAINER-INTERNAL SSH_PORT (e.g. :220) which is often
+    # not the published/reachable port — trusting it verbatim yields
+    # "connect to <host> port 220: Connection refused". So derive the endpoint
+    # in preference order:
+    #   1. the pinned known_hosts line (host[+port]) — consistent by
+    #      construction with the host key the cell verifies against;
+    #   2. else Gitea's reported ssh_url HOST (the host IS correct) with a
+    #      config-driven port (dev_cell_gitea_ssh_port / ENV), default 22 —
+    #      Gitea's self-reported port is deliberately ignored;
+    #   3. else the provider's web host (last resort — may differ from SSH host);
+    #   4. else the https web URL.
     def ssh_clone_url(client, credential, owner, repo)
+      host, port = endpoint_from_known_hosts(known_hosts_for(credential))
+      host = host.presence || gitea_ssh_host(client, owner, repo) || web_host(credential)
+      port ||= configured_ssh_port
+      return "#{credential.provider.effective_web_base_url}/#{owner}/#{repo}.git" if host.blank?
+
+      if port == 22
+        "git@#{host}:#{owner}/#{repo}.git"
+      else
+        "ssh://git@#{host}:#{port}/#{owner}/#{repo}.git"
+      end
+    end
+
+    # [host, port] parsed from the FIRST real known_hosts line, or [nil, nil].
+    # Handles "[host]:port key..." (non-standard port) and "host key..." (→ 22),
+    # plus comma-separated host aliases ("host,1.2.3.4 key...").
+    def endpoint_from_known_hosts(known_hosts)
+      line = known_hosts.to_s.lines.map(&:strip).find { |l| l.present? && !l.start_with?("#") }
+      return [nil, nil] if line.blank?
+
+      token = line.split(/\s+/).first.to_s.split(",").first
+      return [nil, nil] if token.blank?
+
+      if (m = token.match(/\A\[([^\]]+)\]:(\d+)\z/))
+        [m[1], m[2].to_i]
+      else
+        [token, 22]
+      end
+    end
+
+    # Host (only) from Gitea's reported ssh_url, in either ssh://user@host:port/…
+    # or scp-style user@host:path form. The port is intentionally NOT taken here.
+    def gitea_ssh_host(client, owner, repo)
       ssh = begin
         client.get_repository(owner, repo)&.dig("ssh_url")
       rescue ::Devops::Git::ApiClient::ApiError
         nil
       end
-      return ssh if ssh.present?
+      return nil if ssh.blank?
 
-      host = URI(credential.provider.effective_web_base_url.to_s).host
-      return "git@#{host}:#{owner}/#{repo}.git" if host.present?
+      if ssh.start_with?("ssh://")
+        begin
+          URI.parse(ssh).host
+        rescue URI::InvalidURIError
+          nil
+        end
+      elsif (m = ssh.match(%r{\A(?:[^@/]+@)?([^:/]+):}))
+        m[1]
+      end
+    end
 
-      "#{credential.provider.effective_web_base_url}/#{owner}/#{repo}.git"
+    def web_host(credential)
+      URI(credential.provider.effective_web_base_url.to_s).host
+    rescue URI::InvalidURIError
+      nil
+    end
+
+    # Published/reachable SSH port. Config-driven (must match the known_hosts
+    # pin); defaults to the standard 22. Gitea's self-reported port is ignored.
+    def configured_ssh_port
+      raw = ::SiteSetting.get("dev_cell_gitea_ssh_port").presence ||
+            ENV["POWERNODE_DEV_CELL_GITEA_SSH_PORT"].presence
+      port = raw.to_i
+      port.positive? ? port : 22
     end
 
     # SSH host public key line for StrictHostKeyChecking pinning. Sourced from
