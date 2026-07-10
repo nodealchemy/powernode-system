@@ -218,7 +218,8 @@ redact_all() {
 }
 
 run_claude_as_pnagent() {
-  # $1=prompt. Sets CLAUDE_STATUS and prints redacted output to stdout.
+  # $1=prompt. Sets the CLAUDE_STATUS + CLAUDE_OUTPUT globals (does NOT print
+  # to stdout — see BUG-N below re: why callers must NOT use $(...)).
   # `-p, --preserve-environment`: inherits THIS (root) PROCESS's exported
   # ANTHROPIC_API_KEY (needed) without also inheriting anything this
   # script never exports in the first place (GIT_SSH_COMMAND is scoped to
@@ -242,7 +243,13 @@ run_claude_as_pnagent() {
     2>&1)
   CLAUDE_STATUS=$?
   set -e
-  redact_all "$raw"
+  # BUG-N: assign the redacted output to a GLOBAL rather than printing it to
+  # stdout, so callers invoke this function WITHOUT command substitution. Under
+  # $(...) the function ran in a subshell, so its CLAUDE_STATUS assignment was
+  # set + discarded there and the caller's `STATUS=$CLAUDE_STATUS` died
+  # "CLAUDE_STATUS: unbound variable" under `set -u` on iteration 1 — before any
+  # stage ran. Callers now read $CLAUDE_STATUS + $CLAUDE_OUTPUT directly.
+  CLAUDE_OUTPUT=$(redact_all "$raw")
 }
 
 # --- IMMUTABLE VALIDATOR: root fetches origin/develop over the EXPLICIT
@@ -284,8 +291,9 @@ consecutive_failures=0
 while true; do
   PRE_SHA=$(rootgit -C "$WORKDIR" rev-parse --verify -q "refs/heads/$LOOP_BRANCH" 2>/dev/null || true)
 
-  STAGE1_OUTPUT=$(run_claude_as_pnagent "$STAGE1_PROMPT")
+  run_claude_as_pnagent "$STAGE1_PROMPT"
   STAGE1_STATUS=$CLAUDE_STATUS
+  STAGE1_OUTPUT=$CLAUDE_OUTPUT
   log "stage1 (implement, pnagent) exit=$STAGE1_STATUS"
   printf '%s\n' "$STAGE1_OUTPUT"
 
@@ -417,8 +425,9 @@ the outcome — it has already been decided. Then stop.
 PROMPT_EOF
 )
 
-  STAGE2_OUTPUT=$(run_claude_as_pnagent "$STAGE2_PROMPT")
+  run_claude_as_pnagent "$STAGE2_PROMPT"
   STAGE2_STATUS=$CLAUDE_STATUS
+  STAGE2_OUTPUT=$CLAUDE_OUTPUT
   log "stage2 (report, pnagent) exit=$STAGE2_STATUS"
   printf '%s\n' "$STAGE2_OUTPUT"
 
