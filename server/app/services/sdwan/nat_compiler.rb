@@ -126,14 +126,14 @@ module Sdwan
       lines = []
       lines << if by_family[:v4].any?
                  "    #{proto_dport} ip saddr != { #{by_family[:v4].join(', ')} } drop"
-               else
+      else
                  "    #{proto_dport} meta nfproto ipv4 drop"
-               end
+      end
       lines << if by_family[:v6].any?
                  "    #{proto_dport} ip6 saddr != { #{by_family[:v6].join(', ')} } drop"
-               else
+      else
                  "    #{proto_dport} meta nfproto ipv6 drop"
-               end
+      end
       lines
     end
 

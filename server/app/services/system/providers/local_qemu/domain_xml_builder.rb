@@ -73,15 +73,15 @@ module System
 
           os_xml = if boot_mode.to_s == "uefi_disk"
                      uefi_os_xml(arch_str: arch_str, machine: machine, domain_name: domain_name)
-                   else
+          else
                      direct_kernel_os_xml(arch_str: arch_str, machine: machine, image_base: image_base,
                                           arch: arch, fw_cfg_entries: fw_cfg_entries)
-                   end
+          end
           boot_disk_xml = if boot_mode.to_s == "uefi_disk"
                             uefi_boot_disk_xml(disk_image_path)
-                          else
+          else
                             disk_xml(domain_name)
-                          end
+          end
 
           # libvirt domain type — kvm when /dev/kvm exists, qemu otherwise
           # (TCG software emulation; slower but works in nested-virt-disabled

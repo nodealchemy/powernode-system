@@ -18,7 +18,7 @@ module System
       def self.key = :kubernetes
 
       def self.available?
-        [defined?(::Devops::KubernetesCluster), defined?(::System::SshExecutionService)].all?(&:present?)
+        [ defined?(::Devops::KubernetesCluster), defined?(::System::SshExecutionService) ].all?(&:present?)
       end
 
       def deploy!(target:, ref:, dry_run: true)
@@ -32,7 +32,7 @@ module System
         command = rollout_command(target, deployment, namespace)
 
         if dry_run
-          return ::Ai::Deploy::Result.dry(commands: [command], detail: "would run on cluster #{cluster.name}: #{command}")
+          return ::Ai::Deploy::Result.dry(commands: [ command ], detail: "would run on cluster #{cluster.name}: #{command}")
         end
 
         node = server_instance(cluster)
@@ -40,10 +40,10 @@ module System
 
         result = ::System::SshExecutionService.execute(instance: node, command: command, sudo: true)
         if result.success?
-          ::Ai::Deploy::Result.ok("kubectl applied on #{cluster.name}", commands: [command],
+          ::Ai::Deploy::Result.ok("kubectl applied on #{cluster.name}", commands: [ command ],
                                   cluster_id: cluster.id, deployment: deployment, namespace: namespace)
         else
-          ::Ai::Deploy::Result.failure("kubectl failed: #{result.error}", commands: [command])
+          ::Ai::Deploy::Result.failure("kubectl failed: #{result.error}", commands: [ command ])
         end
       rescue StandardError => e
         ::Ai::Deploy::Result.failure("kubernetes deploy failed: #{e.message}")

@@ -66,7 +66,7 @@ RSpec.describe System::CveOps::LearningExtractor do
     end
 
     it "seeds pattern-category (pending-decision) rows at the calibrated 0.45" do
-      pending_decisions = [decisions.first.merge(decision: :pending, gate: "approval_required")]
+      pending_decisions = [ decisions.first.merge(decision: :pending, gate: "approval_required") ]
 
       described_class.record_tick!(account: account, decisions: pending_decisions)
 

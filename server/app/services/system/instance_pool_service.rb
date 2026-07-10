@@ -284,7 +284,7 @@ module System
       # bare `false.to_i` raises NoMethodError, killing every recycle
       # phase in this transaction — `&.to_i` does NOT save you here since
       # safe-nav only short-circuits on nil, not false).
-      heartbeat_reap_enabled = ![false, "false"].include?(pool.metadata["reap_on_stale_heartbeat"])
+      heartbeat_reap_enabled = ![ false, "false" ].include?(pool.metadata["reap_on_stale_heartbeat"])
       # A garbage or non-positive override ("abc" → 0, literal 0, or
       # negative) must fall back to the default rather than being taken
       # literally — a 0-or-negative threshold makes `last_heartbeat_at <

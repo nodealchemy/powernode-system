@@ -76,7 +76,7 @@ module PowernodeSystem
           engine: PowernodeSystem::Engine,
           version: defined?(PowernodeSystem::VERSION) ? PowernodeSystem::VERSION : nil,
           features_module: defined?(PowernodeSystem::Features) ? PowernodeSystem::Features : nil,
-          capabilities: [:kubernetes_deploy],
+          capabilities: [ :kubernetes_deploy ],
           # Contribute behavior to core through generic seams without core ever naming System::.
           # Resolved lazily by class name:
           #   * deploy_method_providers   — Kubernetes deploy method for Ai::Deploy::MethodRegistry

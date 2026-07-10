@@ -54,7 +54,7 @@ module System
       # SSH wire-format string: 4-byte big-endian length prefix + raw bytes.
       def ssh_string(bytes)
         b = bytes.to_s.b
-        [b.bytesize].pack("N") + b
+        [ b.bytesize ].pack("N") + b
       end
 
       def format_public(public_blob, comment)
@@ -80,7 +80,7 @@ module System
       #   | ssh_string(comment)
       #   | padding 1,2,3,... up to BLOCK_SIZE
       def encode_openssh_private(public_blob, raw_pub, raw_priv, comment)
-        check = [SecureRandom.random_number(2**32)].pack("N")
+        check = [ SecureRandom.random_number(2**32) ].pack("N")
 
         priv = check + check +
                ssh_string(KEY_TYPE) +
@@ -95,7 +95,7 @@ module System
                ssh_string("none") +
                ssh_string("none") +
                ssh_string("") +
-               [1].pack("N") +
+               [ 1 ].pack("N") +
                ssh_string(public_blob) +
                ssh_string(priv)
 

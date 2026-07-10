@@ -55,7 +55,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     let!(:peer)    { Sdwan::PeerEnroller.call(network: network, node_instance: instance) }
 
     it "sets + normalizes (trim/dedup/drop-blank) the peer's tags" do
-      r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [" database ", "edge", "database", ""])
+      r = call("system_sdwan_set_peer_tags", peer_id: peer.id, tags: [ " database ", "edge", "database", "" ])
       expect(r[:success]).to be true
       expect(r[:data][:tags]).to eq(%w[database edge])
       expect(peer.reload.tags).to eq(%w[database edge])

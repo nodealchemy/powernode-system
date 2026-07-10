@@ -20,7 +20,7 @@ RSpec.describe "Api::V1::System::Webhooks::PackageBuild", type: :request do
       closure_id:   closure_id,
       architecture: "amd64",
       modules: [
-        { module_id: SecureRandom.uuid, oci_ref: "registry.example/mod:good", file_spec: ["/usr/bin/foo"] }
+        { module_id: SecureRandom.uuid, oci_ref: "registry.example/mod:good", file_spec: [ "/usr/bin/foo" ] }
       ]
     }
   end

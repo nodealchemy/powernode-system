@@ -79,27 +79,27 @@ RSpec.describe System::DevCellBootstrapService do
   describe "#endpoint_from_known_hosts" do
     it "parses [host]:port form" do
       expect(service.send(:endpoint_from_known_hosts, "[h.example]:2222 ssh-ed25519 AAAA"))
-        .to eq(["h.example", 2222])
+        .to eq([ "h.example", 2222 ])
     end
 
     it "parses bare host as port 22" do
       expect(service.send(:endpoint_from_known_hosts, "h.example ssh-ed25519 AAAA"))
-        .to eq(["h.example", 22])
+        .to eq([ "h.example", 22 ])
     end
 
     it "takes the first of comma-separated host aliases" do
       expect(service.send(:endpoint_from_known_hosts, "h.example,10.0.0.1 ssh-ed25519 AAAA"))
-        .to eq(["h.example", 22])
+        .to eq([ "h.example", 22 ])
     end
 
     it "skips comment and blank lines" do
       expect(service.send(:endpoint_from_known_hosts, "\n# a comment\n[h.example]:44 ssh-rsa BBBB\n"))
-        .to eq(["h.example", 44])
+        .to eq([ "h.example", 44 ])
     end
 
     it "returns [nil, nil] for blank input" do
-      expect(service.send(:endpoint_from_known_hosts, "")).to eq([nil, nil])
-      expect(service.send(:endpoint_from_known_hosts, nil)).to eq([nil, nil])
+      expect(service.send(:endpoint_from_known_hosts, "")).to eq([ nil, nil ])
+      expect(service.send(:endpoint_from_known_hosts, nil)).to eq([ nil, nil ])
     end
   end
 

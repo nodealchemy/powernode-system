@@ -274,15 +274,15 @@ module System
     # plus comma-separated host aliases ("host,1.2.3.4 key...").
     def endpoint_from_known_hosts(known_hosts)
       line = known_hosts.to_s.lines.map(&:strip).find { |l| l.present? && !l.start_with?("#") }
-      return [nil, nil] if line.blank?
+      return [ nil, nil ] if line.blank?
 
       token = line.split(/\s+/).first.to_s.split(",").first
-      return [nil, nil] if token.blank?
+      return [ nil, nil ] if token.blank?
 
       if (m = token.match(/\A\[([^\]]+)\]:(\d+)\z/))
-        [m[1], m[2].to_i]
+        [ m[1], m[2].to_i ]
       else
-        [token, 22]
+        [ token, 22 ]
       end
     end
 

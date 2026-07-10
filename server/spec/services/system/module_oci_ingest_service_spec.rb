@@ -113,14 +113,14 @@ RSpec.describe System::ModuleOciIngestService do
     end
 
     it "checks the binary via array-form Open3.capture3 (not a shell string)" do
-      expect(Open3).to receive(:capture3).with("which", "oras").and_return(["", "", status_double(true)])
+      expect(Open3).to receive(:capture3).with("which", "oras").and_return([ "", "", status_double(true) ])
       # If the implementation still used `system("which #{name} …")`, Open3.capture3
       # would never be invoked and this expectation would fail.
       expect { adapter.send(:ensure_binary!, "oras") }.not_to raise_error
     end
 
     it "raises IngestError when the binary is not on PATH" do
-      allow(Open3).to receive(:capture3).with("which", "cosign").and_return(["", "not found", status_double(false)])
+      allow(Open3).to receive(:capture3).with("which", "cosign").and_return([ "", "not found", status_double(false) ])
       expect { adapter.send(:ensure_binary!, "cosign") }
         .to raise_error(described_class::IngestError, /cosign binary not found/)
     end
@@ -146,12 +146,12 @@ RSpec.describe System::ModuleOciIngestService do
 
     before do
       # fetch_manifest checks the binary is on PATH before shelling out to it.
-      allow(Open3).to receive(:capture3).with("which", "oras").and_return(["", "", status_double(true)])
+      allow(Open3).to receive(:capture3).with("which", "oras").and_return([ "", "", status_double(true) ])
     end
 
     it "fails clearly against the pre-fix CI shape (nothing ever published at the bare tag)" do
       allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
-        .and_return(["", "Error: #{oci_ref}: not found", status_double(false, code: 1)])
+        .and_return([ "", "Error: #{oci_ref}: not found", status_double(false, code: 1) ])
 
       result = adapter.fetch_manifest(oci_ref)
       expect(result[:error]).to be_present
@@ -180,7 +180,7 @@ RSpec.describe System::ModuleOciIngestService do
         end
       }.to_json
       allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
-        .and_return([index, "", status_double(true)])
+        .and_return([ index, "", status_double(true) ])
 
       result = adapter.fetch_manifest(oci_ref)
       expect(result[:error]).to be_nil
