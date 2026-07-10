@@ -306,14 +306,75 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.validation_errors.join).to include("duplicates an earlier service")
       end
 
-      it "rejects a service missing start_command" do
+      it "rejects a service missing both start_command and unit_body" do
         bad = manifest_yaml + <<~YAML
           services:
             - { name: rails }
         YAML
         result = described_class.import!(node_module: mod, yaml: bad)
         expect(result.ok?).to be false
-        expect(result.validation_errors.join).to include("start_command is required")
+        expect(result.validation_errors.join).to include("start_command or services[0].unit_body is required")
+      end
+
+      it "rejects a service declaring both start_command and unit_body" do
+        bad = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              start_command: "x"
+              unit_body: |
+                [Unit]
+                Description=x
+                [Service]
+                ExecStart=/bin/true
+                [Install]
+                WantedBy=multi-user.target
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("mutually exclusive")
+      end
+
+      it "rejects a unit_body missing [Service] or WantedBy=" do
+        bad = manifest_yaml + <<~YAML
+          services:
+            - name: rails
+              unit_body: |
+                [Unit]
+                Description=x
+                [Service]
+                ExecStart=/bin/true
+        YAML
+        result = described_class.import!(node_module: mod, yaml: bad)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("[Service] section and a WantedBy= line")
+      end
+
+      it "creates a ModuleService from a unit_body service without requiring user:" do
+        with_body = manifest_yaml + <<~YAML
+          services:
+            - name: claude
+              unit_body: |
+                [Unit]
+                Description=Claude tmux session
+                After=network-online.target
+                Wants=network-online.target
+
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                User=pnadmin
+                ExecStart=/usr/local/bin/claude-tmux-start.sh
+
+                [Install]
+                WantedBy=multi-user.target
+        YAML
+        result = described_class.import!(node_module: mod, yaml: with_body)
+        expect(result.ok?).to be true
+        claude = mod.reload.module_services.find_by(name: "claude")
+        expect(claude.start_command).to be_nil
+        expect(claude.unit_body).to include("Type=oneshot")
+        expect(claude.service_user).to be_nil
+        expect(claude.system_user).to be_nil
       end
 
       it "rejects a service with invalid restart_policy" do

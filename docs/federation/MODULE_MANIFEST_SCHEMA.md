@@ -113,10 +113,63 @@ services:
     metadata: {}                                       # forward-compat free-form
 ```
 
+### `unit_body`: verbatim systemd unit passthrough
+
+Most services describe their process via the structured fields above and let
+the agent generate the `[Service]`/`ExecStart=`/`Restart=`/`[Install]`
+stanzas. A service may instead supply `unit_body` — a **verbatim systemd unit
+file body** — for lifecycle semantics the structured fields can't express
+(`Type=oneshot`, `RemainAfterExit=`, `RestartSec=`, `StartLimit*=`,
+`ExecStartPre=`, etc.):
+
+```yaml
+services:
+  - name: claude
+    unit_body: |
+      [Unit]
+      Description=Claude tmux session
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      User=pnadmin
+      ExecStart=/usr/local/bin/claude-tmux-start.sh
+
+      [Install]
+      WantedBy=multi-user.target
+```
+
+`unit_body` and `start_command` are **mutually exclusive** — a service
+declares exactly one. `unit_body` rides the same `services:` write/enable/
+detach lifecycle as a generated unit (the agent writes
+`powernode-<moduleUUID>-<name>.service`, appends a generated `[Unit]` section
+for any `dependencies:` entries, and — under chroot attach — an appended
+`[Service]` section carrying the chroot directives); the body's own
+`[Install]`/`WantedBy=` is what makes `systemctl --root enable` do anything,
+since the agent does not append an `[Install]` section itself.
+
+Sibling ordering (`After=`/`Requires=` on another service *in this same
+manifest*) must NOT be hand-written into `unit_body` — the generated unit
+name (`powernode-<moduleUUID>-<name>.service`) isn't known until attach time.
+Express those as `dependencies:` instead; the agent emits the matching
+`After=`/`Requires=` lines. Non-sibling ordering (e.g.
+`After=network-online.target`) stays in the body verbatim.
+
+When `unit_body` is present and `user:` is omitted, the body's own `User=`
+line governs — the row is saved with no `service_user`/`system_user`
+(`ManifestImportService` skips user resolution in this case, so a user like
+`pnadmin` that isn't a platform-allocated `ServiceUser` or a
+`WELL_KNOWN_SYSTEM_USERS` entry doesn't need to be declared under `users:`).
+
 ## Validation Rules
 
 - `name` is required, unique within the manifest's services list, max 100 chars.
-- `start_command` is required (non-empty string).
+- Exactly one of `start_command` / `unit_body` is required (non-empty string).
+- When `unit_body` is present, it must contain a `[Service]` section and a
+  `WantedBy=` line — the agent's offline `systemctl enable` reads
+  `[Install]`/`WantedBy=` directly from the body.
 - `restart_policy` (if present) must be one of `always | on-failure | never`.
 - `health.method` (if present) must be one of `GET | POST | PUT`.
 - `dependencies[*].service` must reference another service declared in the

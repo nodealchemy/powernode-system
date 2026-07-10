@@ -118,6 +118,15 @@ type ManifestSudoer struct {
 type Service struct {
 	Name                       string            `json:"name"`
 	StartCommand               string            `json:"start_command"`
+	// UnitBody is a verbatim systemd unit file body (option A2),
+	// mutually exclusive with StartCommand. RenderUnitMode passes it
+	// through as-is (plus an appended generated [Unit] dependency
+	// section, and — under chroot — an appended [Service] chroot
+	// section) instead of synthesizing ExecStart=/Restart=/etc. from
+	// the structured fields below. omitempty is LOAD-BEARING: it keeps
+	// ServicesHash byte-identical for every existing (non-unit_body)
+	// service, so this addition doesn't trigger a fleet-wide re-attach.
+	UnitBody                   string            `json:"unit_body,omitempty"`
 	StopCommand                string            `json:"stop_command,omitempty"`
 	RestartPolicy              string            `json:"restart_policy,omitempty"` // always | on-failure | never
 	User                       string            `json:"user,omitempty"`

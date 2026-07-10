@@ -142,6 +142,7 @@ module System
         {
           name:                          svc.name,
           start_command:                 svc.start_command,
+          unit_body:                     svc.unit_body,
           stop_command:                  svc.stop_command,
           restart_policy:                svc.restart_policy,
           # ModuleService maps to either a platform-allocated

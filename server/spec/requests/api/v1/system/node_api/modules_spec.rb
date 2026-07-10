@@ -209,6 +209,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(entry).to include(
         "name" => "nginx",
         "start_command" => "/usr/sbin/nginx -g 'daemon off;'",
+        "unit_body" => nil,
         "stop_command" => "/usr/sbin/nginx -s quit",
         "restart_policy" => "always",
         "user" => "nobody",
@@ -220,6 +221,37 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
       expect(entry["exposed_ports"]).to eq([ { "container" => 80, "host" => 80 } ])
       expect(entry["dependencies"]).to eq([])
       svc.reload
+    end
+
+    # Option A2 — verbatim unit_body passthrough (dev-cell/claude-tmux's
+    # shape). No start_command, no service_user/system_user.
+    it "show emits unit_body for a unit_body service and start_command: nil" do
+      unit_body = <<~UNIT
+        [Unit]
+        Description=Claude tmux session
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        User=pnadmin
+        ExecStart=/usr/local/bin/claude-tmux-start.sh
+
+        [Install]
+        WantedBy=multi-user.target
+      UNIT
+      ::System::ModuleService.create!(
+        account: account,
+        node_module: base_module,
+        name: "claude",
+        unit_body: unit_body,
+        restart_policy: "always"
+      )
+
+      get "/api/v1/system/node_api/modules/#{base_module.id}", headers: headers
+      entry = JSON.parse(response.body).dig("data", "services").find { |s| s["name"] == "claude" }
+      expect(entry["start_command"]).to be_nil
+      expect(entry["unit_body"]).to eq(unit_body)
+      expect(entry["user"]).to be_nil
     end
 
     it "show services array preserves dependency edges by name" do

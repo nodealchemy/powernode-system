@@ -723,6 +723,30 @@ FactoryBot.define do
       exposed_ports { [ { "port" => 5432, "protocol" => "tcp", "name" => "postgres" } ] }
       service_user { ::System::Identity::UserAllocator.allocate!(username: "postgres") }
     end
+
+    # A verbatim systemd unit passthrough service (option A2) — dev-cell
+    # and claude-tmux's shape. No start_command, no service_user/system_user
+    # (the body's own User= governs).
+    trait :unit_body do
+      start_command { nil }
+      service_user { nil }
+      unit_body do
+        <<~UNIT
+          [Unit]
+          Description=Example unit_body service
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/bin/example-start.sh
+
+          [Install]
+          WantedBy=multi-user.target
+        UNIT
+      end
+    end
   end
 
   factory :system_module_service_dependency, class: "System::ModuleServiceDependency" do

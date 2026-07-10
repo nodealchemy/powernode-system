@@ -50,7 +50,6 @@ module System
 
     validates :name, presence: true, length: { maximum: 100 },
                      uniqueness: { scope: :node_module_id }
-    validates :start_command, presence: true
     validates :restart_policy, inclusion: { in: RESTART_POLICIES }
     validates :health_method, inclusion: { in: HEALTH_METHODS }
     validates :health_interval_seconds,      numericality: { greater_than: 0 }
@@ -59,6 +58,7 @@ module System
     validates :system_user, inclusion: { in: WELL_KNOWN_SYSTEM_USERS },
                             allow_nil: true
     validate :exactly_one_user_source
+    validate :exactly_one_start_source
     validate :account_matches_node_module
 
     scope :with_health_check, -> { where.not(health_endpoint: nil) }
@@ -90,8 +90,26 @@ module System
       has_sys = system_user.present?
       if has_su && has_sys
         errors.add(:base, "service_user_id and system_user are mutually exclusive")
-      elsif !has_su && !has_sys
+      elsif !has_su && !has_sys && unit_body.blank?
+        # A unit_body service may leave both blank — the verbatim body's
+        # own User= line governs (see ManifestImportService#apply_services,
+        # which skips assign_service_user! for exactly this case).
         errors.add(:base, "service_user_id or system_user is required")
+      end
+    end
+
+    # Either a generated unit (start_command drives ExecStart/Restart/etc.
+    # via the agent's RenderUnitMode) or a verbatim unit_body passthrough
+    # (dev-cell/claude-tmux's hand-tuned Type=oneshot/RemainAfterExit/
+    # ExecStartPre semantics the structured fields can't express) — never
+    # both, never neither. See docs/federation/MODULE_MANIFEST_SCHEMA.md.
+    def exactly_one_start_source
+      has_cmd  = start_command.present?
+      has_body = unit_body.present?
+      if has_cmd && has_body
+        errors.add(:base, "start_command and unit_body are mutually exclusive")
+      elsif !has_cmd && !has_body
+        errors.add(:base, "start_command or unit_body is required")
       end
     end
 

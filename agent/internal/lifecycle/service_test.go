@@ -75,6 +75,126 @@ func TestRenderUnit_RestartPolicyMapping(t *testing.T) {
 	}
 }
 
+// TestRenderUnitMode_UnitBodyPassthrough confirms a unit_body service's
+// body is emitted verbatim (option A2 — dev-cell/claude-tmux's shape),
+// with no generated ExecStart=/Type=/Restart= directives, and no
+// generated [Install] section (the body's own WantedBy= governs).
+func TestRenderUnitMode_UnitBodyPassthrough(t *testing.T) {
+	body := "[Unit]\nDescription=Claude tmux session\nAfter=network-online.target\n\n" +
+		"[Service]\nType=oneshot\nRemainAfterExit=yes\nUser=pnadmin\nExecStart=/usr/local/bin/claude-tmux-start.sh\n\n" +
+		"[Install]\nWantedBy=multi-user.target\n"
+	svc := manifest.Service{Name: "claude", UnitBody: body, StartCommand: ""}
+	got := RenderUnitMode(svc, "mod-123", RootModeNative)
+
+	if !strings.Contains(got, "# Managed by powernode-agent") {
+		t.Errorf("expected managed-by header, got:\n%s", got)
+	}
+	if !strings.Contains(got, body) {
+		t.Errorf("expected verbatim unit_body content in output:\n%s", got)
+	}
+	for _, unwanted := range []string{"ExecStart=/bin/", "Type=simple\n", "Restart=always\n", "RestartSec=5s"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("did not expect generated directive %q in unit_body output:\n%s", unwanted, got)
+		}
+	}
+	// Only one [Install] section — the body's own, nothing appended.
+	if strings.Count(got, "[Install]") != 1 {
+		t.Errorf("expected exactly one [Install] section, got:\n%s", got)
+	}
+}
+
+// TestRenderUnitMode_UnitBodyDependencies confirms Dependencies are
+// still emitted as an appended [Unit] section naming the generated
+// powernode-<id>-<name>.service units — identical resolution to the
+// non-unit_body path — even though the body itself carries no sibling
+// After=/Requires= lines.
+func TestRenderUnitMode_UnitBodyDependencies(t *testing.T) {
+	body := "[Unit]\nDescription=x\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
+	svc := manifest.Service{Name: "provision", UnitBody: body, Dependencies: []string{"bootstrap"}}
+	got := RenderUnitMode(svc, "mod-abc", RootModeNative)
+
+	wantAfter := "After=powernode-mod-abc-bootstrap.service"
+	wantRequires := "Requires=powernode-mod-abc-bootstrap.service"
+	if !strings.Contains(got, wantAfter) {
+		t.Errorf("expected %q in:\n%s", wantAfter, got)
+	}
+	if !strings.Contains(got, wantRequires) {
+		t.Errorf("expected %q in:\n%s", wantRequires, got)
+	}
+	// The appended section, not the verbatim body's own [Unit] header —
+	// there should be two [Unit] occurrences: the body's and the appended one.
+	if strings.Count(got, "[Unit]") != 2 {
+		t.Errorf("expected the body's [Unit] section plus one appended dependency [Unit] section, got:\n%s", got)
+	}
+}
+
+// TestRenderUnitMode_UnitBodyChrootAppendsServiceSection confirms
+// RootModeChroot appends a [Service] section with the same chroot
+// directives the generated path emits, so a unit_body service's
+// ExecStart (inside the verbatim body) still resolves against /sysroot.
+// RootModeNative must NOT get this appended section.
+func TestRenderUnitMode_UnitBodyChrootAppendsServiceSection(t *testing.T) {
+	body := "[Unit]\nDescription=x\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n"
+	svc := manifest.Service{Name: "provision", UnitBody: body}
+
+	chroot := RenderUnitMode(svc, "mod-abc", RootModeChroot)
+	for _, want := range []string{"RootDirectory=/sysroot", "MountAPIVFS=yes", "BindReadOnlyPaths=/etc/passwd /etc/group /etc/shadow /etc/gshadow"} {
+		if !strings.Contains(chroot, want) {
+			t.Errorf("chroot mode: expected %q in:\n%s", want, chroot)
+		}
+	}
+	// Two [Service] sections: the body's own, plus the appended chroot one.
+	if strings.Count(chroot, "[Service]") != 2 {
+		t.Errorf("chroot mode: expected the body's [Service] section plus one appended chroot [Service] section, got:\n%s", chroot)
+	}
+
+	native := RenderUnitMode(svc, "mod-abc", RootModeNative)
+	if strings.Contains(native, "RootDirectory=/sysroot") {
+		t.Errorf("native mode: did not expect chroot directives, got:\n%s", native)
+	}
+	if strings.Count(native, "[Service]") != 1 {
+		t.Errorf("native mode: expected only the body's own [Service] section, got:\n%s", native)
+	}
+}
+
+// TestRenderUnit_NonUnitBodyPathUnchanged is a regression guard: this
+// function renders EVERY module's units fleet-wide, so adding the
+// UnitBody branch must not alter output for services that don't declare
+// it. Same assertions as TestRenderUnit_FullDirective_Mapping, run
+// again after the unit_body branch exists, to catch any accidental
+// shared-state or early-return regression in the refactor.
+func TestRenderUnit_NonUnitBodyPathUnchanged(t *testing.T) {
+	svc := manifest.Service{
+		Name:             "postgres",
+		StartCommand:     "/usr/bin/postgres -D /var/lib/postgresql",
+		StopCommand:      "/usr/bin/pg_ctl stop -m fast",
+		RestartPolicy:    "always",
+		User:             "postgres",
+		WorkingDirectory: "/var/lib/postgresql",
+		Env:              map[string]string{"PGDATA": "/var/lib/postgresql", "LANG": "en_US.UTF-8"},
+		Dependencies:     []string{"redis"},
+	}
+	got := RenderUnit(svc, "mod-123")
+	if strings.Contains(got, "Managed by powernode-agent") {
+		t.Errorf("non-unit_body service should use the generated header, not the unit_body one:\n%s", got)
+	}
+	wants := []string{
+		"# Auto-generated by powernode-agent for module mod-123 / service postgres.",
+		"Description=Powernode service postgres (module mod-123)",
+		"After=powernode-mod-123-redis.service",
+		"Requires=powernode-mod-123-redis.service",
+		"Type=simple",
+		"ExecStart=/usr/bin/postgres -D /var/lib/postgresql",
+		"Restart=always",
+		"WantedBy=multi-user.target",
+	}
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in unit body:\n%s", want, got)
+		}
+	}
+}
+
 func TestTopoSort_LinearChain(t *testing.T) {
 	services := []manifest.Service{
 		{Name: "c", StartCommand: "/bin/true", Dependencies: []string{"b"}},

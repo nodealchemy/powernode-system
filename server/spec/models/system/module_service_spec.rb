@@ -37,7 +37,6 @@ RSpec.describe System::ModuleService, type: :model do
 
     it { is_expected.to validate_presence_of(:name) }
     it { is_expected.to validate_length_of(:name).is_at_most(100) }
-    it { is_expected.to validate_presence_of(:start_command) }
     it { is_expected.to validate_inclusion_of(:restart_policy).in_array(described_class::RESTART_POLICIES) }
     it { is_expected.to validate_inclusion_of(:health_method).in_array(described_class::HEALTH_METHODS) }
     it { is_expected.to validate_numericality_of(:health_interval_seconds).is_greater_than(0) }
@@ -64,6 +63,25 @@ RSpec.describe System::ModuleService, type: :model do
       service.account = other_account
       expect(service).not_to be_valid
       expect(service.errors[:account_id]).to include(/must match/)
+    end
+
+    describe "exactly_one_start_source" do
+      it "rejects a service with neither start_command nor unit_body" do
+        service = build(:system_module_service, start_command: nil, unit_body: nil)
+        expect(service).not_to be_valid
+        expect(service.errors[:base]).to include("start_command or unit_body is required")
+      end
+
+      it "rejects a service with both start_command and unit_body" do
+        service = build(:system_module_service, unit_body: "[Service]\nExecStart=/bin/true\nWantedBy=multi-user.target")
+        expect(service).not_to be_valid
+        expect(service.errors[:base]).to include("start_command and unit_body are mutually exclusive")
+      end
+
+      it "accepts a unit_body service without service_user or system_user" do
+        service = build(:system_module_service, :unit_body)
+        expect(service).to be_valid
+      end
     end
   end
 

@@ -90,7 +90,7 @@ module System
     # Per-service schema (manifest.services[*]); see docs/federation/MODULE_MANIFEST_SCHEMA.md.
     SERVICE_KNOWN_KEYS = %w[
       name start_command stop_command restart_policy user working_directory
-      env exposed_ports capabilities health dependencies metadata
+      env exposed_ports capabilities health dependencies metadata unit_body
     ].freeze
 
     USER_KNOWN_KEYS    = %w[name shell home gecos primary_group supplementary_groups].freeze
@@ -414,10 +414,21 @@ module System
           seen_names << name
         end
 
-        if svc["start_command"].blank?
-          errors << "#{prefix}.start_command is required"
-        elsif !svc["start_command"].is_a?(String)
+        has_start_command = svc["start_command"].present?
+        has_unit_body     = svc["unit_body"].present?
+        if has_start_command && has_unit_body
+          errors << "#{prefix}.start_command and #{prefix}.unit_body are mutually exclusive"
+        elsif !has_start_command && !has_unit_body
+          errors << "#{prefix}.start_command or #{prefix}.unit_body is required"
+        elsif has_start_command && !svc["start_command"].is_a?(String)
           errors << "#{prefix}.start_command must be a string"
+        elsif has_unit_body
+          if !svc["unit_body"].is_a?(String)
+            errors << "#{prefix}.unit_body must be a string"
+          elsif !svc["unit_body"].include?("[Service]") || !svc["unit_body"].include?("WantedBy=")
+            errors << "#{prefix}.unit_body must contain a [Service] section and a WantedBy= line " \
+                       "(the agent's offline `systemctl enable` reads [Install]/WantedBy from the body)"
+          end
         end
 
         if (rp = svc["restart_policy"]) && !::System::ModuleService::RESTART_POLICIES.include?(rp)
@@ -652,9 +663,14 @@ module System
         record = ::System::ModuleService.find_or_initialize_by(node_module: mod, name: svc["name"])
         record.account = mod.account
         record.start_command = svc["start_command"]
+        record.unit_body     = svc["unit_body"]
         record.stop_command  = svc["stop_command"]
         record.restart_policy = svc.fetch("restart_policy", "always")
-        assign_service_user!(record, mod, svc, identity_index)
+        # unit_body's own User= governs when the manifest leaves user:
+        # unset — e.g. claude-tmux runs as pnadmin, an agent-baseline
+        # identity that isn't a ServiceUser/WELL_KNOWN_SYSTEM_USERS entry
+        # and can't be declared under users: without colliding UIDs.
+        assign_service_user!(record, mod, svc, identity_index) unless svc["unit_body"].present? && svc["user"].blank?
         record.working_directory = svc["working_directory"]
         record.env           = svc["env"] || {}
         record.exposed_ports = svc["exposed_ports"] || []

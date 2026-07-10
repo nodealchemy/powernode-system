@@ -1,6 +1,12 @@
 package manifest
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 // TestServicesHashStable confirms hash determinism — identical service
 // content yields identical hashes across two independent Manifest values.
@@ -88,5 +94,45 @@ func TestServicesHashNilReceiver(t *testing.T) {
 	var m *Manifest
 	if m.ServicesHash() != "" {
 		t.Errorf("nil-receiver ServicesHash should return empty string")
+	}
+}
+
+// TestServicesHashUnaffectedByEmptyUnitBody confirms adding the UnitBody
+// field (json:"unit_body,omitempty") doesn't change ServicesHash for
+// existing (non-unit_body) services — omitempty means the key is absent
+// from the marshaled JSON for the zero value, so this field addition
+// doesn't trigger a fleet-wide re-attach for modules that never declared
+// unit_body. Cross-checked against an independently marshaled+hashed copy
+// rather than a hardcoded golden string, since the JSON shape of the
+// other fields could legitimately evolve.
+func TestServicesHashUnaffectedByEmptyUnitBody(t *testing.T) {
+	m := &Manifest{
+		Services: []Service{
+			{Name: "qga", StartCommand: "/usr/sbin/qemu-ga", RestartPolicy: "always"},
+		},
+	}
+	body, err := json.Marshal(m.Services)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "unit_body") {
+		t.Errorf("expected unit_body key omitted for a service with empty UnitBody, got: %s", body)
+	}
+	sum := sha256.Sum256(body)
+	want := hex.EncodeToString(sum[:])
+	if got := m.ServicesHash(); got != want {
+		t.Errorf("ServicesHash() = %s, want %s (independently computed from marshaled JSON)", got, want)
+	}
+}
+
+// TestServicesHashDiffersForUnitBody confirms a unit_body service
+// participates in the hash like any other field — a service declaring
+// unit_body hashes differently than an otherwise-identical service
+// declaring start_command.
+func TestServicesHashDiffersForUnitBody(t *testing.T) {
+	withCmd := &Manifest{Services: []Service{{Name: "claude", StartCommand: "/bin/true"}}}
+	withBody := &Manifest{Services: []Service{{Name: "claude", UnitBody: "[Service]\nExecStart=/bin/true\n"}}}
+	if withCmd.ServicesHash() == withBody.ServicesHash() {
+		t.Errorf("expected different hashes for start_command vs unit_body services")
 	}
 }
