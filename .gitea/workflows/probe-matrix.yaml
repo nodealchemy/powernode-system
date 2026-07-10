@@ -1,0 +1,88 @@
+# probe-matrix.yaml — verification canary for the dynamic-build design.
+#
+# Confirms the primitives the module-build workflow's dynamic matrix relies
+# on actually work on THIS Gitea (matrix-level fromJSON(needs.x) is known
+# broken — it collapses to one empty entry — so we index a STATIC integer
+# matrix and resolve the real value in a runner-side step instead):
+#   P1  needs-output → step env resolves (load-bearing)
+#   P2  a step gated on the resolved value skips idle slots correctly
+#   P3  step-level fromJSON(needs.x)[idx] (informational only)
+#   P4  an inputs-ONLY ternary matrix collapses at plan time (hot-path sugar)
+#
+# Also kept as an upgrade canary: re-run after a Gitea bump to see if the
+# native dynamic matrix has landed (PR #36564).
+name: probe-matrix
+on:
+  workflow_dispatch:
+    inputs:
+      single:
+        description: "set to 'yes' to test single-collapse (P4)"
+        required: false
+        default: ""
+
+jobs:
+  emit:
+    runs-on: ubuntu-24.04
+    container:
+      image: docker.io/library/debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      set: ${{ steps.e.outputs.set }}
+      count: ${{ steps.e.outputs.count }}
+      json: ${{ steps.e.outputs.json }}
+    steps:
+      - id: e
+        run: |
+          set -euo pipefail
+          echo "set=alpha beta gamma" >> "$GITHUB_OUTPUT"
+          echo "count=3" >> "$GITHUB_OUTPUT"
+          echo 'json=["alpha","beta","gamma"]' >> "$GITHUB_OUTPUT"
+
+  slots:
+    needs: emit
+    runs-on: ubuntu-24.04
+    container:
+      image: docker.io/library/debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix:
+        idx: [0, 1, 2, 3]   # one more than count=3 → slot 3 must idle
+    steps:
+      - name: Resolve slot (P1)
+        id: resolve
+        env:
+          BUILD_SET: ${{ needs.emit.outputs.set }}
+        run: |
+          set -euo pipefail
+          echo "[P1] raw BUILD_SET='${BUILD_SET}'"
+          read -ra SLOTS <<< "${BUILD_SET}"
+          MODULE="${SLOTS[${{ matrix.idx }}]:-}"
+          echo "[P1] slot ${{ matrix.idx }} -> module='${MODULE}'"
+          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
+      - name: Step-level fromJSON index (P3 informational)
+        env:
+          FJ: ${{ fromJSON(needs.emit.outputs.json)[matrix.idx] }}
+        run: echo "[P3] step-level fromJSON[idx]='${FJ:-<empty>}'"
+      - name: Gated build step (P2)
+        if: steps.resolve.outputs.module != ''
+        run: echo "[P2] BUILD ${{ steps.resolve.outputs.module }} (slot ${{ matrix.idx }})"
+
+  single:
+    needs: emit
+    runs-on: ubuntu-24.04
+    container:
+      image: docker.io/library/debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      # inputs-only ternary — inputs IS available at plan time, so this may
+      # legally collapse the matrix to [0] for single dispatch (P4).
+      matrix:
+        idx: ${{ fromJSON(inputs.single != '' && '[0]' || '[0,1,2,3]') }}
+    steps:
+      - run: echo "[P4] single='${{ inputs.single }}' idx=${{ matrix.idx }}"
