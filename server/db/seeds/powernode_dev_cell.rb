@@ -105,10 +105,16 @@ errors  = []
   template.public = false
   template.description = "Warm AI-agent dev cell: Powernode-as-OS base + Ruby runtime + local " \
                           "Postgres + claude-tmux harness, enrolled onto the dev-fleet SDWAN overlay."
-  # boot_mode matches powernode-hub-pivot (direct_kernel/pivot_root, no host
-  # OS) — dev-cell layers the same system-base + base-os-ubuntu-noble stack.
+  # boot_mode: uefi_disk. dev-cell layers the same system-base +
+  # base-os-ubuntu-noble pivot-boot stack as powernode-hub-pivot, but is
+  # provisioned onto Proxmox via an API token — and PVE restricts the qemu
+  # `args` key (which direct_kernel needs to pass -kernel/-initrd/-append)
+  # to the literal root@pam ticket user, so an API-token provision cannot
+  # set it. The platform publishes a UEFI disk image; the cell boots that
+  # image and the agent's initramfs does the module pull + switch_root from
+  # there (same pivot outcome, without needing qemu `args`).
   template.config = (template.config || {}).merge(
-    "boot_mode" => "direct_kernel",
+    "boot_mode" => "uefi_disk",
     "sdwan_network_id" => network.id
   )
   template.save!
