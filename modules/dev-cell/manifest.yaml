@@ -1,0 +1,201 @@
+schema_version: 1
+
+name: dev-cell
+display_name: "Autonomous Campaign Dev-Cell Executor"
+description: >
+  Turns a booted fleet instance into an autonomous campaign dev-cell, with
+  the untrusted AI-agent work PRIVILEGE-SEPARATED from every credential,
+  from the validate/push decision, AND from root's own git invocations: a
+  root supervisor (dev-cell-executor.sh) holds the Gitea SSH deploy key
+  and the node's own mTLS identity and never runs agent-authored code; a
+  dedicated unprivileged, nologin sandbox user (pnagent) runs headless
+  Claude Code (implement + commit only, never push) and
+  scripts/validate.sh, with NO access to either secret and no MCP reach
+  except through a local proxy. Because pnagent OWNS the cloned repo's
+  working tree (including .git/), every git command root itself still
+  needs to run (fetch/push, both requiring the deploy key) goes through a
+  `rootgit` wrapper that disables hooks/fsmonitor/attributes and the
+  `ext::` transport, and targets the repo's explicit clone_url rather
+  than the pnagent-writable "origin" remote name — otherwise a planted
+  .git/hooks/pre-push, `core.fsmonitor`, or a `url.*.insteadOf` rewrite to
+  `ext::` could execute arbitrary code AS ROOT (verified empirically, both
+  attack and defense, against a real planted hook and a real insteadOf
+  rewrite). Every operation that actually WRITES the working tree — the
+  validator restore, running validate.sh, and reverting the tree back to
+  HEAD afterward — therefore runs AS PNAGENT too, via dev-cell-validate-
+  pnagent.sh, never root. Each loop iteration: (1) pnagent implements
+  +commits one task; (2) root fetches develop over the explicit clone_url
+  into FETCH_HEAD; (3) pnagent restores an IMMUTABLE validator — not just
+  scripts/ .claude/ .gitleaks.toml, but the toolchain config
+  scripts/validate.sh's own rspec/tsc invocations read (server/.rspec,
+  spec_helper.rb, Gemfile.lock, frontend/tsconfig*.json, ...) so neither
+  can be neutered by editing config instead of the validator itself — from
+  FETCH_HEAD and runs THAT copy of scripts/validate.sh sandboxed (app/ and
+  config/ stay agent-authored so test-first work is still genuinely
+  exercised — this makes the loop-branch validate BEST-EFFORT, not a full
+  guarantee; the existing CI gate re-validates before the loop branch is
+  ever merged to develop); (4) only on exit 0 does root itself run an
+  unforced (inherently fast-forward-only) `git push`, again over the
+  explicit clone_url through the same rootgit wrapper; (5) pnagent reports
+  the outcome, already decided by root, via MCP. MCP auth is mTLS, but the
+  cert/key never leave root: a local reverse proxy (dev-cell-mcp-proxy.js,
+  root-owned, header-allowlisted, connection/body/timeout-capped) is the
+  only process holding the node's client cert, forwarding ONLY the /mcp
+  path to the platform; pnagent's `claude` points at
+  http://127.0.0.1:<port>/mcp with no cert material of its own — this is
+  deliberate, not an oversight, even though Claude Code has native
+  CLAUDE_CODE_CLIENT_CERT/KEY mTLS support: handing pnagent the node key
+  would let a compromised agent re-call dev_cell_bootstrap and mint itself
+  a fresh deploy key directly. Gitea auth is a per-repo, read-write SSH
+  deploy key scoped to exactly the one source repo cloned, held only by
+  root. Composed onto a template ALONGSIDE claude-tmux (Claude Code CLI +
+  the credential-fetch script this module reuses for its own headless
+  ANTHROPIC_API_KEY), runtime-ruby (Ruby/bundler for scripts/validate.sh
+  and the test-DB prep), and postgres-primary (local Postgres the prepared
+  test DB lives on, and the psql/createuser/pg_isready this module's own
+  provisioning uses) — this module ships only the dev-workspace
+  provisioning + the executor-loop pieces, not those runtimes themselves.
+  All secrets (the SSH deploy key, the node's own mTLS cert/key, the
+  Anthropic API key) are mTLS-fetched / copied from the platform's
+  Vault-backed node_api and the node's own PKI directory at boot, staged
+  root-only 0600 in a tmpfs runtime directory, and never baked into the
+  module image, written to a persisted dotfile, or logged. The residual:
+  pnagent CAN still reach the Anthropic API (needs the key to run `claude`
+  at all) — a cost-abuse exposure, not a credential-theft one; it cannot
+  reach Gitea, cannot reach any node_api path other than /mcp, cannot
+  decide whether its own work gets pushed, and cannot get root to execute
+  anything through git hooks/config/attributes it controls.
+license: MIT
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+file_spec:
+  - "/usr/bin/git"
+  - "/usr/bin/git-shell"
+  - "/usr/lib/git-core/**"
+  - "/usr/share/git-core/**"
+  - "/usr/bin/jq"
+  # git's remote-https helper + jq both pull additional shared libraries
+  # (libcurl variants, oniguruma for jq, ...) under the multiarch lib dir —
+  # carve the whole tree rather than enumerate individual .so files, same
+  # rationale (and same directory) claude-tmux's manifest documents for its
+  # own apt-installed tmux/nodejs packages.
+  - "/usr/lib/x86_64-linux-gnu/**"
+  - "/etc/systemd/system/dev-cell-bootstrap.service"
+  - "/etc/systemd/system/dev-cell-provision.service"
+  - "/etc/systemd/system/dev-cell-mcp-proxy.service"
+  - "/etc/systemd/system/dev-cell-executor.service"
+  - "/usr/local/bin/dev-cell-bootstrap.sh"
+  - "/usr/local/bin/dev-cell-provision.sh"
+  - "/usr/local/bin/dev-cell-provision-pnagent.sh"
+  - "/usr/local/bin/dev-cell-validate-pnagent.sh"
+  - "/usr/local/bin/dev-cell-git-ssh-env.sh"
+  - "/usr/local/bin/dev-cell-mcp-proxy.js"
+  - "/usr/local/bin/dev-cell-executor.sh"
+
+# dev-cell only ships its own service units + scripts + the git/jq
+# runtime — no other module's paths.
+protected_spec: []
+
+# git + jq are the only packages dev-cell needs that aren't already carried
+# by its sibling modules on the composed template (base-os-ubuntu-noble
+# already provides curl/ca-certificates/bash/coreutils; claude-tmux
+# provides node/npm/tmux/the claude CLI; runtime-ruby provides
+# ruby/bundler). ca-certificates is re-listed anyway, matching claude-tmux's
+# own defensive precedent — this module's bootstrap script also makes its
+# own mTLS calls and should not silently depend on a neighbor's copy.
+#
+# THREE deps this module's SCRIPTS now need (SSH clone/push via a deploy
+# key; psql/createuser/pg_isready for the powernode-role/pg-ready
+# provisioning steps; Node for the local mTLS proxy + privilege drops via
+# runuser) are deliberately NOT added here — all three are already on PATH
+# via existing dependencies, so adding them would just duplicate a sibling
+# module's own apt-installed binaries in a second, redundant mmdebstrap
+# carve:
+#   * `ssh` — comes from the `openssh-client` package, which is a hard
+#     Depends: of `openssh-server` (verified via apt-cache show
+#     openssh-server), which base-os-ubuntu-noble already lists in ITS OWN
+#     package_spec (and carves the whole /usr/bin/** tree that ships it) —
+#     a real, non-optional `requires:` dependency of this module.
+#   * `psql`/`createuser`/`pg_isready` — come from postgresql-client-16,
+#     which postgres-primary already lists in ITS OWN package_spec (and
+#     carves /usr/**) — an ASSUMED co-module (see the comment at the
+#     bottom of this file), same status quo as `bundle` from runtime-ruby.
+#   * `node` (dev-cell-mcp-proxy.js — deliberately dependency-free, Node
+#     core modules only, no npm install) and `runuser` (util-linux) — node
+#     comes from claude-tmux's package_spec (a hard `requires:` dependency,
+#     below), runuser from util-linux, which base-os-ubuntu-noble already
+#     lists in ITS OWN package_spec (also carved under /usr/sbin/**).
+package_spec:
+  - git
+  - jq
+  - ca-certificates
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+    # dev-cell-executor.service's ExecStartPre invokes claude-tmux's
+    # /usr/local/bin/claude-tmux-fetch-credential.sh directly (reused
+    # as-is, rather than re-deriving PKI/platform-URL resolution a third
+    # time in this module) to obtain its own ANTHROPIC_API_KEY — a real
+    # file dependency, not just a documentation note.
+    - powernode/claude-tmux@^1.0
+  provides:
+    - dev.cell
+    - dev.cell.executor
+
+# NOT declared here as a `requires:` edge (no sibling module in this
+# codebase — postgres-primary, runtime-ruby — declares one for a co-located
+# runtime it needs either): dev-cell also assumes runtime-ruby (ruby +
+# bundler on PATH, for scripts/validate.sh and bin/rails) and
+# postgres-primary (a local Postgres on 127.0.0.1:5432, trust-auth,
+# matching server/config/database.yml.example's defaults) are co-assigned
+# on the same NodeTemplate. dev-cell-provision.sh's own preflight step
+# (`command -v bundle/psql/pg_isready/createuser`) verifies this template
+# composition explicitly at provisioning time, failing with a clear
+# message rather than a cryptic error deep inside a later phase if either
+# is missing — see that script for what's assumed vs. verified.
+
+init:
+  start:   "systemctl start dev-cell-executor"
+  stop:    "systemctl stop dev-cell-executor"
+  restart: "systemctl restart dev-cell-executor"
+
+reboot_required: false
+
+# `pnagent`: the DEDICATED, UNPRIVILEGED sandbox account for everything
+# this module's contract calls "untrusted" — headless `claude` (stage1
+# implement+commit, stage2 report) and scripts/validate.sh itself. NOT the
+# platform baseline "pnadmin" account claude-tmux's own interactive tmux
+# session runs as: the whole point of this split is that pnagent must
+# never hold the Gitea deploy key, the node's mTLS cert/key, or
+# GIT_SSH_COMMAND — reusing pnadmin (which nothing else in THIS module
+# grants any special access to either, but which IS the account an
+# operator's own claude-tmux session runs as, a different trust boundary
+# entirely) would blur that line for no benefit. nologin: pnagent is
+# reached only via `runuser -u pnagent` from this module's own
+# root-supervisor scripts, never an interactive or SSH login.
+# etcidentity does not create the home directory (see agent/internal/
+# etcidentity/doc.go — it only renders /etc/passwd et al.) — dev-cell-
+# provision.sh creates + chowns it itself, same as redis's own
+# postgres-start.sh-style precedent for a module-owned service account.
+users:
+  - name: pnagent
+    shell: /usr/sbin/nologin
+    home: /home/pnagent
+    gecos: "Dev-cell sandboxed agent worker (no secrets, no push authority)"
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

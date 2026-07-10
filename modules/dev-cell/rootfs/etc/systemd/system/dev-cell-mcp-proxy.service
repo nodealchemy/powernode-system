@@ -1,0 +1,40 @@
+[Unit]
+Description=Dev-cell: local mTLS-terminating proxy for /mcp — the ONLY process holding the node client cert
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=dev-cell-bootstrap.service network-online.target
+Requires=dev-cell-bootstrap.service
+ConditionPathExists=/usr/local/bin/dev-cell-mcp-proxy.js
+ConditionPathExists=/usr/bin/node
+
+[Service]
+# Runs as root — PRIVILEGE SEPARATION load-bearing detail, not
+# incidental: this is the only process on the instance that ever holds
+# the node's mTLS client cert/key in its own address space. The
+# unprivileged pnagent sandbox user (which runs headless `claude` and
+# scripts/validate.sh — see dev-cell-executor.sh) reaches /mcp ONLY
+# through this proxy's plain-HTTP localhost listener, with no cert
+# material of its own. Handing pnagent the node key directly (Claude
+# Code's native CLAUDE_CODE_CLIENT_CERT/KEY mTLS support would make that
+# easy) would let a compromised agent re-call dev_cell_bootstrap and mint
+# itself a fresh Gitea deploy key — see this module's manifest.yaml
+# description and dev-cell-bootstrap.sh's own comment for the full
+# rationale.
+Type=simple
+User=root
+# Deliberately NOT declaring this unit's own RuntimeDirectory=: it reads
+# (never owns) the dir dev-cell-bootstrap.service already created —
+# DEV_CELL_RUNTIME_DIR matches the same env var name every other script
+# in this module uses for the same purpose (dev-cell-provision.sh,
+# dev-cell-executor.sh).
+Environment=DEV_CELL_RUNTIME_DIR=/run/dev-cell
+Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
+Environment=DEV_CELL_MCP_PROXY_PORT=18443
+
+ExecStart=/usr/bin/node /usr/local/bin/dev-cell-mcp-proxy.js
+Restart=on-failure
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

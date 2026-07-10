@@ -1,0 +1,167 @@
+#!/bin/sh
+# dev-cell-bootstrap.sh — fetches the dev-cell's mTLS bootstrap bundle (an
+# MCP url + a per-repo Gitea SSH deploy key) from the platform's
+# Vault-backed node_api and stages it — plus a copy of the node's OWN mTLS
+# identity — for dev-cell-provision.sh, dev-cell-mcp-proxy.js, and
+# dev-cell-executor.sh to consume, exactly once per boot (RuntimeDirectory
+# is tmpfs, wiped at shutdown — a fresh fetch happens every boot).
+#
+# PRIVILEGE SEPARATION (CRITICAL, read before touching ownership/perms
+# below): everything this script stages stays ROOT-OWNED, mode 0600/0644.
+# It is NEVER chowned to the unprivileged sandbox user (pnagent) that runs
+# headless `claude` + scripts/validate.sh — see dev-cell-executor.sh and
+# this module's manifest.yaml description for why. In particular, handing
+# pnagent the node's own mTLS key (node.key) would let a compromised
+# agent re-call this SAME dev_cell_bootstrap endpoint directly and mint
+# itself a FRESH Gitea deploy key, defeating the whole point of keeping
+# the deploy key root-only — so node.key is confined exactly as tightly
+# as the deploy key is. Only two root-owned processes ever read this
+# directory: dev-cell-mcp-proxy.js (node.crt/node.key/ca-bundle.crt +
+# mcp_credentials.json, to front /mcp on pnagent's behalf) and
+# dev-cell-executor.sh / dev-cell-provision.sh (deploy_key/known_hosts,
+# for the clone/push git only root ever performs).
+#
+# Runs as root (systemd User=root — only root can read the on-node agent's
+# mTLS private key). Writes plaintext secrets to $RUNTIME_DIR
+# (/run/dev-cell by default), mode 0600 root-owned — never echoed, never
+# logged, never baked into this module's image.
+#
+# SECURITY (mTLS-only contract — no OAuth/token of any kind): the cell
+# authenticates to /mcp by presenting the node's own client cert through
+# the local proxy (not directly — see dev-cell-mcp-proxy.js), so this
+# bundle carries no bearer token to protect there. It authenticates to
+# Gitea with a per-repo, read-write SSH deploy key (gitea.private_key
+# below) instead of an account-wide PAT — scoped to exactly the one
+# source repo dev-cell-provision.sh clones, nothing else.
+#
+# Platform-URL + PKI-directory resolution is copied verbatim from
+# claude-tmux's claude-tmux-fetch-credential.sh (itself a read-only shell
+# re-derivation of the Go agent's own identity resolver,
+# agent/internal/identity/*.go), in the same priority order: kernel
+# cmdline -> qemu fw_cfg -> /boot/identity.cfg -> /etc/identity.cfg. Same
+# known gap as that script: cloud-provider metadata strategies
+# (AWS/GCP/Azure/DO) are not replicated here.
+set -eu
+
+RUNTIME_DIR="${RUNTIME_DIRECTORY:-/run/dev-cell}"
+MCP_OUT="$RUNTIME_DIR/mcp_credentials.json"
+GITEA_OUT="$RUNTIME_DIR/gitea_credentials.json"
+DEPLOY_KEY_OUT="$RUNTIME_DIR/deploy_key"
+KNOWN_HOSTS_OUT="$RUNTIME_DIR/known_hosts"
+
+log() { echo "dev-cell-bootstrap: $*" >&2; }
+
+# --- Resolve the on-node agent's PKI directory ------------------------
+if [ -f /persist/var/lib/powernode/pki/node.crt ]; then
+  PKI_DIR=/persist/var/lib/powernode/pki
+elif [ -f /var/lib/powernode/pki/node.crt ]; then
+  PKI_DIR=/var/lib/powernode/pki
+else
+  log "no agent PKI material found (instance not enrolled yet) — refusing to start without a credential"
+  exit 1
+fi
+
+# --- Resolve the platform base URL (same priority order as the agent) -
+PLATFORM_URL=""
+
+if [ -r /proc/cmdline ]; then
+  PLATFORM_URL=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^powernode\.platform_url=//p' | head -n1)
+fi
+
+if [ -z "$PLATFORM_URL" ] && [ -r /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw ]; then
+  PLATFORM_URL=$(cat /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw)
+fi
+
+if [ -z "$PLATFORM_URL" ] && [ -r /boot/identity.cfg ]; then
+  PLATFORM_URL=$(sed -n 's/^SERVER=//p' /boot/identity.cfg | head -n1)
+fi
+
+if [ -z "$PLATFORM_URL" ] && [ -r /etc/identity.cfg ]; then
+  PLATFORM_URL=$(sed -n 's/^SERVER=//p' /etc/identity.cfg | head -n1)
+fi
+
+if [ -z "$PLATFORM_URL" ]; then
+  log "could not resolve platform URL from cmdline/fw_cfg/identity.cfg — refusing to start"
+  exit 1
+fi
+PLATFORM_URL=${PLATFORM_URL%/}
+
+# RuntimeDirectory is created by systemd (RuntimeDirectory=dev-cell in the
+# unit) already root:root 0700 because this unit's User=root — that is
+# EXACTLY the confinement wanted here, so unlike the pre-privilege-
+# separation version of this script, nothing below ever chowns it to
+# anyone else.
+mkdir -p "$RUNTIME_DIR"
+chmod 700 "$RUNTIME_DIR"
+
+RESPONSE="$RUNTIME_DIR/.bootstrap-response.json"
+rm -f "$RESPONSE" "$MCP_OUT" "$GITEA_OUT" "$DEPLOY_KEY_OUT" "$KNOWN_HOSTS_OUT"
+
+# The raw response carries the deploy-key PRIVATE key (gitea.private_key)
+# before it's split into its own file below — belt-and-suspenders umask
+# even though $RUNTIME_DIR is already 0700 root-owned, so curl can't hand
+# it back at the default, more permissive mode.
+umask 077
+HTTP_CODE=$(curl -sS -o "$RESPONSE" -w '%{http_code}' \
+  --cert "$PKI_DIR/node.crt" --key "$PKI_DIR/node.key" --cacert "$PKI_DIR/ca-bundle.crt" \
+  "$PLATFORM_URL/api/v1/system/node_api/config/dev_cell_bootstrap") || {
+  log "bootstrap fetch request failed (network/mTLS error)"
+  exit 1
+}
+
+if [ "$HTTP_CODE" = "404" ]; then
+  log "no dev-cell bootstrap bundle configured for this instance yet (HTTP 404) — an operator must provision one"
+  rm -f "$RESPONSE"
+  exit 1
+fi
+
+if [ "$HTTP_CODE" != "200" ]; then
+  log "bootstrap fetch returned HTTP $HTTP_CODE"
+  rm -f "$RESPONSE"
+  exit 1
+fi
+
+# Tolerate both a bare {"mcp":..., "gitea":...} body and a render_success
+# {"data": {...}} envelope — same defensive shape-tolerance as before.
+# known_hosts is intentionally NOT required here: an empty/absent
+# known_hosts is a legitimate (if less safe) response the platform can send
+# when it has no Gitea host key on record — dev-cell-git-ssh-env.sh is what
+# fails closed on that, not this well-formedness check.
+jq -e '((.data // .) | .mcp.mcp_url) and ((.data // .) | .gitea.clone_url) and ((.data // .) | .gitea.private_key)' "$RESPONSE" >/dev/null 2>&1 || {
+  log "bootstrap response missing mcp.mcp_url / gitea.clone_url / gitea.private_key (checked both a bare body and a .data envelope)"
+  rm -f "$RESPONSE"
+  exit 1
+}
+
+jq '(.data // .).mcp' "$RESPONSE" > "$MCP_OUT"
+# private_key and known_hosts are pulled into their OWN raw files below (ssh
+# -i / UserKnownHostsFile need real files, not JSON) — del() them here so
+# the private key is never duplicated across two on-disk copies.
+jq '(.data // .).gitea | del(.private_key) | del(.known_hosts)' "$RESPONSE" > "$GITEA_OUT"
+jq -r '(.data // .).gitea.private_key' "$RESPONSE" > "$DEPLOY_KEY_OUT"
+# -j, NOT -r: an empty known_hosts ("" — exactly what
+# DevCellBootstrapService#known_hosts_for returns when the platform has no
+# Gitea host key on record) must land as a truly 0-byte file. `jq -r`
+# always appends a trailing newline after the value, which would turn ""
+# into a 1-byte file; dev-cell-git-ssh-env.sh's fail-closed check is a
+# plain `[ -s known_hosts ]` (non-zero size), so that stray newline would
+# silently defeat it — a 1-byte "empty" file would be treated as present.
+jq -j '(.data // .).gitea.known_hosts // empty' "$RESPONSE" > "$KNOWN_HOSTS_OUT"
+rm -f "$RESPONSE"
+
+chmod 600 "$MCP_OUT" "$GITEA_OUT" "$DEPLOY_KEY_OUT" "$KNOWN_HOSTS_OUT"
+
+# --- Stage a root-only copy of the node's own mTLS identity ---------------
+# dev-cell-mcp-proxy.js (root) presents THIS SAME cert to /mcp on pnagent's
+# behalf — copied here (rather than pointed at $PKI_DIR directly) purely
+# so every dev-cell secret lives in the ONE tmpfs runtime directory with
+# the same boot-scoped lifetime, matching every other file this script
+# stages. Stays root:root — see the PRIVILEGE SEPARATION note at the top
+# of this file for why that's load-bearing, not incidental.
+cp "$PKI_DIR/node.crt" "$RUNTIME_DIR/node.crt"
+cp "$PKI_DIR/node.key" "$RUNTIME_DIR/node.key"
+cp "$PKI_DIR/ca-bundle.crt" "$RUNTIME_DIR/ca-bundle.crt"
+chmod 600 "$RUNTIME_DIR/node.key"
+chmod 644 "$RUNTIME_DIR/node.crt" "$RUNTIME_DIR/ca-bundle.crt"
+
+log "bootstrap bundle + node mTLS identity staged root-only at $RUNTIME_DIR (mcp_credentials.json, gitea_credentials.json, deploy_key, known_hosts, node.crt, node.key, ca-bundle.crt) — none of it is readable by the pnagent sandbox user"

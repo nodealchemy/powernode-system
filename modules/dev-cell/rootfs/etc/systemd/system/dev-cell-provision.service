@@ -1,0 +1,54 @@
+[Unit]
+Description=Dev-cell: first-boot workspace provisioning (clone as root, bundle/test-DB as pnagent)
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=dev-cell-bootstrap.service network-online.target
+Requires=dev-cell-bootstrap.service
+ConditionPathExists=/usr/local/bin/dev-cell-provision.sh
+# Belt-and-suspenders alongside the script's own internal marker check
+# (see dev-cell-provision.sh): skip even spawning the process once
+# provisioning has already completed successfully once. Matches
+# dev-cell-provision.sh's own $STATE_DIR default — a persistent FHS path,
+# NOT under pnagent's (or any user's) $HOME, since this phase's early
+# steps run as root before pnagent's home is even created.
+ConditionPathExists=!/var/lib/dev-cell/provisioned
+
+# Bounds Restart=on-failure below to at most 10 attempts per 30 minutes —
+# without this, a sustained failure (e.g. Postgres never comes up) would
+# otherwise crash-loop this oneshot forever at a fixed 30s cadence. After
+# the burst is exhausted the unit stays failed (visible in `systemctl
+# status`) until an operator intervenes or the window rolls over.
+StartLimitIntervalSec=1800
+StartLimitBurst=10
+
+[Service]
+# Oneshot: cloning + bundling + npm ci + the test-DB build can legitimately
+# take many minutes on first boot — disable systemd's default 90s
+# ExecStart timeout rather than race it. RemainAfterExit=yes so
+# dev-cell-executor.service's Requires=/After= ordering has something to
+# depend on being "active", not just "ran once and exited".
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=0
+# PRIVILEGE SEPARATION: runs as root, NOT pnagent — this phase needs the
+# root-only Gitea deploy key to clone/init-submodules (see
+# dev-cell-bootstrap.sh). It internally drops to pnagent via `runuser` for
+# everything that doesn't need that key (bundle/npm/test-DB — see
+# dev-cell-provision.sh and dev-cell-provision-pnagent.sh). No User=/
+# Group=/HOME= override here — systemd's own root default is exactly
+# right.
+
+ExecStart=/usr/local/bin/dev-cell-provision.sh
+StandardOutput=journal
+StandardError=journal
+
+# The script (and its pnagent-side half) is fully idempotent (each phase
+# gated by its own marker file under /var/lib/dev-cell/state/), so a
+# crash mid-phase (e.g. Postgres/network transiently unavailable) just
+# resumes from the last completed step on restart rather than redoing
+# finished work — a transient failure here should not be terminal for
+# the whole cell.
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

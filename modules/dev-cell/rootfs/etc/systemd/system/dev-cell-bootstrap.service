@@ -1,0 +1,43 @@
+[Unit]
+Description=Dev-cell: fetch mTLS bootstrap bundle (MCP url + Gitea SSH deploy key) + node identity, root-only
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/dev-cell-bootstrap.sh
+
+[Service]
+# Oneshot + RemainAfterExit=yes: runs once per boot, then stays "active" so
+# its RuntimeDirectory (below) persists for dev-cell-provision.service,
+# dev-cell-mcp-proxy.service, and dev-cell-executor.service to read from
+# for the rest of this boot's uptime — tmpfs, so it's gone (and
+# re-fetched fresh) on the next reboot.
+Type=oneshot
+RemainAfterExit=yes
+User=root
+
+# Only root can read the on-node agent's mTLS private key
+# (/persist/var/lib/powernode/pki/node.key, 0600) — this whole unit runs as
+# root for that reason (unlike claude-tmux's single ExecStartPre= "+" line,
+# this module's entire bootstrap step is the credential fetch, so there is
+# no lower-privileged ExecStart to separate it from).
+#
+# RuntimeDirectory gives us a private, auto-created, auto-cleaned tmpfs dir
+# at /run/dev-cell, root:root 0700 because this unit's User=root — and
+# PRIVILEGE SEPARATION means it STAYS that way: unlike the pre-sandboxing
+# version of this module, the script never chowns anything in here to the
+# unprivileged pnagent sandbox user. Only root-run processes
+# (dev-cell-mcp-proxy.service, dev-cell-provision.sh, dev-cell-executor.sh)
+# ever read this directory — see dev-cell-bootstrap.sh's own top-of-file
+# comment for why that's load-bearing.
+RuntimeDirectory=dev-cell
+RuntimeDirectoryMode=0700
+
+ExecStart=/usr/local/bin/dev-cell-bootstrap.sh
+StandardOutput=journal
+StandardError=journal
+
+Restart=on-failure
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target
