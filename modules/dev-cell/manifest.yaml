@@ -85,10 +85,6 @@ file_spec:
   # rationale (and same directory) claude-tmux's manifest documents for its
   # own apt-installed tmux/nodejs packages.
   - "/usr/lib/x86_64-linux-gnu/**"
-  - "/etc/systemd/system/dev-cell-bootstrap.service"
-  - "/etc/systemd/system/dev-cell-provision.service"
-  - "/etc/systemd/system/dev-cell-mcp-proxy.service"
-  - "/etc/systemd/system/dev-cell-executor.service"
   - "/usr/local/bin/dev-cell-bootstrap.sh"
   - "/usr/local/bin/dev-cell-provision.sh"
   - "/usr/local/bin/dev-cell-provision-pnagent.sh"
@@ -160,10 +156,230 @@ dependencies:
 # message rather than a cryptic error deep inside a later phase if either
 # is missing — see that script for what's assumed vs. verified.
 
-init:
-  start:   "systemctl start dev-cell-executor"
-  stop:    "systemctl stop dev-cell-executor"
-  restart: "systemctl restart dev-cell-executor"
+# unit_body passthrough (option A2): these 4 units carry hand-tuned
+# Type=oneshot/RemainAfterExit=/StartLimit*=/ExecStartPre= semantics the
+# generated-unit Service fields can't express, so each rides the
+# services: lifecycle with its systemd unit file's body verbatim. Sibling
+# ordering (After=/Requires= naming ANOTHER dev-cell unit) is expressed
+# via `dependencies:` instead of hardcoded in the body — the generated
+# unit name (powernode-<moduleUUID>-<name>.service) isn't knowable at
+# authoring time; the agent re-emits the equivalent After=/Requires=
+# lines from `dependencies:`. Non-sibling ordering (After=network-online.
+# target) stays in each body verbatim. None declare `user:` — every body
+# either sets User=root explicitly or, absent a User= line, systemd's own
+# root default already matches; the body governs, same rationale as
+# claude-tmux's `claude` service below.
+services:
+  - name: bootstrap
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: fetch mTLS bootstrap bundle (MCP url + Gitea SSH deploy key) + node identity, root-only
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/usr/local/bin/dev-cell-bootstrap.sh
+
+      [Service]
+      # Oneshot + RemainAfterExit=yes: runs once per boot, then stays "active" so
+      # its RuntimeDirectory (below) persists for dev-cell-provision.service,
+      # dev-cell-mcp-proxy.service, and dev-cell-executor.service to read from
+      # for the rest of this boot's uptime — tmpfs, so it's gone (and
+      # re-fetched fresh) on the next reboot.
+      Type=oneshot
+      RemainAfterExit=yes
+      User=root
+
+      # Only root can read the on-node agent's mTLS private key
+      # (/persist/var/lib/powernode/pki/node.key, 0600) — this whole unit runs as
+      # root for that reason (unlike claude-tmux's single ExecStartPre= "+" line,
+      # this module's entire bootstrap step is the credential fetch, so there is
+      # no lower-privileged ExecStart to separate it from).
+      #
+      # RuntimeDirectory gives us a private, auto-created, auto-cleaned tmpfs dir
+      # at /run/dev-cell, root:root 0700 because this unit's User=root — and
+      # PRIVILEGE SEPARATION means it STAYS that way: unlike the pre-sandboxing
+      # version of this module, the script never chowns anything in here to the
+      # unprivileged pnagent sandbox user. Only root-run processes
+      # (dev-cell-mcp-proxy.service, dev-cell-provision.sh, dev-cell-executor.sh)
+      # ever read this directory — see dev-cell-bootstrap.sh's own top-of-file
+      # comment for why that's load-bearing.
+      RuntimeDirectory=dev-cell
+      RuntimeDirectoryMode=0700
+
+      ExecStart=/usr/local/bin/dev-cell-bootstrap.sh
+      StandardOutput=journal
+      StandardError=journal
+
+      Restart=on-failure
+      RestartSec=15s
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - name: provision
+    dependencies:
+      - { service: bootstrap, kind: start_before }
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: first-boot workspace provisioning (clone as root, bundle/test-DB as pnagent)
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      ConditionPathExists=/usr/local/bin/dev-cell-provision.sh
+      # Belt-and-suspenders alongside the script's own internal marker check
+      # (see dev-cell-provision.sh): skip even spawning the process once
+      # provisioning has already completed successfully once. Matches
+      # dev-cell-provision.sh's own $STATE_DIR default — the durable /persist
+      # path (BUG-D: moved off /var/lib/dev-cell, which lives on the ephemeral
+      # 512M tmpfs overlay), NOT under pnagent's (or any user's) $HOME, since
+      # this phase's early steps run as root before pnagent's home is created.
+      ConditionPathExists=!/persist/dev-cell/state/provisioned
+
+      # Bounds Restart=on-failure below to at most 10 attempts per 30 minutes —
+      # without this, a sustained failure (e.g. Postgres never comes up) would
+      # otherwise crash-loop this oneshot forever at a fixed 30s cadence. After
+      # the burst is exhausted the unit stays failed (visible in `systemctl
+      # status`) until an operator intervenes or the window rolls over.
+      StartLimitIntervalSec=1800
+      StartLimitBurst=10
+
+      [Service]
+      # Oneshot: cloning + bundling + npm ci + the test-DB build can legitimately
+      # take many minutes on first boot — disable systemd's default 90s
+      # ExecStart timeout rather than race it. RemainAfterExit=yes so
+      # dev-cell-executor.service's Requires=/After= ordering has something to
+      # depend on being "active", not just "ran once and exited".
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=0
+      # PRIVILEGE SEPARATION: runs as root, NOT pnagent — this phase needs the
+      # root-only Gitea deploy key to clone/init-submodules (see
+      # dev-cell-bootstrap.sh). It internally drops to pnagent via `runuser` for
+      # everything that doesn't need that key (bundle/npm/test-DB — see
+      # dev-cell-provision.sh and dev-cell-provision-pnagent.sh). No User=/
+      # Group=/HOME= override here — systemd's own root default is exactly
+      # right.
+
+      ExecStart=/usr/local/bin/dev-cell-provision.sh
+      StandardOutput=journal
+      StandardError=journal
+
+      # The script (and its pnagent-side half) is fully idempotent (each phase
+      # gated by its own marker file under /persist/dev-cell/state/), so a
+      # crash mid-phase (e.g. Postgres/network transiently unavailable) just
+      # resumes from the last completed step on restart rather than redoing
+      # finished work — a transient failure here should not be terminal for
+      # the whole cell.
+      Restart=on-failure
+      RestartSec=30s
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - name: mcp-proxy
+    dependencies:
+      - { service: bootstrap, kind: start_before }
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: local mTLS-terminating proxy for /mcp — the ONLY process holding the node client cert
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      ConditionPathExists=/usr/local/bin/dev-cell-mcp-proxy.js
+      ConditionPathExists=/usr/bin/node
+
+      [Service]
+      # Runs as root — PRIVILEGE SEPARATION load-bearing detail, not
+      # incidental: this is the only process on the instance that ever holds
+      # the node's mTLS client cert/key in its own address space. The
+      # unprivileged pnagent sandbox user (which runs headless `claude` and
+      # scripts/validate.sh — see dev-cell-executor.sh) reaches /mcp ONLY
+      # through this proxy's plain-HTTP localhost listener, with no cert
+      # material of its own. Handing pnagent the node key directly (Claude
+      # Code's native CLAUDE_CODE_CLIENT_CERT/KEY mTLS support would make that
+      # easy) would let a compromised agent re-call dev_cell_bootstrap and mint
+      # itself a fresh Gitea deploy key — see this module's manifest.yaml
+      # description and dev-cell-bootstrap.sh's own comment for the full
+      # rationale.
+      Type=simple
+      User=root
+      # Deliberately NOT declaring this unit's own RuntimeDirectory=: it reads
+      # (never owns) the dir dev-cell-bootstrap.service already created —
+      # DEV_CELL_RUNTIME_DIR matches the same env var name every other script
+      # in this module uses for the same purpose (dev-cell-provision.sh,
+      # dev-cell-executor.sh).
+      Environment=DEV_CELL_RUNTIME_DIR=/run/dev-cell
+      Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
+      Environment=DEV_CELL_MCP_PROXY_PORT=18443
+
+      ExecStart=/usr/bin/node /usr/local/bin/dev-cell-mcp-proxy.js
+      Restart=on-failure
+      RestartSec=15s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - name: executor
+    dependencies:
+      - { service: provision, kind: start_before }
+      - { service: mcp-proxy, kind: start_before }
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: autonomous campaign dev-loop ROOT supervisor (sandboxes agent work as pnagent)
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      After=network-online.target
+      ConditionPathExists=/persist/dev-cell/state/provisioned
+      # The headless `claude` CLI this unit drives (via `runuser -u pnagent`),
+      # and the credential-fetch script it reuses for its own ANTHROPIC_API_KEY,
+      # both come from the claude-tmux module — fail closed (skip) rather than
+      # crash-loop if it isn't co-assigned on this instance's template.
+      ConditionPathExists=/usr/bin/claude
+      ConditionPathExists=/usr/local/bin/claude-tmux-fetch-credential.sh
+
+      [Service]
+      Type=simple
+      # PRIVILEGE SEPARATION: runs as root, NOT pnagent — this unit is the
+      # TRUSTED SUPERVISOR. It holds the Gitea deploy key (for the actual `git
+      # push`) and drives all agent-authored work (headless `claude`,
+      # scripts/validate.sh) sandboxed via `runuser -u pnagent`, never directly.
+      # See dev-cell-executor.sh's own header comment and this module's
+      # manifest.yaml description for the full rationale. No User=/Group=/
+      # HOME= override here — systemd's own root default is exactly right.
+      Environment=DEV_LOOP_NAME=dev-improve
+      Environment=POLL_INTERVAL_ACTIVE=15
+      Environment=POLL_INTERVAL_IDLE=300
+      Environment=MAX_CONSECUTIVE_FAILURES=5
+      Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
+      Environment=DEV_CELL_MCP_PROXY_PORT=18443
+      # Deliberately NOT declaring this unit's own RuntimeDirectory=: the
+      # ExecStartPre below reuses claude-tmux-fetch-credential.sh as-is, and
+      # pointing it at dev-cell-bootstrap.service's already-root-owned
+      # /run/dev-cell (via this override of the env var that script already
+      # reads) keeps every dev-cell secret — the Gitea SSH deploy key, the
+      # node's own mTLS client cert/key, and the Anthropic API key — in the ONE
+      # tmpfs runtime directory, all with the same lifetime (this boot only)
+      # AND the same root-only confinement.
+      Environment=RUNTIME_DIRECTORY=/run/dev-cell
+
+      # Runs as root (the "+" prefix) — only root can read the on-node agent's
+      # mTLS private key. CLAUDE_TMUX_USER=root (overriding that script's own
+      # pnadmin default) keeps /run/dev-cell/api_key root-owned too — this
+      # unit's own process (root) reads-then-deletes it exactly once at start
+      # (see dev-cell-executor.sh), then hands ANTHROPIC_API_KEY down to
+      # pnagent's `claude` invocations via `runuser --preserve-environment`,
+      # never a pnagent-readable file. Never a systemd/tmux argv either,
+      # mirroring claude-tmux-start.sh's own handling of the same secret.
+      Environment=CLAUDE_TMUX_USER=root
+      ExecStartPre=+/usr/local/bin/claude-tmux-fetch-credential.sh
+
+      ExecStart=/usr/local/bin/dev-cell-executor.sh
+      Restart=on-failure
+      RestartSec=30s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
 
 reboot_required: false
 
