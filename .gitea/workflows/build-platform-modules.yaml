@@ -75,14 +75,111 @@ permissions:
   packages: write    # oras push
 
 jobs:
-  # Static matrix — Gitea Actions 1.x doesn't reliably substitute
-  # ${{ matrix.foo }} when matrix is provided via fromJson(needs.x.outputs.y)
-  # from a previous job (the values resolve to empty strings, breaking
-  # every per-module step). Static enumeration is the workaround; the
-  # tradeoff is that adding a new module here must accompany the new
-  # modules/<name>/manifest.yaml in the same PR. The complete list is
-  # defined once in modules/ on disk; the workflow mirrors it.
+  # Enumerates the buildable module set at runtime from modules/*/ on
+  # disk (one entry per directory carrying a manifest.yaml) instead of a
+  # hand-maintained static list — adding a new module directory makes it
+  # buildable with zero workflow edits. Also owns the single-module
+  # dispatch: when workflow_dispatch's `module` input is set, this job's
+  # output collapses to exactly that one module (after validating its
+  # manifest exists), so `build`'s matrix — and therefore the "Compute
+  # dirty closure" step below, which also honors `inputs.module`
+  # directly — only ever considers that module. That combination is what
+  # lets `module=<slug>` build a single module at any time, bypassing
+  # both the dirty-closure git-diff and the force_all/push catch-all.
+  #
+  # Same minimal-container / manual-git-clone shape as `build` below
+  # (see its "Clone repo" step for why actions/checkout is avoided) but
+  # shallow — this job only needs a directory listing at the workflow
+  # ref, not full history.
+  discover:
+    runs-on: ubuntu-24.04
+    container:
+      image: docker.io/library/debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      modules: ${{ steps.enumerate.outputs.modules }}
+    steps:
+      - name: Install git + jq
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -q
+          apt-get install -y --no-install-recommends git jq ca-certificates
+
+      - name: Clone repo (shallow — only need modules/ listing at this ref)
+        env:
+          # Gitea injects GITHUB_TOKEN for workflows running on private
+          # repos. Threading it through the clone URL covers the
+          # private-mirror case without an SSH key in the runner.
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Mirrors the `build` job's clone step (URL construction, auth,
+          # safe.directory) but shallow: --depth 1 at GITHUB_REF_NAME
+          # (works for branches and tags alike) is enough to see
+          # modules/*/ at the ref that triggered this run. Fall back to
+          # an unscoped shallow clone + direct SHA fetch if the ref-scoped
+          # clone can't find GITHUB_SHA (e.g. ref/SHA mismatch on a
+          # workflow_dispatch against a moving branch).
+          git config --global --add safe.directory '*'
+          ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          mkdir -p "$ws"
+          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
+          if [ -n "${GIT_TOKEN:-}" ]; then
+            clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
+          else
+            clone_url="${base}/${GITHUB_REPOSITORY}.git"
+          fi
+          tmp="$(mktemp -d)"
+          if [ -n "${GITHUB_REF_NAME:-}" ]; then
+            git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${clone_url}" "$tmp/repo" 2>/dev/null \
+              || git clone --depth 1 "${clone_url}" "$tmp/repo"
+          else
+            git clone --depth 1 "${clone_url}" "$tmp/repo"
+          fi
+          cp -a "$tmp/repo/." "$ws/"
+          rm -rf "$tmp"
+          cd "$ws"
+          if ! git cat-file -e "${GITHUB_SHA}^{commit}" 2>/dev/null; then
+            git fetch --depth 1 origin "${GITHUB_SHA}"
+          fi
+          git checkout "${GITHUB_SHA}"
+
+      - name: Enumerate buildable modules
+        id: enumerate
+        env:
+          REQUESTED_MODULE: ${{ inputs.module }}
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
+            # Single-module dispatch — collapse the matrix to exactly
+            # this module. Validate the manifest exists so a typo'd slug
+            # fails loudly here instead of silently producing a
+            # zero-entry matrix that no-ops downstream.
+            if [[ ! -f "modules/${REQUESTED_MODULE}/manifest.yaml" ]]; then
+              echo "::error::inputs.module='${REQUESTED_MODULE}' has no modules/${REQUESTED_MODULE}/manifest.yaml — check the slug."
+              exit 1
+            fi
+            MODULES_JSON=$(jq -cn --arg m "$REQUESTED_MODULE" '[$m]')
+          else
+            # Full enumeration — every modules/*/ directory that carries
+            # a manifest.yaml is buildable. Sorted for a deterministic,
+            # diff-friendly matrix ordering across runs.
+            MODULES_JSON=$(
+              for d in modules/*/; do
+                [[ -f "${d}manifest.yaml" ]] || continue
+                basename "$d"
+              done | sort | jq -R . | jq -cs .
+            )
+          fi
+          echo "[discover] modules: $MODULES_JSON"
+          echo "modules=$MODULES_JSON" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: discover
     runs-on: ubuntu-24.04
     # `runs-on` is just a label in Gitea Actions 1.x — the actual
     # container is set below. Use Debian Trixie because:
@@ -113,49 +210,12 @@ jobs:
       # instead of ~50 min.
       fail-fast: true
       matrix:
-        module:
-          # Powernode-platform-specific (hub Rails app + agent runtime):
-          - powernode-extension-system
-          - powernode-hub-backend
-          - powernode-hub-frontend
-          - powernode-hub-worker
-          - powernode-system-base
-          # General-purpose modules — any service can depend on these
-          # via capability tags (database.postgres, cache.redis, etc.).
-          # Renamed from powernode-* prefix during the 2026-05-24
-          # generalization pass to reflect their reusability across
-          # future templates beyond powernode-hub. See modules' manifest
-          # provides: blocks for the capability tags they export.
-          - postgres-primary
-          - postgres-replica
-          - redis
-          - reverse-proxy-traefik
-          - log-forwarder-vector
-          - node-exporter
-          - storage-tools
-          - runtime-ruby
-          # PVE / qemu integration. qga is a single apt-installed binary
-          # that talks to PVE over virtio-serial; safe to deploy on every
-          # host (the binary exits cleanly when /dev/virtio-ports/... is
-          # absent, so non-PVE hosts no-op). Listed in powernode-hub
-          # template (db/seeds/powernode_platform_templates.rb:47).
-          - qemu-guest-agent
-          # OS-base layered family: minimal substrate (powernode-system-base
-          # above, provides the agent binary) + os-specific userland that
-          # provides `base.os` capability. Future variants like
-          # base-os-debian-trixie + base-os-alpine follow the same pattern.
-          - base-os-ubuntu-noble
-          # Increment 20 (campaign 019f3458) — managed Claude Code CLI in a
-          # systemd-supervised tmux session. General-purpose (any fleet
-          # instance, any template) like the block above; listed separately
-          # because Stage 1.5 npm-installs its CLI payload rather than
-          # apt-installing it (package_spec only covers apt packages).
-          - claude-tmux
-          # Increment 21 (campaign 019f3458) — managed dev-cell executor.
-          # Regular apt+rootfs module (git/jq + the executor/proxy scripts);
-          # the claude CLI + node come from claude-tmux at pivot via the union
-          # mount, so no Stage 1.5 payload of its own.
-          - dev-cell
+        # Sourced from the `discover` job's enumeration of modules/*/ on
+        # disk (or the single module named by `inputs.module`) — see the
+        # `discover` job's comment above for the fromJSON-matrix caveat
+        # this replaced a static list to work around, and why that
+        # workaround was retired.
+        module: ${{ fromJSON(needs.discover.outputs.modules) }}
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
@@ -264,9 +324,21 @@ jobs:
           OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
           FORCE_ALL: ${{ inputs.force_all }}
           APT_DRIFT_CHECK: ${{ inputs.apt_drift_check && '1' || '0' }}
+          REQUESTED_MODULE: ${{ inputs.module }}
         run: |
           set -euo pipefail
-          if [[ "${FORCE_ALL:-false}" == "true" ]]; then
+          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
+            # Single-module dispatch — `discover` already scoped the
+            # entire matrix to [${REQUESTED_MODULE}], so the closure is
+            # trivially that one module. Skip the git-diff / apt-drift
+            # computation (and FORCE_ALL) entirely: this path must build
+            # REQUESTED_MODULE unconditionally, regardless of what did or
+            # didn't change on disk — that's what makes `module=<slug>`
+            # work at any time, bypassing both the dirty-closure and the
+            # catch-all rebuild-everything trigger.
+            DIRTY="$REQUESTED_MODULE"
+            echo "[closure] inputs.module=${REQUESTED_MODULE} — closure forced to this module only"
+          elif [[ "${FORCE_ALL:-false}" == "true" ]]; then
             echo "[closure] FORCE_ALL=true — every module marked dirty"
             DIRTY=$(ls -1 modules/ | xargs)
           else
