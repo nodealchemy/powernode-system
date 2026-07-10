@@ -86,22 +86,3 @@ jobs:
         idx: ${{ fromJSON(inputs.single != '' && '[0]' || '[0,1,2,3]') }}
     steps:
       - run: echo "[P4] single='${{ inputs.single }}' idx=${{ matrix.idx }}"
-
-  # P5: job-level `if` over static matrix.idx + inputs (both plan-time
-  # contexts). If this works, single dispatch (single != '') runs ONLY
-  # idx 0 and job-skips 1-3 with NO container spin — a lean single path
-  # without the matrix-fromJSON collapse P4 can't provide.
-  jobif:
-    needs: emit
-    if: ${{ inputs.single == '' || matrix.idx == 0 }}
-    runs-on: ubuntu-24.04
-    container:
-      image: docker.io/library/debian:trixie-slim
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      matrix:
-        idx: [0, 1, 2, 3]
-    steps:
-      - run: echo "[P5] jobif RAN: single='${{ inputs.single }}' idx=${{ matrix.idx }}"
