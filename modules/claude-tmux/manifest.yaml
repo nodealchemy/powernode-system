@@ -54,10 +54,19 @@ package_spec:
   - nodejs
   - npm
   - ca-certificates
+  # claude-tmux-fetch-credential.sh parses the mTLS node_api JSON response
+  # with jq; declare it so the module is self-sufficient rather than
+  # silently relying on a neighbor module (e.g. dev-cell) to pull jq in.
+  - jq
 
 dependencies:
   requires:
-    - powernode/system-base@^1.0
+    # The base module's canonical slug is powernode-system-base (see
+    # base-os-ubuntu-noble, which requires the same). The earlier
+    # "powernode/system-base" was a naming typo — no module is named
+    # system-base, so on a strict resolver it would fail to resolve the
+    # base layer for any template composing claude-tmux (e.g. dev-cell).
+    - powernode/powernode-system-base@^1.0
   provides:
     - dev.claude-cli
     - dev.tmux-session
