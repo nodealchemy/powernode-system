@@ -40,7 +40,9 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
 
   it "returns the api_key from Vault for the authenticated instance" do
     create(:system_claude_code_credential, node_instance: instance)
-    allow(fake_vault).to receive(:get_credential).and_return("api_key" => "sk-ant-STUB-VALUE")
+    # VaultCredentialProvider#get_credential returns a SYMBOL-keyed hash — mock
+    # the real shape so this guards BUG-M (a string-keyed read would 503).
+    allow(fake_vault).to receive(:get_credential).and_return(api_key: "sk-ant-STUB-VALUE")
 
     get path, headers: headers
 
@@ -86,7 +88,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
 
     it "prefers the per-instance credential over the account-provider fallback" do
       create(:system_claude_code_credential, node_instance: instance)
-      allow(fake_vault).to receive(:get_credential).and_return("api_key" => "sk-ant-INSTANCE")
+      allow(fake_vault).to receive(:get_credential).and_return(api_key: "sk-ant-INSTANCE")
 
       get path, headers: headers
       expect(response).to have_http_status(:ok)

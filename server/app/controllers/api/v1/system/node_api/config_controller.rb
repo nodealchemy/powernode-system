@@ -113,7 +113,11 @@ module Api
                 credential_id: credential.id,
                 record: credential
               )
-              api_key = plaintext.is_a?(Hash) ? plaintext["api_key"] : nil
+              # VaultCredentialProvider#get_credential returns a SYMBOL-keyed
+              # hash ({ api_key:, stored_at: }); accept the string key too for
+              # safety. (BUG-M: reading only ["api_key"] returned nil for every
+              # correctly-stored per-instance credential → a spurious 503.)
+              api_key = plaintext.is_a?(Hash) ? (plaintext[:api_key] || plaintext["api_key"]) : nil
               return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
 
               source = "instance"
