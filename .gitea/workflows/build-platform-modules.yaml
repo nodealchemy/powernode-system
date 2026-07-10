@@ -151,6 +151,11 @@ jobs:
           # because Stage 1.5 npm-installs its CLI payload rather than
           # apt-installing it (package_spec only covers apt packages).
           - claude-tmux
+          # Increment 21 (campaign 019f3458) — managed dev-cell executor.
+          # Regular apt+rootfs module (git/jq + the executor/proxy scripts);
+          # the claude CLI + node come from claude-tmux at pivot via the union
+          # mount, so no Stage 1.5 payload of its own.
+          - dev-cell
     steps:
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
