@@ -783,6 +783,10 @@ Rails.application.routes.draw do
           # claude-tmux NodeModule — Vault-backed Claude Code CLI credential,
           # scoped strictly to the mTLS-authenticated instance.
           get "config/claude_code_credential", to: "config#claude_code_credential"
+          # Dev-cell bootstrap — MCP client_credentials + scoped Gitea PAT for a
+          # pooled NodeInstance acting as an autonomous campaign executor.
+          # Scoped strictly to the mTLS-authenticated instance.
+          get "config/dev_cell_bootstrap", to: "config#dev_cell_bootstrap"
           # Phase 3 — LUKS passphrase derivation for volume-setup CLI.
           get "config/luks/:partition_label", to: "luks#show",
               constraints: { partition_label: /[a-zA-Z0-9_.-]{1,32}/ }

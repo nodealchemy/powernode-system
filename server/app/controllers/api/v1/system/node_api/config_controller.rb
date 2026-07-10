@@ -7,6 +7,18 @@ module Api
         # Instance configuration endpoint
         # Provides instance with its configuration data
         class ConfigController < BaseController
+          # Fallback source repo (owner/repo) the dev-cell clones + registers its
+          # deploy key on, when no SiteSetting/ENV override is set — configurable,
+          # mirroring the PACKAGE_BUILD_DEFAULT_REPO pattern.
+          DEV_CELL_SOURCE_REPO_DEFAULT = "powernode/powernode-platform"
+
+          # The NodeModule name whose presence on the calling node marks it a
+          # genuine dev-cell. dev_cell_bootstrap is gated to instances actually
+          # provisioned with this module — mTLS enrollment alone is NOT enough
+          # (otherwise ANY fleet node could self-grant the dev-loop MCP tools +
+          # mint a repo-write deploy key).
+          DEV_CELL_MODULE_NAME = "dev-cell"
+
           # GET /api/v1/system/node_api/config
           # Returns instance configuration
           def show
@@ -105,7 +117,94 @@ module Api
             render_success(api_key: api_key)
           end
 
+          # GET /api/v1/system/node_api/config/dev_cell_bootstrap
+          #
+          # Delivers what a pooled dev-cell NodeInstance needs to act as an
+          # autonomous campaign executor WITHOUT minting any account-wide secret:
+          #
+          #   * mcp   — { mcp_url } ONLY. The cell authenticates to /mcp by
+          #             presenting its node client cert (mTLS), which resolves to
+          #             an Mcp::Principal.for_instance_cn scoped by this
+          #             instance's NodeInstancePeer grant. Bootstrap ensures the
+          #             instance has announced as a peer and grants it EXACTLY the
+          #             three dev-loop tools (default-deny everything else). No
+          #             token is issued here — the cell runs a local mTLS proxy
+          #             presenting the node cert (the dev-cell MODULE's concern).
+          #   * gitea — { clone_url (SSH), private_key, known_hosts }. A per-repo
+          #             read-WRITE Ed25519 DEPLOY KEY on ONLY the source repo (not
+          #             an account-wide PAT). The private key is generated
+          #             in-service, stored in Vault, and returned ONLY here.
+          #             ff-only is enforced by source-repo branch protection.
+          #
+          # Scoped strictly to current_instance (mTLS subject) — same auth as
+          # claude_code_credential. One instance can never bootstrap another's
+          # credentials.
+          #
+          # IMPORTANT (CryptoMaterialSafety): the deploy-key private key is
+          # assembled and returned ONLY in this response body — never logged,
+          # echoed, or persisted anywhere except Vault (the emitted fleet event
+          # carries ids only).
+          def dev_cell_bootstrap
+            # Authorization gate (BEFORE any side effect): only an instance whose
+            # node is actually provisioned with the dev-cell module may bootstrap.
+            unless dev_cell_instance?
+              return render_error("Instance is not provisioned as a dev-cell", :forbidden)
+            end
+
+            result = ::System::DevCellBootstrapService.new(
+              node_instance: current_instance,
+              platform_base_url: platform_base_url,
+              source_repo: dev_cell_source_repo
+            ).call
+
+            unless result.ok?
+              message =
+                if result.error == "gitea_unavailable"
+                  "Dev-cell Gitea provisioning unavailable"
+                else
+                  "Dev-cell MCP grant unavailable"
+                end
+              return render_error(message, :service_unavailable)
+            end
+
+            if defined?(::System::Fleet::EventBroadcaster)
+              ::System::Fleet::EventBroadcaster.emit!(
+                account: current_account,
+                kind: "system.dev_cell_bootstrap_issued",
+                severity: :low,
+                payload: { "instance_id" => current_instance.id },
+                source: "node_api.config"
+              )
+            end
+
+            render_success(mcp: result.mcp, gitea: result.gitea)
+          end
+
           private
+
+          # True when the calling node is actually provisioned with the dev-cell
+          # NodeModule (per-node NodeModuleAssignment → what's really on the box,
+          # not merely the template's desired set). Fail-closed: no dev-cell
+          # module → not a dev-cell → 403.
+          def dev_cell_instance?
+            current_node.node_modules.exists?(name: DEV_CELL_MODULE_NAME)
+          end
+
+          # "owner/repo" of the source repo the cell clones. Config-driven
+          # (SiteSetting → ENV → default) so a non-default deployment can point
+          # cells at its own fork without a code change.
+          def dev_cell_source_repo
+            ::SiteSetting.get("dev_cell_source_repo").presence ||
+              ENV["POWERNODE_DEV_CELL_SOURCE_REPO"].presence ||
+              DEV_CELL_SOURCE_REPO_DEFAULT
+          end
+
+          # Externally-reachable platform base (scheme+host, no trailing slash)
+          # via the canonical PublicUrlResolver seam; falls back to the URL the
+          # cell reached us on over mTLS when nothing is configured.
+          def platform_base_url
+            ::PublicUrlResolver.base_url(account: current_account).presence || request.base_url
+          end
 
           def vault_provider
             @vault_provider ||= ::Security::VaultCredentialProvider.new(account_id: current_account.id)
