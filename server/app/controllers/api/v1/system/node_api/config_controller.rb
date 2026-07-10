@@ -103,29 +103,32 @@ module Api
           def claude_code_credential
             credential = ::System::ClaudeCodeCredential.find_by(node_instance: current_instance)
 
-            api_key = nil
-            source = nil
             if credential
+              # Explicit per-instance credential: resolve from Vault. A broken /
+              # empty Vault for an explicitly-configured row is a SERVICE error
+              # (503) — never silently fall back to the account key for a
+              # credential an operator deliberately set.
               plaintext = vault_provider.get_credential(
                 credential_type: :claude_code_api_key,
                 credential_id: credential.id,
                 record: credential
               )
               api_key = plaintext.is_a?(Hash) ? plaintext["api_key"] : nil
+              return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
+
               source = "instance"
-            end
-
-            # Fallback to the account's active Anthropic AI provider key when no
-            # per-instance credential is configured.
-            if api_key.blank?
+            else
+              # No per-instance credential: fall back to the account's active
+              # Anthropic AI provider key so a dev-cell inherits it with zero
+              # per-instance setup.
               api_key = account_anthropic_provider_api_key
-              source = "account_provider" if api_key.present?
-            end
+              if api_key.blank?
+                return render_not_found(
+                  "Claude Code credential (no per-instance credential and no active Anthropic AI provider on the account)"
+                )
+              end
 
-            if api_key.blank?
-              return render_not_found(
-                "Claude Code credential (no per-instance credential and no active Anthropic AI provider on the account)"
-              )
+              source = "account_provider"
             end
 
             if defined?(::System::Fleet::EventBroadcaster)

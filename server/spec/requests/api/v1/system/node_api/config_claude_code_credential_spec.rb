@@ -63,6 +63,43 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
     expect(response).to have_http_status(:service_unavailable)
   end
 
+  # Fallback: a dev-cell with no per-instance credential inherits the account's
+  # active Anthropic Ai::Provider key (configured under AI Infrastructure →
+  # Providers) instead of requiring a per-instance key for every cell.
+  context "when the instance has no per-instance credential but the account has an active Anthropic provider" do
+    let!(:anthropic_provider) do
+      create(:ai_provider, account: account, provider_type: "anthropic", is_active: true)
+    end
+    let!(:provider_credential) do
+      create(:ai_provider_credential,
+             account: account,
+             provider: anthropic_provider,
+             is_active: true,
+             credentials: { "api_key" => "sk-ant-ACCOUNT-PROVIDER" })
+    end
+
+    it "falls back to the account's Anthropic provider api_key" do
+      get path, headers: headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "api_key")).to eq("sk-ant-ACCOUNT-PROVIDER")
+    end
+
+    it "prefers the per-instance credential over the account-provider fallback" do
+      create(:system_claude_code_credential, node_instance: instance)
+      allow(fake_vault).to receive(:get_credential).and_return("api_key" => "sk-ant-INSTANCE")
+
+      get path, headers: headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("data", "api_key")).to eq("sk-ant-INSTANCE")
+    end
+
+    it "ignores an INACTIVE Anthropic provider (404 when none is active)" do
+      anthropic_provider.update!(is_active: false)
+      get path, headers: headers
+      expect(response).to have_http_status(:not_found)
+    end
+  end
+
   it "returns 401 without mTLS auth" do
     get path
     expect(response).to have_http_status(:unauthorized)
