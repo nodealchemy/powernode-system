@@ -80,36 +80,60 @@ module Api
           # GET /api/v1/system/node_api/config/claude_code_credential
           #
           # Returns the Claude Code CLI credential (Anthropic API key) for
-          # THIS mTLS-authenticated instance — consumed by the claude-tmux
-          # NodeModule's boot-time fetch script. Scoped strictly to
+          # THIS mTLS-authenticated instance — consumed by the claude-tmux /
+          # dev-cell NodeModules' boot-time fetch script. Scoped strictly to
           # current_instance (resolved by BaseController#authenticate_instance!
           # from the verified mTLS subject), so one instance can never read
           # another instance's credential.
           #
-          # 404 when no credential has been configured for this instance yet
-          # (operator sets one via ClaudeCodeCredentialsController).
+          # Resolution order:
+          #   1. The instance's own System::ClaudeCodeCredential (Vault-backed),
+          #      set by an operator via ClaudeCodeCredentialsController.
+          #   2. FALLBACK — the account's active Anthropic Ai::Provider
+          #      credential. Lets a dev-cell inherit the account's existing
+          #      Anthropic *Providers* key instead of requiring a separate
+          #      per-instance key for every cell. Resolved + decrypted
+          #      server-side and returned over this same mTLS channel.
+          # 404 only when neither is configured.
           #
-          # IMPORTANT (CryptoMaterialSafety): the plaintext is read from
-          # Vault and returned ONLY in this response body — never logged,
-          # never cached, never persisted anywhere else on the platform side.
+          # IMPORTANT (CryptoMaterialSafety): the plaintext is read from Vault
+          # (or the account provider credential's server-side decryption) and
+          # returned ONLY in this response body — never logged, never cached,
+          # never persisted anywhere else on the platform side.
           def claude_code_credential
             credential = ::System::ClaudeCodeCredential.find_by(node_instance: current_instance)
-            return render_not_found("Claude Code credential") unless credential
 
-            plaintext = vault_provider.get_credential(
-              credential_type: :claude_code_api_key,
-              credential_id: credential.id,
-              record: credential
-            )
-            api_key = plaintext.is_a?(Hash) ? plaintext["api_key"] : nil
-            return render_error("Vault has no credential for this instance", :service_unavailable) if api_key.blank?
+            api_key = nil
+            source = nil
+            if credential
+              plaintext = vault_provider.get_credential(
+                credential_type: :claude_code_api_key,
+                credential_id: credential.id,
+                record: credential
+              )
+              api_key = plaintext.is_a?(Hash) ? plaintext["api_key"] : nil
+              source = "instance"
+            end
+
+            # Fallback to the account's active Anthropic AI provider key when no
+            # per-instance credential is configured.
+            if api_key.blank?
+              api_key = account_anthropic_provider_api_key
+              source = "account_provider" if api_key.present?
+            end
+
+            if api_key.blank?
+              return render_not_found(
+                "Claude Code credential (no per-instance credential and no active Anthropic AI provider on the account)"
+              )
+            end
 
             if defined?(::System::Fleet::EventBroadcaster)
               ::System::Fleet::EventBroadcaster.emit!(
                 account: current_account,
                 kind: "system.claude_code_credential_issued",
                 severity: :low,
-                payload: { "instance_id" => current_instance.id },
+                payload: { "instance_id" => current_instance.id, "source" => source },
                 source: "node_api.config"
               )
             end
@@ -208,6 +232,25 @@ module Api
 
           def vault_provider
             @vault_provider ||= ::Security::VaultCredentialProvider.new(account_id: current_account.id)
+          end
+
+          # Active Anthropic AI-provider API key for the account, decrypted
+          # server-side — the fallback source for #claude_code_credential when
+          # the instance has no per-instance credential. Mirrors the resolution
+          # shape of Ai::AudioTranscriptionService#resolve_credential
+          # (account.ai_provider_credentials.active + a provider check) and reads
+          # the value via Ai::ProviderCredential#decrypted_api_key. Defensive:
+          # any resolution failure → nil, so the caller falls through to 404.
+          def account_anthropic_provider_api_key
+            return nil unless current_account.respond_to?(:ai_provider_credentials)
+
+            cred = current_account.ai_provider_credentials
+                                  .active
+                                  .includes(:provider)
+                                  .detect { |c| c.provider&.is_active? && c.provider.provider_type == "anthropic" }
+            cred&.decrypted_api_key.presence
+          rescue StandardError
+            nil
           end
 
           def serialize_instance
