@@ -107,7 +107,24 @@
               "initial_delay_seconds": { "type": "integer", "minimum": 0 }
             }
           },
-          "metadata": { "type": "object" }
+          "metadata": { "type": "object" },
+          "unit_body": {
+            "description": "Verbatim systemd unit body; the agent renders it through the same write/enable/detach lifecycle as a generated unit (see MODULE_MANIFEST_SCHEMA.md). Mutually exclusive with start_command (enforced server-side).",
+            "type": "string"
+          },
+          "dependencies": {
+            "description": "Per-service ordering: this service starts after the named sibling services (rendered as After=/Requires= on the generated powernode-<module-id>-<name> unit).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["service"],
+              "properties": {
+                "service": { "type": "string" },
+                "kind": { "enum": ["start_before", "requires_health", "softdep"] }
+              }
+            }
+          }
         }
       }
     },
