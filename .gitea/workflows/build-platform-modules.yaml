@@ -611,24 +611,23 @@ jobs:
               # --- Compile INSIDE /tmp/fat -----------------------------
               # Ruby must link against the EXACT libssl/libyaml/zlib this
               # module ships (not the runner's own), so build inside the
-              # chroot. configure/make redirect heavily to /dev/null and
-              # friends, and a bare mmdebstrap rootfs has no populated
-              # /dev — bind-mount /dev,/proc,/sys from the runner for the
-              # duration of the build and tear them back down (via a
-              # trap, so a failed build doesn't leave dangling mounts)
-              # before Stage 2's composer reads /tmp/fat.
-              mkdir -p /tmp/fat/usr/src /tmp/fat/dev /tmp/fat/proc /tmp/fat/sys
+              # chroot. configure/make redirect heavily to /dev/null and a
+              # bare mmdebstrap rootfs has no populated /dev. The CI runner
+              # container forbids mount --bind (no CAP_SYS_ADMIN — the bind
+              # failed "permission denied", and mmdebstrap itself logs
+              # "skipping mount proc" for the same reason), so mknod the few
+              # device nodes configure/make need directly: CAP_MKNOD IS
+              # available (mmdebstrap --mode=root already used it to bootstrap
+              # the rootfs) and chroot works (mmdebstrap chroots to install
+              # packages). file_spec is /usr,/lib,/etc only, so these /dev
+              # nodes are never carved into the shipped erofs — no cleanup needed.
+              mkdir -p /tmp/fat/usr/src /tmp/fat/dev
               cp /tmp/ruby-src.tar.gz "/tmp/fat/usr/src/ruby-${RUBY_VER}.tar.gz"
               cp /tmp/bundler-2.7.1.gem /tmp/fat/usr/src/bundler-2.7.1.gem
-              mount --bind /dev /tmp/fat/dev
-              mount -t proc proc /tmp/fat/proc
-              mount -t sysfs sysfs /tmp/fat/sys
-              cleanup_ruby_chroot_mounts() {
-                # -l (lazy): don't hard-fail cleanup on a transient busy
-                # mount from a not-yet-reaped chroot subprocess.
-                umount -l /tmp/fat/dev /tmp/fat/proc /tmp/fat/sys 2>/dev/null || true
-              }
-              trap cleanup_ruby_chroot_mounts EXIT
+              for node in "null c 1 3" "zero c 1 5" "full c 1 7" "random c 1 8" "urandom c 1 9" "tty c 5 0"; do
+                set -- $node
+                [ -e "/tmp/fat/dev/$1" ] || mknod -m 666 "/tmp/fat/dev/$1" "$2" "$3" "$4" || true
+              done
 
               echo "[stage-1.5] compiling ruby ${RUBY_VER} inside /tmp/fat chroot…"
               chroot /tmp/fat /bin/sh -c "
@@ -644,8 +643,6 @@ jobs:
               "
               chroot /tmp/fat /usr/local/bin/gem install --local /usr/src/bundler-2.7.1.gem --no-document
 
-              cleanup_ruby_chroot_mounts
-              trap - EXIT
               rm -rf /tmp/fat/usr/src
 
               # --- Verify what actually shipped ------------------------
