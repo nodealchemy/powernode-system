@@ -80,6 +80,13 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
              credentials: { "api_key" => "sk-ant-ACCOUNT-PROVIDER" })
     end
 
+    before do
+      # The account-provider fallback is opt-in (default OFF) — enable it here.
+      allow(::SiteSetting).to receive(:get).and_call_original
+      allow(::SiteSetting).to receive(:get)
+        .with("dev_cell_account_provider_credential_fallback").and_return("true")
+    end
+
     it "falls back to the account's Anthropic provider api_key" do
       get path, headers: headers
       expect(response).to have_http_status(:ok)
@@ -97,6 +104,13 @@ RSpec.describe "Api::V1::System::NodeApi::Config#claude_code_credential", type: 
 
     it "ignores an INACTIVE Anthropic provider (404 when none is active)" do
       anthropic_provider.update!(is_active: false)
+      get path, headers: headers
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it "does NOT fall back when the fallback SiteSetting is disabled (default)" do
+      allow(::SiteSetting).to receive(:get)
+        .with("dev_cell_account_provider_credential_fallback").and_return(nil)
       get path, headers: headers
       expect(response).to have_http_status(:not_found)
     end

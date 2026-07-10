@@ -249,6 +249,14 @@ module Api
           # the value via Ai::ProviderCredential#decrypted_api_key. Defensive:
           # any resolution failure → nil, so the caller falls through to 404.
           def account_anthropic_provider_api_key
+            # Opt-in, default OFF: a dev-cell inherits the account's Anthropic
+            # provider key ONLY when the operator has explicitly enabled the
+            # fallback. Otherwise every provisioned dev-cell would auto-consume
+            # the account's API credits via its executor's real `claude` runs
+            # (observed: burned two credit autorefills). Flip SiteSetting
+            # "dev_cell_account_provider_credential_fallback"=true to enable;
+            # otherwise an explicit per-instance ClaudeCodeCredential is required.
+            return nil unless ::SiteSetting.get("dev_cell_account_provider_credential_fallback").to_s == "true"
             return nil unless current_account.respond_to?(:ai_provider_credentials)
 
             cred = current_account.ai_provider_credentials
