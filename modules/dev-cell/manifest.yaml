@@ -421,8 +421,27 @@ security:
   # overlay + provisioning endpoints are IPv4. (imp 605b follow-on)
   egress_allow:
     - "0.0.0.0/0"
-  privileged: false
-  user_namespace: true
+  # privileged: the dev-cell's bootstrap/provision/executor units are ROOT
+  # supervisors that create + `chown -R pnagent` the workspace and drop to the
+  # unprivileged pnagent sandbox via `runuser -u pnagent`. That model needs
+  # full root caps (CAP_CHOWN + CAP_SETUID/SETGID). Until inc21 these ran as
+  # raw rootfs .service files with no sandbox; the BUG-1 unit_body conversion
+  # moved them into manifest `services:`, which newly subjects them to the
+  # agent's per-module cap/userns drop-ins. With capabilities:[] the agent
+  # writes CapabilityBoundingSet= (empty) → root loses CAP_CHOWN/SETUID →
+  # chown/runuser fail EPERM. privileged:true skips the capability drop-in
+  # (reconcile.go `if !policy.Privileged`), restoring full-root supervisors.
+  # The UNTRUSTED half stays isolated by the dedicated nologin pnagent USER
+  # (setuid to pnagent clears caps), NOT by the agent sandbox. Must keep
+  # capabilities:[] — policy.Validate() rejects privileged + explicit caps.
+  privileged: true
+  # user_namespace:false → PrivateUsers=no. PrivateUsers=yes runs each unit in
+  # a user namespace where pnagent's host uid is UNMAPPED, so the root
+  # supervisor's `chown -R pnagent` fails EINVAL and `runuser -u pnagent`
+  # can't map the target uid — fundamentally incompatible with cross-uid
+  # privilege separation. The dev-cell isolates via the pnagent user, not a
+  # user namespace; the two are mutually exclusive here. (imp 605b follow-on)
+  user_namespace: false
 
 skills: []
 
