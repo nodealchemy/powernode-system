@@ -26,6 +26,13 @@ WORKDIR="${DEV_CELL_WORKDIR:?DEV_CELL_WORKDIR not set — this script must be in
 STATE_DIR="${DEV_CELL_STATE_DIR:?DEV_CELL_STATE_DIR not set — this script must be invoked by dev-cell-provision.sh, not run standalone}"
 STEP_DIR="$STATE_DIR/state"
 
+# BUG-D: keep npm's download cache on the durable /persist volume (a
+# pnagent-owned dir pre-created by dev-cell-provision.sh), not the 512M tmpfs
+# root overlay it would otherwise hit via pnagent's $HOME (~/.npm). vendor/
+# bundle and node_modules already land under $WORKDIR (also on /persist), so
+# this closes the last big writer that would otherwise fill the overlay.
+export npm_config_cache="${DEV_CELL_NPM_CACHE:-$(dirname "$WORKDIR")/npm-cache}"
+
 log() { echo "dev-cell-provision-pnagent: $*"; }
 done_step() { [ -e "$STEP_DIR/$1" ]; }
 mark_step() { mkdir -p "$STEP_DIR"; : > "$STEP_DIR/$1"; }
@@ -45,8 +52,14 @@ fi
 
 # --- 2. bundle Ruby deps ---------------------------------------------------
 if ! done_step bundle; then
-  (cd server && { bundle check >/dev/null 2>&1 || bundle install; })
-  (cd worker && { bundle check >/dev/null 2>&1 || bundle install; })
+  # pnagent is unprivileged and CANNOT write the system gem dir
+  # (/var/lib/gems/... is root-owned), so a bare `bundle install` fails with
+  # Bundler::PermissionError. Pin bundler to a workspace-local, pnagent-owned
+  # vendor/bundle via a --local .bundle/config — which scripts/validate.sh's
+  # later `bundle exec` transparently reuses (same per-project .bundle/config),
+  # so no gems ever need to land in the root-owned system path.
+  (cd server && { bundle config set --local path vendor/bundle; bundle check >/dev/null 2>&1 || bundle install; })
+  (cd worker && { bundle config set --local path vendor/bundle; bundle check >/dev/null 2>&1 || bundle install; })
   if [ -f server/Gemfile.private ]; then
     (cd server && { BUNDLE_GEMFILE=Gemfile.private bundle check >/dev/null 2>&1 || BUNDLE_GEMFILE=Gemfile.private bundle install; })
   fi

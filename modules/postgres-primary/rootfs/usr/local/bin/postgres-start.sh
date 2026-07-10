@@ -13,12 +13,25 @@
 # postgres user via runuser at the end.
 set -euo pipefail
 
-DATA=/var/lib/postgresql/16/main
+# BUG-D: a database on the ephemeral tmpfs root overlay is wrong for any
+# pivot-boot instance — the cluster is lost on every reboot AND competes for
+# the tiny (512M) overlay upper. When a durable /persist volume is mounted
+# (pivot cells, including the dev-cell), put PGDATA there. Otherwise
+# (cloud-init / non-pivot hosts where /persist may not be a mount) keep the
+# historical /var location, so this generic module's behavior is unchanged
+# everywhere it's used today. RUN/LOG are transient (socket + logs, recreated
+# each boot) and deliberately stay on /var regardless.
+if mountpoint -q /persist 2>/dev/null; then
+  PGROOT=/persist/var/lib/postgresql
+else
+  PGROOT=/var/lib/postgresql
+fi
+DATA="$PGROOT/16/main"
 RUN=/var/run/postgresql
 LOG=/var/log/postgresql
 
-mkdir -p "$DATA" "$RUN" "$LOG" /var/lib/postgresql
-chown -R postgres:postgres /var/lib/postgresql "$RUN" "$LOG"
+mkdir -p "$DATA" "$RUN" "$LOG" "$PGROOT"
+chown -R postgres:postgres "$PGROOT" "$RUN" "$LOG"
 chmod 700 "$DATA"
 
 if [ ! -f "$DATA/PG_VERSION" ]; then

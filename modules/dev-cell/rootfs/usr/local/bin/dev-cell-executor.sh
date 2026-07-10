@@ -83,7 +83,9 @@ set -euo pipefail
 
 DEV_CELL_RUNTIME_DIR="${DEV_CELL_RUNTIME_DIR:-/run/dev-cell}"
 PNAGENT_USER="${DEV_CELL_PNAGENT_USER:-pnagent}"
-WORKDIR="${DEV_CELL_WORKDIR:-/home/$PNAGENT_USER/powernode}"
+# BUG-D: must match dev-cell-provision.sh's WORKDIR default — the durable
+# /persist workspace, not /home on the 512M tmpfs overlay.
+WORKDIR="${DEV_CELL_WORKDIR:-/persist/dev-cell/workspace}"
 DEV_LOOP_NAME="${DEV_LOOP_NAME:-dev-improve}"
 LOOP_BRANCH="dev-loop/${DEV_LOOP_NAME}"
 POLL_INTERVAL_ACTIVE="${POLL_INTERVAL_ACTIVE:-15}"

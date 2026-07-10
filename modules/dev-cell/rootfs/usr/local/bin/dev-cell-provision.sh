@@ -44,8 +44,23 @@ export GIT_TERMINAL_PROMPT=0
 
 DEV_CELL_RUNTIME_DIR="${DEV_CELL_RUNTIME_DIR:-/run/dev-cell}"
 PNAGENT_USER="${DEV_CELL_PNAGENT_USER:-pnagent}"
-WORKDIR="${DEV_CELL_WORKDIR:-/home/$PNAGENT_USER/powernode}"
-STATE_DIR="${DEV_CELL_STATE_DIR:-/var/lib/dev-cell}"
+# BUG-D: default the workspace AND the provision state onto the durable
+# /persist volume (12G ext4 on a pivot cell), NOT /home + /var — both live on
+# the 512M tmpfs ROOT overlay, far too small for a platform workspace
+# (bundle + node_modules + test DB) and wiped on every reboot. Co-locating
+# STATE_DIR with WORKDIR on /persist is REQUIRED, not cosmetic: the clone
+# guard below rm-rf's $WORKDIR whenever its `clone` marker is missing, so a
+# durable WORKDIR paired with an ephemeral (overlay) marker would nuke the
+# persisted workspace on every boot. Co-locating both also yields correct
+# warm-restart — the persisted `provisioned` marker keeps this unit's
+# ConditionPathExists=!MARKER from needlessly re-running provision and lets
+# dev-cell-executor.service start straight against the warm workspace.
+# FLAGGED to the unit migration (bug1): dev-cell-provision.service's
+# ConditionPathExists=!/var/lib/dev-cell/provisioned and
+# dev-cell-executor.service's ConditionPathExists=/var/lib/dev-cell/provisioned
+# must move to /persist/dev-cell/state/provisioned to match STATE_DIR here.
+WORKDIR="${DEV_CELL_WORKDIR:-/persist/dev-cell/workspace}"
+STATE_DIR="${DEV_CELL_STATE_DIR:-/persist/dev-cell/state}"
 STEP_DIR="$STATE_DIR/state"
 MARKER="$STATE_DIR/provisioned"
 PNAGENT_PHASE_SCRIPT="${DEV_CELL_PNAGENT_PHASE_SCRIPT:-/usr/local/bin/dev-cell-provision-pnagent.sh}"
@@ -202,9 +217,23 @@ fi
 # home explicitly, same as redis's own precedent for a module-owned
 # service account.
 if ! done_step chown-workspace; then
+  # /home ships 0700 root:root on the dev-cell rootfs, which blocks pnagent
+  # (the owner of everything under /home/pnagent) from even TRAVERSING into
+  # its own chowned workspace — the pnagent hand-off's first `cd "$WORKDIR"`
+  # fails with EACCES at the /home hop, not on the workspace itself. Widen
+  # /home to 0711 (traverse, not list) so the unprivileged sandbox can reach
+  # its home; /home/pnagent below stays 0700 (private) via the chmod after.
+  chmod 0711 /home
   mkdir -p "/home/$PNAGENT_USER"
   chown "$PNAGENT_USER:$PNAGENT_USER" "/home/$PNAGENT_USER"
   chmod 700 "/home/$PNAGENT_USER"
+  # BUG-D: the frontend npm download cache (~/.npm) would otherwise land on
+  # the 512M tmpfs overlay via pnagent's $HOME. Pre-create a /persist-backed,
+  # pnagent-owned cache dir beside the workspace (the /persist/dev-cell parent
+  # is root-owned, so pnagent can't mkdir it itself); dev-cell-provision-
+  # pnagent.sh points npm_config_cache here so `npm ci` never touches the overlay.
+  mkdir -p "$(dirname "$WORKDIR")/npm-cache"
+  chown "$PNAGENT_USER:$PNAGENT_USER" "$(dirname "$WORKDIR")/npm-cache"
   chown -R "$PNAGENT_USER:$PNAGENT_USER" "$WORKDIR"
   mark_step chown-workspace
   log "workspace at $WORKDIR handed off to $PNAGENT_USER"
