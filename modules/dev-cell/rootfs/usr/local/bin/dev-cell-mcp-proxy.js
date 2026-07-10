@@ -50,6 +50,7 @@
 
 const http = require('http');
 const https = require('https');
+const tls = require('tls');
 const fs = require('fs');
 const { URL } = require('url');
 
@@ -118,7 +119,15 @@ const target = new URL(mcpUrl);
 
 const cert = readFileOrDie(`${RUNTIME_DIR}/node.crt`, 'node client cert');
 const key = readFileOrDie(`${RUNTIME_DIR}/node.key`, 'node client key');
-const ca = readFileOrDie(`${RUNTIME_DIR}/ca-bundle.crt`, 'platform CA bundle');
+const caBundle = readFileOrDie(`${RUNTIME_DIR}/ca-bundle.crt`, 'platform CA bundle');
+// BUG-O: trust BOTH the platform's internal CA (ca-bundle.crt — for the mTLS
+// handshake + any internal endpoints) AND Node's bundled public roots. The
+// upstream platform URL is typically served by a PUBLIC CA (Let's Encrypt)
+// whose issuer isn't in ca-bundle.crt, and Node — unlike curl — does NOT fall
+// back to the system trust store once an explicit `ca` is set, so verification
+// failed "unable to get issuer certificate". Concatenating tls.rootCertificates
+// restores public-CA verification without dropping the internal CA.
+const ca = [caBundle, ...tls.rootCertificates];
 
 const upstreamAgent = new https.Agent({ cert, key, ca, keepAlive: true });
 
