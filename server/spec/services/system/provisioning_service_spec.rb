@@ -201,6 +201,56 @@ RSpec.describe System::ProvisioningService do
     end
   end
 
+  # Campaign 019f3458 — a template's config["boot_mode"] (e.g. "direct_kernel"
+  # for the pivot-boot path) previously only reached the provider via
+  # SpawnProvisioner explicitly threading it into `options`; every other
+  # caller of provision_instance (e.g. pool replenishment) passed no options
+  # at all, so the provider silently fell back to its own default (cloud_init
+  # on Proxmox) regardless of what the template declared. build_provider_params
+  # now falls back to the template's stored boot_mode, mirroring the existing
+  # init_script fallthrough.
+  describe "boot_mode threading (template config -> provider params)" do
+    it "passes the template's config boot_mode through to the provider params" do
+      node.node_template.update!(config: { "boot_mode" => "direct_kernel" })
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-boot-1", status: "running")
+
+      provision
+
+      expect(adapter).to have_received(:create_instance)
+        .with(hash_including(boot_mode: "direct_kernel"))
+    end
+
+    it "does not force a boot_mode when the template config has none" do
+      expect(node.node_template.config["boot_mode"]).to be_nil
+      captured = nil
+      allow(adapter).to receive(:create_instance) do |params|
+        captured = params
+        { success: true, cloud_instance_id: "i-boot-2", status: "running" }
+      end
+
+      provision
+
+      expect(captured).not_to have_key(:boot_mode)
+    end
+
+    it "prefers an explicit options[:boot_mode] override over the template's config" do
+      node.node_template.update!(config: { "boot_mode" => "direct_kernel" })
+      allow(adapter).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "i-boot-3", status: "running")
+
+      described_class.provision_instance(
+        node: node,
+        provider_region_id: region.id,
+        provider_instance_type_id: instance_type.id,
+        options: { boot_mode: "uefi_disk" }
+      )
+
+      expect(adapter).to have_received(:create_instance)
+        .with(hash_including(boot_mode: "uefi_disk"))
+    end
+  end
+
   describe "fleet-event observability" do
     it "emits a system.instance_provisioned event on success" do
       allow(adapter).to receive(:create_instance)

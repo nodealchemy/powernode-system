@@ -240,6 +240,12 @@ module System
       # peer is already gone.
       auto_detach_sdwan_peer!(instance)
 
+      # Increment 21 — a recycled/terminated dev-cell must not leave a live
+      # read-write deploy key on the source repo (or its private key in Vault).
+      # Best-effort + guarded like the peer detach above: a revoke failure must
+      # never block the terminate transition.
+      revoke_dev_cell_deploy_key!(instance)
+
       unless instance.may_terminate?
         Rails.logger.warn("[ProvisioningService] Instance #{instance.name} already #{instance.status} — skipping terminate transition and meter event")
         return
@@ -353,6 +359,27 @@ module System
         params[:user_data] = options[:user_data]
       elsif template_init.is_a?(String) && template_init.present?
         params[:user_data] = template_init
+      end
+
+      # NodeTemplate stores boot_mode under its `config` JSONB blob too
+      # (no dedicated column) — same pattern as init_script above. Honor
+      # an explicit options override first (e.g. SpawnProvisioner already
+      # threads template.config["boot_mode"] through as an option), then
+      # fall through to the template's stored boot_mode directly so
+      # callers that never set options at all (e.g. pool replenishment,
+      # instance_pool_service.rb) still get the template's boot_mode
+      # instead of silently defaulting to the provider's cloud_init path.
+      # Templates without a boot_mode in config are unaffected — params
+      # simply omits the key and each provider adapter falls back to its
+      # own default (cloud_init for ProxmoxProvider, direct_kernel for
+      # LocalQemuProvider).
+      template_boot_mode = node.node_template&.config.is_a?(Hash) ?
+                          (node.node_template.config["boot_mode"] || node.node_template.config[:boot_mode]) :
+                          nil
+      if options[:boot_mode].present?
+        params[:boot_mode] = options[:boot_mode]
+      elsif template_boot_mode.is_a?(String) && template_boot_mode.present?
+        params[:boot_mode] = template_boot_mode
       end
 
       if options[:root_volume_size]
@@ -504,6 +531,17 @@ module System
       ::Sdwan::PeerDetacher.call(node_instance: instance)
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] SDWAN auto-detach failed for instance #{instance.id}: #{e.class}: #{e.message}")
+    end
+
+    # Delete the dev-cell's read-write Gitea deploy key + drop its Vault private
+    # key when the instance is terminated/recycled. No-op when the extension
+    # model isn't loaded or the instance never bootstrapped a dev-cell key.
+    def revoke_dev_cell_deploy_key!(instance)
+      return unless defined?(::System::DevCellDeployKey)
+
+      ::System::DevCellDeployKey.revoke_for!(instance)
+    rescue StandardError => e
+      Rails.logger.warn("[ProvisioningService] dev-cell deploy-key revoke failed for instance #{instance&.id}: #{e.class}: #{e.message}")
     end
 
     def normalize_status(status)
