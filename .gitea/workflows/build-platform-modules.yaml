@@ -75,22 +75,28 @@ permissions:
   packages: write    # oras push
 
 jobs:
-  # Enumerates the buildable module set at runtime from modules/*/ on
-  # disk (one entry per directory carrying a manifest.yaml) instead of a
-  # hand-maintained static list — adding a new module directory makes it
-  # buildable with zero workflow edits. Also owns the single-module
-  # dispatch: when workflow_dispatch's `module` input is set, this job's
-  # output collapses to exactly that one module (after validating its
-  # manifest exists), so `build`'s matrix — and therefore the "Compute
-  # dirty closure" step below, which also honors `inputs.module`
-  # directly — only ever considers that module. That combination is what
-  # lets `module=<slug>` build a single module at any time, bypassing
-  # both the dirty-closure git-diff and the force_all/push catch-all.
+  # Computes the BUILD SET — an ordered, space-separated list of module
+  # slugs to build this run — from modules/*/ on disk, the dirty
+  # closure, or a single `inputs.module` dispatch. This does NOT feed a
+  # dynamic matrix: Gitea Actions expands `strategy.matrix` **server-side
+  # at run-creation time**, before any job (including this one) has
+  # executed, so `matrix.module: ${{ fromJSON(needs.discover.outputs.X) }}`
+  # was empirically confirmed BROKEN here — `needs` outputs don't exist
+  # yet at that evaluation point, the fork gracefully collapses the
+  # expression to an empty scalar, and every matrix entry resolves to
+  # `module: ''` (nothing builds; a prior revision of this workflow hit
+  # exactly this on a `module=dev-cell` dispatch). Confirmed against
+  # upstream: go-gitea/gitea#25179 ("dynamic array in strategy:matrix
+  # generates only one job") is still open; PR #36564 (deferred matrix
+  # expansion) is an open draft, not shipped.
   #
-  # Same minimal-container / manual-git-clone shape as `build` below
-  # (see its "Clone repo" step for why actions/checkout is avoided) but
-  # shallow — this job only needs a directory listing at the workflow
-  # ref, not full history.
+  # The fix used here: `build`'s matrix is a STATIC list of integer
+  # slots (a capacity knob, not a module list — see its comment). Each
+  # slot resolves its module in a **step**, not the matrix — steps are
+  # evaluated by the runner at execution time, by which point `needs`
+  # outputs ARE available (that asymmetry is documented from the other
+  # direction in go-gitea/gitea#29020). This job's `build_set` output is
+  # what that per-slot resolver step indexes into.
   discover:
     runs-on: ubuntu-24.04
     container:
@@ -99,30 +105,52 @@ jobs:
       run:
         shell: bash
     outputs:
-      modules: ${{ steps.enumerate.outputs.modules }}
+      build_set: ${{ steps.plan.outputs.build_set }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
-      - name: Install git + jq
-        run: |
-          set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update -q
-          apt-get install -y --no-install-recommends git jq ca-certificates
-
-      - name: Clone repo (shallow — only need modules/ listing at this ref)
+      - name: Plan build set
+        id: plan
         env:
+          # Operator-supplied diff base / flags via workflow_dispatch
+          # inputs take precedence; otherwise the closure script uses its
+          # own resolution chain (GITEA_EVENT_BEFORE / GITHUB_BASE_SHA /
+          # HEAD~1).
+          REQUESTED_MODULE: ${{ inputs.module }}
+          FORCE_ALL: ${{ inputs.force_all }}
+          OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
+          APT_DRIFT_CHECK: ${{ inputs.apt_drift_check && '1' || '0' }}
           # Gitea injects GITHUB_TOKEN for workflows running on private
           # repos. Threading it through the clone URL covers the
           # private-mirror case without an SSH key in the runner.
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Mirrors the `build` job's clone step (URL construction, auth,
-          # safe.directory) but shallow: --depth 1 at GITHUB_REF_NAME
-          # (works for branches and tags alike) is enough to see
-          # modules/*/ at the ref that triggered this run. Fall back to
-          # an unscoped shallow clone + direct SHA fetch if the ref-scoped
-          # clone can't find GITHUB_SHA (e.g. ref/SHA mismatch on a
-          # workflow_dispatch against a moving branch).
+          SLUG_RE='^[A-Za-z0-9._-]+$'
+          MATRIX_CAP=24
+
+          # Word-splitting safety: build_set is consumed downstream via
+          # unquoted `for m in $SET` / `read -ra`, so every slug — from
+          # any path (operator input, disk enumeration, or the closure
+          # script) — must be validated before it lands in the set.
+          validate_slug() {
+            local s="$1"
+            if [[ ! "$s" =~ $SLUG_RE ]]; then
+              echo "::error::module slug '$s' fails validation ($SLUG_RE) — refusing to build it"
+              exit 1
+            fi
+          }
+
+          # Bootstrap: git + jq (+ curl/ca-certificates for the closure
+          # script's own yq self-install and for the oras fetch below
+          # when APT_DRIFT_CHECK=1).
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -q
+          apt-get install -y --no-install-recommends git jq curl ca-certificates
+
+          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
+            validate_slug "$REQUESTED_MODULE"
+          fi
+
           git config --global --add safe.directory '*'
           ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
           mkdir -p "$ws"
@@ -132,51 +160,84 @@ jobs:
           else
             clone_url="${base}/${GITHUB_REPOSITORY}.git"
           fi
-          tmp="$(mktemp -d)"
-          if [ -n "${GITHUB_REF_NAME:-}" ]; then
-            git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${clone_url}" "$tmp/repo" 2>/dev/null \
-              || git clone --depth 1 "${clone_url}" "$tmp/repo"
-          else
-            git clone --depth 1 "${clone_url}" "$tmp/repo"
-          fi
-          cp -a "$tmp/repo/." "$ws/"
-          rm -rf "$tmp"
-          cd "$ws"
-          if ! git cat-file -e "${GITHUB_SHA}^{commit}" 2>/dev/null; then
-            git fetch --depth 1 origin "${GITHUB_SHA}"
-          fi
-          git checkout "${GITHUB_SHA}"
 
-      - name: Enumerate buildable modules
-        id: enumerate
-        env:
-          REQUESTED_MODULE: ${{ inputs.module }}
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          tmp="$(mktemp -d)"
+          if [[ -n "${REQUESTED_MODULE:-}" || "${FORCE_ALL:-false}" == "true" ]]; then
+            # Single-module and force_all paths only need a directory
+            # listing at this ref — shallow clone (branch/tag-scoped,
+            # with an unscoped-shallow + direct-SHA-fetch fallback).
+            if [ -n "${GITHUB_REF_NAME:-}" ]; then
+              git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${clone_url}" "$tmp/repo" 2>/dev/null \
+                || git clone --depth 1 "${clone_url}" "$tmp/repo"
+            else
+              git clone --depth 1 "${clone_url}" "$tmp/repo"
+            fi
+            cp -a "$tmp/repo/." "$ws/"
+            rm -rf "$tmp"
+            cd "$ws"
+            if ! git cat-file -e "${GITHUB_SHA}^{commit}" 2>/dev/null; then
+              git fetch --depth 1 origin "${GITHUB_SHA}" 2>/dev/null || git fetch origin "${GITHUB_SHA}"
+            fi
+            git checkout "${GITHUB_SHA}"
+          else
+            # Default (dirty-closure) path needs full history for
+            # `git diff BASE_SHA..HEAD_SHA` inside the closure script.
+            git clone "${clone_url}" "$tmp/repo"
+            cp -a "$tmp/repo/." "$ws/"
+            rm -rf "$tmp"
+            cd "$ws"
+            git checkout "${GITHUB_SHA}"
+          fi
+
           if [[ -n "${REQUESTED_MODULE:-}" ]]; then
-            # Single-module dispatch — collapse the matrix to exactly
-            # this module. Validate the manifest exists so a typo'd slug
-            # fails loudly here instead of silently producing a
-            # zero-entry matrix that no-ops downstream.
+            # Hot path — operator asked for exactly one module, at any
+            # time, regardless of what's dirty. Validate it exists, then
+            # skip the closure/force_all machinery entirely: this is
+            # what makes `module=<slug>` build unconditionally.
             if [[ ! -f "modules/${REQUESTED_MODULE}/manifest.yaml" ]]; then
               echo "::error::inputs.module='${REQUESTED_MODULE}' has no modules/${REQUESTED_MODULE}/manifest.yaml — check the slug."
               exit 1
             fi
-            MODULES_JSON=$(jq -cn --arg m "$REQUESTED_MODULE" '[$m]')
+            SET="$REQUESTED_MODULE"
+            echo "[discover] inputs.module=${REQUESTED_MODULE} — build set forced to this module only"
+          elif [[ "${FORCE_ALL:-false}" == "true" ]]; then
+            SET=$(for d in modules/*/; do [[ -f "${d}manifest.yaml" ]] || continue; basename "$d"; done | sort | xargs)
+            echo "[discover] FORCE_ALL=true — every module in the build set"
           else
-            # Full enumeration — every modules/*/ directory that carries
-            # a manifest.yaml is buildable. Sorted for a deterministic,
-            # diff-friendly matrix ordering across runs.
-            MODULES_JSON=$(
-              for d in modules/*/; do
-                [[ -f "${d}manifest.yaml" ]] || continue
-                basename "$d"
-              done | sort | jq -R . | jq -cs .
-            )
+            if [[ "${APT_DRIFT_CHECK:-0}" == "1" ]] && ! command -v oras >/dev/null 2>&1; then
+              echo "[discover] APT_DRIFT_CHECK=1 — installing oras for apt-closure drift probes"
+              ORAS_VERSION="1.2.0"
+              curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+                | tar -xz -C /usr/local/bin oras
+              chmod +x /usr/local/bin/oras
+            fi
+            # The script accepts BASE_SHA HEAD_SHA as positional args.
+            # When the operator didn't supply one, fall through to the
+            # script's own GITEA_EVENT_BEFORE / HEAD~1 resolver.
+            if [[ -n "${OPERATOR_BASE_SHA:-}" ]]; then
+              RAW=$(bash scripts/ci-compute-dirty-closure.sh "${OPERATOR_BASE_SHA}" "${GITHUB_SHA}")
+            else
+              RAW=$(bash scripts/ci-compute-dirty-closure.sh)
+            fi
+            SET=$(echo "$RAW" | sort | xargs)
           fi
-          echo "[discover] modules: $MODULES_JSON"
-          echo "modules=$MODULES_JSON" >> "$GITHUB_OUTPUT"
+
+          COUNT=0
+          if [[ -n "$SET" ]]; then
+            for m in $SET; do
+              validate_slug "$m"
+              COUNT=$((COUNT + 1))
+            done
+          fi
+
+          if (( COUNT > MATRIX_CAP )); then
+            echo "::error::build set ($COUNT) exceeds matrix capacity ${MATRIX_CAP} — widen jobs.build.strategy.matrix.idx"
+            exit 1
+          fi
+
+          echo "[discover] build_set (${COUNT}): ${SET:-<empty>}"
+          echo "build_set=$SET" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
   build:
     needs: discover
@@ -210,13 +271,39 @@ jobs:
       # instead of ~50 min.
       fail-fast: true
       matrix:
-        # Sourced from the `discover` job's enumeration of modules/*/ on
-        # disk (or the single module named by `inputs.module`) — see the
-        # `discover` job's comment above for the fromJSON-matrix caveat
-        # this replaced a static list to work around, and why that
-        # workaround was retired.
-        module: ${{ fromJSON(needs.discover.outputs.modules) }}
+        # CAPACITY KNOB, not a module list — see the `discover` job's
+        # comment for why this can't be `module: ${{ fromJSON(needs...) }}`.
+        # 17 modules today; 24 gives headroom. Bump this list (never
+        # hand-list module names here) if `discover`'s MATRIX_CAP guard
+        # ever fails. Each slot's "Resolve build slot" step below maps
+        # `idx` to a module name (or '' when idx has no corresponding
+        # entry in this run's build set — that slot idle-skips every
+        # remaining step).
+        idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
+      - name: Resolve build slot
+        # Runner-side step evaluation (unlike matrix expansion) has the
+        # `needs` context available, so this is where
+        # `needs.discover.outputs.build_set` becomes usable — see the
+        # `discover` job's comment for why it can't be read at the
+        # matrix level. Pure bash `read -ra` needs zero expression
+        # features beyond "needs output → step env" and degrades
+        # out-of-range indices to an explicit empty string.
+        id: resolve
+        env:
+          BUILD_SET: ${{ needs.discover.outputs.build_set }}
+        run: |
+          set -euo pipefail
+          read -ra SLOTS <<< "${BUILD_SET}"
+          MODULE="${SLOTS[${{ matrix.idx }}]:-}"
+          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
+          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
+          if [ -n "$MODULE" ]; then
+            echo "=== slot ${{ matrix.idx }} builds: $MODULE ==="
+          else
+            echo "=== slot ${{ matrix.idx }} idle (build set has ${#SLOTS[@]} entries) ==="
+          fi
+
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
       # node runtime requirement (the action is a Node.js bundle) which
@@ -224,6 +311,7 @@ jobs:
       # `git clone` does the same job in two seconds AND keeps the
       # container Debian-base-image clean.
       - name: Install build tools (git + mmdebstrap + erofs-utils + fsverity + cosign + oras)
+        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # The Gitea runner container is Debian Trixie. Install the
@@ -255,6 +343,7 @@ jobs:
             tar
 
       - name: Clone repo (full history for cosign provenance)
+        if: steps.resolve.outputs.module != ''
         env:
           # Gitea injects GITHUB_TOKEN for workflows running on private
           # repos. Threading it through the clone URL covers the
@@ -289,6 +378,7 @@ jobs:
           git checkout "${GITHUB_SHA}"
 
       - name: Install signing toolchain (cosign + oras)
+        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # cosign — Sigstore keyless signing. Pin to a known-good release.
@@ -309,73 +399,16 @@ jobs:
           cosign version | head -1
           oras version | head -1
 
-      - name: Compute dirty closure (per-module path filter + apt drift)
-        # Runs once per matrix entry — cheap (mostly manifest parsing +
-        # git diff). Writes DIRTY_MODULES to GITHUB_ENV so every
-        # subsequent step can gate on whether this matrix entry's module
-        # is in the closure. Skips the closure check entirely when
-        # workflow_dispatch.force_all=true (operator-initiated full
-        # rebuild) or when the workflow can't determine a sane diff base.
-        id: closure
-        env:
-          # Operator-supplied diff base via workflow_dispatch input takes
-          # precedence; otherwise let the script use its own resolution
-          # chain (GITEA_EVENT_BEFORE / GITHUB_BASE_SHA / HEAD~1).
-          OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
-          FORCE_ALL: ${{ inputs.force_all }}
-          APT_DRIFT_CHECK: ${{ inputs.apt_drift_check && '1' || '0' }}
-          REQUESTED_MODULE: ${{ inputs.module }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
-            # Single-module dispatch — `discover` already scoped the
-            # entire matrix to [${REQUESTED_MODULE}], so the closure is
-            # trivially that one module. Skip the git-diff / apt-drift
-            # computation (and FORCE_ALL) entirely: this path must build
-            # REQUESTED_MODULE unconditionally, regardless of what did or
-            # didn't change on disk — that's what makes `module=<slug>`
-            # work at any time, bypassing both the dirty-closure and the
-            # catch-all rebuild-everything trigger.
-            DIRTY="$REQUESTED_MODULE"
-            echo "[closure] inputs.module=${REQUESTED_MODULE} — closure forced to this module only"
-          elif [[ "${FORCE_ALL:-false}" == "true" ]]; then
-            echo "[closure] FORCE_ALL=true — every module marked dirty"
-            DIRTY=$(ls -1 modules/ | xargs)
-          else
-            # The script accepts BASE_SHA HEAD_SHA as positional args.
-            # When the operator didn't supply one, fall through to
-            # the script's own GITEA_EVENT_BEFORE / HEAD~1 resolver.
-            if [[ -n "${OPERATOR_BASE_SHA:-}" ]]; then
-              DIRTY=$(bash scripts/ci-compute-dirty-closure.sh \
-                "${OPERATOR_BASE_SHA}" "${GITHUB_SHA}" | xargs)
-            else
-              DIRTY=$(bash scripts/ci-compute-dirty-closure.sh | xargs)
-            fi
-          fi
-          # Pad with leading + trailing space so substring-match in
-          # downstream `if: contains()` doesn't get false positives
-          # ("redis" matching "redis-cluster" etc.).
-          PADDED=" $DIRTY "
-          echo "DIRTY_MODULES=$PADDED" >> "$GITHUB_ENV"
-          echo "[closure] dirty modules: $DIRTY"
-          # Echo per-matrix-entry decision so the run log shows skip
-          # rationale without having to cross-reference DIRTY_MODULES.
-          if [[ "$PADDED" == *" ${{ matrix.module }} "* ]]; then
-            echo "[closure] BUILD ${{ matrix.module }} — in closure"
-          else
-            echo "[closure] SKIP ${{ matrix.module }} — not in closure"
-          fi
-
-      - name: Parse manifest for ${{ matrix.module }}
-        # Skip when this matrix entry's module isn't in the dirty closure.
-        # The pad+contains pattern (leading + trailing space around the
-        # needle) prevents false positives where "redis" matches inside
-        # "redis-cluster" etc.
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+      - name: Parse manifest for the resolved module
+        # `discover` already computed the build set (dirty closure |
+        # single module | force_all) once for the whole run; this slot
+        # just needs to know whether it has work. No more per-matrix-entry
+        # DIRTY_MODULES contains() gate.
+        if: steps.resolve.outputs.module != ''
         id: manifest
         run: |
           set -euo pipefail
-          mfpath="modules/${{ matrix.module }}/manifest.yaml"
+          mfpath="modules/$MODULE/manifest.yaml"
           # Extract the fields the builder stage needs. yq is preferred;
           # fall back to python if not available on the runner.
           if command -v yq >/dev/null 2>&1; then
@@ -396,10 +429,10 @@ jobs:
           snapshot=$(jq -r '.build.apt_snapshot // "20260415T000000Z"' /tmp/manifest.json)
           echo "apt_snapshot=$snapshot" >> "$GITHUB_OUTPUT"
           # Module-name slug (alphanumeric + hyphens) for image tag.
-          echo "slug=${{ matrix.module }}" >> "$GITHUB_OUTPUT"
+          echo "slug=$MODULE" >> "$GITHUB_OUTPUT"
 
       - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # mmdebstrap produces a minimal Ubuntu noble rootfs at
@@ -429,7 +462,7 @@ jobs:
           # install but BEFORE the manifest's package_spec packages.
           hook_args=()
           mkdir -p /tmp/hooks
-          case "${{ matrix.module }}" in
+          case "$MODULE" in
             log-forwarder-vector)
               # Post-Datadog-acquisition, vector's apt key moved to
               # keys.datadoghq.com (DATADOG_APT_KEY_CURRENT.public) and
@@ -484,11 +517,15 @@ jobs:
             "$base_url"
 
       - name: Stage 1.5 — stage parent platform content (Class B modules)
-        # Combined gate: only runs for Class B modules (the original
-        # allow-list below) AND only when this matrix entry's module
-        # is in the dirty closure (added 2026-05-24 as part of the
-        # selective-rebuild work). A second `if:` line below would be
-        # invalid YAML — both conditions must live in one expression.
+        # Gate collapses to the same resolve check as every other step —
+        # the hand-maintained Class-B allow-list that used to live here
+        # (as a second `&&`-joined clause, since two separate `if:` lines
+        # is invalid YAML) is now redundant with the `case "$MODULE"` in
+        # the step body below: that case statement already enumerates
+        # exactly the Class-B modules and no-ops (falls through with no
+        # matching arm) for everything else in ~1s. One list instead of
+        # two — a new Class-B module now needs only a new case arm, not
+        # a workflow-level allow-list edit.
         #
         # Class B modules ship source-code or vendored binaries that
         # don't come from apt. mmdebstrap left /tmp/fat with just
@@ -504,7 +541,7 @@ jobs:
         #
         # reverse-proxy ships the vendored traefik binary that lives
         # in THIS submodule's agent/dist/.
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module)) && (matrix.module == 'powernode-hub-backend' || matrix.module == 'powernode-hub-worker' || matrix.module == 'powernode-hub-frontend' || matrix.module == 'powernode-extension-system' || matrix.module == 'reverse-proxy-traefik' || matrix.module == 'powernode-system-base' || matrix.module == 'base-os-ubuntu-noble' || matrix.module == 'runtime-ruby' || matrix.module == 'claude-tmux')
+        if: steps.resolve.outputs.module != ''
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -513,7 +550,7 @@ jobs:
           cd "$ws"
 
           needs_parent=0
-          case "${{ matrix.module }}" in
+          case "$MODULE" in
             powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend) needs_parent=1 ;;
           esac
 
@@ -525,7 +562,7 @@ jobs:
             git clone --depth 1 "$clone_url" /tmp/parent
           fi
 
-          case "${{ matrix.module }}" in
+          case "$MODULE" in
             runtime-ruby)
               # Ship the EXACT bundler the platform Gemfile.lock pins (BUNDLED
               # WITH 2.7.1) into the runtime gem dir, so the on-node `bundle
@@ -823,15 +860,15 @@ jobs:
           find /tmp/fat -type f | wc -l
 
       - name: Stage 2 — composer (rsync filter + mkfs.erofs + fs-verity)
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # 1. Layer the module's static rootfs/ contents onto the
           # bootstrapped /tmp/fat. Anything in rootfs/ overrides the
           # apt-installed equivalent — that's how a module customizes
           # its package's defaults.
-          if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
-            rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/fat/
+          if [ -d "modules/$MODULE/rootfs" ]; then
+            rsync -a modules/$MODULE/rootfs/ /tmp/fat/
           fi
           # 2. Apply rsync filter to carve the slim module rootfs
           # from the fat tree. Same filter that the buildah-mounted
@@ -875,8 +912,8 @@ jobs:
           echo "=== /tmp/slim total size ==="
           du -sh /tmp/slim 2>&1 | awk 'NR==1'
           # 3. Layer the module's static rootfs/ contents on top
-          if [ -d "modules/${{ matrix.module }}/rootfs" ]; then
-            rsync -a modules/${{ matrix.module }}/rootfs/ /tmp/slim/
+          if [ -d "modules/$MODULE/rootfs" ]; then
+            rsync -a modules/$MODULE/rootfs/ /tmp/slim/
           fi
           # 4. mkfs.erofs — universal read-only lower-dir.
           #
@@ -896,17 +933,17 @@ jobs:
           mkfs.erofs \
             -zlz4hc \
             --all-root \
-            /tmp/${{ matrix.module }}.erofs \
+            /tmp/$MODULE.erofs \
             /tmp/slim
-          EROFS_ROOT=$(fsverity digest --hash-alg=sha256 /tmp/${{ matrix.module }}.erofs | awk '{print $1}')
-          EROFS_SIZE=$(stat -c%s /tmp/${{ matrix.module }}.erofs)
+          EROFS_ROOT=$(fsverity digest --hash-alg=sha256 /tmp/$MODULE.erofs | awk '{print $1}')
+          EROFS_SIZE=$(stat -c%s /tmp/$MODULE.erofs)
           {
             echo "fsverity_root=$EROFS_ROOT"
             echo "size=$EROFS_SIZE"
-          } > /tmp/${{ matrix.module }}.erofs.meta
+          } > /tmp/$MODULE.erofs.meta
 
       - name: Cosign sign + oras push
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: steps.resolve.outputs.module != ''
         id: push
         run: |
           set -euo pipefail
@@ -914,8 +951,8 @@ jobs:
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
           REGISTRY_NS="git.powernode.org/powernode"
-          EROFS_REF="${REGISTRY_NS}/${{ matrix.module }}:${TAG}"
-          LATEST_REF="${REGISTRY_NS}/${{ matrix.module }}:latest"
+          EROFS_REF="${REGISTRY_NS}/$MODULE:${TAG}"
+          LATEST_REF="${REGISTRY_NS}/$MODULE:latest"
 
           # `oras` reads credentials from ~/.docker/config.json or
           # via explicit `oras login` — it does NOT pick up
@@ -935,8 +972,8 @@ jobs:
           # the versions Stage 1's mmdebstrap would see.
           APT_HASH=$(APT_PROBE_MODE=local \
             bash scripts/ci-compute-dirty-closure.sh \
-              apt-hash "${{ matrix.module }}" 2>/dev/null || true)
-          echo "[push] apt-closure-sha256 for ${{ matrix.module }}: ${APT_HASH:-<empty>}"
+              apt-hash "$MODULE" 2>/dev/null || true)
+          echo "[push] apt-closure-sha256 for $MODULE: ${APT_HASH:-<empty>}"
 
           # oras complains about absolute paths in source operands.
           # Run from /tmp so the file operands are bare names; the
@@ -946,8 +983,8 @@ jobs:
           ORAS_PUSH_ARGS=(
             "$EROFS_REF"
             --artifact-type application/vnd.powernode.module.v1
-            "${{ matrix.module }}.erofs:application/vnd.powernode.erofs"
-            "${{ matrix.module }}.erofs.meta:application/vnd.powernode.module.meta"
+            "$MODULE.erofs:application/vnd.powernode.erofs"
+            "$MODULE.erofs.meta:application/vnd.powernode.module.meta"
           )
           if [[ -n "$APT_HASH" ]]; then
             ORAS_PUSH_ARGS+=(--annotation "org.powernode.apt-closure-sha256=$APT_HASH")
@@ -991,7 +1028,7 @@ jobs:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       - name: Notify platform — module published
-        if: success() && contains(env.DIRTY_MODULES, format(' {0} ', matrix.module))
+        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # POSTs the erofs artifact reference so the platform's ingest
@@ -1009,15 +1046,15 @@ jobs:
           # Without this sync, the DB columns get pinned to whatever the
           # initial db:seed wrote and drift away from the manifests in
           # the source tree on every refactor.
-          EROFS_ROOT=$(grep '^fsverity_root=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
-          EROFS_SIZE=$(grep '^size=' /tmp/${{ matrix.module }}.erofs.meta | cut -d= -f2)
-          MANIFEST_B64=$(base64 -w0 "modules/${{ matrix.module }}/manifest.yaml")
+          EROFS_ROOT=$(grep '^fsverity_root=' /tmp/$MODULE.erofs.meta | cut -d= -f2)
+          EROFS_SIZE=$(grep '^size=' /tmp/$MODULE.erofs.meta | cut -d= -f2)
+          MANIFEST_B64=$(base64 -w0 "modules/$MODULE/manifest.yaml")
           # NodeModuleVersion.artifacts is JSONB (no fixed schema), so
           # built_from_sha rides through untouched — see the matching
           # oras push annotation above for the artifact-side copy of the
           # same provenance value.
           payload=$(jq -nc \
-            --arg name       "${{ matrix.module }}" \
+            --arg name       "$MODULE" \
             --arg tag        "${{ steps.push.outputs.tag }}" \
             --arg ref        "${{ steps.push.outputs.erofs_ref }}" \
             --arg root       "$EROFS_ROOT" \
