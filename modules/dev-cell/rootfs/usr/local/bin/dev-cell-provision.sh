@@ -89,12 +89,22 @@ chown -R "$PNAGENT_USER:$PNAGENT_USER" "$STATE_DIR"
 # anyway since this whole privilege-separation design depends on it being
 # present. Fail here with a clear message instead of a cryptic "command
 # not found" deep inside a later phase if any is missing.
-for cmd in bundle psql pg_isready createuser runuser; do
+for cmd in bundle npm node psql pg_isready createuser runuser; do
   command -v "$cmd" >/dev/null 2>&1 || {
-    log "missing '$cmd' — is this instance's NodeTemplate missing a co-required module (runtime-ruby / postgres-primary), or util-linux broken?"
+    log "missing '$cmd' — is this instance's NodeTemplate missing a co-required module (runtime-ruby / runtime-node / postgres-primary), or util-linux broken?"
     exit 1
   }
 done
+# Assert Node 24+ (runtime-node), not Noble's stale apt v18: a bare `command -v
+# node` passes on v18, but the frontend needs engines >=24.9, and v18 lacks npm
+# and SIGABRTs on V8 snapshot init in this pivot env. `node --version` on a
+# broken/old node yields a non-24 major (or errors → empty → treated as 0), so
+# fail clearly here rather than deep inside `npm ci` / the mcp-proxy crash-loop.
+NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9]\{1,\}\).*/\1/p')
+if [ "${NODE_MAJOR:-0}" -lt 24 ]; then
+  log "node major is '${NODE_MAJOR:-<none>}' (<24) — the runtime-node module (Node 24) is missing from this NodeTemplate; apt's v18 fallback can't build the frontend or run the mcp-proxy."
+  exit 1
+fi
 
 # --- deploy key + known_hosts + clone_url, read fresh from tmpfs ---------
 # Root-owned, 0600 — this script runs as root, so it can read them

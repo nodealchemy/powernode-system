@@ -147,11 +147,14 @@ dependencies:
 # NOT declared here as a `requires:` edge (no sibling module in this
 # codebase — postgres-primary, runtime-ruby — declares one for a co-located
 # runtime it needs either): dev-cell also assumes runtime-ruby (ruby +
-# bundler on PATH, for scripts/validate.sh and bin/rails) and
-# postgres-primary (a local Postgres on 127.0.0.1:5432, trust-auth,
+# bundler on PATH, for scripts/validate.sh and bin/rails), runtime-node
+# (node + npm on PATH, for `npm ci`, the mcp-proxy, and validate.sh's
+# `npx tsc` — Noble's apt node is v18/npm-less and V8-crashes here, so
+# shipping Node 24 via runtime-node is load-bearing, not a convenience),
+# and postgres-primary (a local Postgres on 127.0.0.1:5432, trust-auth,
 # matching server/config/database.yml.example's defaults) are co-assigned
 # on the same NodeTemplate. dev-cell-provision.sh's own preflight step
-# (`command -v bundle/psql/pg_isready/createuser`) verifies this template
+# (`command -v bundle/npm/node/psql/...` + a node>=24 assertion) verifies this template
 # composition explicitly at provisioning time, failing with a clear
 # message rather than a cryptic error deep inside a later phase if either
 # is missing — see that script for what's assumed vs. verified.
@@ -284,7 +287,7 @@ services:
       Documentation=https://github.com/nodealchemy/powernode-platform
       After=network-online.target
       ConditionPathExists=/usr/local/bin/dev-cell-mcp-proxy.js
-      ConditionPathExists=/usr/bin/node
+      ConditionPathExists=/usr/local/bin/node
 
       [Service]
       # Runs as root — PRIVILEGE SEPARATION load-bearing detail, not
@@ -310,7 +313,7 @@ services:
       Environment=DEV_CELL_MCP_PROXY_BIND=127.0.0.1
       Environment=DEV_CELL_MCP_PROXY_PORT=18443
 
-      ExecStart=/usr/bin/node /usr/local/bin/dev-cell-mcp-proxy.js
+      ExecStart=/usr/local/bin/node /usr/local/bin/dev-cell-mcp-proxy.js
       Restart=on-failure
       RestartSec=15s
       StandardOutput=journal

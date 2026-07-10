@@ -33,6 +33,17 @@ STEP_DIR="$STATE_DIR/state"
 # this closes the last big writer that would otherwise fill the overlay.
 export npm_config_cache="${DEV_CELL_NPM_CACHE:-$(dirname "$WORKDIR")/npm-cache}"
 
+# BUG-H: `npm ci` (frontend deps below) otherwise downloads the Cypress binary
+# — a ~237M .zip staged in TMPDIR plus a ~245M extracted tree in
+# ~/.cache/Cypress. pnagent's $HOME and the default /tmp both sit on the 512M
+# tmpfs root overlay (only $WORKDIR + the npm cache are redirected to /persist),
+# so that download overflows the overlay to 100% → the co-located Postgres then
+# dies "No space left on device" on its socket lock, failing provision. Nothing
+# in scripts/validate.sh runs Cypress (it runs rspec + tsc + pattern-validation
+# + gitleaks only), so skip the binary download entirely — npm ci still installs
+# the cypress npm package for a coherent node_modules, just not its 240M binary.
+export CYPRESS_INSTALL_BINARY=0
+
 log() { echo "dev-cell-provision-pnagent: $*"; }
 done_step() { [ -e "$STEP_DIR/$1" ]; }
 mark_step() { mkdir -p "$STEP_DIR"; : > "$STEP_DIR/$1"; }
