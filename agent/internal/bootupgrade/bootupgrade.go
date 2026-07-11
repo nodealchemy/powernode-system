@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
@@ -66,9 +67,12 @@ type Deps struct {
 	Arch     string // "" → runtime.GOARCH
 }
 
-// BootTries is the systemd-boot boot-counter a newly-written slot starts with:
-// the new UKI gets this many boot attempts before systemd-boot marks it bad and
-// falls back to the other (good) slot.
+// BootTries is the systemd-boot boot-counter a newly-written slot starts with.
+// The upgrade also `bootctl set-oneshot`s the new slot, so in practice the new
+// UKI gets exactly ONE forced attempt: if that boot doesn't reach a healthy
+// heartbeat (which blesses it), the one-shot is consumed and the next boot falls
+// through to the still-old default slot — immediate rollback. The counter is the
+// margin that keeps the entry from being flagged bad during that single attempt.
 const BootTries = 3
 
 // Apply runs the full upgrade: download → sha256 + cosign verify → write the
@@ -124,13 +128,26 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 		return "", fmt.Errorf("cosign verify UKI: %w", err)
 	}
 
-	// 3. Write the INACTIVE A/B slot (systemd-boot boot-counted) and arm it as
-	//    the one-shot next boot. The active slot stays untouched as the rollback
-	//    target; if the new UKI fails to boot BootTries times, systemd-boot marks
-	//    it bad and falls back to the good slot (no brick).
+	// 3. Install the boot image.
+	//    - A/B (booted via systemd-boot): write the INACTIVE slot boot-counted
+	//      and arm it as the one-shot next boot. The active slot stays as the
+	//      rollback target; a UKI that fails to boot falls back to it.
+	//    - Fallback (older node whose ESP predates systemd-boot): the single-slot
+	//      writer so upgrades still work — no A/B, but no brick either.
+	arch := d.Arch
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	if !bootslots.BootedViaSystemdBoot() {
+		if err := espwrite.WriteUKI(ctx, d.Runner, ukiPath, espwrite.RemovableBootName(arch)); err != nil {
+			return "", fmt.Errorf("write ESP (single-slot fallback): %w", err)
+		}
+		return "", nil // no A/B slot to record
+	}
 	inactive := bootslots.Other(bootslots.Load().Active)
+	base := bootslots.EntryBase(inactive)
 	entry := bootslots.EntryName(inactive, BootTries) // e.g. powernode-b+3.efi
-	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, entry); err != nil {
+	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, base, entry); err != nil {
 		return "", fmt.Errorf("write ESP slot: %w", err)
 	}
 	if err := d.Runner.Run(ctx, "bootctl", "set-oneshot", entry); err != nil {
@@ -140,28 +157,49 @@ func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err erro
 }
 
 // ConfirmBoot is called once per boot after the FIRST successful heartbeat
-// (agent-health-gated). It blesses the current boot — `systemd-bless-boot good`
-// strips the boot-counter from the running entry so systemd-boot stops counting
-// it down toward rollback — and, when a pending upgrade's target matches the
-// image that actually booted, promotes the pending slot to the persistent
-// default (so subsequent boots use the new image, not the old one). If the node
-// instead rolled back to the previous slot, the pending upgrade is cleared
-// without promotion. Best-effort + idempotent; safe to call once per boot.
+// (agent-health-gated). When a pending upgrade's target matches the image that
+// actually booted, it blesses the new slot — strips the systemd-boot boot-counter
+// from its UKI filename so it stops counting toward rollback — and, only after
+// confirming the blessed file exists, promotes it to the persistent default. If
+// the node instead rolled back to the previous slot, it cleans the failed
+// attempt's counter files and leaves the active slot unchanged. Idempotent: on a
+// retry (e.g. set-default failed), the already-blessed slot re-blesses as a
+// no-op. Returns an error (leaving Pending set for a retry) if any step fails, so
+// a healthy upgrade is never left un-promoted while state claims success.
 func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error {
-	// Bless the running entry (no-op if not booted with counting / already good).
-	_ = r.Run(ctx, "systemd-bless-boot", "good")
-
-	st := bootslots.Load()
-	if st.Pending == "" {
+	// Only meaningful when we actually booted through systemd-boot's counted
+	// entries — old-layout nodes have nothing to bless.
+	if !bootslots.BootedViaSystemdBoot() {
 		return nil
 	}
+	st := bootslots.Load()
+	if st.Pending == "" {
+		return nil // no upgrade in flight this boot
+	}
+	base := bootslots.EntryBase(st.Pending)
+
 	if bootedGitSHA != "" && bootedGitSHA == st.PendingSHA {
-		// The new slot booted healthy — make it the persistent default.
-		good := bootslots.EntryName(st.Pending, 0) // powernode-<slot>.efi
-		if err := r.Run(ctx, "bootctl", "set-default", good); err != nil {
-			return fmt.Errorf("bootctl set-default %s: %w", good, err)
+		// New slot booted healthy: bless it, confirm the good file exists, then
+		// promote it to default. Order matters — never set-default a name that
+		// doesn't resolve to a file (bootctl doesn't validate existence).
+		if err := espwrite.BlessSlot(ctx, r, base); err != nil {
+			return fmt.Errorf("bless slot %s: %w", st.Pending, err)
+		}
+		ok, err := espwrite.SlotGoodExists(ctx, r, base)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("bless slot %s: good file missing after bless", st.Pending)
+		}
+		if err := r.Run(ctx, "bootctl", "set-default", base+".efi"); err != nil {
+			return fmt.Errorf("bootctl set-default %s.efi: %w", base, err)
 		}
 		st.Active = st.Pending
+	} else {
+		// Rolled back to the previous slot — drop the failed attempt's counter
+		// files; the active slot is unchanged.
+		_ = espwrite.CleanSlot(ctx, r, base)
 	}
 	st.Pending = ""
 	st.PendingSHA = ""

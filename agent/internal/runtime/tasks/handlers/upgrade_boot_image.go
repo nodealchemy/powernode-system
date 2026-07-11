@@ -80,11 +80,18 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 	// Record the pending slot + target (survives the reboot on /persist) so the
 	// post-reboot bless (agent's first successful heartbeat) can promote this
 	// slot to the persistent default if it boots healthy — or clear it if the
-	// node rolled back. Also mark the attempt to bound the reboot loop.
-	st := bootslots.Load()
-	st.Pending = slot
-	st.PendingSHA = opts.TargetGitSHA
-	_ = st.Save()
+	// node rolled back. If this record can't be persisted we must NOT reboot: a
+	// healthy new boot would then find no pending state, never bless/promote the
+	// slot, and revert to the old image at the next reboot. (slot == "" on the
+	// single-slot fallback path — nothing to record.)
+	if slot != "" {
+		st := bootslots.Load()
+		st.Pending = slot
+		st.PendingSHA = opts.TargetGitSHA
+		if serr := st.Save(); serr != nil {
+			return nil, fmt.Errorf("upgrade_boot_image: persist pending slot: %w", serr)
+		}
+	}
 	markAttempted(opts.TargetGitSHA)
 	if err := h.deps.MountRunner.Run(ctx, "systemctl", "reboot"); err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: reboot: %w", err)

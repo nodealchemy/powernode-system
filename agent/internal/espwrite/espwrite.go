@@ -38,26 +38,44 @@ func RemovableBootName(goarch string) string {
 	}
 }
 
+// IsUEFI reports whether this node booted via UEFI (an ESP exists to write).
+// Non-UEFI nodes (e.g. rpi4's config.txt boot) have no /sys/firmware/efi; the
+// boot-image writers refuse rather than scribble a UKI into the wrong partition.
+func IsUEFI() bool {
+	fi, err := os.Stat("/sys/firmware/efi")
+	return err == nil && fi.IsDir()
+}
+
 // WriteUKI locates the ESP, backs up EFI/BOOT/<filename> to <filename>.bak, and
 // atomically replaces it with the UKI at srcUKIPath. This is the single-slot
-// (increment 2) writer; the A/B path uses WriteUKISlot. Idempotent.
+// (increment 2) writer, kept for nodes whose ESP predates the systemd-boot A/B
+// layout; the A/B path uses WriteUKISlot. Idempotent.
 func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) error {
-	return withMountedESP(ctx, r, srcUKIPath, func(mnt string) error {
+	if _, statErr := os.Stat(srcUKIPath); statErr != nil {
+		return fmt.Errorf("source UKI: %w", statErr)
+	}
+	return withMountedESP(ctx, r, func(mnt string) error {
 		return installUKI(mnt, srcUKIPath, filename)
 	})
 }
 
 // WriteUKISlot installs the UKI at srcUKIPath as /EFI/Linux/<entryName> on the
-// ESP (campaign 019f505f inc 3 A/B slots). Unlike WriteUKI it does NOT touch the
-// removable default (systemd-boot) or the other slot — the other slot is the
-// rollback target — so no .bak is kept. Atomic (.new → rename) so an interrupted
-// write leaves the existing slots intact.
-func WriteUKISlot(ctx context.Context, r mount.Runner, srcUKIPath, entryName string) error {
-	return withMountedESP(ctx, r, srcUKIPath, func(mnt string) error {
+// ESP (campaign 019f505f inc 3 A/B slots). entryBase (e.g. "powernode-b") is the
+// slot's family: ALL of that slot's existing files (counterless + any stale
+// boot-counter variants) are removed first, so a re-attempt can't collide with a
+// leftover counter file (which would make systemd-boot skip counting and boot an
+// unproven UKI without rollback). It does NOT touch the removable default
+// (systemd-boot) or the OTHER slot — the other slot is the rollback target.
+func WriteUKISlot(ctx context.Context, r mount.Runner, srcUKIPath, entryBase, entryName string) error {
+	if _, statErr := os.Stat(srcUKIPath); statErr != nil {
+		return fmt.Errorf("source UKI: %w", statErr)
+	}
+	return withMountedESP(ctx, r, func(mnt string) error {
 		linuxDir := filepath.Join(mnt, "EFI", "Linux")
 		if e := os.MkdirAll(linuxDir, 0o755); e != nil {
 			return fmt.Errorf("mkdir %s: %w", linuxDir, e)
 		}
+		removeSlotFiles(linuxDir, entryBase) // clear stale variants of THIS slot
 		dst := filepath.Join(linuxDir, entryName)
 		tmp := dst + ".new"
 		if e := copyFile(srcUKIPath, tmp); e != nil {
@@ -70,12 +88,81 @@ func WriteUKISlot(ctx context.Context, r mount.Runner, srcUKIPath, entryName str
 	})
 }
 
-// withMountedESP locates + mounts the ESP (if not already mounted), runs fn
-// against its mountpoint, syncs, and unmounts what it mounted. Shared by the
-// single-slot and A/B writers.
-func withMountedESP(ctx context.Context, r mount.Runner, srcUKIPath string, fn func(mnt string) error) (err error) {
-	if _, statErr := os.Stat(srcUKIPath); statErr != nil {
-		return fmt.Errorf("source UKI: %w", statErr)
+// BlessSlot marks a slot permanently good by stripping the systemd-boot
+// boot-counter from its UKI filename (<base>+<n>-<m>.efi → <base>.efi) and
+// removing any other counter variants. This is what stops systemd-boot counting
+// the entry toward rollback — done HERE by the agent (health-gated) rather than
+// systemd-bless-boot.service (masked), which can't run anyway (the ESP isn't
+// mounted rw at /boot post-pivot and the binary isn't on PATH). Idempotent: a
+// no-op if the counterless file already exists. Errors if the slot has no file.
+func BlessSlot(ctx context.Context, r mount.Runner, entryBase string) error {
+	return withMountedESP(ctx, r, func(mnt string) error {
+		return blessSlotDir(filepath.Join(mnt, "EFI", "Linux"), entryBase)
+	})
+}
+
+// blessSlotDir is the mount-relative bless: strip the boot-counter from a slot's
+// UKI (rename <base>+*.efi → <base>.efi) and drop extra counter variants. Split
+// out so the file logic is unit-testable against a temp dir (the exported
+// BlessSlot requires a real UEFI node + mounted ESP).
+func blessSlotDir(linuxDir, entryBase string) error {
+	good := filepath.Join(linuxDir, entryBase+".efi")
+	counters, _ := filepath.Glob(filepath.Join(linuxDir, entryBase+"+*.efi"))
+	if len(counters) == 0 {
+		if _, e := os.Stat(good); e == nil {
+			return nil // already blessed
+		}
+		return fmt.Errorf("bless: no UKI for slot %s", entryBase)
+	}
+	if e := os.Rename(counters[0], good); e != nil {
+		return fmt.Errorf("bless rename: %w", e)
+	}
+	for _, extra := range counters[1:] {
+		_ = os.Remove(extra)
+	}
+	return nil
+}
+
+// CleanSlot removes a slot's boot-counter variants (a failed/rolled-back attempt's
+// leftovers), leaving any counterless good file intact.
+func CleanSlot(ctx context.Context, r mount.Runner, entryBase string) error {
+	return withMountedESP(ctx, r, func(mnt string) error {
+		removeSlotCounters(filepath.Join(mnt, "EFI", "Linux"), entryBase)
+		return nil
+	})
+}
+
+// SlotGoodExists reports whether the counterless (blessed) file for a slot is on
+// the ESP — used to gate `bootctl set-default` so we never promote a name that
+// points at nothing.
+func SlotGoodExists(ctx context.Context, r mount.Runner, entryBase string) (bool, error) {
+	found := false
+	err := withMountedESP(ctx, r, func(mnt string) error {
+		_, e := os.Stat(filepath.Join(mnt, "EFI", "Linux", entryBase+".efi"))
+		found = e == nil
+		return nil
+	})
+	return found, err
+}
+
+func removeSlotFiles(linuxDir, entryBase string) {
+	_ = os.Remove(filepath.Join(linuxDir, entryBase+".efi"))
+	removeSlotCounters(linuxDir, entryBase)
+}
+
+func removeSlotCounters(linuxDir, entryBase string) {
+	matches, _ := filepath.Glob(filepath.Join(linuxDir, entryBase+"+*.efi"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
+// withMountedESP requires UEFI, locates + mounts the ESP (fresh rw when it isn't
+// already mounted — post-switch_root the ESP is unmounted, so this is the write
+// path), runs fn, syncs, and unmounts what it mounted.
+func withMountedESP(ctx context.Context, r mount.Runner, fn func(mnt string) error) (err error) {
+	if !IsUEFI() {
+		return errors.New("not a UEFI node — refusing ESP write")
 	}
 	dev, e := locateESP(ctx, r)
 	if e != nil {

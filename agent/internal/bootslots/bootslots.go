@@ -52,14 +52,31 @@ func Other(slot string) string {
 	return SlotB
 }
 
+// EntryBase is a slot's /EFI/Linux filename stem, without the ".efi" suffix or
+// any boot-counter (e.g. "powernode-a"). Used to glob a slot's whole file family.
+func EntryBase(slot string) string { return EntryPrefix + slot }
+
 // EntryName returns the /EFI/Linux basename for a slot. With tries > 0 it
 // carries the systemd-boot boot-counter suffix (powernode-a+3.efi); with
 // tries <= 0 it is the permanent-good name (powernode-a.efi).
 func EntryName(slot string, tries int) string {
 	if tries > 0 {
-		return fmt.Sprintf("%s%s+%d.efi", EntryPrefix, slot, tries)
+		return fmt.Sprintf("%s+%d.efi", EntryBase(slot), tries)
 	}
-	return fmt.Sprintf("%s%s.efi", EntryPrefix, slot)
+	return EntryBase(slot) + ".efi"
+}
+
+// loaderGUID is the systemd-boot Boot Loader Interface vendor GUID.
+const loaderGUID = "4a67b082-0246-4e07-9e78-2c9f24a68a41"
+
+// BootedViaSystemdBoot reports whether the CURRENT boot went through systemd-boot
+// (it exports LoaderInfo into the EFI variable store). Nodes whose ESP predates
+// the A/B layout boot the bare UKI directly from the firmware and have no such
+// variable — the upgrade path falls back to the single-slot writer for them
+// rather than writing /EFI/Linux slots the firmware will never read.
+func BootedViaSystemdBoot() bool {
+	_, err := os.Stat("/sys/firmware/efi/efivars/LoaderInfo-" + loaderGUID)
+	return err == nil
 }
 
 // Load reads the slot state, defaulting to {Active: "a"} when absent/unreadable
