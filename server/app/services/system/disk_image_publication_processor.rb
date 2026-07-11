@@ -152,6 +152,10 @@ module System
           disk_image_built_at:           publication.published_at,
           disk_image_oci_ref:            publication.oci_ref,
           disk_image_git_sha:            publication.git_sha,
+          # Standalone UKI artifact for in-place upgrades (campaign 019f505f
+          # inc 2) — set on first publish, not just operator promote/rollback.
+          disk_image_uki_oci_ref:        publication.uki_oci_ref,
+          disk_image_uki_sha256:         publication.uki_sha256,
           disk_image_publication_status: "published",
           disk_image_publication_error:  nil
         )

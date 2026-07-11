@@ -84,6 +84,10 @@ module Api
               sha256:        payload["sha256"],
               size_bytes:    payload["size_bytes"].to_i,
               oci_ref:       payload["oci_ref"],
+              # Standalone UKI artifact for in-place upgrades (campaign 019f505f
+              # inc 2). Absent from pre-inc-2 CI payloads → nil (allow_nil).
+              uki_oci_ref:   payload["uki_oci_ref"],
+              uki_sha256:    payload["uki_sha256"],
               firmware_ref: payload["firmware_ref"],
               arch:          payload["arch"] || "arm64",
               payload:       payload,

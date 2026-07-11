@@ -46,6 +46,9 @@ module System
     validates :status, inclusion: { in: STATUSES }
     validates :git_sha, presence: true
     validates :sha256, presence: true, format: { with: /\A[a-f0-9]{64}\z/, message: "must be 64 hex chars" }
+    # Standalone UKI artifact (campaign 019f505f inc 2). Optional — publications
+    # built before the UKI-publishing CI (and the cloud-direct path) carry none.
+    validates :uki_sha256, format: { with: /\A[a-f0-9]{64}\z/, message: "must be 64 hex chars" }, allow_nil: true
     validates :size_bytes, presence: true, numericality: { greater_than: 0 }
     validates :arch, inclusion: { in: ARCHES }
     validates :git_sha, uniqueness: { scope: :node_platform_id, message: "already published for this platform" }

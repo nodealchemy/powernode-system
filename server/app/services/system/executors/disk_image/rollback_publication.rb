@@ -27,6 +27,8 @@ module System
               disk_image_size_bytes:         target.size_bytes,
               disk_image_oci_ref:            target.oci_ref,
               disk_image_git_sha:            target.git_sha,
+              disk_image_uki_oci_ref:        target.uki_oci_ref,
+              disk_image_uki_sha256:         target.uki_sha256,
               disk_image_publication_status: "published",
               disk_image_publication_error:  nil
             )
