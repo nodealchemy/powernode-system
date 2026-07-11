@@ -15,6 +15,13 @@ Wants=basic.target powernode-agent.service
 Type=oneshot
 RemainAfterExit=yes
 
+# Load the nftables subsystem into the running kernel BEFORE switch_root, so the
+# post-pivot reconciler's `nft` egress apply finds nf_tables already registered
+# (switch_root re-uses the same kernel; the pivot rootfs ships no /lib/modules).
+# Guaranteed belt alongside the modules-load.d drop-in — leading `-` keeps a
+# modprobe failure non-fatal so a missing module never blocks the pivot (BUG-J).
+ExecStartPre=-/bin/sh -c 'modprobe -a nf_tables nft_ct nf_conntrack'
+
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`
 # isn't applicable to oneshot; if this fails the smoke run continues with

@@ -209,7 +209,28 @@ build_kernel_initrd() {
   # able to mount ext4. CONFIG_EXT4_FS=m on Ubuntu 24.04, and there's no ext4
   # rootfs at build time, so dracut won't auto-include it; force it (same class
   # as erofs/isofs/ahci above).
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4"
+  # nf_tables (+ nft_ct + nf_conntrack): the POST-pivot steady-state reconciler
+  # (agent/internal/runtime/reconcile.go attachModule → security.ApplyEgress-
+  # Allowlist) shells out to `nft` to install each module's default-deny egress
+  # chain BEFORE rendering its units. The pivot rootfs (base-os-ubuntu-noble is
+  # an mmdebstrap minbase — it ships NO kernel package, so no netfilter .ko), so
+  # the first `nft add table inet ...` died with "Unable to initialize Netlink
+  # socket: Protocol not supported" (nf_tables.ko never loaded → the NFNETLINK
+  # subsystem is unregistered) → attachModule returns early → postgres/redis/
+  # traefik and every other module's units stay empty and never start (BUG-J).
+  # These are CONFIG_*=m on Ubuntu 24.04 (all in linux-modules, NOT -extra), so
+  # dracut won't auto-detect them (no nftables ruleset at build time) — force
+  # them into the initramfs /lib/modules. The modules-load.d drop-in +
+  # powernode-mount ExecStartPre (see module-setup.sh) then modprobe them BEFORE
+  # switch_root; because switch_root keeps the SAME running kernel, a module
+  # loaded pre-pivot stays loaded, so the post-pivot reconciler's `nft` talks to
+  # an already-registered subsystem and never needs the pivot rootfs to carry a
+  # /lib/modules tree. dracut auto-pulls the modinfo deps (nfnetlink for
+  # nf_tables; nf_conntrack for nft_ct). The inet-family filter/output ruleset
+  # with `ct state established,related` needs nft_ct (the ct expr) + nf_conntrack
+  # (conntrack core) on top of nf_tables — all three are force-listed so the
+  # whole egress ruleset applies, not just the table create.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook

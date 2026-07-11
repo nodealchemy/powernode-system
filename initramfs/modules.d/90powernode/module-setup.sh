@@ -197,8 +197,26 @@ install() {
     # nftables `nft` — the reconciler's module egress-policy applier shells out
     # to `nft` to create per-module filter chains. Absent from the initramfs,
     # egress apply failed with `nft: executable file not found in $PATH` on
-    # every module. The nf_tables kernel module is force-included via build.sh.
-    inst_multiple nft
+    # every module. `modprobe` is staged alongside it: it's the usermode helper
+    # the kernel invokes to autoload any nft expression module on demand, and
+    # powernode-mount.service's ExecStartPre calls it directly (see below).
+    inst_multiple nft modprobe
+
+    # nf_tables kernel subsystem — force-included via build.sh force_drivers
+    # (nf_tables + nft_ct + nf_conntrack, plus dracut-resolved deps). Load them
+    # in the initramfs BEFORE switch_root so the POST-pivot steady-state
+    # reconciler's `nft` egress apply finds the NFNETLINK subsystem already
+    # registered — switch_root keeps the same running kernel, so a module loaded
+    # here survives the pivot even though the mmdebstrap-minbase pivot rootfs
+    # ships no /lib/modules. Without this the first `nft add table inet ...` died
+    # with "Unable to initialize Netlink socket: Protocol not supported" and
+    # every module's units were left empty (BUG-J). systemd-modules-load.service
+    # (Before=sysinit.target, i.e. before the agent service) processes this
+    # drop-in; powernode-mount.service ExecStartPre re-modprobes the same set as
+    # a guaranteed belt.
+    mkdir -p "${initdir}/etc/modules-load.d"
+    inst_simple "${moddir}/powernode-nftables.conf" \
+        /etc/modules-load.d/powernode-nftables.conf
 
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
