@@ -68,6 +68,7 @@ RSpec.describe System::Fleet::Sensors::BootImageDriftSensor do
         expect(signal.kind).to eq("system.boot_image_drift")
         expect(signal.severity).to eq(:medium)
         expect(signal.payload["instance_id"]).to eq(instance.id)
+        expect(signal.payload["platform_id"]).to eq(platform.id)
         expect(signal.payload["booted_git_sha"]).to eq(booted_sha)
         expect(signal.payload["promoted_git_sha"]).to eq(promoted_sha)
       end

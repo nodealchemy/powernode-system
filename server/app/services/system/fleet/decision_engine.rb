@@ -78,17 +78,18 @@ module System
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         # Boot-image drift (BootImageDriftSensor): a node booted a stale disk
-        # image. Campaign 019f505f increment 1 — observation-only, no skill. The
-        # "system.observation" category is auto_approve + creates no remediation
-        # outcome (RemediationValidator#record_proceeded! skips it), so the signal
-        # is recorded/surfaced (signal stream, serializer, system_drift_report MCP)
-        # without a node action, an operator notification, or the false
-        # "remediation stuck" escalation a persistent no-op fingerprint would
-        # otherwise trip. Increment 4 replaces this with a skill binding to the
-        # drift-driven rollout executor (system.node_boot_image_drift gate).
+        # image. Campaign 019f505f increment 4 — route to the drift-driven fleet
+        # rollout executor, gated by system.node_boot_image_drift (require_approval:
+        # a fleet-wide reboot rollout is high blast radius). side_effectful +
+        # dry_run_supported means it runs PLAN-ONLY under the gate (canary-first
+        # batch plan into the ApprovalRequest); the per-instance upgrade_boot_image
+        # tasks are created only when the operator approves (execute_approved!).
         "system.boot_image_drift" => {
-          skill: nil,
-          action_category: "system.observation"
+          skill: ::System::Ai::Skills::BootImageDriftRolloutExecutor,
+          action_category: "system.node_boot_image_drift",
+          side_effectful: true,
+          dry_run_supported: true,
+          input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
         # Provider-state drift (InstanceStateDriftSensor): the VM itself is
         # stopped/terminated while the model says running — distinct from
@@ -459,7 +460,15 @@ module System
           end
         end
 
-        apply_remediation!(signal, skill_result)
+        result = apply_remediation!(signal, skill_result)
+        # Surface what the executor actually did in the execution stamp — for
+        # skills whose work IS the dispatch (no REMEDIATION_APPLIERS entry, e.g.
+        # the boot-image drift rollout), apply_remediation! reports "no applier",
+        # so without this the audit trail loses which nodes were acted on.
+        if skill_result.is_a?(Hash) && skill_result[:data].is_a?(Hash)
+          result = result.merge(skill_data: skill_result[:data])
+        end
+        result
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] approved execution failed for ApprovalRequest #{request.id}: #{e.class}: #{e.message}")
         { applied: false, reason: "#{e.class}: #{e.message}" }

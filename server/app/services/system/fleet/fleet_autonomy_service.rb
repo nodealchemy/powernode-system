@@ -20,6 +20,7 @@ module System
       ADVANCEMENT_ACTIONS = %w[
         system.module_promote_to_live
         system.fleet_rolling_upgrade
+        system.node_boot_image_drift
         system.region_expansion
         system.package_module.create
         system.package_module.refresh
@@ -385,6 +386,13 @@ module System
         when "system.fleet_rolling_upgrade", "system.region_expansion",
              "system.capacity_resize"
           key_value(metadata, "template_id")
+        # Boot-image drift rollout (campaign 019f505f inc 4): the sensor emits one
+        # signal per drifted instance, but the rollout is per-platform — dedup on
+        # platform_id (carried TOP-LEVEL in the sensor's signal payload, so it
+        # survives into the decision metadata and the execute_approved! replay) so
+        # a fleet-wide drift collapses to ONE approval instead of one per node.
+        when "system.node_boot_image_drift"
+          key_value(metadata, "platform_id") || key_value(metadata, "instance_id")
         when "system.cve_remediate"
           key_value(metadata, "cve_id")
         # Federation peer remediation — per-peer dedup so a peer flapping in and

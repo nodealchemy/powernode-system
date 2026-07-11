@@ -135,6 +135,13 @@ fleet_policies = {
   "system.cert_revoke"             => "require_approval",
   "system.module_promote_to_live"  => "require_approval",
   "system.fleet_rolling_upgrade"   => "require_approval",
+  # Campaign 019f505f inc 4 — BootImageDriftSensor → BootImageDriftRolloutExecutor.
+  # Seeded HERE (Fleet Autonomy), not Disk Image Manager, because the sensor fires
+  # from FleetAutonomyService::SENSORS and gates as THIS agent (same reason
+  # system.disk_image_publication_investigate lives here). A fleet-wide in-place
+  # reboot rollout is high blast radius → require_approval; the executor plans
+  # canary-first and dispatches the batch on approval.
+  "system.node_boot_image_drift"   => "require_approval",
   "system.region_expansion"        => "require_approval",
   "system.capacity_resize"         => "require_approval",
 

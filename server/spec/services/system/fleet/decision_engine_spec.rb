@@ -68,6 +68,57 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    context "with a system.boot_image_drift signal (campaign 019f505f inc 4)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+      let!(:drifted_instance) { create(:system_node_instance, :running, node: node) }
+
+      before do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.node_boot_image_drift",
+                                       policy: "require_approval", is_active: true)
+      end
+
+      it "invokes the boot_image_drift_rollout executor and gates as require_approval" do
+        platform.update!(
+          disk_image_git_sha: "promoted-sha",
+          disk_image_oci_ref: "oci-ref",
+          disk_image_uki_oci_ref: "uki-ref",
+          disk_image_uki_sha256: "sha256:uki"
+        )
+        System::DiskImagePublication.create!(
+          account: account,
+          node_platform: platform,
+          git_sha: "promoted-sha",
+          arch: "amd64",
+          oci_ref: "oci-ref",
+          sha256: "#{'a' * 64}",
+          size_bytes: 1024,
+          uki_cosign_bundle: "base64_bundle"
+        )
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY")
+          .and_return("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzKyqKWW5nHvyLMYqwP5xPeOXDw" \
+                      "tz+sKlxGqKcvK9I5CDLQQRi8S6X8L6kqJMPj7pZ9nFNqnCwHGh/JFVRqZDjA==\n-----END PUBLIC KEY-----")
+        allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
+        drifted_instance.update!(booted_image_git_sha: "old-sha")
+
+        d = engine.decide(kind: "system.boot_image_drift", severity: :medium,
+                          payload: { "instance_id" => drifted_instance.id, "platform_id" => platform.id },
+                          fingerprint: "boot_image_drift:#{drifted_instance.id}")
+
+        expect(d[:action_category]).to eq("system.node_boot_image_drift")
+        expect(d[:skill_result]).to be_present
+        expect(d[:skill_result][:success]).to be true
+        # dry_run: true is passed to the executor by default in the gate, so no tasks created
+        expect(d[:skill_result][:data][:dispatched_task_ids]).to be_empty
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:gate]).to eq("require_approval")
+      end
+    end
+
     # Audit finding F3-11: the validate arc never fed back — all 10k+
     # RemediationOutcome rows scored ineffective yet nothing consumed the
     # score, so the same futile remediation re-proceeded every dedup-TTL

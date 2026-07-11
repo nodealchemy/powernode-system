@@ -35,6 +35,12 @@ module System
               severity: :medium,
               payload: {
                 instance_id: inst.id,
+                # platform_id rides the signal payload so it lands TOP-LEVEL in
+                # the decision metadata — the rollout dedup (inc 4) collapses a
+                # fleet-wide drift to ONE approval per platform, and key_value
+                # only reads top-level keys (the executor's nested skill_plan
+                # data would be invisible to it).
+                platform_id: inst.node&.node_platform&.id,
                 booted_git_sha: inst.booted_image_git_sha,
                 promoted_git_sha: promoted
               },
