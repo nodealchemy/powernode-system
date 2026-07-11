@@ -222,6 +222,20 @@ const INSTANCE_PHYSICAL = {
   updated_at: '2026-01-03T00:00:00Z',
 };
 
+const INSTANCE_DRIFTED = {
+  id: 'inst-3',
+  name: 'edge-01',
+  variety: 'cloud' as const,
+  status: 'running',
+  config: {},
+  node_id: 'node-1',
+  booted_image_git_sha: 'abc123def456789',
+  promoted_image_git_sha: 'zzz999yyy888777',
+  boot_image_drifted: true,
+  created_at: '2026-01-03T00:00:00Z',
+  updated_at: '2026-01-03T00:00:00Z',
+};
+
 const MODULE = {
   id: 'mod-1',
   name: 'nginx',
@@ -539,6 +553,26 @@ describe('NodeDetailModal', () => {
       fireEvent.click(expandBtn!);
 
       await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    });
+
+    it('does not show a boot-image-drift badge for instances without drift', async () => {
+      await openInstancesTab();
+      await waitFor(() => expect(screen.getByText('web-01')).toBeInTheDocument());
+      expect(screen.queryByText('Boot image outdated')).not.toBeInTheDocument();
+    });
+
+    it('shows a boot-image-drift badge when boot_image_drifted is true', async () => {
+      mockGetNode.mockResolvedValue(NODE);
+      mockGetNodeInstances.mockResolvedValue({ node_instances: [INSTANCE_CLOUD, INSTANCE_DRIFTED] });
+      mockGetNodeModules.mockResolvedValue({ node_modules: [] });
+      mockGetTasks.mockResolvedValue({ tasks: [], meta: META });
+
+      renderModal();
+      await waitForModal();
+      clickTab('Instances');
+
+      await waitFor(() => expect(screen.getByText('edge-01')).toBeInTheDocument());
+      expect(screen.getByText('Boot image outdated')).toBeInTheDocument();
     });
 
     it('shows Download button for unclaimed physical instance', async () => {

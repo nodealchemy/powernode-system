@@ -52,6 +52,14 @@ export interface SystemNodeInstance {
   architecture?: string;
   boot_id?: string;
   mtls_subject?: string;
+  // Boot-image identity + drift (campaign 019f505f). booted is the git_sha
+  // the node reported booting from (heartbeat); promoted is the git_sha of
+  // the image currently published for its platform; drifted is true when
+  // both are known and differ (node is on a stale boot image). See
+  // System::NodeInstanceSerializer.
+  booted_image_git_sha?: string | null;
+  promoted_image_git_sha?: string | null;
+  boot_image_drifted?: boolean;
   created_at: string;
   updated_at: string;
 }

@@ -6,3 +6,4 @@ export { EditNodeModal } from './EditNodeModal';
 export { CreateInstanceModal } from './CreateInstanceModal';
 export { EditInstanceModal } from './EditInstanceModal';
 export { NodeInstanceControls } from './NodeInstanceControls';
+export { BootImageDriftBadge } from './BootImageDriftBadge';

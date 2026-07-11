@@ -19,6 +19,7 @@ import {
 } from '@system/features/system/hooks/useSystemWebSocket';
 import type { SystemNode, SystemNodeInstance, SystemNodeModule, SystemTask } from '@system/features/system/types/system.types';
 import NodeInstanceControls from './NodeInstanceControls';
+import { BootImageDriftBadge } from './BootImageDriftBadge';
 import { EditNodeModal } from './EditNodeModal';
 import { CreateInstanceModal } from './CreateInstanceModal';
 import { EditInstanceModal } from './EditInstanceModal';
@@ -512,6 +513,7 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                   <h4 className="font-medium text-theme-primary truncate">{instance.name}</h4>
                   {getStatusBadge(instance.status)}
                   <Badge variant="outline" size="xs">{instance.variety}</Badge>
+                  <BootImageDriftBadge instance={instance} />
                   {primaryIp && (
                     <code className="hidden md:inline text-xs text-theme-secondary font-mono truncate">{primaryIp}</code>
                   )}
@@ -684,6 +686,19 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                     <div>
                       <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Boot ID</label>
                       <p className="text-theme-primary font-mono text-xs truncate" title={instance.boot_id}>{instance.boot_id}</p>
+                    </div>
+                  )}
+                  {instance.booted_image_git_sha && (
+                    <div>
+                      <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Boot Image</label>
+                      <p className="text-theme-primary font-mono text-xs truncate" title={instance.booted_image_git_sha}>
+                        {instance.booted_image_git_sha.slice(0, 12)}
+                      </p>
+                      {instance.boot_image_drifted && (
+                        <div className="mt-1">
+                          <BootImageDriftBadge instance={instance} />
+                        </div>
+                      )}
                     </div>
                   )}
                   {instance.mtls_subject && (
