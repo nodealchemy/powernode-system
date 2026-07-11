@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
@@ -67,17 +68,23 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 		return nil, errors.New("upgrade_boot_image: no platform transport")
 	}
 
-	if err := bootupgrade.Apply(ctx, bootupgrade.Deps{
+	slot, err := bootupgrade.Apply(ctx, bootupgrade.Deps{
 		Runner: h.deps.MountRunner,
 		Client: client,
 		Arch:   runtime.GOARCH,
-	}, opts); err != nil {
+	}, opts)
+	if err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: %w", err)
 	}
 
-	// ESP written + verified — record the attempt (survives the reboot on
-	// /persist), then reboot into the new UKI. /persist (and the PKI under it)
-	// survives, so the node re-attaches with its existing cert.
+	// Record the pending slot + target (survives the reboot on /persist) so the
+	// post-reboot bless (agent's first successful heartbeat) can promote this
+	// slot to the persistent default if it boots healthy — or clear it if the
+	// node rolled back. Also mark the attempt to bound the reboot loop.
+	st := bootslots.Load()
+	st.Pending = slot
+	st.PendingSHA = opts.TargetGitSHA
+	_ = st.Save()
 	markAttempted(opts.TargetGitSHA)
 	if err := h.deps.MountRunner.Run(ctx, "systemctl", "reboot"); err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: reboot: %w", err)

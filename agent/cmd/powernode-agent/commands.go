@@ -1107,7 +1107,7 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read cosign public key: %w", err)
 			}
-			if err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
+			if _, err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
 				Runner: mount.ExecRunner{},
 				Client: cctx.Transport,
 			}, bootupgrade.Options{

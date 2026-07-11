@@ -17,8 +17,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/bootslots"
 	"github.com/nodealchemy/powernode-system/agent/internal/espwrite"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
@@ -66,19 +66,26 @@ type Deps struct {
 	Arch     string // "" → runtime.GOARCH
 }
 
-// Apply runs the full upgrade: download → sha256 + cosign verify → write ESP.
-// Idempotent — safe for the loop's crash-recovery re-dispatch (a matching cached
-// download is reused; the ESP write re-writes the same bytes).
-func Apply(ctx context.Context, d Deps, o Options) error {
+// BootTries is the systemd-boot boot-counter a newly-written slot starts with:
+// the new UKI gets this many boot attempts before systemd-boot marks it bad and
+// falls back to the other (good) slot.
+const BootTries = 3
+
+// Apply runs the full upgrade: download → sha256 + cosign verify → write the
+// INACTIVE A/B slot → arm it as the one-shot next boot. It returns the slot it
+// wrote ("a"/"b") so the caller can record the pending upgrade. It does NOT
+// reboot. Idempotent — a crash-recovery re-dispatch reuses the cached download
+// and re-writes the same slot.
+func Apply(ctx context.Context, d Deps, o Options) (writtenSlot string, err error) {
 	if err := o.validate(); err != nil {
-		return err
+		return "", err
 	}
 	stage := d.StageDir
 	if stage == "" {
 		stage = DefaultStageDir
 	}
 	if err := os.MkdirAll(stage, 0o700); err != nil {
-		return fmt.Errorf("stage dir: %w", err)
+		return "", fmt.Errorf("stage dir: %w", err)
 	}
 	ukiPath := filepath.Join(stage, o.UkiSha256+".uki")
 
@@ -86,14 +93,14 @@ func Apply(ctx context.Context, d Deps, o Options) error {
 	//    (crash-recovery re-dispatch reuses a verified download, no client needed).
 	if !fileHasSHA(ukiPath, o.UkiSha256) {
 		if d.Client == nil {
-			return errors.New("bootupgrade: nil transport client")
+			return "", errors.New("bootupgrade: nil transport client")
 		}
 		if err := download(ctx, d.Client, o.DownloadPath, ukiPath); err != nil {
-			return fmt.Errorf("download UKI: %w", err)
+			return "", fmt.Errorf("download UKI: %w", err)
 		}
 		if !fileHasSHA(ukiPath, o.UkiSha256) {
 			_ = os.Remove(ukiPath)
-			return fmt.Errorf("UKI sha256 mismatch (want %s)", o.UkiSha256)
+			return "", fmt.Errorf("UKI sha256 mismatch (want %s)", o.UkiSha256)
 		}
 	}
 
@@ -102,30 +109,63 @@ func Apply(ctx context.Context, d Deps, o Options) error {
 	bundlePath := filepath.Join(stage, o.UkiSha256+".cosign-bundle")
 	bundle, err := base64.StdEncoding.DecodeString(o.CosignBundleB64)
 	if err != nil {
-		return fmt.Errorf("decode cosign bundle: %w", err)
+		return "", fmt.Errorf("decode cosign bundle: %w", err)
 	}
 	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
-		return fmt.Errorf("write cosign bundle: %w", err)
+		return "", fmt.Errorf("write cosign bundle: %w", err)
 	}
 	keyPath := filepath.Join(stage, "cosign.pub")
 	if err := os.WriteFile(keyPath, []byte(o.CosignPublicKey), 0o600); err != nil {
-		return fmt.Errorf("write cosign public key: %w", err)
+		return "", fmt.Errorf("write cosign public key: %w", err)
 	}
 	verifier := &verify.CosignVerifier{Runner: d.Runner, KeyPath: keyPath}
 	if err := verifier.VerifyBlob(ctx, ukiPath, bundlePath); err != nil {
 		_ = os.Remove(ukiPath) // don't leave an unverified blob staged
-		return fmt.Errorf("cosign verify UKI: %w", err)
+		return "", fmt.Errorf("cosign verify UKI: %w", err)
 	}
 
-	// 3. Write the ESP (backup + atomic replace of the arch's removable boot).
-	arch := d.Arch
-	if arch == "" {
-		arch = runtime.GOARCH
+	// 3. Write the INACTIVE A/B slot (systemd-boot boot-counted) and arm it as
+	//    the one-shot next boot. The active slot stays untouched as the rollback
+	//    target; if the new UKI fails to boot BootTries times, systemd-boot marks
+	//    it bad and falls back to the good slot (no brick).
+	inactive := bootslots.Other(bootslots.Load().Active)
+	entry := bootslots.EntryName(inactive, BootTries) // e.g. powernode-b+3.efi
+	if err := espwrite.WriteUKISlot(ctx, d.Runner, ukiPath, entry); err != nil {
+		return "", fmt.Errorf("write ESP slot: %w", err)
 	}
-	if err := espwrite.WriteUKI(ctx, d.Runner, ukiPath, espwrite.RemovableBootName(arch)); err != nil {
-		return fmt.Errorf("write ESP: %w", err)
+	if err := d.Runner.Run(ctx, "bootctl", "set-oneshot", entry); err != nil {
+		return "", fmt.Errorf("bootctl set-oneshot %s: %w", entry, err)
 	}
-	return nil
+	return inactive, nil
+}
+
+// ConfirmBoot is called once per boot after the FIRST successful heartbeat
+// (agent-health-gated). It blesses the current boot — `systemd-bless-boot good`
+// strips the boot-counter from the running entry so systemd-boot stops counting
+// it down toward rollback — and, when a pending upgrade's target matches the
+// image that actually booted, promotes the pending slot to the persistent
+// default (so subsequent boots use the new image, not the old one). If the node
+// instead rolled back to the previous slot, the pending upgrade is cleared
+// without promotion. Best-effort + idempotent; safe to call once per boot.
+func ConfirmBoot(ctx context.Context, r mount.Runner, bootedGitSHA string) error {
+	// Bless the running entry (no-op if not booted with counting / already good).
+	_ = r.Run(ctx, "systemd-bless-boot", "good")
+
+	st := bootslots.Load()
+	if st.Pending == "" {
+		return nil
+	}
+	if bootedGitSHA != "" && bootedGitSHA == st.PendingSHA {
+		// The new slot booted healthy — make it the persistent default.
+		good := bootslots.EntryName(st.Pending, 0) // powernode-<slot>.efi
+		if err := r.Run(ctx, "bootctl", "set-default", good); err != nil {
+			return fmt.Errorf("bootctl set-default %s: %w", good, err)
+		}
+		st.Active = st.Pending
+	}
+	st.Pending = ""
+	st.PendingSHA = ""
+	return st.Save()
 }
 
 func download(ctx context.Context, c *transport.Client, path, dst string) error {

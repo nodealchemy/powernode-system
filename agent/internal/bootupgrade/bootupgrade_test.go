@@ -38,12 +38,12 @@ func (f *fakeRunner) Output(_ context.Context, name string, _ ...string) ([]byte
 }
 
 func TestApply_ValidateRejectsMissingFields(t *testing.T) {
-	if err := Apply(context.Background(), Deps{}, Options{}); err == nil {
+	if _, err := Apply(context.Background(), Deps{}, Options{}); err == nil {
 		t.Fatal("expected a validation error for empty options")
 	}
 	// A payload missing only the cosign bundle must still be rejected — we never
 	// dispatch an unverifiable image.
-	err := Apply(context.Background(), Deps{}, Options{
+	_, err := Apply(context.Background(), Deps{}, Options{
 		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
 		CosignPublicKey: "key",
 	})
@@ -51,7 +51,7 @@ func TestApply_ValidateRejectsMissingFields(t *testing.T) {
 		t.Fatalf("want cosign_bundle_b64 required, got %v", err)
 	}
 	// And missing the public key must be rejected.
-	err = Apply(context.Background(), Deps{}, Options{
+	_, err = Apply(context.Background(), Deps{}, Options{
 		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
 		CosignBundleB64: "eA==",
 	})
@@ -71,7 +71,7 @@ func TestApply_CosignFailureRefusesESPWrite(t *testing.T) {
 	}
 
 	fr := &fakeRunner{cosignErr: errors.New("certificate identity mismatch")}
-	err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
+	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
 		TargetGitSHA:    "deadbeef",
 		UkiSha256:       sha,
 		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
@@ -102,7 +102,7 @@ func TestApply_SkipsDownloadForCachedVerifiedBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	fr := &fakeRunner{cosignErr: errors.New("stop here")}
-	err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
+	_, err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
 		TargetGitSHA: "x", UkiSha256: sha, DownloadPath: "/d",
 		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
 		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("b")),

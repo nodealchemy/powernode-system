@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
+	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
@@ -252,6 +253,12 @@ func (s *Service) Run(ctx context.Context) error {
 		OnError:     s.cfg.OnError,
 	}
 
+	// boot-image A/B bless (campaign 019f505f inc 3): the FIRST successful
+	// heartbeat means this boot is healthy, so we bless the running systemd-boot
+	// entry (disarming auto-rollback) and promote a pending upgrade slot to the
+	// default. PostSend runs sequentially in the heartbeat goroutine, so this
+	// plain flag needs no lock; it retries each tick until ConfirmBoot succeeds.
+	bootBlessed := false
 	heartbeat := &Heartbeater{
 		Client:    client,
 		StartedAt: startedAt,
@@ -259,6 +266,13 @@ func (s *Service) Run(ctx context.Context) error {
 			return s.buildHeartbeat(bootID, sdwanMgr)
 		},
 		PostSend: func() {
+			if !bootBlessed {
+				if err := bootupgrade.ConfirmBoot(ctx, mount.ExecRunner{}, s.bootedImageGitSHA); err != nil {
+					s.cfg.OnError("boot_confirm", err)
+				} else {
+					bootBlessed = true
+				}
+			}
 			if err := s.fetchAuthorizedKeys(ctx, client); err != nil {
 				s.cfg.OnError("authorized_keys", err)
 			}

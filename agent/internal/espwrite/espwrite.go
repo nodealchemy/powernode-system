@@ -39,19 +39,48 @@ func RemovableBootName(goarch string) string {
 }
 
 // WriteUKI locates the ESP, backs up EFI/BOOT/<filename> to <filename>.bak, and
-// atomically replaces it with the UKI at srcUKIPath. Idempotent: re-running with
-// the same UKI simply re-writes the same bytes. Returns an error without
-// modifying the live bootloader if any step before the final rename fails.
-func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) (err error) {
+// atomically replaces it with the UKI at srcUKIPath. This is the single-slot
+// (increment 2) writer; the A/B path uses WriteUKISlot. Idempotent.
+func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) error {
+	return withMountedESP(ctx, r, srcUKIPath, func(mnt string) error {
+		return installUKI(mnt, srcUKIPath, filename)
+	})
+}
+
+// WriteUKISlot installs the UKI at srcUKIPath as /EFI/Linux/<entryName> on the
+// ESP (campaign 019f505f inc 3 A/B slots). Unlike WriteUKI it does NOT touch the
+// removable default (systemd-boot) or the other slot — the other slot is the
+// rollback target — so no .bak is kept. Atomic (.new → rename) so an interrupted
+// write leaves the existing slots intact.
+func WriteUKISlot(ctx context.Context, r mount.Runner, srcUKIPath, entryName string) error {
+	return withMountedESP(ctx, r, srcUKIPath, func(mnt string) error {
+		linuxDir := filepath.Join(mnt, "EFI", "Linux")
+		if e := os.MkdirAll(linuxDir, 0o755); e != nil {
+			return fmt.Errorf("mkdir %s: %w", linuxDir, e)
+		}
+		dst := filepath.Join(linuxDir, entryName)
+		tmp := dst + ".new"
+		if e := copyFile(srcUKIPath, tmp); e != nil {
+			return fmt.Errorf("stage slot UKI: %w", e)
+		}
+		if e := os.Rename(tmp, dst); e != nil {
+			return fmt.Errorf("install slot UKI: %w", e)
+		}
+		return nil
+	})
+}
+
+// withMountedESP locates + mounts the ESP (if not already mounted), runs fn
+// against its mountpoint, syncs, and unmounts what it mounted. Shared by the
+// single-slot and A/B writers.
+func withMountedESP(ctx context.Context, r mount.Runner, srcUKIPath string, fn func(mnt string) error) (err error) {
 	if _, statErr := os.Stat(srcUKIPath); statErr != nil {
 		return fmt.Errorf("source UKI: %w", statErr)
 	}
-
 	dev, e := locateESP(ctx, r)
 	if e != nil {
 		return fmt.Errorf("locate ESP: %w", e)
 	}
-
 	mnt, mountedByUs, e := ensureMounted(ctx, r, dev)
 	if e != nil {
 		return fmt.Errorf("mount ESP %s: %w", dev, e)
@@ -68,8 +97,7 @@ func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) 
 			_ = os.Remove(mnt)
 		}()
 	}
-
-	if e := installUKI(mnt, srcUKIPath, filename); e != nil {
+	if e := fn(mnt); e != nil {
 		return e
 	}
 	if e := r.Run(ctx, "sync"); e != nil {
