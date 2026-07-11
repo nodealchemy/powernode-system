@@ -44,7 +44,9 @@ module Api
               path,
               type: "application/octet-stream",
               disposition: "attachment",
-              filename: "BOOTX64.EFI",
+              # Cosmetic (the agent writes the arch's removable-boot name itself);
+              # keep the header honest per arch.
+              filename: current_instance.architecture.to_s == "arm64" ? "BOOTAA64.EFI" : "BOOTX64.EFI",
               stream: true,
               buffer_size: 65_536
             )

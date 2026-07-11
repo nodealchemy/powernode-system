@@ -59,11 +59,13 @@ func WriteUKI(ctx context.Context, r mount.Runner, srcUKIPath, filename string) 
 	if mountedByUs {
 		defer func() {
 			_ = r.Run(ctx, "sync")
-			if uerr := r.Run(ctx, "umount", mnt); uerr != nil && err == nil {
-				err = fmt.Errorf("umount ESP: %w", uerr)
-			} else {
-				_ = os.Remove(mnt)
+			if uerr := r.Run(ctx, "umount", mnt); uerr != nil {
+				if err == nil {
+					err = fmt.Errorf("umount ESP: %w", uerr)
+				}
+				return // still mounted — do NOT remove the mountpoint
 			}
+			_ = os.Remove(mnt)
 		}()
 	}
 

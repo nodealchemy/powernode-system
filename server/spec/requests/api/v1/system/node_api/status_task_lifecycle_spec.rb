@@ -42,4 +42,56 @@ RSpec.describe "Api::V1::System::NodeApi::Status task lifecycle", type: :request
     expect(response).not_to have_http_status(:ok)
     expect(task.reload.status).to eq("pending")
   end
+
+  describe "upgrade_boot_image completion deferral (campaign 019f505f inc 2)" do
+    let(:upgrade_task) do
+      System::Task.create!(
+        account: account, operable: instance, command: "upgrade_boot_image",
+        status: "running", initiated_by: create(:user, account: account)
+      )
+    end
+
+    it "defers upgrade_boot_image completion — returns completed:false, stays in running state" do
+      # Acknowledge and start the task first
+      post "/api/v1/system/node_api/status/tasks/#{upgrade_task.id}/acknowledge", headers: headers
+      expect(response).to have_http_status(:ok)
+
+      # Complete the task — should defer
+      post "/api/v1/system/node_api/status/tasks/#{upgrade_task.id}/complete",
+           params: { message: "rebooting" }.to_json,
+           headers: headers.merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body["data"]["completed"]).to be false
+      expect(body["data"]["deferred_to"]).to eq("post_reboot_heartbeat")
+
+      # Task status must remain "running" (not "complete")
+      expect(upgrade_task.reload.status).to eq("running")
+      # Agent's message is recorded as an event
+      expect(upgrade_task.events).to include(hash_including("type" => "agent_reported", "message" => "rebooting"))
+    end
+
+    it "completes non-upgrade tasks normally (no deferral)" do
+      regular_task = System::Task.create!(
+        account: account, operable: instance, command: "sync_modules",
+        status: "running", initiated_by: create(:user, account: account)
+      )
+
+      post "/api/v1/system/node_api/status/tasks/#{regular_task.id}/acknowledge", headers: headers
+      expect(response).to have_http_status(:ok)
+
+      post "/api/v1/system/node_api/status/tasks/#{regular_task.id}/complete",
+           params: { result: { "ok" => true } }.to_json,
+           headers: headers.merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body["data"]["completed"]).to be true
+      expect(body["data"]).not_to have_key("deferred_to")
+
+      # Non-upgrade task completes normally
+      expect(regular_task.reload.status).to eq("complete")
+    end
+  end
 end

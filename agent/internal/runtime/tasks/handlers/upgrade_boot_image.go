@@ -4,12 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 )
+
+// attemptMarkerPath records the target of the last upgrade we wrote + rebooted
+// for. It lives on /persist so it survives the reboot: if the node comes back
+// NOT on the target (a failed/rolled-back boot, or a boot whose cmdline lacks
+// the sha marker), a crash-recovery re-dispatch sees this and refuses to reboot
+// again — bounding what would otherwise be a reboot loop.
+const attemptMarkerPath = "/persist/var/lib/powernode/boot-image-upgrade.attempted"
+
+func alreadyAttempted(target string) bool {
+	b, err := os.ReadFile(attemptMarkerPath)
+	return err == nil && strings.TrimSpace(string(b)) == target
+}
+
+func markAttempted(target string) {
+	_ = os.MkdirAll(filepath.Dir(attemptMarkerPath), 0o755)
+	_ = os.WriteFile(attemptMarkerPath, []byte(target), 0o600)
+}
 
 // UpgradeBootImageHandler performs an in-place boot-image (UKI) upgrade
 // (campaign 019f505f increment 2): pull + cosign-verify the target UKI, write it
@@ -30,7 +50,16 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 	// Post-reboot re-dispatch (or a redundant re-issue): already on target →
 	// done, and crucially do NOT reboot again.
 	if booted := identity.BootedImageGitSHA(); booted != "" && booted == opts.TargetGitSHA {
+		_ = os.Remove(attemptMarkerPath) // upgrade confirmed; clear the loop guard
 		return tasks.Result{"status": "already_on_target", "git_sha": booted}, nil
+	}
+
+	// Loop guard: we already wrote this UKI + rebooted, yet the node did not come
+	// back on the target (failed/rolled-back boot, or a boot missing the cmdline
+	// sha marker). Rewriting + rebooting again wouldn't change the outcome, so
+	// stop here and let the platform reconciler time the task out.
+	if alreadyAttempted(opts.TargetGitSHA) {
+		return tasks.Result{"status": "written_awaiting_confirmation", "git_sha": opts.TargetGitSHA}, nil
 	}
 
 	client := h.deps.Transport.Get()
@@ -46,8 +75,10 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 		return nil, fmt.Errorf("upgrade_boot_image: %w", err)
 	}
 
-	// ESP written + verified — reboot into the new UKI. /persist (and the PKI
-	// under it) survives, so the node re-attaches with its existing cert.
+	// ESP written + verified — record the attempt (survives the reboot on
+	// /persist), then reboot into the new UKI. /persist (and the PKI under it)
+	// survives, so the node re-attaches with its existing cert.
+	markAttempted(opts.TargetGitSHA)
 	if err := h.deps.MountRunner.Run(ctx, "systemctl", "reboot"); err != nil {
 		return nil, fmt.Errorf("upgrade_boot_image: reboot: %w", err)
 	}
@@ -56,12 +87,11 @@ func (h *UpgradeBootImageHandler) Execute(ctx context.Context, task *tasks.Task)
 
 func parseUpgradeOptions(task *tasks.Task) bootupgrade.Options {
 	return bootupgrade.Options{
-		TargetGitSHA:         optString(task, "target_git_sha"),
-		UkiSha256:            optString(task, "uki_sha256"),
-		CosignIdentityRegexp: optString(task, "cosign_identity_regexp"),
-		CosignIssuerRegexp:   optString(task, "cosign_issuer_regexp"),
-		CosignBundleB64:      optString(task, "cosign_bundle_b64"),
-		DownloadPath:         optString(task, "download_path"),
+		TargetGitSHA:    optString(task, "target_git_sha"),
+		UkiSha256:       optString(task, "uki_sha256"),
+		CosignPublicKey: optString(task, "cosign_public_key"),
+		CosignBundleB64: optString(task, "cosign_bundle_b64"),
+		DownloadPath:    optString(task, "download_path"),
 	}
 }
 

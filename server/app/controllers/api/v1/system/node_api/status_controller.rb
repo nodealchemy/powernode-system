@@ -153,6 +153,19 @@ module Api
           def complete_task
             operation = current_instance.tasks.find(params[:id])
 
+            # Boot-image upgrade completion is authoritative ONLY via the
+            # post-reboot heartbeat (BootImage::UpgradeReconciler) — the node
+            # reboots mid-task, so the agent's /complete races the shutdown and,
+            # if it lands, would mark the task complete BEFORE we know the node
+            # actually booted the new image (a false success on a failed/rolled-
+            # back upgrade). Acknowledge the agent's report but DO NOT complete;
+            # the reconciler transitions it when booted_image_git_sha matches.
+            if operation.command == "upgrade_boot_image"
+              operation.add_event("agent_reported", params[:message].to_s.presence || "reboot initiated") if operation.respond_to?(:add_event)
+              return render_success(task: serialize_task(operation), completed: false,
+                                    deferred_to: "post_reboot_heartbeat")
+            end
+
             unless operation.running?
               return render_error("Operation cannot be completed from #{operation.status} state")
             end
