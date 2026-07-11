@@ -1450,16 +1450,21 @@ module Ai
             "republish/promote a newer image to enable boot-image upgrades"
           )
         end
-        unless platform.cosign_trust_configured?
+        # The agent verifies the UKI's STATIC-KEY cosign signature against the
+        # platform's cosign PUBLIC key. Sourced platform-side (POWERNODE_COSIGN_
+        # PUBLIC_KEY[_FILE]) — never from the artifact/webhook — and passed inline
+        # (public, not secret). Fail closed when it isn't configured: the node
+        # could not verify the UKI. (Gitea CI signs with a static key, so this is
+        # key-based verification, not keyless identity/issuer.)
+        cosign_pubkey = platform_cosign_public_key
+        if cosign_pubkey.blank?
           return error_result(
-            "Refusing boot-image upgrade: cosign trust (identity/issuer) is not configured for this platform — " \
-            "the node could not verify the pulled UKI"
+            "Refusing boot-image upgrade: the platform cosign public key " \
+            "(POWERNODE_COSIGN_PUBLIC_KEY / _FILE) is not configured — the node could not verify the pulled UKI"
           )
         end
-        # The agent verifies the UKI's cosign signature before writing it, so it
-        # needs the signature bundle. Sourced from the promoted publication and
-        # passed inline (small). Fail closed if it's missing — no unverifiable
-        # boot image reaches a node.
+        # The agent also needs the UKI's signature bundle. Sourced from the
+        # promoted publication and passed inline (small). Fail closed if missing.
         promoted_pub = platform.disk_image_publications.find_by(git_sha: target_sha)
         cosign_bundle = promoted_pub&.uki_cosign_bundle
         if cosign_bundle.blank?
@@ -1473,13 +1478,17 @@ module Ai
           return success_result(upgraded: false, already_current: true, instance_id: instance.id, git_sha: target_sha)
         end
 
-        existing = ::System::Task
-                   .where(account: @account, operable: instance, command: "upgrade_boot_image")
-                   .where(status: %w[pending scheduled running])
-                   .order(created_at: :desc).first
-        if existing
-          return success_result(upgraded: false, deduplicated: true, instance_id: instance.id,
-                                task_id: existing.id, task_status: existing.status)
+        # In-flight dedup — but `force` bypasses it so an operator can re-issue to
+        # a node whose prior upgrade is stuck (e.g. it never rebooted back).
+        unless force
+          existing = ::System::Task
+                     .where(account: @account, operable: instance, command: "upgrade_boot_image")
+                     .where(status: %w[pending scheduled running])
+                     .order(created_at: :desc).first
+          if existing
+            return success_result(upgraded: false, deduplicated: true, instance_id: instance.id,
+                                  task_id: existing.id, task_status: existing.status)
+          end
         end
 
         task = ::System::Task.create!(
@@ -1492,8 +1501,7 @@ module Ai
             # bytes it writes to the ESP), not the full disk image.
             "uki_oci_ref"            => platform.disk_image_uki_oci_ref,
             "uki_sha256"             => platform.disk_image_uki_sha256,
-            "cosign_identity_regexp" => platform.cosign_identity_regexp,
-            "cosign_issuer_regexp"   => platform.cosign_issuer_regexp,
+            "cosign_public_key"      => cosign_pubkey,
             "cosign_bundle_b64"      => cosign_bundle,
             "download_path"          => "/api/v1/system/node_api/boot_image/download",
             "source"                 => "mcp_upgrade_boot_image",
@@ -1505,6 +1513,23 @@ module Ai
                        task_status: task.status, target_git_sha: target_sha)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Failed to queue boot-image upgrade: #{e.message}")
+      end
+
+      # The platform's static cosign PUBLIC key (PEM), provisioned via
+      # POWERNODE_COSIGN_PUBLIC_KEY (inline) or POWERNODE_COSIGN_PUBLIC_KEY_FILE
+      # (path) — the same config module_oci_ingest_service verifies against.
+      # Returns nil when unset (the caller fails the upgrade closed).
+      def platform_cosign_public_key
+        inline = ENV["POWERNODE_COSIGN_PUBLIC_KEY"].presence
+        return inline if inline
+
+        path = ENV["POWERNODE_COSIGN_PUBLIC_KEY_FILE"].presence
+        return nil if path.blank?
+
+        File.exist?(path) ? File.read(path) : nil
+      rescue StandardError => e
+        ::Rails.logger.warn("[upgrade_boot_image] cosign public key read failed: #{e.class}: #{e.message}")
+        nil
       end
 
       # === Instances ===

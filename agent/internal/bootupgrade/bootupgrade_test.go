@@ -45,10 +45,18 @@ func TestApply_ValidateRejectsMissingFields(t *testing.T) {
 	// dispatch an unverifiable image.
 	err := Apply(context.Background(), Deps{}, Options{
 		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
-		CosignIdentityRegexp: "id", CosignIssuerRegexp: "iss",
+		CosignPublicKey: "key",
 	})
 	if err == nil || !strings.Contains(err.Error(), "cosign_bundle_b64") {
 		t.Fatalf("want cosign_bundle_b64 required, got %v", err)
+	}
+	// And missing the public key must be rejected.
+	err = Apply(context.Background(), Deps{}, Options{
+		TargetGitSHA: "a", UkiSha256: "b", DownloadPath: "/d",
+		CosignBundleB64: "eA==",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cosign_public_key") {
+		t.Fatalf("want cosign_public_key required, got %v", err)
 	}
 }
 
@@ -64,12 +72,11 @@ func TestApply_CosignFailureRefusesESPWrite(t *testing.T) {
 
 	fr := &fakeRunner{cosignErr: errors.New("certificate identity mismatch")}
 	err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
-		TargetGitSHA:         "deadbeef",
-		UkiSha256:            sha,
-		CosignIdentityRegexp: "id",
-		CosignIssuerRegexp:   "iss",
-		CosignBundleB64:      base64.StdEncoding.EncodeToString([]byte("bundle")),
-		DownloadPath:         "/download",
+		TargetGitSHA:    "deadbeef",
+		UkiSha256:       sha,
+		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
+		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("bundle")),
+		DownloadPath:    "/download",
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "cosign verify") {
@@ -97,7 +104,7 @@ func TestApply_SkipsDownloadForCachedVerifiedBytes(t *testing.T) {
 	fr := &fakeRunner{cosignErr: errors.New("stop here")}
 	err := Apply(context.Background(), Deps{Runner: fr, StageDir: stage}, Options{
 		TargetGitSHA: "x", UkiSha256: sha, DownloadPath: "/d",
-		CosignIdentityRegexp: "id", CosignIssuerRegexp: "iss",
+		CosignPublicKey: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
 		CosignBundleB64: base64.StdEncoding.EncodeToString([]byte("b")),
 	})
 	// It reached cosign (not a "nil transport client" download error).

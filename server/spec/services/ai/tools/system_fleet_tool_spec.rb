@@ -935,10 +935,16 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     let(:instance) { create(:system_node_instance, :running, node: node) }
     let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage]) }
     let(:user_tool) { described_class.new(account: account, user: user) }
+    let(:cosign_public_key_pem) do
+      "-----BEGIN PUBLIC KEY-----\n" \
+      "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzKyqKWW5nHvyLMYqwP5xPeOXDw" \
+      "tz+sKlxGqKcvK9I5CDLQQRi8S6X8L6kqJMPj7pZ9nFNqnCwHGh/JFVRqZDjA==\n" \
+      "-----END PUBLIC KEY-----"
+    end
 
     def call_with_user(action, **rest)
       user_tool.execute(params: { action: action }.merge(rest))
-    end
+end
 
     it "rejects upgrades for instances from other accounts (access control)" do
       other_account = create(:account)
@@ -984,38 +990,24 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:error]).to include("republish")
     end
 
-    it "fails closed with security error when cosign trust is not configured (cosign_identity_regexp blank)" do
+    it "fails closed with security error when cosign public key is not configured (ENV unset)" do
       platform_record.update!(
         disk_image_git_sha: "sha-abc",
         disk_image_oci_ref: "ref-xyz",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: nil,
-        cosign_issuer_regexp: "issuer-pattern"
+        disk_image_uki_sha256: "sha256:uki"
       )
+      # Ensure ENV is NOT set and no file path exists
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(nil)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
       expect(r[:success]).to be false
-      expect(r[:error]).to include("cosign")
+      expect(r[:error]).to include("cosign public key")
       expect(r[:error]).to include("not configured")
-    end
-
-    it "fails closed with security error when cosign trust is not configured (cosign_issuer_regexp blank)" do
-      platform_record.update!(
-        disk_image_git_sha: "sha-abc",
-        disk_image_oci_ref: "ref-xyz",
-        disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity-pattern",
-        cosign_issuer_regexp: nil
-      )
-
-      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
-
-      expect(r[:success]).to be false
-      expect(r[:error]).to include("cosign")
-      expect(r[:error]).to include("not configured")
+      expect(::System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
     end
 
     it "errors when platform has no promoted UKI cosign signature bundle" do
@@ -1024,9 +1016,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref-xyz",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity-pattern",
-        cosign_issuer_regexp: "issuer-pattern"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create a publication but without uki_cosign_bundle (nil)
       System::DiskImagePublication.create!(
@@ -1040,6 +1030,11 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         uki_cosign_bundle: nil
       )
 
+      # Bundle guard runs AFTER cosign pubkey guard, so ENV must be set
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
       expect(r[:success]).to be false
@@ -1052,17 +1047,13 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       oci_ref = "ghcr.io/nodealchemy/system/boot-uki:0.1.0"
       uki_ref = "ghcr.io/nodealchemy/system/boot-uki-standalone:0.1.0"
       uki_sha256 = "sha256:uki_abc"
-      identity_regexp = "https://github.com/NodeAlchemy/powernode"
-      issuer_regexp = "https://token.actions.githubusercontent.com"
       cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="  # base64 encoded
 
       platform_record.update!(
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: oci_ref,
         disk_image_uki_oci_ref: uki_ref,
-        disk_image_uki_sha256: uki_sha256,
-        cosign_identity_regexp: identity_regexp,
-        cosign_issuer_regexp: issuer_regexp
+        disk_image_uki_sha256: uki_sha256
       )
 
       # Create the promoted publication with cosign bundle
@@ -1076,6 +1067,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         size_bytes: 1024,
         uki_cosign_bundle: cosign_bundle_b64
       )
+
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
@@ -1095,10 +1090,11 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(task.options["target_git_sha"]).to eq(target_sha)
       expect(task.options["uki_oci_ref"]).to eq(uki_ref)
       expect(task.options["uki_sha256"]).to eq(uki_sha256)
-      expect(task.options["cosign_identity_regexp"]).to eq(identity_regexp)
-      expect(task.options["cosign_issuer_regexp"]).to eq(issuer_regexp)
+      expect(task.options["cosign_public_key"]).to eq(cosign_public_key_pem)
       expect(task.options["cosign_bundle_b64"]).to eq(cosign_bundle_b64)
       expect(task.options["download_path"]).to eq("/api/v1/system/node_api/boot_image/download")
+      # Old identity/issuer regexp fields should NOT be present
+      expect(task.options).not_to include("cosign_identity_regexp", "cosign_issuer_regexp")
     end
 
     it "returns NO-OP (already_current:true) when booted sha equals target sha and force not set" do
@@ -1107,9 +1103,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: matching_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle (needed to pass all guards)
       System::DiskImagePublication.create!(
@@ -1123,6 +1117,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         uki_cosign_bundle: "base64_bundle_data"
       )
       instance.update!(booted_image_git_sha: matching_sha)
+
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
@@ -1138,9 +1136,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: matching_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1155,6 +1151,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       )
       instance.update!(booted_image_git_sha: matching_sha)
 
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id, force: true)
 
       expect(r[:success]).to be true
@@ -1163,15 +1163,53 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(System::Task.where(operable: instance, command: "upgrade_boot_image", status: "pending").count).to eq(1)
     end
 
+    it "force:true bypasses in-flight dedup — creates a NEW task even if pending/running exists" do
+      target_sha = "target-sha"
+      platform_record.update!(
+        disk_image_git_sha: target_sha,
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki"
+      )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        node_platform: platform_record,
+        git_sha: target_sha,
+        account: account,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'e' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
+      )
+      # Create an existing in-flight pending task
+      existing_task = System::Task.create!(
+        account: account,
+        operable: instance,
+        command: "upgrade_boot_image",
+        status: "pending",
+        initiated_by: user
+      )
+
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id, force: true)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be true
+      expect(r[:data][:task_id]).not_to eq(existing_task.id)
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(2)
+    end
+
     it "returns DEDUP when an in-flight pending task already exists" do
       target_sha = "target-sha"
       platform_record.update!(
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1192,6 +1230,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         initiated_by: user
       )
 
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
       expect(r[:success]).to be true
@@ -1207,9 +1249,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1230,6 +1270,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         initiated_by: user
       )
 
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
       expect(r[:success]).to be true
@@ -1243,9 +1287,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1266,6 +1308,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         initiated_by: user
       )
 
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 
       expect(r[:success]).to be true
@@ -1279,9 +1325,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
-        disk_image_uki_sha256: "sha256:uki",
-        cosign_identity_regexp: "identity",
-        cosign_issuer_regexp: "issuer"
+        disk_image_uki_sha256: "sha256:uki"
       )
       # Create the published artifact with bundle
       System::DiskImagePublication.create!(
@@ -1301,6 +1345,10 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         status: "complete",
         initiated_by: user
       )
+
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(cosign_public_key_pem)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
 

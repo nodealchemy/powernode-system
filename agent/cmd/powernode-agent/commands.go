@@ -1086,10 +1086,10 @@ func updateCmd() *cobra.Command {
 // with --reboot.
 func upgradeBootImageCmd() *cobra.Command {
 	var (
-		platformURL, pkiDir                      string
-		downloadPath, targetGitSHA, ukiSHA256    string
-		cosignIdentity, cosignIssuer, bundleFile string
-		doReboot                                 bool
+		platformURL, pkiDir                   string
+		downloadPath, targetGitSHA, ukiSHA256 string
+		cosignPubKeyFile, bundleFile          string
+		doReboot                              bool
 	)
 	c := &cobra.Command{
 		Use:   "upgrade-boot-image",
@@ -1103,16 +1103,19 @@ func upgradeBootImageCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read cosign bundle: %w", err)
 			}
+			pubKey, err := os.ReadFile(cosignPubKeyFile)
+			if err != nil {
+				return fmt.Errorf("read cosign public key: %w", err)
+			}
 			if err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
 				Runner: mount.ExecRunner{},
 				Client: cctx.Transport,
 			}, bootupgrade.Options{
-				TargetGitSHA:         targetGitSHA,
-				UkiSha256:            ukiSHA256,
-				CosignIdentityRegexp: cosignIdentity,
-				CosignIssuerRegexp:   cosignIssuer,
-				CosignBundleB64:      base64.StdEncoding.EncodeToString(bundle),
-				DownloadPath:         downloadPath,
+				TargetGitSHA:    targetGitSHA,
+				UkiSha256:       ukiSHA256,
+				CosignPublicKey: string(pubKey),
+				CosignBundleB64: base64.StdEncoding.EncodeToString(bundle),
+				DownloadPath:    downloadPath,
 			}); err != nil {
 				return err
 			}
@@ -1130,8 +1133,7 @@ func upgradeBootImageCmd() *cobra.Command {
 	c.Flags().StringVar(&downloadPath, "download-path", "/api/v1/system/node_api/boot_image/download", "node_api path to GET the UKI")
 	c.Flags().StringVar(&targetGitSHA, "target-git-sha", "", "expected image git_sha (informational)")
 	c.Flags().StringVar(&ukiSHA256, "uki-sha256", "", "expected UKI sha256 (required)")
-	c.Flags().StringVar(&cosignIdentity, "cosign-identity", "", "cosign certificate-identity regexp (required)")
-	c.Flags().StringVar(&cosignIssuer, "cosign-issuer", "", "cosign oidc-issuer regexp (required)")
+	c.Flags().StringVar(&cosignPubKeyFile, "cosign-public-key-file", "", "path to the platform's cosign public key (required)")
 	c.Flags().StringVar(&bundleFile, "cosign-bundle-file", "", "path to the UKI cosign bundle (required)")
 	c.Flags().BoolVar(&doReboot, "reboot", false, "reboot into the new image after a successful write")
 	return c

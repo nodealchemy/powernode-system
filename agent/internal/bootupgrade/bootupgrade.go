@@ -32,12 +32,14 @@ const DefaultStageDir = "/persist/cache/boot-image"
 
 // Options is the decoded upgrade_boot_image task payload.
 type Options struct {
-	TargetGitSHA         string
-	UkiSha256            string
-	CosignIdentityRegexp string
-	CosignIssuerRegexp   string
-	CosignBundleB64      string
-	DownloadPath         string
+	TargetGitSHA string
+	UkiSha256    string
+	// CosignPublicKey is the platform's static cosign PUBLIC key (PEM), sourced
+	// platform-side (not from the artifact/webhook). The agent verifies the UKI's
+	// static-key signature against it. Public, not secret — safe to carry inline.
+	CosignPublicKey string
+	CosignBundleB64 string
+	DownloadPath    string
 }
 
 func (o Options) validate() error {
@@ -50,8 +52,8 @@ func (o Options) validate() error {
 		return errors.New("download_path required")
 	case o.CosignBundleB64 == "":
 		return errors.New("cosign_bundle_b64 required")
-	case o.CosignIdentityRegexp == "" || o.CosignIssuerRegexp == "":
-		return errors.New("cosign identity/issuer pins required")
+	case o.CosignPublicKey == "":
+		return errors.New("cosign_public_key required")
 	}
 	return nil
 }
@@ -105,11 +107,11 @@ func Apply(ctx context.Context, d Deps, o Options) error {
 	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
 		return fmt.Errorf("write cosign bundle: %w", err)
 	}
-	verifier := &verify.CosignVerifier{
-		Runner:         d.Runner,
-		IdentityRegexp: o.CosignIdentityRegexp,
-		IssuerRegexp:   o.CosignIssuerRegexp,
+	keyPath := filepath.Join(stage, "cosign.pub")
+	if err := os.WriteFile(keyPath, []byte(o.CosignPublicKey), 0o600); err != nil {
+		return fmt.Errorf("write cosign public key: %w", err)
 	}
+	verifier := &verify.CosignVerifier{Runner: d.Runner, KeyPath: keyPath}
 	if err := verifier.VerifyBlob(ctx, ukiPath, bundlePath); err != nil {
 		_ = os.Remove(ukiPath) // don't leave an unverified blob staged
 		return fmt.Errorf("cosign verify UKI: %w", err)

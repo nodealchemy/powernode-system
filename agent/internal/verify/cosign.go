@@ -32,24 +32,34 @@ type Verifier interface {
 	VerifyBlob(ctx context.Context, blobPath, bundlePath string) error
 }
 
-// CosignVerifier wraps the cosign CLI for blob signature verification.
+// CosignVerifier wraps the cosign CLI for blob signature verification. It runs
+// in one of two modes:
+//
+//   - Static-key (KeyPath set): `cosign verify-blob --key <KeyPath> --bundle …`.
+//     This is what the platform CI uses — Gitea is not on Sigstore Fulcio's
+//     trusted-issuer list, so artifacts are signed with a static cosign key
+//     (COSIGN_PRIVATE_KEY) and verified against its public half. See the
+//     platform's module_oci_ingest_service static-key branch. Used for the
+//     boot-image (UKI) upgrade path.
+//   - Keyless (KeyPath empty): identity/issuer regexp pins against a Fulcio
+//     certificate. Reserved for a future Fulcio-issued signing flow.
 type CosignVerifier struct {
 	Runner mount.Runner
-	// IdentityRegexp pins the Sigstore Fulcio identity that signed the
-	// module. Production modules built by the M1 CI workflow ship with
-	// signatures whose identity is the GitHub/Gitea Actions OIDC token
-	// — the regexp typically matches "https://gitea.example.com/.../+ref(.*)".
+	// KeyPath, when set, selects static-key verification against the cosign
+	// public key at this path (`--key <KeyPath>`). Takes precedence over the
+	// keyless identity/issuer pins.
+	KeyPath string
+	// IdentityRegexp pins the Sigstore Fulcio identity (keyless mode only).
 	IdentityRegexp string
-	// IssuerRegexp pins the Sigstore Fulcio issuer (e.g.,
-	// "https://token.actions.githubusercontent.com" for GitHub or the
-	// Gitea Actions OIDC issuer URL).
+	// IssuerRegexp pins the Sigstore Fulcio issuer (keyless mode only).
 	IssuerRegexp string
 }
 
-// VerifyBlob runs `cosign verify-blob --bundle <bundlePath> <blobPath>`
-// with the configured identity pins. Returns nil on success; non-nil
-// error means the signature did not verify or the identity didn't match
-// — in either case, the mount package MUST refuse to mount the blob.
+// VerifyBlob runs `cosign verify-blob` over blobPath using bundlePath. Returns
+// nil only on a valid signature (static-key: signed by KeyPath's private half;
+// keyless: signer matches the identity/issuer pins). Any error — bad signature,
+// wrong identity, or a MISSING cosign binary — means the caller MUST refuse to
+// use the blob (fail closed).
 func (v *CosignVerifier) VerifyBlob(ctx context.Context, blobPath, bundlePath string) error {
 	if v == nil {
 		return errors.New("CosignVerifier: nil receiver")
@@ -60,11 +70,19 @@ func (v *CosignVerifier) VerifyBlob(ctx context.Context, blobPath, bundlePath st
 	if v.Runner == nil {
 		return errors.New("CosignVerifier: nil Runner")
 	}
-	args := []string{"verify-blob",
-		"--bundle", bundlePath,
-		"--certificate-identity-regexp", v.IdentityRegexp,
-		"--certificate-oidc-issuer-regexp", v.IssuerRegexp,
-		blobPath,
+	var args []string
+	if v.KeyPath != "" {
+		args = []string{"verify-blob", "--key", v.KeyPath, "--bundle", bundlePath, blobPath}
+	} else {
+		if v.IdentityRegexp == "" || v.IssuerRegexp == "" {
+			return errors.New("CosignVerifier: no KeyPath and no identity/issuer pins — refusing to verify without a trust anchor")
+		}
+		args = []string{"verify-blob",
+			"--bundle", bundlePath,
+			"--certificate-identity-regexp", v.IdentityRegexp,
+			"--certificate-oidc-issuer-regexp", v.IssuerRegexp,
+			blobPath,
+		}
 	}
 	if err := v.Runner.Run(ctx, "cosign", args...); err != nil {
 		return fmt.Errorf("cosign verify-blob: %w", err)
@@ -80,4 +98,3 @@ type AlwaysOK struct{}
 
 // VerifyBlob always returns nil.
 func (AlwaysOK) VerifyBlob(_ context.Context, _, _ string) error { return nil }
-
