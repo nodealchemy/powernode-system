@@ -56,6 +56,7 @@ module Ai
         "system_update_instance"        => "system.instances.update",
         "system_delete_module"          => "system.modules.delete",
         "system_refresh_instance_modules" => "system.node_instances.manage",
+        "system_upgrade_boot_image"     => "system.node_instances.manage",
         "system_assign_module_to_template" => "system.modules.update",
         "system_provision_instance"     => "system.instances.create",
         "system_terminate_instance"     => "system.instances.control",
@@ -470,6 +471,16 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to reboot" },
               operation_id: { type: "string", required: false, description: "System operation id to attribute this control action to" },
               force: { type: "boolean", required: false, description: "Force a hard reset instead of a graceful reboot" }
+            }
+          },
+          "system_upgrade_boot_image" => {
+            description: "Trigger an in-place boot-image (UKI) upgrade on a NodeInstance to its platform's currently " \
+                         "promoted disk image (campaign 019f505f). Queues an agent task that pulls + cosign-verifies the " \
+                         "target UKI, writes the ESP, and reboots — reusing the /persist cert (no re-enroll). Refuses if " \
+                         "the platform has no promoted image or cosign trust is not configured. No-op if already current.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance to upgrade" },
+              force: { type: "boolean", required: false, description: "Queue the upgrade even if the node already reports the promoted git_sha" }
             }
           },
           "system_destroy_instance" => {
@@ -1159,6 +1170,7 @@ module Ai
         when "system_update_template"          then update_template(params)
         when "system_delete_module"            then delete_module(params)
         when "system_refresh_instance_modules" then refresh_instance_modules(params)
+        when "system_upgrade_boot_image"       then upgrade_boot_image(params)
         when "system_list_instances"           then list_instances(params)
         when "system_get_instance"             then get_instance(params)
         when "system_update_instance"          then update_instance(params)
@@ -1412,6 +1424,75 @@ module Ai
         success_result(refreshed: true, instance_id: instance.id, task_id: task.id, task_status: task.status)
       rescue ActiveRecord::RecordInvalid => e
         error_result("Failed to queue refresh task: #{e.message}")
+      end
+
+      # Campaign 019f505f increment 2 — queue an in-place boot-image (UKI)
+      # upgrade to the platform's currently-promoted disk image. The agent
+      # pulls + cosign-verifies the target UKI, writes the ESP, and reboots.
+      # Guards, in order: (1) the instance must resolve to a platform; (2) that
+      # platform must have a promoted image; (3) cosign trust MUST be configured
+      # — we refuse to dispatch an unverifiable boot image (a malicious UKI is
+      # full node compromise); (4) no-op when the node already booted the target
+      # (unless force); (5) dedup against an in-flight upgrade so re-issuing is
+      # idempotent.
+      def upgrade_boot_image(params)
+        instance = account_instances.find(params[:instance_id])
+        platform = instance.node&.node_platform
+        return error_result("Instance has no resolvable node platform") if platform.nil?
+
+        target_sha = platform.disk_image_git_sha
+        if target_sha.blank? || platform.disk_image_oci_ref.blank?
+          return error_result("Platform has no promoted disk image to upgrade to")
+        end
+        if platform.disk_image_uki_oci_ref.blank?
+          return error_result(
+            "Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
+            "republish/promote a newer image to enable boot-image upgrades"
+          )
+        end
+        unless platform.cosign_trust_configured?
+          return error_result(
+            "Refusing boot-image upgrade: cosign trust (identity/issuer) is not configured for this platform — " \
+            "the node could not verify the pulled UKI"
+          )
+        end
+
+        force = params[:force].to_s == "true" || params[:force] == true
+        if !force && instance.booted_image_git_sha.present? && instance.booted_image_git_sha == target_sha
+          return success_result(upgraded: false, already_current: true, instance_id: instance.id, git_sha: target_sha)
+        end
+
+        existing = ::System::Task
+                   .where(account: @account, operable: instance, command: "upgrade_boot_image")
+                   .where(status: %w[pending scheduled running])
+                   .order(created_at: :desc).first
+        if existing
+          return success_result(upgraded: false, deduplicated: true, instance_id: instance.id,
+                                task_id: existing.id, task_status: existing.status)
+        end
+
+        task = ::System::Task.create!(
+          account: @account, operable: instance,
+          command: "upgrade_boot_image", status: "pending",
+          initiated_by: @user,
+          options: {
+            "target_git_sha"         => target_sha,
+            # The agent pulls + cosign-verifies the standalone UKI (the exact
+            # bytes it writes to the ESP), not the full disk image.
+            "uki_oci_ref"            => platform.disk_image_uki_oci_ref,
+            "uki_sha256"             => platform.disk_image_uki_sha256,
+            "cosign_identity_regexp" => platform.cosign_identity_regexp,
+            "cosign_issuer_regexp"   => platform.cosign_issuer_regexp,
+            "download_path"          => "/api/v1/system/node_api/boot_image/download",
+            "source"                 => "mcp_upgrade_boot_image",
+            "triggered_by_user_id"   => @user&.id,
+            "triggered_at"           => Time.current.iso8601
+          }
+        )
+        success_result(upgraded: true, instance_id: instance.id, task_id: task.id,
+                       task_status: task.status, target_git_sha: target_sha)
+      rescue ActiveRecord::RecordInvalid => e
+        error_result("Failed to queue boot-image upgrade: #{e.message}")
       end
 
       # === Instances ===

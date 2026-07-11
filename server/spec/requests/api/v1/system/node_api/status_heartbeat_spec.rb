@@ -156,5 +156,121 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(instance.running_module_digests).to include(new_digest)
       expect(instance.architecture).to eq("arm64")
     end
+
+    describe "boot image upgrade reconciliation (campaign 019f505f inc 2)" do
+      it "completes an in-flight upgrade_boot_image task when booted sha matches the target" do
+        target_sha = "target-upgrade-abc123"
+        user = create(:user, account: account)
+
+        # Create an in-flight upgrade_boot_image task with target sha
+        task = System::Task.create!(
+          account: account,
+          operable: instance,
+          command: "upgrade_boot_image",
+          status: "pending",
+          initiated_by: user,
+          options: {
+            "target_git_sha" => target_sha,
+            "uki_oci_ref" => "ghcr.io/uki:1.0",
+            "uki_sha256" => "sha256:uuuu",
+            "cosign_identity_regexp" => "https://github.com/test",
+            "cosign_issuer_regexp" => "https://token.actions.githubusercontent.com",
+            "download_path" => "/api/v1/system/node_api/boot_image/download"
+          }
+        )
+
+        # Heartbeat reports the target sha as booted
+        body[:booted_image_git_sha] = target_sha
+
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(response).to have_http_status(:ok)
+
+        # The reconciler should have completed the task
+        expect(task.reload.status).to eq("complete")
+
+        # Instance records the heartbeat
+        instance.reload
+        expect(instance.booted_image_git_sha).to eq(target_sha)
+      end
+
+      it "leaves in-flight task alone when booted sha does not match (waiting for reboot)" do
+        target_sha = "target-pending-xyz"
+        booted_sha = "current-running-sha"
+        user = create(:user, account: account)
+
+        task = System::Task.create!(
+          account: account,
+          operable: instance,
+          command: "upgrade_boot_image",
+          status: "pending",
+          initiated_by: user,
+          options: {
+            "target_git_sha" => target_sha,
+            "uki_oci_ref" => "ghcr.io/uki:1.0",
+            "uki_sha256" => "sha256:uuuu"
+          }
+        )
+
+        # Heartbeat reports current (not yet upgraded) image
+        body[:booted_image_git_sha] = booted_sha
+
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(response).to have_http_status(:ok)
+
+        # Task should still be in-flight, waiting for node to boot into target image
+        expect(task.reload.status).to eq("pending")
+
+        instance.reload
+        expect(instance.booted_image_git_sha).to eq(booted_sha)
+      end
+
+      it "fails an upgrade_boot_image task if it has timed out and target sha not reached" do
+        target_sha = "target-timeout-test"
+        booted_sha = "old-image-sha"
+        user = create(:user, account: account)
+
+        # Create an old task (older than TIMEOUT_SECONDS = 900s by default)
+        task = System::Task.create!(
+          account: account,
+          operable: instance,
+          command: "upgrade_boot_image",
+          status: "pending",
+          initiated_by: user,
+          created_at: 20.minutes.ago,
+          options: {
+            "target_git_sha" => target_sha,
+            "uki_oci_ref" => "ghcr.io/uki:1.0"
+          }
+        )
+
+        # Heartbeat reports the old image still booted
+        body[:booted_image_git_sha] = booted_sha
+
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(response).to have_http_status(:ok)
+
+        # Reconciler should fail the timed-out task
+        expect(task.reload.status).to eq("failed")
+        expect(task.error_message).to include("not confirmed")
+        expect(task.error_message).to include("900s")
+      end
+
+      it "does not run reconciler when no in-flight upgrade task exists (cheap no-op)" do
+        # No upgrade task created
+
+        body[:booted_image_git_sha] = "any-sha"
+
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(response).to have_http_status(:ok)
+
+        # Should complete without error
+        instance.reload
+        expect(instance.booted_image_git_sha).to eq("any-sha")
+      end
+    end
   end
 end

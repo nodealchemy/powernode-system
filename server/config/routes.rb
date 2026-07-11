@@ -816,6 +816,10 @@ Rails.application.routes.draw do
           post "status/tasks/:id/complete", to: "status#complete_task"
           post "status/tasks/:id/fail", to: "status#fail_task"
 
+          # In-place boot-image upgrade (campaign 019f505f inc 2): the agent
+          # GETs the promoted UKI (proxied by digest) to write to its ESP.
+          get "boot_image/download", to: "boot_image#download"
+
           # Phase B — runtime daemon handshake (Docker today; K3s/kubeadm
           # via the same endpoint in Phase 2/3). Agent posts CSR + ready
           # signals here on the dockerd lifecycle. Single endpoint, three

@@ -78,6 +78,13 @@ module Api
             caps = caps.to_unsafe_h if caps.respond_to?(:to_unsafe_h)
             current_instance.record_capabilities!(caps) if caps.present?
 
+            # Boot-image upgrade reconcile (campaign 019f505f inc 2): the node
+            # reboots mid-task, so the agent's /complete is unreliable — the
+            # authoritative success signal is this post-reboot heartbeat's
+            # booted_image_git_sha matching the upgrade target. Cheap no-op when
+            # the instance has no in-flight upgrade_boot_image task.
+            ::System::BootImage::UpgradeReconciler.reconcile!(instance: current_instance)
+
             # Transition pending → running on first heartbeat post-enrollment.
             current_instance.mark_running! if current_instance.may_mark_running?
 

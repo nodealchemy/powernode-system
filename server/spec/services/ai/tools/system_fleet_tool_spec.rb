@@ -930,6 +930,291 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "system_upgrade_boot_image (campaign 019f505f inc 2)" do
+    let(:node) { create(:system_node, account: account, node_template: template) }
+    let(:instance) { create(:system_node_instance, :running, node: node) }
+    let(:user) { create(:user, account: account, permissions: %w[system.node_instances.manage]) }
+    let(:user_tool) { described_class.new(account: account, user: user) }
+
+    def call_with_user(action, **rest)
+      user_tool.execute(params: { action: action }.merge(rest))
+    end
+
+    it "rejects upgrades for instances from other accounts (access control)" do
+      other_account = create(:account)
+      other_node = create(:system_node, account: other_account)
+      other_instance = create(:system_node_instance, :running, node: other_node)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: other_instance.id)
+
+      # Should fail because instance is not in the current account
+      expect(r[:success]).to be false
+    end
+
+    it "errors when the platform has no promoted disk_image_git_sha" do
+      platform_record.update!(disk_image_git_sha: nil, disk_image_oci_ref: "ref")
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("no promoted disk image")
+    end
+
+    it "errors when the platform has no promoted disk_image_oci_ref" do
+      platform_record.update!(disk_image_git_sha: "sha-abc", disk_image_oci_ref: nil)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("no promoted disk image")
+    end
+
+    it "errors when the platform has no standalone UKI artifact (disk_image_uki_oci_ref blank)" do
+      platform_record.update!(
+        disk_image_git_sha: "sha-abc",
+        disk_image_oci_ref: "ref-xyz",
+        disk_image_uki_oci_ref: nil,
+        disk_image_uki_sha256: nil
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("UKI artifact")
+      expect(r[:error]).to include("republish")
+    end
+
+    it "fails closed with security error when cosign trust is not configured (cosign_identity_regexp blank)" do
+      platform_record.update!(
+        disk_image_git_sha: "sha-abc",
+        disk_image_oci_ref: "ref-xyz",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: nil,
+        cosign_issuer_regexp: "issuer-pattern"
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("cosign")
+      expect(r[:error]).to include("not configured")
+    end
+
+    it "fails closed with security error when cosign trust is not configured (cosign_issuer_regexp blank)" do
+      platform_record.update!(
+        disk_image_git_sha: "sha-abc",
+        disk_image_oci_ref: "ref-xyz",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity-pattern",
+        cosign_issuer_regexp: nil
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("cosign")
+      expect(r[:error]).to include("not configured")
+    end
+
+    it "creates a pending upgrade_boot_image task when all preconditions are met (happy path)" do
+      target_sha = "target-sha-xyz"
+      oci_ref = "ghcr.io/nodealchemy/system/boot-uki:0.1.0"
+      uki_ref = "ghcr.io/nodealchemy/system/boot-uki-standalone:0.1.0"
+      uki_sha256 = "sha256:uki_abc"
+      identity_regexp = "https://github.com/NodeAlchemy/powernode"
+      issuer_regexp = "https://token.actions.githubusercontent.com"
+
+      platform_record.update!(
+        disk_image_git_sha: target_sha,
+        disk_image_oci_ref: oci_ref,
+        disk_image_uki_oci_ref: uki_ref,
+        disk_image_uki_sha256: uki_sha256,
+        cosign_identity_regexp: identity_regexp,
+        cosign_issuer_regexp: issuer_regexp
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be true
+      expect(r[:data][:task_id]).to be_present
+
+      task = System::Task.find(r[:data][:task_id])
+      expect(task).to have_attributes(
+        command: "upgrade_boot_image",
+        status: "pending",
+        operable_type: "System::NodeInstance",
+        operable_id: instance.id,
+        account_id: account.id,
+        initiated_by_id: user.id
+      )
+      expect(task.options["target_git_sha"]).to eq(target_sha)
+      expect(task.options["uki_oci_ref"]).to eq(uki_ref)
+      expect(task.options["uki_sha256"]).to eq(uki_sha256)
+      expect(task.options["cosign_identity_regexp"]).to eq(identity_regexp)
+      expect(task.options["cosign_issuer_regexp"]).to eq(issuer_regexp)
+      expect(task.options["download_path"]).to eq("/api/v1/system/node_api/boot_image/download")
+    end
+
+    it "returns NO-OP (already_current:true) when booted sha equals target sha and force not set" do
+      matching_sha = "shared-sha-abc123"
+      platform_record.update!(
+        disk_image_git_sha: matching_sha,
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      instance.update!(booted_image_git_sha: matching_sha)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be false
+      expect(r[:data][:already_current]).to be true
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+    end
+
+    it "creates a task when booted sha equals target but force:true" do
+      matching_sha = "shared-sha-abc123"
+      platform_record.update!(
+        disk_image_git_sha: matching_sha,
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      instance.update!(booted_image_git_sha: matching_sha)
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id, force: true)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be true
+      expect(r[:data][:task_id]).to be_present
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image", status: "pending").count).to eq(1)
+    end
+
+    it "returns DEDUP when an in-flight pending task already exists" do
+      platform_record.update!(
+        disk_image_git_sha: "target-sha",
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      existing_task = System::Task.create!(
+        account: account,
+        operable: instance,
+        command: "upgrade_boot_image",
+        status: "pending",
+        initiated_by: user
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be false
+      expect(r[:data][:deduplicated]).to be true
+      expect(r[:data][:task_id]).to eq(existing_task.id)
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(1)
+    end
+
+    it "returns DEDUP when an in-flight scheduled task already exists" do
+      platform_record.update!(
+        disk_image_git_sha: "target-sha",
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      existing_task = System::Task.create!(
+        account: account,
+        operable: instance,
+        command: "upgrade_boot_image",
+        status: "scheduled",
+        initiated_by: user
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:deduplicated]).to be true
+      expect(r[:data][:task_id]).to eq(existing_task.id)
+    end
+
+    it "returns DEDUP when an in-flight running task already exists" do
+      platform_record.update!(
+        disk_image_git_sha: "target-sha",
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      existing_task = System::Task.create!(
+        account: account,
+        operable: instance,
+        command: "upgrade_boot_image",
+        status: "running",
+        initiated_by: user
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:deduplicated]).to be true
+      expect(r[:data][:task_id]).to eq(existing_task.id)
+    end
+
+    it "creates a new task when a completed upgrade_boot_image task exists (dedup only in-flight)" do
+      platform_record.update!(
+        disk_image_git_sha: "target-sha",
+        disk_image_oci_ref: "ref",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      existing_task = System::Task.create!(
+        account: account,
+        operable: instance,
+        command: "upgrade_boot_image",
+        status: "complete",
+        initiated_by: user
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:upgraded]).to be true
+      expect(r[:data][:task_id]).not_to eq(existing_task.id)
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image", status: "pending").count).to eq(1)
+    end
+
+    it "requires system.node_instances.manage permission" do
+      platform_record.update!(
+        disk_image_git_sha: "target-sha",
+        disk_image_oci_ref: "ref",
+        disk_image_sha256: "sha256:aaaa",
+        cosign_identity_regexp: "identity",
+        cosign_issuer_regexp: "issuer"
+      )
+      unpermissioned_user = create(:user, account: account, permissions: %w[system.nodes.read])
+      unpermissioned_tool = described_class.new(account: account, user: unpermissioned_user)
+
+      r = unpermissioned_tool.execute(params: { action: "system_upgrade_boot_image", instance_id: instance.id })
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("permission denied")
+    end
+  end
+
   describe "Tasks" do
     let(:node) { create(:system_node, account: account, node_template: template, name: "tsk") }
 
