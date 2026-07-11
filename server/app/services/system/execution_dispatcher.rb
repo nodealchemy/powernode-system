@@ -35,6 +35,26 @@ module System
       "sync"           => System::Runtime::SyncCloudState
     }.freeze
 
+    # Commands executed ON THE NODE by the powernode-agent, which polls
+    # node_api for its pending tasks and reports its own completion there.
+    # The server-side dispatcher must NOT claim/run/fail these — it leaves them
+    # `pending` for the agent to pick up. Without this, an agent-delegated task
+    # is rejected as "Unsupported command" and failed within milliseconds of
+    # creation (the after_commit enqueue fires immediately), long before the
+    # agent's next poll — so the node never sees it. These are exactly the
+    # agent-side task handlers (see the agent's tasks/handlers registry) that
+    # have no COMMAND_REGISTRY entry above.
+    AGENT_DELEGATED_COMMANDS = %w[
+      upgrade_boot_image
+      a2a_call
+      storage.mount storage.unmount storage.exports.apply storage.smb_user.apply
+      storage.gateway.provision storage.gateway.deprovision storage.chown
+    ].freeze
+
+    def self.agent_delegated?(command)
+      AGENT_DELEGATED_COMMANDS.include?(command)
+    end
+
     Outcome = Struct.new(:claimed, :result, :status_code, keyword_init: true)
 
     # @param operation [System::Task]
@@ -50,6 +70,17 @@ module System
     end
 
     def run
+      # Node-executed commands are left pending for the powernode-agent to poll
+      # and complete via node_api. The server neither claims nor fails them.
+      if self.class.agent_delegated?(@operation.command)
+        log_event(:dispatch_delegated_to_agent, command: @operation.command)
+        return Outcome.new(
+          claimed: false,
+          result: System::Runtime::Result.ok(data: { delegated_to_agent: true, command: @operation.command }),
+          status_code: :accepted
+        )
+      end
+
       service_class = COMMAND_REGISTRY[@operation.command]
 
       unless service_class

@@ -19,6 +19,7 @@ module System
       ssh_command
       backup restore
       a2a_call
+      upgrade_boot_image
       custom
     ].freeze
 

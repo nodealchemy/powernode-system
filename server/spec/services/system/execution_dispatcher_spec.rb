@@ -29,6 +29,35 @@ RSpec.describe System::ExecutionDispatcher do
       end
     end
 
+    context 'when the command is agent-delegated (node-executed)' do
+      let(:operation) do
+        create(:system_task, account: account, operable: instance, command: 'upgrade_boot_image')
+      end
+
+      it 'leaves the task pending for the agent — never claims or fails it' do
+        outcome = described_class.run(operation)
+
+        expect(outcome.claimed).to be false
+        expect(outcome.status_code).to eq(:accepted)
+        expect(outcome.result.success?).to be true
+        expect(outcome.result.to_h.dig(:data, :delegated_to_agent)).to be true
+        # Critical: the task must stay pending so the node agent's poll picks it
+        # up. The dispatcher must NOT transition it to running/failed.
+        expect(operation.reload.status).to eq('pending')
+        expect(operation.error_message).to be_blank
+      end
+
+      it 'treats every agent handler command (storage.*, a2a_call) the same' do
+        %w[a2a_call storage.chown storage.mount].each do |cmd|
+          op = create(:system_task, account: account, operable: instance, command: 'sync')
+          op.send(:write_attribute, :command, cmd)
+          outcome = described_class.run(op)
+          expect(outcome.status_code).to eq(:accepted), "expected #{cmd} to be agent-delegated"
+          expect(op.reload.status).to eq('pending')
+        end
+      end
+    end
+
     context 'when the operation cannot be claimed (already running)' do
       let(:operation) do
         op = create(:system_task, :running, account: account, operable: instance, command: 'start')

@@ -165,7 +165,11 @@ module Api
 
             outcome = ::System::ExecutionDispatcher.run(@operation, worker: current_worker)
 
-            if outcome.claimed
+            if outcome.claimed || outcome.status_code == :accepted
+              # claimed: server ran it. :accepted (not claimed): an
+              # agent-delegated command left pending for the node agent to poll —
+              # NOT an error, so render success and let the worker job exit
+              # cleanly (the task stays pending for the agent).
               render_success(
                 task: serialize_operation_full(@operation.reload),
                 runtime_result: outcome.result.to_h
