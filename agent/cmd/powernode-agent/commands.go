@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -29,9 +30,11 @@ import (
 	agentcli "github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
 	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
 	"github.com/nodealchemy/powernode-system/agent/internal/boot"
+	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
+	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime"
 )
 
@@ -1072,6 +1075,65 @@ func updateCmd() *cobra.Command {
 	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print planned actions without executing")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON output instead of human-readable lines")
+	return c
+}
+
+// upgradeBootImageCmd is the manual/debug entry point for an in-place boot-image
+// (UKI) upgrade (campaign 019f505f increment 2). The normal path is the
+// platform-dispatched `upgrade_boot_image` task; this command drives the same
+// bootupgrade.Apply with explicit flags so an operator can upgrade a node by
+// hand. It pulls + cosign-verifies the UKI and writes the ESP; it reboots only
+// with --reboot.
+func upgradeBootImageCmd() *cobra.Command {
+	var (
+		platformURL, pkiDir                      string
+		downloadPath, targetGitSHA, ukiSHA256    string
+		cosignIdentity, cosignIssuer, bundleFile string
+		doReboot                                 bool
+	)
+	c := &cobra.Command{
+		Use:   "upgrade-boot-image",
+		Short: "In-place UKI boot-image upgrade: pull + cosign-verify + write ESP (manual/debug)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cctx, err := agentcli.BuildContext(platformURL, pkiDir)
+			if err != nil {
+				return err
+			}
+			bundle, err := os.ReadFile(bundleFile)
+			if err != nil {
+				return fmt.Errorf("read cosign bundle: %w", err)
+			}
+			if err := bootupgrade.Apply(cmd.Context(), bootupgrade.Deps{
+				Runner: mount.ExecRunner{},
+				Client: cctx.Transport,
+			}, bootupgrade.Options{
+				TargetGitSHA:         targetGitSHA,
+				UkiSha256:            ukiSHA256,
+				CosignIdentityRegexp: cosignIdentity,
+				CosignIssuerRegexp:   cosignIssuer,
+				CosignBundleB64:      base64.StdEncoding.EncodeToString(bundle),
+				DownloadPath:         downloadPath,
+			}); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "boot image written + cosign-verified")
+			if doReboot {
+				fmt.Fprintln(cmd.OutOrStdout(), "rebooting into the new image…")
+				return mount.ExecRunner{}.Run(cmd.Context(), "systemctl", "reboot")
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "not rebooting (pass --reboot to boot the new image)")
+			return nil
+		},
+	}
+	c.Flags().StringVar(&platformURL, "platform-url", "", "platform base URL (default: identity-discovered)")
+	c.Flags().StringVar(&pkiDir, "pki-dir", "", "agent PKI directory (default: /persist/var/lib/powernode/pki)")
+	c.Flags().StringVar(&downloadPath, "download-path", "/api/v1/system/node_api/boot_image/download", "node_api path to GET the UKI")
+	c.Flags().StringVar(&targetGitSHA, "target-git-sha", "", "expected image git_sha (informational)")
+	c.Flags().StringVar(&ukiSHA256, "uki-sha256", "", "expected UKI sha256 (required)")
+	c.Flags().StringVar(&cosignIdentity, "cosign-identity", "", "cosign certificate-identity regexp (required)")
+	c.Flags().StringVar(&cosignIssuer, "cosign-issuer", "", "cosign oidc-issuer regexp (required)")
+	c.Flags().StringVar(&bundleFile, "cosign-bundle-file", "", "path to the UKI cosign bundle (required)")
+	c.Flags().BoolVar(&doReboot, "reboot", false, "reboot into the new image after a successful write")
 	return c
 }
 

@@ -21,4 +21,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterPassthrough(r, deps)
 	RegisterStorage(r, deps)
 	RegisterA2ADelegate(r, deps)
+	RegisterUpgradeBootImage(r, deps)
 }
