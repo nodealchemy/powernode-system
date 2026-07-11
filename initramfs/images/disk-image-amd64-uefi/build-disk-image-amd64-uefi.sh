@@ -53,6 +53,11 @@ if [[ -n "${POWERNODE_IMAGE_GIT_SHA:-}" ]]; then
 fi
 UKIFY="${UKIFY:-ukify}"
 EFI_STUB="${EFI_STUB:-/usr/lib/systemd/boot/efi/linuxx64.efi.stub}"
+# systemd-boot BOOT MANAGER (campaign 019f505f inc 3) — installed as the ESP's
+# removable default so it can manage two boot-counted UKI slots for A/B
+# auto-rollback. Shipped by systemd-boot-efi (already in the CI build container),
+# distinct from the UKI stub above.
+SDBOOT="${SDBOOT:-/usr/lib/systemd/boot/efi/systemd-bootx64.efi}"
 
 usage() {
   cat <<USAGE
@@ -174,11 +179,25 @@ P2_BYTES=$(( (P2_END - P2_START + 1) * 512 ))
 log "  p1 ESP:     offset=$P1_OFFSET"
 log "  p2 persist: offset=$P2_OFFSET size=$P2_BYTES"
 
-# ── 4. ESP via mtools (FS label BOOT — boot.mount mounts LABEL=BOOT) ────────
-log "formatting ESP (FAT32, label BOOT) + staging UKI/identity.cfg/CA"
+# ── 4. ESP via mtools — systemd-boot manager + boot-counted UKI slot A ──────
+# The firmware auto-loads /EFI/BOOT/BOOTX64.EFI = systemd-boot (the boot MANAGER,
+# not the UKI). systemd-boot discovers UKIs in /EFI/Linux and manages boot
+# counting for A/B auto-rollback (campaign 019f505f inc 3). Slot A ships as the
+# good default (no counter); the on-node agent writes the INACTIVE slot with a
+# +tries counter on upgrade, so a new UKI that fails to boot auto-reverts to A.
+[[ -f "$SDBOOT" ]] || { log "ERROR: systemd-boot manager missing ($SDBOOT) — install systemd-boot-efi"; exit 1; }
+cat >"$STAGE/loader.conf" <<'LOADER'
+timeout 3
+default powernode-a*
+editor  no
+LOADER
+log "formatting ESP (FAT32, label BOOT) + systemd-boot + UKI slot A"
 mformat -F -i "${OUTPUT}@@${P1_OFFSET}" -v BOOT ::
-mmd -i "${OUTPUT}@@${P1_OFFSET}" ::/EFI ::/EFI/BOOT
-mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$UKI" ::/EFI/BOOT/BOOTX64.EFI
+mmd -i "${OUTPUT}@@${P1_OFFSET}" ::/EFI ::/EFI/BOOT ::/EFI/Linux ::/EFI/systemd ::/loader
+mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$SDBOOT" ::/EFI/BOOT/BOOTX64.EFI
+mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$SDBOOT" ::/EFI/systemd/systemd-bootx64.efi
+mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$UKI"    ::/EFI/Linux/powernode-a.efi
+mcopy -i "${OUTPUT}@@${P1_OFFSET}" -Q "$STAGE/loader.conf" ::/loader/loader.conf
 ( cd "$STAGE" && for f in identity.cfg powernode-ca.pem; do
     [[ -f "$f" ]] && mcopy -i "${OUTPUT}@@${P1_OFFSET}" -p -Q "$f" "::" || true
   done )

@@ -84,6 +84,12 @@ package_spec:
   - ca-certificates
   - curl
   - dosfstools
+  # systemd-boot provides /usr/bin/bootctl + the systemd-bless-boot*.service /
+  # boot-complete.target boot-assessment units the node needs for A/B boot-image
+  # rollback (campaign 019f505f inc 3). bootctl was split out of the `systemd`
+  # package (~v250); on Noble it lives in this separate binary package. The agent
+  # shells out to `bootctl set-oneshot/set-good/set-default` to drive the slots.
+  - systemd-boot
   - kmod
   - udev
 
