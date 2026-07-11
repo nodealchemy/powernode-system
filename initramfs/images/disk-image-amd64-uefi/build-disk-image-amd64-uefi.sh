@@ -43,6 +43,14 @@ CA_PEM_FILE="${CA_PEM_FILE:-}"
 # tty0 still shows kernel logs on devices with a display.
 #
 CMDLINE="${POWERNODE_CMDLINE:-console=tty0 console=ttyS0,115200 powernode.boot=1 ip=dhcp}"
+# Bake the image build git_sha into the kernel cmdline so the on-node agent can
+# report the disk image it actually booted from (campaign 019f505f — boot-image
+# drift visibility). /proc/cmdline survives switch_root, so this is the robust
+# identity source. Only appended when the build knows its sha (CI passes
+# POWERNODE_IMAGE_GIT_SHA=<github.sha>); local builds without it omit the marker.
+if [[ -n "${POWERNODE_IMAGE_GIT_SHA:-}" ]]; then
+    CMDLINE="${CMDLINE} powernode.image_git_sha=${POWERNODE_IMAGE_GIT_SHA}"
+fi
 UKIFY="${UKIFY:-ukify}"
 EFI_STUB="${EFI_STUB:-/usr/lib/systemd/boot/efi/linuxx64.efi.stub}"
 

@@ -198,8 +198,16 @@ kernel=kernel8.img
 initramfs initramfs.cpio.zst followkernel
 CONFIG_TXT
 
+# Bake the image build git_sha into the kernel cmdline so the on-node agent can
+# report the disk image it booted from (campaign 019f505f — boot-image drift).
+# /proc/cmdline on the Pi is sourced from cmdline.txt. Only appended when the
+# build knows its sha (CI passes POWERNODE_IMAGE_GIT_SHA=<github.sha>).
+RPI4_IMAGE_SHA_ARG=""
+if [[ -n "${POWERNODE_IMAGE_GIT_SHA:-}" ]]; then
+    RPI4_IMAGE_SHA_ARG=" powernode.image_git_sha=${POWERNODE_IMAGE_GIT_SHA}"
+fi
 cat >"$STAGE/cmdline.txt" <<CMDLINE
-console=serial0,115200 console=tty1 powernode.boot=1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait
+console=serial0,115200 console=tty1 powernode.boot=1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait${RPI4_IMAGE_SHA_ARG}
 CMDLINE
 
 cat >"$STAGE/identity.cfg" <<EOF

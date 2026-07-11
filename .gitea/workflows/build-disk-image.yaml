@@ -44,11 +44,11 @@ permissions:
 
 jobs:
   build-arm64:
-    # Disabled 2026-07-07: no arm64 fleet in active use (dev/ops-tier work
-    # is amd64-uefi only), and the emulated QEMU arm64 build is by far the
-    # slowest, most resource-hungry job in this workflow. Remove this
-    # `if: false` to re-enable once arm64 targets are back in scope.
-    if: false
+    # Re-enabled 2026-07-11 (campaign 019f505f): arm64 targets are back in scope,
+    # and the arm64-uefi + rpi4 images now bake the boot-image git_sha for drift
+    # visibility. Runs on the same push-tags / workflow_dispatch trigger as the
+    # amd64 job. NOTE: the emulated QEMU arm64 build is by far the slowest,
+    # most resource-hungry job in this workflow.
     # ubuntu-24.04 unprivileged runner. Filesystem creation uses offline
     # tools (mtools mformat/mcopy for FAT32, mkfs.ext4 -E offset for ext4)
     # so /dev/loop-control is not required. The disk-image-rpi4 script
@@ -265,6 +265,8 @@ jobs:
           SIZE_GB: "1"
           RPI4_FIRMWARE_DIR: /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware
           CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
+          # Bake the build sha into the rpi4 cmdline.txt for boot-image drift (019f505f).
+          POWERNODE_IMAGE_GIT_SHA: ${{ github.sha }}
         run: |
           ./build.sh --arch arm64 --variants disk-image-rpi4
 
@@ -297,8 +299,11 @@ jobs:
           # INTO a long-lived arm64 container, build, then copy artifacts back.
           C=pn-arm64-uefi
           docker rm -f "$C" >/dev/null 2>&1 || true
+          # POWERNODE_IMAGE_GIT_SHA — see amd64 job: bakes the build sha into the
+          # UKI cmdline + initramfs boot-image.json for boot-image drift (019f505f).
           docker run -d --name "$C" --platform linux/arm64 \
-            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" "${ca_env[@]}" \
+            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" \
+            -e "POWERNODE_IMAGE_GIT_SHA=${{ github.sha }}" "${ca_env[@]}" \
             ubuntu:24.04 sleep 3600
           docker exec "$C" mkdir -p /work
           docker cp ./. "$C":/work
@@ -756,8 +761,14 @@ jobs:
           # into the container, build, then copy artifacts back out.
           C=pn-amd64-uefi
           docker rm -f "$C" >/dev/null 2>&1 || true
+          # POWERNODE_IMAGE_GIT_SHA bakes the build sha into the UKI cmdline +
+          # initramfs boot-image.json (campaign 019f505f) so nodes report the
+          # image they booted from. github.sha is the authoritative build sha
+          # (the in-container .git is absent, so build.sh's rev-parse yields
+          # "unknown" — pass it explicitly).
           docker run -d --name "$C" --platform linux/amd64 \
-            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" "${ca_env[@]}" \
+            -e SIZE_GB=1 -e "PLATFORM_URL=${PLATFORM_URL}" \
+            -e "POWERNODE_IMAGE_GIT_SHA=${{ github.sha }}" "${ca_env[@]}" \
             ubuntu:24.04 sleep 3600
           docker exec "$C" mkdir -p /work
           docker cp ./. "$C":/work

@@ -243,4 +243,14 @@ install() {
     # Mark the module as Powernode-installed so the agent can self-identify.
     mkdir -p "${initdir}/etc/powernode"
     echo "powernode-initramfs-module=1" >"${initdir}/etc/powernode/module.conf"
+
+    # Boot-image identity (campaign 019f505f) — informational only. The disk-image
+    # build passes its git_sha via POWERNODE_IMAGE_GIT_SHA (CI: ${{ github.sha }});
+    # bake it here so an operator can `cat /etc/powernode/boot-image.json` on a
+    # running node. The AGENT does NOT read this file for drift — its only
+    # trustworthy source is the UKI kernel cmdline (powernode.image_git_sha=),
+    # because this file also ships in any netboot-served initramfs where the sha
+    # has no promotion binding. Empty git_sha on builds that don't set the env.
+    printf '{"git_sha":"%s"}\n' "${POWERNODE_IMAGE_GIT_SHA:-}" \
+        >"${initdir}/etc/powernode/boot-image.json"
 }
