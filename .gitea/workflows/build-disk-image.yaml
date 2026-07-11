@@ -878,6 +878,25 @@ jobs:
             || { echo "::error::oras push failed for $platform to $ref"; exit 1; }
           echo "✓ Pushed $platform to $ref (sha=$sha size=$size)"
 
+          # Standalone UKI artifact for in-place boot-image upgrades (campaign
+          # 019f505f inc 2): push + cosign-sign the raw UKI to a parallel
+          # $platform-uki:$sha ref so the agent pulls just the bootable EFI and
+          # verifies the signature over exactly what it writes to the ESP.
+          uki="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.uki"
+          if [ -f "$uki" ]; then
+            uki_sha="$(sha256sum "$uki" | awk '{print $1}')"
+            uki_ref="$ORAS_REGISTRY/powernode/disk-images/$platform-uki:${{ github.sha }}"
+            cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$uki.cosign-bundle" "$uki" \
+              || { echo "::error::cosign sign-blob failed for $uki"; exit 1; }
+            uki_push=("$uki_ref" "--artifact-type" "application/vnd.powernode.uki.v1" "$uki:application/vnd.powernode.uki.v1")
+            [ -f "$uki.cosign-bundle" ] && uki_push+=("$uki.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json")
+            oras push "${uki_push[@]}" \
+              || { echo "::error::oras push failed for UKI to $uki_ref"; exit 1; }
+            echo "✓ Pushed UKI to $uki_ref (sha=$uki_sha)"
+          else
+            echo "WARN: UKI $uki not found — in-place upgrade unavailable for this publication"
+          fi
+
       - name: Notify platform of new amd64 image (HMAC webhook — OCI-pull mode)
         if: env.POWERNODE_DISK_IMAGE_WEBHOOK_URL != '' && env.POWERNODE_STORAGE_MODE != 'cloud-direct'
         env:
@@ -891,9 +910,19 @@ jobs:
           sha="$(sha256sum "$img" | awk '{print $1}')"
           size="$(stat -c '%s' "$img")"
           ref="$ORAS_REGISTRY/powernode/disk-images/$platform:${{ github.sha }}"
+          # Carry the standalone UKI artifact ref+digest (inc 2) when present so
+          # the platform records them for the in-place upgrade path.
+          uki="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.uki"
+          uki_ref=""; uki_sha=""
+          if [ -f "$uki" ]; then
+            uki_sha="$(sha256sum "$uki" | awk '{print $1}')"
+            uki_ref="$ORAS_REGISTRY/powernode/disk-images/$platform-uki:${{ github.sha }}"
+          fi
           body=$(jq -nc --arg p "$platform" --arg ref "$ref" --arg sha "$sha" \
             --arg gs "${{ github.sha }}" --argjson sz "$size" --arg arch "amd64" \
-            '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz, git_sha:$gs, arch:$arch}')
+            --arg uref "$uki_ref" --arg usha "$uki_sha" \
+            '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz, git_sha:$gs, arch:$arch}
+             + (if $uref != "" then {uki_oci_ref:$uref, uki_sha256:$usha} else {} end)')
           sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex | awk '{print $2}')
           echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
           curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \

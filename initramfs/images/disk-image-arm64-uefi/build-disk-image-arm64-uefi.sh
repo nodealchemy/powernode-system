@@ -138,6 +138,14 @@ $UKIFY build \
 [[ -s "$UKI" ]] || { log "ERROR: ukify produced no output"; exit 1; }
 log "UKI ✓ $(stat -c%s "$UKI") bytes"
 
+# Export the UKI beside the .img so CI can publish it as a standalone,
+# cosign-signed OCI artifact for in-place boot-image upgrades (campaign 019f505f
+# inc 2). $STAGE is wiped by the EXIT trap, so copy it out now.
+if [[ -n "${OUTPUT:-}" ]]; then
+  cp "$UKI" "${OUTPUT%.img}.uki"
+  log "exported UKI → ${OUTPUT%.img}.uki"
+fi
+
 # ── 2. identity.cfg placeholder + optional CA ──────────────────────────────
 cat >"$STAGE/identity.cfg" <<EOF
 # Powernode claim-by-ID identity — PLACEHOLDER.
