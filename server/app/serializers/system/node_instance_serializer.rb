@@ -32,6 +32,15 @@ module System
         node_id: @instance.node_id,
         node_name: @instance.node&.name,
         active: @instance.active?,
+        # Boot-image identity + drift (campaign 019f505f). booted is the git_sha
+        # the node reported booting from (heartbeat); promoted is the git_sha of
+        # the image currently published for its platform; drifted is true when
+        # both are known and differ (node is on a stale boot image). Callers that
+        # serialize collections MUST eager-load node → node_template → node_platform
+        # to keep promoted/drifted N+1-free (see NodeInstancesController#index).
+        booted_image_git_sha:   @instance.booted_image_git_sha,
+        promoted_image_git_sha: @instance.promoted_image_git_sha,
+        boot_image_drifted:     @instance.boot_image_drifted?,
         created_at: @instance.created_at,
         updated_at: @instance.updated_at
       }

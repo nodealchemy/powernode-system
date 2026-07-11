@@ -1935,7 +1935,14 @@ module Ai
           missing: missing,
           extra: extra,
           mismatched: mismatched,
-          last_heartbeat_at: instance.last_heartbeat_at&.iso8601
+          last_heartbeat_at: instance.last_heartbeat_at&.iso8601,
+          # Boot-image drift (campaign 019f505f) — is the node running a stale
+          # disk image relative to its platform's promoted image? booted is the
+          # sha the agent reported booting from; promoted is the currently
+          # published image. Either may be nil (older agent / no promotion yet).
+          boot_image_drift: instance.boot_image_drifted?,
+          booted_image_git_sha: instance.booted_image_git_sha,
+          promoted_image_git_sha: instance.promoted_image_git_sha
         )
       end
 

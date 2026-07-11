@@ -21,17 +21,40 @@ module System
       end
 
       def build
-        case @runtime
-        when "docker"
-          docker_config
-        when "k3s_server"
-          k3s_server_config
-        else
-          empty_config
-        end
+        base =
+          case @runtime
+          when "docker"
+            docker_config
+          when "k3s_server"
+            k3s_server_config
+          else
+            empty_config
+          end
+        # Boot-image identity is runtime-independent — surface the promoted
+        # disk image for every runtime so the agent can compare it against the
+        # git_sha it actually booted from (campaign 019f505f). Merged here (not
+        # per-runtime) so a future dedicated boot-image fetch has one source.
+        boot_image = boot_image_block
+        boot_image.present? ? base.merge(boot_image: boot_image) : base
       end
 
       private
+
+      # Promoted (currently-published) disk image identity for this node's
+      # platform — Node → NodeTemplate → NodePlatform.disk_image_* columns set
+      # by the DiskImage::PromotePublication executor. Empty when the platform
+      # has no promoted image yet (or the links aren't populated) so the agent's
+      # zero-value decode stays clean and the key is simply omitted.
+      def boot_image_block
+        platform = @instance.node&.node_platform
+        return {} if platform&.disk_image_git_sha.blank?
+
+        {
+          git_sha: platform.disk_image_git_sha,
+          oci_ref: platform.disk_image_oci_ref,
+          sha256:  platform.disk_image_sha256
+        }
+      end
 
       def docker_config
         overrides = ::System::DockerDaemonOverridesResolver.resolve(

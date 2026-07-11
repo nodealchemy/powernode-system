@@ -77,6 +77,19 @@ module System
           side_effectful: false, # drift report + remediation plan only
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
+        # Boot-image drift (BootImageDriftSensor): a node booted a stale disk
+        # image. Campaign 019f505f increment 1 — observation-only, no skill. The
+        # "system.observation" category is auto_approve + creates no remediation
+        # outcome (RemediationValidator#record_proceeded! skips it), so the signal
+        # is recorded/surfaced (signal stream, serializer, system_drift_report MCP)
+        # without a node action, an operator notification, or the false
+        # "remediation stuck" escalation a persistent no-op fingerprint would
+        # otherwise trip. Increment 4 replaces this with a skill binding to the
+        # drift-driven rollout executor (system.node_boot_image_drift gate).
+        "system.boot_image_drift" => {
+          skill: nil,
+          action_category: "system.observation"
+        },
         # Provider-state drift (InstanceStateDriftSensor): the VM itself is
         # stopped/terminated while the model says running — distinct from
         # instance_silent (heartbeat staleness). Routes to the

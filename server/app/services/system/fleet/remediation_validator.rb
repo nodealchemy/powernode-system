@@ -38,6 +38,15 @@ module System
         recorded = 0
         Array(decisions).each_with_index do |decision, i|
           next unless proceeded?(decision)
+          # Observation-only signals (action_category "system.observation") carry
+          # no remediation to validate — they exist purely to surface state to
+          # dashboards / serializers / MCP (boot-image drift in campaign 019f505f
+          # increment 1; trading-pressure + stale-BGP observations). Recording a
+          # pending outcome for a persistent observation would score "ineffective"
+          # forever (nothing ever remediates the fingerprint) and, once the
+          # ineffective streak trips F3-11, manufacture false fleet.remediation_stuck
+          # HIGH escalations + forced approvals. Skip them from the validate arc.
+          next if decision[:action_category].to_s == "system.observation"
 
           fingerprint = (decision[:fingerprint] || signals[i]&.fingerprint).to_s
           next if fingerprint.blank?

@@ -855,6 +855,81 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  describe "boot image drift (campaign 019f505f)" do
+    let(:node) { create(:system_node, account: account, node_template: template) }
+    let(:instance) { create(:system_node_instance, :running, node: node) }
+
+    it "reports boot_image_drift when booted and promoted shas differ" do
+      booted_sha = "booted-abc123"
+      promoted_sha = "promoted-xyz789"
+      instance.update!(booted_image_git_sha: booted_sha)
+      platform_record.update!(disk_image_git_sha: promoted_sha)
+
+      r = call("system_drift_report", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:boot_image_drift]).to be true
+      expect(r[:data][:booted_image_git_sha]).to eq(booted_sha)
+      expect(r[:data][:promoted_image_git_sha]).to eq(promoted_sha)
+    end
+
+    it "reports boot_image_drift false when booted and promoted shas match" do
+      same_sha = "matching-sha"
+      instance.update!(booted_image_git_sha: same_sha)
+      platform_record.update!(disk_image_git_sha: same_sha)
+
+      r = call("system_drift_report", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:boot_image_drift]).to be false
+      expect(r[:data][:booted_image_git_sha]).to eq(same_sha)
+      expect(r[:data][:promoted_image_git_sha]).to eq(same_sha)
+    end
+
+    it "reports boot_image_drift false when booted_image_git_sha is nil" do
+      instance.update!(booted_image_git_sha: nil)
+      platform_record.update!(disk_image_git_sha: "promoted-sha")
+
+      r = call("system_drift_report", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:boot_image_drift]).to be false
+      expect(r[:data][:booted_image_git_sha]).to be_nil
+      expect(r[:data][:promoted_image_git_sha]).to eq("promoted-sha")
+    end
+
+    it "reports boot_image_drift false when promoted_image_git_sha is nil" do
+      instance.update!(booted_image_git_sha: "booted-sha")
+      platform_record.update!(disk_image_git_sha: nil)
+
+      r = call("system_drift_report", instance_id: instance.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:boot_image_drift]).to be false
+      expect(r[:data][:booted_image_git_sha]).to eq("booted-sha")
+      expect(r[:data][:promoted_image_git_sha]).to be_nil
+    end
+
+    it "includes boot image fields alongside module drift fields" do
+      booted_sha = "boot-sha"
+      promoted_sha = "promoted-sha"
+      instance.update!(booted_image_git_sha: booted_sha, running_module_digests: {})
+      platform_record.update!(disk_image_git_sha: promoted_sha)
+
+      r = call("system_drift_report", instance_id: instance.id)
+
+      data = r[:data]
+      # Boot image drift fields are always present
+      expect(data[:boot_image_drift]).to be true
+      expect(data[:booted_image_git_sha]).to eq(booted_sha)
+      expect(data[:promoted_image_git_sha]).to eq(promoted_sha)
+      # Module drift fields should also be present even when no drift
+      expect(data[:missing_count]).to eq(0)
+      expect(data[:extra_count]).to eq(0)
+      expect(data[:mismatched_count]).to eq(0)
+    end
+  end
+
   describe "Tasks" do
     let(:node) { create(:system_node, account: account, node_template: template, name: "tsk") }
 

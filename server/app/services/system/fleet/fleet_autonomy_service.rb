@@ -185,6 +185,11 @@ module System
         # agent-crashed-but-VM-up vs VM-itself-stopped.
         ::System::Fleet::Sensors::InstanceStateDriftSensor,
         ::System::Fleet::Sensors::ModuleDriftSensor,
+        # Boot-image drift: a running node booted a stale disk image (its
+        # reported booted_image_git_sha != the platform's promoted
+        # disk_image_git_sha). Campaign 019f505f increment 1 — observation-only
+        # (no remediation outcome); increment 4 routes it to the rollout executor.
+        ::System::Fleet::Sensors::BootImageDriftSensor,
         ::System::Fleet::Sensors::CertificateExpirySensor,
         # Platform ACME (Traefik-terminated) cert expiry — distinct store +
         # remediation path from CertificateExpirySensor (node identity certs).
@@ -357,7 +362,13 @@ module System
       def dedup_key_for(action_category, metadata)
         case action_category
         when "system.instance_reprovision", "system.instance_reboot",
-             "system.cert_rotate", "system.cert_revoke"
+             "system.cert_rotate", "system.cert_revoke",
+             # Observation signals never create remediation outcomes
+             # (see RemediationValidator#record_proceeded!), so they should not
+             # reach require_approval on the normal path — but dedup per instance
+             # defensively so a future escalation can't mint one approval per tick
+             # (boot-image drift carries instance_id in its payload).
+             "system.observation"
           key_value(metadata, "instance_id")
         # Honeypot quarantine (F3-08): the access signal may carry no
         # instance when nothing currently hosts the canary module — fall

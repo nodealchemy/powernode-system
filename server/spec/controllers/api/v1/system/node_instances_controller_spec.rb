@@ -162,4 +162,50 @@ RSpec.describe "Api::V1::System::NodeInstances", type: :request do
       expect(response).to have_http_status(:forbidden)
     end
   end
+
+  describe "boot image drift fields (campaign 019f505f)" do
+    let(:platform) { create(:system_node_platform, account: account) }
+
+    before do
+      # Re-create template and node with platform for boot_image tests
+      template.update!(node_platform: platform)
+      platform.update!(disk_image_git_sha: "promoted-sha")
+      instance.update!(booted_image_git_sha: "booted-sha")
+    end
+
+    it "includes boot_image_drifted, booted_image_git_sha, promoted_image_git_sha in list" do
+      get "/api/v1/system/nodes/#{node.id}/node_instances", headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+
+      instances_data = json_response_data["instances"] || json_response_data["node_instances"]
+      listed_instance = instances_data.find { |i| i["id"] == instance.id }
+
+      expect(listed_instance).to have_key("boot_image_drifted")
+      expect(listed_instance).to have_key("booted_image_git_sha")
+      expect(listed_instance).to have_key("promoted_image_git_sha")
+    end
+
+    it "correctly shows boot_image_drifted=true when booted differs from promoted" do
+      get "/api/v1/system/nodes/#{node.id}/node_instances", headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+
+      instances_data = json_response_data["instances"] || json_response_data["node_instances"]
+      listed_instance = instances_data.find { |i| i["id"] == instance.id }
+
+      expect(listed_instance["boot_image_drifted"]).to be true
+      expect(listed_instance["booted_image_git_sha"]).to eq("booted-sha")
+      expect(listed_instance["promoted_image_git_sha"]).to eq("promoted-sha")
+    end
+
+    it "includes boot image fields in show response" do
+      get "/api/v1/system/nodes/#{node.id}/node_instances/#{instance.id}", headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+
+      payload = json_response_data["instance"] || json_response_data["node_instance"]
+      expect(payload).to have_key("boot_image_drifted")
+      expect(payload).to have_key("booted_image_git_sha")
+      expect(payload).to have_key("promoted_image_git_sha")
+      expect(payload["boot_image_drifted"]).to be true
+    end
+  end
 end

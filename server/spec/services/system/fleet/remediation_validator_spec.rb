@@ -125,4 +125,54 @@ RSpec.describe System::Fleet::RemediationValidator, type: :service do
       expect(o.metadata["sensor"]).to eq("CertExpirySensor")
     end
   end
+
+  # Campaign 019f505f — boot-image drift detection (increment 1 observation-only).
+  # Observation signals (action_category: "system.observation") carry no remediation
+  # to validate — they exist to surface state to dashboards/serializers/MCP only.
+  # Recording a pending outcome for a persistent observation would score "ineffective"
+  # forever and manufacture false fleet.remediation_stuck escalations. Skip them.
+  describe "observation-only signal skipping (F3-11 prevention)" do
+    it "skips PROCEEDED decisions with action_category 'system.observation'" do
+      observation_decision = {
+        decision: :proceed, gate: "notify_only", signal_kind: "system.boot_image_drift",
+        fingerprint: "boot_image_drift:i-1", action_category: "system.observation"
+      }
+      signals = [ sig("boot_image_drift:i-1", kind: "system.boot_image_drift") ]
+
+      expect { validator.record_proceeded!(decisions: [ observation_decision ], signals: signals) }
+        .not_to change { System::Fleet::RemediationOutcome.count }
+    end
+
+    it "still records PROCEEDED decisions with other action_categories" do
+      normal_decision = {
+        decision: :proceed, gate: "approve_and_proceed", signal_kind: "system.cert_expiring",
+        fingerprint: "cert-1", action_category: "system.cert_rotate"
+      }
+      signals = [ sig("cert-1", kind: "system.cert_expiring") ]
+
+      expect { validator.record_proceeded!(decisions: [ normal_decision ], signals: signals) }
+        .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
+    end
+
+    it "mixes observation and normal decisions correctly" do
+      observation = {
+        decision: :proceed, fingerprint: "boot:i-1", signal_kind: "system.boot_image_drift",
+        action_category: "system.observation"
+      }
+      normal = {
+        decision: :proceed, fingerprint: "config:i-1", signal_kind: "system.config_drift",
+        action_category: "system.config_update"
+      }
+      signals = [
+        sig("boot:i-1", kind: "system.boot_image_drift"),
+        sig("config:i-1", kind: "system.config_drift")
+      ]
+
+      expect { validator.record_proceeded!(decisions: [ observation, normal ], signals: signals) }
+        .to change { System::Fleet::RemediationOutcome.pending.count }.by(1)
+
+      # Only the normal decision should create an outcome
+      expect(System::Fleet::RemediationOutcome.pending.pluck(:fingerprint)).to eq([ "config:i-1" ])
+    end
+  end
 end

@@ -367,7 +367,10 @@ module System
 
     # Records a heartbeat from the on-node powernode-agent. The :module_digests
     # parameter is a hash of { module_id => oci_digest } captured by the agent.
-    def record_heartbeat!(agent_version:, boot_id:, module_digests: {}, architecture: nil)
+    # :booted_image_git_sha is the git_sha baked into the disk image the node
+    # actually booted from (read from the UKI kernel cmdline); absent on nodes
+    # running older agents or images built before campaign 019f505f.
+    def record_heartbeat!(agent_version:, boot_id:, module_digests: {}, architecture: nil, booted_image_git_sha: nil)
       attrs = {
         last_heartbeat_at: Time.current,
         agent_version: agent_version,
@@ -375,7 +378,37 @@ module System
         running_module_digests: (module_digests || {}).to_h
       }
       attrs[:architecture] = architecture if architecture.present?
+      # Boot-image sha (campaign 019f505f): a reported sha always wins. A heartbeat
+      # that reports NO sha on a *new* boot (boot_id changed) means the node booted
+      # an image that can't self-identify (a pre-campaign image, or a rollback) —
+      # clear the stale value so it reads "unknown", never false drift against the
+      # last image. A no-sha heartbeat on the *same* boot (agent restart, or an old
+      # agent that never reports it) leaves the existing value untouched.
+      if booted_image_git_sha.present?
+        attrs[:booted_image_git_sha] = booted_image_git_sha
+      elsif boot_id.present? && self.boot_id.present? && self.boot_id != boot_id
+        attrs[:booted_image_git_sha] = nil
+      end
       update!(attrs)
+    end
+
+    # The git_sha of the disk image currently promoted for this instance's
+    # platform (Node → NodeTemplate → NodePlatform.disk_image_git_sha, set by
+    # the DiskImage::PromotePublication executor). Nil when the platform has no
+    # promoted image yet or the Node/Template links aren't populated.
+    def promoted_image_git_sha
+      node&.node_platform&.disk_image_git_sha
+    end
+
+    # True when the node has reported a booted image sha that differs from the
+    # platform's promoted image sha — i.e. it is running a stale boot image and
+    # a smooth upgrade would converge it. Read-only: never mutates. Returns
+    # false unless BOTH shas are known (an unknown side is "no evidence of
+    # drift", not drift).
+    def boot_image_drifted?
+      booted = booted_image_git_sha
+      promoted = promoted_image_git_sha
+      booted.present? && promoted.present? && booted != promoted
     end
 
     # The currently active mTLS cert for this instance (most recently issued,

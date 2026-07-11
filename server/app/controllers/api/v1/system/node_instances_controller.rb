@@ -21,7 +21,10 @@ module Api
 
         def index
           require_permission("system.instances.read")
-          instances = @node.node_instances
+          # Eager-load the platform chain so the serializer's boot-image drift
+          # fields (promoted_image_git_sha / boot_image_drifted) stay N+1-free
+          # across the collection (campaign 019f505f).
+          instances = @node.node_instances.includes(node: { node_template: :node_platform })
           instances = apply_filters(instances)
           instances = paginate(instances)
           # Lazy reconcile: in-flight instances (status=pending/provisioning/starting/

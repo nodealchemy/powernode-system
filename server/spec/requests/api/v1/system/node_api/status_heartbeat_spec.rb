@@ -84,5 +84,77 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       post "/api/v1/system/node_api/status/heartbeat", params: body, as: :json
       expect(response).to have_http_status(:unauthorized)
     end
+
+    it "persists booted_image_git_sha when provided" do
+      booted_sha = "abc123def456"
+      body[:booted_image_git_sha] = booted_sha
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.booted_image_git_sha).to eq(booted_sha)
+    end
+
+    it "tolerates missing booted_image_git_sha body field" do
+      body.delete(:booted_image_git_sha)
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.booted_image_git_sha).to be_nil
+    end
+
+    it "preserves booted_image_git_sha when not provided and boot_id unchanged (agent restart)" do
+      instance.update!(booted_image_git_sha: "existing-sha", boot_id: "boot-test-1")
+      body.delete(:booted_image_git_sha)
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.booted_image_git_sha).to eq("existing-sha")
+    end
+
+    it "clears booted_image_git_sha when not provided and boot_id changed (new boot into old image)" do
+      instance.update!(booted_image_git_sha: "old-sha", boot_id: "boot-old")
+      body.delete(:booted_image_git_sha)
+      body[:boot_id] = "boot-test-1"
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.boot_id).to eq("boot-test-1")
+      expect(instance.booted_image_git_sha).to be_nil
+    end
+
+    it "updates booted_image_git_sha when provided and different" do
+      instance.update!(booted_image_git_sha: "old-sha")
+      new_sha = "new-sha-xyz"
+      body[:booted_image_git_sha] = new_sha
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.booted_image_git_sha).to eq(new_sha)
+    end
+
+    it "persists booted_image_git_sha alongside other heartbeat fields" do
+      booted_sha = "test-boot-sha"
+      new_digest = { "system-enhanced" => "sha256:bbbb" }
+      body[:booted_image_git_sha] = booted_sha
+      body[:module_digests] = new_digest
+      body[:architecture] = "arm64"
+
+      post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+      expect(response).to have_http_status(:ok)
+      instance.reload
+      expect(instance.booted_image_git_sha).to eq(booted_sha)
+      expect(instance.running_module_digests).to include(new_digest)
+      expect(instance.architecture).to eq("arm64")
+    end
   end
 end
