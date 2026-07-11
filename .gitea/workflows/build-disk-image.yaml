@@ -36,6 +36,20 @@ on:
         description: "raspberrypi/firmware ref (overrides manifest default)"
         required: false
         type: string
+      target_arch:
+        # Single-runner CI: the emulated arm64 job is by far the slowest and
+        # would serialize ahead of amd64. Let a manual dispatch build only the
+        # arch it needs (e.g. an amd64-only ops-hub rebuild). Default "all"
+        # preserves the tag-push behavior (both arches); push events ignore
+        # this input and always build all.
+        description: "Arch(es) to build on manual dispatch (tag-push always builds all)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - amd64
+          - arm64
 
 permissions:
   contents: read
@@ -44,6 +58,8 @@ permissions:
 
 jobs:
   build-arm64:
+    # Skip on a manual dispatch that targets only amd64 (see target_arch).
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target_arch == 'all' || inputs.target_arch == 'arm64' }}
     # Re-enabled 2026-07-11 (campaign 019f505f): arm64 targets are back in scope,
     # and the arm64-uefi + rpi4 images now bake the boot-image git_sha for drift
     # visibility. Runs on the same push-tags / workflow_dispatch trigger as the
@@ -622,6 +638,8 @@ jobs:
   # to `build` (arm64) — distinct artifact + platform, no shared state.
   # ───────────────────────────────────────────────────────────────────────
   build-amd64-uefi:
+    # Skip on a manual dispatch that targets only arm64 (see target_arch).
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target_arch == 'all' || inputs.target_arch == 'amd64' }}
     runs-on: ubuntu-24.04
     env:
       PLATFORM_URL: ${{ inputs.platform_url || 'https://platform.example.com' }}
