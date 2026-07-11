@@ -913,16 +913,19 @@ jobs:
           # Carry the standalone UKI artifact ref+digest (inc 2) when present so
           # the platform records them for the in-place upgrade path.
           uki="initramfs/build/amd64/disk-image-amd64-uefi/powernode-amd64-uefi.uki"
-          uki_ref=""; uki_sha=""
+          uki_ref=""; uki_sha=""; uki_bundle=""
           if [ -f "$uki" ]; then
             uki_sha="$(sha256sum "$uki" | awk '{print $1}')"
             uki_ref="$ORAS_REGISTRY/powernode/disk-images/$platform-uki:${{ github.sha }}"
+            # base64 the cosign bundle so the platform can hand it to the agent
+            # inline for verification (small — a few KB).
+            [ -f "$uki.cosign-bundle" ] && uki_bundle="$(base64 -w0 "$uki.cosign-bundle")"
           fi
           body=$(jq -nc --arg p "$platform" --arg ref "$ref" --arg sha "$sha" \
             --arg gs "${{ github.sha }}" --argjson sz "$size" --arg arch "amd64" \
-            --arg uref "$uki_ref" --arg usha "$uki_sha" \
+            --arg uref "$uki_ref" --arg usha "$uki_sha" --arg ub "$uki_bundle" \
             '{platform_name:$p, oci_ref:$ref, sha256:$sha, size_bytes:$sz, git_sha:$gs, arch:$arch}
-             + (if $uref != "" then {uki_oci_ref:$uref, uki_sha256:$usha} else {} end)')
+             + (if $uref != "" then {uki_oci_ref:$uref, uki_sha256:$usha, uki_cosign_bundle:$ub} else {} end)')
           sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$POWERNODE_DISK_IMAGE_WEBHOOK_SECRET" -hex | awk '{print $2}')
           echo "→ Notifying platform: $POWERNODE_DISK_IMAGE_WEBHOOK_URL"
           curl -fsSL -X POST "$POWERNODE_DISK_IMAGE_WEBHOOK_URL" \

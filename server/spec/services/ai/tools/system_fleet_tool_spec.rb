@@ -1018,6 +1018,35 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(r[:error]).to include("not configured")
     end
 
+    it "errors when platform has no promoted UKI cosign signature bundle" do
+      target_sha = "target-no-bundle"
+      platform_record.update!(
+        disk_image_git_sha: target_sha,
+        disk_image_oci_ref: "ref-xyz",
+        disk_image_uki_oci_ref: "uki-ref",
+        disk_image_uki_sha256: "sha256:uki",
+        cosign_identity_regexp: "identity-pattern",
+        cosign_issuer_regexp: "issuer-pattern"
+      )
+      # Create a publication but without uki_cosign_bundle (nil)
+      System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: target_sha,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'b' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: nil
+      )
+
+      r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("no UKI cosign signature bundle")
+      expect(System::Task.where(operable: instance, command: "upgrade_boot_image").count).to eq(0)
+    end
+
     it "creates a pending upgrade_boot_image task when all preconditions are met (happy path)" do
       target_sha = "target-sha-xyz"
       oci_ref = "ghcr.io/nodealchemy/system/boot-uki:0.1.0"
@@ -1025,6 +1054,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       uki_sha256 = "sha256:uki_abc"
       identity_regexp = "https://github.com/NodeAlchemy/powernode"
       issuer_regexp = "https://token.actions.githubusercontent.com"
+      cosign_bundle_b64 = "LS0tLS1CRUdJTiBQR1AgU0lHTkVEIE1FU1NBR0UtLS0tLQo="  # base64 encoded
 
       platform_record.update!(
         disk_image_git_sha: target_sha,
@@ -1033,6 +1063,18 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_uki_sha256: uki_sha256,
         cosign_identity_regexp: identity_regexp,
         cosign_issuer_regexp: issuer_regexp
+      )
+
+      # Create the promoted publication with cosign bundle
+      pub = System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: target_sha,
+        arch: "amd64",
+        oci_ref: oci_ref,
+        sha256: "#{'a' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: cosign_bundle_b64
       )
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id)
@@ -1055,6 +1097,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       expect(task.options["uki_sha256"]).to eq(uki_sha256)
       expect(task.options["cosign_identity_regexp"]).to eq(identity_regexp)
       expect(task.options["cosign_issuer_regexp"]).to eq(issuer_regexp)
+      expect(task.options["cosign_bundle_b64"]).to eq(cosign_bundle_b64)
       expect(task.options["download_path"]).to eq("/api/v1/system/node_api/boot_image/download")
     end
 
@@ -1067,6 +1110,17 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         disk_image_uki_sha256: "sha256:uki",
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
+      )
+      # Create the published artifact with bundle (needed to pass all guards)
+      System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: matching_sha,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'c' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
       )
       instance.update!(booted_image_git_sha: matching_sha)
 
@@ -1088,6 +1142,17 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
       )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        node_platform: platform_record,
+        git_sha: matching_sha,
+        account: account,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'d' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
+      )
       instance.update!(booted_image_git_sha: matching_sha)
 
       r = call_with_user("system_upgrade_boot_image", instance_id: instance.id, force: true)
@@ -1099,13 +1164,25 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "returns DEDUP when an in-flight pending task already exists" do
+      target_sha = "target-sha"
       platform_record.update!(
-        disk_image_git_sha: "target-sha",
+        disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki",
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
+      )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        node_platform: platform_record,
+        git_sha: target_sha,
+        account: account,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'e' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
         account: account,
@@ -1125,13 +1202,25 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "returns DEDUP when an in-flight scheduled task already exists" do
+      target_sha = "target-sha"
       platform_record.update!(
-        disk_image_git_sha: "target-sha",
+        disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki",
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
+      )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        node_platform: platform_record,
+        git_sha: target_sha,
+        account: account,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'f' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
         account: account,
@@ -1149,13 +1238,25 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "returns DEDUP when an in-flight running task already exists" do
+      target_sha = "target-sha"
       platform_record.update!(
-        disk_image_git_sha: "target-sha",
+        disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki",
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
+      )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        node_platform: platform_record,
+        git_sha: target_sha,
+        account: account,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'0' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
         account: account,
@@ -1173,13 +1274,25 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "creates a new task when a completed upgrade_boot_image task exists (dedup only in-flight)" do
+      target_sha = "target-sha"
       platform_record.update!(
-        disk_image_git_sha: "target-sha",
+        disk_image_git_sha: target_sha,
         disk_image_oci_ref: "ref",
         disk_image_uki_oci_ref: "uki-ref",
         disk_image_uki_sha256: "sha256:uki",
         cosign_identity_regexp: "identity",
         cosign_issuer_regexp: "issuer"
+      )
+      # Create the published artifact with bundle
+      System::DiskImagePublication.create!(
+        account: account,
+        node_platform: platform_record,
+        git_sha: target_sha,
+        arch: "amd64",
+        oci_ref: "test-oci-ref",
+        sha256: "#{'1' * 64}",
+        size_bytes: 1024,
+        uki_cosign_bundle: "base64_bundle_data"
       )
       existing_task = System::Task.create!(
         account: account,

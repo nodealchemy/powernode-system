@@ -88,6 +88,7 @@ module Api
               # inc 2). Absent from pre-inc-2 CI payloads → nil (allow_nil).
               uki_oci_ref:   payload["uki_oci_ref"],
               uki_sha256:    payload["uki_sha256"],
+              uki_cosign_bundle: payload["uki_cosign_bundle"],
               firmware_ref: payload["firmware_ref"],
               arch:          payload["arch"] || "arm64",
               payload:       payload,

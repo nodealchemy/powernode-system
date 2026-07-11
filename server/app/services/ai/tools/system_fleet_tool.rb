@@ -1456,6 +1456,17 @@ module Ai
             "the node could not verify the pulled UKI"
           )
         end
+        # The agent verifies the UKI's cosign signature before writing it, so it
+        # needs the signature bundle. Sourced from the promoted publication and
+        # passed inline (small). Fail closed if it's missing — no unverifiable
+        # boot image reaches a node.
+        promoted_pub = platform.disk_image_publications.find_by(git_sha: target_sha)
+        cosign_bundle = promoted_pub&.uki_cosign_bundle
+        if cosign_bundle.blank?
+          return error_result(
+            "Promoted image has no UKI cosign signature bundle — cannot dispatch an unverifiable boot-image upgrade"
+          )
+        end
 
         force = params[:force].to_s == "true" || params[:force] == true
         if !force && instance.booted_image_git_sha.present? && instance.booted_image_git_sha == target_sha
@@ -1483,6 +1494,7 @@ module Ai
             "uki_sha256"             => platform.disk_image_uki_sha256,
             "cosign_identity_regexp" => platform.cosign_identity_regexp,
             "cosign_issuer_regexp"   => platform.cosign_issuer_regexp,
+            "cosign_bundle_b64"      => cosign_bundle,
             "download_path"          => "/api/v1/system/node_api/boot_image/download",
             "source"                 => "mcp_upgrade_boot_image",
             "triggered_by_user_id"   => @user&.id,
