@@ -38,6 +38,14 @@ type HeartbeatPayload struct {
 	// internal/runtime/capabilities.go) and is stable across reboots
 	// until the kernel changes.
 	Capabilities *NodeCapabilities `json:"node_capabilities,omitempty"`
+	// BootedImageGitSHA is the git_sha baked into the disk image this node
+	// booted from (campaign 019f505f). Read once at service startup from the UKI
+	// kernel cmdline (powernode.image_git_sha=); stable for the life of the boot,
+	// so it's snapshotted rather than re-read each tick. The platform compares it
+	// against the promoted image's git_sha to detect boot-image drift. Empty
+	// (omitted) on netboot / non-UKI / pre-019f505f images that don't bake it —
+	// the server reads that as "unknown", never drift.
+	BootedImageGitSHA string `json:"booted_image_git_sha,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

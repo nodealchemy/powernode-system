@@ -44,22 +44,23 @@ func x509ParseCertificate(der []byte) (*x509.Certificate, error) {
 
 // Config bundles the parameters that drive a long-lived service run.
 type Config struct {
-	PlatformURL       string
-	AgentVersion      string
-	HeartbeatInterval time.Duration
-	PKIDir            string  // defaults to enroll.ResolveDefaultPKIDir()
-	StatePath         string  // defaults to mount.StatePath
-	A2AListenAddr     string  // agent-to-agent MCP server listen addr (empty = disabled)
-	A2AInferenceEndpoint string // local inference runtime (ollama) for the A2A inference.* skills (empty = no inference skills)
-	IsolationRuntimes []string // isolation runtimes to provision on the docker daemon (e.g. ["gvisor"]) — substrate L0
-	OnError           func(string, error)
+	PlatformURL          string
+	AgentVersion         string
+	HeartbeatInterval    time.Duration
+	PKIDir               string   // defaults to enroll.ResolveDefaultPKIDir()
+	StatePath            string   // defaults to mount.StatePath
+	A2AListenAddr        string   // agent-to-agent MCP server listen addr (empty = disabled)
+	A2AInferenceEndpoint string   // local inference runtime (ollama) for the A2A inference.* skills (empty = no inference skills)
+	IsolationRuntimes    []string // isolation runtimes to provision on the docker daemon (e.g. ["gvisor"]) — substrate L0
+	OnError              func(string, error)
 }
 
 // Service is the top-level long-running agent loop. Run blocks until
 // ctx is canceled, then returns the first error any goroutine surfaced.
 type Service struct {
-	cfg          Config
-	capabilities *NodeCapabilities
+	cfg               Config
+	capabilities      *NodeCapabilities
+	bootedImageGitSHA string
 }
 
 func New(cfg Config) *Service {
@@ -77,8 +78,14 @@ func New(cfg Config) *Service {
 	}
 	// Detect kernel capabilities ONCE at construction. Stable across
 	// the agent's lifetime — kernel features don't change without
-	// a reboot, which restarts the agent process anyway.
-	return &Service{cfg: cfg, capabilities: DetectCapabilities()}
+	// a reboot, which restarts the agent process anyway. The booted disk
+	// image's git_sha (campaign 019f505f) is likewise fixed for the life of
+	// the boot, so it's read once here rather than per heartbeat.
+	return &Service{
+		cfg:               cfg,
+		capabilities:      DetectCapabilities(),
+		bootedImageGitSHA: identity.BootedImageGitSHA(),
+	}
 }
 
 // Run starts the service goroutines and blocks until ctx is canceled.
@@ -481,6 +488,8 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		// Stable across heartbeats — kernel features don't change
 		// without a reboot, which restarts the agent.
 		Capabilities: s.capabilities,
+		// Baked-in disk-image git_sha, read once at construction.
+		BootedImageGitSHA: s.bootedImageGitSHA,
 	}
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
