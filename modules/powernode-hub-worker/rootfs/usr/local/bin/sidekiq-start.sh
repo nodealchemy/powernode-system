@@ -33,13 +33,9 @@ set -a
 . "$SECRETS_FILE"
 set +a
 
-# Worker identity + backend target. config/application.rb#setup_service_authentication
-# exit(1)s in production if WORKER_ID / JWT_SECRET_KEY / BACKEND_API_URL / REDIS_URL
-# are blank. JWT_SECRET_KEY + REDIS_URL come from the shared secrets file; supply the
-# other two here. The worker reaches the co-located hub-backend over loopback (both
-# in the same all-in-one instance) authenticating with the shared HS256 JWT secret.
-export WORKER_ID="${WORKER_ID:-powernode-hub-worker}"
-export BACKEND_API_URL="${BACKEND_API_URL:-http://localhost:3000}"
+# WORKER_ID / BACKEND_API_URL / WORKER_TLS_VERIFY / WORKER_PKI_DIR / REDIS_URL are
+# supplied by the module manifest env (systemd Environment=); JWT_SECRET_KEY +
+# encryption keys come from the shared secrets file sourced above.
 
 cd "$WORKER_DIR"
 

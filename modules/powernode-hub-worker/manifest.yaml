@@ -61,6 +61,19 @@ services:
       # worker just reads node.crt + node.key + ca-bundle.crt at request
       # time (Faraday re-reads on each ssl_options call).
       WORKER_PKI_DIR: "/persist/var/lib/powernode/pki"
+      # This all-in-one hub's Traefik serves a SELF-SIGNED cert (no public CA),
+      # so the client side has nothing to chain the server cert to and default
+      # verification fails ("certificate verify failed (self-signed certificate)"
+      # -> BackendApiClient circuit breaker opens). Skip server-cert verification:
+      # the call is loopback (worker + Traefik + Rails co-resident, no MITM risk),
+      # and the worker STILL presents its client cert which Traefik verifies.
+      # Multi-host prod (real platform cert) overrides this to "true" via the
+      # config-variety child module, same seam as BACKEND_API_URL.
+      WORKER_TLS_VERIFY: "false"
+      # JWT-mode identity (config/application.rb#setup_service_authentication
+      # exit(1)s in production if blank). mTLS internal calls identify via the
+      # client-cert CN (= NodeInstance id); this is the JWT-side identifier.
+      WORKER_ID: "powernode-hub-worker"
     capabilities: []
     # Cross-module ordering (rails + redis must be up first) lives in
     # the top-level dependencies.requires above. Service-level
