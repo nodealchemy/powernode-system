@@ -362,7 +362,7 @@ jobs:
           # keyless signing — tracked as a future goal.
           for img in disk-image-rpi4/powernode-rpi4.img disk-image-arm64-uefi/powernode-arm64-uefi.img; do
             if [ -f "$img" ]; then
-              cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "${img}.cosign-bundle" "$img" \
+              cosign sign-blob --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY --bundle "${img}.cosign-bundle" "$img" \
                 || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
             fi
           done
@@ -474,7 +474,7 @@ jobs:
             #    this runner has no ambient OIDC token). Signing now works
             #    reliably, so a failure is a real problem — an unsigned image
             #    must not publish.
-            cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
+            cosign sign-blob --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
               || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
 
             # 2. Attest payload (signature on the publication metadata —
@@ -875,7 +875,7 @@ jobs:
           # signing now works reliably, and the platform's OrasDiskImageAdapter
           # fails ingest closed on a missing attestation-bundle anyway, so a
           # WARN-and-continue here would only defer the same failure to ingest.
-          cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
+          cosign sign-blob --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY --bundle "$img.cosign-bundle" "$img" \
             || { echo "::error::cosign sign-blob failed for $img"; exit 1; }
           jq -nc --arg p "$platform" --arg sha "$sha" --argjson sz "$size" \
             --arg gs "${{ github.sha }}" --arg ref "$ref" --arg arch "amd64" \
@@ -904,7 +904,7 @@ jobs:
           if [ -f "$uki" ]; then
             uki_sha="$(sha256sum "$uki" | awk '{print $1}')"
             uki_ref="$ORAS_REGISTRY/powernode/disk-images/$platform-uki:${{ github.sha }}"
-            cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY --bundle "$uki.cosign-bundle" "$uki" \
+            cosign sign-blob --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY --bundle "$uki.cosign-bundle" "$uki" \
               || { echo "::error::cosign sign-blob failed for $uki"; exit 1; }
             uki_push=("$uki_ref" "--artifact-type" "application/vnd.powernode.uki.v1" "$uki:application/vnd.powernode.uki.v1")
             [ -f "$uki.cosign-bundle" ] && uki_push+=("$uki.cosign-bundle:application/vnd.dev.cosign.bundle.v1+json")

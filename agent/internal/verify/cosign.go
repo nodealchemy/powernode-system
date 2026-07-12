@@ -72,7 +72,15 @@ func (v *CosignVerifier) VerifyBlob(ctx context.Context, blobPath, bundlePath st
 	}
 	var args []string
 	if v.KeyPath != "" {
-		args = []string{"verify-blob", "--key", v.KeyPath, "--bundle", bundlePath, blobPath}
+		// Static-key verification. --insecure-ignore-tlog=true skips the Sigstore
+		// transparency-log (Rekor) check, which cosign v3 otherwise performs
+		// ONLINE against tuf-repo-cdn.sigstore.dev — unreachable from offline
+		// fleet nodes, so verify fails with a hard i/o timeout on every node.
+		// With a static --key the signature IS the trust anchor; the tlog is
+		// supplementary provenance, not required for trust. (Pair with the CI
+		// signing `--tlog-upload=false` so future bundles carry no Rekor entry.)
+		args = []string{"verify-blob", "--key", v.KeyPath, "--bundle", bundlePath,
+			"--insecure-ignore-tlog=true", blobPath}
 	} else {
 		if v.IdentityRegexp == "" || v.IssuerRegexp == "" {
 			return errors.New("CosignVerifier: no KeyPath and no identity/issuer pins — refusing to verify without a trust anchor")

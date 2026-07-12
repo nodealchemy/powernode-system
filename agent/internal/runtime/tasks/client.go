@@ -112,7 +112,10 @@ func (c *Client) Complete(id string, result Result) error {
 // transitions the task to failed and surfaces the message in the
 // operator UI.
 func (c *Client) Fail(id, message string) error {
-	body, err := json.Marshal(map[string]any{"error": message})
+	// The platform's node_api status controller reads params[:error_message];
+	// send that key (plus legacy :error) so the REAL failure reason surfaces in
+	// the operator UI + the task record, instead of a generic "Failed by instance".
+	body, err := json.Marshal(map[string]any{"error_message": message, "error": message})
 	if err != nil {
 		return err
 	}

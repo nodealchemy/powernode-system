@@ -75,7 +75,17 @@ module System
         if target_sha.blank? || platform.disk_image_oci_ref.blank?
           return err("Platform has no promoted disk image to upgrade to")
         end
-        if platform.disk_image_uki_oci_ref.blank?
+        # Source the UKI pins + cosign bundle from the promoted PUBLICATION ROW
+        # (single source of truth), NOT the NodePlatform.disk_image_uki_* columns:
+        # a partial-field promote writer can leave those columns stale relative to
+        # disk_image_git_sha, smearing a mismatched (uki, bundle) pair into the
+        # task → cosign verify fails on-node (campaign 019f505f). Keying off the
+        # publication matching target_sha keeps the dispatch self-consistent.
+        promoted_pub = platform.disk_image_publications.find_by(git_sha: target_sha)
+        if promoted_pub.nil?
+          return err("Platform pointer inconsistent: no published record for promoted git_sha #{target_sha}")
+        end
+        if promoted_pub.uki_oci_ref.blank? || promoted_pub.uki_sha256.blank?
           return err("Promoted image has no standalone UKI artifact (built before the in-place-upgrade CI) — " \
                      "republish/promote a newer image to enable boot-image upgrades")
         end
@@ -84,8 +94,7 @@ module System
           return err("Refusing boot-image upgrade: the platform cosign public key " \
                      "(POWERNODE_COSIGN_PUBLIC_KEY / _FILE) is not configured — the node could not verify the pulled UKI")
         end
-        promoted_pub = platform.disk_image_publications.find_by(git_sha: target_sha)
-        cosign_bundle = promoted_pub&.uki_cosign_bundle
+        cosign_bundle = promoted_pub.uki_cosign_bundle
         if cosign_bundle.blank?
           return err("Promoted image has no UKI cosign signature bundle — cannot dispatch an unverifiable boot-image upgrade")
         end
@@ -106,8 +115,8 @@ module System
           initiated_by: @initiated_by,
           options: {
             "target_git_sha"       => target_sha,
-            "uki_oci_ref"          => platform.disk_image_uki_oci_ref,
-            "uki_sha256"           => platform.disk_image_uki_sha256,
+            "uki_oci_ref"          => promoted_pub.uki_oci_ref,
+            "uki_sha256"           => promoted_pub.uki_sha256,
             "cosign_public_key"    => cosign_pubkey,
             "cosign_bundle_b64"    => cosign_bundle,
             "download_path"        => DOWNLOAD_PATH,

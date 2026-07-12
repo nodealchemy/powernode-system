@@ -3387,12 +3387,16 @@ module Ai
         end
 
         platform = publication.node_platform
-        platform.update!(
-          disk_image_oci_ref: publication.oci_ref,
-          disk_image_git_sha: publication.git_sha,
-          disk_image_publication_status: "published",
-          disk_image_publication_error: nil
+        # Route through the executor so ALL image pointers update atomically +
+        # consistently (file_object, sha256, size_bytes, oci_ref, git_sha,
+        # uki_oci_ref, uki_sha256). A partial update here (only oci_ref+git_sha)
+        # leaves the uki_* pointers stale relative to git_sha, which silently
+        # breaks in-place boot-image upgrades: the node downloads one image's UKI
+        # but cosign-verifies it against another image's bundle (campaign 019f505f).
+        ::System::Executors::DiskImage::PromotePublication.execute(
+          { "publication_id" => publication.id }, deferred_operation: nil
         )
+        platform.reload
 
         success_result(
           set_default: true,
