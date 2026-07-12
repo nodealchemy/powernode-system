@@ -33,6 +33,14 @@ set -a
 . "$SECRETS_FILE"
 set +a
 
+# Worker identity + backend target. config/application.rb#setup_service_authentication
+# exit(1)s in production if WORKER_ID / JWT_SECRET_KEY / BACKEND_API_URL / REDIS_URL
+# are blank. JWT_SECRET_KEY + REDIS_URL come from the shared secrets file; supply the
+# other two here. The worker reaches the co-located hub-backend over loopback (both
+# in the same all-in-one instance) authenticating with the shared HS256 JWT secret.
+export WORKER_ID="${WORKER_ID:-powernode-hub-worker}"
+export BACKEND_API_URL="${BACKEND_API_URL:-http://localhost:3000}"
+
 cd "$WORKER_DIR"
 
 # Worker's own bundle (independent from backend's), installed offline
@@ -48,4 +56,8 @@ if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
 fi
 
 echo "[sidekiq-start] Starting sidekiq"
-exec /usr/local/bin/bundle exec sidekiq -C config/sidekiq.yml
+# -r ./config/application.rb is REQUIRED: without it, Sidekiq's CLI assumes a Rails
+# app and does `require 'rails'`, which crash-loops the lean worker (its Gemfile has
+# no `rails` gem — only sidekiq/activesupport/actionmailer/etc.). application.rb is
+# the worker's own boot file (loads sidekiq + sidekiq-scheduler, registers schedules).
+exec /usr/local/bin/bundle exec sidekiq -r ./config/application.rb -C config/sidekiq.yml
