@@ -93,8 +93,29 @@ SECRET_KEY_BASE=$SKB
 ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$ARP
 ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$ARD
 ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$ARS
-DATABASE_URL=postgres://powernode@${DB_HOST}:5432/powernode_production
+# DB connection is host-based (DATABASE_HOST), NOT a single DATABASE_URL. This
+# app is Rails-8 multi-database: config/database.yml declares production
+# primary/cache/queue/cable connections (solid_cache/solid_queue/solid_cable all
+# on the same powernode_production DB, distinguished by connects_to role). A
+# single DATABASE_URL collapses Rails to one unnamed "production" config, so the
+# named :queue connection disappears and SolidQueue::Record's connects_to fails
+# at eager_load — puma (config.eager_load=true) then cannot boot. The working
+# platform runs with DATABASE_URL unset for exactly this reason; mirror it here.
+# username=powernode is hard-set in each production config; password is unset →
+# postgres trust auth (initdb default on this appliance).
+DATABASE_HOST=${DB_HOST}
 REDIS_URL=redis://${REDIS_HOST}:6379/0
+# Backends: this all-in-one hub does NOT ship the solid_cache/solid_queue
+# tables (their schemas live in db/{cache,queue}_schema.rb and are never loaded
+# by db:migrate). The defaults (solid_cache_store / solid_queue) would then hit
+# a missing table: solid_cache writes during account+role creation aborted the
+# first-admin bootstrap transaction, and solid_queue enqueues in db:seed would
+# fail the same way. Use table-free, in-bundle Rails cores instead — memory
+# cache + the async ActiveJob adapter. (The server does NOT bundle sidekiq;
+# real background work is dispatched to the hub-worker over the HTTP API, not
+# via this in-process adapter, so async is only a safe fallback for stray jobs.)
+CACHE_STORE=memory_store
+QUEUE_ADAPTER=async
 # JWT signing for the platform's user-auth tokens. config/initializers/jwt.rb
 # raises if JWT_SECRET_KEY is unset in production, and production defaults to
 # RS256 (an RSA keypair, awkward as a multi-line PEM in this env file). A
@@ -111,6 +132,20 @@ set -a
 set +a
 
 cd "$RAILS_DIR"
+
+# --- Render config/database.yml from the shipped template ---
+# database.yml is gitignored, so the module ships only database.yml.example.
+# Rails needs the FILE (not just DATABASE_URL) for its multi-database config —
+# the production primary/cache/queue/cable connections that solid_cache /
+# solid_queue / solid_cable resolve via connects_to. Without it, eager_load
+# (config.eager_load=true in production) fails on SolidQueue::Record and puma
+# cannot boot. The template renders entirely from ENV (DATABASE_HOST, trust
+# auth), so a straight copy is the whole config. The overlay upper is ephemeral
+# on pivot cells, so regenerate whenever it is missing.
+if [ ! -f config/database.yml ]; then
+  cp config/database.yml.example config/database.yml
+  echo "[rails-start] Rendered config/database.yml from template"
+fi
 
 # --- Wait for postgres (sibling module powernode-postgres) ---
 echo "[rails-start] Waiting for postgres on ${DB_HOST}:5432..."
