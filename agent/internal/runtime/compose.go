@@ -14,6 +14,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
@@ -117,6 +118,27 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		}
 		if _, err := lifecycle.AttachServicesNative(ctx, r.cfg.MountRunner, mod.ID, mf.Services, sysroot); err != nil {
 			r.cfg.OnError("compose:attach_native", fmt.Errorf("module %s: %w", mod.ID, err))
+		}
+		// Grant the module's declared capabilities into each unit's AMBIENT set,
+		// written INTO the union at sysroot (systemd-in-the-union reads it after
+		// switch_root — no daemon-reload needed, PID 1 starts fresh). Unlike the
+		// cloud_init attachModule path this is grant-only: it does NOT reset the
+		// bounding set (see WriteAmbientCapabilityDropInAt). Without this a
+		// non-root User= service can't use a permitted-but-not-ambient cap —
+		// e.g. traefik (User=traefik) failed "listen tcp :80: bind: permission
+		// denied" post-pivot because CapabilityBoundingSet permitted
+		// CAP_NET_BIND_SERVICE but AmbientCapabilities was empty. Privileged
+		// modules already run with full caps; skip (empty allow list is a no-op
+		// anyway). Failures are non-fatal — the unit still boots with defaults.
+		policy := buildPolicy(mf)
+		if !policy.Privileged && len(policy.Capabilities) > 0 {
+			for _, svc := range mf.Services {
+				unit := lifecycle.UnitName(mod.ID, svc.Name)
+				if err := security.WriteAmbientCapabilityDropInAt(sysroot, unit, policy.Capabilities); err != nil {
+					r.cfg.OnError("compose:ambient_cap_dropin",
+						fmt.Errorf("module %s unit %s: %w", mod.ID, unit, err))
+				}
+			}
 		}
 	}
 
