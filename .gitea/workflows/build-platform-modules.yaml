@@ -933,6 +933,27 @@ jobs:
                 mkdir -p /tmp/fat/sbin
                 ln -sf /usr/lib/systemd/systemd /tmp/fat/sbin/init
               fi
+              # Stage cosign (checksum-verified) → /usr/bin/cosign for the
+              # on-node upgrade_boot_image handler's UKI signature verification
+              # (campaign 019f505f inc2). base-os's file_spec includes
+              # /usr/bin/** so Stage-2's carve keeps it. The Makefile's
+              # stage-cosign target was orphaned from CI (this workflow
+              # cross-compiles the agent directly and never runs `make`), so
+              # cosign never shipped and the in-place upgrade failed closed on
+              # every node. Pinned version + BOTH checksums mirror
+              # modules/base-os-ubuntu-noble/Makefile — bump them together.
+              COSIGN_VERSION=3.0.6
+              case "${ARCH:-amd64}" in
+                amd64) COSIGN_SHA=c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74 ;;
+                arm64) COSIGN_SHA=bedac92e8c3729864e13d4a17048007cfafa79d5deca993a43a90ffe018ef2b8 ;;
+                *) echo "[stage-1.5] FATAL: no pinned cosign sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+              esac
+              mkdir -p /tmp/fat/usr/bin
+              curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${ARCH:-amd64}" -o /tmp/fat/usr/bin/cosign
+              got=$(sha256sum /tmp/fat/usr/bin/cosign | awk '{print $1}')
+              [ "$got" = "$COSIGN_SHA" ] || { echo "[stage-1.5] FATAL: cosign sha256 mismatch (want $COSIGN_SHA got $got)"; rm -f /tmp/fat/usr/bin/cosign; exit 1; }
+              chmod +x /tmp/fat/usr/bin/cosign
+              echo "[stage-1.5] staged cosign v${COSIGN_VERSION} ${ARCH:-amd64} → /usr/bin/cosign"
               ;;
             claude-tmux)
               # The Claude Code CLI (@anthropic-ai/claude-code) is an npm
