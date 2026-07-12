@@ -306,7 +306,8 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
-              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
+              openssh-server openssh-client nftables kmod
             for t in sfdisk resize2fs partx blkid blockdev udevadm; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — persist bounded-grow needs it in the initramfs"; exit 1; }; done
             cd /work && ./build.sh --arch arm64 --variants "kernel-initrd,disk-image-arm64-uefi"
           '
@@ -756,7 +757,8 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
-              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
+              openssh-server openssh-client nftables kmod
             # Fail loud (in-container) if any persist grow tool is absent — a
             # non-fatal dracut-install warning must not ship a broken initramfs.
             for t in sfdisk resize2fs partx blkid blockdev udevadm; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — persist bounded-grow needs it in the initramfs"; exit 1; }; done
