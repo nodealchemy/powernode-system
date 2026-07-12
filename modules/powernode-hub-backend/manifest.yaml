@@ -41,11 +41,14 @@ dependencies:
 services:
   - name: rails
     # Wrapper handles first-boot bootstrap: generates Rails secrets
-    # (secret_key_base + AR encryption keys + admin password),
-    # waits for postgres, creates the powernode role + database,
-    # vendors gems via bundle install, runs db:migrate + db:seed,
-    # then execs puma. Admin password persists at /etc/powernode/
-    # admin-credentials.json (mode 0600) for operator retrieval.
+    # (secret_key_base + AR encryption keys), waits for postgres,
+    # creates the powernode role + database, vendors gems via bundle
+    # install, runs db:migrate + first-admin bootstrap
+    # (bootstrap-first-admin.rb) + db:seed, then execs puma. Durable
+    # state (secrets env, admin credentials, init marker) lives under
+    # /persist/powernode-rails when /persist is mounted; /etc/powernode
+    # keeps symlinks. Admin password persists at admin-credentials.json
+    # (mode 0600) for operator retrieval.
     start_command: "/usr/local/bin/rails-start.sh"
     restart_policy: always
     user: root
