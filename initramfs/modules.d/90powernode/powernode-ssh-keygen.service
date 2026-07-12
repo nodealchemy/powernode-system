@@ -9,7 +9,12 @@ After=basic.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/usr/bin/mkdir -p /etc/ssh
+# No mkdir ExecStartPre: /etc/ssh already exists (module-setup.sh inst_simple's
+# sshd_config into it), and /usr/bin/mkdir is not staged into the dracut image —
+# so the ExecStartPre exec'd with status=203/EXEC, failing the unit and leaving a
+# serialized "not-found failed" ghost that survives switch_root into the module
+# union (where this initramfs-only unit no longer exists). ssh-keygen -A creates
+# any missing key files in the already-present /etc/ssh.
 ExecStart=/usr/bin/ssh-keygen -A
 StandardOutput=journal+console
 StandardError=journal+console

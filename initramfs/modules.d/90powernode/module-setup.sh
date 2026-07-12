@@ -102,7 +102,10 @@ install() {
     # platform via /node_api/config/authorized_keys after enrollment and writes
     # them to /root/.ssh/authorized_keys.
     # ─────────────────────────────────────────────────────────────────────
-    inst_multiple sshd ssh-keygen
+    # mkdir: some units (and ssh-keygen helpers) shell out to it; without it in
+    # the dracut image an ExecStartPre=/usr/bin/mkdir 203/EXEC'd (see
+    # powernode-ssh-keygen.service, which no longer relies on it).
+    inst_multiple sshd ssh-keygen mkdir
 
     # Minimal sshd config: pubkey-only, no PAM (avoids PAM module deps).
     inst_simple "${moddir}/sshd_config" /etc/ssh/sshd_config
