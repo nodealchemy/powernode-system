@@ -382,12 +382,25 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// Skipped when no modules are attached — the sysroot has nothing
 	// to union and overlay's lowerdir requires at least one entry.
 	if !r.cfg.DryRun && len(current.AttachedModules) > 0 {
-		overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
-		if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
-			r.cfg.OnError("reconciler:union_mount", err)
-			current.UnionMounted = false
-		} else {
+		if lifecycle.PivotAwareRootMode() == lifecycle.RootModeNative {
+			// Pivot-booted node: / is ALREADY the composed module union
+			// (switch_root'd into it at boot). Re-mounting a second union at
+			// /sysroot here creates two overlays sharing this live root's
+			// upperdir+workdir — the kernel's "upperdir/workdir is in-use as
+			// upperdir/workdir of another mount … undefined behavior" warning
+			// (identity writes land in one mount, services read through the
+			// other). A post-pivot stack change can't extend /'s lowerdir
+			// without a reboot (reboot_required semantics), so the shadow
+			// remount is pure downside. Treat / as the mounted union.
 			current.UnionMounted = true
+		} else {
+			overlay := &mount.Overlay{Layout: r.cfg.Layout, Runner: r.cfg.MountRunner}
+			if err := overlay.MountUnion(ctx, mount.ModuleStack(current.AttachedModules)); err != nil {
+				r.cfg.OnError("reconciler:union_mount", err)
+				current.UnionMounted = false
+			} else {
+				current.UnionMounted = true
+			}
 		}
 	}
 
