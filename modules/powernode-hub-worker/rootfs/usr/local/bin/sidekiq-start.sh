@@ -42,10 +42,10 @@ cd "$WORKER_DIR"
 # cache and compiles native extensions on-instance against runtime-ruby.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
   echo "[sidekiq-start] Installing worker gems from vendored cache (offline)"
-  /usr/bin/bundle config set --local path 'vendor/bundle'
-  /usr/bin/bundle config set --local without 'development:test'
-  /usr/bin/bundle install --local --jobs 4
+  /usr/local/bin/bundle config set --local path 'vendor/bundle'
+  /usr/local/bin/bundle config set --local without 'development:test'
+  /usr/local/bin/bundle install --local --jobs 4
 fi
 
 echo "[sidekiq-start] Starting sidekiq"
-exec /usr/bin/bundle exec sidekiq -C config/sidekiq.yml
+exec /usr/local/bin/bundle exec sidekiq -C config/sidekiq.yml

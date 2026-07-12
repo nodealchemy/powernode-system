@@ -21,6 +21,12 @@ file_spec:
   - "/lib/**"
   - "/sbin/**"
   - "/bin/**"
+  # dbus ships its system-bus config under /usr/share/dbus-1 (system.conf +
+  # system.d/**). Without it dbus-daemon exits 1 ("Failed to open
+  # /usr/share/dbus-1/system.conf"), cascading into hostnamectl/logind failures
+  # post-pivot. The carve omitted /usr/share entirely; include the dbus tree
+  # specifically (a blanket /usr/share/** would balloon the erofs blob).
+  - "/usr/share/dbus-1/**"
 
 # Sensitive paths that NO higher-priority module may override at union mount.
 # Build pipeline folds these into every higher neighbor's effective_mask, so

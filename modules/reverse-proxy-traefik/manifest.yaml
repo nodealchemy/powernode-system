@@ -63,7 +63,7 @@ security:
     - CAP_NET_BIND_SERVICE
   egress_allow: []
   privileged: false
-  user_namespace: true
+  user_namespace: false
 
 build:
   # The traefik binary is fetched + sha256-verified from the upstream GitHub

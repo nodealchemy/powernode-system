@@ -77,7 +77,7 @@ security:
   capabilities: []
   egress_allow: []
   privileged: false
-  user_namespace: true
+  user_namespace: false
 
 build:
   apt_snapshot: "20260415T000000Z"

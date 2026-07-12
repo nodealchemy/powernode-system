@@ -123,9 +123,9 @@ fi
 # matches and --local resolves cleanly without --deployment's fatal-on-drift.
 if [ ! -d vendor/bundle ] || [ -z "$(ls -A vendor/bundle 2>/dev/null)" ]; then
   echo "[rails-start] Installing gems from vendored cache (offline)"
-  /usr/bin/bundle config set --local path 'vendor/bundle'
-  /usr/bin/bundle config set --local without 'development:test'
-  /usr/bin/bundle install --local --jobs 4
+  /usr/local/bin/bundle config set --local path 'vendor/bundle'
+  /usr/local/bin/bundle config set --local without 'development:test'
+  /usr/local/bin/bundle install --local --jobs 4
 fi
 
 # --- Migrate + seed (idempotent) ---
@@ -133,13 +133,13 @@ MIGRATED_MARKER=/var/lib/powernode-rails/.db-initialized
 mkdir -p /var/lib/powernode-rails
 if [ ! -f "$MIGRATED_MARKER" ]; then
   echo "[rails-start] db:migrate + db:seed (first boot)"
-  /usr/bin/bundle exec rails db:migrate
-  /usr/bin/bundle exec rails db:seed
+  /usr/local/bin/bundle exec rails db:migrate
+  /usr/local/bin/bundle exec rails db:seed
   touch "$MIGRATED_MARKER"
 else
   echo "[rails-start] db already initialized; running pending migrations only"
-  /usr/bin/bundle exec rails db:migrate
+  /usr/local/bin/bundle exec rails db:migrate
 fi
 
 echo "[rails-start] Starting puma"
-exec /usr/bin/bundle exec puma -C config/puma.rb
+exec /usr/local/bin/bundle exec puma -C config/puma.rb
