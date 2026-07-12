@@ -156,55 +156,29 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Stage cross-compiled powernode-agent (arm64)
-        env:
-          POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
+      - name: Set up Go (compile the agent from THIS checkout)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Stage cross-compiled powernode-agent (arm64) — compiled from source
         run: |
-          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
-            echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured"
-            echo "       Disk image builds bake the agent into the on-node rootfs;"
-            echo "       a placeholder shim would silently produce non-bootable images."
-            exit 1
-          fi
+          # Compile the on-node agent from the SAME commit this disk image is
+          # built from (see the amd64 job for the full rationale — the
+          # POWERNODE_AGENT_BINARY_URL fetch drifted stale relative to the ref,
+          # so agent code fixes silently did not reach the UKI initramfs). CGO is
+          # disabled in the Makefile target so arm64 cross-compiles cleanly on
+          # the amd64 runner.
+          make -C agent build-arm64
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-arm64"
-          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64" -o "$OUT"
-          # The /agent route answers ANY missing path with 200 + SPA HTML, not
-          # a 404 (see the sidecar comments below) — so `curl -f` succeeding
-          # proves nothing about the main binary either. Verify the ELF magic
-          # before anything downstream (sha256/cosign checks, build.sh) treats
-          # this as a real binary.
+          cp agent/dist/powernode-agent-linux-arm64 "$OUT"
           if [ "$(head -c4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
-            echo "FATAL: fetched $OUT is not an ELF binary — the /agent route likely"
-            echo "       served its SPA-fallback HTML instead of powernode-agent-linux-arm64."
-            echo "First bytes:"; head -c200 "$OUT"
-            exit 1
-          fi
-          # .sha256 sidecar is optional. The /agent route can answer a MISSING
-          # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
-          # tell present-and-valid from absent — validate the fetched content is
-          # a real sha256sum line, and compare hashes directly (the remote line
-          # references the remote filename, which differs from $OUT after the
-          # rename, so `sha256sum -c` would spuriously fail).
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.sha256" -o "$OUT.sha256" 2>/dev/null \
-             && grep -qiE '^[0-9a-f]{64}([[:space:]]|$)' "$OUT.sha256"; then
-            want=$(awk '{print $1; exit}' "$OUT.sha256"); got=$(sha256sum "$OUT" | awk '{print $1}')
-            [ "$want" = "$got" ] || { echo "FATAL: sha256 mismatch for $OUT (want=$want got=$got)"; exit 1; }
-            echo "OK: agent binary sha256 verified."
-          else
-            echo "WARN: .sha256 sidecar absent/invalid — skipping integrity check."
-          fi
-          # Same 200-HTML guard for the cosign bundle: only verify when the
-          # fetched payload is actually a JSON bundle.
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-arm64.cosign-bundle" \
-                 -o "$OUT.cosign-bundle" 2>/dev/null \
-             && head -c1 "$OUT.cosign-bundle" | grep -q '{'; then
-            cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
-              || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
-          else
-            echo "WARN: .cosign-bundle absent/invalid — skipping signature verify."; rm -f "$OUT.cosign-bundle"
+            echo "FATAL: built $OUT is not an ELF binary"; head -c200 "$OUT"; exit 1
           fi
           chmod +x "$OUT"
+          echo "OK: agent (arm64) compiled from source ($(sha256sum "$OUT" | awk '{print $1}'))"
 
       - name: Build rpi4-firmware module rootfs
         # Direct curl fetch — no need for buildah/QEMU when we just want
@@ -701,55 +675,35 @@ jobs:
             sudo tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras && sudo chmod +x /usr/local/bin/oras
           fi
 
-      - name: Stage powernode-agent (amd64)
-        env:
-          POWERNODE_AGENT_BINARY_URL: ${{ secrets.POWERNODE_AGENT_BINARY_URL }}
+      - name: Set up Go (compile the agent from THIS checkout)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Stage powernode-agent (amd64) — compiled from source
         run: |
-          if [ -z "${POWERNODE_AGENT_BINARY_URL:-}" ]; then
-            echo "FATAL: POWERNODE_AGENT_BINARY_URL secret not configured — the agent"
-            echo "       is baked into the UKI's initramfs; a placeholder would produce"
-            echo "       a non-bootable / non-enrolling image."
-            exit 1
-          fi
+          # Compile the on-node agent from the SAME commit this disk image is
+          # built from, so agent source changes ship in the UKI's initramfs.
+          # This previously curl'd a pre-hosted binary from
+          # POWERNODE_AGENT_BINARY_URL, which drifted STALE relative to the ref:
+          # an agent code fix would silently NOT reach the UKI. Observed in
+          # 019f505f — the ComposeForPivot ambient-capability drop-in (which
+          # fixes traefik binding :80 post-pivot) lives in the boot/initramfs
+          # agent, and did not ship until the hosted binary was hand-rebuilt.
+          # Compiling here keeps the initramfs agent and the repo in lockstep;
+          # the initramfs agent (enroll + ComposeForPivot) and the post-pivot
+          # system-base module agent are now both source-of-truth from git.
+          make -C agent build-amd64
           mkdir -p initramfs/scripts
           OUT="initramfs/scripts/powernode-agent-amd64"
-          curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64" -o "$OUT"
-          # The /agent route answers ANY missing path with 200 + SPA HTML, not
-          # a 404 (see the sidecar comments below) — so `curl -f` succeeding
-          # proves nothing about the main binary either. Verify the ELF magic
-          # before anything downstream (sha256/cosign checks, build.sh) treats
-          # this as a real binary.
+          cp agent/dist/powernode-agent-linux-amd64 "$OUT"
+          # ELF sanity — mirrors the prior fetch-path guard.
           if [ "$(head -c4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
-            echo "FATAL: fetched $OUT is not an ELF binary — the /agent route likely"
-            echo "       served its SPA-fallback HTML instead of powernode-agent-linux-amd64."
-            echo "First bytes:"; head -c200 "$OUT"
-            exit 1
-          fi
-          # .sha256 sidecar is optional. The /agent route can answer a MISSING
-          # sidecar with 200 + SPA HTML (not a 404), so `curl -f` alone can't
-          # tell present-and-valid from absent — validate the fetched content is
-          # a real sha256sum line, and compare hashes directly (the remote line
-          # references the remote filename, which differs from $OUT after the
-          # rename, so `sha256sum -c` would spuriously fail).
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.sha256" -o "$OUT.sha256" 2>/dev/null \
-             && grep -qiE '^[0-9a-f]{64}([[:space:]]|$)' "$OUT.sha256"; then
-            want=$(awk '{print $1; exit}' "$OUT.sha256"); got=$(sha256sum "$OUT" | awk '{print $1}')
-            [ "$want" = "$got" ] || { echo "FATAL: sha256 mismatch for $OUT (want=$want got=$got)"; exit 1; }
-            echo "OK: agent binary sha256 verified."
-          else
-            echo "WARN: .sha256 sidecar absent/invalid — skipping integrity check."
-          fi
-          # Same 200-HTML guard for the cosign bundle: only verify when the
-          # fetched payload is actually a JSON bundle.
-          if curl -fsSL "${POWERNODE_AGENT_BINARY_URL}/powernode-agent-linux-amd64.cosign-bundle" \
-                 -o "$OUT.cosign-bundle" 2>/dev/null \
-             && head -c1 "$OUT.cosign-bundle" | grep -q '{'; then
-            cosign verify-blob --bundle "$OUT.cosign-bundle" "$OUT" \
-              || { echo "FATAL: cosign signature verification failed for $OUT"; exit 1; }
-          else
-            echo "WARN: .cosign-bundle absent/invalid — skipping signature verify."; rm -f "$OUT.cosign-bundle"
+            echo "FATAL: built $OUT is not an ELF binary"; head -c200 "$OUT"; exit 1
           fi
           chmod +x "$OUT"
+          echo "OK: agent (amd64) compiled from source ($(sha256sum "$OUT" | awk '{print $1}'))"
 
       - name: Fetch platform CA
         if: inputs.ca_pem_url != ''
