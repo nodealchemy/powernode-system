@@ -70,9 +70,11 @@ type Resolver struct {
 // in the recommended priority order:
 //  1. CmdlineStrategy           — fastest, no network
 //  2. FwCfgStrategy             — virtio-fw-cfg (libvirt/QEMU)
-//  3. ClaimStrategy             — physical disk-image flow (boot partition)
-//  4. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
-//  5. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
+//  3. LocalIdentityStrategy     — /run/powernode/identity.cfg (Option 3:
+//     NoCloud cicustom-staged enrollment identity, uefi_disk builders)
+//  4. ClaimStrategy             — physical disk-image flow (boot partition)
+//  5. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
+//  6. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
 //
 // Cloud strategies are deliberately ordered after the no-network paths so
 // a QEMU node booting locally doesn't waste seconds probing cloud
@@ -83,12 +85,28 @@ type Resolver struct {
 // partition), ClaimStrategy returns ErrNotFound and the chain falls
 // through to cloud strategies naturally.
 //
+// The /run/powernode/identity.cfg strategy sits between fw-cfg and
+// ClaimStrategy for the same reason: a pool-provisioned Proxmox uefi_disk
+// builder's baked image carries a claim-by-ID /boot/identity.cfg (SERVER=
+// set to the CI/claim endpoint), so ClaimStrategy would otherwise win
+// first and poll /node_api/claim forever instead of ever reaching the
+// real enrollment identity. powernode-cidata-payload.service stages the
+// provider's cicustom (NoCloud) identity payload to /run/powernode/
+// identity.cfg pre-pivot, Before=powernode-agent.service, whenever the
+// PVE connection is API-token-only (fw-cfg's `args` field is root@pam-only
+// — see System::Providers::Proxmox::EnrollmentSeed#render_cicustom). If
+// that file is absent (no cicustom identity staged — the steady state for
+// every other boot path), this instance returns ErrNotFound and the chain
+// falls through unchanged, so physical/boot-identity devices see zero
+// behavior change.
+//
 // Plan: docs/plans/wondrous-yawning-anchor.md §4.
 func DefaultResolver() *Resolver {
 	return &Resolver{
 		Strategies: []Strategy{
 			&CmdlineStrategy{},
 			&FwCfgStrategy{},
+			&LocalIdentityStrategy{Path: "/run/powernode/identity.cfg"},
 			&ClaimStrategy{},
 			&CloudStrategy{Client: &AwsMetadataClient{}},
 			&CloudStrategy{Client: &GcpMetadataClient{}},

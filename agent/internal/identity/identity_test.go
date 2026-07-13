@@ -133,6 +133,55 @@ func TestResolver_PicksFirstHit(t *testing.T) {
 	}
 }
 
+// TestDefaultResolver_StagedCidataIdentityBeforeClaim pins the Option 3
+// ordering: the early /run/powernode/identity.cfg LocalIdentityStrategy
+// (staged pre-pivot by powernode-cidata-payload.service from a PVE cicustom
+// NoCloud payload) must run AFTER FwCfgStrategy but BEFORE ClaimStrategy —
+// otherwise a pool-provisioned uefi_disk builder whose baked image also
+// carries a claim-by-ID /boot/identity.cfg would have ClaimStrategy win
+// first and poll /node_api/claim forever instead of ever reaching the
+// staged enrollment identity.
+func TestDefaultResolver_StagedCidataIdentityBeforeClaim(t *testing.T) {
+	r := DefaultResolver()
+
+	fwCfgIdx, stagedIdx, claimIdx, legacyIdx := -1, -1, -1, -1
+	for i, s := range r.Strategies {
+		switch v := s.(type) {
+		case *FwCfgStrategy:
+			fwCfgIdx = i
+		case *ClaimStrategy:
+			claimIdx = i
+		case *LocalIdentityStrategy:
+			switch v.Path {
+			case "/run/powernode/identity.cfg":
+				stagedIdx = i
+			case "/etc/identity.cfg":
+				legacyIdx = i
+			}
+		}
+	}
+
+	if fwCfgIdx == -1 {
+		t.Fatal("DefaultResolver: FwCfgStrategy not found")
+	}
+	if claimIdx == -1 {
+		t.Fatal("DefaultResolver: ClaimStrategy not found")
+	}
+	if stagedIdx == -1 {
+		t.Fatal("DefaultResolver: LocalIdentityStrategy{Path: \"/run/powernode/identity.cfg\"} not found")
+	}
+	if legacyIdx == -1 {
+		t.Fatal("DefaultResolver: LocalIdentityStrategy{Path: \"/etc/identity.cfg\"} not found (legacy fallback regressed)")
+	}
+	if !(fwCfgIdx < stagedIdx && stagedIdx < claimIdx) {
+		t.Errorf("expected order FwCfgStrategy(%d) < staged LocalIdentityStrategy(%d) < ClaimStrategy(%d)",
+			fwCfgIdx, stagedIdx, claimIdx)
+	}
+	if stagedIdx >= legacyIdx {
+		t.Errorf("expected staged /run identity.cfg (%d) before legacy /etc identity.cfg (%d)", stagedIdx, legacyIdx)
+	}
+}
+
 func TestResolver_AllNotFound(t *testing.T) {
 	r := &Resolver{Strategies: []Strategy{
 		&fakeStrategyImpl{name: "a", err: ErrNotFound},

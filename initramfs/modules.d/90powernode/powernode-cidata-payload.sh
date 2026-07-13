@@ -1,5 +1,6 @@
 #!/bin/sh
-# Powernode NoCloud federation-payload stager (pre-pivot).
+# Powernode NoCloud cicustom stager (pre-pivot) — federation payload AND
+# Option 3 enrollment identity.
 #
 # The UKI pivot-boot image (images/disk-image-amd64-uefi/build-disk-image-amd64-uefi.sh)
 # has NO cloud-init. But a Proxmox federation spawn under a non-root API token
@@ -11,19 +12,41 @@
 # writes that file, because there is no cloud-init to process a write_files
 # directive. So the child never enrolls.
 #
+# The SAME cicustom transport also carries pool-provisioned builder ENROLLMENT
+# identity (Option 3 — the fw-cfg-via-args path is blocked for API-token PVE
+# connections the same way federation's is): System::Providers::Proxmox::
+# EnrollmentSeed#render_cicustom renders a `user-data` that is the sourced-shell
+# identity.cfg format (ID=/KEY=/SERVER=/CA_PEM_FILE=) instead of JSON, with
+# `meta-data` carrying the raw CA PEM. The two shapes are distinguished by
+# content: federation user-data is always a JSON object (starts with `{`);
+# enrollment identity.cfg never does. Federation and enrollment are mutually
+# exclusive per VM (ProxmoxProvider only renders one cicustom user_data).
+#
 # This oneshot bridges the gap: mount the NoCloud CD-ROM read-only, and if it
-# carries a non-empty `user-data`, copy it VERBATIM to the payload path (0600)
-# for powernode-federation-accept.service to consume. The provider writes that
-# user-data as the RAW spawn_payload JSON (ProxmoxProvider
-# #apply_default_federation_user_data, boot_mode: "uefi_disk"), byte-identical
-# to what CloudSeed embeds in its federation-payload.json write_files entry — so
-# it drops in as the agent's file fallback with no cloud-init and no YAML parse.
+# carries a non-empty `user-data`, route on its shape:
+#   - JSON (`{...}`)   → copy VERBATIM to the federation payload path (0600)
+#                        for powernode-federation-accept.service to consume.
+#                        The provider writes that user-data as the RAW
+#                        spawn_payload JSON (ProxmoxProvider
+#                        #apply_default_federation_user_data, boot_mode:
+#                        "uefi_disk"), byte-identical to what CloudSeed embeds
+#                        in its federation-payload.json write_files entry — so
+#                        it drops in as the agent's file fallback with no
+#                        cloud-init and no YAML parse.
+#   - identity.cfg     → copy `user-data` to /run/powernode/identity.cfg (0600)
+#                        and `meta-data` (the raw CA PEM) to
+#                        /run/powernode/enroll-ca.pem (0644) for the agent's
+#                        early LocalIdentityStrategy (agent/internal/identity/
+#                        identity.go DefaultResolver) to consume, Before=
+#                        powernode-agent.service.
 #
 # Safe no-op (exit 0) whenever there is no NoCloud drive — the steady state for
 # local_qemu, direct-kernel, and bare-metal boots that never received a cicustom
 # seed. Never errors the boot, never hangs, adds no latency to those boots.
 
 PAYLOAD_DEST="/etc/powernode/federation-payload.json"
+IDENTITY_DEST="/run/powernode/identity.cfg"
+ENROLL_CA_DEST="/run/powernode/enroll-ca.pem"
 MNT="/run/powernode-cidata"
 
 log() { echo "[powernode-cidata] $*"; }
@@ -62,19 +85,57 @@ if [ "$mounted" -ne 0 ]; then
 fi
 
 if [ -s "$MNT/user-data" ]; then
-    mkdir -p /etc/powernode
-    # The payload carries a single-use acceptance_token in cleartext. umask
-    # keeps the file from being briefly group/world-readable between create and
-    # chmod; cp + chmod pin it at 0600; root ownership is implicit (this oneshot
-    # runs as root). Same 0600 rationale as the provider's stage_cicustom
-    # snippet write.
-    umask 077
-    rm -f "$PAYLOAD_DEST"
-    if cp "$MNT/user-data" "$PAYLOAD_DEST" && chmod 0600 "$PAYLOAD_DEST"; then
-        log "staged federation payload -> $PAYLOAD_DEST (0600)"
-    else
-        log "WARN: failed to stage user-data -> $PAYLOAD_DEST"
-    fi
+    # Content-route: federation user-data is always a JSON object; enrollment
+    # identity.cfg never is. Read just the first line with the shell's own
+    # `read` builtin (no external `head`/`grep` dependency needed pre-pivot).
+    first_line=""
+    IFS= read -r first_line < "$MNT/user-data" 2>/dev/null || true
+
+    case "$first_line" in
+        "{"*)
+            mkdir -p /etc/powernode
+            # The payload carries a single-use acceptance_token in cleartext. umask
+            # keeps the file from being briefly group/world-readable between create and
+            # chmod; cp + chmod pin it at 0600; root ownership is implicit (this oneshot
+            # runs as root). Same 0600 rationale as the provider's stage_cicustom
+            # snippet write.
+            umask 077
+            rm -f "$PAYLOAD_DEST"
+            if cp "$MNT/user-data" "$PAYLOAD_DEST" && chmod 0600 "$PAYLOAD_DEST"; then
+                log "staged federation payload -> $PAYLOAD_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $PAYLOAD_DEST"
+            fi
+            ;;
+        *)
+            # Option 3 enrollment identity — sourced-shell identity.cfg
+            # (ID=/KEY=/SERVER=/CA_PEM_FILE=), rendered by
+            # System::Providers::Proxmox::EnrollmentSeed#render_cicustom.
+            # KEY= carries a single-use bootstrap token in cleartext, so the
+            # same 0600 umask discipline as the federation branch applies.
+            mkdir -p /run/powernode
+            umask 077
+            rm -f "$IDENTITY_DEST"
+            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
+                log "staged enrollment identity -> $IDENTITY_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
+            fi
+            # meta-data carries the raw CA PEM (a public cert chain, not
+            # secret) that CA_PEM_FILE= in identity.cfg points at — 0644 is
+            # fine, mirroring the federation branch's own CA-is-public
+            # posture (see EnrollmentSeed's ca_pem class doc).
+            if [ -s "$MNT/meta-data" ]; then
+                if cp "$MNT/meta-data" "$ENROLL_CA_DEST" && chmod 0644 "$ENROLL_CA_DEST"; then
+                    log "staged enrollment CA -> $ENROLL_CA_DEST (0644)"
+                else
+                    log "WARN: failed to stage meta-data -> $ENROLL_CA_DEST"
+                fi
+            else
+                log "WARN: identity.cfg staged but no meta-data (CA PEM) present on the cidata drive"
+            fi
+            ;;
+    esac
 else
     log "cidata drive has no non-empty user-data — nothing to stage"
 fi

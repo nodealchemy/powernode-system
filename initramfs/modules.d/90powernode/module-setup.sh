@@ -72,16 +72,23 @@ install() {
     ln -sf ../powernode-federation-accept.service \
         "${initdir}/etc/systemd/system/multi-user.target.wants/powernode-federation-accept.service"
 
-    # NoCloud federation-payload stager — runs Before powernode-federation-accept.
-    # PVE spawns under a non-root API token can't use fw-cfg, so the provider
-    # ships the federation payload on a cloud-init NoCloud CD-ROM (ide2 cloudinit)
-    # instead. The UKI pivot-boot image has no cloud-init to process it, so this
-    # oneshot mounts that CD-ROM read-only and copies its user-data VERBATIM to
-    # /etc/powernode/federation-payload.json — the agent's file fallback (see
-    # agent/internal/federation/config.go). Safe no-op when no such CD-ROM is
-    # present (bare-metal / local_qemu / direct-kernel). Full rationale in the
-    # script header. Needs isofs + optical drivers (added in build.sh /
-    # dracut.conf.d) to see + mount the drive.
+    # NoCloud cicustom stager — runs Before BOTH powernode-federation-accept
+    # AND powernode-agent. PVE spawns/enrollments under a non-root API token
+    # can't use fw-cfg, so the provider ships the payload on a cloud-init
+    # NoCloud CD-ROM (ide2 cloudinit) instead. The UKI pivot-boot image has no
+    # cloud-init to process it, so this oneshot mounts that CD-ROM read-only
+    # and content-routes its user-data: a JSON payload copies VERBATIM to
+    # /etc/powernode/federation-payload.json (the agent's federation file
+    # fallback — see agent/internal/federation/config.go); an identity.cfg
+    # payload (Option 3 enrollment identity — System::Providers::Proxmox::
+    # EnrollmentSeed#render_cicustom) copies to /run/powernode/identity.cfg +
+    # meta-data (raw CA PEM) to /run/powernode/enroll-ca.pem, for the agent's
+    # early LocalIdentityStrategy (agent/internal/identity/identity.go). Safe
+    # no-op when no such CD-ROM is present (bare-metal / local_qemu /
+    # direct-kernel). Full rationale in the script header. Needs isofs +
+    # optical drivers (added in build.sh / dracut.conf.d) to see + mount the
+    # drive. No new tool dependency — the JSON/identity.cfg shape check uses
+    # the shell's own `read` builtin, not an external `head`/`grep` binary.
     inst_simple "${moddir}/powernode-cidata-payload.sh" /sbin/powernode-cidata-payload
     inst_simple "${moddir}/powernode-cidata-payload.service" \
         /etc/systemd/system/powernode-cidata-payload.service
