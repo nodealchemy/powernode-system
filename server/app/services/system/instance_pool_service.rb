@@ -162,8 +162,10 @@ module System
     # The actual provisioning is dispatched as worker jobs (one per
     # deficit slot) so this method returns quickly. Each job creates a
     # NodeInstance with pool_state="warming" + pool_warming_started_at
-    # set; standard enrollment proceeds, and the after_save callback
-    # transitions to "ready" once the instance is fully operational.
+    # set; standard enrollment proceeds. There is no after_save callback —
+    # promotion to "ready" is heartbeat-driven (NodeInstance#promote_pool_ready!,
+    # called from StatusController#heartbeat once the instance's on-node
+    # agent enrolls and reports in).
     def replenish!(pool:)
       raise PoolNotActiveError, "pool is paused" if pool.paused?
 

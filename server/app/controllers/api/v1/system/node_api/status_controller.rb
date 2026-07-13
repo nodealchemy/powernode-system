@@ -88,6 +88,16 @@ module Api
             # Transition pending → running on first heartbeat post-enrollment.
             current_instance.mark_running! if current_instance.may_mark_running?
 
+            # Slice 7 pool promotion — a heartbeat is the platform's only
+            # evidence that a pool-provisioned instance actually enrolled
+            # and is alive, so it's the natural trigger to flip a
+            # "warming" member to "ready" (acquirable). Previously nothing
+            # called NodeInstance#mark_pool_ready! anywhere, so every
+            # pool-provisioned member sat in "warming" forever regardless
+            # of how healthy it was. See NodeInstance#promote_pool_ready!
+            # for the idempotency guard + FleetEvent emission.
+            current_instance.promote_pool_ready!
+
             render_success(
               acknowledged:      true,
               server_time:       Time.current.iso8601,

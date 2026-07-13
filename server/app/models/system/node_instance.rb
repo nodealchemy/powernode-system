@@ -243,6 +243,35 @@ module System
       true
     end
 
+    # Promotes a "warming" pool member to "ready" and emits a FleetEvent so
+    # the promotion is fleet-observable — the counterpart to mark_pool_ready!
+    # for callers that also want observability (StatusController#heartbeat is
+    # the only caller today: a heartbeat is the platform's sole evidence that
+    # a pool-provisioned instance actually enrolled and is alive, so it's the
+    # natural trigger to flip warming → ready). No-op (returns false, no
+    # event) for a non-pool instance or one not currently "warming" —
+    # mark_pool_ready! already provides that guard, so this is safe to call
+    # unconditionally on every heartbeat, not just the first.
+    #
+    # Best-effort event emission: a FleetEvent persistence hiccup must never
+    # raise back into the heartbeat response the agent is waiting on.
+    def promote_pool_ready!
+      return false unless mark_pool_ready!
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "system.pool.member_ready",
+        severity: :low,
+        payload: { pool_id: instance_pool_id, instance_id: id },
+        source: "node_instance#promote_pool_ready!",
+        node_instance_id: id
+      )
+      true
+    rescue StandardError => e
+      Rails.logger.warn("[NodeInstance] pool promotion event emit failed for #{id}: #{e.class}: #{e.message}")
+      true
+    end
+
     # Idempotent transition: any pool state → errored. Reaper recycles
     # errored members into terminated state on the next tick.
     def mark_pool_errored!

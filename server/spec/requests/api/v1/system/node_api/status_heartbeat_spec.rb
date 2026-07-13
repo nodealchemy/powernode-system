@@ -286,4 +286,94 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       end
     end
   end
+
+  # Root cause B fix — System::NodeInstance#mark_pool_ready! previously had
+  # ZERO callers, so nothing ever promoted a pool-provisioned instance out
+  # of pool_state="warming", regardless of how healthy it was. A successful
+  # heartbeat is the platform's evidence that the on-node agent enrolled and
+  # is alive, so it's the trigger point (NodeInstance#promote_pool_ready!,
+  # called unconditionally from this endpoint).
+  describe "pool warming -> ready promotion (heartbeat-driven)" do
+    let(:provider_region)       { create(:system_provider_region) }
+    let(:provider_instance_type) { create(:system_provider_instance_type) }
+    let(:pool) do
+      System::InstancePool.create!(
+        account: account,
+        node_template: node_template,
+        name: "heartbeat-promo-pool",
+        target_size: 1,
+        min_size: 1,
+        max_size: 3,
+        lifecycle_class: "ephemeral",
+        status: "active",
+        provider_region: provider_region,
+        provider_instance_type: provider_instance_type
+      )
+    end
+
+    context "when the instance is a pooled 'warming' member" do
+      let(:instance) do
+        create(:system_node_instance, node: node, status: "pending",
+                                       instance_pool_id: pool.id, pool_state: "warming",
+                                       pool_warming_started_at: 1.minute.ago)
+      end
+
+      it "promotes pool_state warming -> ready on a successful heartbeat" do
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(response).to have_http_status(:ok)
+        expect(instance.reload.pool_state).to eq("ready")
+      end
+
+      it "emits a system.pool.member_ready FleetEvent scoped to the instance" do
+        expect {
+          post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        }.to change {
+          System::FleetEvent.where(kind: "system.pool.member_ready", node_instance_id: instance.id).count
+        }.by(1)
+      end
+
+      it "is idempotent — a second heartbeat does not re-promote or double-emit" do
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+
+        expect(instance.reload.pool_state).to eq("ready")
+        expect(
+          System::FleetEvent.where(kind: "system.pool.member_ready", node_instance_id: instance.id).count
+        ).to eq(1)
+      end
+    end
+
+    context "when the instance is a pooled member already 'ready' (no-op guard)" do
+      let(:instance) do
+        create(:system_node_instance, node: node, status: "running",
+                                       instance_pool_id: pool.id, pool_state: "ready",
+                                       pool_warming_started_at: 10.minutes.ago)
+      end
+
+      it "leaves pool_state unchanged and emits no promotion event" do
+        expect {
+          post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        }.not_to change {
+          System::FleetEvent.where(kind: "system.pool.member_ready", node_instance_id: instance.id).count
+        }
+
+        expect(response).to have_http_status(:ok)
+        expect(instance.reload.pool_state).to eq("ready")
+      end
+    end
+
+    context "when the instance is NOT in a pool (operator-owned, legacy path)" do
+      it "is a no-op — no pool_state change, no FleetEvent" do
+        expect(instance.instance_pool_id).to be_nil
+
+        expect {
+          post "/api/v1/system/node_api/status/heartbeat", params: body, headers: headers, as: :json
+        }.not_to change { System::FleetEvent.where(kind: "system.pool.member_ready").count }
+
+        expect(response).to have_http_status(:ok)
+        expect(instance.reload.pool_state).to be_nil
+      end
+    end
+  end
 end

@@ -16,10 +16,16 @@ module System
   #   2. Periodic reaper job (worker/system/instance_pool_replenisher_job)
   #      checks each active pool every 60s. If ready_count < target_size,
   #      provisions new NodeInstance(s) bound to this pool with
-  #      pool_state="warming". The standard enrollment + module-attach
-  #      flow runs unchanged; once the instance reaches status="running"
-  #      AND its modules are all attached, an after_save callback flips
-  #      pool_state to "ready".
+  #      pool_state="warming". The standard enrollment flow runs
+  #      unchanged; there is no after_save callback — promotion is
+  #      heartbeat-driven: once the on-node agent enrolls and sends its
+  #      first successful heartbeat, StatusController#heartbeat calls
+  #      NodeInstance#promote_pool_ready! (wraps mark_pool_ready!), which
+  #      flips pool_state to "ready" and emits a "system.pool.member_ready"
+  #      FleetEvent. A member that never enrolls (e.g. a provider adapter
+  #      that never staged enrollment identity) never heartbeats and so
+  #      never promotes — it stays "warming" until the reaper's
+  #      warming_timeout recycle picks it up.
   #   3. Operator (or AI agent) calls acquire! to pull a ready instance.
   #      Atomic UPDATE with row lock claims the oldest "ready" member,
   #      sets pool_state="claimed" + pool_acquired_at=NOW. The instance
