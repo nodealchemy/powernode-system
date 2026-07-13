@@ -791,6 +791,10 @@ Rails.application.routes.draw do
           # pooled NodeInstance acting as an autonomous campaign executor.
           # Scoped strictly to the mTLS-authenticated instance.
           get "config/dev_cell_bootstrap", to: "config#dev_cell_bootstrap"
+          # gitea-act-runner NodeModule — live-minted Gitea Actions runner
+          # registration token, gated to instances provisioned with that
+          # module. Scoped strictly to the mTLS-authenticated instance.
+          get "config/ci_runner_registration", to: "config#ci_runner_registration"
           # Phase 3 — LUKS passphrase derivation for volume-setup CLI.
           get "config/luks/:partition_label", to: "luks#show",
               constraints: { partition_label: /[a-zA-Z0-9_.-]{1,32}/ }

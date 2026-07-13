@@ -19,6 +19,25 @@ module Api
           # mint a repo-write deploy key).
           DEV_CELL_MODULE_NAME = "dev-cell"
 
+          # The NodeModule name whose presence on the calling node marks it a
+          # genuine gitea-act-runner CI builder. ci_runner_registration is
+          # gated to instances actually provisioned with this module — same
+          # fail-closed shape as DEV_CELL_MODULE_NAME above (otherwise ANY
+          # fleet node could self-mint an org-scope Gitea runner
+          # registration token).
+          CI_RUNNER_MODULE_NAME = "gitea-act-runner"
+
+          # Fallback owner (SiteSetting "ci_runner_owner" overrides) for the
+          # org-scope registration token minted by #ci_runner_registration.
+          CI_RUNNER_OWNER_DEFAULT = "powernode"
+
+          # Fallback runner label (SiteSetting "ci_runner_label" overrides).
+          # `fleet-amd64` is the label Actions workflows target via
+          # `runs-on:`; the trailing `:docker://...` schedules the DEFAULT
+          # job image act_runner falls back to when a workflow step doesn't
+          # pin its own `container:` (rare — most jobs pin one explicitly).
+          CI_RUNNER_LABEL_DEFAULT = "fleet-amd64:docker://ghcr.io/catthehacker/ubuntu:act-24.04"
+
           # GET /api/v1/system/node_api/config
           # Returns instance configuration
           def show
@@ -211,6 +230,76 @@ module Api
             render_success(mcp: result.mcp, gitea: result.gitea)
           end
 
+          # GET /api/v1/system/node_api/config/ci_runner_registration
+          #
+          # Live-mints a Gitea Actions runner registration token for THIS
+          # mTLS-authenticated instance — consumed by the gitea-act-runner
+          # NodeModule's `runner` service ExecStartPre
+          # (gitea-act-runner-register.sh). NO token is ever persisted on the
+          # platform side or on the instance across restarts: a fresh one is
+          # minted on every service start via
+          # Devops::RunnerLifecycleService#registration_token_for_scope
+          # (campaign 019f5885 inc1), which this endpoint calls with an
+          # org-scope credential by default.
+          #
+          # Authorization gate (BEFORE any side effect): only an instance
+          # whose node is actually provisioned with the gitea-act-runner
+          # module may mint a token — mTLS enrollment alone is NOT enough,
+          # same fail-closed shape as #dev_cell_bootstrap.
+          #
+          # inc5 HOOK POINT: this module-presence gate is the INTERIM
+          # authorization the campaign 019f5885 design accepted for inc2 (a
+          # multi-use org-scope token, gated only by module presence). inc5
+          # replaces/augments this with a require-active-ci_build-lease
+          # check right here, before minting.
+          #
+          # Credential resolution: SiteSetting "ci_runner_git_credential_id"
+          # if set, else the account's single active Gitea credential.
+          # Absent or AMBIGUOUS (more than one active Gitea credential with
+          # no override configured) → 404, same "don't guess" posture as
+          # every other credential-resolution path in this controller.
+          #
+          # IMPORTANT (CryptoMaterialSafety): the token is minted server-side
+          # and returned ONLY in this response body — never logged, never
+          # persisted, never included in the emitted fleet event (ids only).
+          def ci_runner_registration
+            unless ci_runner_instance?
+              return render_error("Instance is not provisioned as a gitea-act-runner", :forbidden)
+            end
+
+            credential = ci_runner_git_credential
+            return render_not_found("Gitea credential for CI runner registration") if credential.nil?
+
+            result = ::Devops::RunnerLifecycleService.new(account: current_account).registration_token_for_scope(
+              credential: credential,
+              scope: ci_runner_scope,
+              owner: ci_runner_owner,
+              repo: ci_runner_repo
+            )
+
+            if result[:token].blank?
+              return render_error("Gitea runner registration token unavailable", :service_unavailable)
+            end
+
+            if defined?(::System::Fleet::EventBroadcaster)
+              ::System::Fleet::EventBroadcaster.emit!(
+                account: current_account,
+                kind: "system.ci_runner_registration_issued",
+                severity: :low,
+                payload: { "instance_id" => current_instance.id },
+                source: "node_api.config"
+              )
+            end
+
+            render_success(
+              gitea_instance_url: credential.provider.effective_web_base_url,
+              registration_token: result[:token],
+              runner_name: "fleet-#{current_instance.id.first(8)}",
+              labels: [ ci_runner_label ],
+              ephemeral: ci_runner_ephemeral?
+            )
+          end
+
           private
 
           # True when the calling node is actually provisioned with the dev-cell
@@ -219,6 +308,55 @@ module Api
           # module → not a dev-cell → 403.
           def dev_cell_instance?
             current_node.node_modules.exists?(name: DEV_CELL_MODULE_NAME)
+          end
+
+          # True when the calling node is actually provisioned with the
+          # gitea-act-runner NodeModule (per-node NodeModuleAssignment → what's
+          # really on the box, not merely the template's desired set).
+          # Fail-closed: no gitea-act-runner module → not a CI runner → 403.
+          def ci_runner_instance?
+            current_node.node_modules.exists?(name: CI_RUNNER_MODULE_NAME)
+          end
+
+          # Resolves the Gitea credential to mint a registration token
+          # against. SiteSetting "ci_runner_git_credential_id" is an explicit
+          # operator override; absent that, falls back to the account's
+          # single active Gitea credential. More than one active Gitea
+          # credential with no override configured is AMBIGUOUS — returns
+          # nil (404) rather than silently guessing which one to use.
+          def ci_runner_git_credential
+            configured_id = ::SiteSetting.get("ci_runner_git_credential_id").presence
+            return current_account.git_provider_credentials.active.find_by(id: configured_id) if configured_id
+
+            candidates = current_account.git_provider_credentials.active
+                                        .joins(:provider)
+                                        .where(git_providers: { provider_type: "gitea" }).to_a
+            candidates.one? ? candidates.first : nil
+          end
+
+          # :repo | :org | :admin — defaults to :org (a single org-scope
+          # token covers every repo under CI_RUNNER_OWNER_DEFAULT without a
+          # per-repo mint). Operator-configurable via SiteSetting
+          # "ci_runner_scope".
+          def ci_runner_scope
+            (::SiteSetting.get("ci_runner_scope").presence || "org").to_sym
+          end
+
+          def ci_runner_owner
+            ::SiteSetting.get("ci_runner_owner").presence || CI_RUNNER_OWNER_DEFAULT
+          end
+
+          # Only required for :repo scope; nil is fine for :org/:admin.
+          def ci_runner_repo
+            ::SiteSetting.get("ci_runner_repo").presence
+          end
+
+          def ci_runner_label
+            ::SiteSetting.get("ci_runner_label").presence || CI_RUNNER_LABEL_DEFAULT
+          end
+
+          def ci_runner_ephemeral?
+            ::SiteSetting.get("ci_runner_ephemeral").to_s == "true"
           end
 
           # "owner/repo" of the source repo the cell clones. Config-driven
