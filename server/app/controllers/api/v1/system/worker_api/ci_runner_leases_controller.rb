@@ -32,11 +32,17 @@ module Api
           private
 
           def target_accounts
-            if (id = params[:account_id].presence)
-              Array(::Account.find_by(id: id))
-            else
-              ::Account.where(id: ::System::CiRunnerLease.active.select(:account_id).distinct)
-            end
+            return Array(::Account.find_by(id: params[:account_id])) if params[:account_id].present?
+
+            # Sweep accounts with active leases OR orphaned fleet-* runners: a
+            # recycled account can reach zero active leases while still carrying
+            # offline runner rows that need reaping, so scoping on leases alone
+            # would leave those orphans unreachable by the cron.
+            account_ids = (
+              ::System::CiRunnerLease.active.distinct.pluck(:account_id) +
+              ::Devops::GitRunner.where("name LIKE 'fleet-%'").distinct.pluck(:account_id)
+            ).compact.uniq
+            ::Account.where(id: account_ids)
           end
 
           def aggregate(summaries)
