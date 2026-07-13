@@ -3,8 +3,19 @@
 module System
   module Providers
     module Proxmox
-      # Builds the platform-identity fw-cfg entries a pool-provisioned
-      # Proxmox uefi_disk builder needs to auto-enroll on first boot.
+      # Builds the platform-identity a pool-provisioned Proxmox uefi_disk
+      # builder needs to auto-enroll on first boot, over EITHER of two
+      # transports:
+      #
+      #   #build           — virtio-fw-cfg entries. Requires PVE's `args`
+      #                      config field, which is root@pam-only; gated
+      #                      behind POWERNODE_PVE_USE_FWCFG=1.
+      #   #render_cicustom — Option 3: the same identity delivered via the
+      #                      cloud-init NoCloud cicustom channel (the
+      #                      token-friendly transport ProxmoxProvider
+      #                      already uses for federation spawn payloads),
+      #                      for API-token PVE connections that can't set
+      #                      `args` at all.
       #
       # Mirrors System::Providers::LocalQemu::CloudSeed's identity block
       # (instance_uuid, instance_name, bootstrap_token, ca_pem,
@@ -14,19 +25,19 @@ module System
       # untouched by this change.
       #
       # Root cause this fixes: create_uefi_disk_vm_instance never staged
-      # any fw-cfg at all, so an automated (pool-replenished) uefi_disk
+      # any identity at all, so an automated (pool-replenished) uefi_disk
       # builder booted with no platform_url/token/ca and could never
       # enroll — it would sit at pool_state="warming" forever, because
       # nothing ever promotes an unenrolled instance to "ready" either
       # (see the separate heartbeat-driven promotion fix in
       # StatusController#heartbeat).
       #
-      # Opt-in / fail-safe gate: #build returns nil unless BOTH the CA
-      # chain AND the platform URL resolve (see #resolve_enroll_ca_pem +
-      # #resolve_platform_url). An operator who hasn't configured
-      # enrollment identity gets EXACTLY the pre-fix behavior — the
-      # provider proceeds without staging any identity fw-cfg. This is
-      # deliberate, not a shortcut: a builder pointed at the wrong CA
+      # Opt-in / fail-safe gate: BOTH #build and #render_cicustom return nil
+      # unless BOTH the CA chain AND the platform URL resolve (see
+      # #resolve_enroll_ca_pem + #resolve_platform_url). An operator who
+      # hasn't configured enrollment identity gets EXACTLY the pre-fix
+      # behavior — the provider proceeds without staging any identity. This
+      # is deliberate, not a shortcut: a builder pointed at the wrong CA
       # fails its TLS handshake to the platform SILENTLY on the guest
       # side (no operator-visible error surfaces), so we never guess or
       # fall back to an internal CA default — see the resolver below.
@@ -59,6 +70,49 @@ module System
           }
 
           { fw_cfg_entries: entries, bootstrap_token_id: bootstrap_token&.id }
+        end
+
+        # Option 3 — same enrollment identity as #build, delivered over the
+        # API-token-safe cloud-init NoCloud cicustom channel instead of
+        # fw-cfg's root@pam-only `args` field. This is the transport
+        # create_uefi_disk_vm_instance already uses for federation spawn
+        # payloads (ProxmoxProvider#stage_cicustom writes params[:user_data] /
+        # params[:meta_data] to 0600 snippets and sets `cicustom`); enrollment
+        # reuses it when there's no federation payload to carry instead
+        # (mutually exclusive per VM — see the provider's call site).
+        #
+        # Renders `user_data` as the sourced-shell identity.cfg format the
+        # agent's LocalIdentityStrategy already parses (agent/internal/
+        # identity/local_identity.go) — ID=/KEY=/SERVER=/CA_PEM_FILE= — and
+        # `meta_data` as the raw CA PEM (CA_PEM_FILE= points the agent at
+        # /run/powernode/enroll-ca.pem, where powernode-cidata-payload.sh
+        # stages the mounted cicustom `meta-data` file pre-pivot).
+        #
+        # SAME opt-in / fail-safe gate as #build: nil (+ warn) unless both
+        # the CA chain and platform URL resolve — never guess, never fall
+        # back to an internal CA default. NEVER log the plaintext bootstrap
+        # token; it only ever lands in the returned `user_data` string.
+        def render_cicustom(instance:)
+          ca_pem = resolve_enroll_ca_pem
+          platform_url = resolve_platform_url
+
+          if ca_pem.blank? || platform_url.blank?
+            Rails.logger.warn(
+              "[Proxmox::EnrollmentSeed] enrollment identity not staged for #{instance.id}: " \
+              "set SiteSetting system.ci_builder.enroll_ca_pem (trust chain of the platform URL, " \
+              "e.g. the LE chain) + system.ci_builder.enroll_platform_url"
+            )
+            return nil
+          end
+
+          _bootstrap_token, plaintext = issue_bootstrap_token(instance)
+
+          user_data = "ID=#{instance.id}\n" \
+                      "KEY=#{plaintext}\n" \
+                      "SERVER=#{platform_url}\n" \
+                      "CA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
+
+          { user_data: user_data, meta_data: ca_pem }
         end
 
         private

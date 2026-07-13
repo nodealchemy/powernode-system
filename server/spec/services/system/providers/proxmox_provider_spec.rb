@@ -858,6 +858,141 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # Option 3 — enrollment identity via the cicustom (NoCloud) channel, the
+  # API-token-safe DEFAULT counterpart to the fw-cfg wiring tested above.
+  # System::Providers::Proxmox::EnrollmentSeed#render_cicustom supplies the
+  # identity; ProxmoxProvider threads it into params[:user_data] /
+  # params[:meta_data] so the existing stage_cicustom helper writes it as a
+  # normal 0600 snippet and sets `cicustom` — no `args`, no root@pam
+  # requirement.
+  describe "#create_instance (uefi_disk enrollment-identity cicustom wiring — Option 3)" do
+    let(:node_instance) { instance_double("System::NodeInstance", id: "0199aaaa-0000-7000-8000-000000000002") }
+    let(:enrollment_seed) { instance_double(System::Providers::Proxmox::EnrollmentSeed) }
+    let(:cicustom_seed) do
+      {
+        user_data: "ID=#{node_instance.id}\nKEY=plaintext-cicustom-token\n" \
+                   "SERVER=https://dev.ipnode.us\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n",
+        meta_data: "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"
+      }
+    end
+    let(:params) do
+      {
+        name: "uefi-pool-vm-cicustom",
+        instance_type: "pve.vm.small",
+        boot_mode: "uefi_disk",
+        image_id: "dna-data:import/uefi-uki.raw",
+        node: "dna",
+        storage: "dna-data",
+        start: false,
+        instance: node_instance
+      }
+    end
+    let(:written_files) { {} }
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("500")
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/qemu", anything)
+        .and_return("UPID:dna:001:001:001:qmcreate:500:user!tok:")
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+      allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:write) do |path, content, **_opts|
+        written_files[path] = content
+        content.to_s.bytesize
+      end
+      allow(System::Providers::Proxmox::EnrollmentSeed).to receive(:new).and_return(enrollment_seed)
+      # The fw-cfg opt-in context below (POWERNODE_PVE_USE_FWCFG=1) exercises
+      # the OTHER call path (.build, a class method wrapping .new.build) —
+      # give the instance_double a harmless default so that context doesn't
+      # also have to know about #build's contract.
+      allow(enrollment_seed).to receive(:build).and_return(nil)
+    end
+
+    def written_user_data
+      key = written_files.keys.find { |k| k.end_with?("-user.yml") }
+      key && written_files[key]
+    end
+
+    def written_meta_data
+      key = written_files.keys.find { |k| k.end_with?("-meta.yml") }
+      key && written_files[key]
+    end
+
+    around do |example|
+      prev = ENV["POWERNODE_PVE_USE_FWCFG"]
+      example.run
+    ensure
+      if prev.nil?
+        ENV.delete("POWERNODE_PVE_USE_FWCFG")
+      else
+        ENV["POWERNODE_PVE_USE_FWCFG"] = prev
+      end
+    end
+
+    context "when POWERNODE_PVE_USE_FWCFG is unset (default) and EnrollmentSeed resolves identity" do
+      before do
+        allow(enrollment_seed).to receive(:render_cicustom).with(instance: node_instance).and_return(cicustom_seed)
+      end
+
+      it "stages the identity.cfg user_data + CA meta_data as cicustom snippets and sets `cicustom`, never `args`" do
+        provider.create_instance(params)
+
+        expect(written_user_data).to eq(cicustom_seed[:user_data])
+        expect(written_meta_data).to eq(cicustom_seed[:meta_data])
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("cicustom" => a_string_including("user=").and(a_string_including("meta=")))
+        )
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+        )
+      end
+    end
+
+    context "when params[:user_data] is already present (federation payload owns the snippet slot)" do
+      let(:params) do
+        super().merge(user_data: JSON.dump("parent_url" => "https://parent.powernode.internal"))
+      end
+
+      it "never calls EnrollmentSeed#render_cicustom (mutual exclusion with federation)" do
+        expect(enrollment_seed).not_to receive(:render_cicustom)
+        provider.create_instance(params)
+      end
+    end
+
+    context "when POWERNODE_PVE_USE_FWCFG=1 (operator opted into the fw-cfg transport instead)" do
+      before { ENV["POWERNODE_PVE_USE_FWCFG"] = "1" }
+
+      it "never calls EnrollmentSeed#render_cicustom" do
+        expect(enrollment_seed).not_to receive(:render_cicustom)
+        provider.create_instance(params)
+      end
+    end
+
+    context "when params[:instance] is absent" do
+      let(:params) { super().except(:instance) }
+
+      it "never calls EnrollmentSeed#render_cicustom" do
+        expect(enrollment_seed).not_to receive(:render_cicustom)
+        provider.create_instance(params)
+      end
+    end
+
+    context "when EnrollmentSeed#render_cicustom returns nil (identity not configured)" do
+      before do
+        allow(enrollment_seed).to receive(:render_cicustom).with(instance: node_instance).and_return(nil)
+      end
+
+      it "never sets `cicustom` and never raises" do
+        expect { provider.create_instance(params) }.not_to raise_error
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("cicustom")
+        )
+      end
+    end
+  end
+
   describe "#create_instance (LXC mode)" do
     let(:params) do
       {

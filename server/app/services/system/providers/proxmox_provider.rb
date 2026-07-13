@@ -1058,6 +1058,15 @@ module System
       #      still rides the cloud-init/cicustom channel below, same as
       #      cloud_init — that channel remains API-token-safe and is
       #      unaffected by the fw-cfg opt-in.
+      #   3. Option 3 — the DEFAULT path (POWERNODE_PVE_USE_FWCFG unset):
+      #      enrollment identity rides that SAME cicustom channel instead of
+      #      fw-cfg, via EnrollmentSeed#render_cicustom (below, between
+      #      apply_default_federation_user_data and stage_cicustom). Mutually
+      #      exclusive with a federation payload (whichever populates
+      #      params[:user_data] first wins the one snippet slot per VM); the
+      #      initramfs's powernode-cidata-payload.sh content-routes on shape
+      #      (JSON federation payload vs. identity.cfg) so both consumers stay
+      #      decoupled on the guest side.
       def create_uefi_disk_vm_instance(params, preset:)
         c = require_client!
         # Place on the caller's chosen PVE node: an explicit string wins, else
@@ -1101,6 +1110,30 @@ module System
         )
 
         params = apply_default_federation_user_data(params, boot_mode: "uefi_disk")
+
+        # Enrollment identity via cicustom (Option 3) — the API-token-safe
+        # counterpart to the fw-cfg block below. Fires only when there's no
+        # federation user_data to carry instead (mutual exclusion: a
+        # federation spawn's payload already owns the one cicustom
+        # `user_data` snippet slot per VM, and enrollment + federation never
+        # apply to the same instance) and the operator hasn't opted into the
+        # fw-cfg path (POWERNODE_PVE_USE_FWCFG=1 — handled further below;
+        # staging identity via both channels at once would be redundant, not
+        # wrong, but the fw-cfg opt-in is the operator's explicit choice of
+        # transport). Requires the NodeInstance AR record for the same reason
+        # the fw-cfg branch does. Silently no-ops (nil) under the same
+        # opt-in/fail-safe gate EnrollmentSeed#render_cicustom enforces — see
+        # the class comment.
+        if params[:user_data].blank? && ENV["POWERNODE_PVE_USE_FWCFG"] != "1" && params[:instance].present?
+          cicustom_seed = ::System::Providers::Proxmox::EnrollmentSeed.new.render_cicustom(instance: params[:instance])
+          if cicustom_seed
+            params = params.merge(
+              user_data: cicustom_seed[:user_data],
+              meta_data: cicustom_seed[:meta_data]
+            )
+          end
+        end
+
         stage_cicustom(body, params, vmid: vmid)
 
         # Enrollment identity fw-cfg — opt-in, see the class comment above.
