@@ -25,8 +25,9 @@ description: >
   .
   No SDWAN, no docker-engine module, no managed DockerHost — dockerd talks
   to act_runner over the local unix socket only
-  (container.docker_host: unix:///var/run/docker.sock in
-  rootfs/etc/gitea-act-runner/config.yaml). protected_spec is deliberately
+  (container.docker_host: unix:///run/docker.sock in
+  rootfs/etc/gitea-act-runner/config.yaml — NOT /var/run, see that file's
+  comment for why). protected_spec is deliberately
   empty: this module ships NOTHING under /etc/docker/** — the account-wide
   `docker-engine` module owns that path's protection, and stepping on it
   here would be a silent conflict on any node composing both.
@@ -48,7 +49,7 @@ description: >
   .
   `pnrunner` is nologin and carries no other secret — it is a member of the
   `docker` group (declared below) purely so it can reach
-  /var/run/docker.sock, which dockerd chowns to root:docker BY NAME at
+  /run/docker.sock, which dockerd chowns to root:docker BY NAME at
   daemon start; etcidentity re-renders /etc/group from this module's
   `groups:` declaration on every reconcile, so that chown always resolves.
   .
@@ -168,7 +169,7 @@ dependencies:
 # UserAllocator auto-creates a same-name `pnrunner` primary group (debian
 # USERGROUPS_ENAB behavior), matching redis's/postgres's own precedent in
 # this repo. supplementary_groups: [docker] is load-bearing, not cosmetic:
-# dockerd chowns /var/run/docker.sock to root:docker BY NAME at every daemon
+# dockerd chowns /run/docker.sock to root:docker BY NAME at every daemon
 # start, so pnrunner must already be a member of a `docker` group for the
 # socket to be reachable without also handing it root.
 users:
