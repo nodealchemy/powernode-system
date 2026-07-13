@@ -296,6 +296,24 @@ RSpec.describe System::Providers::ProxmoxProvider do
       end
     end
 
+    # PVE only materializes the cloud-init NoCloud (CIDATA) drive from cicustom
+    # on a full power cycle — the first boot and a graceful reboot both come up
+    # with an empty seed, so a cicustom-carrying uefi_disk VM's on-node agent
+    # loops on identity-not-found until a stop+start. reload_cloudinit_seed!
+    # is that power cycle.
+    describe "#reload_cloudinit_seed! (cloud-init seed power cycle)" do
+      it "issues a full stop+start (never a graceful reboot) so PVE reloads the CIDATA seed" do
+        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/stop").and_return("UPID:stop")
+        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/start").and_return("UPID:start")
+
+        provider.send(:reload_cloudinit_seed!, client, node: "dna", kind: "qemu", vmid: 200)
+
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start")
+        expect(client).not_to have_received(:post).with(a_string_matching(%r{status/reboot}))
+      end
+    end
+
     context "when no explicit storage is given, prefers the operator-configured default_storage" do
       # The uefi_disk path imports the boot image into `storage` — that storage
       # must support `import` content, which an `images`-only auto-pick can miss.
