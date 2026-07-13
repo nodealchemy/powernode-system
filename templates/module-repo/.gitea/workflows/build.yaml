@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: "module"
+      runner_label:
+        description: "Optional fleet runner label to build on instead of the static ubuntu-24.04 runner (dual-run seam, campaign 019f5885 inc4)"
+        required: false
+        type: string
+        default: ""
   push:
     tags:
       - "v*.*.*"
@@ -66,7 +71,11 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
       fail-fast: false
-    runs-on: ${{ matrix.runner }}
+    # Dual-run seam (campaign 019f5885 inc4): inputs.runner_label (set only by
+    # System::CiBuildOrchestrator's leased fleet path) overrides the static
+    # per-arch matrix.runner default. Empty on every push-triggered / plain
+    # workflow_dispatch build, so the static path is unchanged.
+    runs-on: ${{ inputs.runner_label || matrix.runner }}
     # Matrix-invariant — every arch leg resolves the same tag/fingerprint/
     # module_id/module_name, so surfacing them as job outputs is safe (the
     # usual "last matrix leg wins" hazard only bites when legs disagree).

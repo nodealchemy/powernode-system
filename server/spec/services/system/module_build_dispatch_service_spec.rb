@@ -125,6 +125,25 @@ RSpec.describe System::ModuleBuildDispatchService do
       expect(payload[:inputs][:fingerprint]).to eq(result.fingerprint)
     end
 
+    # Dual-run seam (campaign 019f5885 inc4) — runner_label is the opt-in
+    # fleet-runner path; absent it, the workflow's own static ubuntu-24.04
+    # default stays in effect (no behavior change for existing callers).
+    it "threads runner_label into the recorded payload inputs when given" do
+      result = described_class.dispatch_build!(node_module: node_module, runner_label: "fleet-amd64:docker://ghcr.io/catthehacker/ubuntu:act-24.04")
+
+      expect(result.ok?).to be true
+      payload = described_class.adapter.dispatched.last
+      expect(payload[:inputs][:runner_label]).to eq("fleet-amd64:docker://ghcr.io/catthehacker/ubuntu:act-24.04")
+    end
+
+    it "omits runner_label from the payload inputs when not given (static-runner default unchanged)" do
+      result = described_class.dispatch_build!(node_module: node_module)
+
+      expect(result.ok?).to be true
+      payload = described_class.adapter.dispatched.last
+      expect(payload[:inputs]).not_to have_key(:runner_label)
+    end
+
     it "fails clearly when gitea_repo_full_name is missing" do
       orphan = create(:system_node_module, account: account, node_platform: platform,
                       category: category, variety: "subscription", name: "orphan",

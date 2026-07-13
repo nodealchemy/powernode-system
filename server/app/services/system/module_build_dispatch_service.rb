@@ -54,10 +54,11 @@ module System
         @adapter = nil
       end
 
-      def dispatch_build!(node_module:, target: nil, ref: DEFAULT_REF, workflow: DEFAULT_WORKFLOW_FILENAME)
+      def dispatch_build!(node_module:, target: nil, ref: DEFAULT_REF, workflow: DEFAULT_WORKFLOW_FILENAME,
+                          runner_label: nil)
         new.dispatch_build!(
           node_module: node_module, target: target,
-          ref: ref, workflow: workflow
+          ref: ref, workflow: workflow, runner_label: runner_label
         )
       end
 
@@ -142,23 +143,31 @@ module System
       end
     end
 
-    def dispatch_build!(node_module:, target: nil, ref: DEFAULT_REF, workflow: DEFAULT_WORKFLOW_FILENAME)
+    def dispatch_build!(node_module:, target: nil, ref: DEFAULT_REF, workflow: DEFAULT_WORKFLOW_FILENAME,
+                        runner_label: nil)
       return failure("node_module required") unless node_module
       return failure("module is missing gitea_repo_full_name") if node_module.gitea_repo_full_name.blank?
 
       compiled = ::System::RsyncSpecCompiler.compile(node_module: node_module, target: target)
 
+      inputs = {
+        rsync_spec:    compiled.rsync_spec,
+        package_spec:  compiled.package_spec,
+        fingerprint:   compiled.fingerprint,
+        module_id:     node_module.id,
+        module_name:   node_module.name
+      }
+      # Dual-run seam (campaign 019f5885 inc4): only threaded through when the
+      # caller opted into a leased fleet runner (System::CiBuildOrchestrator).
+      # Absent, the workflow's own default (static ubuntu-24.04) stays in
+      # effect — no behavior change for the existing static path.
+      inputs[:runner_label] = runner_label if runner_label.present?
+
       payload = {
         repository: node_module.gitea_repo_full_name,
         workflow:   workflow,
         ref:        ref,
-        inputs: {
-          rsync_spec:    compiled.rsync_spec,
-          package_spec:  compiled.package_spec,
-          fingerprint:   compiled.fingerprint,
-          module_id:     node_module.id,
-          module_name:   node_module.name
-        }
+        inputs:     inputs
       }
 
       dispatch = self.class.adapter.dispatch(payload, account: node_module.account)

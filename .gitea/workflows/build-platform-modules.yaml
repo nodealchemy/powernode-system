@@ -53,6 +53,11 @@ on:
         required: false
         type: boolean
         default: false
+      runner_label:
+        description: "Optional fleet runner label to build on instead of the static ubuntu-24.04 runner (dual-run seam, campaign 019f5885 inc4)"
+        required: false
+        type: string
+        default: ""
   push:
     branches: [ develop, master ]
     paths:
@@ -98,7 +103,11 @@ jobs:
   # direction in go-gitea/gitea#29020). This job's `build_set` output is
   # what that per-slot resolver step indexes into.
   discover:
-    runs-on: ubuntu-24.04
+    # Dual-run seam (campaign 019f5885 inc4): inputs.runner_label (set only by
+    # System::CiBuildOrchestrator's leased fleet path) overrides the static
+    # runner. Empty on every push/tag-triggered run — the static path is
+    # unchanged there.
+    runs-on: ${{ inputs.runner_label || 'ubuntu-24.04' }}
     container:
       image: docker.io/library/debian:trixie-slim
     defaults:
@@ -241,7 +250,11 @@ jobs:
 
   build:
     needs: discover
-    runs-on: ubuntu-24.04
+    # Dual-run seam (campaign 019f5885 inc4): inputs.runner_label (set only by
+    # System::CiBuildOrchestrator's leased fleet path) overrides the static
+    # runner. Empty on every push/tag-triggered run — the static path is
+    # unchanged there.
+    runs-on: ${{ inputs.runner_label || 'ubuntu-24.04' }}
     # `runs-on` is just a label in Gitea Actions 1.x — the actual
     # container is set below. Use Debian Trixie because:
     #   - composefs (userspace + tools) ships in Trixie's main repo
