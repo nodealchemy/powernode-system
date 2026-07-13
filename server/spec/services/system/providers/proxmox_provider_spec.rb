@@ -724,6 +724,140 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # Root cause A fix — pool-provisioned uefi_disk builders previously booted
+  # with NO enrollment identity at all (create_uefi_disk_vm_instance never
+  # staged fw-cfg). System::Providers::Proxmox::EnrollmentSeed now supplies
+  # it, wired in behind the SAME POWERNODE_PVE_USE_FWCFG=1 opt-in the
+  # cloud_init path already requires (PVE's `args` field is root@pam-only —
+  # see the "never sets `args`" pinned specs above/below, which must keep
+  # passing unchanged: this wiring must never regress API-token PVE users).
+  describe "#create_instance (uefi_disk enrollment-identity fw-cfg wiring)" do
+    let(:node_instance) { instance_double("System::NodeInstance", id: "0199aaaa-0000-7000-8000-000000000001") }
+    let(:seed_entries) do
+      {
+        "opt/com.powernode/instance_uuid"   => node_instance.id,
+        "opt/com.powernode/instance_name"   => "uefi-pool-vm",
+        "opt/com.powernode/bootstrap_token" => "plaintext-token-abc",
+        "opt/com.powernode/ca_pem"          => "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----",
+        "opt/com.powernode/platform_url"    => "https://dev.ipnode.us"
+      }
+    end
+    let(:params) do
+      {
+        name: "uefi-pool-vm",
+        instance_type: "pve.vm.small",
+        boot_mode: "uefi_disk",
+        image_id: "dna-data:import/uefi-uki.raw",
+        node: "dna",
+        storage: "dna-data",
+        start: false,
+        instance: node_instance
+      }
+    end
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/cluster/nextid").and_return("400")
+      allow(client).to receive(:post)
+        .with("/api2/json/nodes/dna/qemu", anything)
+        .and_return("UPID:dna:001:001:001:qmcreate:400:user!tok:")
+      allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
+      allow(client).to receive(:put).and_return(nil)
+      allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:write)
+    end
+
+    around do |example|
+      prev = ENV["POWERNODE_PVE_USE_FWCFG"]
+      example.run
+    ensure
+      if prev.nil?
+        ENV.delete("POWERNODE_PVE_USE_FWCFG")
+      else
+        ENV["POWERNODE_PVE_USE_FWCFG"] = prev
+      end
+    end
+
+    context "when POWERNODE_PVE_USE_FWCFG=1 and EnrollmentSeed resolves identity" do
+      before do
+        ENV["POWERNODE_PVE_USE_FWCFG"] = "1"
+        allow(System::Providers::Proxmox::EnrollmentSeed).to receive(:build)
+          .with(instance: node_instance)
+          .and_return(fw_cfg_entries: seed_entries, bootstrap_token_id: "tok-id-1")
+      end
+
+      it "stages the fw-cfg entries at perm 0o600 and appends -fw_cfg args to the VM create body" do
+        provider.create_instance(params)
+
+        expect(File).to have_received(:write).with(
+          a_string_including("-fwcfg/"), "plaintext-token-abc", mode: "w", perm: 0o600
+        )
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu",
+          hash_including("args" => a_string_including("-fw_cfg name=opt/com.powernode/platform_url"))
+        )
+      end
+    end
+
+    context "when POWERNODE_PVE_USE_FWCFG is unset (default) even though identity WOULD resolve" do
+      before do
+        allow(System::Providers::Proxmox::EnrollmentSeed).to receive(:build).and_return(
+          fw_cfg_entries: seed_entries, bootstrap_token_id: "tok-id-1"
+        )
+      end
+
+      it "never calls EnrollmentSeed and never sets `args` — no regression for root@pam-less (API-token) PVE connections" do
+        provider.create_instance(params)
+
+        expect(System::Providers::Proxmox::EnrollmentSeed).not_to have_received(:build)
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+        )
+      end
+    end
+
+    context "when the flag is on but params[:instance] is absent (no NodeInstance threaded through)" do
+      before { ENV["POWERNODE_PVE_USE_FWCFG"] = "1" }
+
+      let(:params) do
+        {
+          name: "uefi-pool-vm",
+          instance_type: "pve.vm.small",
+          boot_mode: "uefi_disk",
+          image_id: "dna-data:import/uefi-uki.raw",
+          node: "dna",
+          storage: "dna-data",
+          start: false
+        }
+      end
+
+      it "never calls EnrollmentSeed and never sets `args`" do
+        expect(System::Providers::Proxmox::EnrollmentSeed).not_to receive(:build)
+
+        provider.create_instance(params)
+
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+        )
+      end
+    end
+
+    context "when the flag is on + instance present but EnrollmentSeed returns nil (identity not configured)" do
+      before do
+        ENV["POWERNODE_PVE_USE_FWCFG"] = "1"
+        allow(System::Providers::Proxmox::EnrollmentSeed).to receive(:build)
+          .with(instance: node_instance).and_return(nil)
+      end
+
+      it "never sets `args`" do
+        provider.create_instance(params)
+
+        expect(client).to have_received(:post).with(
+          "/api2/json/nodes/dna/qemu", hash_excluding("args")
+        )
+      end
+    end
+  end
+
   describe "#create_instance (LXC mode)" do
     let(:params) do
       {

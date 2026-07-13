@@ -1044,10 +1044,20 @@ module System
       #      have an imported volid at params[:image_id]; uefi_disk can
       #      resolve + import one itself from the node's NodePlatform
       #      default disk image (see resolve_uefi_disk_image!).
-      #   2. No `args` at all — never stages fw-cfg, never checks
-      #      POWERNODE_PVE_USE_FWCFG. Federation payload delivery (when
-      #      needed) rides the cloud-init/cicustom channel below, same as
-      #      cloud_init — that channel is API-token-safe.
+      #   2. `args` stays off by default — never stages fw-cfg, never
+      #      checks POWERNODE_PVE_USE_FWCFG, UNLESS an operator has both
+      #      opted into fw-cfg (POWERNODE_PVE_USE_FWCFG=1 — same root@pam
+      #      constraint create_vm_instance's fw-cfg block documents: PVE
+      #      restricts `args` to root@pam, so an API-token connection
+      #      would 500) AND configured enrollment identity (see
+      #      System::Providers::Proxmox::EnrollmentSeed) — this is what
+      #      lets a pool-provisioned uefi_disk builder auto-enroll, since
+      #      this boot_mode has no cloud-init NoCloud datasource to carry
+      #      a fallback payload the way create_vm_instance's federation
+      #      path does. Federation spawn payload delivery (when needed)
+      #      still rides the cloud-init/cicustom channel below, same as
+      #      cloud_init — that channel remains API-token-safe and is
+      #      unaffected by the fw-cfg opt-in.
       def create_uefi_disk_vm_instance(params, preset:)
         c = require_client!
         # Place on the caller's chosen PVE node: an explicit string wins, else
@@ -1092,6 +1102,28 @@ module System
 
         params = apply_default_federation_user_data(params, boot_mode: "uefi_disk")
         stage_cicustom(body, params, vmid: vmid)
+
+        # Enrollment identity fw-cfg — opt-in, see the class comment above.
+        # Gated on POWERNODE_PVE_USE_FWCFG=1 for the exact same reason
+        # create_vm_instance's fw-cfg block gates on it: `args` is a
+        # root@pam-only PVE config field, so unconditionally writing it
+        # here would turn today's silent non-enrollment into a hard
+        # provisioning failure (PVE 500 "only root can set 'args' config")
+        # for every API-token-authenticated PVE connection. Requires the
+        # NodeInstance AR record (ProvisioningService always threads one
+        # through as params[:instance]; a direct/test caller that omits it
+        # simply gets no identity staged, same as the flag being off).
+        instance_for_seed = params[:instance]
+        if instance_for_seed && ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
+          seed = ::System::Providers::Proxmox::EnrollmentSeed.build(instance: instance_for_seed)
+          if seed
+            fw_args = stage_fw_cfg_entries(seed[:fw_cfg_entries], vmid: vmid, params: params)
+            unless fw_args.empty?
+              existing = body["args"].to_s
+              body["args"] = [ existing, fw_args.join(" ") ].reject(&:empty?).join(" ")
+            end
+          end
+        end
 
         create_upid = c.post("/api2/json/nodes/#{node}/qemu", body)
         c.wait_task(node: node, upid: create_upid)
