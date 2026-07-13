@@ -503,6 +503,25 @@ jobs:
               chmod +x /tmp/hooks/essential00-gcsfuse-source.sh
               hook_args+=("--hook-directory=/tmp/hooks")
               ;;
+            gitea-act-runner)
+              # docker-ce/docker-ce-cli/containerd.io/docker-buildx-plugin/
+              # docker-compose-plugin (this module's package_spec) aren't in
+              # Ubuntu's own archive — they come from Docker's own apt repo.
+              # Same essential-hook-stage constraint as the vector/gcsfuse
+              # hooks above: apt isn't yet in the chroot, so we only drop the
+              # key + sources.list here; mmdebstrap's --include pass (below)
+              # picks them up once apt itself lands.
+              cat > /tmp/hooks/essential00-docker-source.sh <<'EOF'
+          #!/bin/sh
+          set -eu
+          ROOT="$1"
+          mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/docker.gpg"
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" > "$ROOT/etc/apt/sources.list.d/docker.list"
+          EOF
+              chmod +x /tmp/hooks/essential00-docker-source.sh
+              hook_args+=("--hook-directory=/tmp/hooks")
+              ;;
           esac
 
           mmdebstrap \
@@ -981,6 +1000,55 @@ jobs:
               echo "=== claude-tmux: npm install result ==="
               ls -la /tmp/fat/usr/bin/claude* 2>/dev/null || true
               ls -d /tmp/fat/usr/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true
+              ;;
+            gitea-act-runner)
+              # act_runner has no apt package — fetch the pinned upstream
+              # release binary and verify its sha256, same hermetic pattern
+              # as the traefik/cosign fetches elsewhere in this stage.
+              # docker-ce/docker-ce-cli/containerd.io/docker-buildx-plugin/
+              # docker-compose-plugin (this module's package_spec) already
+              # landed in /tmp/fat via Stage 1's mmdebstrap, using the
+              # Docker apt-repo essential-hook registered for this module
+              # earlier in this job (Stage 1 apt-hook case above).
+              ACT_RUNNER_VERSION=$(jq -r '.build.act_runner_version // "0.2.13"' /tmp/manifest.json)
+
+              # Pinned sha256 for act_runner-${ACT_RUNNER_VERSION}-linux-<arch>
+              # from https://gitea.com/gitea/act_runner/releases. arm64 is
+              # pre-pinned for the future multi-arch fetch (campaign 019f5885
+              # inc2 design note) — only amd64 is actually built today.  Bump
+              # both alongside build.act_runner_version on any version change.
+              case "${ARCH:-amd64}" in
+                amd64) ACT_RUNNER_SHA256=3acac8b506ac8cadc88a55155b5d6378f0fab0b8f62d1e0c0450f4ccd69733e2 ;;
+                arm64) ACT_RUNNER_SHA256=0b79090cd6e06adbe4f10dac500b16abae9504b70948ea94b7f888e84fae12f9 ;;
+                *) echo "[stage-1.5] FATAL: no pinned act_runner sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+              esac
+
+              curl -fsSL \
+                "https://dl.gitea.com/act_runner/${ACT_RUNNER_VERSION}/act_runner-${ACT_RUNNER_VERSION}-linux-${ARCH:-amd64}" \
+                -o /tmp/act_runner
+              echo "${ACT_RUNNER_SHA256}  /tmp/act_runner" | sha256sum -c -
+
+              mkdir -p /tmp/fat/usr/local/bin
+              install -m0755 /tmp/act_runner /tmp/fat/usr/local/bin/act_runner
+
+              # Verify what actually shipped. Only exec the binary on an
+              # amd64 runner (the only ARCH this campaign increment actually
+              # builds) — a cross-arch (future arm64) fetch already has its
+              # integrity confirmed by the sha256sum -c above and can't be
+              # exec'd on this runner anyway.
+              if [ "${ARCH:-amd64}" = "amd64" ]; then
+                ACT_RUNNER_OUT=$(/tmp/fat/usr/local/bin/act_runner --version 2>&1 || true)
+                echo "[stage-1.5] act_runner: $ACT_RUNNER_OUT"
+                echo "$ACT_RUNNER_OUT" | grep -q "${ACT_RUNNER_VERSION}" || { echo "[stage-1.5] FATAL: expected act_runner ${ACT_RUNNER_VERSION}, got: $ACT_RUNNER_OUT"; exit 1; }
+              else
+                echo "[stage-1.5] skipping act_runner --version exec check for ARCH=${ARCH:-amd64} (cross-arch binary, runner can't exec it) — sha256 already verified above"
+              fi
+
+              # Docker hook sanity — Stage 1's essential-hook + package_spec
+              # must have actually landed dockerd; catch a silently-empty
+              # docker install here rather than ship a runner with no daemon
+              # to talk to.
+              test -e /tmp/fat/usr/bin/dockerd || { echo "[stage-1.5] FATAL: /tmp/fat/usr/bin/dockerd missing — docker-ce did not install"; exit 1; }
               ;;
           esac
 
