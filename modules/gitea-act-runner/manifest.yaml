@@ -1,0 +1,241 @@
+schema_version: 1
+
+name: gitea-act-runner
+display_name: "Gitea Act runner (fleet-amd64 CI builder)"
+description: >
+  Turns a fleet instance into an ephemeral Gitea Actions CI builder: bundles
+  act_runner (sha256-pinned, fetched in CI Stage 1.5 — see the
+  gitea-act-runner case in build-platform-modules.yaml Stage 1.5) plus a
+  LOCAL, unix-socket-only docker-ce (docker-ce docker-ce-cli containerd.io
+  docker-buildx-plugin docker-compose-plugin) so `container:`-pinned Actions
+  jobs can build images. docker-ce ships its OWN unit files
+  (/usr/lib/systemd/system/{docker.service,docker.socket,containerd.service})
+  installed by the deb's postinst at CI build time — this module's
+  rootfs/etc/systemd/system/*.wants/ symlinks enable them exactly the way
+  base-os-ubuntu-noble enables ssh.service, deliberately NOT the manifest
+  `services:` lifecycle: raw units never go through the agent's per-module
+  capability/user-namespace drop-ins, so dockerd's own privilege needs are
+  never subject to this module's `security:` block (below) — only the
+  `runner` service (act_runner itself) is.
+  .
+  No SDWAN, no docker-engine module, no managed DockerHost — dockerd talks
+  to act_runner over the local unix socket only
+  (container.docker_host: unix:///var/run/docker.sock in
+  rootfs/etc/gitea-act-runner/config.yaml). protected_spec is deliberately
+  empty: this module ships NOTHING under /etc/docker/** — the account-wide
+  `docker-engine` module owns that path's protection, and stepping on it
+  here would be a silent conflict on any node composing both.
+  .
+  The runner's Gitea registration token is never stored on the instance: the
+  `runner` service's ExecStartPre (gitea-act-runner-register.sh, running as
+  root via the systemd "+" prefix — needed to read the on-node agent's mTLS
+  private key) live-mints one PER SERVICE START from the platform's
+  ci_runner_registration node_api endpoint
+  (GET /api/v1/system/node_api/config/ci_runner_registration, gated to
+  instances actually provisioned with this module) and stages it 0600,
+  chowned to pnrunner, in the service's tmpfs RuntimeDirectory. The
+  unprivileged `pnrunner` service user (gitea-act-runner-start.sh) feeds it
+  to `act_runner register` over STDIN — never argv, never an env var, never
+  logged — then shreds the staging file before execing
+  `act_runner daemon`. Labeled `fleet-amd64` (distinct from any static
+  `ubuntu-24.04` runner) so Actions workflows can target this fleet
+  explicitly via `runs-on: fleet-amd64`.
+  .
+  `pnrunner` is nologin and carries no other secret — it is a member of the
+  `docker` group (declared below) purely so it can reach
+  /var/run/docker.sock, which dockerd chowns to root:docker BY NAME at
+  daemon start; etcidentity re-renders /etc/group from this module's
+  `groups:` declaration on every reconcile, so that chown always resolves.
+  .
+  SECURITY POSTURE (operator-reviewed, not incidental): this is a
+  root-equivalent Docker build sandbox by nature — any CI job on this
+  runner can drive the local Docker daemon, which is root-equivalent on the
+  host. The boundary is the EPHEMERAL INSTANCE itself (pool
+  ci-builders-amd64, lifecycle_class ephemeral), not in-container
+  confinement. egress_allow is the documented "0.0.0.0/0" wildcard escape
+  hatch (agent/internal/security/egress.go) — a CI builder legitimately
+  pulls arbitrary base images, clones arbitrary repos, and fetches
+  dependencies from arbitrary registries. Pre-approved contingency: if the
+  pivot-booted smoke test EPERMs on the register script's `+`-prefixed
+  ExecStartPre (the capability-bounding-set drop-in stripping something
+  dockerd/act_runner needs), flip `privileged: true` (keep
+  `capabilities: []` — policy.Validate() rejects the combination of
+  `privileged: true` with a non-empty capability list) and re-run; do not
+  add explicit capabilities as a first attempt.
+license: MIT
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+file_spec:
+  - "/usr/local/bin/act_runner"
+  - "/usr/local/bin/gitea-act-runner-register.sh"
+  - "/usr/local/bin/gitea-act-runner-start.sh"
+  - "/etc/gitea-act-runner/**"
+  # docker-ce / docker-ce-cli / containerd.io payload (apt, Stage 1). Bundled
+  # so container: jobs have a local Docker daemon to build/run against — see
+  # the module description for why these ride raw file_spec carves rather
+  # than manifest `services:`.
+  - "/usr/bin/docker"
+  - "/usr/bin/dockerd"
+  - "/usr/bin/docker-proxy"
+  - "/usr/bin/docker-init"
+  - "/usr/bin/containerd*"
+  - "/usr/bin/ctr"
+  - "/usr/bin/runc"
+  - "/usr/libexec/docker/**"
+  - "/usr/lib/systemd/system/docker.service"
+  - "/usr/lib/systemd/system/docker.socket"
+  - "/usr/lib/systemd/system/containerd.service"
+  # This module's own rootfs/ enablement symlinks (see rootfs/etc/systemd/
+  # system/*.wants/ — same enablement pattern base-os-ubuntu-noble uses for
+  # ssh.service) — NOT generated by the manifest `services:` lifecycle.
+  - "/etc/systemd/system/multi-user.target.wants/docker.service"
+  - "/etc/systemd/system/sockets.target.wants/docker.socket"
+  # iptables/xtables (apt `iptables`) — dockerd manages its own NAT/filter
+  # chains for container networking.
+  - "/usr/sbin/iptables*"
+  - "/usr/sbin/ip6tables*"
+  - "/usr/sbin/xtables*"
+  # gitea-act-runner-register.sh parses the node_api JSON response with jq.
+  - "/usr/bin/jq"
+  # apt's docker-ce/containerd.io/iptables packages pull additional shared
+  # libraries (libseccomp, libltdl, etc.) under the multiarch lib dir — carve
+  # the whole tree rather than enumerate individual .so files, same
+  # rationale claude-tmux's manifest documents for its own apt packages.
+  - "/usr/lib/x86_64-linux-gnu/**"
+
+# Deliberately empty: this module ships nothing under /etc/docker/** — the
+# account-wide docker-engine module owns protecting that path. See the
+# module description for why colliding here would be a silent conflict.
+protected_spec: []
+
+package_spec:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+  - iptables
+  - jq
+  - ca-certificates
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+  provides:
+    - ci.act-runner
+    - ci.docker-build
+
+# `pnrunner`: the unprivileged, nologin service account act_runner's daemon
+# process runs as. Home is a real, module-owned state directory (act_runner's
+# own .runner file + cache + workdir_parent all live under it — see
+# rootfs/etc/gitea-act-runner/config.yaml). No primary_group declared —
+# UserAllocator auto-creates a same-name `pnrunner` primary group (debian
+# USERGROUPS_ENAB behavior), matching redis's/postgres's own precedent in
+# this repo. supplementary_groups: [docker] is load-bearing, not cosmetic:
+# dockerd chowns /var/run/docker.sock to root:docker BY NAME at every daemon
+# start, so pnrunner must already be a member of a `docker` group for the
+# socket to be reachable without also handing it root.
+users:
+  - name: pnrunner
+    shell: /usr/sbin/nologin
+    home: /var/lib/gitea-act-runner
+    gecos: "Gitea Act runner CI builder"
+    supplementary_groups: [docker]
+
+# Declared explicitly (rather than left to docker-ce's own postinst) so
+# etcidentity's /etc/group render is authoritative and idempotent across
+# reconciles — see the `users:` comment above for why pnrunner must be a
+# member.
+groups:
+  - name: docker
+    members: [pnrunner]
+
+# unit_body passthrough (option A2, same as claude-tmux/dev-cell): the
+# ExecStartPre= credential-mint step can't be expressed via the generated-
+# unit Service fields, so this rides the services: lifecycle with the unit
+# file's body verbatim. No sibling gitea-act-runner unit references in this
+# body (After=/Wants= name docker.service directly, the RAW unit enabled via
+# rootfs/etc/systemd/system/sockets.target.wants/ + multi-user.target.wants/
+# above, not another `services:` entry), so nothing needed stripping into
+# `dependencies:`.
+services:
+  - name: runner
+    unit_body: |
+      [Unit]
+      Description=Gitea Act runner (fleet-amd64 CI builder)
+      After=network-online.target docker.service
+      Wants=network-online.target docker.service
+      ConditionPathExists=/usr/local/bin/act_runner
+
+      [Service]
+      Type=simple
+      User=pnrunner
+      Group=pnrunner
+      Environment=HOME=/var/lib/gitea-act-runner
+
+      # RuntimeDirectory gives us a private, auto-created, auto-cleaned tmpfs
+      # dir (0700) for the live-minted registration token handoff — never a
+      # world-readable path, never persisted across reboots (a fresh token is
+      # minted every start; see gitea-act-runner-register.sh).
+      RuntimeDirectory=gitea-act-runner
+      RuntimeDirectoryMode=0700
+      # StateDirectory persists act_runner's own .runner file + cache +
+      # workdir_parent (see rootfs/etc/gitea-act-runner/config.yaml) across
+      # restarts/reboots at /var/lib/gitea-act-runner.
+      StateDirectory=gitea-act-runner
+      StateDirectoryMode=0750
+
+      # Fetches a fresh Gitea runner registration token from the platform's
+      # ci_runner_registration node_api endpoint over mTLS and stages it 0600
+      # in $RUNTIME_DIRECTORY. Runs as root (the "+" prefix) because only
+      # root can read the agent's mTLS private key
+      # (/persist/var/lib/powernode/pki/node.key) — the staged file is
+      # chowned to pnrunner so the unprivileged daemon process (User=
+      # pnrunner below) can consume it exactly once.
+      ExecStartPre=+/usr/local/bin/gitea-act-runner-register.sh
+
+      # Feeds the staged token to `act_runner register` via STDIN (never
+      # argv, never an env var — see gitea-act-runner-start.sh), shreds the
+      # staging file, then execs `act_runner daemon`.
+      ExecStart=/usr/local/bin/gitea-act-runner-start.sh
+
+      Restart=on-failure
+      RestartSec=10s
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+reboot_required: false
+
+security:
+  capabilities: []
+  # Unrestricted egress — the documented, reviewed wildcard escape hatch
+  # (agent/internal/security/egress.go), same posture dev-cell's manifest
+  # documents for the same reason: a CI builder legitimately pulls arbitrary
+  # base images, clones arbitrary repos, and fetches dependencies from
+  # arbitrary package registries. The boundary is the ephemeral instance
+  # itself, not an egress allowlist.
+  egress_allow:
+    - "0.0.0.0/0"
+  privileged: false
+  # user_namespace:false → PrivateUsers=no. See the module description's
+  # pre-approved contingency: if the pivot-booted smoke test EPERMs on the
+  # register script's `+`-prefixed ExecStartPre, flip privileged: true
+  # (keep capabilities: []) rather than adding explicit capabilities.
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # act_runner version fetched + sha256-verified in Stage 1.5 (see the
+  # gitea-act-runner case in .gitea/workflows/build-platform-modules.yaml).
+  # Bump this alongside the pinned amd64/arm64 sha256 in that step.
+  act_runner_version: "0.2.13"

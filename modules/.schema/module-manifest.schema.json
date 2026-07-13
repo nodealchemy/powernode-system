@@ -240,6 +240,11 @@
           "description": "Pinned Node.js version to fetch as a prebuilt linux-x64 binary (runtime-node module). Keep in sync with frontend/.nvmrc.",
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "act_runner_version": {
+          "description": "Pinned Gitea act_runner version fetched as a sha256-verified linux-amd64 binary (gitea-act-runner module). Bump alongside the pinned checksum(s) in build-platform-modules.yaml Stage 1.5.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         }
       }
     }

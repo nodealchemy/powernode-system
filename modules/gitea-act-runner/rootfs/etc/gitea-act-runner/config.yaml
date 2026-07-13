@@ -1,0 +1,38 @@
+# gitea-act-runner config.yaml — non-secret act_runner configuration.
+#
+# Deliberately carries NO registration token or instance URL — those are
+# live-minted per service start by gitea-act-runner-register.sh and fed to
+# `act_runner register` over STDIN by gitea-act-runner-start.sh (see both
+# scripts + this module's manifest.yaml `runner` service). runner.file
+# below is the ONLY place the resulting `.runner` credentials file is
+# recorded; that file itself is written by `act_runner register`, not this
+# config.
+
+log:
+  level: info
+
+runner:
+  # Where `act_runner register` writes (and `act_runner daemon` reads) the
+  # long-lived runner credentials it obtains from the one-time registration
+  # token — NOT the token itself. Lives under StateDirectory
+  # (/var/lib/gitea-act-runner), so it survives service restarts/reboots;
+  # gitea-act-runner-register.sh's idempotency check tests for this exact
+  # path.
+  file: /var/lib/gitea-act-runner/.runner
+  capacity: 1
+  timeout: 3h
+  insecure: false
+
+cache:
+  enabled: true
+  dir: /var/lib/gitea-act-runner/cache
+
+container:
+  # Local unix socket only — no SDWAN, no docker-engine module, no managed
+  # DockerHost (see this module's manifest.yaml description).
+  docker_host: "unix:///var/run/docker.sock"
+  network: bridge
+  privileged: false
+
+host:
+  workdir_parent: /var/lib/gitea-act-runner/act
