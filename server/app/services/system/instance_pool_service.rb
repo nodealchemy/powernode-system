@@ -65,6 +65,10 @@ module System
       new(account: pool.account).recycle_stale_members!(pool: pool)
     end
 
+    def self.reload_pending_seeds!(pool:)
+      new(account: pool.account).reload_pending_seeds!(pool: pool)
+    end
+
     def initialize(account:)
       @account = account
     end
@@ -259,6 +263,15 @@ module System
     #     still never auto-terminates.
     #   - errored members → terminated (cleanup)
     def recycle_stale_members!(pool:)
+      # Seed-reload phase runs FIRST and OUTSIDE the FOR UPDATE transaction
+      # below — power-cycling a PVE VM is a slow external API call (multiple
+      # seconds per stop+start), and holding a row lock across it would
+      # serialize unrelated pool operations (acquire!, the recycle phases
+      # further down) behind every cycle. See reload_pending_seeds! for the
+      # eligibility rules + why this exists (deferred cloud-init seed reload,
+      # replacing an ineffective immediate in-create power cycle).
+      seed_reload_count = reload_pending_seeds!(pool: pool)
+
       now = Time.current
       warming_timeout = pool.metadata["warming_timeout_seconds"]&.to_i ||
                         DEFAULT_WARMING_TIMEOUT_SECONDS
@@ -322,7 +335,8 @@ module System
         warming_to_errored: 0,
         ready_to_draining: 0,
         claimed_flagged: 0,
-        claimed_heartbeat_flagged: 0
+        claimed_heartbeat_flagged: 0,
+        seed_reloads: seed_reload_count
       }
 
       ::ActiveRecord::Base.transaction do
@@ -439,7 +453,111 @@ module System
       counts
     end
 
+    # Reaper-driven deferred cloud-init seed reload for Proxmox uefi_disk
+    # builders (see System::Providers::ProxmoxProvider#reload_cloudinit_seed!
+    # and #power_cycle_instance for the provider side).
+    #
+    # Background: PVE only materializes the cloud-init NoCloud (CIDATA) seed
+    # drive some unknown number of minutes AFTER a uefi_disk VM's first boot
+    # — never on the first boot itself, and never on a graceful reboot. A
+    # prior fix tried firing the power cycle once, synchronously, right after
+    # create — the PVE task log proved that lands ~8s into boot, mid-UEFI,
+    # long before the seed exists, so it was a no-op (two builders only
+    # enrolled after a manual cycle done minutes later). Because the real
+    # materialization delay is unknown, the fix has to retry until it works,
+    # not fire once — this method is that retry loop, called once per
+    # recycle_stale_members! tick.
+    #
+    # Runs NON-transactionally and is called BEFORE recycle_stale_members!'s
+    # ActiveRecord::Base.transaction block (see the call site) — power-
+    # cycling a VM is a slow external PVE call, and holding a FOR UPDATE row
+    # lock across it would serialize unrelated pool operations behind it.
+    #
+    # Eligibility — a warming member that:
+    #   - has never enrolled (last_heartbeat_at IS NULL). Once a member
+    #     heartbeats it drops out of this query immediately, whether or not
+    #     it was ever cycled — an enrolled member's seed already worked.
+    #   - has a cloud VM already created (config->>'cloud_instance_id'
+    #     present) — nothing to power-cycle otherwise.
+    #   - has been warming at least SEED_RELOAD_AFTER seconds — gives the
+    #     first boot time to reach the point PVE would materialize the seed
+    #     before we cycle it (cycling too early just repeats the original
+    #     bug's mid-boot timing).
+    #   - was never cycled, or wasn't cycled within the last
+    #     SEED_RELOAD_INTERVAL seconds — throttles re-cycling so a member
+    #     mid-cycle from the previous tick isn't cycled again 60s later.
+    #   - hasn't hit SEED_RELOAD_MAX attempts yet — past the cap we stop
+    #     cycling and let the normal warming_timeout recycle path (above)
+    #     eventually error the member out instead of power-cycling forever.
+    #
+    # An idle warming VM does no useful work, so re-cycling it is safe.
+    #
+    # Returns the count of members power-cycled this tick.
+    def reload_pending_seeds!(pool:)
+      seed_reload_after = (::SiteSetting.get("system.ci_builder.seed_reload_after_seconds").presence || 120).to_i
+      seed_reload_interval = (::SiteSetting.get("system.ci_builder.seed_reload_interval_seconds").presence || 240).to_i
+      seed_reload_max = (::SiteSetting.get("system.ci_builder.seed_reload_max_attempts").presence || 6).to_i
+
+      now = Time.current
+      candidates = pool.warming_members
+                       .where(last_heartbeat_at: nil)
+                       .where("config->>'cloud_instance_id' IS NOT NULL")
+                       .where("pool_warming_started_at < ?", now - seed_reload_after)
+
+      cycled = 0
+      candidates.find_each do |member|
+        attempts = member.config["seed_reload_count"].to_i
+        next if attempts >= seed_reload_max
+
+        last_reload_at = begin
+          raw = member.config["last_seed_reload_at"]
+          raw.present? ? Time.zone.parse(raw) : nil
+        rescue ArgumentError
+          nil
+        end
+        next if last_reload_at && last_reload_at > now - seed_reload_interval
+
+        provider = resolve_seed_reload_provider(member)
+        next unless provider&.respond_to?(:power_cycle_instance)
+
+        begin
+          provider.power_cycle_instance(member.config["cloud_instance_id"])
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[InstancePoolService] reload_pending_seeds!: power_cycle_instance failed " \
+            "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+          )
+          next
+        end
+
+        member.update!(
+          config: member.config.merge(
+            "last_seed_reload_at" => now.iso8601,
+            "seed_reload_count" => attempts + 1
+          )
+        )
+        cycled += 1
+      end
+
+      Rails.logger.info("[InstancePoolService] reload_pending_seeds!: cycled=#{cycled} in '#{pool.name}'") if cycled.positive?
+
+      cycled
+    end
+
     private
+
+    # Best-effort provider resolution for reload_pending_seeds! — a member
+    # whose pool/region has no resolvable provider connection (misconfigured,
+    # deleted, etc.) should be skipped for this tick, not blow up the whole
+    # reaper run.
+    def resolve_seed_reload_provider(member)
+      ::System::Providers::Registry.for_instance(member)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[InstancePoolService] reload_pending_seeds!: no provider for instance=#{member.id}: #{e.class}: #{e.message}"
+      )
+      nil
+    end
 
     attr_reader :account
 

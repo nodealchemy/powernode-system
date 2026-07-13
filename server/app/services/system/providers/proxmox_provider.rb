@@ -307,14 +307,49 @@ module System
         build_error_response("PVE reboot failed: #{e.message}")
       end
 
+      # Public entry point for System::InstancePoolService#reload_pending_seeds!
+      # — the reaper-driven counterpart to reload_cloudinit_seed! (see that
+      # method's doc comment for why this can no longer fire once, inline,
+      # right after create). The reaper resolves this instance's provider via
+      # Registry.for_instance and calls this on a schedule (retrying every
+      # recycle_stale_members! tick) until the member either enrolls
+      # (heartbeat set, drops out of the reaper's eligibility query) or hits
+      # its attempt cap. instance_id is the same composite "<node>/<kind>/
+      # <vmid>" locator every other instance method here takes.
+      def power_cycle_instance(instance_id)
+        log_operation("power_cycle_instance", instance_id: instance_id)
+        node, kind, vmid = parse_instance_id!(instance_id)
+        c = require_client!
+        reload_cloudinit_seed!(c, node: node, kind: kind, vmid: vmid)
+        sync_status(instance_id)
+      rescue Proxmox::Client::NotFoundError => e
+        raise ResourceNotFoundError, e.message
+      rescue Proxmox::Client::Error => e
+        build_error_response("PVE power_cycle_instance failed: #{e.message}")
+      end
+
       # Force PVE to (re)generate + load the cloud-init NoCloud seed onto the
       # ide2 CIDATA drive via a full stop+start — NOT a graceful reboot, which
       # the guest handles internally without PVE re-emitting the seed (class
-      # note #4). Called once right after a cicustom-carrying uefi_disk VM's
-      # first start so the on-node agent's cidata identity strategy has a
-      # populated /run/powernode/identity.cfg to read. Best-effort: a fresh VM
-      # that fails to cycle here still exists and gets recycled by the pool
-      # reaper, so we log rather than unwind the whole create.
+      # note #4).
+      #
+      # NOT called inline at create time anymore. It used to fire once, right
+      # after create_uefi_disk_vm_instance's finalize_create, on the theory
+      # that the freshly-started VM's CIDATA drive just needed one kick. The
+      # PVE task log proved that wrong: the stop+start it issued landed only
+      # ~8s into boot — mid-UEFI, long before PVE actually materializes the
+      # cicustom seed onto the drive — so it was a no-op in practice (two
+      # builders only enrolled after a MANUAL cycle done minutes later). The
+      # real materialization delay is unknown and PVE-version/load dependent,
+      # so a single fire-and-forget call can't be timed correctly.
+      #
+      # Driven instead by System::InstancePoolService#reload_pending_seeds!
+      # via the public power_cycle_instance wrapper above: the reaper retries
+      # this on every recycle_stale_members! tick (throttled) for any warming
+      # uefi_disk member that hasn't enrolled yet, until it either enrolls or
+      # hits the attempt cap. Best-effort: a cycle that fails here just gets
+      # retried next tick (or, past the cap, falls back to the normal
+      # warming_timeout recycle), so we log rather than raise.
       def reload_cloudinit_seed!(c, node:, kind:, vmid:)
         stop_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/stop")
         c.wait_task(node: node, upid: stop_upid, timeout: 60)
@@ -1189,20 +1224,7 @@ module System
         apply_protection!(c, node: node, vmid: vmid, params: params)
 
         instance_id = "#{node}/qemu/#{vmid}"
-        result = finalize_create(instance_id, start: params.fetch(:start, true))
-
-        # PVE materializes the cloud-init NoCloud (CIDATA) drive from cicustom
-        # only on a full power cycle — NOT the first boot, and NOT a graceful
-        # reboot (class note #4). When we delivered identity over cicustom
-        # (enrollment render_cicustom or a federation user_data payload), the
-        # first boot comes up with an empty seed and the on-node agent loops on
-        # identity-not-found; one stop+start loads it. Only for a started VM
-        # that actually carries a cicustom payload.
-        if params.fetch(:start, true) && params[:user_data].present?
-          reload_cloudinit_seed!(c, node: node, kind: "qemu", vmid: vmid)
-        end
-
-        result
+        finalize_create(instance_id, start: params.fetch(:start, true))
       end
 
       # Resolves the boot-disk volid for uefi_disk: an explicit

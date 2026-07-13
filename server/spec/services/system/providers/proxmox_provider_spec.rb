@@ -314,6 +314,81 @@ RSpec.describe System::Providers::ProxmoxProvider do
       end
     end
 
+    # Public entry point for System::InstancePoolService#reload_pending_seeds!
+    # (the reaper-driven replacement for the ineffective immediate in-create
+    # reload — see the "no longer stop+starts on its own" spec below). Reuses
+    # reload_cloudinit_seed! internally, same as the removed inline call did.
+    describe "#power_cycle_instance" do
+      it "parses the instance_id, reuses reload_cloudinit_seed! (stop+start), and returns synced status" do
+        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/stop").and_return("UPID:stop")
+        allow(client).to receive(:post).with("/api2/json/nodes/dna/qemu/200/status/start").and_return("UPID:start")
+        allow(client).to receive(:get)
+          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .and_return({ "status" => "running", "name" => "uefi-vm" })
+
+        result = provider.power_cycle_instance("dna/qemu/200")
+
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start")
+        expect(result[:success]).to be true
+        expect(result[:status]).to eq("running")
+      end
+
+      it "returns an error response on a PVE transport failure" do
+        allow(client).to receive(:post)
+          .with("/api2/json/nodes/dna/qemu/200/status/stop")
+          .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
+        # reload_cloudinit_seed! swallows Client::Error internally (best-effort,
+        # logs a warning) — power_cycle_instance still proceeds to sync_status,
+        # which is stubbed here to succeed so this spec isolates the
+        # transport-failure path at the sync_status layer instead.
+        allow(client).to receive(:get)
+          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .and_raise(System::Providers::Proxmox::Client::Error, "connection refused")
+
+        result = provider.power_cycle_instance("dna/qemu/200")
+        expect(result[:success]).to be false
+        expect(result[:error]).to include("connection refused")
+      end
+    end
+
+    # Change 1 — the immediate in-create power cycle (reload_cloudinit_seed!
+    # called inline right after finalize_create) has been removed:
+    # PVE task-log evidence showed it fired ~8s into boot, mid-UEFI, long
+    # before the cicustom seed materializes, so it never actually worked.
+    # The retry now lives in System::InstancePoolService#reload_pending_seeds!
+    # (reaper-driven, via #power_cycle_instance above). create_uefi_disk_vm_instance
+    # itself must issue exactly ONE status/start (from finalize_create) and
+    # never a status/stop, regardless of whether it auto-starts with a
+    # cicustom user_data payload.
+    context "when the VM auto-starts (default) with a cicustom user_data payload — no self-triggered power cycle" do
+      let(:params) do
+        base_params.except(:start).merge(
+          image_id: "dna-data:import/uefi-uki.raw",
+          user_data: "ID=fake-instance\nKEY=plaintext-token\n"
+        )
+      end
+
+      before do
+        allow(client).to receive(:post)
+          .with("/api2/json/nodes/dna/qemu/200/status/start")
+          .and_return("UPID:dna:001:001:001:qmstart:200:user!tok:")
+        allow(client).to receive(:get)
+          .with("/api2/json/nodes/dna/qemu/200/status/current")
+          .and_return({ "status" => "running", "name" => "uefi-vm" })
+        allow(File).to receive(:write)
+      end
+
+      it "issues only the single finalize_create start — never a stop" do
+        result = provider.create_instance(params)
+        expect(result[:success]).to be true
+
+        expect(client).to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/start").once
+        expect(client).not_to have_received(:post).with("/api2/json/nodes/dna/qemu/200/status/stop")
+        expect(client).not_to have_received(:post).with(a_string_matching(%r{status/stop}))
+      end
+    end
+
     context "when no explicit storage is given, prefers the operator-configured default_storage" do
       # The uefi_disk path imports the boot image into `storage` — that storage
       # must support `import` content, which an `images`-only auto-pick can miss.

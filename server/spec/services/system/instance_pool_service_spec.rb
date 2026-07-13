@@ -499,6 +499,168 @@ RSpec.describe System::InstancePoolService, type: :service do
       end
     end
   end
+
+  # Reaper-driven deferred cloud-init seed reload for Proxmox uefi_disk
+  # builders — the retry loop that replaced the ineffective immediate
+  # in-create power cycle (create_uefi_disk_vm_instance used to call
+  # reload_cloudinit_seed! once, synchronously, right after finalize_create;
+  # PVE task-log evidence showed that fired ~8s into boot, mid-UEFI, long
+  # before the cicustom seed ever materializes, so it never worked). See
+  # System::Providers::ProxmoxProvider#power_cycle_instance for the provider
+  # side this delegates to.
+  describe ".reload_pending_seeds!" do
+    let(:provider_double) { instance_double(System::Providers::ProxmoxProvider, power_cycle_instance: true) }
+
+    # Seeds a warming member with a cloud_instance_id already present (VM
+    # created) — the minimum shape reload_pending_seeds! considers.
+    def seed_warming_with_cloud_id(warming_started_at:, last_heartbeat_at: nil, config_extra: {})
+      m = seed_pool_member(state: "warming", warming_started_at: warming_started_at,
+                           last_heartbeat_at: last_heartbeat_at)
+      m.update!(config: m.config.merge({ "cloud_instance_id" => "dna/qemu/#{SecureRandom.hex(3)}" }.merge(config_extra)))
+      m
+    end
+
+    before do
+      allow(::System::Providers::Registry).to receive(:for_instance).and_return(provider_double)
+    end
+
+    it "power-cycles an eligible warming member (never enrolled, past seed_reload_after, cloud VM exists) and records the attempt" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      cloud_instance_id = m.config["cloud_instance_id"]
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(1)
+      expect(provider_double).to have_received(:power_cycle_instance).with(cloud_instance_id)
+      expect(m.reload.config["seed_reload_count"]).to eq(1)
+      expect(m.config["last_seed_reload_at"]).to be_present
+    end
+
+    it "(a) does not cycle a member that already has a heartbeat" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago, last_heartbeat_at: 1.minute.ago)
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to be_nil
+    end
+
+    it "(b) does not cycle a member younger than seed_reload_after (default 120s)" do
+      m = seed_warming_with_cloud_id(warming_started_at: 10.seconds.ago)
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to be_nil
+    end
+
+    it "(c) does not re-cycle a member cycled within seed_reload_interval (default 240s)" do
+      m = seed_warming_with_cloud_id(
+        warming_started_at: 10.minutes.ago,
+        config_extra: { "seed_reload_count" => 1, "last_seed_reload_at" => 30.seconds.ago.iso8601 }
+      )
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to eq(1)
+    end
+
+    it "(d) does not cycle a member that has hit seed_reload_max (default 6)" do
+      m = seed_warming_with_cloud_id(
+        warming_started_at: 10.minutes.ago,
+        config_extra: { "seed_reload_count" => 6, "last_seed_reload_at" => 1.hour.ago.iso8601 }
+      )
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to eq(6)
+    end
+
+    it "does not cycle a warming member with no cloud_instance_id yet (VM not created)" do
+      m = seed_pool_member(state: "warming", warming_started_at: 3.minutes.ago)
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to be_nil
+    end
+
+    it "skips a member whose resolved provider doesn't support power_cycle_instance (non-proxmox)" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(::System::Providers::Registry).to receive(:for_instance).with(m).and_return(double("NonProxmoxProvider"))
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(0)
+      expect(m.reload.config["seed_reload_count"]).to be_nil
+    end
+
+    it "skips (without raising) a member with no resolvable provider connection" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(::System::Providers::Registry).to receive(:for_instance).with(m)
+        .and_raise(System::Providers::Registry::UnknownProviderError, "no connection")
+
+      expect { described_class.reload_pending_seeds!(pool: pool) }.not_to raise_error
+      expect(m.reload.config["seed_reload_count"]).to be_nil
+    end
+
+    it "logs + continues when power_cycle_instance raises for one member, without blocking the others" do
+      failing = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      healthy = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      failing_cloud_id = failing.config["cloud_instance_id"]
+      allow(provider_double).to receive(:power_cycle_instance) do |cloud_id|
+        raise Timeout::Error, "PVE unreachable" if cloud_id == failing_cloud_id
+      end
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(1)
+      expect(failing.reload.config["seed_reload_count"]).to be_nil
+      expect(healthy.reload.config["seed_reload_count"]).to eq(1)
+    end
+
+    it "respects a SiteSetting override for seed_reload_after_seconds" do
+      allow(::SiteSetting).to receive(:get).and_call_original
+      allow(::SiteSetting).to receive(:get).with("system.ci_builder.seed_reload_after_seconds").and_return("30")
+      m = seed_warming_with_cloud_id(warming_started_at: 45.seconds.ago)
+
+      count = described_class.reload_pending_seeds!(pool: pool)
+
+      expect(count).to eq(1)
+      expect(m.reload.config["seed_reload_count"]).to eq(1)
+    end
+
+    # The power cycle is a slow external PVE call; running it inside
+    # recycle_stale_members!'s FOR UPDATE transaction would serialize
+    # unrelated pool operations (acquire!, other reaper phases) behind it.
+    it "runs power_cycle_instance calls BEFORE recycle_stale_members!'s FOR UPDATE transaction opens (no added lock contention)" do
+      seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      baseline = ::ActiveRecord::Base.connection.open_transactions
+      observed = nil
+      allow(provider_double).to receive(:power_cycle_instance) do
+        observed = ::ActiveRecord::Base.connection.open_transactions
+      end
+
+      described_class.recycle_stale_members!(pool: pool)
+
+      expect(observed).to eq(baseline)
+    end
+
+    it "folds the cycled count into recycle_stale_members!'s returned counts under :seed_reloads" do
+      seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+
+      result = described_class.recycle_stale_members!(pool: pool)
+
+      expect(result[:seed_reloads]).to eq(1)
+    end
+  end
 end
 
 RSpec.describe System::InstancePool, type: :model do
