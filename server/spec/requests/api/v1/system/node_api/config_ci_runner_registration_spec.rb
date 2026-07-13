@@ -68,7 +68,11 @@ RSpec.describe "Api::V1::System::NodeApi::Config#ci_runner_registration", type: 
       )
       expect(data["gitea_instance_url"]).to eq(gitea_provider.effective_web_base_url)
       expect(data["registration_token"]).to eq("GTA-STUB-REG-TOKEN")
-      expect(data["runner_name"]).to eq("fleet-#{instance.id.first(8)}")
+      # P0-1 collision fix (campaign 019f5885 inc3): runner_name is now the
+      # random UUIDv7 TAIL, not id.first(8) (which collides for any two ids
+      # minted in the same ~65.5s window — see CiRunnerRegistrationResolver).
+      expect(data["runner_name"]).to eq(::System::CiRunnerRegistrationResolver.runner_name(instance))
+      expect(data["runner_name"]).not_to eq("fleet-#{instance.id.first(8)}")
       expect(data["labels"]).to eq([ "fleet-amd64:docker://ghcr.io/catthehacker/ubuntu:act-24.04" ])
       expect(data["ephemeral"]).to eq(false)
     end

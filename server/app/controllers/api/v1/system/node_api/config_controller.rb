@@ -27,17 +27,6 @@ module Api
           # registration token).
           CI_RUNNER_MODULE_NAME = "gitea-act-runner"
 
-          # Fallback owner (SiteSetting "ci_runner_owner" overrides) for the
-          # org-scope registration token minted by #ci_runner_registration.
-          CI_RUNNER_OWNER_DEFAULT = "powernode"
-
-          # Fallback runner label (SiteSetting "ci_runner_label" overrides).
-          # `fleet-amd64` is the label Actions workflows target via
-          # `runs-on:`; the trailing `:docker://...` schedules the DEFAULT
-          # job image act_runner falls back to when a workflow step doesn't
-          # pin its own `container:` (rare — most jobs pin one explicitly).
-          CI_RUNNER_LABEL_DEFAULT = "fleet-amd64:docker://ghcr.io/catthehacker/ubuntu:act-24.04"
-
           # GET /api/v1/system/node_api/config
           # Returns instance configuration
           def show
@@ -267,14 +256,15 @@ module Api
               return render_error("Instance is not provisioned as a gitea-act-runner", :forbidden)
             end
 
-            credential = ci_runner_git_credential
+            resolver = ::System::CiRunnerRegistrationResolver.new(account: current_account)
+            credential = resolver.credential
             return render_not_found("Gitea credential for CI runner registration") if credential.nil?
 
             result = ::Devops::RunnerLifecycleService.new(account: current_account).registration_token_for_scope(
               credential: credential,
-              scope: ci_runner_scope,
-              owner: ci_runner_owner,
-              repo: ci_runner_repo
+              scope: resolver.scope,
+              owner: resolver.owner,
+              repo: resolver.repo
             )
 
             if result[:token].blank?
@@ -294,9 +284,9 @@ module Api
             render_success(
               gitea_instance_url: credential.provider.effective_web_base_url,
               registration_token: result[:token],
-              runner_name: "fleet-#{current_instance.id.first(8)}",
-              labels: [ ci_runner_label ],
-              ephemeral: ci_runner_ephemeral?
+              runner_name: ::System::CiRunnerRegistrationResolver.runner_name(current_instance),
+              labels: [ resolver.label ],
+              ephemeral: resolver.ephemeral?
             )
           end
 
@@ -316,47 +306,6 @@ module Api
           # Fail-closed: no gitea-act-runner module → not a CI runner → 403.
           def ci_runner_instance?
             current_node.node_modules.exists?(name: CI_RUNNER_MODULE_NAME)
-          end
-
-          # Resolves the Gitea credential to mint a registration token
-          # against. SiteSetting "ci_runner_git_credential_id" is an explicit
-          # operator override; absent that, falls back to the account's
-          # single active Gitea credential. More than one active Gitea
-          # credential with no override configured is AMBIGUOUS — returns
-          # nil (404) rather than silently guessing which one to use.
-          def ci_runner_git_credential
-            configured_id = ::SiteSetting.get("ci_runner_git_credential_id").presence
-            return current_account.git_provider_credentials.active.find_by(id: configured_id) if configured_id
-
-            candidates = current_account.git_provider_credentials.active
-                                        .joins(:provider)
-                                        .where(git_providers: { provider_type: "gitea" }).to_a
-            candidates.one? ? candidates.first : nil
-          end
-
-          # :repo | :org | :admin — defaults to :org (a single org-scope
-          # token covers every repo under CI_RUNNER_OWNER_DEFAULT without a
-          # per-repo mint). Operator-configurable via SiteSetting
-          # "ci_runner_scope".
-          def ci_runner_scope
-            (::SiteSetting.get("ci_runner_scope").presence || "org").to_sym
-          end
-
-          def ci_runner_owner
-            ::SiteSetting.get("ci_runner_owner").presence || CI_RUNNER_OWNER_DEFAULT
-          end
-
-          # Only required for :repo scope; nil is fine for :org/:admin.
-          def ci_runner_repo
-            ::SiteSetting.get("ci_runner_repo").presence
-          end
-
-          def ci_runner_label
-            ::SiteSetting.get("ci_runner_label").presence || CI_RUNNER_LABEL_DEFAULT
-          end
-
-          def ci_runner_ephemeral?
-            ::SiteSetting.get("ci_runner_ephemeral").to_s == "true"
           end
 
           # "owner/repo" of the source repo the cell clones. Config-driven
