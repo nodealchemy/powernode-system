@@ -183,6 +183,10 @@ module Ai
         "system_provision_ci_worker"                 => "system.ci_workers.create",
         "system_terminate_ci_worker"                 => "system.ci_workers.delete",
         "system_list_ci_workers"                     => "system.ci_workers.read",
+        # Campaign 019f5885 inc3 — ephemeral CI runner leases.
+        "system_lease_ci_runner"                     => "system.ci_runner_leases.create",
+        "system_release_ci_runner"                   => "system.ci_runner_leases.update",
+        "system_list_ci_runner_leases"               => "system.ci_runner_leases.read",
         "system_list_disk_image_webhooks"            => "system.modules.read",
 
         # === Missing-features slice 6a — GitOps reconciler MCP surface ===
@@ -1030,6 +1034,32 @@ module Ai
             description: "List CI workers (Workers with role='ci_worker') for the current account.",
             parameters: {}
           },
+          "system_lease_ci_runner" => {
+            description: "Lease an ephemeral Gitea Act runner from a builder pool: acquire a warm builder instance, correlate it to the Gitea runner it self-registered, and return the lease. The instance is recycled (terminate + backfill) on release so no state bleeds between jobs.",
+            parameters: {
+              pool_name: { type: "string", required: false, description: "Builder InstancePool name to acquire from (e.g. 'ci-builders-amd64'). One of pool_name/pool_id is required." },
+              pool_id: { type: "string", required: false, description: "Builder InstancePool id (alternative to pool_name)" },
+              purpose: { type: "string", required: false, description: "generic | module_build | disk_image_build (default generic) — selects the publish-arrival signal the reconciler waits on before release" },
+              workflow_run_id: { type: "integer", required: false, description: "Gitea workflow run id this lease serves (set by the build orchestrator; drives auto-release when the run completes)" },
+              workflow_run_repo: { type: "string", required: false, description: "owner/repo of the workflow run (needed to poll run state when workflow_run_id is set)" },
+              correlate_timeout: { type: "integer", required: false, description: "Seconds to wait for the runner to correlate before returning (default from SiteSetting; 0 = single attempt, the reconciler finishes async)" }
+            }
+          },
+          "system_release_ci_runner" => {
+            description: "Release a CI runner lease: deregister the runner from Gitea and recycle its pooled instance (terminate + backfill). Refuses a busy runner unless force is set (never tears down a running build).",
+            parameters: {
+              lease_id: { type: "string", required: true, description: "UUID of the CiRunnerLease to release (account-scoped)" },
+              force: { type: "boolean", required: false, description: "Release even if the runner is currently busy (default false)" }
+            }
+          },
+          "system_list_ci_runner_leases" => {
+            description: "List CI runner leases for the current account, optionally filtered by status or active-only.",
+            parameters: {
+              status: { type: "string", required: false, description: "Filter to a single lease status (leased/registered/busy/releasing/released/errored)" },
+              active: { type: "boolean", required: false, description: "When true, return only active (non-terminal) leases" },
+              limit: { type: "integer", required: false, description: "Max rows (default 50)" }
+            }
+          },
           "system_list_disk_image_webhooks" => {
             description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions).",
             parameters: {}
@@ -1281,6 +1311,9 @@ module Ai
         when "system_provision_ci_worker"           then provision_ci_worker(params)
         when "system_terminate_ci_worker"           then terminate_ci_worker(params)
         when "system_list_ci_workers"               then list_ci_workers(params)
+        when "system_lease_ci_runner"               then lease_ci_runner(params)
+        when "system_release_ci_runner"             then release_ci_runner(params)
+        when "system_list_ci_runner_leases"         then list_ci_runner_leases(params)
         when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
         # Missing-features slice 6a — GitOps reconciler
         when "system_gitops_register_repository"    then gitops_register_repository(params)
@@ -3580,6 +3613,63 @@ module Ai
           ci_workers: scope.map { |w| ::System::CiWorkerSerializer.new(w).as_json },
           count: scope.size
         )
+      end
+
+      # === Campaign 019f5885 inc3 — ephemeral CI runner leases ===
+
+      def lease_ci_runner(params)
+        lease = ::System::CiRunnerLeaseService.lease!(
+          account: @account,
+          pool_name: params[:pool_name],
+          pool_id: params[:pool_id],
+          purpose: params[:purpose].presence || "generic",
+          workflow_run_id: params[:workflow_run_id],
+          workflow_run_repo: params[:workflow_run_repo],
+          correlate_timeout: params[:correlate_timeout]
+        )
+        success_result(ci_runner_lease: serialize_ci_runner_lease(lease))
+      rescue ::System::CiRunnerLeaseService::LeaseError => e
+        error_result(e.message)
+      end
+
+      def release_ci_runner(params)
+        lease = ::System::CiRunnerLease.where(account_id: @account.id).find(params[:lease_id])
+        ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: params[:force] == true)
+        success_result(ci_runner_lease: serialize_ci_runner_lease(lease.reload))
+      rescue ::System::CiRunnerLeaseService::LeaseError => e
+        error_result(e.message)
+      end
+
+      def list_ci_runner_leases(params)
+        scope = ::System::CiRunnerLease.where(account_id: @account.id)
+        scope = scope.by_status(params[:status]) if params[:status].present?
+        scope = scope.active if params[:active] == true
+        scope = scope.recent.limit((params[:limit].presence || 50).to_i)
+
+        success_result(
+          ci_runner_leases: scope.map { |lease| serialize_ci_runner_lease(lease) },
+          count: scope.size
+        )
+      end
+
+      def serialize_ci_runner_lease(lease)
+        {
+          id: lease.id,
+          status: lease.status,
+          purpose: lease.purpose,
+          node_instance_id: lease.node_instance_id,
+          instance_pool_id: lease.instance_pool_id,
+          runner_name: lease.runner_name,
+          git_runner_id: lease.git_runner_id,
+          runner_labels: lease.runner_labels,
+          workflow_run_id: lease.workflow_run_id,
+          workflow_run_repo: lease.workflow_run_repo,
+          leased_at: lease.leased_at,
+          registered_at: lease.registered_at,
+          released_at: lease.released_at,
+          expires_at: lease.expires_at,
+          error_message: lease.error_message
+        }
       end
 
       def list_disk_image_webhooks(_params)

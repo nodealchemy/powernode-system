@@ -844,6 +844,27 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         expect(operator_tool.send(:action_permitted?, action)).to be true
       end
     end
+
+    # Campaign 019f5885 inc3 — CI runner lease actions map to 3 brand-new
+    # permission slugs (added to CORE_PERMISSIONS, not reused from an
+    # existing family). F8-02's failure mode was a slug with NO Permission
+    # record anywhere; assert both halves — the slug is really in the
+    # catalog (grantable at all) AND holding it actually satisfies
+    # action_permitted? (the mapping itself is correct).
+    {
+      "system_lease_ci_runner"       => "system.ci_runner_leases.create",
+      "system_release_ci_runner"     => "system.ci_runner_leases.update",
+      "system_list_ci_runner_leases" => "system.ci_runner_leases.read"
+    }.each do |action, permission_slug|
+      it "#{action} maps to a real, grantable #{permission_slug} permission" do
+        expect(described_class::ACTION_PERMISSIONS.fetch(action)).to eq(permission_slug)
+        expect(::Permissions.permission_exists?(permission_slug)).to be true
+
+        holder = create(:user, account: account, permissions: [ permission_slug ])
+        holder_tool = described_class.new(account: account, user: holder)
+        expect(holder_tool.send(:action_permitted?, action)).to be true
+      end
+    end
   end
 
   # IMP-2818: system_refresh_instance_modules built a System::Task with columns
@@ -2295,6 +2316,98 @@ end
       end
     end
 
+    # Campaign 019f5885 inc3 — CI runner lease MCP surface. lease!/release!
+    # are already thoroughly covered at the service layer
+    # (ci_runner_lease_service_spec.rb); these examples lock in the MCP
+    # param-marshaling + response shape + error passthrough.
+    describe "system_lease_ci_runner / system_release_ci_runner / system_list_ci_runner_leases" do
+      let(:provider_region)  { create(:system_provider_region) }
+      let(:instance_type)    { create(:system_provider_instance_type) }
+      let(:builder_pool) do
+        System::InstancePool.create!(
+          account: account, node_template: template, name: "ci-builders-mcp",
+          target_size: 2, min_size: 1, max_size: 3, lifecycle_class: "ephemeral", status: "active",
+          provider_region: provider_region, provider_instance_type: instance_type
+        )
+      end
+
+      def seed_ready_member(pool)
+        node = create(:system_node, account: account, node_template: template, lifecycle_class: "ephemeral")
+        create(:system_node_instance, node: node, name: "mcp-member-#{SecureRandom.hex(3)}", variety: "cloud",
+                                       status: "running", provider_region: provider_region,
+                                       provider_instance_type: instance_type,
+                                       instance_pool_id: pool.id, pool_state: "ready",
+                                       pool_warming_started_at: 1.minute.ago)
+      end
+
+      it "system_lease_ci_runner acquires a warm builder and correlates it to its self-registered runner" do
+        member = seed_ready_member(builder_pool)
+        create(:git_runner, account: account, name: ::System::CiRunnerRegistrationResolver.runner_name(member))
+
+        r = call("system_lease_ci_runner", pool_name: builder_pool.name, correlate_timeout: 0)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:ci_runner_lease][:status]).to eq("registered")
+        expect(r[:data][:ci_runner_lease][:node_instance_id]).to eq(member.id)
+      end
+
+      it "system_lease_ci_runner returns an error result when the pool has no ready members" do
+        r = call("system_lease_ci_runner", pool_name: builder_pool.name, correlate_timeout: 0)
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to be_present
+      end
+
+      it "system_release_ci_runner deregisters the runner and releases the lease" do
+        member = seed_ready_member(builder_pool)
+        runner_name = ::System::CiRunnerRegistrationResolver.runner_name(member)
+        create(:git_runner, account: account, name: runner_name)
+        lease_r = call("system_lease_ci_runner", pool_name: builder_pool.name, correlate_timeout: 0)
+        lease_id = lease_r[:data][:ci_runner_lease][:id]
+
+        fake_gitea_client = instance_double("Devops::Git::GiteaApiClient")
+        allow(::Devops::Git::ApiClient).to receive(:for).and_return(fake_gitea_client)
+        allow(fake_gitea_client).to receive(:supports_runners?).and_return(true)
+        allow(fake_gitea_client).to receive(:delete_runner).and_return(success: true)
+        allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+        r = call("system_release_ci_runner", lease_id: lease_id)
+
+        expect(r[:success]).to be true
+        expect(r[:data][:ci_runner_lease][:status]).to eq("released")
+      end
+
+      it "system_release_ci_runner surfaces RunnerBusyError as an error result (not an exception)" do
+        member = seed_ready_member(builder_pool)
+        runner_name = ::System::CiRunnerRegistrationResolver.runner_name(member)
+        runner = create(:git_runner, account: account, name: runner_name)
+        lease_r = call("system_lease_ci_runner", pool_name: builder_pool.name, correlate_timeout: 0)
+        lease_id = lease_r[:data][:ci_runner_lease][:id]
+        runner.update!(status: "busy", busy: true)
+
+        r = call("system_release_ci_runner", lease_id: lease_id)
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to include("busy")
+      end
+
+      it "system_list_ci_runner_leases lists + filters leases for the account" do
+        member = seed_ready_member(builder_pool)
+        registered = ::System::CiRunnerLease.create!(account: account, node_instance: member, status: "registered")
+        released = ::System::CiRunnerLease.create!(account: account, node_instance: member, status: "released")
+
+        all_r = call("system_list_ci_runner_leases")
+        expect(all_r[:success]).to be true
+        expect(all_r[:data][:ci_runner_leases].map { |l| l[:id] }).to contain_exactly(registered.id, released.id)
+
+        active_r = call("system_list_ci_runner_leases", active: true)
+        expect(active_r[:data][:ci_runner_leases].map { |l| l[:id] }).to contain_exactly(registered.id)
+
+        status_r = call("system_list_ci_runner_leases", status: "released")
+        expect(status_r[:data][:ci_runner_leases].map { |l| l[:id] }).to contain_exactly(released.id)
+      end
+    end
+
     describe "system_list_disk_image_webhooks" do
       let!(:webhook) { create(:system_disk_image_webhook, account: account) }
 
@@ -2628,6 +2741,12 @@ end
 
     it "registers gap-remediation slice 5 actions" do
       %w[system_list_disk_image_publications system_set_default_disk_image_publication system_set_disk_image_retention system_provision_ci_worker system_terminate_ci_worker system_list_ci_workers system_list_disk_image_webhooks].each do |action|
+        expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
+      end
+    end
+
+    it "registers campaign 019f5885 inc3 CI runner lease actions" do
+      %w[system_lease_ci_runner system_release_ci_runner system_list_ci_runner_leases].each do |action|
         expect(Ai::Tools::PlatformApiToolRegistry::TOOLS[action]).to eq("Ai::Tools::SystemFleetTool")
       end
     end
