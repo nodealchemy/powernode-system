@@ -71,6 +71,42 @@ RSpec.describe System::BootstrapToken, type: :model do
     end
   end
 
+  # improvement 019f5cc9 — before the FK on system_bootstrap_tokens.
+  # node_instance_id was relaxed to on_delete: :nullify (see
+  # db/migrate/20260713140000_nullify_node_instance_on_delete_for_system_bootstrap_tokens.rb),
+  # destroying a NodeInstance that still had a token pointing at it raised
+  # ActiveRecord::InvalidForeignKey — masking
+  # System::InstancePoolService::PoolError, "cloud provision failed: ..."
+  # behind an unrelated integrity-constraint crash whenever a pool-warming
+  # provider create failed AFTER EnrollmentSeed had already issued a token
+  # for the just-created (and now-orphaned) NodeInstance.
+  describe "on_delete behavior when the referenced NodeInstance is destroyed" do
+    it "does not raise, and nullifies node_instance_id instead of blocking the destroy" do
+      instance = create(:system_node_instance, node: node)
+      token, _plaintext = described_class.issue!(
+        node: node, node_instance: instance, intended_subject: instance.id, purpose: "proxmox_uefi_provision"
+      )
+
+      expect { instance.destroy! }.not_to raise_error
+
+      expect(token.reload.node_instance_id).to be_nil
+      # The audit record itself (node_id, purpose, token_hash, expires_at)
+      # survives — only the dangling FK is cleared.
+      expect(token.node_id).to eq(node.id)
+      expect(token.purpose).to eq("proxmox_uefi_provision")
+    end
+
+    it "cleans up a NodeInstance destroyed via its parent Node (the real provision_warming_member! failure path)" do
+      instance = create(:system_node_instance, node: node)
+      _token, _plaintext = described_class.issue!(
+        node: node, node_instance: instance, intended_subject: instance.id, purpose: "proxmox_uefi_provision"
+      )
+
+      expect { node.destroy! }.not_to raise_error
+      expect(System::NodeInstance.exists?(instance.id)).to be false
+    end
+  end
+
   describe "scopes" do
     it "categorizes tokens by lifecycle state" do
       fresh, _    = described_class.issue!(node: node, intended_subject: "fresh")
