@@ -589,6 +589,11 @@ Rails.application.routes.draw do
           # Worker invokes System::Migrations::ChainSweepService which
           # walks active chains and advances one hop per chain per tick.
           post "migration_chains/advance", to: "migration_chain_advance#create"
+          # Campaign 019f5885 inc3 — every-60s CI runner lease reconcile.
+          # Worker invokes System::CiRunnerLeaseSweepService which correlates
+          # each active lease against Gitea run state + publish arrival and
+          # drives it toward release + recycle (and reaps orphaned fleet-* runners).
+          post "ci_runner_leases/advance", to: "ci_runner_leases#advance"
           # Per-peer cluster_member PG replica slot + credential
           # materialization. Plan: P6.4.
           post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"
