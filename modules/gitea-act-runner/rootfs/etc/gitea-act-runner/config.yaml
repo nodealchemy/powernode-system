@@ -31,7 +31,15 @@ container:
   # Local unix socket only — no SDWAN, no docker-engine module, no managed
   # DockerHost (see this module's manifest.yaml description).
   docker_host: "unix:///var/run/docker.sock"
-  network: bridge
+  # host, not bridge: this platform's disk images ship no /lib/modules, so
+  # the kernel can't create bridge/veth devices ("Unknown device type") —
+  # dockerd itself runs with --bridge=none (see docker.service.d/ drop-in)
+  # to skip the broken default-bridge creation. Job containers share the
+  # instance's network namespace directly instead, which needs no bridge
+  # kernel support and doesn't weaken this module's already-documented
+  # security posture (isolation is the ephemeral instance, not the
+  # container — see this module's manifest.yaml SECURITY POSTURE section).
+  network: host
   privileged: false
 
 host:
