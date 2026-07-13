@@ -1,0 +1,17 @@
+# probe-fleet-amd64.yaml — live VM smoke canary for campaign 019f5885 inc2
+# (ephemeral fleet Gitea Act runners). Trivial job that only proves a
+# workflow labeled `fleet-amd64` actually lands on and runs against a
+# gitea-act-runner NodeInstance, distinct from the static `ubuntu-24.04`
+# runner. Kept as a reusable smoke for re-verifying the fleet builder pool
+# after future changes (module rebuilds, pool/template edits).
+name: probe-fleet-amd64
+on:
+  workflow_dispatch: {}
+
+jobs:
+  echo:
+    runs-on: fleet-amd64
+    container:
+      image: docker.io/library/debian:trixie-slim
+    steps:
+      - run: echo ok
