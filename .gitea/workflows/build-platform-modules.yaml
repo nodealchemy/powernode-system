@@ -503,25 +503,9 @@ jobs:
               chmod +x /tmp/hooks/essential00-gcsfuse-source.sh
               hook_args+=("--hook-directory=/tmp/hooks")
               ;;
-            gitea-act-runner)
-              # docker-ce/docker-ce-cli/containerd.io/docker-buildx-plugin/
-              # docker-compose-plugin (this module's package_spec) aren't in
-              # Ubuntu's own archive — they come from Docker's own apt repo.
-              # Same essential-hook-stage constraint as the vector/gcsfuse
-              # hooks above: apt isn't yet in the chroot, so we only drop the
-              # key + sources.list here; mmdebstrap's --include pass (below)
-              # picks them up once apt itself lands.
-              cat > /tmp/hooks/essential00-docker-source.sh <<'EOF'
-          #!/bin/sh
-          set -eu
-          ROOT="$1"
-          mkdir -p "$ROOT/etc/apt/keyrings" "$ROOT/etc/apt/sources.list.d"
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor > "$ROOT/etc/apt/keyrings/docker.gpg"
-          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" > "$ROOT/etc/apt/sources.list.d/docker.list"
-          EOF
-              chmod +x /tmp/hooks/essential00-docker-source.sh
-              hook_args+=("--hook-directory=/tmp/hooks")
-              ;;
+            # gitea-act-runner needs no apt-source hook: its Docker packages
+            # (docker.io + docker-buildx) live in Ubuntu noble's own universe
+            # component, already indexed by mmdebstrap's base apt-get update.
           esac
 
           mmdebstrap \
@@ -1005,11 +989,9 @@ jobs:
               # act_runner has no apt package — fetch the pinned upstream
               # release binary and verify its sha256, same hermetic pattern
               # as the traefik/cosign fetches elsewhere in this stage.
-              # docker-ce/docker-ce-cli/containerd.io/docker-buildx-plugin/
-              # docker-compose-plugin (this module's package_spec) already
-              # landed in /tmp/fat via Stage 1's mmdebstrap, using the
-              # Docker apt-repo essential-hook registered for this module
-              # earlier in this job (Stage 1 apt-hook case above).
+              # This module's Docker packages (docker.io + docker-buildx) came
+              # from Ubuntu noble's own universe via Stage 1's mmdebstrap — no
+              # apt-source hook needed (see the manifest package_spec comment).
               ACT_RUNNER_VERSION=$(jq -r '.build.act_runner_version // "0.2.13"' /tmp/manifest.json)
 
               # Pinned sha256 for act_runner-${ACT_RUNNER_VERSION}-linux-<arch>
@@ -1044,11 +1026,10 @@ jobs:
                 echo "[stage-1.5] skipping act_runner --version exec check for ARCH=${ARCH:-amd64} (cross-arch binary, runner can't exec it) — sha256 already verified above"
               fi
 
-              # Docker hook sanity — Stage 1's essential-hook + package_spec
-              # must have actually landed dockerd; catch a silently-empty
-              # docker install here rather than ship a runner with no daemon
-              # to talk to.
-              test -e /tmp/fat/usr/bin/dockerd || { echo "[stage-1.5] FATAL: /tmp/fat/usr/bin/dockerd missing — docker-ce did not install"; exit 1; }
+              # Docker sanity — Stage 1's package_spec (docker.io) must have
+              # actually landed dockerd; catch a silently-empty docker install
+              # here rather than ship a runner with no daemon to talk to.
+              test -e /tmp/fat/usr/bin/dockerd || { echo "[stage-1.5] FATAL: /tmp/fat/usr/bin/dockerd missing — docker.io did not install"; exit 1; }
               ;;
           esac
 

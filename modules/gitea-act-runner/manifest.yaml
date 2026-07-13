@@ -6,9 +6,8 @@ description: >
   Turns a fleet instance into an ephemeral Gitea Actions CI builder: bundles
   act_runner (sha256-pinned, fetched in CI Stage 1.5 — see the
   gitea-act-runner case in build-platform-modules.yaml Stage 1.5) plus a
-  LOCAL, unix-socket-only docker-ce (docker-ce docker-ce-cli containerd.io
-  docker-buildx-plugin docker-compose-plugin) so `container:`-pinned Actions
-  jobs can build images. docker-ce ships its OWN unit files
+  LOCAL, unix-socket-only Docker (Ubuntu noble's docker.io + docker-buildx) so
+  `container:`-pinned Actions jobs can build images. docker.io ships its OWN unit files
   (/usr/lib/systemd/system/{docker.service,docker.socket,containerd.service})
   installed by the deb's postinst at CI build time — this module's
   rootfs/etc/systemd/system/*.wants/ symlinks enable them exactly the way
@@ -114,11 +113,14 @@ file_spec:
 protected_spec: []
 
 package_spec:
-  - docker-ce
-  - docker-ce-cli
-  - containerd.io
-  - docker-buildx-plugin
-  - docker-compose-plugin
+  # Ubuntu noble's in-universe Docker: docker.io provides dockerd + the docker
+  # CLI and pulls containerd; docker-buildx is the buildx plugin. Resolvable
+  # straight from the base noble universe with NO third-party apt repo. (The
+  # Docker-official docker-ce repo cannot be added via an mmdebstrap
+  # essential-hook — that hook runs AFTER the package index is built, with no
+  # re-index before the --include install, so docker-ce is never found.)
+  - docker.io
+  - docker-buildx
   - iptables
   - jq
   - ca-certificates
