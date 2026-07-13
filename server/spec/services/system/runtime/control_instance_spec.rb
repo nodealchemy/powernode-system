@@ -32,7 +32,7 @@ RSpec.describe System::Runtime::ControlInstance do
       end
     end
 
-    %w[start stop restart reboot terminate].each do |command|
+    %w[start stop restart reboot terminate deprovision].each do |command|
       context "when command is '#{command}'" do
         let(:operation) do
           create(:system_task,
@@ -44,7 +44,16 @@ RSpec.describe System::Runtime::ControlInstance do
           )
         end
 
-        let(:expected_action) { command == 'reboot' ? 'restart' : command }
+        let(:expected_action) do
+          {
+            'start' => 'start',
+            'stop' => 'stop',
+            'restart' => 'reboot',
+            'reboot' => 'reboot',
+            'terminate' => 'terminate',
+            'deprovision' => 'terminate'
+          }.fetch(command)
+        end
 
         before do
           allow(System::InstanceControlService).to receive(:execute).and_return(
@@ -144,6 +153,29 @@ RSpec.describe System::Runtime::ControlInstance do
           hash_including(force: true)
         )
       end
+    end
+  end
+
+  # Guards the two ways ACTION_FOR_COMMAND can silently drift from its downstream
+  # contract. Neither is caught by the '.call' examples above, which stub
+  # InstanceControlService.execute — so a mapped action InstanceControlService
+  # itself rejects (e.g. "restart") never surfaces there.
+  describe 'ACTION_FOR_COMMAND contract' do
+    it 'maps every command to an action InstanceControlService#validate_action! accepts' do
+      service = System::InstanceControlService.new
+
+      described_class::ACTION_FOR_COMMAND.each do |command, action|
+        expect { service.send(:validate_action!, action) }
+          .not_to raise_error, "command '#{command}' maps to action '#{action}', which InstanceControlService rejects"
+      end
+    end
+
+    it 'has an entry for every command ExecutionDispatcher routes to ControlInstance' do
+      dispatched_commands = System::ExecutionDispatcher::COMMAND_REGISTRY
+        .select { |_, service_class| service_class == described_class }
+        .keys
+
+      expect(dispatched_commands - described_class::ACTION_FOR_COMMAND.keys).to be_empty
     end
   end
 end

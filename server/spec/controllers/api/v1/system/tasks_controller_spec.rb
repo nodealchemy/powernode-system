@@ -109,4 +109,33 @@ RSpec.describe "Api::V1::System::Tasks", type: :request do
       expect(response).to have_http_status(:unprocessable_content).or have_http_status(:unprocessable_content)
     end
   end
+
+  # IMP-8153d1952ff8 — the AASM abort event (legal from :running) existed but
+  # was deliberately unexposed, leaving operators with no recourse on a wedged
+  # provision/build/ssh task short of the hourly reaper's 60-min threshold.
+  describe "POST /api/v1/system/tasks/:id/abort" do
+    let!(:running_task) { create(:system_task, account: account, operable: node, command: "ssh_command", status: "running", started_at: Time.current) }
+
+    it "returns 403 without control perm" do
+      post "/api/v1/system/tasks/#{running_task.id}/abort",
+           headers: auth_headers_for(read_user).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:forbidden)
+    end
+
+    it "aborts a running task" do
+      post "/api/v1/system/tasks/#{running_task.id}/abort",
+           params: { reason: "operator abort" }.to_json,
+           headers: auth_headers_for(control_user).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:ok)
+      running_task.reload
+      expect(running_task.status).to eq("aborted")
+      expect(running_task.error_message).to eq("operator abort")
+    end
+
+    it "returns 422 when the task is not abortable (state-machine guard)" do
+      post "/api/v1/system/tasks/#{task.id}/abort",
+           headers: auth_headers_for(control_user).merge("Content-Type" => "application/json")
+      expect(response).to have_http_status(:unprocessable_content)
+    end
+  end
 end

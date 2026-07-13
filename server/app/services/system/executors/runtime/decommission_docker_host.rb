@@ -7,11 +7,17 @@ module System
         protected
 
         def perform
-          host = ::DockerHost.find(params[:host_id])
-          # Tear down via the existing service if defined; otherwise destroy
-          # the host record directly.
-          if defined?(::System::DockerHostDecommissionService)
-            ::System::DockerHostDecommissionService.new(host: host).decommission!
+          # ::DockerHost is not a top-level constant — the model is
+          # Devops::DockerHost — so this raised NameError on every call.
+          # ::System::DockerHostDecommissionService also doesn't exist;
+          # the real teardown (Vault purge + destroy, transactional) lives
+          # on DockerDaemonProvisionerService#decommission!, gated to
+          # managed hosts only. External (operator-registered) hosts have
+          # no Vault-issued TLS material to purge, so they're destroyed
+          # directly, same as before.
+          host = ::Devops::DockerHost.find(params[:host_id])
+          if host.managed?
+            ::System::DockerDaemonProvisionerService.new(docker_host: host, account: account).decommission!
           else
             host.destroy!
           end

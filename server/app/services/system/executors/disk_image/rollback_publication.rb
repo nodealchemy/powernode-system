@@ -16,9 +16,16 @@ module System
           previous_file_object_id = platform.disk_image_file_object_id
 
           ::ApplicationRecord.transaction do
-            # Restore the file_object if the target was retired (soft-deleted).
-            if target.retired? && target.file_object&.deleted_at?
-              target.file_object.update!(deleted_at: nil, deleted_reason: nil, deleted_by_id: nil)
+            if target.retired?
+              # Restore the file_object (soft-deleted) and reactivate the row
+              # back to :published — otherwise it stays status=retired even
+              # though it's now the platform's active image, and the next
+              # purge sweep would treat it as purgeable. `restore!` is the
+              # model's own soft-delete-undo helper (deleted_at/deleted_by
+              # only — FileManagement::Object has no deleted_reason column).
+              target.file_object.restore! if target.file_object&.deleted_at?
+              target.reactivate
+              target.save!
             end
 
             platform.update!(
@@ -41,7 +48,7 @@ module System
             end
           end
 
-          { rolled_back_to: target.id, platform_id: platform.id }
+          { rolled_back_to: target.id, platform_id: platform.id, previous_file_object_id: previous_file_object_id }
         end
 
         def summarize = "Roll back disk image to #{params[:target_publication_id]}"

@@ -66,6 +66,29 @@ RSpec.describe "FleetAutonomyService approved-action execution (F3-01)" do
       expect(execution["executed_at"]).to be_present
     end
 
+    it "executes an approved honeypot quarantine as a provider-side terminate and stamps the result (IMP-83471cc28e1a)" do
+      allow(System::InstanceControlService).to receive(:execute)
+        .and_return(System::Runtime::Result.ok(data: { action: "terminate" }))
+
+      request = approved_request!(
+        action_category: "system.instance_terminate",
+        payload: {
+          "instance_id" => instance.id,
+          "signal_kind" => "system.honeypot_access",
+          "signal_severity" => "critical"
+        }
+      )
+
+      executed = service.execute_approved_actions!(engine)
+
+      expect(System::InstanceControlService).to have_received(:execute)
+        .with(hash_including(instance: instance, action: "terminate"))
+      expect(executed).to contain_exactly(hash_including(request_id: request.id, applied: true))
+
+      execution = request.reload.request_data["execution"]
+      expect(execution["applied"]).to be true
+    end
+
     it "does not re-execute an already-stamped request on the next poll" do
       allow(System::InstanceControlService).to receive(:execute)
         .and_return(System::Runtime::Result.ok(data: {}))

@@ -146,7 +146,7 @@ module Ai
       end
 
       def assign_storage_owner(params)
-        assignment = ::System::StorageAssignment.find(params[:storage_assignment_id])
+        assignment = scoped_find_assignment!(params[:storage_assignment_id])
         kind = params[:owner_kind].to_s
 
         unless ::System::StorageAssignment::OWNER_KINDS.include?(kind)
@@ -200,7 +200,7 @@ module Ai
       end
 
       def storage_chown_status(params)
-        a = ::System::StorageAssignment.find(params[:storage_assignment_id])
+        a = scoped_find_assignment!(params[:storage_assignment_id])
         success_result(
           storage_assignment_id: a.id,
           chown_state:           a.chown_state,
@@ -218,7 +218,7 @@ module Ai
       end
 
       def storage_chown_retry(params)
-        a = ::System::StorageAssignment.find(params[:storage_assignment_id])
+        a = scoped_find_assignment!(params[:storage_assignment_id])
         if params[:force_complete]
           a.update_columns(
             chown_state:        "complete",
@@ -262,6 +262,16 @@ module Ai
       # cross-account-safe because identities are platform-global.
       def current_account_scope
         @account&.id
+      end
+
+      # Single chokepoint for id-lookups on this tool — mirrors the scoping
+      # list_storage_assignments_by_owner already applies, so a foreign
+      # account's storage_assignment_id 404s instead of being readable/
+      # mutable cross-account (IMP-66ac8e46a6fb).
+      def scoped_find_assignment!(id)
+        scope = ::System::StorageAssignment.all
+        scope = scope.where(account: current_account_scope) if current_account_scope
+        scope.find(id)
       end
     end
   end

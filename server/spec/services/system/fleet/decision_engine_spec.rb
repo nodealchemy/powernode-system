@@ -261,6 +261,77 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
     end
 
+    # IMP-f5f03a7e8d3b: the approval TTL (1h) outlives the F1-12
+    # presumed-dead reap threshold (30 min), so by the time an operator
+    # approves a system.instance_reprovision request the instance has
+    # USUALLY already been reaped running -> error above — "the race is the
+    # norm", not an edge case. reboot_silent_instance hardcoded
+    # action: "reboot", and NodeInstance's AASM :reboot event only
+    # transitions from :running, so the approved self-heal returned
+    # applied:false against exactly the states the reap/sensor loop itself
+    # produces, stranding the instance for manual intervention every time.
+    context "execute_approved! reboot_silent_instance self-heal (IMP-f5f03a7e8d3b)" do
+      let(:platform) { create(:system_node_platform, account: account) }
+      let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)     { create(:system_node, account: account, node_template: template) }
+      let(:adapter)  { instance_double("System::Providers::BaseProvider", provider_type: "mock", supports?: true) }
+
+      def approved_silent_request(instance)
+        double("Ai::ApprovalRequest", id: SecureRandom.uuid,
+               request_data: {
+                 "payload" => {
+                   "instance_id" => instance.id,
+                   "signal_kind" => "system.instance_silent",
+                   "signal_severity" => "high",
+                   "signal_fingerprint" => "instance_silent:#{instance.id}"
+                 }
+               })
+      end
+
+      before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+      it "self-heals via start when the reap already flipped the instance to error (the normal race outcome)" do
+        instance = create(:system_node_instance, node: node, status: "error", cloud_instance_id: "i-123")
+        allow(adapter).to receive(:start_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("start")
+        expect(instance.reload.status).to eq("running")
+      end
+
+      it "self-heals via start when an operator manually stopped the same silent instance before approving" do
+        instance = create(:system_node_instance, node: node, status: "stopped", cloud_instance_id: "i-123")
+        allow(adapter).to receive(:start_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("start")
+        expect(instance.reload.status).to eq("running")
+      end
+
+      it "returns a status-specific reason instead of silently no-op'ing when stuck in :starting" do
+        instance = create(:system_node_instance, node: node, status: "starting", cloud_instance_id: "i-123")
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be false
+        expect(result[:reason]).to match(/starting/)
+      end
+
+      it "still reboots a genuinely-running instance (baseline, unaffected by the fix)" do
+        instance = create(:system_node_instance, :running, node: node, cloud_instance_id: "i-123")
+        allow(adapter).to receive(:reboot_instance).with("i-123").and_return(success: true)
+
+        result = engine.execute_approved!(approved_silent_request(instance))
+
+        expect(result[:applied]).to be true
+        expect(result[:action]).to eq("reboot")
+      end
+    end
+
     # Audit finding F3-05: InstanceStateDriftSensor's signal kind had no
     # SIGNAL_BINDINGS entry, so every provider-state drift it detected was
     # discarded as decision :skipped.
@@ -351,16 +422,67 @@ RSpec.describe System::Fleet::DecisionEngine do
 
       it "records an unapplied proceed when no applier exists for the kind" do
         Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
-                                       action_category: "system.instance_reboot",
+                                       action_category: "system.gitops_drift_remediate",
                                        policy: "notify_and_proceed", is_active: true)
 
-        d = engine.decide(kind: "system.instance_state_drifted", severity: :high,
-                          payload: { instance_id: instance.id },
-                          fingerprint: "instance_state_drifted:#{instance.id}")
+        d = engine.decide(kind: "system.gitops.drift_detected", severity: :medium,
+                          payload: {},
+                          fingerprint: "gitops_drift:repo-1")
 
         expect(d[:decision]).to eq(:proceed)
         expect(d[:remediation]).to include(applied: false)
         expect(d[:remediation][:reason]).to match(/no applier/)
+      end
+
+      # IMP-555e29eeb4ab: provider-state drift was notify-only — every
+      # instance_state_drifted proceed recorded applied:false forever
+      # because REMEDIATION_APPLIERS had no entry for the kind, so a VM
+      # stopped/killed behind the platform's back stayed "running" in the
+      # model across every hourly CloudSync pass.
+      context "system.instance_state_drifted converges the model to the provider-reported state" do
+        before do
+          Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                         action_category: "system.instance_reboot",
+                                         policy: "notify_and_proceed", is_active: true)
+        end
+
+        def decide_drifted(instance, actual_status)
+          engine.decide(kind: "system.instance_state_drifted", severity: :high,
+                        payload: { "instance_id" => instance.id, "expected_status" => "running",
+                                   "actual_status" => actual_status },
+                        fingerprint: "instance_state_drifted:#{instance.id}:#{actual_status}")
+        end
+
+        it "marks the instance stopped when the provider reports stopped" do
+          d = decide_drifted(instance, "stopped")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "stopped")
+          expect(instance.reload.status).to eq("stopped")
+        end
+
+        it "marks the instance terminated when the provider reports terminated" do
+          d = decide_drifted(instance, "terminated")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "terminated")
+          expect(instance.reload.status).to eq("terminated")
+        end
+
+        it "marks the instance errored when the provider reports error" do
+          d = decide_drifted(instance, "error")
+
+          expect(d[:remediation]).to include(applied: true, converged_to: "error")
+          expect(instance.reload.status).to eq("error")
+        end
+
+        it "does not re-apply once the instance already matches the reported state" do
+          instance.update!(status: "stopped")
+
+          d = decide_drifted(instance, "stopped")
+
+          expect(d[:remediation]).to include(applied: false)
+          expect(d[:remediation][:reason]).to match(/already converged/)
+          expect(instance.reload.status).to eq("stopped")
+        end
       end
     end
 

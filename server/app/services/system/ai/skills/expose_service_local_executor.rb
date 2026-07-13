@@ -100,7 +100,20 @@ module System
           service.save!
 
           regen = ::Sdwan::ServiceExposureWriter.write!(account: @account)
-          host  = resolve_host(service)
+          if regen[:skipped_service_ids]&.include?(service.id)
+            # The facet flip is already persisted (idempotent — a later retry
+            # once a cert exists picks up from here), but the writer silently
+            # dropped this service's router (no resolvable host/cert), so it
+            # is NOT reachable. Reporting success here would be exactly the
+            # soft-fail-into-success bug this skill's sibling public-exposure
+            # executor guards against for its own hard requirements.
+            return failure(
+              "service saved but not reachable: no valid certificate/host resolvable for " \
+              "/svc/#{service.slug} (provision a certificate for this account, or pass " \
+              "certificate_id, then retry)"
+            )
+          end
+          host = resolve_host(service)
 
           success(
             service_id: service.id,

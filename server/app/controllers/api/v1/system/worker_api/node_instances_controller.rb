@@ -91,10 +91,33 @@ module Api
           end
 
           # POST /api/v1/system/worker_api/node_instances/:id/sync
-          # Sync instance configuration
+          # Reflects cloud-reported instance state into the platform.
+          # InstanceControlService has no "sync" action (only
+          # start/stop/reboot/terminate) — CloudSyncService is the boundary
+          # that reads the provider's current state, same as the internal
+          # API's #sync_cloud_state.
           def sync
             authorize_worker_permission!("system.node_instances.manage")
-            execute_instance_action(:sync)
+
+            result = ::System::CloudSyncService.sync_instance_state(instance: @instance)
+
+            if result.success?
+              data = result.data
+              finalize_state_from_cloud(data[:status])
+
+              ip_updates = {}
+              ip_updates[:private_ip_address] = data[:private_ip_address] if data.key?(:private_ip_address)
+              ip_updates[:public_ip_address]  = data[:public_ip_address]  if data.key?(:public_ip_address)
+              @instance.update!(ip_updates) if ip_updates.any?
+
+              render_success(
+                instance: serialize_instance(@instance.reload),
+                action: :sync,
+                result: { success: true, status: data[:status], updated: data[:updated] }
+              )
+            else
+              render_error(result.error || "Sync failed")
+            end
           end
 
           # POST /api/v1/system/worker_api/node_instances/:id/maintenance
@@ -159,18 +182,36 @@ module Api
           end
 
           def execute_instance_action(action)
-            service = ::System::InstanceControlService.new(@instance)
-            result = service.public_send(action)
+            result = ::System::InstanceControlService.execute(
+              instance: @instance,
+              action: action,
+              operation_id: params[:operation_id]
+            )
 
-            if result[:success]
+            if result.success?
               render_success(
                 instance: serialize_instance(@instance.reload),
                 action: action,
-                result: result
+                result: { success: true }.merge(result.data)
               )
             else
-              render_error(result[:error] || "#{action.to_s.humanize} failed")
+              render_error(result.error || "#{action.to_s.humanize} failed")
             end
+          end
+
+          # Map cloud-reported status to the matching AASM finalizer event.
+          # `may_X?` guard makes the call a safe no-op if the instance is
+          # already in a terminal state or was already moved by another
+          # worker (same pattern as the internal API controller).
+          def finalize_state_from_cloud(reported_status)
+            event = case reported_status
+            when "running"    then :mark_running
+            when "stopped"    then :mark_stopped
+            when "terminated" then :mark_terminated
+            when "error"      then :mark_errored
+            end
+            return unless event && @instance.public_send("may_#{event}?")
+            @instance.public_send("#{event}!")
           end
 
           def serialize_instance(instance)

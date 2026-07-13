@@ -95,5 +95,55 @@ RSpec.describe System::DiskImagePublicationProcessor do
         tempfile&.close!
       end
     end
+
+    # Regression for IMP-ff288e4d8cb0: a Gitea "redeliver webhook" (routine
+    # while debugging CI) for a git_sha whose publication has since been
+    # retired/purged upserts the existing row with status preserved (see
+    # DiskImageBuiltController#upsert_publication!). start_verifying! and
+    # mark_published! are BOTH silent no-ops for retired/purged rows
+    # (whiny_transitions:false, retired/purged aren't in either event's
+    # from-state list) — but before this fix, ingest + upload_to_storage! +
+    # node_platform.update! ran unconditionally anyway, pointing the
+    # platform at a brand-new orphaned FileObject that no publication row
+    # references.
+    context "when a webhook is redelivered for a publication that has moved past ingest" do
+      let(:prior_pointer) { create(:file_object, account: account) }
+
+      before { platform.update!(disk_image_file_object_id: prior_pointer.id) }
+
+      shared_examples "a strict no-op re-entry" do
+        it "does not touch ingest, storage, or the platform's FileObject pointer" do
+          expect(System::DiskImageOciIngestService).not_to receive(:verify_and_pull!)
+
+          result = nil
+          expect {
+            result = described_class.process!(publication: stale_publication)
+          }.not_to change { FileManagement::Object.count }
+
+          expect(result.ok?).to be false
+          expect(stale_publication.reload.status).to eq(stale_publication_status)
+          expect(platform.reload.disk_image_file_object_id).to eq(prior_pointer.id)
+        end
+      end
+
+      context "retired" do
+        let(:stale_publication_status) { "retired" }
+        let(:stale_publication) do
+          create(:system_disk_image_publication, :retired, account: account, node_platform: platform)
+        end
+
+        include_examples "a strict no-op re-entry"
+      end
+
+      context "purged" do
+        let(:stale_publication_status) { "purged" }
+        let(:stale_publication) do
+          create(:system_disk_image_publication, account: account, node_platform: platform,
+                 status: "purged", purged_at: Time.current)
+        end
+
+        include_examples "a strict no-op re-entry"
+      end
+    end
   end
 end

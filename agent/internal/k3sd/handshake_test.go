@@ -153,6 +153,9 @@ func TestReportReady_Server(t *testing.T) {
 		if req.Role != RoleServer || req.Version != "v1.30.4+k3s1" {
 			t.Fatalf("expected role=server + version, got %+v", req)
 		}
+		if req.ClusterID != "cluster-abc" {
+			t.Fatalf("expected cluster_id forwarded, got %+v", req)
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true,
@@ -166,7 +169,7 @@ func TestReportReady_Server(t *testing.T) {
 	})
 	defer srv.Close()
 
-	ack, err := c.ReportReady(context.Background(), RuntimeK3sServer, RoleServer, "v1.30.4+k3s1")
+	ack, err := c.ReportReady(context.Background(), RuntimeK3sServer, RoleServer, "v1.30.4+k3s1", "cluster-abc")
 	if err != nil {
 		t.Fatalf("ReportReady: %v", err)
 	}
@@ -197,7 +200,7 @@ func TestReportReady_Agent(t *testing.T) {
 	})
 	defer srv.Close()
 
-	ack, err := c.ReportReady(context.Background(), RuntimeK3sAgent, RoleAgent, "v1.30.4+k3s1")
+	ack, err := c.ReportReady(context.Background(), RuntimeK3sAgent, RoleAgent, "v1.30.4+k3s1", "cluster-abc")
 	if err != nil {
 		t.Fatalf("ReportReady: %v", err)
 	}

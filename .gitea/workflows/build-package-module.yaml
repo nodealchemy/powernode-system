@@ -141,7 +141,13 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/carved /tmp/artifacts
           REPORT="[]"
-          jq -c '.[]' /tmp/modules.filtered.json | while read -r module; do
+          # NOTE: must read from a file, NOT `producer | while read` (pipe runs the loop
+          # in a subshell, so every REPORT= reassignment below is invisible to the parent
+          # shell) and NOT `done < <(producer)` either (process substitution's exit status
+          # isn't checked by `set -e`/pipefail, so a failing producer silently loops zero
+          # times instead of aborting the step — same "empty report" symptom, different cause).
+          jq -c '.[]' /tmp/modules.filtered.json > /tmp/modules.jsonl
+          while read -r module; do
             MODULE_ID=$(echo "$module" | jq -r '.module_id')
             PKG=$(echo "$module" | jq -r '.package_name')
             CARVE_DIR=/tmp/carved/$MODULE_ID
@@ -183,7 +189,7 @@ jobs:
                                           --argjson size "$SIZE" \
                                           --argjson fs "$FILE_SPEC" \
                                           '. + [{module_id: $mid, oci_digest: $digest, fsverity_root_hash: $fsroot, media_type: $media, size_bytes: $size, file_spec: $fs}]')
-          done
+          done < /tmp/modules.jsonl
           echo "$REPORT" > /tmp/build-report.json
           cat /tmp/build-report.json
 
@@ -196,7 +202,10 @@ jobs:
           REPORT=$(cat /tmp/build-report.json)
 
           ENRICHED="[]"
-          echo "$REPORT" | jq -c '.[]' | while read -r entry; do
+          # See the carve step's note: same reasoning applies here (both the
+          # pipe-into-while and process-substitution forms are unsafe).
+          jq -c '.[]' <<< "$REPORT" > /tmp/report.jsonl
+          while read -r entry; do
             MODULE_ID=$(echo "$entry" | jq -r '.module_id')
             DIGEST=$(echo "$entry" | jq -r '.oci_digest')
             BLOB="/tmp/artifacts/$MODULE_ID.erofs"
@@ -216,7 +225,7 @@ jobs:
                                               --arg bundle "$BUNDLE" \
                                               --argjson e "$entry" \
                                               '. + [($e + {oci_ref: $oci, cosign_bundle: $bundle})]')
-          done
+          done < /tmp/report.jsonl
           echo "$ENRICHED" > /tmp/build-report.enriched.json
 
       - name: Send completion webhook

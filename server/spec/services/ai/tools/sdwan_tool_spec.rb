@@ -281,6 +281,36 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  describe "system_sdwan_activate_host_bridge" do
+    let(:host) { sdwan_test_node_instance(node: node) }
+    let!(:bridge) { ::Sdwan::HostBridgeAllocator.allocate!(host: host, account: account) }
+
+    it "marks a pending bridge active" do
+      expect(bridge.state).to eq("pending")
+      r = call("system_sdwan_activate_host_bridge", id: bridge.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:host_bridge][:state]).to eq("active")
+      expect(bridge.reload.state).to eq("active")
+    end
+
+    it "rejects a bridge from another account" do
+      other_account = create(:account)
+      other_node = sdwan_test_node(account: other_account)
+      other_host = sdwan_test_node_instance(node: other_node)
+      other_bridge = ::Sdwan::HostBridgeAllocator.allocate!(host: other_host, account: other_account)
+      r = call("system_sdwan_activate_host_bridge", id: other_bridge.id)
+      expect(r[:success]).to be false
+    end
+
+    it "reports an error instead of silently no-op'ing on a removed bridge" do
+      bridge.mark_removed!
+      r = call("system_sdwan_activate_host_bridge", id: bridge.id)
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/readopt/)
+      expect(bridge.reload.state).to eq("removed")
+    end
+  end
+
   # ─── Phase O6 — OVN deployment + switches + ports + plan (O3) ────────
 
   describe "system_sdwan_create_ovn_deployment" do
@@ -444,6 +474,135 @@ RSpec.describe Ai::Tools::SdwanTool do
     end
   end
 
+  # IMP-b0292ddd5ee9 — create_ovn_logical_switch / create_ovn_logical_switch_port
+  # land rows in `pending` (matching create_host_bridge's design) but, unlike
+  # host bridges, had no activation path via MCP: no tool ever called
+  # switch.mark_active!/port.mark_active!, so the documented create -> compile
+  # sequence silently produced an empty plan with zero errors.
+  describe "the documented create -> compile sequence" do
+    let!(:deployment) do
+      ::Sdwan::OvnDeployment.create!(
+        account: account,
+        nb_db_endpoint: "tcp:nb.example:6641",
+        sb_db_endpoint: "tcp:sb.example:6642"
+      )
+    end
+
+    it "materializes the plan once the switch and port are activated via the tool" do
+      switch_r = call(
+        "system_sdwan_create_ovn_logical_switch",
+        deployment_id: deployment.id,
+        name: "trap-switch"
+      )
+      switch_id = switch_r[:data][:ovn_logical_switch][:id]
+
+      port_r = call(
+        "system_sdwan_create_ovn_logical_switch_port",
+        logical_switch_id: switch_id,
+        name: "trap-port",
+        kind: "external"
+      )
+      port_id = port_r[:data][:ovn_logical_switch_port][:id]
+
+      # Before activation: the trap. Zero errors, but nothing compiles.
+      empty_plan = call("system_sdwan_compile_ovn_plan", deployment_id: deployment.id)
+      expect(empty_plan[:success]).to be true
+      expect(empty_plan[:data][:plan][:plan]).to eq([])
+
+      switch_activation = call("system_sdwan_activate_ovn_logical_switch", logical_switch_id: switch_id)
+      expect(switch_activation[:success]).to be true
+      expect(switch_activation[:data][:ovn_logical_switch][:state]).to eq("active")
+
+      port_activation = call("system_sdwan_activate_ovn_logical_switch_port", port_id: port_id)
+      expect(port_activation[:success]).to be true
+      expect(port_activation[:data][:ovn_logical_switch_port][:state]).to eq("active")
+
+      plan = call("system_sdwan_compile_ovn_plan", deployment_id: deployment.id)
+      cmds = plan[:data][:plan][:plan].map { |e| e[:cmd] }
+      expect(cmds).to include("ls-add", "lsp-add")
+    end
+  end
+
+  describe "system_sdwan_activate_ovn_logical_switch" do
+    let!(:deployment) do
+      ::Sdwan::OvnDeployment.create!(
+        account: account,
+        nb_db_endpoint: "tcp:nb.example:6641",
+        sb_db_endpoint: "tcp:sb.example:6642"
+      )
+    end
+    let!(:switch) { deployment.logical_switches.create!(account: account, name: "activate-me") }
+
+    it "marks a pending switch active" do
+      expect(switch.state).to eq("pending")
+      r = call("system_sdwan_activate_ovn_logical_switch", logical_switch_id: switch.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:ovn_logical_switch][:state]).to eq("active")
+      expect(switch.reload.state).to eq("active")
+    end
+
+    it "rejects a switch from another account" do
+      other_account = create(:account)
+      other_deployment = ::Sdwan::OvnDeployment.create!(
+        account: other_account,
+        nb_db_endpoint: "tcp:nb.other:6641",
+        sb_db_endpoint: "tcp:sb.other:6642"
+      )
+      other_switch = other_deployment.logical_switches.create!(account: other_account, name: "not-mine")
+      r = call("system_sdwan_activate_ovn_logical_switch", logical_switch_id: other_switch.id)
+      expect(r[:success]).to be false
+    end
+
+    it "reports an error instead of silently no-op'ing on a removed switch" do
+      switch.mark_removed!
+      r = call("system_sdwan_activate_ovn_logical_switch", logical_switch_id: switch.id)
+      expect(r[:success]).to be false
+      expect(switch.reload.state).to eq("removed")
+    end
+  end
+
+  describe "system_sdwan_activate_ovn_logical_switch_port" do
+    let!(:deployment) do
+      ::Sdwan::OvnDeployment.create!(
+        account: account,
+        nb_db_endpoint: "tcp:nb.example:6641",
+        sb_db_endpoint: "tcp:sb.example:6642"
+      )
+    end
+    let!(:switch) { deployment.logical_switches.create!(account: account, name: "port-parent") }
+    let!(:port) do
+      switch.ports.create!(account: account, name: "activate-me", kind: "external")
+    end
+
+    it "marks a pending port active" do
+      expect(port.state).to eq("pending")
+      r = call("system_sdwan_activate_ovn_logical_switch_port", port_id: port.id)
+      expect(r[:success]).to be true
+      expect(r[:data][:ovn_logical_switch_port][:state]).to eq("active")
+      expect(port.reload.state).to eq("active")
+    end
+
+    it "rejects a port from another account" do
+      other_account = create(:account)
+      other_deployment = ::Sdwan::OvnDeployment.create!(
+        account: other_account,
+        nb_db_endpoint: "tcp:nb.other:6641",
+        sb_db_endpoint: "tcp:sb.other:6642"
+      )
+      other_switch = other_deployment.logical_switches.create!(account: other_account, name: "not-mine")
+      other_port = other_switch.ports.create!(account: other_account, name: "not-mine", kind: "external")
+      r = call("system_sdwan_activate_ovn_logical_switch_port", port_id: other_port.id)
+      expect(r[:success]).to be false
+    end
+
+    it "reports an error instead of silently no-op'ing on a removed port" do
+      port.mark_removed!
+      r = call("system_sdwan_activate_ovn_logical_switch_port", port_id: port.id)
+      expect(r[:success]).to be false
+      expect(port.reload.state).to eq("removed")
+    end
+  end
+
   describe "system_sdwan_compile_ovn_plan" do
     let!(:deployment) do
       ::Sdwan::OvnDeployment.create!(
@@ -585,6 +744,23 @@ RSpec.describe Ai::Tools::SdwanTool do
         r = call("system_sdwan_delete_ovn_logical_switch_port", port_id: op.id)
         expect(r[:success]).to be false
         expect(Sdwan::OvnLogicalSwitchPort.exists?(op.id)).to be true
+      end
+    end
+
+    describe "system_sdwan_delete_ovn_deployment" do
+      it "destroys the deployment without raising (model has no name column)" do
+        r = call("system_sdwan_delete_ovn_deployment", deployment_id: deployment.id)
+        expect(r[:success]).to be true
+        expect(r[:data][:deleted]).to be true
+        expect(Sdwan::OvnDeployment.exists?(deployment.id)).to be false
+      end
+
+      it "rejects a deployment from another account" do
+        other = create(:account)
+        foreign = ::Sdwan::OvnDeployment.create!(account: other, nb_db_endpoint: "tcp:nb.o:6641", sb_db_endpoint: "tcp:sb.o:6642")
+        r = call("system_sdwan_delete_ovn_deployment", deployment_id: foreign.id)
+        expect(r[:success]).to be false
+        expect(Sdwan::OvnDeployment.exists?(foreign.id)).to be true
       end
     end
 

@@ -97,7 +97,9 @@ module System
         # instance_reboot gate (notify_and_proceed in the fleet seed) so the
         # drift is notified, deduped per instance_id, and visible to
         # operators instead of discarded as decision :skipped. No skill —
-        # no reboot executor exists yet.
+        # there is nothing to plan; the REMEDIATION_APPLIERS entry below
+        # (converge_instance_state_drift) is the real remediation, applied
+        # directly on :proceed.
         "system.instance_state_drifted" => {
           skill: nil,
           action_category: "system.instance_reboot"
@@ -660,7 +662,22 @@ module System
         # F3-01: the instance_reprovision executor. A silent instance's agent
         # is unreachable, so on-node task commands cannot apply — the
         # remediation is a provider-side reboot via InstanceControlService.
-        "system.instance_silent" => { method: :reboot_silent_instance }
+        "system.instance_silent" => { method: :reboot_silent_instance },
+        # IMP-555e29eeb4ab: provider-state drift (InstanceStateDriftSensor)
+        # had no applier at all — every proceed recorded applied:false, so a
+        # VM stopped/killed behind the platform's back stayed "running" in
+        # the model forever. There is nothing to actuate here (the drift IS
+        # the real state); the remediation is a model-side convergence to
+        # the provider-reported status.
+        "system.instance_state_drifted" => { method: :converge_instance_state_drift },
+        # IMP-83471cc28e1a: honeypot quarantine (F3-08) routes through
+        # system.instance_terminate but, like instance_silent, has no skill
+        # and no on-node task to dispatch — the remediation IS the
+        # provider-side terminate. Without this entry the approved gate's
+        # apply_remediation! fell through to the "no applier" branch and the
+        # compromised instance was never terminated despite the operator
+        # approving the quarantine.
+        "system.honeypot_access" => { method: :quarantine_honeypot_instance }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -684,17 +701,123 @@ module System
       # F3-01 — provider-side reboot for an approved instance_reprovision.
       # Account-scoped lookup; returns the same applied/reason shape as the
       # other appliers so the decision/event/stamp paths stay uniform.
+      #
+      # IMP-f5f03a7e8d3b: the approval TTL (1h) outlives the F1-12
+      # presumed-dead reap threshold (30 min — reap_presumed_dead! above), so
+      # by the time an operator approves the instance is USUALLY already
+      # flipped running -> error — the race is the norm, not an edge case.
+      # NodeInstance's AASM :reboot event only transitions from :running, so
+      # hardcoding action: "reboot" made the approved self-heal return
+      # applied:false against exactly the state the reap itself produces,
+      # stranding the instance for manual intervention every time. Pick the
+      # AASM-legal action for the instance's CURRENT status instead: reboot
+      # when still running, start when stopped/error (the self-heal intent —
+      # bring it back — is the same; "start" is just the legal verb from a
+      # not-currently-running row). :stopped is reachable here too if an
+      # operator manually stopped the same instance_silent instance before
+      # approving the pending reprovision request — "start" is still the
+      # right call: the approval itself is the operator's decision to bring
+      # it back. A :starting instance (never reached running) has no legal
+      # forward transition from here at all; surfaced as applied:false with
+      # a status-specific reason rather than a generic provider error.
       def reboot_silent_instance(signal, _skill_result)
         id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
 
-        result = ::System::InstanceControlService.execute(instance: instance, action: "reboot")
+        action = if instance.may_reboot?
+                   "reboot"
+                 elsif instance.may_start?
+                   "start"
+                 end
+        unless action
+          return { applied: false, instance_id: instance.id,
+                   reason: "instance in #{instance.status} status — no self-heal action available, needs manual intervention" }
+        end
+
+        result = ::System::InstanceControlService.execute(instance: instance, action: action)
         if result.respond_to?(:success?)
-          { applied: result.success?, action: "reboot", instance_id: instance.id,
+          { applied: result.success?, action: action, instance_id: instance.id,
             reason: (result.respond_to?(:error) ? result.error : nil) }.compact
         else
-          { applied: true, action: "reboot", instance_id: instance.id }
+          { applied: true, action: action, instance_id: instance.id }
+        end
+      end
+
+      # IMP-555e29eeb4ab: maps InstanceStateDriftSensor's actual_status (the
+      # provider-reported state) to the AASM event that reconciles the model
+      # to match it. "terminated" uses `terminate` rather than the narrower
+      # `mark_terminated` finalizer — mark_terminated only allows from
+      # [terminated, stopped, running, error] (node_instance.rb), so an
+      # instance that drifted into :stopping/:rebooting/etc. between sense
+      # and this proceed (e.g. an operator issued a stop/reboot on the same
+      # instance concurrently) would never converge. `terminate` is legal
+      # from every non-terminal state (F4-02 — "once the provider destroys
+      # the cloud resource, the DB row must always reach :terminated"),
+      # which is exactly this case. stopped/error keep the narrower
+      # finalizers since the sensor only ever senses from :running, which
+      # both mark_stopped and mark_errored already cover.
+      CONVERGENCE_EVENT_FOR_ACTUAL_STATUS = {
+        "stopped" => :mark_stopped!,
+        "terminated" => :terminate!,
+        "error" => :mark_errored!
+      }.freeze
+
+      # IMP-555e29eeb4ab: the instance_state_drifted applier. Unlike
+      # reboot_silent_instance, there is nothing to actuate — the provider
+      # already transitioned the VM (or is itself reporting error) — so this
+      # just replays the matching AASM finalizer event instead of calling
+      # InstanceControlService, keeping the transition legal and audited
+      # (System::LifecycleAuditable) like every other real status change.
+      def converge_instance_state_drift(signal, _skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        id = payload["instance_id"] || payload[:instance_id]
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+
+        actual_status = (payload["actual_status"] || payload[:actual_status]).to_s
+        event = CONVERGENCE_EVENT_FOR_ACTUAL_STATUS[actual_status]
+        unless event
+          return { applied: false, instance_id: instance.id,
+                   reason: "no convergence mapping for actual_status=#{actual_status.inspect}" }
+        end
+
+        # Re-check the LIVE status, not the signal's (possibly stale)
+        # snapshot — the sensor may have already re-synced, or an operator
+        # may have acted manually, between sense and this proceed.
+        if instance.status == actual_status
+          return { applied: false, instance_id: instance.id, reason: "already converged to #{actual_status}" }
+        end
+
+        predicate = "may_#{event.to_s.delete_suffix('!')}?"
+        unless instance.public_send(predicate)
+          return { applied: false, instance_id: instance.id,
+                   reason: "instance in #{instance.status} status — no legal transition to #{actual_status}" }
+        end
+
+        instance.public_send(event)
+        { applied: true, instance_id: instance.id, converged_to: instance.status }
+      end
+
+      # IMP-83471cc28e1a: quarantine the compromised instance behind an
+      # approved honeypot-access signal. HoneypotAccessSensor#signals_for can
+      # emit a module-only signal (no hosting instance found at sense time)
+      # when nothing currently runs the accessed canary — nothing to
+      # terminate, so that's applied: false with a clear reason rather than
+      # an error. Same applied/reason shape as the other appliers.
+      def quarantine_honeypot_instance(signal, _skill_result)
+        id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
+        return { applied: false, reason: "no instance to quarantine (module-only honeypot signal)" } if id.blank?
+
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
+        return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+
+        result = ::System::InstanceControlService.execute(instance: instance, action: "terminate")
+        if result.respond_to?(:success?)
+          { applied: result.success?, action: "terminate", instance_id: instance.id,
+            reason: (result.respond_to?(:error) ? result.error : nil) }.compact
+        else
+          { applied: true, action: "terminate", instance_id: instance.id }
         end
       end
 

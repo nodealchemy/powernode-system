@@ -99,5 +99,21 @@ RSpec.describe System::Ai::Skills::ExposeServiceLocalExecutor do
       expect(r[:success]).to be false
       expect(r[:error]).to match(/not found/)
     end
+
+    it "fails clearly instead of reporting a misleading success when the writer silently " \
+       "skipped this service's router (no valid certificate/host resolvable) " \
+       "(bug: routes_configured echoed the writer's total-exposed count, not what was actually rendered)" do
+      allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+        .and_return(output_path: "/tmp/local-services.yaml", route_count: 0,
+                    skipped_service_ids: [ service.id ])
+
+      r = exec.execute(service_id: service.id, auth_mode: "authenticated")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/no valid certificate|host resolvable/i)
+      # the facet flip is idempotent and already persisted — a later retry
+      # (once a cert exists) picks up from here rather than starting over.
+      expect(service.reload.local_enabled).to be true
+    end
   end
 end

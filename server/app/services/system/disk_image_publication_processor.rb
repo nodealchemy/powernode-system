@@ -34,6 +34,7 @@ module System
     def process!(publication:)
       return failure(nil, "publication required") unless publication
       return idempotent_hit!(publication) if already_published?(publication)
+      return conflict!(publication) unless publication.may_start_verifying?
 
       publication.update!(attempt_count: publication.attempt_count + 1)
       publication.start_verifying!
@@ -81,6 +82,27 @@ module System
       Result.new(ok?: true, publication: publication,
                  file_object: publication.file_object,
                  idempotent_hit: true)
+    end
+
+    # A re-entry (typically a redelivered Gitea webhook) for a publication
+    # that has moved past the ingest pipeline's valid entry states — e.g.
+    # retired/purged after a rollback or reaper sweep — must be a strict
+    # no-op. Without this guard, start_verifying! and mark_published! both
+    # silently no-op (whiny_transitions:false — retired/purged aren't in
+    # either event's from-state list) while ingest, upload_to_storage!, and
+    # the platform update all still run unconditionally, pointing
+    # NodePlatform at a brand-new FileObject that no publication row
+    # references (breaks the rollback substrate + #active?, and leaks
+    # untracked storage). Checked with may_start_verifying? (the platform's
+    # standard AASM pre-flight predicate, see ExecutionDispatcher) BEFORE
+    # any side effect runs, not after.
+    def conflict!(publication)
+      Rails.logger.warn "[DiskImagePublicationProcessor] ignoring re-entry for " \
+                         "publication #{publication.id} (git_sha=#{publication.git_sha}) " \
+                         "in terminal status=#{publication.status}"
+      Result.new(ok?: false,
+                 error: "publication #{publication.id} is status=#{publication.status}; not eligible for (re)verification",
+                 publication: publication)
     end
 
     # Selects the right ingest adapter based on the publication source.

@@ -178,5 +178,18 @@ RSpec.describe Sdwan::ServiceExposureWriter, type: :service do
       expect(result[:route_count]).to eq(1)
       expect(File.exist?(result[:output_path])).to be(true)
     end
+
+    it "excludes a hostless/uncertified service from route_count and reports it as skipped " \
+       "(bug: route_count previously counted every exposed service regardless of whether its " \
+       "router was actually rendered, so a caller couldn't tell a skip from a real success)" do
+      svc = create_service(local_certificate: nil)
+      # no valid account cert to fall back on -> render_yaml must skip this service's router
+      System::AcmeCertificate.where(account_id: account.id).update_all(status: "revoked")
+
+      result = writer.write!
+
+      expect(result[:route_count]).to eq(0)
+      expect(result[:skipped_service_ids]).to eq([ svc.id ])
+    end
   end
 end

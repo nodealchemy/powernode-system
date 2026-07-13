@@ -270,6 +270,13 @@ module Ai
         error_result(e.message)
       rescue ActiveRecord::RecordInvalid => e
         error_result(e.record.errors.full_messages.join("; "))
+      rescue ::Sdwan::ServiceExposureWriter::WriteError => e
+        # The DB flip (create/update/delete/unexpose) already committed by
+        # this point — only the reverse-proxy regen failed. Surface it as a
+        # clean error instead of a raw exception, and flag that the stale
+        # on-disk YAML may still be routing the old state until a regen
+        # succeeds (system_reverse_proxy_compose, or retry this action).
+        error_result("service change saved but reverse-proxy regen failed (stale route may still be live): #{e.message}")
       end
 
       private

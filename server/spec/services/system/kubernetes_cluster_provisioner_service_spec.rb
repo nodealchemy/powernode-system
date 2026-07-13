@@ -395,6 +395,76 @@ RSpec.describe System::KubernetesClusterProvisionerService do
     end
   end
 
+  # Regression — phase=ready re-fires register_node_join! on every k3s
+  # version bump / rolling upgrade / state loss. Before the fix this
+  # ALWAYS re-resolved "most recent non-error cluster in the account"
+  # and blindly moved the node's row onto it — silently corrupting
+  # multi-cluster membership the moment a second cluster existed, in
+  # direct contradiction of the AmbiguousClusterError isolation guard
+  # already enforced by join_request!.
+  describe ".register_node_join! multi-cluster isolation (regression)" do
+    let(:server_inst_2) { sdwan_test_node_instance(node: node, name: "i-server-2") }
+    let!(:server_peer_2) {
+      ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
+                            node_instance: server_inst_2, publicly_reachable: false)
+    }
+
+    before do
+      server_peer
+      @cluster_a = described_class.bootstrap!(
+        node_instance: server_instance,
+        kubeconfig: "kc-A", server_token: "tok-A",
+        agent_token: "agent-A", k8s_version: "v1.30"
+      )
+      # Agent joins cluster_a while it's the only cluster in the account
+      # — unambiguous single-cluster auto-select.
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent",
+                                          k8s_version: "v1.30")
+      # A second, independent cluster bootstraps later (newer created_at).
+      @cluster_b = described_class.bootstrap!(
+        node_instance: server_inst_2,
+        kubeconfig: "kc-B", server_token: "tok-B",
+        agent_token: "agent-B", k8s_version: "v1.30"
+      )
+    end
+
+    it "refuses (does not silently relocate) an already-joined node's ready re-fire once a second cluster exists" do
+      node_row = ::Devops::KubernetesNode.find_by!(node_instance_id: agent_instance.id)
+      expect(node_row.kubernetes_cluster_id).to eq(@cluster_a.id)
+
+      expect {
+        described_class.register_node_join!(node_instance: agent_instance, role: "agent",
+                                            k8s_version: "v1.30.1")
+      }.to raise_error(described_class::AmbiguousClusterError, /pass target_cluster_id/)
+
+      expect(node_row.reload.kubernetes_cluster_id).to eq(@cluster_a.id)
+    end
+
+    it "stays pinned to the node's own cluster when target_cluster_id matches its existing membership" do
+      node_row = ::Devops::KubernetesNode.find_by!(node_instance_id: agent_instance.id)
+
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent",
+                                          k8s_version: "v1.30.1", target_cluster_id: @cluster_a.id)
+
+      expect(node_row.reload.kubernetes_cluster_id).to eq(@cluster_a.id)
+      expect(@cluster_a.reload.node_count).to eq(2) # server + agent, unchanged
+      expect(@cluster_b.reload.node_count).to eq(1) # unaffected
+    end
+
+    it "adjusts node_count on both clusters when explicitly retargeted to a different cluster" do
+      node_row = ::Devops::KubernetesNode.find_by!(node_instance_id: agent_instance.id)
+      expect(@cluster_a.reload.node_count).to eq(2)
+      expect(@cluster_b.reload.node_count).to eq(1)
+
+      described_class.register_node_join!(node_instance: agent_instance, role: "agent",
+                                          target_cluster_id: @cluster_b.id)
+
+      expect(node_row.reload.kubernetes_cluster_id).to eq(@cluster_b.id)
+      expect(@cluster_a.reload.node_count).to eq(1)
+      expect(@cluster_b.reload.node_count).to eq(2)
+    end
+  end
+
   describe ".mark_node_ready!" do
     before do
       server_peer
@@ -618,9 +688,13 @@ RSpec.describe System::KubernetesClusterProvisionerService do
       ::Sdwan::Peer.create!(account: account, sdwan_network_id: network.id,
                              node_instance: hw_worker, publicly_reachable: false)
 
+      # The outer `before` block already bootstrapped an ovn_kubernetes
+      # cluster on server_instance, so the account now legitimately has
+      # 2 active clusters — target_cluster_id disambiguates which one
+      # hw_worker means to join (auto-select is correctly refused above).
       expect {
         described_class.register_node_join!(
-          node_instance: hw_worker, role: "agent"
+          node_instance: hw_worker, role: "agent", target_cluster_id: flannel_cluster.id
         )
       }.not_to raise_error
     end

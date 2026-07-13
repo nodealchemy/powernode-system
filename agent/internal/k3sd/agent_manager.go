@@ -188,7 +188,7 @@ func (m *AgentManager) transitionReportReady(ctx context.Context) {
 	if m.state.readyReportedFor == version && version != "" {
 		return
 	}
-	if _, err := m.Client.ReportReady(ctx, RuntimeK3sAgent, RoleAgent, version); err != nil {
+	if _, err := m.Client.ReportReady(ctx, RuntimeK3sAgent, RoleAgent, version, m.state.joinedClusterID); err != nil {
 		m.recordError("report_ready", err)
 		return
 	}

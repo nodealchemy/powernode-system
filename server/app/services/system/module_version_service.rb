@@ -18,14 +18,20 @@ module System
     # Create a new version of the module, capturing current state
     # @param changelog [String] optional description of changes
     # @param user [User] optional user who created this version
+    # @param source_version [System::NodeModuleVersion] optional version to
+    #   copy the build artifact bundle (erofs/OCI metadata) from. The bundle
+    #   lives only on NodeModuleVersion, never on node_module, so it can't be
+    #   recovered from node_module's own columns the way mask/file_spec/etc.
+    #   can — callers that need it carried forward (rollback_to) must pass
+    #   the version to copy it from explicitly.
     # @return [System::NodeModuleVersion] the created version
-    def create_version(changelog: nil, user: nil)
+    def create_version(changelog: nil, user: nil, source_version: nil)
       raise LockError, "Module is locked and cannot be versioned" if node_module.locked?
 
       user ||= current_user
 
       ActiveRecord::Base.transaction do
-        version = node_module.versions.create!(
+        attrs = {
           changelog: changelog,
           created_by: user,
           mask: node_module.mask || {},
@@ -35,7 +41,10 @@ module System
           data_file_name: node_module.data_file_name,
           data_checksum: node_module.data_checksum,
           data_file_size: node_module.data_file_size
-        )
+        }
+        attrs.merge!(artifact_bundle_of(source_version)) if source_version
+
+        version = node_module.versions.create!(attrs)
 
         node_module.update!(
           current_version: version,
@@ -81,8 +90,13 @@ module System
 
         node_module.instance_variable_set(:@skip_auto_version, false)
 
-        # Create new version recording the rollback
-        create_version(changelog: changelog)
+        # Create new version recording the rollback, carrying forward the
+        # rolled-back-to version's build artifact bundle (erofs/OCI digest,
+        # fsverity root, SBOM/provenance/VEX). Without this the rollback
+        # version is spec-only: current_version&.artifact comes back nil and
+        # the agent has nothing to deploy — rollback strands the module
+        # instead of restoring the prior build.
+        create_version(changelog: changelog, source_version: version)
       end
     end
 
@@ -147,6 +161,20 @@ module System
     end
 
     private
+
+    # The build artifact bundle a version carries: the erofs/OCI artifacts
+    # JSONB plus the denormalized supply-chain metadata columns populated by
+    # ModuleOciIngestService. See System::NodeModuleVersion#artifact.
+    def artifact_bundle_of(source_version)
+      {
+        artifacts: source_version.artifacts || {},
+        oci_digest: source_version.oci_digest,
+        fsverity_root_hash: source_version.fsverity_root_hash,
+        sbom_uri: source_version.sbom_uri,
+        provenance_uri: source_version.provenance_uri,
+        vex_uri: source_version.vex_uri
+      }
+    end
 
     def diff_json(hash_a, hash_b)
       hash_a ||= {}

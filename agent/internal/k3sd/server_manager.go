@@ -212,7 +212,7 @@ func (m *ServerManager) transitionReportReady(ctx context.Context) {
 	if m.state.readyReportedFor == version && version != "" {
 		return // idempotent — already reported this version
 	}
-	if _, err := m.Client.ReportReady(ctx, RuntimeK3sServer, RoleServer, version); err != nil {
+	if _, err := m.Client.ReportReady(ctx, RuntimeK3sServer, RoleServer, version, m.state.bootstrappedFor); err != nil {
 		m.recordError("report_ready", err)
 		return
 	}

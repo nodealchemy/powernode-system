@@ -29,6 +29,13 @@
 #     parallel chain `sdwan_egress_<8-char-net-id>`.
 #   - Default policy lives on Sdwan::Network.settings["firewall_default_policy"]
 #     (defaults to "accept" — operators flip to "drop" for allowlist mode).
+#     The base-chain `policy` directive itself is ALWAYS emitted as
+#     "accept" — it is hook-wide and not scoped by any rule's `iif`
+#     clause, so a literal "policy drop" would brick every non-SDWAN input
+#     (SSH, agent heartbeats, DNS, ...) on the next reconcile. Allowlist
+#     mode is enforced instead via an explicit `iif "<iface>" drop` rule
+#     appended after all configured rules — fail-closed for this
+#     network's peer interface only, every other interface is unaffected.
 #   - Tag-based selectors are no-ops until slice 5 populates nft sets.
 #
 # Slice 2 of the SDWAN plan.
@@ -92,7 +99,13 @@ module Sdwan
     def emit_nft_script
       lines = []
       lines << "add table inet #{TABLE}"
-      lines << "add chain inet #{TABLE} #{chain_name} { type filter hook input priority #{HOOK_PRIORITY}; policy #{default_policy}; }"
+      # The base-chain `policy` fires for EVERY packet that reaches this
+      # hook — it is not scoped by any rule's `iif` clause, so it must
+      # always stay "accept" or every non-SDWAN input (SSH, agent
+      # heartbeats, DNS, ...) gets dropped the moment a network is flipped
+      # to allowlist mode. Allowlist enforcement happens further down via
+      # an explicit iif-scoped deny-all rule instead.
+      lines << "add chain inet #{TABLE} #{chain_name} { type filter hook input priority #{HOOK_PRIORITY}; policy accept; }"
       lines << "flush chain inet #{TABLE} #{chain_name}"
 
       # The interface scope clause is a global filter for every rule in
@@ -108,6 +121,14 @@ module Sdwan
         emitted = emit_rule(rule)
         lines << emitted if emitted
       end
+
+      # Allowlist mode (firewall_default_policy=drop): append the deny-all
+      # AFTER every configured rule, still scoped to this network's
+      # interface. Unmatched SDWAN-interface traffic hits this rule and is
+      # dropped; unmatched traffic on every other interface never matches
+      # any rule in this chain (they're all iif-scoped) and falls through
+      # to the chain's accept policy, untouched.
+      lines << "add rule inet #{TABLE} #{chain_name} #{iif_clause} drop" if default_policy == "drop"
 
       lines.join("\n") + "\n"
     end

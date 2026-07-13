@@ -72,6 +72,9 @@ module Ai
 
         # Task control
         "system_cancel_task"            => "system.infra_tasks.control",
+        # IMP-8153d1952ff8 — operator recourse on a wedged :running task,
+        # same gate as cancel (system.infra_tasks.control).
+        "system_abort_task"             => "system.infra_tasks.control",
 
         # Module diff (read — same level as get_module)
         "system_module_diff"            => "system.modules.read",
@@ -551,6 +554,17 @@ module Ai
           "system_cancel_task" => {
             description: "Cancel a pending task",
             parameters: { id: { type: "string", required: true, description: "UUID of the pending System::Task to cancel" } }
+          },
+          # IMP-8153d1952ff8 — the abort AASM event (legal from :running) was
+          # exposed only to the worker dispatch chain, leaving a wedged
+          # provision/build/ssh task stuck for up to the reaper's 60-min
+          # STUCK_RUNNING threshold with no operator recourse.
+          "system_abort_task" => {
+            description: "Abort a running task (operator recourse on a wedged provision/build/ssh task — errors once the task has already left :running)",
+            parameters: {
+              id: { type: "string", required: true, description: "UUID of the running System::Task to abort" },
+              reason: { type: "string", required: false, description: "Optional reason recorded on the task's error_message/audit events" }
+            }
           },
 
           # === Module diff preview (Track F-11) ===
@@ -1203,6 +1217,7 @@ module Ai
         when "system_list_tasks"               then list_tasks(params)
         when "system_get_task"                 then get_task(params)
         when "system_cancel_task"              then cancel_task(params)
+        when "system_abort_task"               then abort_task(params)
         when "system_module_diff"              then module_diff(params)
         when "system_deploy_platform"          then deploy_platform(params)
         # Storage volume CRUD (MCP.1) — wraps ProviderVolume + ProviderVolumeType
@@ -2010,6 +2025,19 @@ module Ai
         end
       end
 
+      # IMP-8153d1952ff8 — operator recourse on a wedged :running task.
+      # Mirrors cancel_task's may_x?/bang shape; the abort AASM event was
+      # already legal from :running, just unexposed on this surface.
+      def abort_task(params)
+        task = ::System::Task.where(account: @account).find(params[:id])
+        if task.respond_to?(:abort!) && task.may_abort?
+          task.abort!(params[:reason])
+          success_result(aborted: true, task: serialize_task(task.reload))
+        else
+          error_result("Task cannot be aborted from #{task.status}")
+        end
+      end
+
       # Single-task fetch — mirrors list_tasks' account scoping + serializer.
       # Not-found bubbles to the shared ActiveRecord::RecordNotFound rescue
       # in #call, which renders the standard error_result.
@@ -2176,6 +2204,14 @@ module Ai
                                           .find_by(id: params[:node_instance_id])
         return error_result("Instance not found: #{params[:node_instance_id]}") unless instance
 
+        # The instance's config["storage_volume"] holds a single binding — a
+        # second attach without an explicit detach would otherwise silently
+        # overwrite it, unbinding whatever disk is currently mounted.
+        existing_binding_id = bound_storage_volume_id(instance)
+        if existing_binding_id.present? && existing_binding_id != v.id.to_s
+          return error_result("Instance already has a storage_volume binding (volume #{existing_binding_id}) — detach it first")
+        end
+
         vt_kind = v.volume_type&.volume_type.to_s
         is_network_fs = %w[nfs smb iscsi].include?(vt_kind)
         deployment_name = params[:deployment_name].to_s.presence || "manual"
@@ -2195,8 +2231,9 @@ module Ai
           instance.update!(config: (instance.config || {}).merge("storage_volume" => binding))
         else
           return error_result("Volume already attached to another instance") if v.attached?
+          return error_result("Volume is not available to attach (status: #{v.status})") unless v.can_attach?
           device_name = next_block_device_for(instance)
-          v.attach_to!(instance, device_name)
+          return error_result("Attach failed — volume state changed") unless v.attach_to!(instance, device_name)
           binding = {
             volume_id: v.id, volume_name: v.name, size_gb: v.size_gb,
             transport: "block", mount_type: "device",
@@ -2220,6 +2257,8 @@ module Ai
           instance = ::System::NodeInstance.where(account_id: @account.id)
                                             .find_by(id: params[:node_instance_id])
           return error_result("Instance not found") unless instance
+          bound_volume_id = bound_storage_volume_id(instance)
+          return error_result("Volume not attached to this instance") unless bound_volume_id == v.id.to_s
           new_config = (instance.config || {}).except("storage_volume")
           instance.update!(config: new_config)
           success_result(detached: true, volume_id: v.id, instance_id: instance.id)
@@ -2629,6 +2668,13 @@ module Ai
         when "nfs" then "nfs://#{params[:nfs_server]}#{params[:nfs_export_path]}"
         else nil
         end
+      end
+
+      # The volume_id currently bound in this instance's single
+      # config["storage_volume"] slot, or nil if unbound. Shared by
+      # attach_volume's clobber guard and detach_volume's ownership check.
+      def bound_storage_volume_id(instance)
+        instance.config&.dig("storage_volume", "volume_id")&.to_s
       end
 
       def next_block_device_for(instance)

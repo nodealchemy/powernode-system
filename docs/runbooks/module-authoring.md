@@ -2,7 +2,7 @@
 
 > Status: active
 
-Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`. Covers `manifest.yaml` schema, `package_spec` / `file_spec` / `protected_spec` semantics, Containerfile patterns, two-stage CI pipeline, and Cosign keyless signing.
+Quick-start for authoring, signing, publishing, and assigning a new `NodeModule`. Covers `manifest.yaml` schema, `package_spec` / `file_spec` / `protected_spec` semantics, Containerfile patterns, two-stage CI pipeline, and Cosign static-key signing (Gitea Actions isn't on Sigstore Fulcio's trusted-issuer list, so keyless signing never verifies server-side — see Phase 5).
 
 **Audience:** module authors (internal + external open-source contributors), template designers composing fleet-wide assignments.
 
@@ -193,11 +193,11 @@ jobs:
           oras push registry.example.com/<account>/modules/my-nginx:${{ github.sha }} \
             ./dist/module.tar:application/vnd.powernode.module.v1+tar
 
-      - name: Sign with Cosign (keyless)
+      - name: Sign with Cosign (static key)
         run: |
-          cosign sign --yes registry.example.com/<account>/modules/my-nginx:${{ github.sha }}
+          cosign sign --key env://COSIGN_PRIVATE_KEY --yes registry.example.com/<account>/modules/my-nginx:${{ github.sha }}
         env:
-          COSIGN_EXPERIMENTAL: 1
+          COSIGN_PRIVATE_KEY: ${{ secrets.POWERNODE_COSIGN_PRIVATE_KEY }}
 ```
 
 **Do not copy the workflow inline** — use the canonical version at [`templates/module-repo/.gitea/workflows/build.yaml`](../../templates/module-repo/.gitea/workflows/build.yaml). The example above sketches the shape; the canonical workflow handles the full two-stage build, SBOM/VEX generation, in-toto provenance attestations, and OCI referrers. Diverging from the canonical workflow risks composing modules that the platform's `ModuleOciIngestService` rejects.
@@ -208,9 +208,9 @@ jobs:
 2. **Composer stage**: rsync applies your `rootfs/` tree per `file_spec` rules; mkfs.erofs computes the fs-verity digest
 3. **Artifact emission**: tar of the erofs lower layer + manifest.json (parsed) + erofs digest
 4. **OCI push**: `oras` uploads the artifact to `registry.example.com`
-5. **Cosign signing**: keyless signing via Sigstore Fulcio (no long-lived signing keys; ephemeral OIDC-bound certs tied to the Gitea Actions OIDC issuer)
+5. **Cosign signing**: static-key signing — Gitea Actions isn't on Sigstore Fulcio's trusted-issuer list, so keyless certs would never verify server-side. The `assemble` job signs with `POWERNODE_COSIGN_PRIVATE_KEY`, a Gitea Actions secret you add to your repo (ask your platform operator for the value — it's the private half of the platform's `POWERNODE_COSIGN_PUBLIC_KEY`). Keyless/Fulcio signing only applies to modules actually built on a Fulcio-trusted CI (e.g. GitHub Actions), not this Gitea template.
 
-The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature matching the `NodeModule`'s registered `cosign_identity_regexp` (set on the DB row, not the manifest), it creates a `NodeModuleVersion` row in `promotion_state: built`.
+The platform's `ModuleOciIngestService` polls the registry; when a new tag appears with a valid Cosign signature, it creates a `NodeModuleVersion` row in `promotion_state: built`. By default that means `cosign verify` against the platform's static `POWERNODE_COSIGN_PUBLIC_KEY`; the `NodeModule`'s `cosign_identity_regexp` / `cosign_issuer_regexp` (set on the DB row, not the manifest) only come into play on the keyless fallback path, for modules signed by a genuinely Fulcio-trusted issuer.
 
 ## Phase 6 — Verify publication ✅
 
@@ -324,7 +324,7 @@ The `mask` directive is a deliberate escape hatch — use sparingly; it inverts 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ModuleManifestSchemaError` on push | YAML doesn't match schema_version | Run `platform.system_validate_module_manifest` locally first |
-| Cosign signature rejected | `cosign_identity_regexp` doesn't match the OIDC issuer | Verify the Gitea Actions OIDC URL matches your regexp |
+| Cosign signature rejected | Static-key mismatch (default path) — repo's `POWERNODE_COSIGN_PRIVATE_KEY` doesn't correspond to the platform's `POWERNODE_COSIGN_PUBLIC_KEY`; only the keyless fallback checks `cosign_identity_regexp`/`cosign_issuer_regexp` | Confirm the repo's cosign key secret with your platform operator; for the keyless fallback, verify the signing CI's OIDC issuer matches your regexp |
 | Module shows in registry but no `NodeModuleVersion` row | OCI ingest hasn't run yet | Wait 60 s for the next ingest poll; check `journalctl -u powernode-worker@default \| grep ModuleOciIngest` |
 | `protected_spec` collision on assignment | Another module owns one of your protected files | Rename your file or use `mask` in a `config`-variety override |
 | Assignment to template succeeds but agent doesn't pull | Module is still `built` promotion_state — agents only pull `blessed`+ | Promote: `system_promote_module_version` |

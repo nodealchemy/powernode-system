@@ -25,10 +25,47 @@ RSpec.describe Sdwan::FirewallCompiler, type: :service do
       expect(result[:ruleset]).to include("flush chain inet powernode_sdwan #{result[:chain]}")
     end
 
-    it "respects firewall_default_policy=drop in network settings" do
+    it "SAFETY: never installs an unscoped base-chain drop policy — it would brick all non-SDWAN host input (SSH, heartbeats, DNS)" do
+      network.update!(settings: { "firewall_default_policy" => "drop" })
+      compiler = described_class.new(network)
+      out = compiler.compile[:ruleset]
+
+      # The base-chain `policy` directive fires for EVERY packet at the
+      # input hook — not just packets on this network's SDWAN interface —
+      # so it must always stay "accept". Allowlist mode is instead
+      # enforced with an explicit iif-scoped drop rule appended after all
+      # configured rules, so only this network's peer interface is denied
+      # by default; every other interface (management SSH, agent
+      # heartbeats, DNS, ...) falls through to the chain's accept policy
+      # untouched.
+      expect(out).not_to include("policy drop")
+      expect(out).to include("policy accept")
+      expect(out).to include(%(add rule inet powernode_sdwan #{compiler.chain_name} iif "#{compiler.interface_name}" drop))
+    end
+
+    it "respects firewall_default_policy=drop via a scoped deny-all rule, not the base-chain policy" do
       network.update!(settings: { "firewall_default_policy" => "drop" })
       expect(described_class.new(network).default_policy).to eq("drop")
-      expect(described_class.new(network).compile[:ruleset]).to include("policy drop")
+      expect(described_class.new(network).compile[:policy]).to eq("drop")
+    end
+
+    it "orders the scoped deny-all rule after explicit allow rules so allowlisted traffic still matches first" do
+      Sdwan::FirewallRule.create!(
+        sdwan_network_id: network.id, account_id: account.id,
+        name: "allow-ssh", priority: 100,
+        action: "accept", direction: "ingress", protocol: "tcp",
+        dst_port_range: (22..22)
+      )
+      network.update!(settings: { "firewall_default_policy" => "drop" })
+      compiler = described_class.new(network)
+      lines = compiler.compile[:ruleset].lines.map(&:chomp)
+
+      allow_index = lines.index { |l| l.include?("tcp dport 22 accept") }
+      deny_index  = lines.index { |l| l.end_with?(%(iif "#{compiler.interface_name}" drop)) }
+
+      expect(allow_index).not_to be_nil
+      expect(deny_index).not_to be_nil
+      expect(allow_index).to be < deny_index
     end
 
     it "falls back to accept when firewall_default_policy is unrecognized" do

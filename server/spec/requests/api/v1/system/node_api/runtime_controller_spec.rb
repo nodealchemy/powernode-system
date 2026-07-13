@@ -212,6 +212,35 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
       expect(cfg["flannel_backend"]).to eq("host-gw")
       expect(cfg["cluster_cidr"]).to eq("10.42.0.0/16")
     end
+
+    # Regression — a heavyweight-profile host must be predicted as
+    # cni_plugin=ovn_kubernetes BEFORE any cluster row exists, matching
+    # what KubernetesClusterProvisionerService#bootstrap! records via
+    # NETWORK_PROFILE_TO_CNI once the agent later reports credentials.
+    # Before the fix, this pre-cluster fallback was unconditionally
+    # "flannel" regardless of network_profile — so a heavyweight host's
+    # agent installed K3s with bundled Flannel (install-time is the
+    # only time --flannel-backend=* can be set) while the DB recorded
+    # cni_plugin=ovn_kubernetes once bootstrap! ran, permanently
+    # drifting the two apart (the immutability validator locks the
+    # wrong recorded value in, and enforce_cni_profile_compatibility!
+    # then wrongly blocks lightweight workers from joining what is
+    # really a flannel cluster).
+    it "predicts cni_plugin ovn_kubernetes for a heavyweight-profile host before any cluster exists" do
+      ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-server") do |m|
+        m.assign_attributes(variety: "subscription", enabled: true, priority: 100)
+      end
+      ::System::NodeModuleAssignment.find_or_create_by!(
+        node: node,
+        node_module: ::System::NodeModule.find_by(account: account, name: "k3s-server")
+      ) { |a| a.enabled = true }
+      node_instance.update!(network_profile: "heavyweight")
+
+      get "/api/v1/system/node_api/runtime/k3s_server/config"
+      expect(response).to have_http_status(:ok)
+      cfg = JSON.parse(response.body).dig("data", "bootstrap_config")
+      expect(cfg["cni_plugin"]).to eq("ovn_kubernetes")
+    end
   end
 
   describe "POST /api/v1/system/node_api/runtime/handshake" do
@@ -376,6 +405,107 @@ RSpec.describe Api::V1::System::NodeApi::RuntimeController, type: :request do
         body = JSON.parse(response.body)
         expect(body.dig("data", "api_endpoint")).to start_with("https://[")
         expect(body.dig("data", "agent_token")).to eq("tok-agt")
+      end
+    end
+
+    # Regression — phase=ready forwards params[:cluster_id] (the k3sd
+    # agent's own cached join/bootstrap cluster_id) as target_cluster_id
+    # so a ready re-fire resolves the node's actual cluster instead of
+    # guessing "most recent cluster in the account".
+    context "phase=ready (k3s_agent) multi-cluster targeting" do
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:k3s_agent_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_agent_module, enabled: true)
+      end
+
+      def bootstrap_extra_k3s_cluster!(name:, kubeconfig:, server_token:, agent_token:)
+        extra_instance = sdwan_test_node_instance(node: node, name: name)
+        ::Sdwan::Peer.create!(account: account, sdwan_network_id: sdwan_network.id,
+                              node_instance: extra_instance, publicly_reachable: false)
+        ::System::KubernetesClusterProvisionerService.bootstrap!(
+          node_instance: extra_instance, kubeconfig: kubeconfig, server_token: server_token,
+          agent_token: agent_token, k8s_version: "v1.30"
+        )
+      end
+
+      it "pins a ready re-fire to cluster_id instead of drifting to a newer cluster" do
+        cluster_a = bootstrap_extra_k3s_cluster!(name: "i-srv-a", kubeconfig: "kc-A",
+                                                  server_token: "tok-A", agent_token: "agent-A")
+        ::System::KubernetesClusterProvisionerService.register_node_join!(
+          node_instance: node_instance, role: "agent", k8s_version: "v1.30"
+        )
+        # A second, newer cluster now exists in the account.
+        bootstrap_extra_k3s_cluster!(name: "i-srv-b", kubeconfig: "kc-B",
+                                      server_token: "tok-B", agent_token: "agent-B")
+
+        post url, params: {
+          runtime: "k3s_agent", phase: "ready",
+          role: "agent", version: "v1.30.1", cluster_id: cluster_a.id
+        }, as: :json
+
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)
+        expect(body.dig("data", "cluster_id")).to eq(cluster_a.id)
+      end
+
+      it "refuses an ambiguous ready re-fire (409) when cluster_id is omitted and multiple clusters exist" do
+        bootstrap_extra_k3s_cluster!(name: "i-srv-c", kubeconfig: "kc-C",
+                                      server_token: "tok-C", agent_token: "agent-C")
+        ::System::KubernetesClusterProvisionerService.register_node_join!(
+          node_instance: node_instance, role: "agent", k8s_version: "v1.30"
+        )
+        bootstrap_extra_k3s_cluster!(name: "i-srv-d", kubeconfig: "kc-D",
+                                      server_token: "tok-D", agent_token: "agent-D")
+
+        post url, params: { runtime: "k3s_agent", phase: "ready", role: "agent", version: "v1.30.1" }, as: :json
+
+        expect(response).to have_http_status(:conflict)
+      end
+    end
+
+    # Regression — handle_k3s_ready only rescued NoClusterAvailableError /
+    # AmbiguousClusterError. register_node_join! also raises
+    # CniProfileMismatchError (via enforce_cni_profile_compatibility!) when
+    # a lightweight-profile node tries to join an ovn_kubernetes cluster —
+    # that fell through to core ApiResponse's blanket rescue_from
+    # StandardError as a generic 500, so the k3sd agent retried forever
+    # with no actionable signal.
+    context "phase=ready (k3s_agent) CNI profile mismatch" do
+      let!(:k3s_agent_module) do
+        ::System::NodeModule.find_or_create_by!(account: account, name: "k3s-agent") do |m|
+          m.assign_attributes(variety: "subscription", category: container_runtimes_category,
+                              enabled: true, public: true, priority: 100,
+                              description: "k3s agent test seed")
+        end
+      end
+      let!(:k3s_agent_assignment) do
+        ::System::NodeModuleAssignment.create!(node: node, node_module: k3s_agent_module, enabled: true)
+      end
+
+      it "returns 422 (not 500) when a lightweight agent tries to join an ovn_kubernetes cluster" do
+        hw_server = sdwan_test_node_instance(node: node, name: "i-hw-server-#{SecureRandom.hex(3)}")
+        hw_server.update!(network_profile: "heavyweight")
+        ::Sdwan::Peer.create!(account: account, sdwan_network_id: sdwan_network.id,
+                              node_instance: hw_server, publicly_reachable: false)
+        ::System::KubernetesClusterProvisionerService.bootstrap!(
+          node_instance: hw_server, kubeconfig: "kc", server_token: "tok",
+          agent_token: "atok", k8s_version: "v1.30"
+        )
+
+        # node_instance (the auth-bound current_instance) defaults to
+        # network_profile=lightweight — joining the ovn_kubernetes cluster
+        # bootstrapped above as a k3s_agent must surface as a clear 422,
+        # not a generic 500.
+        post url, params: { runtime: "k3s_agent", phase: "ready", role: "agent", version: "v1.30.1" }, as: :json
+
+        expect(response).to have_http_status(:unprocessable_content)
+        expect(JSON.parse(response.body)["error"]).to include("Mixed-profile")
       end
     end
 

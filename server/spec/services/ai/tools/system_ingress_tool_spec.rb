@@ -333,6 +333,53 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(::Sdwan::Service.find_by(id: exposed.id)).to be_nil
       expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
     end
+
+    # Bug: the DB flip (unexpose/delete/update) already committed by the time
+    # regen_local_services! runs, but ServiceExposureWriter::WriteError (e.g.
+    # an unwritable dynamic-config dir) wasn't rescued here — only
+    # RecordNotFound/RecordInvalid were — so it escaped `call` as a raw
+    # exception instead of a clean error_result, and the stale on-disk YAML
+    # kept routing the just-disabled/deleted service.
+    describe "a reverse-proxy regen failure after the DB flip already committed" do
+      before do
+        allow(::Sdwan::ServiceExposureWriter).to receive(:write!)
+          .and_raise(::Sdwan::ServiceExposureWriter::WriteError, "dynamic dir unwritable")
+      end
+
+      it "does not escape uncaught from system_unexpose_service_local" do
+        svc = create_service!(slug: "off-werr", local_enabled: true)
+
+        result = nil
+        expect { result = tool.execute(params: { action: "system_unexpose_service_local", service_id: svc.id }) }
+          .not_to raise_error
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/regen failed/i)
+        expect(svc.reload.local_enabled).to be false
+      end
+
+      it "does not escape uncaught from system_delete_service" do
+        svc = create_service!(slug: "del-werr", local_enabled: true)
+
+        result = nil
+        expect { result = tool.execute(params: { action: "system_delete_service", service_id: svc.id }) }
+          .not_to raise_error
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/regen failed/i)
+        expect(::Sdwan::Service.find_by(id: svc.id)).to be_nil
+      end
+
+      it "does not escape uncaught from system_update_service" do
+        svc = create_service!(slug: "upd-werr", local_enabled: true)
+
+        result = nil
+        expect {
+          result = tool.execute(params: { action: "system_update_service", service_id: svc.id, name: "Renamed" })
+        }.not_to raise_error
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/regen failed/i)
+        expect(svc.reload.name).to eq("Renamed")
+      end
+    end
   end
 
   describe "permission gating" do

@@ -286,6 +286,88 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # Audit IMP-dc49b9151852 — attach_volume ignored ProviderVolume#attach_to!'s
+  # return value and unconditionally stamped the instance's config binding, so
+  # a volume stuck in creating/error status "attached" successfully while the
+  # row never flipped to in-use — the agent mounts a device that was never
+  # attached. Attaching a second volume also silently clobbered the single
+  # storage_volume binding instead of refusing, and detach_volume's network-FS
+  # path cleared the binding without checking it belonged to the given volume.
+  describe "attach_volume / detach_volume binding integrity (IMP-dc49b9151852)" do
+    let(:instance) { create(:system_node_instance, account: account) }
+
+    describe "block-volume attach" do
+      it "does not strand the instance when the volume is not available (status creating)" do
+        volume = create(:system_provider_volume, account: account, status: "creating")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config["storage_volume"]).to be_nil
+        expect(volume.reload.node_instance_id).to be_nil
+        expect(volume.status).to eq("creating")
+      end
+
+      it "does not strand the instance when the volume is in error status" do
+        volume = create(:system_provider_volume, account: account, status: "error")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config["storage_volume"]).to be_nil
+        expect(volume.reload.node_instance_id).to be_nil
+      end
+
+      it "attaches a genuinely available volume and records the FK" do
+        volume = create(:system_provider_volume, account: account, status: "available")
+
+        r = call("system_attach_volume", volume_id: volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be true
+        expect(volume.reload.node_instance_id).to eq(instance.id)
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(volume.id)
+      end
+    end
+
+    describe "clobber guard" do
+      it "refuses to overwrite an existing storage_volume binding with a different volume" do
+        first = create(:system_provider_volume, account: account, status: "available")
+        second = create(:system_provider_volume, account: account, status: "available")
+        call("system_attach_volume", volume_id: first.id, node_instance_id: instance.id)
+
+        r = call("system_attach_volume", volume_id: second.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(first.id)
+        expect(second.reload.node_instance_id).to be_nil
+      end
+    end
+
+    describe "network-FS detach" do
+      let(:nfs_type) { create(:system_provider_volume_type, account: account, volume_type: "nfs") }
+      let(:bound_volume) { create(:system_provider_volume, account: account, volume_type: nfs_type) }
+      let(:other_volume) { create(:system_provider_volume, account: account, volume_type: nfs_type) }
+
+      it "refuses to clear the binding when it references a different volume" do
+        instance.update!(config: { "storage_volume" => { "volume_id" => bound_volume.id, "transport" => "nfs" } })
+
+        r = call("system_detach_volume", volume_id: other_volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be false
+        expect(instance.reload.config.dig("storage_volume", "volume_id")).to eq(bound_volume.id)
+      end
+
+      it "clears the binding when it references the given volume" do
+        instance.update!(config: { "storage_volume" => { "volume_id" => bound_volume.id, "transport" => "nfs" } })
+
+        r = call("system_detach_volume", volume_id: bound_volume.id, node_instance_id: instance.id)
+
+        expect(r[:success]).to be true
+        expect(instance.reload.config["storage_volume"]).to be_nil
+      end
+    end
+  end
+
   # Audit F4-08 — agents could provision, terminate, and drain but not
   # start/stop/reboot, even though InstanceControlService and the AASM fully
   # support these operations. For GPU-cost-sensitive missions stop/start is
@@ -1390,6 +1472,48 @@ end
     end
   end
 
+  # IMP-8153d1952ff8 — the AASM abort event (legal from :running) existed but
+  # was unexposed on both the operator REST API and this MCP surface, leaving
+  # a wedged provision/build/ssh task with no recourse short of the hourly
+  # reaper's 60-min STUCK_RUNNING threshold.
+  describe "system_abort_task" do
+    let(:node) { create(:system_node, account: account, node_template: template, name: "aborttsk") }
+    let!(:running_task) do
+      System::Task.create!(
+        account: account, command: "ssh_command", status: "running", started_at: Time.current,
+        operable_type: "System::Node", operable_id: node.id
+      )
+    end
+
+    it "aborts a running task" do
+      r = call("system_abort_task", id: running_task.id, reason: "operator abort")
+      expect(r[:success]).to be true
+      expect(r[:data][:aborted]).to be true
+      expect(r[:data][:task][:status]).to eq("aborted")
+      expect(running_task.reload.error_message).to eq("operator abort")
+    end
+
+    it "errors when the task is not abortable (state-machine guard)" do
+      pending_task = System::Task.create!(
+        account: account, command: "sync", status: "pending",
+        operable_type: "System::Node", operable_id: node.id
+      )
+      r = call("system_abort_task", id: pending_task.id)
+      expect(r[:success]).to be false
+      expect(pending_task.reload.status).to eq("pending")
+    end
+
+    it "denies callers without system.infra_tasks.control" do
+      denied = described_class.new(
+        account: account,
+        user: create(:user, account: account, permissions: %w[system.infra_tasks.read])
+      )
+      r = denied.execute(params: { action: "system_abort_task", id: running_task.id })
+      expect(r[:success]).to be false
+      expect(r[:error]).to include("permission denied")
+    end
+  end
+
   describe "system_get_task" do
     let(:node) { create(:system_node, account: account, node_template: template, name: "gettask") }
     let!(:task) do
@@ -2005,6 +2129,20 @@ end
         other_pub = create(:system_disk_image_publication, account: other_account, node_platform: create(:system_node_platform, account: other_account), status: "published")
         r = call("system_set_default_disk_image_publication", publication_id: other_pub.id)
         expect(r[:success]).to be false
+      end
+
+      it "copies disk_image_file_object_id/sha256/size_bytes so provisioning actually boots the new image, not just display metadata" do
+        promoted = create(:system_disk_image_publication, :published,
+                           account: account, node_platform: platform_record_for_pubs,
+                           oci_ref: "registry.example.com/test:promoted", git_sha: "promoted-sha")
+
+        r = call("system_set_default_disk_image_publication", publication_id: promoted.id)
+        expect(r[:success]).to be true
+
+        platform_record_for_pubs.reload
+        expect(platform_record_for_pubs.disk_image_file_object_id).to eq(promoted.file_object_id)
+        expect(platform_record_for_pubs.disk_image_sha256).to eq(promoted.sha256)
+        expect(platform_record_for_pubs.disk_image_size_bytes).to eq(promoted.size_bytes)
       end
     end
 

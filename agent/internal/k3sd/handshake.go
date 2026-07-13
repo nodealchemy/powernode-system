@@ -100,6 +100,15 @@ type HandshakeRequest struct {
 	// Ready fields (both, phase=ready)
 	Version string `json:"version,omitempty"`
 	Role    string `json:"role,omitempty"`
+
+	// ClusterID is the cluster this node already knows it's a member
+	// of — cached client-side from the join_request/bootstrap ack
+	// (AgentManager.state.joinedClusterID / ServerManager.state.
+	// bootstrappedFor). Forwarded as target_cluster_id so the
+	// platform resolves the node's actual membership on every ready
+	// re-fire (rolling upgrade / version bump / state loss) instead
+	// of guessing "most recent cluster in the account".
+	ClusterID string `json:"cluster_id,omitempty"`
 }
 
 // BootstrapAck is the payload returned for phase=bootstrap. Mirrors
@@ -227,13 +236,17 @@ func (c *Client) JoinRequest(ctx context.Context, targetClusterID string) (*Join
 
 // ReportReady (both server + agent) announces kubelet is up. Optional
 // version helps operators see which release each node is running per
-// rolling-upgrade tick.
-func (c *Client) ReportReady(ctx context.Context, runtime RuntimeKind, role, version string) (*ReadyAck, error) {
+// rolling-upgrade tick. clusterID is the cluster this node already
+// joined (AgentManager.state.joinedClusterID / ServerManager.state.
+// bootstrappedFor) — pass empty only if truly unknown; omitting it lets
+// the platform fall back to (refusable) auto-select.
+func (c *Client) ReportReady(ctx context.Context, runtime RuntimeKind, role, version, clusterID string) (*ReadyAck, error) {
 	req := HandshakeRequest{
-		Runtime: runtime,
-		Phase:   PhaseReady,
-		Version: version,
-		Role:    role,
+		Runtime:   runtime,
+		Phase:     PhaseReady,
+		Version:   version,
+		Role:      role,
+		ClusterID: clusterID,
 	}
 	var ack ReadyAck
 	if err := c.do(ctx, req, &ack); err != nil {

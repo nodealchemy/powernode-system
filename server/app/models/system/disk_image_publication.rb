@@ -23,6 +23,7 @@ module System
   #   failed, verifying → retired (DK3 cleanup rake — abandoned/stuck builds
   #                                past a grace window, same terminal state)
   #   retired  → purged        (reaper grace expired — hard-delete file_object)
+  #   retired  → published    (reactivate — operator rollback/promote, restores file_object)
   #
   # `attempt_count` increments on each re-receive so operators can see
   # which publications had transient failures before settling.
@@ -103,6 +104,21 @@ module System
       event :purge do
         transitions from: :retired, to: :purged
         before { self.purged_at = Time.current }
+      end
+
+      # Dedicated event for RollbackPublication/PromotePublication reactivating
+      # a retired target — deliberately separate from `mark_published` (which
+      # the CI/webhook ingest pipeline also drives via DiskImagePublicationProcessor)
+      # so broadening the operator rollback path can never let a replayed
+      # webhook re-publish an already-retired git_sha. Without this transition
+      # the row stays status=retired after the platform pointer flips back to
+      # it, and the next purge sweep would treat the now-active image as
+      # purgeable (see IMP-d4a546024745).
+      event :reactivate do
+        transitions from: :retired, to: :published do
+          guard { file_object_id.present? }
+        end
+        before { self.published_at = Time.current; self.retired_at = nil }
       end
     end
 

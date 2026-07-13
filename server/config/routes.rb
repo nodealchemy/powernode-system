@@ -32,13 +32,17 @@ Rails.application.routes.draw do
         post "setup/defaults", to: "setup#defaults"
 
         # === Operator-facing CRUD ===
-        # Public-facing tasks API: list/show/create/cancel only.
-        # State mutations (start/complete/fail/abort) are worker-only via
+        # Public-facing tasks API: list/show/create/cancel/abort only.
+        # start/complete/fail stay worker-only via
         # /api/v1/system/worker_api/tasks to keep AASM's single source
-        # of truth honest. Cancel is the one user-initiated state transition
-        # an operator can legitimately make on a pending task.
+        # of truth honest. Cancel is the user-initiated transition off a
+        # pending/scheduled task; abort (IMP-8153d1952ff8) is the operator's
+        # recourse on a wedged :running task, short of the hourly reaper.
         resources :tasks, only: %i[index show create] do
-          member { post :cancel }
+          member do
+            post :cancel
+            post :abort
+          end
         end
 
         # NodeInstancesController#set_node uses params[:node_id], so node_instances

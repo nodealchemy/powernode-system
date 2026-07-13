@@ -4,7 +4,7 @@ module Api
   module V1
     module System
       class TasksController < BaseController
-        before_action :set_task, only: [ :show, :cancel ]
+        before_action :set_task, only: [ :show, :cancel, :abort ]
 
         # GET /api/v1/system/tasks
         def index
@@ -79,15 +79,25 @@ module Api
         end
 
         # POST /api/v1/system/tasks/:id/cancel
-        # The other state mutations (start/complete/fail/abort) are
-        # deliberately NOT exposed publicly: those transitions belong to the
-        # worker dispatch chain, where the AASM state machine is the single
-        # source of truth. Allowing operators to forge them would corrupt the
-        # audit trail. Cancel stays public because cancelling a pending task
-        # is a legitimate user action.
+        # start/complete/fail stay worker-only: those transitions belong to
+        # the worker dispatch chain, where the AASM state machine is the
+        # single source of truth, and allowing operators to forge them would
+        # corrupt the audit trail. Cancel stays public because cancelling a
+        # pending/scheduled task is a legitimate user action.
         def cancel
           require_permission("system.infra_tasks.control")
           transition_or_error(:cancel, params[:reason])
+        end
+
+        # POST /api/v1/system/tasks/:id/abort
+        # IMP-8153d1952ff8 — a wedged provision/build/ssh task shows :running
+        # with no operator recourse short of the hourly reaper's 60-min
+        # STUCK_RUNNING threshold. The `abort` AASM event (legal from
+        # :running) already existed for the worker dispatch chain; expose it
+        # here behind the same infra_tasks.control gate as cancel.
+        def abort
+          require_permission("system.infra_tasks.control")
+          transition_or_error(:abort, params[:reason])
         end
 
         private

@@ -158,15 +158,22 @@ module System
       end
     end
 
+    # IMP-bb5fdd6bce28: no ipmitool/wakeonlan driver exists anywhere in the
+    # codebase yet. These branches used to log-and-claim success, which the
+    # AASM finalizer turned into a confident running/stopped row while the
+    # physical machine's power state never actually changed — a
+    # stopped-but-heartbeating (or never-powered-on) instance no sensor
+    # watches. Until a real driver lands, report failure so the transitional
+    # status reverts instead of a false terminal stamp landing on the row.
     def execute_physical_start(instance)
       ipmi_config = instance.config&.dig("ipmi")
 
       if ipmi_config.present?
-        Rails.logger.info("[InstanceControlService] IPMI power on for #{instance.name}")
-        { success: true, status: "running" }
-      elsif instance.config&.dig("mac_address").present?
-        Rails.logger.info("[InstanceControlService] Wake-on-LAN for #{instance.name}")
-        { success: true, status: "starting" }
+        Rails.logger.warn("[InstanceControlService] IPMI power-on requested for #{instance.name} but no IPMI driver is implemented - refusing to report false success")
+        { success: false, error: "IPMI power control is not implemented" }
+      elsif instance.mac_address.present?
+        Rails.logger.warn("[InstanceControlService] Wake-on-LAN requested for #{instance.name} but WoL is not implemented - refusing to report false success")
+        { success: false, error: "Wake-on-LAN is not implemented" }
       else
         { success: false, error: "No IPMI or WoL configuration available" }
       end
@@ -184,8 +191,8 @@ module System
 
       ipmi_config = instance.config&.dig("ipmi")
       if ipmi_config.present?
-        Rails.logger.info("[InstanceControlService] IPMI power off for #{instance.name}")
-        { success: true, status: "stopped" }
+        Rails.logger.warn("[InstanceControlService] IPMI power-off requested for #{instance.name} but no IPMI driver is implemented - refusing to report false success")
+        { success: false, error: "IPMI power control is not implemented" }
       else
         { success: false, error: "Cannot stop physical instance - no SSH or IPMI available" }
       end
@@ -203,8 +210,8 @@ module System
 
       ipmi_config = instance.config&.dig("ipmi")
       if ipmi_config.present?
-        Rails.logger.info("[InstanceControlService] IPMI power cycle for #{instance.name}")
-        { success: true, status: "rebooting" }
+        Rails.logger.warn("[InstanceControlService] IPMI power-cycle requested for #{instance.name} but no IPMI driver is implemented - refusing to report false success")
+        { success: false, error: "IPMI power control is not implemented" }
       else
         { success: false, error: "Cannot reboot physical instance - no SSH or IPMI available" }
       end

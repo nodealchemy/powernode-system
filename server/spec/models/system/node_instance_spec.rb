@@ -250,6 +250,19 @@ RSpec.describe System::NodeInstance, type: :model do
         expect(instance.may_terminate?).to be false
       end
     end
+
+    # IMP-42cf03360656: a >30-min partition (or any transient outage that
+    # trips the presumed-dead reap → status "error") must not permanently
+    # strand a healthy instance. Before this fix mark_running's from-list
+    # omitted :error, so may_mark_running? was false and the heartbeat
+    # controller's `mark_running! if may_mark_running?` silently no-op'd —
+    # the instance stayed in error forever even after heartbeats resumed.
+    describe '#may_mark_running?' do
+      it 'is true for error instances' do
+        instance.status = 'error'
+        expect(instance.may_mark_running?).to be true
+      end
+    end
   end
 
   describe 'encrypted attributes' do
