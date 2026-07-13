@@ -1,0 +1,14 @@
+[Unit]
+Description=tmpfs for Docker data dir (overlay2 can't nest on this instance's own overlay rootfs)
+DefaultDependencies=no
+Before=local-fs.target docker.service
+Conflicts=umount.target
+
+[Mount]
+What=tmpfs
+Where=/var/lib/docker
+Type=tmpfs
+Options=size=8G,mode=0711
+
+[Install]
+WantedBy=local-fs.target

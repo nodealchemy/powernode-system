@@ -95,12 +95,27 @@ file_spec:
   - "/etc/systemd/system/multi-user.target.wants/docker.service"
   - "/etc/systemd/system/sockets.target.wants/docker.socket"
   # iptables/xtables (apt `iptables`) — dockerd manages its own NAT/filter
-  # chains for container networking.
+  # chains for container networking. noble's iptables binaries are
+  # update-alternatives symlinks (/usr/sbin/iptables -> /etc/alternatives/
+  # iptables -> .../xtables-nft-multi); carving only /usr/sbin/* leaves the
+  # /etc/alternatives/* hop dangling and dockerd fails "iptables: executable
+  # file not found in $PATH" even though /usr/sbin/iptables exists.
   - "/usr/sbin/iptables*"
   - "/usr/sbin/ip6tables*"
   - "/usr/sbin/xtables*"
+  - "/etc/alternatives/iptables*"
+  - "/etc/alternatives/ip6tables*"
   # gitea-act-runner-register.sh parses the node_api JSON response with jq.
   - "/usr/bin/jq"
+  # tmpfs mount for /var/lib/docker (below) — dockerd's overlay2 storage
+  # driver can't nest on this instance's own overlay rootfs (module-layering
+  # mounts / itself as overlay; overlay-on-overlay is unsupported by the
+  # kernel, "failed to mount overlay: invalid argument"). tmpfs isn't
+  # overlayfs, so overlay2 works fine on top of it — and since this pool is
+  # ephemeral/recycled, losing the layer cache on stop is correct, not a
+  # regression.
+  - "/etc/systemd/system/var-lib-docker.mount"
+  - "/etc/systemd/system/local-fs.target.wants/var-lib-docker.mount"
   # apt's docker-ce/containerd.io/iptables packages pull additional shared
   # libraries (libseccomp, libltdl, etc.) under the multiarch lib dir — carve
   # the whole tree rather than enumerate individual .so files, same
