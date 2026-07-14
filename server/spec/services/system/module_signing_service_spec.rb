@@ -28,11 +28,15 @@ RSpec.describe System::ModuleSigningService do
   before do
     allow(Open3).to receive(:capture3).with("which", "oras").and_return([ "", "", status_double(true) ])
     allow(Open3).to receive(:capture3).with("which", "cosign").and_return([ "", "", status_double(true) ])
+    # Default: registry unconfigured → with_registry_auth yields an empty env
+    # (no `oras login`), so oras/cosign run with env={} (vault_env for cosign).
+    # The authenticated path has its own context below.
+    allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(false)
   end
 
   def stub_manifest_fetch(returned_digest: digest, ok: true)
     allow(Open3).to receive(:capture3)
-      .with("oras", "manifest", "fetch", "--descriptor", oci_ref)
+      .with({}, "oras", "manifest", "fetch", "--descriptor", oci_ref)
       .and_return(
         ok ? [ { digest: returned_digest }.to_json, "", status_double(true) ]
            : [ "", "Error: not found", status_double(false, code: 1) ]
@@ -155,6 +159,49 @@ RSpec.describe System::ModuleSigningService do
 
       result = service.sign!(oci_ref: oci_ref, expected_digest: digest)
       expect(result.ok?).to be true
+    end
+
+    context "when the registry is configured (private Gitea OCI)" do
+      let(:reg_host)  { "git.powernode.org" }
+      let(:reg_user)  { "everett" }
+      let(:reg_token) { "gitea-token-not-a-real-secret" }
+
+      before do
+        allow(::System::DiskImageRegistryConfig).to receive(:configured?).with(account: account).and_return(true)
+        allow(::System::DiskImageRegistryConfig).to receive(:registry_host).with(account: account).and_return(reg_host)
+        allow(::System::DiskImageRegistryConfig).to receive(:registry_user).with(account: account).and_return(reg_user)
+        allow(::System::DiskImageRegistryConfig).to receive(:registry_token).with(account: account).and_return(reg_token)
+      end
+
+      it "logs in with the token via stdin (never argv) into a throwaway DOCKER_CONFIG, and threads it onto oras + cosign" do
+        # oras login — token piped via stdin_data, DOCKER_CONFIG-scoped, nothing key/token-shaped in argv
+        expect(Open3).to receive(:capture3)
+          .with(hash_including("DOCKER_CONFIG"), "oras", "login", reg_host, "--username", reg_user, "--password-stdin", stdin_data: reg_token)
+          .and_return([ "Login Succeeded", "", status_double(true) ])
+        # manifest fetch + cosign sign both carry the same DOCKER_CONFIG env
+        expect(Open3).to receive(:capture3)
+          .with(hash_including("DOCKER_CONFIG"), "oras", "manifest", "fetch", "--descriptor", oci_ref)
+          .and_return([ { digest: digest }.to_json, "", status_double(true) ])
+        expect(Open3).to receive(:capture3)
+          .with(hash_including("DOCKER_CONFIG", "VAULT_ADDR" => vault_address, "VAULT_TOKEN" => vault_token),
+                "cosign", "sign", "--yes", "--key", "hashivault://powernode-module-signing", ref_at_digest)
+          .and_return([ "signed", "", status_double(true) ])
+
+        result = service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account)
+        expect(result.ok?).to be true
+      end
+
+      it "fails closed (never fetches or signs) when oras login is rejected" do
+        allow(Open3).to receive(:capture3)
+          .with(hash_including("DOCKER_CONFIG"), "oras", "login", reg_host, "--username", reg_user, "--password-stdin", stdin_data: reg_token)
+          .and_return([ "", "unauthorized", status_double(false, code: 1) ])
+        expect(Open3).not_to receive(:capture3).with(anything, "oras", "manifest", any_args)
+        expect(Open3).not_to receive(:capture3).with(anything, "cosign", "sign", any_args)
+
+        result = service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account)
+        expect(result.ok?).to be false
+        expect(result.error).to match(/oras login failed/i)
+      end
     end
   end
 end

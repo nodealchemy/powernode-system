@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "tempfile"
+require "tmpdir"
 
 module System
   # Signs a pushed OCI module artifact against the platform's Vault-held
@@ -73,25 +74,34 @@ module System
       ensure_binary!("oras")
       ensure_binary!("cosign")
 
-      registry_digest = fetch_registry_digest(oci_ref)
-      if registry_digest != expected_digest
-        raise DigestMismatchError,
-              "registry digest #{registry_digest.inspect} does not match expected digest " \
-              "#{expected_digest.inspect} for #{oci_ref} — refusing to sign"
+      # Both the manifest fetch (below) and cosign's signature PUSH target the
+      # private Gitea OCI registry, which 401s anonymous requests. Log in ONCE
+      # into a throwaway DOCKER_CONFIG scoped to this sign (never the shared
+      # ~/.docker/config.json — Puma serves many accounts concurrently); oras
+      # AND cosign both honor DOCKER_CONFIG, so one login authenticates both.
+      # Token piped via stdin, never argv. Unconfigured registry (dev/public)
+      # falls through unauthenticated, exactly like DiskImageOciIngestService.
+      with_registry_auth(account) do |reg_env|
+        registry_digest = fetch_registry_digest(oci_ref, env: reg_env)
+        if registry_digest != expected_digest
+          raise DigestMismatchError,
+                "registry digest #{registry_digest.inspect} does not match expected digest " \
+                "#{expected_digest.inspect} for #{oci_ref} — refusing to sign"
+        end
+
+        ref_at_digest = "#{strip_tag(oci_ref)}@#{registry_digest}"
+        cosign_output = cosign_sign!(ref_at_digest, env: reg_env)
+
+        emit_signed_event!(
+          account: account,
+          oci_ref: oci_ref,
+          digest: registry_digest,
+          node_module_id: node_module_id,
+          node_module_version_id: node_module_version_id
+        )
+
+        Result.new(ok?: true, oci_ref: oci_ref, digest: registry_digest, cosign_output: cosign_output)
       end
-
-      ref_at_digest = "#{strip_tag(oci_ref)}@#{registry_digest}"
-      cosign_output = cosign_sign!(ref_at_digest)
-
-      emit_signed_event!(
-        account: account,
-        oci_ref: oci_ref,
-        digest: registry_digest,
-        node_module_id: node_module_id,
-        node_module_version_id: node_module_version_id
-      )
-
-      Result.new(ok?: true, oci_ref: oci_ref, digest: registry_digest, cosign_output: cosign_output)
     rescue SigningError => e
       failure(e.message)
     rescue StandardError => e
@@ -110,8 +120,43 @@ module System
       ::SiteSetting.get(KEYNAME_SETTING).presence || DEFAULT_KEYNAME
     end
 
-    def fetch_registry_digest(oci_ref)
-      out, err, status = ::Open3.capture3("oras", "manifest", "fetch", "--descriptor", oci_ref)
+    # Resolves the platform's Gitea OCI registry credentials (the SAME ones
+    # config_controller#ci_build_context hands leased builders for push.sh's
+    # `oras login`) and logs in to a throwaway DOCKER_CONFIG for the duration
+    # of the block, yielding the env hash to thread onto oras + cosign. Returns
+    # an empty env (unauthenticated) when the registry is unconfigured — dev
+    # fixtures / public registries — matching DiskImageOciIngestService.
+    def with_registry_auth(account)
+      creds = registry_credentials(account)
+      return yield({}) if creds.blank?
+
+      Dir.mktmpdir("powernode-sign-auth-") do |dir|
+        env = { "DOCKER_CONFIG" => dir }
+        login_out, login_err, login_status = ::Open3.capture3(
+          env, "oras", "login", creds[:host],
+          "--username", creds[:user], "--password-stdin",
+          stdin_data: creds[:token].to_s
+        )
+        unless login_status.success?
+          raw = login_err.strip.presence || login_out.strip
+          raise ManifestFetchError, "oras login failed: #{::System::ShellOutputSanitizer.redact(raw)}"
+        end
+        yield env
+      end
+    end
+
+    def registry_credentials(account)
+      return nil unless account && ::System::DiskImageRegistryConfig.configured?(account: account)
+
+      {
+        host:  ::System::DiskImageRegistryConfig.registry_host(account: account),
+        user:  ::System::DiskImageRegistryConfig.registry_user(account: account),
+        token: ::System::DiskImageRegistryConfig.registry_token(account: account)
+      }
+    end
+
+    def fetch_registry_digest(oci_ref, env: {})
+      out, err, status = ::Open3.capture3(env, "oras", "manifest", "fetch", "--descriptor", oci_ref)
       unless status.success?
         raise ManifestFetchError,
               "oras manifest fetch --descriptor failed: " \
@@ -127,9 +172,11 @@ module System
       raise ManifestFetchError, "oras descriptor JSON parse failed: #{e.message}"
     end
 
-    def cosign_sign!(ref_at_digest)
+    def cosign_sign!(ref_at_digest, env: {})
       cmd = [ "cosign", "sign", "--yes", "--key", "hashivault://#{keyname}", ref_at_digest ]
-      out, err, status = ::Open3.capture3(vault_env, *cmd)
+      # vault_env carries VAULT_ADDR/VAULT_TOKEN for the transit key; env carries
+      # DOCKER_CONFIG for the registry auth cosign needs to PUSH the signature.
+      out, err, status = ::Open3.capture3(vault_env.merge(env), *cmd)
       unless status.success?
         raise CosignError,
               "cosign sign failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
