@@ -142,13 +142,25 @@ module System
     def flush(buffer)
       return if buffer.empty?
 
+      # Deduplicate by the conflict key WITHIN this batch. An upstream index can
+      # list the same (name, architecture, version) more than once (e.g. a
+      # package present in multiple components), and Postgres' ON CONFLICT DO
+      # UPDATE refuses to touch the same row twice in one statement
+      # (PG::CardinalityViolation: "cannot affect row a second time"). Keep the
+      # LAST occurrence — later entries win, matching normal upsert semantics.
+      # (Cross-batch duplicates are harmless: they're separate statements.)
+      rows = buffer
+        .reverse
+        .uniq { |r| [ r[:package_repository_id], r[:name], r[:architecture], r[:version] ] }
+        .reverse
+
       # `update_only` must NOT include `updated_at`: Rails 7.1+ already
       # appends `updated_at = NOW()` to the ON CONFLICT SET clause when
       # `record_timestamps: true` (the default). Listing it here too
       # produces a duplicate column assignment and PG raises
       # "multiple assignments to same column updated_at".
       ::System::Package.upsert_all(
-        buffer,
+        rows,
         # Reference the conflict target by COLUMNS, not by index name: the
         # unique index on these four columns exists, but under Rails'
         # auto-generated name (idx_on_package_repository_id_name_architecture_vers_…),
