@@ -428,7 +428,18 @@ module System
     # plan's "oci_ref" key despite the name.
     def full_oci_ref(node_module, tag)
       registry = ::System::DiskImageRegistryConfig.registry_host(account: @account)
-      "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
+      "#{registry}/#{oci_repo_path(node_module)}:#{tag}"
+    end
+
+    # OCI repo path an artifact was actually pushed under. push.sh hardcodes the
+    # `powernode/<module>` namespace (REGISTRY_NS="${REGISTRY_HOST}/powernode"),
+    # and gitea_repo_full_name is blank for every platform module (only the 5
+    # custom per-repo modules populate it). Prefer the explicit column when set
+    # (custom modules), else mirror push.sh so the ref matches where
+    # module-forge-build.sh's push.sh just pushed — without it the fetch/sign/
+    # publish all target `<registry>/:<tag>` (empty repo) and fail.
+    def oci_repo_path(node_module)
+      node_module.gitea_repo_full_name.presence || "powernode/#{node_module.name}"
     end
 
     def emit_event(kind, severity: :low, **payload)

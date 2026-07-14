@@ -108,7 +108,13 @@ module System
     def build_oci_ref(node_module, tag)
       registry = ::System::DiskImageRegistryConfig.registry_host(account: node_module.account).presence ||
                  ENV.fetch("POWERNODE_OCI_REGISTRY", ::System::DiskImageRegistryConfig::PLACEHOLDER_HOST)
-      "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
+      # gitea_repo_full_name is blank for every platform module (only the 5
+      # custom per-repo modules set it). Mirror push.sh's hardcoded
+      # `powernode/<module>` namespace as the fallback so the ingested/signed
+      # ref matches where the artifact was actually pushed — otherwise this
+      # builds `<registry>/:<tag>` (empty repo) and oras/cosign reject it.
+      repo = node_module.gitea_repo_full_name.presence || "powernode/#{node_module.name}"
+      "#{registry}/#{repo}:#{tag}"
     end
 
     # Idempotent: if a NodeModuleVersion already exists for this tag,
