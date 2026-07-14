@@ -35,6 +35,17 @@ module System
         raise NotImplementedError
       end
 
+      # Returns a STABLE digest of the upstream index metadata that changes iff
+      # the package set/metadata changed — cheap to fetch (one small index
+      # file, not the full Packages/primary). The sync fast-path compares it to
+      # the last stored value and skips fetch+parse+diff entirely when
+      # unchanged. Returns nil when the adapter can't cheaply/robustly compute
+      # one (the caller then always performs a full sync). MUST be stable
+      # across upstream re-signs (ignore signatures/timestamps).
+      def fingerprint(repository:)
+        nil
+      end
+
       # Compare two version strings. Returns -1, 0, or 1 (suitable for sort).
       # Adapter-specific because dpkg and rpm version semantics differ
       # (epochs, debian revisions, rpm release qualifiers, etc.).

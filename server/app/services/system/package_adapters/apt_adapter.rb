@@ -64,6 +64,23 @@ module System
         count
       end
 
+      # Digest the InRelease/Release SHA256 block — it lists every index file
+      # (Packages, Sources, Contents…) with its content hash, so it changes iff
+      # a file changed, and is STABLE across re-signs (the PGP clearsign wraps
+      # the block but doesn't alter it; the Date field, which does churn, is
+      # excluded). nil on fetch failure → caller does a full sync.
+      def fingerprint(repository:)
+        release, = fetch_release(repository)
+        return nil if release.blank?
+
+        section = extract_release_hash_section(release)
+        return nil if section.blank?
+
+        ::Digest::SHA256.hexdigest(section)
+      rescue FetchError
+        nil
+      end
+
       def compare_versions(a, b)
         # dpkg --compare-versions returns 0 (true) or 1 (false). We probe
         # both "lt" and "gt" to derive -1/0/1.
@@ -104,6 +121,25 @@ module System
         return { "name" => s, "op" => nil, "version" => nil } unless match
 
         { "name" => match[1], "op" => match[2], "version" => match[3] }
+      end
+
+      # Extracts + normalizes the `SHA256:` block of a Release/InRelease doc —
+      # the indented "<hash> <size> <path>" lines under it, sorted for order-
+      # stability. Empty when the doc has no SHA256 block (very old repos).
+      def extract_release_hash_section(release)
+        lines = []
+        in_section = false
+        release.each_line do |raw|
+          line = raw.chomp
+          if line.start_with?("SHA256:")
+            in_section = true
+            next
+          elsif in_section
+            break unless line.start_with?(" ", "\t") # block ends at next top-level field
+            lines << line.strip
+          end
+        end
+        lines.sort.join("\n")
       end
 
       def fetch_release(repository)

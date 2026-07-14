@@ -50,6 +50,23 @@ module System
         count
       end
 
+      # Digest repomd.xml's <revision> + every <data><checksum> — these change
+      # iff the underlying repodata (primary/filelists/…) changed, and don't
+      # carry a signature/timestamp that churns otherwise. nil on fetch failure
+      # → caller does a full sync.
+      def fingerprint(repository:)
+        repomd = fetch_repomd(repository)
+        return nil if repomd.blank?
+
+        checksums = repomd.scan(/<checksum\b[^>]*>([^<]+)</).flatten.map(&:strip).reject(&:empty?)
+        return nil if checksums.empty?
+
+        revision = repomd[%r{<revision>([^<]+)</revision>}, 1]
+        ::Digest::SHA256.hexdigest(([ revision ].compact + checksums.sort).join("\n"))
+      rescue FetchError
+        nil
+      end
+
       # rpmvercmp algorithm (pure Ruby). The canonical implementation lives
       # in librpmio; this port handles the common cases: alphanumeric
       # tokenization, tilde-as-less-than, caret-as-pre-release. Matches dnf's
