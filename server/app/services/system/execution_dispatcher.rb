@@ -44,11 +44,19 @@ module System
     # agent's next poll — so the node never sees it. These are exactly the
     # agent-side task handlers (see the agent's tasks/handlers registry) that
     # have no COMMAND_REGISTRY entry above.
+    #
+    # ci.module_build (campaign 019f5885 inc7): the agent, on a leased
+    # module-forge builder, pulls its build secrets from the lease-gated
+    # Api::V1::System::NodeApi::ConfigController#ci_build_context endpoint
+    # and execs /usr/local/bin/module-forge-build.sh — see
+    # agent/internal/runtime/tasks/handlers/module_build.go. No handler
+    # timeout on the poll loop, so a long native build is fine.
     AGENT_DELEGATED_COMMANDS = %w[
       upgrade_boot_image
       a2a_call
       storage.mount storage.unmount storage.exports.apply storage.smb_user.apply
       storage.gateway.provision storage.gateway.deprovision storage.chown
+      ci.module_build
     ].freeze
 
     def self.agent_delegated?(command)

@@ -800,6 +800,11 @@ Rails.application.routes.draw do
           # registration token, gated to instances provisioned with that
           # module. Scoped strictly to the mTLS-authenticated instance.
           get "config/ci_runner_registration", to: "config#ci_runner_registration"
+          # module-forge NodeModule — native module-build secrets (campaign
+          # 019f5885 inc7), gated on module-forge presence AND an active
+          # module_build CiRunnerLease for the calling instance. Consumed by
+          # the agent's ci.module_build task handler.
+          get "config/ci_build_context", to: "config#ci_build_context"
           # Phase 3 — LUKS passphrase derivation for volume-setup CLI.
           get "config/luks/:partition_label", to: "luks#show",
               constraints: { partition_label: /[a-zA-Z0-9_.-]{1,32}/ }

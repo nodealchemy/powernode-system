@@ -27,6 +27,34 @@ module Api
           # registration token).
           CI_RUNNER_MODULE_NAME = "gitea-act-runner"
 
+          # The NodeModule name whose presence on the calling node marks it a
+          # genuine module-forge native builder (campaign 019f5885 inc7).
+          # ci_build_context is gated to instances actually provisioned with
+          # this module — same fail-closed shape as CI_RUNNER_MODULE_NAME —
+          # PLUS an active module_build lease (see #active_module_build_lease
+          # below); module presence alone is NOT enough for an endpoint that
+          # hands out registry/source-clone credentials.
+          MODULE_FORGE_MODULE_NAME = "module-forge"
+
+          # Fallback source repo (owner/repo) native module builds clone at
+          # BUILD_SHA — the system extension's OWN repo, since modules/<slug>
+          # lives here for every in-tree module (including module-forge
+          # itself). Distinct from DEV_CELL_SOURCE_REPO_DEFAULT (the parent
+          # powernode-platform repo) — configurable the same way
+          # (SiteSetting -> ENV -> default) so a fork can point builders at
+          # its own repo without a code change.
+          CI_BUILD_SOURCE_REPO_DEFAULT = "powernode/powernode-system"
+
+          # Modules whose Stage-1.5 arm actually clones the PARENT platform
+          # repo (stage15.sh's `needs_parent` case — NOT the broader "Class B"
+          # 11-arm set, which also includes modules that stage parent-adjacent
+          # content without needing the clone). Only these three ever consume
+          # PARENT_PAT, so it's the only set worth minting/handing over the
+          # credential for.
+          CLASS_B_PARENT_MODULES = %w[
+            powernode-hub-backend powernode-hub-worker powernode-hub-frontend
+          ].freeze
+
           # GET /api/v1/system/node_api/config
           # Returns instance configuration
           def show
@@ -290,6 +318,91 @@ module Api
             )
           end
 
+          # GET /api/v1/system/node_api/config/ci_build_context?module=<slug>
+          #
+          # Native module builds (campaign 019f5885 inc7) — hands a LEASED
+          # module-forge builder its build secrets: a short-lived read token
+          # for the system extension repo (where modules/<slug> lives for
+          # every in-tree module), the parent-platform PAT (Class-B modules
+          # only), OCI registry push credentials, and an optional
+          # apt_snapshot drift-guard assertion. Consumed by the agent's ci.module_build
+          # task handler (agent/internal/runtime/tasks/handlers/module_build.go),
+          # which execs /usr/local/bin/module-forge-build.sh with these
+          # values as ENVIRONMENT VARIABLES — never as CLI args.
+          #
+          # GATES (BOTH required, fail-closed 403 — checked BEFORE any DB
+          # lookup keyed on the caller-supplied `module` param):
+          #   1. module-presence: the calling node is provisioned with the
+          #      module-forge NodeModule (mirrors #ci_runner_instance?).
+          #   2. lease-gate: an ACTIVE System::CiRunnerLease with purpose
+          #      "module_build" exists for THIS instance (inc3's
+          #      CiRunnerLeaseService). This is the tightening
+          #      #ci_runner_registration's inc5 hook-point comment flagged —
+          #      module presence alone would let ANY module-forge-provisioned
+          #      node self-serve build secrets at will, lease or not.
+          #
+          # Credential resolution mirrors #ci_runner_registration: the
+          # account's single active Gitea credential (SiteSetting
+          # "ci_runner_git_credential_id" override, else "don't guess" if
+          # ambiguous). Reused for BOTH source_token and parent_pat — Fable's
+          # D5 accepts a PAT for v1; TODO(campaign 019f5885 inc9+): mint a
+          # narrower per-lease/per-repo token instead of reusing the account
+          # PAT.
+          #
+          # IMPORTANT (CryptoMaterialSafety): every credential here is
+          # resolved server-side and returned ONLY in this response body —
+          # never logged, never persisted, never included in the emitted
+          # fleet event (ids only). NOTHING cosign/signing-shaped is ever
+          # returned — signing stays server-side (inc8).
+          def ci_build_context
+            unless module_forge_instance?
+              return render_error("Instance is not provisioned as a module-forge builder", :forbidden)
+            end
+
+            lease = active_module_build_lease
+            return render_error("Instance has no active module_build lease", :forbidden) unless lease
+
+            module_slug = params[:module].to_s
+            return render_error("module is required", :unprocessable_content) if module_slug.blank?
+
+            node_module = current_account.system_node_modules.find_by(name: module_slug)
+            return render_not_found("NodeModule '#{module_slug}'") unless node_module
+
+            resolver = ::System::CiRunnerRegistrationResolver.new(account: current_account)
+            credential = resolver.credential
+            return render_not_found("Gitea credential for module build source") if credential.nil?
+
+            unless ::System::DiskImageRegistryConfig.configured?(account: current_account)
+              return render_error("OCI registry credentials unavailable", :service_unavailable)
+            end
+
+            if defined?(::System::Fleet::EventBroadcaster)
+              ::System::Fleet::EventBroadcaster.emit!(
+                account: current_account,
+                kind: "system.ci_build_context_issued",
+                severity: :low,
+                payload: {
+                  "instance_id" => current_instance.id,
+                  "lease_id"    => lease.id,
+                  "module_id"   => node_module.id
+                },
+                source: "node_api.config"
+              )
+            end
+
+            payload = {
+              source_repo_url: ci_build_source_repo_url(credential),
+              source_token:    credential.access_token,
+              oras_registry:   ::System::DiskImageRegistryConfig.registry_host(account: current_account),
+              oras_user:       ::System::DiskImageRegistryConfig.registry_user(account: current_account),
+              oras_password:   ::System::DiskImageRegistryConfig.registry_token(account: current_account),
+              apt_snapshot:    apt_snapshot_override
+            }
+            payload[:parent_pat] = credential.access_token if class_b_module?(module_slug)
+
+            render_success(**payload)
+          end
+
           private
 
           # True when the calling node is actually provisioned with the dev-cell
@@ -306,6 +419,71 @@ module Api
           # Fail-closed: no gitea-act-runner module → not a CI runner → 403.
           def ci_runner_instance?
             current_node.node_modules.exists?(name: CI_RUNNER_MODULE_NAME)
+          end
+
+          # True when the calling node is actually provisioned with the
+          # module-forge NodeModule (per-node NodeModuleAssignment — what's
+          # really on the box, not merely the template's desired set).
+          # Fail-closed: no module-forge module → not a native builder → 403.
+          def module_forge_instance?
+            current_node.node_modules.exists?(name: MODULE_FORGE_MODULE_NAME)
+          end
+
+          # The active (leased/registered/busy/releasing) System::CiRunnerLease
+          # with purpose "module_build" for THIS mTLS-authenticated instance,
+          # or nil. Scoped by node_instance (not just account), so one
+          # instance can never ride another's lease. Most-recent-first is
+          # defensive only — CiRunnerLeaseService never issues two concurrent
+          # module_build leases against the same instance.
+          def active_module_build_lease
+            ::System::CiRunnerLease
+              .for_node_instance(current_instance)
+              .active
+              .where(purpose: "module_build")
+              .order(created_at: :desc)
+              .first
+          end
+
+          # Mirrors scripts/module-build/stage15.sh's `needs_parent` case
+          # statement — the ONLY three modules whose Stage-1.5 arm clones the
+          # parent powernode-platform repo, hence the only ones that ever
+          # consume PARENT_PAT.
+          def class_b_module?(module_slug)
+            CLASS_B_PARENT_MODULES.include?(module_slug)
+          end
+
+          # "owner/repo" of the system extension repo native builds clone.
+          # Config-driven (SiteSetting -> ENV -> default), same shape as
+          # #dev_cell_source_repo.
+          def ci_build_source_repo
+            ::SiteSetting.get("ci_build_source_repo").presence ||
+              ENV["POWERNODE_CI_BUILD_SOURCE_REPO"].presence ||
+              CI_BUILD_SOURCE_REPO_DEFAULT
+          end
+
+          # Bare HTTPS clone URL (scheme+host+path, NO embedded credential —
+          # source_token travels as its own JSON field so it never has to be
+          # parsed back out of a URL string, and never lands in a URL that
+          # might get logged). The agent handler embeds the token itself
+          # when it builds MODULE_SOURCE_URL for module-forge-build.sh.
+          def ci_build_source_repo_url(credential)
+            "#{credential.provider.effective_web_base_url}/#{ci_build_source_repo}.git"
+          end
+
+          # Optional apt_snapshot value (SiteSetting
+          # "system.ci_builder.apt_snapshot_override"). CONFIRMED against
+          # Part A's module-forge-build.sh (campaign 019f5885 inc7): APT_SNAPSHOT
+          # is a caller-supplied EXPECTED value the script asserts against
+          # the CLONED manifest's own build.apt_snapshot — a drift guard,
+          # NOT a mutator (the manifest at BUILD_SHA remains the single
+          # source of truth for the actual pin used). Blank by default
+          # (skips the check entirely) since inc7 has no orchestrator yet
+          # that independently knows the module's expected pin; inc9's
+          # ModuleBuildPlannerService is expected to set this from the
+          # manifest it already parsed while planning the build, so the
+          # script fails fast on any drift between plan-time and build-time.
+          def apt_snapshot_override
+            ::SiteSetting.get("system.ci_builder.apt_snapshot_override").presence
           end
 
           # "owner/repo" of the source repo the cell clones. Config-driven

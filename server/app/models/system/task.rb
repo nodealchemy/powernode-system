@@ -7,6 +7,13 @@ module System
 
     # === Constants ===
     STATUSES = %w[pending scheduled running complete failed aborted cancelled].freeze
+    # ci.module_build (campaign 019f5885 inc7) is DISTINCT from the legacy
+    # build_module/commit_module pair above: those are the server-side
+    # Gitea-Actions-dispatch path (System::Runtime::BuildModule /
+    # ::CommitModule in COMMAND_REGISTRY). ci.module_build is executed BY
+    # THE AGENT on a leased module-forge builder — see
+    # ExecutionDispatcher::AGENT_DELEGATED_COMMANDS and the agent's
+    # tasks/handlers/module_build.go.
     COMMANDS = %w[
       start stop restart terminate reboot
       provision deprovision
@@ -16,6 +23,7 @@ module System
       create_network delete_network
       sync sync_modules apply_config
       build_module commit_module
+      ci.module_build
       ssh_command
       backup restore
       a2a_call
