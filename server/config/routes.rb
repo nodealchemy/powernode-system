@@ -399,6 +399,11 @@ Rails.application.routes.draw do
         # === Webhooks (no operator JWT required; HMAC-validated per-resource) ===
         namespace :webhooks do
           post "gitea/module", to: "gitea_module#handle"
+          # Platform (whole-repo) push trigger for native/dual-run module
+          # builds — campaign 019f5885 inc10. Routes through
+          # System::ModuleBuildTriggerService, which no-ops unless
+          # system.module_builds.mode is "dual" or "native".
+          post "gitea/platform_push", to: "platform_push#handle"
           # SBOM ingestion from module CI builds. Same per-module HMAC secret
           # as gitea/module above. Phase 10.2 of stabilization sweep.
           post "gitea/module_sbom", to: "module_sbom#create"

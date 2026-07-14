@@ -181,6 +181,21 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(batch.module_slugs).to eq([])
       expect(batch.planned_count).to eq(0)
     end
+
+    # Campaign 019f5885 inc10 — dual-run shadow mode.
+    it "defaults shadow to false, preserving every pre-inc10 caller" do
+      batch = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")
+
+      expect(batch.shadow).to be false
+    end
+
+    it "persists shadow: true for a dual-run shadow batch" do
+      batch = described_class.create_for(account: account, plan: plan, trigger: "push", base_sha: "a", head_sha: "b",
+                                          shadow: true)
+
+      expect(batch.shadow).to be true
+      expect(batch).to be_shadow
+    end
   end
 
   describe "#member_tasks" do

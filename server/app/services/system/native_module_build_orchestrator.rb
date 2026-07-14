@@ -358,7 +358,16 @@ module System
       end
 
       @batch.begin_publishing! if @batch.may_begin_publishing?
-      publish_result = ::System::ModulePublicationProcessor.process!(node_module: node_module, tag: entry["tag"])
+      # Shadow batches (campaign 019f5885 inc10 — dual-run) ingest + record a
+      # NodeModuleVersion under the `native-` tag (see class doc) but must
+      # NEVER advance current_version_id — the fleet keeps consuming exactly
+      # what the Gitea build published. Non-shadow batches (authoritative
+      # native dispatch, and every pre-inc10 manual/CVE dispatch) promote
+      # exactly as before — @batch.shadow? defaults false so this is a no-op
+      # change for every existing caller.
+      publish_result = ::System::ModulePublicationProcessor.process!(
+        node_module: node_module, tag: entry["tag"], promote: !@batch.shadow?
+      )
       unless publish_result.ok?
         entry["error"] = "publish failed: #{publish_result.error}"
         return false

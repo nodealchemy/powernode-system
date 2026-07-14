@@ -24,12 +24,21 @@ module System
                         :resolved_dependencies, keyword_init: true)
 
     class << self
-      def process!(node_module:, tag:)
-        new.process!(node_module: node_module, tag: tag)
+      def process!(node_module:, tag:, promote: true)
+        new.process!(node_module: node_module, tag: tag, promote: promote)
       end
     end
 
-    def process!(node_module:, tag:)
+    # @param promote [Boolean] whether a successful ingest advances
+    #   node_module.current_version_id (campaign 019f5885 inc10 — dual-run
+    #   shadow mode). Default true preserves every existing caller's
+    #   behavior (Gitea webhook, CI-direct publish, the native authoritative
+    #   path). Callers publishing a SHADOW native build (mode == "dual")
+    #   pass promote: false so the ingest still creates a NodeModuleVersion +
+    #   ModuleArtifact rows (parity comparison needs those) without ever
+    #   moving current_version_id off whatever the Gitea build published —
+    #   the fleet keeps consuming exactly what it consumed before.
+    def process!(node_module:, tag:, promote: true)
       return failure("node_module required") unless node_module
       return failure("tag required") if tag.blank?
 
@@ -64,9 +73,9 @@ module System
             }
           )
         end
-        promote_current_version(node_module, node_module_version)
+        promote_current_version(node_module, node_module_version) if promote
         register_skills_for(node_module)
-        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag)
+        emit_published_event(node_module, node_module_version, oci_ref, result.module_artifacts, tag, promote)
         Result.new(
           ok?: true,
           node_module_version: node_module_version,
@@ -171,7 +180,7 @@ module System
       Rails.logger.warn "[ModulePublicationProcessor] skill registrar raised: #{e.class}: #{e.message}"
     end
 
-    def emit_published_event(node_module, version, oci_ref, artifacts, tag)
+    def emit_published_event(node_module, version, oci_ref, artifacts, tag, promoted)
       return unless defined?(::System::Fleet::EventBroadcaster)
 
       ::System::Fleet::EventBroadcaster.emit!(
@@ -186,7 +195,8 @@ module System
           version_number: version.version_number,
           git_tag:        tag,
           oci_ref:        oci_ref,
-          arches:         artifacts.map(&:architecture)
+          arches:         artifacts.map(&:architecture),
+          promoted:       promoted
         }
       )
     rescue StandardError => e

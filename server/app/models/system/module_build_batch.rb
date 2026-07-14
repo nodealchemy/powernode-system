@@ -101,13 +101,23 @@ module System
     # the exact shape). The full plan (module + assigned oci_ref/tag per
     # module) is preserved in metadata["plan"] for audit/debugging; the
     # queryable module_slugs column is just the slug list.
-    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:)
+    #
+    # shadow: (campaign 019f5885 inc10 — dual-run) marks this batch as a
+    # shadow native build dispatched alongside a Gitea-authoritative build
+    # (mode == "dual"). Callers building a shadow plan are responsible for
+    # already having tagged each plan entry's oci_ref with the `native-`
+    # prefix (see System::ModuleBuildTriggerService) — this method just
+    # persists the flag so System::NativeModuleBuildOrchestrator#advance!
+    # knows to publish with promote: false (System::ModulePublicationProcessor)
+    # instead of the normal promote-on-publish default.
+    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false)
       plan_array = Array(plan)
       create!(
         account: account,
         trigger: trigger,
         base_sha: base_sha,
         head_sha: head_sha,
+        shadow: shadow,
         module_slugs: plan_array.map { |p| p[:module].to_s },
         planned_count: plan_array.size,
         metadata: {

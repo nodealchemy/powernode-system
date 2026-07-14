@@ -32,6 +32,14 @@ module System
     # HMAC'd under the SAME server_secret root.
     MODULE_WEBHOOK_DOMAIN = "module-webhook"
 
+    # Domain separator for the platform (whole-repo) push webhook — campaign
+    # 019f5885 inc10's trigger for native/dual-run module builds. Distinct
+    # namespace from both MODULE_WEBHOOK_DOMAIN (per-module) and the
+    # per-closure derivation, for the same reason: no input under one
+    # domain can ever collide with an input under another, even though all
+    # three derive from the SAME server_secret root.
+    PLATFORM_PUSH_WEBHOOK_DOMAIN = "platform-push-webhook"
+
     # Deployment toggle for the module webhooks (gitea_module + module_sbom).
     # When set truthy, those receivers verify against module_webhook_secret_for
     # and FAIL CLOSED (reject unsigned / unverifiable payloads). When unset /
@@ -118,6 +126,22 @@ module System
         return nil if secret.blank? || node_module_id.blank?
 
         OpenSSL::HMAC.hexdigest("SHA256", secret, "#{MODULE_WEBHOOK_DOMAIN}:#{node_module_id}")
+      end
+
+      # Platform (whole-repo) push webhook secret = HMAC-SHA256(server_secret,
+      # "platform-push-webhook:<repo_full_name>") — campaign 019f5885 inc10.
+      # There is no NodeModule row for the whole platform repo (unlike
+      # module_webhook_secret_for, which is keyed by node_module_id), so this
+      # is keyed by the source repo's full_name instead — the same value
+      # System::ModuleBuildPlannerService diffs against. Returns nil when no
+      # server secret is configured (prod fail-closed) so the receiver
+      # REJECTS rather than trusting a default; rotatable by rotating
+      # SERVER_SECRET_ENV — never stored.
+      def platform_push_webhook_secret_for(repo_full_name)
+        secret = server_secret
+        return nil if secret.blank? || repo_full_name.blank?
+
+        OpenSSL::HMAC.hexdigest("SHA256", secret, "#{PLATFORM_PUSH_WEBHOOK_DOMAIN}:#{repo_full_name}")
       end
 
       # Whether the module webhooks enforce the derived-secret, fail-closed

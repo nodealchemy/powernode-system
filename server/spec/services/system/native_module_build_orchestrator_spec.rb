@@ -180,7 +180,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         node_module_id: mod.id
       ).and_return(sign_result)
       expect(System::ModulePublicationProcessor).to receive(:process!)
-        .with(node_module: mod, tag: "abc1234").and_return(publish_result)
+        .with(node_module: mod, tag: "abc1234", promote: true).and_return(publish_result)
 
       result = described_class.advance!(batch: batch)
 
@@ -300,6 +300,78 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
       expect(batch.reload.status).to eq("partial")
       expect(batch.succeeded_count).to eq(1)
       expect(batch.failed_count).to eq(1)
+    end
+  end
+
+  # Campaign 019f5885 inc10 — dual-run shadow mode. A shadow batch
+  # (shadow: true) must publish with promote: false, so a native build
+  # dispatched in "dual" mode never advances NodeModule#current_version_id —
+  # the fleet keeps consuming exactly what the Gitea build published.
+  describe "#advance! — shadow batches (inc10 dual-run)" do
+    before do
+      System::ModuleOciIngestService.reset!
+      System::ManifestFetchService.reset!
+    end
+
+    def shadow_batch(modules:, tag: "native-abc1234")
+      plan = modules.map { |m| { module: m.name, oci_ref: tag } }
+      System::ModuleBuildBatch.create_for(account: account, plan: plan, trigger: "push",
+                                          base_sha: "base0000", head_sha: "headsha1234567", shadow: true)
+    end
+
+    def complete_task!(task, result:)
+      task.update!(status: "complete", completed_at: Time.current,
+                   events: (task.events || []) + [ { "type" => "completed", "message" => "done",
+                                                      "result" => result, "timestamp" => Time.current.iso8601 } ])
+    end
+
+    it "publishes with promote: false, still succeeding the module and releasing the lease" do
+      seed_pool_member
+      mod = create_module("mod-shadow")
+      batch = shadow_batch(modules: [ mod ])
+      described_class.dispatch!(batch: batch)
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      lease = System::CiRunnerLease.find_by(build_task_id: task.id)
+      complete_task!(task, result: { "oci_digest" => "sha256:shadow1234" })
+
+      sign_result = System::ModuleSigningService::Result.new(ok?: true, oci_ref: "irrelevant", digest: "sha256:shadow1234")
+      publish_result = System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: nil)
+
+      expect(System::ModuleSigningService).to receive(:sign!).with(
+        oci_ref: "registry.example.com/powernode/mod-shadow:native-abc1234",
+        expected_digest: "sha256:shadow1234",
+        account: account,
+        node_module_id: mod.id
+      ).and_return(sign_result)
+      expect(System::ModulePublicationProcessor).to receive(:process!)
+        .with(node_module: mod, tag: "native-abc1234", promote: false).and_return(publish_result)
+
+      result = described_class.advance!(batch: batch)
+
+      expect(result.succeeded).to eq(1)
+      expect(batch.reload.status).to eq("complete")
+      expect(batch.metadata["modules"]["mod-shadow"]["state"]).to eq("succeeded")
+      expect(lease.reload).to be_released
+    end
+
+    it "never moves NodeModule#current_version_id (real ModulePublicationProcessor, not stubbed)" do
+      allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("registry.example.com")
+      seed_pool_member
+      mod = create_module("mod-shadow-real")
+      expect(mod.current_version_id).to be_nil
+      batch = shadow_batch(modules: [ mod ])
+      described_class.dispatch!(batch: batch)
+      task = System::Task.find_by(account: account, command: "ci.module_build")
+      complete_task!(task, result: { "oci_digest" => "sha256:shadow-real" })
+
+      sign_result = System::ModuleSigningService::Result.new(ok?: true, digest: "sha256:shadow-real")
+      allow(System::ModuleSigningService).to receive(:sign!).and_return(sign_result)
+
+      result = described_class.advance!(batch: batch)
+
+      expect(result.succeeded).to eq(1)
+      expect(mod.reload.current_version_id).to be_nil
+      expect(mod.versions.count).to eq(1) # ingested + recorded, just not promoted
     end
   end
 end
