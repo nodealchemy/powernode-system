@@ -1,0 +1,229 @@
+schema_version: 1
+
+name: module-forge
+display_name: "Module Forge (fleet-amd64 native module builder)"
+description: >
+  Turns a fleet instance into an ephemeral, NATIVE (no Docker, no
+  act_runner) NodeModule builder — a chroot-based reproduction of the
+  platform's own Gitea CI module-build pipeline
+  (.gitea/workflows/build-platform-modules.yaml), so a module can be built
+  on-node instead of only via a Gitea Actions runner. Deliberately the
+  simplest possible builder module: unlike gitea-act-runner (which bundles
+  act_runner + a local containerized Docker daemon so `container:`-pinned
+  Actions JOBS can build images inside a container runtime), module-forge
+  ships no CI-runner protocol client and no container runtime at all — the
+  build itself runs in a plain chroot, invoked directly by the on-node
+  agent (campaign 019f5885 inc7 Part B) via
+  /usr/local/bin/module-forge-build.sh. There is deliberately no
+  `services:` entry: this module has no persistent daemon, only an
+  on-demand entrypoint script the agent execs per build job (see that
+  script's own header for the full env-var contract — the exact contract
+  Part B's agent handler must match).
+  .
+  THE BUILDROOT (/opt/buildenv): a nested mmdebstrap'd debian:trixie tree,
+  baked in this module's OWN Stage 1.5 (the `module-forge` case arm added
+  to scripts/module-build/stage15.sh — see that file), carrying the EXACT
+  toolchain .gitea/workflows/build-platform-modules.yaml's "Install build
+  tools" + "Install signing toolchain" steps install onto the
+  docker.io/library/debian:trixie-slim CI container: git, mmdebstrap,
+  arch-test, ubuntu-keyring, erofs-utils (>=1.8.6 — the mkfs.erofs -T/-U
+  determinism flags campaign 019f5885 inc5 relies on; guarded explicitly in
+  the stage15.sh arm), fsverity, jq, rsync, python3-yaml, ca-certificates,
+  curl, gnupg, tar, uuid-runtime, plus sha256-pinned oras 1.2.0 (same
+  version already pinned elsewhere in this pipeline's own toolchain) and
+  cosign 3.0.6 (REUSES the exact version+checksum already pinned in the
+  base-os-ubuntu-noble Stage 1.5 arm — one trusted cosign pin in this repo,
+  not two). This reproduces the CI container closely enough that an
+  on-node build via module-forge and a Gitea-Actions-dispatched build of
+  the SAME commit produce byte-identical erofs output. cosign ships for
+  parity/future use only — it is NOT invoked by push.sh; this increment's
+  builds are UNSIGNED (cosign signing moves server-side in campaign
+  019f5885 inc8).
+  .
+  module-forge-build.sh never chroots into /opt/buildenv directly — it
+  rsyncs a fresh per-job COPY of it to writable scratch storage first (see
+  the script's header for why: several Stage 1.5 arms in stage15.sh, e.g.
+  powernode-hub-backend/-worker, apt-get-install packages like ruby
+  directly onto whatever root they're running against, which would mean
+  writing all over /opt/buildenv itself — a path this module ships baked
+  into its OWN read-only erofs. Relying on overlayfs copy-up for that,
+  though very likely fine given this module's CAP_SYS_ADMIN grant below,
+  is untested by this increment's static-only validation; the per-job
+  rsync copy sidesteps the question entirely and, as a bonus, guarantees
+  every build job starts from an uncontaminated buildroot).
+  .
+  THE BUILD SCRIPTS (/opt/module-build/): scripts/module-build/*.sh
+  (build-one-module.sh, stage1-rootfs.sh, stage15.sh, stage2-carve.sh,
+  push.sh — campaign 019f5885 inc6) are COPIED (not symlinked/referenced —
+  the shipped erofs must be self-contained; no live path back into this
+  repo checkout exists on a running fleet instance) into this module's
+  rootfs by the SAME module-forge Stage 1.5 arm that bakes /opt/buildenv,
+  at BUILD TIME, from this checkout's own scripts/module-build/ — never
+  hand-duplicated as static rootfs/ files, so every module-forge rebuild
+  automatically re-syncs any later fix to those shared scripts with zero
+  drift risk.
+  .
+  SECURITY POSTURE (operator-reviewed, not incidental — same posture
+  gitea-act-runner's manifest documents, for the same reason): mount(2) +
+  chroot(2) + mknod(2) (mmdebstrap's own device-node creation when Stage 1
+  bootstraps a TARGET module's fat rootfs inside the chroot, mirroring the
+  runtime-ruby Stage 1.5 arm's own manual mknod calls) are the MECHANISM
+  this module exists to run, not an edge case — capabilities:
+  [CAP_SYS_ADMIN, CAP_SYS_CHROOT, CAP_MKNOD], privileged: false,
+  capabilities non-empty (policy.Validate() rejects privileged:true
+  combined with a non-empty capability list — same constraint
+  gitea-act-runner's manifest documents). egress_allow is the same
+  documented "0.0.0.0/0" wildcard escape hatch
+  (agent/internal/security/egress.go): a native module builder legitimately
+  pulls arbitrary apt/go-toolchain/npm packages and pushes to the module
+  registry, exactly like gitea-act-runner's CI-builder posture. The
+  boundary is the EPHEMERAL INSTANCE itself, not an egress allowlist or
+  in-chroot confinement. Pre-approved contingency (identical shape to
+  gitea-act-runner's own note): if live smoke testing EPERMs on the
+  mount/chroot/mknod sequence despite these three explicit capabilities,
+  flip `privileged: true` (clear `capabilities: []` — the same mutual-
+  exclusion the validator enforces), do not add further explicit
+  capabilities as a first attempt.
+  .
+  No `users:` entry — deliberate CONTRAST with gitea-act-runner's pnrunner
+  split. gitea-act-runner splits privilege because its daemon (act_runner)
+  has no inherent need for root beyond one narrow ExecStartPre
+  credential-mint step; module-forge-build.sh's entire job (mount, chroot,
+  mmdebstrap, mknod) needs elevated privilege for essentially its whole
+  runtime, so there is no meaningful narrow root sliver to carve an
+  unprivileged user out of — inventing one here would be security theater,
+  not a real privilege reduction. The script runs as root end to end,
+  however the on-node agent (Part B) chooses to invoke it.
+  .
+  OPEN QUESTION FOR PART B / the operator (documented here deliberately):
+  because this module ships no `services:` entry, the usual "raw unit vs.
+  services: lifecycle" security-block wiring gitea-act-runner's own
+  description explains (raw units bypass the agent's per-module
+  capability/user-namespace drop-ins entirely; only a `services:`-declared
+  unit is subject to this manifest's `security:` block) doesn't have an
+  obvious analogue for an on-demand, non-daemon script. Part B's agent
+  handler is the thing that actually applies (or doesn't) this manifest's
+  declared capabilities/privileged/user_namespace to the process that execs
+  module-forge-build.sh — that wiring, and confirming it actually grants
+  CAP_SYS_ADMIN/CAP_SYS_CHROOT/CAP_MKNOD to the right process, is squarely
+  Part B's + the live-acceptance step's responsibility, not something this
+  increment's static validation can confirm.
+  .
+  push.sh (scripts/module-build/push.sh) gained one small, backward-
+  compatible addition in this increment: an optional `--registry HOST` flag
+  (default: git.powernode.org, unchanged from before) so
+  module-forge-build.sh can honor its own ORAS_REGISTRY env var without
+  duplicating oras-login/push/tag logic a second time. The existing Gitea
+  workflow invocation (no `--registry` passed) is untouched.
+  .
+  Only requires powernode-system-base (same single dependency
+  gitea-act-runner declares) — this module ships no userland/init/coreutils
+  of its own (mount/chroot/bash/coreutils all come from whichever OS module,
+  e.g. base-os-ubuntu-noble, a NodeTemplate composes alongside it — the same
+  implicit template-level pairing gitea-act-runner already relies on).
+license: MIT
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+file_spec:
+  # The build contract entrypoint (Part B invokes this — see its own header
+  # for the full env-var contract).
+  - "/usr/local/bin/module-forge-build.sh"
+  # The baked buildroot (nested debian:trixie tree — see description) and
+  # the copied build scripts (scripts/module-build/*.sh) — both staged by
+  # this module's own Stage 1.5 arm in scripts/module-build/stage15.sh, not
+  # apt packages.
+  - "/opt/buildenv/**"
+  - "/opt/module-build/**"
+  # git (host-side clone of MODULE_SOURCE_URL@BUILD_SHA — see
+  # module-forge-build.sh). Binary + its helper/template trees (Debian's
+  # `git` package layout splits these three ways).
+  - "/usr/bin/git"
+  - "/usr/lib/git-core/**"
+  - "/usr/share/git-core/**"
+  # rsync — seeds the ephemeral per-job /opt/buildenv copy from the golden
+  # template (see module-forge-build.sh); same tool Stage 2's own carve
+  # already depends on inside the buildroot.
+  - "/usr/bin/rsync"
+  # jq — assembles the final RESULT JSON (module-forge-build.sh).
+  - "/usr/bin/jq"
+  # uuidgen (uuid-runtime) — per-job scratch directory naming
+  # (module-forge-build.sh), avoiding any collision across build jobs on a
+  # reused/pooled instance.
+  - "/usr/bin/uuidgen"
+  # ca-certificates — TLS verification for the host-side git clone over
+  # https (MODULE_SOURCE_URL).
+  - "/etc/ssl/certs/**"
+  - "/usr/share/ca-certificates/**"
+  - "/etc/ca-certificates.conf"
+  # git/rsync/jq/uuidgen's own shared-library closure beyond glibc (e.g.
+  # libpcre2 for git, libpopt for rsync) — carve the whole multiarch lib
+  # tree rather than enumerate individual .so files, same rationale
+  # gitea-act-runner's manifest documents for its own apt packages.
+  - "/usr/lib/x86_64-linux-gnu/**"
+
+# Deliberately empty — this module ships nothing under a path another
+# module needs to protect, and claims no path another module should be
+# barred from overriding.
+protected_spec: []
+
+package_spec:
+  # The HOST-side (noble) toolchain module-forge-build.sh itself needs
+  # OUTSIDE the chroot — resolvable straight from noble's base archive, no
+  # third-party apt repo. Everything the BUILD ITSELF needs (mmdebstrap,
+  # erofs-utils, fsverity, oras, cosign, ...) lives only inside
+  # /opt/buildenv (see file_spec / description) — never duplicated here.
+  - git
+  - rsync
+  - jq
+  - ca-certificates
+  - uuid-runtime
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+  provides:
+    - ci.module-forge
+
+# No `users:` entry — see the manifest description's "deliberate contrast
+# with gitea-act-runner's pnrunner split" note. module-forge-build.sh's
+# entire job needs elevated privilege throughout; there is no narrow
+# unprivileged sliver to carve a service user out of.
+
+# No `services:` entry — no persistent daemon. module-forge-build.sh is an
+# on-demand entrypoint the on-node agent execs per build job (Part B); see
+# the manifest description's "OPEN QUESTION FOR PART B" note for how this
+# module's `security:` block is expected to reach that exec.
+
+reboot_required: false
+
+security:
+  # mount(2) + chroot(2) + mknod(2) are the mechanism this module exists to
+  # run (see description) — not an edge case fallback like
+  # gitea-act-runner's contingency note. Kept as explicit capabilities
+  # (not `privileged: true`) as the conservative first attempt; see the
+  # description's pre-approved contingency for the fallback.
+  capabilities:
+    - CAP_SYS_ADMIN
+    - CAP_SYS_CHROOT
+    - CAP_MKNOD
+  # Same documented wildcard escape hatch gitea-act-runner's manifest uses,
+  # for the same reason: a native module builder legitimately pulls
+  # arbitrary apt/go-toolchain/npm packages and pushes to the module
+  # registry. The boundary is the ephemeral instance itself.
+  egress_allow:
+    - "0.0.0.0/0"
+  privileged: false
+  # Real root (uid 0, not remapped) is required throughout — mount/chroot
+  # under a user-namespace remap is unsupported by this design. Same choice
+  # and same rationale as gitea-act-runner's own user_namespace: false.
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"

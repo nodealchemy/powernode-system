@@ -51,7 +51,7 @@
 #
 # Usage:
 #   push.sh --module MODULE --sha SHA --workspace DIR
-#           [--tag TAG] [--output-file FILE]
+#           [--tag TAG] [--registry HOST] [--output-file FILE]
 #
 # Required:
 #   --module MODULE        module slug
@@ -66,6 +66,17 @@
 #                           `${{ inputs.tag }}`); empty/omitted falls back
 #                           to `git rev-parse --short HEAD` in --workspace,
 #                           exactly as the inline step did
+#   --registry HOST             registry host to push to. Default:
+#                           git.powernode.org (unchanged from before this
+#                           flag existed — the workflow's own invocation
+#                           doesn't pass it). Added in campaign 019f5885
+#                           inc7 (Part A) so the module-forge NodeModule's
+#                           entrypoint (module-forge-build.sh) can honor
+#                           its own ORAS_REGISTRY env var without
+#                           duplicating this script's oras-login/push/tag
+#                           logic a second time — a small, backward-
+#                           compatible addition, not a behavior change for
+#                           any existing caller.
 #   --output-file FILE         append `erofs_ref=...` / `tag=...` lines
 #                           here (pass "$GITHUB_OUTPUT" from the workflow
 #                           step to reproduce the original step-output
@@ -77,7 +88,8 @@
 #
 # Reads:  /tmp/$MODULE.erofs, /tmp/$MODULE.erofs.meta,
 #         /tmp/$MODULE.packages.txt (Stage 1/2 outputs)
-# Writes: pushes git.powernode.org/powernode/$MODULE:$TAG (+ :latest tag)
+# Writes: pushes $REGISTRY_HOST/powernode/$MODULE:$TAG (+ :latest tag) —
+#         REGISTRY_HOST defaults to git.powernode.org, override via --registry
 #
 # Exit: non-zero on any oras/git/hash failure (set -euo pipefail
 # propagates the first one).
@@ -87,7 +99,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: push.sh --module MODULE --sha SHA --workspace DIR
-               [--tag TAG] [--output-file FILE]
+               [--tag TAG] [--registry HOST] [--output-file FILE]
 
 oras login/push (+ OCI annotations) for one module's erofs artifact. Does
 NOT sign (cosign stays an inline workflow step for now). Requires
@@ -106,6 +118,7 @@ MODULE=""
 GITHUB_SHA=""
 WORKSPACE=""
 INPUT_TAG=""
+REGISTRY_HOST="git.powernode.org"
 OUTPUT_FILE=""
 # Credentials — read only from the process environment (see file header),
 # never as CLI flags. The `:-` defaults keep this safe under `set -u`; a
@@ -128,6 +141,9 @@ while [ $# -gt 0 ]; do
     --tag)
       [ $# -ge 2 ] || die "--tag requires an argument"
       INPUT_TAG="$2"; shift 2 ;;
+    --registry)
+      [ $# -ge 2 ] || die "--registry requires an argument"
+      REGISTRY_HOST="$2"; shift 2 ;;
     --output-file)
       [ $# -ge 2 ] || die "--output-file requires an argument"
       OUTPUT_FILE="$2"; shift 2 ;;
@@ -159,13 +175,17 @@ cd "$WORKSPACE"
 # expression `${{ inputs.tag }}` inline; here it's `$INPUT_TAG` from the
 # arg parsing above. The final two `echo ... >> "$GITHUB_OUTPUT"` lines are
 # replaced by the output-emission block at the bottom (optional
-# --output-file, else stdout) — see the file header for why.
+# --output-file, else stdout) — see the file header for why. The
+# `git.powernode.org` literal below is now `$REGISTRY_HOST` (campaign
+# 019f5885 inc7 Part A addition — see the file header's --registry note);
+# its default is the exact same literal, so every existing caller
+# (unchanged, no --registry passed) gets byte-identical behavior.
 # ---------------------------------------------------------------------------
 
 # Tag = workflow input, else commit SHA short.
 TAG="$INPUT_TAG"
 if [ -z "$TAG" ]; then TAG=$(git rev-parse --short HEAD); fi
-REGISTRY_NS="git.powernode.org/powernode"
+REGISTRY_NS="${REGISTRY_HOST}/powernode"
 EROFS_REF="${REGISTRY_NS}/$MODULE:${TAG}"
 # shellcheck disable=SC2034  # pre-existing in the original inline step —
 # `oras tag "$EROFS_REF" latest` below uses the literal string "latest",
@@ -178,7 +198,7 @@ LATEST_REF="${REGISTRY_NS}/$MODULE:latest"
 # ORAS_REGISTRY_USERNAME / PASSWORD env vars on its own.
 # Authenticate first so the subsequent `oras push` against
 # the private Gitea registry doesn't 401.
-oras login git.powernode.org \
+oras login "$REGISTRY_HOST" \
   --username "$ORAS_REGISTRY_USERNAME" \
   --password-stdin <<< "$ORAS_REGISTRY_PASSWORD"
 

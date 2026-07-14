@@ -20,6 +20,15 @@
 # same directory) runs the identical script with no Gitea Actions context
 # at all.
 #
+# A 12th arm, `module-forge`, landed in campaign 019f5885 inc7 (Part A) —
+# this one is NOT a verbatim extraction of anything (there is no prior
+# inline workflow step for it): it bakes module-forge's own /opt/buildenv
+# (a nested debian:trixie buildroot) + stages scripts/module-build/*.sh
+# into /opt/module-build/, the two things the module-forge NodeModule
+# needs to natively build OTHER modules on a fleet instance. See its case
+# arm below and modules/module-forge/manifest.yaml for the full design
+# rationale.
+#
 # Every value that varied by workflow context in the original inline step
 # is threaded through as an explicit CLI arg below (never read from the
 # process environment directly by this script — the workflow step / driver
@@ -650,6 +659,133 @@ case "$MODULE" in
     # actually landed dockerd; catch a silently-empty docker install
     # here rather than ship a runner with no daemon to talk to.
     test -e /tmp/fat/usr/bin/dockerd || { echo "[stage-1.5] FATAL: /tmp/fat/usr/bin/dockerd missing — docker.io did not install"; exit 1; }
+    ;;
+  module-forge)
+    # Bakes /opt/buildenv: a NESTED mmdebstrap'd debian:trixie tree
+    # carrying the same toolchain this very workflow's own "Install build
+    # tools" + "Install signing toolchain" steps install onto the
+    # docker.io/library/debian:trixie-slim CI runner, so a fleet instance
+    # running the module-forge NodeModule (campaign 019f5885 inc7) can
+    # chroot into a byte-for-byte reproduction of the CI container and
+    # produce IDENTICAL build output to a Gitea-Actions-dispatched run of
+    # THIS SAME workflow. This is nested mmdebstrap: the OUTER mmdebstrap
+    # already ran in Stage 1 (module-forge's OWN noble-based fat rootfs,
+    # from its manifest's package_spec); this arm runs a SECOND,
+    # independent mmdebstrap of a completely different suite (trixie, not
+    # noble) into a subtree that gets carved into module-forge's shipped
+    # erofs at /opt/buildenv/** (see its manifest.yaml file_spec).
+    #
+    # No --keyring override needed for THIS bootstrap the way Stage 1's
+    # noble bootstrap needs ubuntu-keyring: the runner already IS
+    # debian:trixie-slim, so mmdebstrap can bootstrap trixie from the
+    # runner's own already-trusted debian-archive-keyring (installed
+    # defensively below in case a future runner image ever ships without
+    # it). ubuntu-keyring is instead something this arm installs INTO the
+    # nested tree (see package list below) — build-one-module.sh, run
+    # later inside this buildroot, bootstraps a TARGET module's own
+    # noble-based fat rootfs and needs ubuntu-keyring available from
+    # within the chroot to do that cross-distro bootstrap, exactly as
+    # Stage 1 does out here.
+    #
+    # Package list intentionally goes beyond module-forge's design note's
+    # short-hand list (mmdebstrap, arch-test, ubuntu-keyring, erofs-utils,
+    # fsverity, uuid-runtime, oras, cosign) to also include jq, rsync,
+    # python3-yaml, git, curl, gnupg, tar, ca-certificates — every one of
+    # these is a hard dependency of build-one-module.sh and the three
+    # stage scripts it calls (jq: manifest parsing everywhere; rsync:
+    # Stage 2's carve, plus module-forge-build.sh's own buildroot-seed
+    # copy; python3-yaml: the yq-unavailable fallback in the manifest-
+    # parse replication; git: cloning the module source + `git log`/
+    # SOURCE_DATE_EPOCH in Stage 2; curl/gnupg/ca-certificates: every
+    # sha256-pinned fetch across this stage's other arms). Omitting any of
+    # these would make module-forge's own buildroot unable to build most
+    # OTHER modules — a strictly worse reproduction of the CI container
+    # than the explicit list below already achieves for free (this arm
+    # just installs the CI container's own already-vetted package set).
+    apt-get install -y --no-install-recommends debian-archive-keyring >/dev/null 2>&1 || true
+    mkdir -p /tmp/buildenv
+    mmdebstrap \
+      --mode=root \
+      --variant=minbase \
+      --components=main \
+      --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+      --include=git,mmdebstrap,arch-test,ubuntu-keyring,erofs-utils,fsverity,jq,rsync,python3-yaml,ca-certificates,curl,gnupg,tar,uuid-runtime \
+      trixie /tmp/buildenv http://deb.debian.org/debian
+
+    # erofs-utils version guard: Stage 2 (campaign 019f5885 inc5) relies
+    # on mkfs.erofs's -T/-U flags, confirmed present from erofs-utils
+    # 1.8.6 onward (see stage2-carve.sh's own comment, verified against
+    # the SAME debian:trixie-slim container this arm just reproduced). A
+    # build inside an older buildroot would silently drop those
+    # determinism flags rather than failing loudly, so check explicitly
+    # rather than trust trixie's current version forever.
+    EROFS_UTILS_VER=$(chroot /tmp/buildenv mkfs.erofs --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)
+    if ! dpkg --compare-versions "${EROFS_UTILS_VER:-0}" ge "1.8.6"; then
+      echo "[stage-1.5] FATAL: /opt/buildenv's erofs-utils ${EROFS_UTILS_VER:-<unknown>} is older than the required 1.8.6 (mkfs.erofs -T/-U support) — trixie's archive has drifted; investigate before shipping this buildroot"
+      exit 1
+    fi
+    echo "[stage-1.5] buildenv erofs-utils: ${EROFS_UTILS_VER}"
+
+    # oras (sha256-pinned) — same ORAS_VERSION=1.2.0 already pinned
+    # elsewhere in this pipeline's own toolchain (this workflow's "Install
+    # signing toolchain" step), so this buildroot's oras is the identical
+    # version CI itself runs. That step's own fetch is NOT sha256-checked
+    # today; this one is — the checksum below is the vendor-published
+    # oras_1.2.0_checksums.txt value, independently re-verified against a
+    # fresh download.
+    ORAS_VERSION="1.2.0"
+    ORAS_SHA256=5b3f1cbb86d869eee68120b9b45b9be983f3738442f87ee5f06b00edd0bab336
+    mkdir -p /tmp/buildenv/usr/local/bin
+    curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" -o /tmp/oras.tar.gz
+    echo "${ORAS_SHA256}  /tmp/oras.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/oras.tar.gz -C /tmp/buildenv/usr/local/bin oras
+    chmod 0755 /tmp/buildenv/usr/local/bin/oras
+    rm -f /tmp/oras.tar.gz
+
+    # cosign (sha256-pinned) — REUSES the exact version+checksum ALREADY
+    # pinned in the base-os-ubuntu-noble arm above (COSIGN_VERSION=3.0.6),
+    # not a second independent pin, so this repo never has two different
+    # "trusted" cosign versions to keep straight. Shipped for parity with
+    # the CI container's own toolchain / future use only — NOT invoked by
+    # push.sh (this increment's builds are UNSIGNED; cosign signing moves
+    # server-side in campaign 019f5885 inc8).
+    COSIGN_VERSION=3.0.6
+    COSIGN_SHA256=c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+    curl -fsSL "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" -o /tmp/buildenv/usr/local/bin/cosign
+    got=$(sha256sum /tmp/buildenv/usr/local/bin/cosign | awk '{print $1}')
+    [ "$got" = "$COSIGN_SHA256" ] || { echo "[stage-1.5] FATAL: buildenv cosign sha256 mismatch (want $COSIGN_SHA256 got $got)"; rm -f /tmp/buildenv/usr/local/bin/cosign; exit 1; }
+    chmod 0755 /tmp/buildenv/usr/local/bin/cosign
+
+    echo "[stage-1.5] buildenv toolchain:"
+    chroot /tmp/buildenv mmdebstrap --version || true
+    chroot /tmp/buildenv mkfs.erofs --version || true
+    chroot /tmp/buildenv fsverity --version || true
+    /tmp/buildenv/usr/local/bin/oras version | head -1
+    /tmp/buildenv/usr/local/bin/cosign version | head -1
+
+    # Layer the nested buildroot into module-forge's OWN fat rootfs at
+    # /opt/buildenv — carved into the shipped erofs by that manifest's
+    # file_spec "/opt/buildenv/**" entry.
+    mkdir -p /tmp/fat/opt/buildenv
+    rsync -a /tmp/buildenv/ /tmp/fat/opt/buildenv/
+    rm -rf /tmp/buildenv
+
+    # Ship the build scripts this buildroot exists to run
+    # (scripts/module-build/*.sh, campaign 019f5885 inc6) at
+    # /opt/module-build/ — COPIED (not symlinked/referenced): the erofs
+    # artifact must be self-contained, and no live path back into this
+    # repo checkout exists on a running fleet instance. Copied at BUILD
+    # TIME from this checkout's own scripts/module-build/ (relative to
+    # $ws, already `cd`'d into at the top of this script) — never
+    # hand-duplicated as static rootfs/ files — so every module-forge
+    # rebuild automatically re-syncs any later fix to those shared
+    # scripts with zero drift risk.
+    mkdir -p /tmp/fat/opt/module-build
+    rsync -a scripts/module-build/ /tmp/fat/opt/module-build/
+    find /tmp/fat/opt/module-build -maxdepth 1 -name '*.sh' -exec chmod 0755 {} +
+    echo "=== module-forge: staged buildenv + build scripts ==="
+    du -sh /tmp/fat/opt/buildenv 2>&1 | awk 'NR==1'
+    ls /tmp/fat/opt/module-build/
     ;;
 esac
 
