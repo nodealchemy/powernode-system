@@ -111,7 +111,7 @@ module System
       gitea_ref  = full_oci_ref(node_module, gitea_tag)
       native_ref = full_oci_ref(node_module, native_tag)
 
-      diff = self.class.adapter.diff(ref_a: gitea_ref, ref_b: native_ref)
+      diff = self.class.adapter.diff(ref_a: gitea_ref, ref_b: native_ref, registry_credentials: registry_credentials)
 
       if diff[:error]
         error_result(slug, diff[:error], gitea_ref: gitea_ref, native_ref: native_ref)
@@ -158,6 +158,23 @@ module System
 
     def find_node_module(slug)
       @account.system_node_modules.find_by(name: slug)
+    end
+
+    # Registry credentials for the oras adapter's `oras pull` — both refs live
+    # in the private Gitea OCI registry, which 401s anonymous. Same source the
+    # signer + ci_build_context use; nil (→ unauthenticated pull) when the
+    # registry is unconfigured (dev fixtures / the local stub adapter).
+    def registry_credentials
+      return @registry_credentials if defined?(@registry_credentials)
+
+      @registry_credentials =
+        if ::System::DiskImageRegistryConfig.configured?(account: @account)
+          {
+            host:  ::System::DiskImageRegistryConfig.registry_host(account: @account),
+            user:  ::System::DiskImageRegistryConfig.registry_user(account: @account),
+            token: ::System::DiskImageRegistryConfig.registry_token(account: @account)
+          }
+        end
     end
 
     # Mirrors NativeModuleBuildOrchestrator#full_oci_ref /
@@ -218,7 +235,7 @@ module System
         @overrides[[ ref_a, ref_b ]] = result
       end
 
-      def diff(ref_a:, ref_b:)
+      def diff(ref_a:, ref_b:, registry_credentials: nil)
         @overrides[[ ref_a, ref_b ]] || { identical: true, added: [], removed: [], changed: [] }
       end
     end
@@ -236,15 +253,22 @@ module System
       # lives one level up, at extensions/system/scripts/.
       ARTIFACT_DIFF_SCRIPT = File.expand_path("../scripts/module-artifact-diff.sh", ::PowernodeSystem::Engine.root).freeze
 
-      def diff(ref_a:, ref_b:)
+      def diff(ref_a:, ref_b:, registry_credentials: nil)
         ensure_binary!("oras")
         return { error: "module-artifact-diff.sh not found at #{ARTIFACT_DIFF_SCRIPT}" } unless File.exist?(ARTIFACT_DIFF_SCRIPT)
 
         Dir.mktmpdir("module-build-parity") do |dir|
-          pulled_a = pull(ref_a, File.join(dir, "a"))
+          # Both refs are in the private Gitea OCI registry (401s anonymous) —
+          # log in ONCE into a throwaway DOCKER_CONFIG scoped to this diff and
+          # thread it onto both pulls (token via stdin, never argv). Empty env
+          # (unauthenticated) when the registry is unconfigured.
+          env, login_error = login(registry_credentials, dir)
+          return { error: login_error } if login_error
+
+          pulled_a = pull(ref_a, File.join(dir, "a"), env)
           return { error: pulled_a[:error] } if pulled_a[:error]
 
-          pulled_b = pull(ref_b, File.join(dir, "b"))
+          pulled_b = pull(ref_b, File.join(dir, "b"), env)
           return { error: pulled_b[:error] } if pulled_b[:error]
 
           run_diff(pulled_a[:file], pulled_b[:file], dir)
@@ -253,9 +277,25 @@ module System
 
       private
 
-      def pull(ref, dest_dir)
+      def login(registry_credentials, dir)
+        return [ {}, nil ] if registry_credentials.blank?
+
+        auth_dir = File.join(dir, "auth")
+        FileUtils.mkdir_p(auth_dir)
+        env = { "DOCKER_CONFIG" => auth_dir }
+        _out, err, status = Open3.capture3(
+          env, "oras", "login", registry_credentials[:host],
+          "--username", registry_credentials[:user], "--password-stdin",
+          stdin_data: registry_credentials[:token].to_s
+        )
+        return [ nil, "oras login failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}" ] unless status.success?
+
+        [ env, nil ]
+      end
+
+      def pull(ref, dest_dir, env = {})
         FileUtils.mkdir_p(dest_dir)
-        _out, err, status = Open3.capture3("oras", "pull", ref, "-o", dest_dir)
+        _out, err, status = Open3.capture3(env, "oras", "pull", ref, "-o", dest_dir)
         unless status.success?
           return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "oras pull exit #{status.exitstatus} for #{ref}" }
         end
