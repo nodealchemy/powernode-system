@@ -104,6 +104,11 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 	if err := etcidentity.ApplyAt(identitySet, unionIdentityPaths(sysroot)); err != nil {
 		r.cfg.OnError("compose:identity_write", err)
 	}
+	// Bake correct home-dir ownership into the union before pivot so the
+	// switch_root'd system comes up with sshd-readable homes (the base-os
+	// tmpfiles.d fragment is the boot-time backstop; this makes the union
+	// correct even for a home already staged root:root).
+	etcidentity.ReconcileHomeOwnership(identitySet, sysroot, r.cfg.OnError)
 	if err := etcsudoers.ApplyAt(etcsudoers.CollectFromManifests(manifestsSlice),
 		filepath.Join(sysroot, "etc", "sudoers.d"), time.Now); err != nil {
 		r.cfg.OnError("compose:sudoers_write", err)

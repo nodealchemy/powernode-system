@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/transport"
 )
 
@@ -79,15 +80,31 @@ func FetchAuthorizedKeys(ctx context.Context, opts AuthorizedKeysOptions) error 
 	}
 	path := filepath.Join(dir, "authorized_keys")
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
+	// The parent chain must be correct or sshd — dropping to the target
+	// uid under StrictModes to read authorized_keys — cannot even reach
+	// the file:
+	//   /home      must be traversable. A bare os.MkdirAll(dir, 0700) here
+	//              used to create it 0700 root:root on pivot-booted fleet
+	//              nodes where /home did not pre-exist, silently breaking
+	//              EVERY user's key login (the fleet SSH incident). Cloud-
+	//              init nodes escaped only because cloud-init's useradd had
+	//              already created the home.
+	//   ~user      must be OWNED by the user (0700) so it can traverse into
+	//              its own home — this was previously left root:root
+	//              because MkdirAll only chowned .ssh below it, not ~user.
+	//   ~user/.ssh 0700, user-owned.
+	// EnsureOwnedDir reconciles top-level ownership only (never recursive)
+	// and refuses symlinks; the modes are single-sourced in etcidentity so
+	// they match the base-os tmpfiles.d boot-time backstop.
+	home := filepath.Dir(dir)
+	if err := etcidentity.EnsureTraversableDir(filepath.Dir(home)); err != nil {
+		warn(opts.OnWarn, "authorized_keys_home_parent", err)
 	}
-	// useradd creates $HOME with correct ownership but the .ssh dir (and
-	// later the file) is owned by whoever ran MkdirAll — root, in this
-	// case. sshd's StrictModes will refuse to read an authorized_keys
-	// file the target user doesn't own. Best-effort chown both.
-	if err := os.Chown(dir, uid, gid); err != nil && !os.IsNotExist(err) {
-		warn(opts.OnWarn, "authorized_keys_chown_dir", err)
+	if err := etcidentity.EnsureOwnedDir(home, uid, gid, 0o700); err != nil {
+		return fmt.Errorf("ensure home %s: %w", home, err)
+	}
+	if err := etcidentity.EnsureOwnedDir(dir, uid, gid, 0o700); err != nil {
+		return fmt.Errorf("ensure ssh dir %s: %w", dir, err)
 	}
 
 	desired := ak.Data.AuthorizedKeys

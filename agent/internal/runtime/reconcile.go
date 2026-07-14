@@ -308,6 +308,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	if err := etcidentity.Apply(identitySet); err != nil {
 		r.cfg.OnError("reconciler:identity_write", err)
 	}
+	// Make the filesystem agree with the passwd we just rendered: managed
+	// home dirs must be owned by the user etcidentity declared (uid/gid =
+	// platform source of truth) and /home must stay traversable, else sshd
+	// and any unprivileged service with HOME there break. Idempotent.
+	etcidentity.ReconcileHomeOwnership(identitySet, "", r.cfg.OnError)
 	if err := etcsudoers.Apply(etcsudoers.CollectFromManifests(manifestsSlice)); err != nil {
 		r.cfg.OnError("reconciler:sudoers_write", err)
 	}
