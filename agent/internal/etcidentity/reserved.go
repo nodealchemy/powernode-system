@@ -57,6 +57,11 @@ var ReservedUIDs = map[string]int{
 	"puma":     70730,
 	"unicorn":  70740,
 	"gunicorn": 70750,
+	// Baseline/system fixed-uid accounts — NOT part of the 70xxx
+	// allocator range. Listed here only so this cross-check table
+	// stays complete; the authoritative definition is
+	// etcidentity.Baseline() in baseline.go.
+	"pnadmin": 1000,
 }
 
 // ReservedGIDs mirror ReservedUIDs (every reserved user gets a same-

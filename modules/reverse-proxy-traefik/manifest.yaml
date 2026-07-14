@@ -55,7 +55,13 @@ users:
   - name: traefik
     primary_group: traefik
     shell: /usr/sbin/nologin
-    home: /etc/traefik
+    # NOT /etc/traefik: home is a passwd-rendering hint only (the process's
+    # actual cwd + config path come from working_directory / --configFile
+    # above), and the manifest-import validator restricts users[].home to
+    # a fixed allowlist of managed roots (excludes /etc — see
+    # ManifestImportService::ALLOWED_HOME_ROOTS) so a manifest can't point
+    # the agent's home reconciler at a shared system config directory.
+    home: /var/lib/traefik
     gecos: "Traefik reverse proxy"
 
 security:

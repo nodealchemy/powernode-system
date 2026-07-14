@@ -19,6 +19,13 @@ module System
     # NEVER reused for new names, so the reserved table can grow without
     # disturbing previously-allocated sequential IDs.
     #
+    # Exception: the BASELINE category (below) reserves ids OUTSIDE the
+    # 70xxx range entirely (e.g. pnadmin at 1000) — these are agent
+    # baseline accounts, not allocator-managed daemons. They're folded
+    # into USERS/GROUPS/all_reserved_ids purely for cross-check
+    # completeness; nothing treats 70100..70999 as the exhaustive set of
+    # reserved values.
+    #
     # To add a new well-known daemon: pick the next free 10-aligned slot
     # in the appropriate category. Both Ruby (USERS/GROUPS) and
     # extensions/system/agent/internal/etcidentity/reserved.go must stay
@@ -97,9 +104,31 @@ module System
         "gunicorn"  => 70_750
       }.freeze
 
+      # Baseline/system fixed-uid accounts — NOT part of the 70xxx
+      # allocator range at all. These are hardcoded into the agent's
+      # etcidentity.Baseline() (agent/internal/etcidentity/baseline.go)
+      # and rendered to every node's /etc/passwd before the platform has
+      # been contacted even once (first-boot bootstrap). They are listed
+      # here ONLY so the platform's uid/gid map is complete and the
+      # allocator + validators can cross-check against them — nothing in
+      # this table causes a ServiceUser/ServiceGroup row to be created at
+      # these ids (System::ServiceUser::UID_MIN/GID_MIN start at 70_000,
+      # well above 1000, so these values are never candidates for
+      # sequential allocation, they just need to be excluded from it).
+      #
+      # Do NOT add sequentially-allocated module users here (e.g. a
+      # `pnrunner` that some module allocates via the 70xxx pool) —
+      # reserving a name that's actually assigned sequentially is
+      # fragile: reallocation would invalidate any id baked into this
+      # table, whereas the runtime reconcile (UserAllocator/GroupAllocator)
+      # already handles those correctly without a fixed entry.
+      BASELINE = {
+        "pnadmin" => 1_000
+      }.freeze
+
       USERS = [
         DATABASES, WEB_SERVERS, MESSAGING, OBSERVABILITY,
-        CICD, PLATFORM, APP_RUNTIMES
+        CICD, PLATFORM, APP_RUNTIMES, BASELINE
       ].reduce({}, :merge).freeze
 
       # Group reservations mirror users by default — every reserved user

@@ -510,6 +510,73 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.ok?).to be false
         expect(result.validation_errors.join).to match(/users\[\d+\]\.name/)
       end
+
+      context "home-path lints (module import safety)" do
+        it "rejects a file_spec entry that ships a path under /home" do
+          bad = manifest_yaml.sub(
+            "file_spec:\n  - \"/etc/demo/**\"",
+            "file_spec:\n  - \"/home/**\"\n  - \"/etc/demo/**\""
+          )
+          result = described_class.import!(node_module: mod, yaml: bad)
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("ships a path under /home")
+        end
+
+        it "rejects a file_spec entry pointing at a specific file under /home" do
+          bad = manifest_yaml.sub(
+            "file_spec:\n  - \"/etc/demo/**\"",
+            "file_spec:\n  - \"/home/pnadmin/.bashrc\"\n  - \"/etc/demo/**\""
+          )
+          result = described_class.import!(node_module: mod, yaml: bad)
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("ships a path under /home")
+        end
+
+        it "does not flag file_spec entries that merely contain the substring 'home' elsewhere in the path" do
+          ok = manifest_yaml.sub(
+            "file_spec:\n  - \"/etc/demo/**\"",
+            "file_spec:\n  - \"/opt/somehome/**\"\n  - \"/etc/demo/**\""
+          )
+          result = described_class.import!(node_module: mod, yaml: ok)
+          expect(result.ok?).to be true
+        end
+
+        it "rejects users[].home outside the allowed managed roots (e.g. /etc)" do
+          bad = manifest_yaml + <<~YAML
+            users:
+              - name: extra-svc
+                home: /etc/extra-svc
+          YAML
+          result = described_class.import!(node_module: mod, yaml: bad)
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("is not under an allowed home root")
+        end
+
+        it "accepts users[].home under an allowed managed root (/var/lib)" do
+          ok = manifest_yaml + <<~YAML
+            users:
+              - name: extra-svc
+                home: /var/lib/extra-svc
+          YAML
+          result = described_class.import!(node_module: mod, yaml: ok)
+          expect(result.ok?).to be true
+        end
+
+        it "accepts users[].home under /home for a human-login-style account" do
+          ok = manifest_yaml + <<~YAML
+            users:
+              - name: extra-human
+                home: /home/extra-human
+          YAML
+          result = described_class.import!(node_module: mod, yaml: ok)
+          expect(result.ok?).to be true
+        end
+
+        it "accepts a manifest with no explicit home (UserAllocator's /var/lib/<name> default)" do
+          result = described_class.import!(node_module: mod, yaml: manifest_yaml)
+          expect(result.ok?).to be true
+        end
+      end
     end
   end
 

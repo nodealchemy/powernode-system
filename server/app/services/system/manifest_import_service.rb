@@ -97,6 +97,26 @@ module System
     GROUP_KNOWN_KEYS   = %w[name].freeze
     SUDOERS_KNOWN_KEYS = %w[id user runas commands flags].freeze
 
+    # Matches any file_spec entry that ships (or globs) a path under
+    # /home — with or without a leading slash, and whether or not it's
+    # the literal directory or a glob underneath it.
+    HOME_PATH_RX = %r{\A/?home(/|\z)}i
+
+    # Prefixes/exact paths a manifest's `users[].home` is allowed to
+    # point at. This is deliberately broader than the agent's actual
+    # runtime home-ownership reconciler (etcidentity.managedHomeRoots,
+    # scoped to /home/* only) — it's a manifest-authoring guardrail so a
+    # module can't declare a `home` that lands somewhere like /etc or /
+    # (either because the agent's reconciler is later widened, or
+    # because some other consumer of the `home` field, e.g. a service's
+    # HOME env var, would otherwise be pointed at a sensitive shared
+    # system path). Every entry here already appears as a `home:` value
+    # in a shipped module manifest or extensions/system/agent/internal/
+    # etcidentity/baseline.go.
+    ALLOWED_HOME_ROOTS = %w[
+      /home/ /var/lib/ /run/ /var/run/ /nonexistent /usr/sbin /bin /dev /root /run/sshd
+    ].freeze
+
     class << self
       def import!(node_module:, yaml:, create_version: false, version_changelog: nil)
         new.import!(
@@ -239,8 +259,35 @@ module System
       validate_groups(manifest, errors)
       validate_users(manifest, errors)
       validate_sudoers(manifest, errors)
+      validate_no_shipped_home_paths(manifest, errors)
 
       errors
+    end
+
+    # Rejects file_spec entries that ship (or glob) a path under /home.
+    # Home directories are runtime-managed by the agent's identity
+    # reconciler (etcidentity) — anything a module ships there via its
+    # rootfs/ tree lands root:root under mkfs.erofs --all-root, which is
+    # always wrong (the whole point of a home dir is that it's owned by
+    # the user that lives there, not by whichever module happened to
+    # carve that path first).
+    def validate_no_shipped_home_paths(manifest, errors)
+      Array(manifest["file_spec"]).each_with_index do |entry, i|
+        next unless entry.is_a?(String)
+        next unless entry.match?(HOME_PATH_RX)
+
+        errors << "file_spec[#{i}] #{entry.inspect} ships a path under /home — home directories " \
+                   "are runtime-managed (owned by the agent's identity reconciler, not the module " \
+                   "artifact); remove it from file_spec, or declare the account under `users:` and " \
+                   "let the agent create/own its home directory instead"
+      end
+    end
+
+    def home_root_allowed?(home)
+      ALLOWED_HOME_ROOTS.any? do |root|
+        normalized = root.end_with?("/") ? root : "#{root}/"
+        home == root || home.start_with?(normalized)
+      end
     end
 
     # Validates `users:` key (fleet-managed Unix users). Caught here so
@@ -277,6 +324,14 @@ module System
         %w[shell home gecos].each do |k|
           v = entry[k]
           errors << "#{prefix}.#{k} must be a string" if v && !v.is_a?(String)
+        end
+
+        home = entry["home"]
+        if home.is_a?(String) && home.present? && !home_root_allowed?(home)
+          errors << "#{prefix}.home #{home.inspect} is not under an allowed home root " \
+                     "(#{ALLOWED_HOME_ROOTS.join(', ')}) — the agent's home reconciler and " \
+                     "rendering hints only ever operate on these paths; pick one of them " \
+                     "(e.g. \"/var/lib/#{name}\") instead of a shared system path"
         end
 
         pg = entry["primary_group"]
