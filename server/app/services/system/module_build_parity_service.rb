@@ -162,10 +162,13 @@ module System
 
     # Mirrors NativeModuleBuildOrchestrator#full_oci_ref /
     # ModulePublicationProcessor#build_oci_ref exactly — same
-    # registry+namespace+tag shape.
+    # registry+namespace+tag shape, including the powernode/<name> fallback
+    # for the 40 platform modules whose gitea_repo_full_name is blank
+    # (without it every diff errors on an empty-repo ref).
     def full_oci_ref(node_module, tag)
       registry = ::System::DiskImageRegistryConfig.registry_host(account: @account)
-      "#{registry}/#{node_module.gitea_repo_full_name}:#{tag}"
+      repo = node_module.gitea_repo_full_name.presence || "powernode/#{node_module.name}"
+      "#{registry}/#{repo}:#{tag}"
     end
 
     def persist_results!(results)
