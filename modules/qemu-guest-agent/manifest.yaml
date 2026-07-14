@@ -37,7 +37,15 @@ services:
     # at startup and exits cleanly with a friendly message on substrates
     # that don't expose it, so the service is safe to declare for ALL
     # hub deployments — only PVE hosts will see it actively running.
-    start_command: "/usr/sbin/qemu-ga"
+    # -t /run overrides qga's compiled-in /var/run state-dir. Pivot-booted
+    # nodes have no /var/run (base-os ships no /var; boot tmpfiles doesn't
+    # create it), so the default statedir write to /var/run/qga.state fails,
+    # qga logs "error initializing guest agent" and — a qga quirk — exits 0,
+    # which Restart=always turns into a SILENT crash-loop (invisible as
+    # "active (auto-restart)"). Builders with a daemon that mkdir's /var/run
+    # as a side effect (dockerd) accidentally escaped this; native builders
+    # did not. /run always exists (tmpfs). See also base-os /var/run symlink.
+    start_command: "/usr/sbin/qemu-ga -t /run"
     restart_policy: always
     user: root
     capabilities: []
