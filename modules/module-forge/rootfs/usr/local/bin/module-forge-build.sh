@@ -198,7 +198,18 @@ trap cleanup EXIT INT TERM
 
 bind_mount() {
   local src="$1" dst="$2"
-  mkdir -p "$dst"
+  if [ -d "$src" ]; then
+    mkdir -p "$dst"
+  else
+    # File bind-mount (e.g. /etc/resolv.conf): the target must be a regular
+    # FILE, not a directory. The rsync from /opt/buildenv may have already
+    # placed a file/symlink here — replace it with a fresh empty file so the
+    # bind target is clean (mkdir'ing a path that's already a file fails
+    # "File exists", which crashed the first live native build).
+    mkdir -p "$(dirname "$dst")"
+    rm -f "$dst"
+    touch "$dst"
+  fi
   mount --bind "$src" "$dst"
   MOUNTED=("$dst" "${MOUNTED[@]}")
 }
@@ -268,7 +279,6 @@ mount -o remount,bind,ro "$BUILDENV/opt/module-build"
 mount -t proc proc "$BUILDENV/proc"
 MOUNTED=("$BUILDENV/proc" "${MOUNTED[@]}")
 bind_mount /dev "$BUILDENV/dev"
-touch "$BUILDENV/etc/resolv.conf"
 bind_mount /etc/resolv.conf "$BUILDENV/etc/resolv.conf"
 
 # --- 4. run build-one-module.sh inside the chroot. HOME=/root is set
