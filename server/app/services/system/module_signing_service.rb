@@ -1,0 +1,188 @@
+# frozen_string_literal: true
+
+require "tempfile"
+
+module System
+  # Signs a pushed OCI module artifact against the platform's Vault-held
+  # transit signing key. Ephemeral fleet builders (campaign 019f5885 inc7)
+  # push UNSIGNED artifacts — this service is the ONLY place a cosign
+  # signature gets attached, and it runs here (server-side) because this is
+  # where the already-authenticated Vault AppRole session lives.
+  #
+  # cosign's `--key hashivault://<name>` scheme means cosign talks to Vault
+  # directly and asks the transit engine to perform the signature — the
+  # private key material never leaves Vault, never transits this process,
+  # and is never written to argv, logs, or disk. This service only ever
+  # passes cosign the Vault ADDRESS and an already-issued Vault AUTH TOKEN
+  # (via subprocess env, never argv) plus the transit KEY NAME (config, not
+  # a secret) — see #vault_env and campaign design doc §D3 (private plan,
+  # not committed to this repo) for the full rationale.
+  #
+  # Digest binding: before signing, this service re-fetches the pushed
+  # artifact's manifest descriptor straight from the registry (`oras
+  # manifest fetch --descriptor`) and asserts its digest matches what the
+  # caller expects. The caller's `expected_digest` is what the leased
+  # builder REPORTED it pushed; re-deriving the digest from the registry
+  # itself (rather than trusting the report) closes the gap where a
+  # builder reports one digest but something else landed in the registry.
+  # A mismatch is a hard reject — this service never signs bytes it hasn't
+  # independently confirmed are the expected ones (fail-closed).
+  class ModuleSigningService
+    Result = Struct.new(:ok?, :error, :oci_ref, :digest, :cosign_output, keyword_init: true)
+
+    class SigningError < StandardError; end
+    class DigestMismatchError < SigningError; end
+    class BinaryNotFoundError < SigningError; end
+    class ManifestFetchError < SigningError; end
+    class CosignError < SigningError; end
+
+    # SiteSetting key for the transit keyname — this is CONFIG, not a
+    # secret (the keyname alone grants no signing capability; only the
+    # server's already-authenticated Vault session can invoke transit/sign
+    # against it). Never hardcode the keyname elsewhere — route through
+    # .keyname so an operator-driven rename/rotation-to-new-name is a
+    # single SiteSetting update.
+    KEYNAME_SETTING = "system.module_signing.keyname"
+    DEFAULT_KEYNAME = "powernode-module-signing"
+
+    def self.sign!(oci_ref:, expected_digest:, account: nil, node_module_id: nil, node_module_version_id: nil)
+      new.sign!(
+        oci_ref: oci_ref,
+        expected_digest: expected_digest,
+        account: account,
+        node_module_id: node_module_id,
+        node_module_version_id: node_module_version_id
+      )
+    end
+
+    def initialize(vault_client: nil)
+      @vault_client = vault_client || ::Security::VaultClient.instance
+    end
+
+    # @param oci_ref [String] the pushed artifact reference (registry/name:tag)
+    # @param expected_digest [String] the digest the caller believes was pushed
+    # @param account [Account, nil] for FleetEvent correlation — event emission
+    #   is skipped (not an error) when omitted, since signing itself has no
+    #   inherent tenant scope beyond the module being signed.
+    # @param node_module_id [String, nil] optional correlation id for the event
+    # @param node_module_version_id [String, nil] optional correlation id for the event
+    def sign!(oci_ref:, expected_digest:, account: nil, node_module_id: nil, node_module_version_id: nil)
+      return failure("oci_ref required") if oci_ref.blank?
+      return failure("expected_digest required") if expected_digest.blank?
+
+      ensure_binary!("oras")
+      ensure_binary!("cosign")
+
+      registry_digest = fetch_registry_digest(oci_ref)
+      if registry_digest != expected_digest
+        raise DigestMismatchError,
+              "registry digest #{registry_digest.inspect} does not match expected digest " \
+              "#{expected_digest.inspect} for #{oci_ref} — refusing to sign"
+      end
+
+      ref_at_digest = "#{strip_tag(oci_ref)}@#{registry_digest}"
+      cosign_output = cosign_sign!(ref_at_digest)
+
+      emit_signed_event!(
+        account: account,
+        oci_ref: oci_ref,
+        digest: registry_digest,
+        node_module_id: node_module_id,
+        node_module_version_id: node_module_version_id
+      )
+
+      Result.new(ok?: true, oci_ref: oci_ref, digest: registry_digest, cosign_output: cosign_output)
+    rescue SigningError => e
+      failure(e.message)
+    rescue StandardError => e
+      sanitized = ::System::ShellOutputSanitizer.redact(e.message)
+      Rails.logger.error("[ModuleSigningService] #{e.class}: #{sanitized}")
+      failure("signing failed: #{sanitized}")
+    end
+
+    private
+
+    def failure(msg)
+      Result.new(ok?: false, error: msg)
+    end
+
+    def keyname
+      ::SiteSetting.get(KEYNAME_SETTING).presence || DEFAULT_KEYNAME
+    end
+
+    def fetch_registry_digest(oci_ref)
+      out, err, status = ::Open3.capture3("oras", "manifest", "fetch", "--descriptor", oci_ref)
+      unless status.success?
+        raise ManifestFetchError,
+              "oras manifest fetch --descriptor failed: " \
+              "#{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
+      end
+
+      parsed = JSON.parse(out)
+      digest = parsed["digest"]
+      raise ManifestFetchError, "oras descriptor had no digest field" if digest.blank?
+
+      digest
+    rescue JSON::ParserError => e
+      raise ManifestFetchError, "oras descriptor JSON parse failed: #{e.message}"
+    end
+
+    def cosign_sign!(ref_at_digest)
+      cmd = [ "cosign", "sign", "--yes", "--key", "hashivault://#{keyname}", ref_at_digest ]
+      out, err, status = ::Open3.capture3(vault_env, *cmd)
+      unless status.success?
+        raise CosignError,
+              "cosign sign failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
+      end
+
+      ::System::ShellOutputSanitizer.redact(out)
+    end
+
+    # Builds the subprocess ENV hash cosign's hashivault:// KMS provider
+    # needs: VAULT_ADDR + VAULT_TOKEN. Deliberately reuses the SAME
+    # already-authenticated Vault session this server holds (AppRole
+    # login result) rather than minting anything new — "the server's
+    # existing Vault env." VAULT_TOKEN here is a short-lived Vault AUTH
+    # token (not transit key material); cosign forwards it straight to
+    # Vault's own HTTP API to authenticate the sign request. Passed as
+    # Open3's env-hash argument (never argv, never interpolated into the
+    # command string) so it never touches process listings or shell
+    # history, and this method never logs its return value.
+    def vault_env
+      client = @vault_client.client
+      { "VAULT_ADDR" => client.address, "VAULT_TOKEN" => client.token }
+    end
+
+    # oci_ref may be "registry/name:tag" — cosign wants the digest form
+    # "registry/name@sha256:...". Strips a trailing ":tag" without
+    # touching the registry host (which may itself contain a ":port").
+    def strip_tag(oci_ref)
+      oci_ref.sub(%r{:[^:@/]+\z}, "")
+    end
+
+    def ensure_binary!(name)
+      _out, _err, status = ::Open3.capture3("which", name)
+      return if status.success?
+
+      raise BinaryNotFoundError, "#{name} binary not found on PATH (required for ModuleSigningService)"
+    end
+
+    def emit_signed_event!(account:, oci_ref:, digest:, node_module_id:, node_module_version_id:)
+      return unless account
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: "system.module_signed",
+        severity: :low,
+        source: "module_signing_service",
+        node_module_id: node_module_id,
+        node_module_version_id: node_module_version_id,
+        payload: {
+          oci_ref: oci_ref,
+          digest: digest,
+          keyname: keyname
+        }
+      )
+    end
+  end
+end

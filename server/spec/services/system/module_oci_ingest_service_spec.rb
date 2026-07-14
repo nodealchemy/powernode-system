@@ -219,4 +219,110 @@ RSpec.describe System::ModuleOciIngestService do
       expect(push_step_script).to match(/--annotation\s+"io\.powernode\.vex_uri=/)
     end
   end
+
+  # Campaign 019f5885 inc8 — platform-side module signing via Vault-transit.
+  # OrasOciAdapter#verify_signature now tries an ORDERED list of trusted
+  # public keys (Vault key first, legacy static Gitea key second) instead
+  # of a single static key, so both legacy-Gitea-signed and new
+  # Vault-signed artifacts verify during the migration window. All
+  # cosign/registry interaction here is mocked — no live cosign, no live
+  # Vault, no real keys (the PEMs below are inert placeholder text, not
+  # cryptographic material).
+  describe "OrasOciAdapter#verify_signature (multi-key trust window, campaign 019f5885 inc8)" do
+    let(:adapter) { described_class::OrasOciAdapter.new }
+    let(:oci_ref) { "registry.example.com/acct/ingest-mod:v1.0.0" }
+    let(:vault_pem)  { "-----BEGIN PUBLIC KEY-----\nVAULTKEYDATA\n-----END PUBLIC KEY-----\n" }
+    let(:legacy_pem) { "-----BEGIN PUBLIC KEY-----\nLEGACYKEYDATA\n-----END PUBLIC KEY-----\n" }
+    let(:trusted_keys_setting) { described_class::OrasOciAdapter::TRUSTED_KEYS_SETTING }
+
+    def status_double(ok, code: 0)
+      instance_double(Process::Status, success?: ok, exitstatus: code)
+    end
+
+    before do
+      allow(Open3).to receive(:capture3).with("which", "cosign").and_return([ "", "", status_double(true) ])
+    end
+
+    after { ::SiteSetting.where(key: trusted_keys_setting).delete_all }
+
+    # Fakes `cosign verify --output json --key <tempfile-path> <ref>` as
+    # succeeding only when the tempfile's content is one of `matching_pems`
+    # (mirrors how a real cosign binary would only verify against the
+    # correct public key). Fakes the keyless invocation (no --key flag) per
+    # `keyless_ok`. Optionally records the attempted PEM content (in call
+    # order) into `attempts` so tests can assert the Vault-key-first /
+    # legacy-key-second ordering, not just the end result.
+    def stub_cosign_verify(matching_pems:, keyless_ok: false, attempts: nil)
+      allow(Open3).to receive(:capture3) do |*args|
+        next [ "", "", status_double(true) ] if args == [ "which", "cosign" ]
+
+        if args.include?("--key")
+          key_path = args[args.index("--key") + 1]
+          content = File.read(key_path)
+          attempts << content if attempts
+          if matching_pems.include?(content)
+            [ '{"critical":{}}', "", status_double(true) ]
+          else
+            [ "", "Error: no matching signatures", status_double(false, code: 1) ]
+          end
+        else
+          keyless_ok ? [ '{"critical":{}}', "", status_double(true) ] : [ "", "Error: no keyless match", status_double(false, code: 1) ]
+        end
+      end
+    end
+
+    it "verifies a Vault-key-signed artifact via the SiteSetting-configured trusted key list" do
+      ::SiteSetting.set(trusted_keys_setting, [ vault_pem ].to_json, setting_type: "json")
+      stub_cosign_verify(matching_pems: [ vault_pem ])
+
+      result = adapter.verify_signature(oci_ref)
+      expect(result[:ok]).to be true
+    end
+
+    it "verifies a legacy-Gitea-key-signed artifact via the POWERNODE_COSIGN_PUBLIC_KEY env fallback" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(legacy_pem)
+      stub_cosign_verify(matching_pems: [ legacy_pem ])
+
+      result = adapter.verify_signature(oci_ref)
+      expect(result[:ok]).to be true
+    end
+
+    it "tries the Vault key FIRST, the legacy key SECOND, and succeeds on the legacy match" do
+      ::SiteSetting.set(trusted_keys_setting, [ vault_pem ].to_json, setting_type: "json")
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(legacy_pem)
+      attempts = []
+      stub_cosign_verify(matching_pems: [ legacy_pem ], attempts: attempts)
+
+      result = adapter.verify_signature(oci_ref)
+      expect(result[:ok]).to be true
+      expect(attempts).to eq([ vault_pem, legacy_pem ])
+    end
+
+    it "fails when neither trusted key matches (unsigned or badly-signed artifact)" do
+      ::SiteSetting.set(trusted_keys_setting, [ vault_pem ].to_json, setting_type: "json")
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(legacy_pem)
+      stub_cosign_verify(matching_pems: [])
+
+      result = adapter.verify_signature(oci_ref)
+      expect(result[:ok]).to be_nil
+      expect(result[:error]).to match(/no trusted key verified/)
+    end
+
+    it "falls back to the keyless path (unchanged) when no trusted keys are configured at all" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY").and_return(nil)
+      allow(ENV).to receive(:[]).with("POWERNODE_COSIGN_PUBLIC_KEY_FILE").and_return(nil)
+      stub_cosign_verify(matching_pems: [], keyless_ok: true)
+
+      result = adapter.verify_signature(
+        oci_ref,
+        expected_signers: [ "https://github.com/acme/repo/.*" ],
+        issuer_regexp: "https://token.actions.githubusercontent.com"
+      )
+      expect(result[:ok]).to be true
+    end
+  end
 end

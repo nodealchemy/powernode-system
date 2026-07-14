@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "tempfile"
+
 module System
   # Ingests an OCI module artifact: pulls the manifest descriptors, verifies
   # the cosign signature, records one System::ModuleArtifact per architecture,
@@ -222,44 +224,118 @@ module System
         { error: "manifest JSON parse failed: #{e.message}" }
       end
 
+      # Trusted-key list, ordered Vault-key-first / legacy-Gitea-key-second
+      # (campaign 019f5885 inc8 — migration window while builds cut over
+      # from the static Gitea cosign key to platform-side Vault-transit
+      # signing). Each entry is a PEM public key string.
+      TRUSTED_KEYS_SETTING = "system.module_signing.trusted_public_keys"
+
       def verify_signature(oci_ref, expected_signers: nil, issuer_regexp: nil)
         ensure_binary!("cosign")
-        cmd = [ "cosign", "verify", "--output", "json", oci_ref ]
-        # Static-key verification — Gitea isn't on Sigstore Fulcio's
-        # trusted-issuer list, so the platform's CI uses a static
-        # cosign key. The public key is provisioned via
-        # POWERNODE_COSIGN_PUBLIC_KEY env var (or a file path via
-        # POWERNODE_COSIGN_PUBLIC_KEY_FILE). When neither is set the
-        # verifier falls back to the keyless flow for any modules
-        # that DID get signed by a Fulcio-trusted issuer (legacy +
-        # third-party).
-        if (pubkey_inline = ENV["POWERNODE_COSIGN_PUBLIC_KEY"]).present?
-          # cosign accepts `--key env://VAR` for an inline key value.
-          ENV["__COSIGN_PUB_KEY_INLINE"] = pubkey_inline
-          cmd += [ "--key", "env://__COSIGN_PUB_KEY_INLINE" ]
-        elsif (pubkey_path = ENV["POWERNODE_COSIGN_PUBLIC_KEY_FILE"]).present?
-          cmd += [ "--key", pubkey_path ]
+
+        keys = trusted_public_keys
+        if keys.any?
+          verify_with_trusted_keys(oci_ref, keys)
         else
           # Keyless fallback path — only works for modules signed by
           # an issuer Sigstore Fulcio trusts (GitHub, GitLab.com, etc).
-          if expected_signers&.any?
-            cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
-          end
-          if issuer_regexp.present?
-            cmd += [ "--certificate-oidc-issuer-regexp", issuer_regexp ]
-          end
+          # Unchanged by the multi-key trusted-key path above: no
+          # trusted key configured at all (neither the Vault key nor
+          # the legacy static key) is exactly the pre-existing
+          # "nothing configured" case.
+          verify_keyless(oci_ref, expected_signers: expected_signers, issuer_regexp: issuer_regexp)
         end
+      end
+
+      private
+
+      # Ordered: Vault-transit key(s) from SiteSetting FIRST (new,
+      # preferred), legacy static Gitea key SECOND (env-configured,
+      # kept only as a migration-window fallback entry). Verification
+      # tries each in order and succeeds on the first match — this is
+      # what lets both legacy-Gitea-signed and new-Vault-signed
+      # artifacts verify while the fleet migrates. Public keys are not
+      # secret; any read failure degrades to "no trusted keys from this
+      # source" rather than raising, so a SiteSetting hiccup can't block
+      # ingest (it just narrows verification to whatever other source is
+      # configured, or keyless if none are).
+      def trusted_public_keys
+        (site_setting_trusted_keys + [ legacy_static_key ]).compact.uniq
+      end
+
+      def site_setting_trusted_keys
+        raw = ::SiteSetting.get(TRUSTED_KEYS_SETTING)
+        Array(raw).map(&:presence).compact
+      rescue StandardError => e
+        Rails.logger.warn("[OrasOciAdapter] trusted_public_keys SiteSetting read failed: #{e.message}")
+        []
+      end
+
+      # The pre-inc8 verification path — a single static cosign public
+      # key provisioned via POWERNODE_COSIGN_PUBLIC_KEY (inline) or
+      # POWERNODE_COSIGN_PUBLIC_KEY_FILE (path). Kept as the trailing
+      # fallback entry in the trusted-key list so operators who haven't
+      # yet migrated the legacy key into the SiteSetting list keep
+      # verifying exactly as before.
+      def legacy_static_key
+        if (inline = ENV["POWERNODE_COSIGN_PUBLIC_KEY"]).present?
+          inline
+        elsif (path = ENV["POWERNODE_COSIGN_PUBLIC_KEY_FILE"]).present? && File.exist?(path)
+          File.read(path)
+        end
+      end
+
+      def verify_with_trusted_keys(oci_ref, keys)
+        last_error = nil
+        keys.each do |pubkey_pem|
+          result = verify_with_key(oci_ref, pubkey_pem)
+          return result if result[:ok]
+
+          last_error = result[:error]
+        end
+
+        { error: "no trusted key verified this artifact (tried #{keys.size} key(s)); last error: #{last_error}" }
+      end
+
+      # Verifies against one candidate public key. The PEM is written to
+      # a tempfile (public keys are NOT secret — no special handling
+      # needed beyond normal tempfile cleanup) and passed via `--key
+      # <path>`, one cosign invocation per candidate. Using a tempfile
+      # (rather than the old single-key path's global `ENV[...] =`
+      # mutation) keeps concurrent verifications on different threads
+      # from stepping on each other's key value.
+      def verify_with_key(oci_ref, pubkey_pem)
+        Tempfile.create([ "cosign_pub", ".pem" ]) do |f|
+          f.write(pubkey_pem)
+          f.flush
+          cmd = [ "cosign", "verify", "--output", "json", "--key", f.path, oci_ref ]
+          out, err, status = Open3.capture3(*cmd)
+          unless status.success?
+            return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "cosign exit #{status.exitstatus}" }
+          end
+
+          { ok: true, bundle: out, signers: [], issuer: nil }
+        end
+      end
+
+      def verify_keyless(oci_ref, expected_signers:, issuer_regexp:)
+        cmd = [ "cosign", "verify", "--output", "json" ]
+        if expected_signers&.any?
+          cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
+        end
+        if issuer_regexp.present?
+          cmd += [ "--certificate-oidc-issuer-regexp", issuer_regexp ]
+        end
+        cmd << oci_ref
+
         out, err, status = Open3.capture3(*cmd)
         # cosign's verify failures often quote the certificate body,
-        # which is fine; but they ALSO echo the inline cosign public
-        # key env var name + value on key-load errors. Same sanitizer
-        # as above; nil-safe for the empty-err exit path.
+        # which is fine to surface; sanitizer strips anything
+        # secret-shaped regardless. nil-safe for the empty-err exit path.
         return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "cosign exit #{status.exitstatus}" } unless status.success?
 
         { ok: true, bundle: out, signers: expected_signers || [], issuer: issuer_regexp }
       end
-
-      private
 
       def ensure_binary!(name)
         # Array-form Open3 (no shell) — matches the rest of this adapter's
