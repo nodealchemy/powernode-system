@@ -149,7 +149,14 @@ module System
       # "multiple assignments to same column updated_at".
       ::System::Package.upsert_all(
         buffer,
-        unique_by: :idx_pkg_repo_name_arch_ver,
+        # Reference the conflict target by COLUMNS, not by index name: the
+        # unique index on these four columns exists, but under Rails'
+        # auto-generated name (idx_on_package_repository_id_name_architecture_vers_…),
+        # never the `idx_pkg_repo_name_arch_ver` name this code originally
+        # named — so `unique_by: :idx_pkg_repo_name_arch_ver` raised
+        # "No unique index found" on EVERY sync. Columns resolve to whichever
+        # unique index covers exactly them, independent of its name / any DB.
+        unique_by: %i[package_repository_id name architecture version],
         update_only: %i[
           release_version section_or_group description summary
           installed_size_bytes download_size_bytes
