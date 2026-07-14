@@ -195,6 +195,9 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
+# Always name the failing command on the last stderr line — the agent captures
+# a bounded log_tail, so a bare `set -e` exit can otherwise leave no clue.
+trap 'echo "[module-forge-build.sh] FAILED rc=$? at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 bind_mount() {
   local src="$1" dst="$2"
@@ -268,6 +271,17 @@ fi
 # left behind. -------------------------------------------------------------
 log "seeding ephemeral buildroot copy from ${BUILDENV_GOLDEN}…"
 rsync -a "$BUILDENV_GOLDEN/" "$BUILDENV/"
+
+# stage2-carve.sh's --prune-empty-dirs strips EVERY empty directory from the
+# golden buildroot's carve, so /opt/buildenv ships with no /tmp, /run, /sys,
+# etc. — recreate the standard skeleton the chrooted build depends on. /tmp
+# is load-bearing (build-one-module.sh writes /tmp/manifest.json + the whole
+# /tmp/* fat/slim/erofs stage contract; without it the chroot dies exit 2 on
+# its first redirect). The apt partial dirs are mask-stripped from the carve
+# and needed by Class-B stage15 arms' in-chroot apt-get.
+mkdir -p "$BUILDENV/tmp" "$BUILDENV/var/tmp" "$BUILDENV/run" "$BUILDENV/sys" \
+         "$BUILDENV/var/lib/apt/lists/partial" "$BUILDENV/var/cache/apt/archives/partial"
+chmod 1777 "$BUILDENV/tmp" "$BUILDENV/var/tmp"
 
 # --- 3. chroot mounts: workspace + build scripts (bind, read-only) + the
 # minimum a chrooted mmdebstrap/git/curl need to function (proc, dev,
