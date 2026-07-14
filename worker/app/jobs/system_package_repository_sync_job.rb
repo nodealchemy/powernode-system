@@ -16,7 +16,20 @@ class SystemPackageRepositorySyncJob < BaseJob
   CONCURRENCY_LOCK = "system:pkgrepo:sync:lock"
   LOCK_TTL_SEC = 1800 # 30 minutes — bounded by Ubuntu archive fetch latency on slow links
 
-  def execute(*_args)
+  def execute(*args)
+    # On-demand single-repo sync (operator "Sync now" button enqueues this
+    # job with the repo id). Skips the global daily-tick lock entirely — it
+    # targets one repo, is idempotent, and must not be starved by (or starve)
+    # the daily all-repos tick.
+    repo_id = args.first
+    return sync_one_repository(repo_id) if repo_id.present?
+
+    daily_tick
+  end
+
+  private
+
+  def daily_tick
     return { skipped: true, reason: "already locked" } unless acquire_lock
 
     log_info("[PackageRepoSync] Starting daily sync tick")
@@ -36,6 +49,21 @@ class SystemPackageRepositorySyncJob < BaseJob
     { ok: false, error: e.message }
   ensure
     release_lock
+  end
+
+  # POSTs a single repository id; the server marked it `syncing` before
+  # enqueueing, and PackageRepositorySyncService flips it to idle/failed.
+  def sync_one_repository(repo_id)
+    log_info("[PackageRepoSync] On-demand sync", repository_id: repo_id)
+    response = api_client.post(
+      "/api/v1/system/worker_api/package_repositories/sync",
+      { repository_id: repo_id }
+    )
+    payload = response.dig("data") || {}
+    { on_demand: true, repository_id: repo_id, results: payload["results"] }
+  rescue BackendApiClient::ApiError => e
+    log_error("[PackageRepoSync] On-demand API error", e)
+    { ok: false, error: e.message }
   end
 
   private

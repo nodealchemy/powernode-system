@@ -12,6 +12,16 @@ module Api
             authorize_worker_permission!("system.package_repositories.sync")
             return if performed?
 
+            # On-demand single-repo sync (operator "Sync now" button → the
+            # enqueued SystemPackageRepositorySyncJob passes the repo id). Sync
+            # just that repo instead of the full enabled-repo tick.
+            if (repo_id = params[:repository_id]).present?
+              repo = ::System::PackageRepository.find_by(id: repo_id)
+              return render_error("repository not found", status: :not_found) unless repo
+
+              return render_success(tick_count: 1, results: [ sync_one(repo) ])
+            end
+
             repos = scope_repositories
             results = repos.map do |repo|
               sync_one(repo)

@@ -126,17 +126,21 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
   describe "POST /:id/sync" do
     let!(:repo) { create(:system_package_repository, account: account_a) }
 
-    it "invokes PackageRepositorySyncService and returns the result" do
-      expect(System::PackageRepositorySyncService).to receive(:call).with(repository: anything).and_return(
-        System::PackageRepositorySyncService::Result.new(
-          success: true, package_count: 5, upserted: 5, obsoleted: 0, error: nil
-        )
+    it "marks the repo syncing and enqueues the worker sync job (async)" do
+      # Async: the request returns immediately after queueing; it must NOT run
+      # the (minutes-long) sync inline, and never enqueues to Sidekiq directly.
+      expect(System::PackageRepositorySyncService).not_to receive(:call)
+      expect(System::WorkerJobEnqueuer).to receive(:enqueue).with(
+        job_class: "SystemPackageRepositorySyncJob",
+        args:      [ repo.id ],
+        queue:     "system"
       )
       post "/api/v1/system/package_repositories/#{repo.id}/sync",
            headers: auth_headers_for(user_a)
       expect(response).to have_http_status(:ok)
       expect(json_response_data["ok"]).to be(true)
-      expect(json_response_data["upserted"]).to eq(5)
+      expect(json_response_data["status"]).to eq("syncing")
+      expect(repo.reload.sync_status).to eq("syncing")
     end
   end
 end

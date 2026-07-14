@@ -116,12 +116,16 @@ RSpec.describe "Api::V1::System::PackageRepositories", type: :request do
       expect(response).to have_http_status(:forbidden)
     end
 
-    it "delegates to PackageRepositorySyncService" do
-      result = OpenStruct.new(success?: true, upserted: 0, obsoleted: 0, package_count: 0, error: nil)
-      allow(::System::PackageRepositorySyncService).to receive(:call).and_return(result)
+    it "marks the repo syncing and enqueues the worker sync job (async, no inline sync)" do
+      expect(::System::PackageRepositorySyncService).not_to receive(:call)
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue)
       post "/api/v1/system/package_repositories/#{repo.id}/sync",
            headers: auth_headers_for(sync_user).merge("Content-Type" => "application/json")
       expect(response).to have_http_status(:ok)
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        job_class: "SystemPackageRepositorySyncJob", args: [ repo.id ], queue: "system"
+      )
+      expect(repo.reload.sync_status).to eq("syncing")
     end
   end
 

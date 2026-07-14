@@ -13,6 +13,7 @@ import { PackageBrowser } from '@system/features/system/components/packages/Pack
 import { ResponsiveListContainer } from '@system/features/system/components/shared/ResponsiveListContainer';
 import { useResourceList } from '@system/features/system/hooks/useResourceList';
 import { usePermissions } from '@/shared/hooks/usePermissions';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { logger } from '@/shared/utils/logger';
 import { MultiSelect, type MultiSelectOption } from '@/shared/components/ui/MultiSelect';
 
@@ -40,6 +41,7 @@ const VISIBILITY_OPTIONS: MultiSelectOption[] = [
 
 export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   const { hasPermission } = usePermissions();
+  const { showNotification } = useNotifications();
   const canCreate = hasPermission('system.package_repositories.create');
   const canSync = hasPermission('system.package_repositories.sync');
   const canDelete = hasPermission('system.package_repositories.delete');
@@ -113,12 +115,33 @@ export const PackageRepositoriesTab: FC<Props> = ({ onActionsReady }) => {
   const handleSync = useCallback(
     async (repo: SystemPackageRepository) => {
       if (!canSync) return;
-      const result = await packageRepositoriesApi.sync(repo.id);
-      logger.info('[PackageRepositoriesTab] sync result', result);
-      list.refresh();
+      try {
+        // Async: the request returns as soon as the sync is queued; the repo
+        // flips to "syncing" and the poll below tracks it to idle/failed.
+        const result = await packageRepositoriesApi.sync(repo.id);
+        logger.info('[PackageRepositoriesTab] sync queued', result);
+        showNotification(`Sync started for ${repo.name} — running in the background.`, 'success');
+        list.refresh();
+      } catch (e) {
+        logger.error('[PackageRepositoriesTab] sync failed to start', e);
+        showNotification(`Failed to start sync for ${repo.name}`, 'error');
+      }
     },
-    [canSync, list]
+    [canSync, list, showNotification]
   );
+
+  // While any repository is mid-sync, poll the list so the badge flips from
+  // "syncing" to idle/failed without a manual refresh (the work runs on the
+  // worker, out of the request that started it).
+  const anySyncing = useMemo(
+    () => list.items.some((r) => r.sync_status === 'syncing'),
+    [list.items]
+  );
+  useEffect(() => {
+    if (!anySyncing) return;
+    const id = setInterval(() => list.refresh(), 5000);
+    return () => clearInterval(id);
+  }, [anySyncing, list]);
 
   const handleDelete = useCallback(
     async (repo: SystemPackageRepository) => {

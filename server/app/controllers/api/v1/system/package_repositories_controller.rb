@@ -144,13 +144,25 @@ module Api
             return render_error("Forbidden", status: :forbidden)
           end
 
-          result = ::System::PackageRepositorySyncService.call(repository: @repository)
+          # ASYNC: a full apt/rpm sync fetches + parses + upserts tens of
+          # thousands of rows — minutes of work, far too long to hold an HTTP
+          # request open (the reverse proxy times it out, so the button looked
+          # dead). Mark the repo syncing and hand the actual work to the worker
+          # (the same Sidekiq job the daily tick runs, scoped to THIS repo by
+          # its id — enqueued via WorkerJobEnqueuer since the server has no
+          # Sidekiq gem). The UI polls sync_status until it flips to idle/failed.
+          @repository.update!(sync_status: "syncing", last_sync_error: nil)
+          ::System::WorkerJobEnqueuer.enqueue(
+            job_class: "SystemPackageRepositorySyncJob",
+            args:      [ @repository.id ],
+            queue:     "system"
+          )
+          # NOTE: pass the payload via `data:` — render_success's own `status:`
+          # kwarg is the HTTP status, so a top-level `status: "syncing"` would
+          # be validated as an HTTP code and 500.
           render_success(
-            ok:            result.success?,
-            upserted:      result.upserted,
-            obsoleted:     result.obsoleted,
-            package_count: result.package_count,
-            error:         result.error
+            data:    { ok: true, status: "syncing" },
+            message: "Sync queued — running in the background; the status will update when it completes."
           )
         end
 

@@ -193,8 +193,11 @@ export const packageRepositoriesApi = {
     await apiClient.delete(`/system/package_repositories/${id}`);
   },
 
-  sync: async (id: string): Promise<{ ok: boolean; upserted: number; obsoleted: number; package_count: number; error?: string }> => {
-    const response = await apiClient.post<ApiEnvelope<{ ok: boolean; upserted: number; obsoleted: number; package_count: number; error?: string }>>(
+  // Async: returns as soon as the sync is QUEUED (status "syncing"); the
+  // actual work runs on the worker. Poll the repo's sync_status for the
+  // terminal idle/failed result.
+  sync: async (id: string): Promise<{ ok: boolean; status?: string; message?: string }> => {
+    const response = await apiClient.post<ApiEnvelope<{ ok: boolean; status?: string; message?: string }>>(
       `/system/package_repositories/${id}/sync`,
       {},
     );
