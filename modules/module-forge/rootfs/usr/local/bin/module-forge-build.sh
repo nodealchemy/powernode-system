@@ -173,7 +173,24 @@ require_cmd chroot
 [ -x "$BUILD_SCRIPTS/push.sh" ] || die "$BUILD_SCRIPTS/push.sh missing"
 
 JOB_ID="$(uuidgen)"
-JOB_ROOT="/var/lib/module-forge/jobs/${JOB_ID}"
+# Build scratch (the rsync'd golden buildroot copy + mmdebstrap's multi-GB fat
+# rootfs) MUST land on a roomy, DISK-backed filesystem — never the pivot-boot
+# overlay root (/), which on fleet nodes is a ~512M tmpfs-backed writable layer
+# that mmdebstrap's very first apt-get fills to ENOSPC. Resolve the scratch base:
+# an explicit MODULE_FORGE_JOB_ROOT override wins; else the platform's persistent
+# data mount (/persist on pivot-booted nodes — a real ext4 partition with tens of
+# GB free) when it's a DISTINCT filesystem from /; else /var/lib (correct on a
+# normal host where / is itself a real disk). The stat-device compare keeps this
+# module generic across boot styles instead of hardcoding one disk layout.
+JOB_BASE="${MODULE_FORGE_JOB_ROOT:-}"
+if [ -z "$JOB_BASE" ]; then
+  if [ -d /persist ] && [ "$(stat -c %d /persist 2>/dev/null)" != "$(stat -c %d / 2>/dev/null)" ]; then
+    JOB_BASE="/persist/module-forge"
+  else
+    JOB_BASE="/var/lib/module-forge"
+  fi
+fi
+JOB_ROOT="$JOB_BASE/jobs/${JOB_ID}"
 BUILDENV="$JOB_ROOT/buildenv"
 WORKSPACE_HOST="$JOB_ROOT/workspace"
 mkdir -p "$BUILDENV" "$WORKSPACE_HOST"
