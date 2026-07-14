@@ -399,6 +399,21 @@ func RenderUnitMode(svc manifest.Service, moduleID string, mode RootMode) string
 	if svc.WorkingDirectory != "" {
 		fmt.Fprintf(&b, "WorkingDirectory=%s\n", svc.WorkingDirectory)
 	}
+	// StateDirectory= makes systemd itself create the /var/lib/<x> dir
+	// (mode 0755) and chown it to User= at service start, resolving the
+	// platform-rendered passwd UID at *runtime* — never a numerically
+	// baked-in owner. This matters on pivot-booted fleet nodes: the
+	// composed erofs module union ships with --all-root (mkfs.erofs),
+	// which drops /var entirely, so a plain WorkingDirectory= under
+	// /var/lib is never created and the non-root User= hits EACCES/
+	// 200-CHDIR. Only applies when both User= is set (nothing to chown
+	// to otherwise) and WorkingDirectory is actually under /var/lib —
+	// e.g. /etc/traefik or other non-state working dirs are left alone.
+	if svc.User != "" {
+		if stateDir, ok := varLibStateDirectory(svc.WorkingDirectory); ok {
+			fmt.Fprintf(&b, "StateDirectory=%s\n", stateDir)
+		}
+	}
 	for _, k := range sortedKeys(svc.Env) {
 		// systemd accepts Environment= with shell-escaping; we keep it
 		// simple — values pre-escaped by the operator land verbatim.
@@ -483,6 +498,24 @@ func renderUnitBodyMode(svc manifest.Service, moduleID string, mode RootMode) st
 	}
 
 	return b.String()
+}
+
+// varLibStateDirectory reports whether workingDir is rooted under
+// /var/lib/ and, if so, returns the path systemd's StateDirectory=
+// directive should carry to reproduce it — e.g. /var/lib/vector ->
+// "vector" (systemd then creates /var/lib/vector). Returns ok=false
+// for anything outside /var/lib (e.g. /etc/traefik) or for /var/lib
+// itself (no meaningful subdirectory to state-manage).
+func varLibStateDirectory(workingDir string) (string, bool) {
+	const prefix = "/var/lib/"
+	if !strings.HasPrefix(workingDir, prefix) {
+		return "", false
+	}
+	suffix := strings.TrimSuffix(strings.TrimPrefix(workingDir, prefix), "/")
+	if suffix == "" {
+		return "", false
+	}
+	return suffix, true
 }
 
 // restartDirective maps the plan's policy enum to systemd's directive.

@@ -75,6 +75,71 @@ func TestRenderUnit_RestartPolicyMapping(t *testing.T) {
 	}
 }
 
+// TestRenderUnit_StateDirectoryForVarLibWorkingDir pins the fix for
+// pivot-booted fleet nodes: mkfs.erofs --all-root drops /var entirely
+// from the composed module union, so a plain WorkingDirectory= under
+// /var/lib is never created and a non-root User= hits EACCES/200-CHDIR.
+// StateDirectory= makes systemd itself create + chown the dir at start
+// (ownership resolved by name against the live passwd, never baked
+// numerically). Only fires when User= is set AND WorkingDirectory is
+// under /var/lib — e.g. reverse-proxy-traefik's /etc/traefik working
+// dir, or a service with no User=, must NOT get it.
+func TestRenderUnit_StateDirectoryForVarLibWorkingDir(t *testing.T) {
+	cases := []struct {
+		name    string
+		svc     manifest.Service
+		wantDir string // "" means StateDirectory= must NOT appear
+	}{
+		{
+			name: "user set, working dir under /var/lib",
+			svc: manifest.Service{
+				Name: "vector", StartCommand: "/usr/bin/vector",
+				User: "vector", WorkingDirectory: "/var/lib/vector",
+			},
+			wantDir: "vector",
+		},
+		{
+			name: "user set, working dir under /var/lib (prometheus)",
+			svc: manifest.Service{
+				Name: "node-exporter", StartCommand: "/usr/bin/prometheus-node-exporter",
+				User: "prometheus", WorkingDirectory: "/var/lib/prometheus",
+			},
+			wantDir: "prometheus",
+		},
+		{
+			name: "user set, working dir elsewhere (not /var/lib)",
+			svc: manifest.Service{
+				Name: "traefik", StartCommand: "/usr/bin/traefik",
+				User: "traefik", WorkingDirectory: "/etc/traefik",
+			},
+			wantDir: "",
+		},
+		{
+			name: "no user set — never emit StateDirectory even under /var/lib",
+			svc: manifest.Service{
+				Name: "anon", StartCommand: "/usr/bin/anon",
+				WorkingDirectory: "/var/lib/anon",
+			},
+			wantDir: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderUnit(tc.svc, "mod-x")
+			if tc.wantDir == "" {
+				if strings.Contains(got, "StateDirectory=") {
+					t.Errorf("did not expect StateDirectory= in output:\n%s", got)
+				}
+				return
+			}
+			want := "StateDirectory=" + tc.wantDir
+			if !strings.Contains(got, want) {
+				t.Errorf("expected %q in unit body:\n%s", want, got)
+			}
+		})
+	}
+}
+
 // TestRenderUnitMode_UnitBodyPassthrough confirms a unit_body service's
 // body is emitted verbatim (option A2 — dev-cell/claude-tmux's shape),
 // with no generated ExecStart=/Type=/Restart= directives, and no
