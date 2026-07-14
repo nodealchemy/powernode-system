@@ -102,7 +102,10 @@ module Ai
           },
           "system_sync_package_repository" => {
             description: "Trigger an immediate sync of the upstream apt/rpm index for this repository",
-            parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to sync" } }
+            parameters: {
+              repository_id: { type: "string", required: true, description: "UUID of the package repository to sync" },
+              force:         { type: "boolean", required: false, description: "Re-write every package row + bypass the unchanged-fingerprint fast-path and the mass-obsoletion guard (metadata refresh / override a partial-upstream guard trip)" }
+            }
           },
           "system_link_repository_platform" => {
             description: "Link a NodePlatform to a PackageRepository. Cross-account validated — account-scoped repos can only link platforms in the same account; shared repos can link any platform.",
@@ -378,7 +381,8 @@ module Ai
 
       def sync_repository(params)
         repo = scoped_repos.find(params[:repository_id])
-        result = ::System::PackageRepositorySyncService.call(repository: repo)
+        force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
+        result = ::System::PackageRepositorySyncService.call(repository: repo, force: force)
         success_result(
           ok:            result.success?,
           upserted:      result.upserted,

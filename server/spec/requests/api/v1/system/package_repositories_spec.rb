@@ -132,7 +132,7 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
       expect(System::PackageRepositorySyncService).not_to receive(:call)
       expect(System::WorkerJobEnqueuer).to receive(:enqueue).with(
         job_class: "SystemPackageRepositorySyncJob",
-        args:      [ repo.id ],
+        args:      [ repo.id, { "force" => false } ],
         queue:     "system"
       )
       post "/api/v1/system/package_repositories/#{repo.id}/sync",

@@ -123,7 +123,7 @@ RSpec.describe "Api::V1::System::PackageRepositories", type: :request do
            headers: auth_headers_for(sync_user).merge("Content-Type" => "application/json")
       expect(response).to have_http_status(:ok)
       expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
-        job_class: "SystemPackageRepositorySyncJob", args: [ repo.id ], queue: "system"
+        job_class: "SystemPackageRepositorySyncJob", args: [ repo.id, { "force" => false } ], queue: "system"
       )
       expect(repo.reload.sync_status).to eq("syncing")
     end

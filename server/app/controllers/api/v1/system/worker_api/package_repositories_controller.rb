@@ -20,16 +20,18 @@ module Api
             # amplifying storm. Dispatch the work to a detached background
             # thread and return immediately; the per-repo advisory lock in
             # PackageRepositorySyncService is the real duplicate guard.
+            force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
+
             if (repo_id = params[:repository_id]).present?
               repo = ::System::PackageRepository.find_by(id: repo_id)
               return render_error("repository not found", status: :not_found) unless repo
 
-              dispatch_background_sync([ repo ])
+              dispatch_background_sync([ repo ], force: force)
               return render_success(queued: true, repository_id: repo.id)
             end
 
             repos = scope_repositories.to_a
-            dispatch_background_sync(repos)
+            dispatch_background_sync(repos, force: force)
             render_success(queued: true, tick_count: repos.size)
           end
 
@@ -42,13 +44,13 @@ module Api
           # Rails.application.executor.wrap gives the thread its own connection
           # + reloading; each repo is synced sequentially so one thread holds at
           # most one sync connection.
-          def dispatch_background_sync(repos)
+          def dispatch_background_sync(repos, force: false)
             return if repos.blank?
 
             Thread.new do
               ::Rails.application.executor.wrap do
                 repos.each do |repo|
-                  ::System::PackageRepositorySyncService.call(repository: repo)
+                  ::System::PackageRepositorySyncService.call(repository: repo, force: force)
                 rescue StandardError => e
                   ::Rails.logger.error("[worker_api package sync bg] repository=#{repo.id}: #{e.class}: #{e.message}")
                 end

@@ -28,11 +28,11 @@ module System
 
         protected
 
-        def perform(repository_id:)
+        def perform(repository_id:, force: false)
           repo = ::System::PackageRepository.accessible_to(@account).find_by(id: repository_id)
           return failure("repository not found or not accessible") unless repo
 
-          result = ::System::PackageRepositorySyncService.call(repository: repo)
+          result = ::System::PackageRepositorySyncService.call(repository: repo, force: force)
           success(
             ok:            result.success?,
             upserted:      result.upserted,

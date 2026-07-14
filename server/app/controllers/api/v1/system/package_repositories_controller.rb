@@ -151,10 +151,14 @@ module Api
           # (the same Sidekiq job the daily tick runs, scoped to THIS repo by
           # its id — enqueued via WorkerJobEnqueuer since the server has no
           # Sidekiq gem). The UI polls sync_status until it flips to idle/failed.
+          # `force` re-writes every row + bypasses the fingerprint fast-path and
+          # the mass-obsoletion guard — for a metadata refresh or overriding a
+          # partial-upstream guard trip.
+          force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
           @repository.update!(sync_status: "syncing", last_sync_error: nil)
           ::System::WorkerJobEnqueuer.enqueue(
             job_class: "SystemPackageRepositorySyncJob",
-            args:      [ @repository.id ],
+            args:      [ @repository.id, { "force" => force } ],
             queue:     "system"
           )
           # NOTE: pass the payload via `data:` — render_success's own `status:`

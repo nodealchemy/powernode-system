@@ -18,32 +18,31 @@ class SystemPackageRepositorySyncJob < BaseJob
 
   def execute(*args)
     # On-demand single-repo sync (operator "Sync now" button enqueues this
-    # job with the repo id). Skips the global daily-tick lock entirely — it
-    # targets one repo, is idempotent, and must not be starved by (or starve)
-    # the daily all-repos tick.
+    # job with the repo id + an opts hash). Skips the global daily-tick lock
+    # entirely — it targets one repo, is idempotent, and must not be starved by
+    # (or starve) the daily all-repos tick.
     repo_id = args.first
-    return sync_one_repository(repo_id) if repo_id.present?
+    opts    = args[1].is_a?(Hash) ? args[1] : {}
+    force   = opts["force"] || opts[:force] || false
+    return sync_one_repository(repo_id, force: force) if repo_id.present?
 
     daily_tick
   end
 
   private
 
+  # The server now dispatches each repo's (minutes-long) sync to a background
+  # thread and returns immediately, so this call completes in ms — the summary
+  # reports only what was QUEUED; per-repo upsert/obsolete counts land in the
+  # repos' own sync_status/last_synced_at, not this response.
   def daily_tick
     return { skipped: true, reason: "already locked" } unless acquire_lock
 
     log_info("[PackageRepoSync] Starting daily sync tick")
     response = api_client.post("/api/v1/system/worker_api/package_repositories/sync", {})
-    payload = response.dig("data") || {}
-
-    summary = {
-      tick_count:      payload["tick_count"] || 0,
-      upserted_total:  total_upserted(payload["results"]),
-      obsoleted_total: total_obsoleted(payload["results"]),
-      failed_count:    failed_count(payload["results"])
-    }
-    log_info("[PackageRepoSync] Tick complete", **summary)
-    summary
+    tick_count = (response.dig("data") || {})["tick_count"] || 0
+    log_info("[PackageRepoSync] Tick queued", tick_count: tick_count)
+    { tick_count: tick_count, queued: true }
   rescue BackendApiClient::ApiError => e
     log_error("[PackageRepoSync] API error", e)
     { ok: false, error: e.message }
@@ -51,22 +50,20 @@ class SystemPackageRepositorySyncJob < BaseJob
     release_lock
   end
 
-  # POSTs a single repository id; the server marked it `syncing` before
-  # enqueueing, and PackageRepositorySyncService flips it to idle/failed.
-  def sync_one_repository(repo_id)
-    log_info("[PackageRepoSync] On-demand sync", repository_id: repo_id)
-    response = api_client.post(
+  # POSTs a single repository id (+ force); the server marked it `syncing`
+  # before enqueueing and dispatches the sync to a background thread, so this
+  # returns immediately — PackageRepositorySyncService flips it to idle/failed.
+  def sync_one_repository(repo_id, force: false)
+    log_info("[PackageRepoSync] On-demand sync", repository_id: repo_id, force: force)
+    api_client.post(
       "/api/v1/system/worker_api/package_repositories/sync",
-      { repository_id: repo_id }
+      { repository_id: repo_id, force: force }
     )
-    payload = response.dig("data") || {}
-    { on_demand: true, repository_id: repo_id, results: payload["results"] }
+    { on_demand: true, repository_id: repo_id, queued: true }
   rescue BackendApiClient::ApiError => e
     log_error("[PackageRepoSync] On-demand API error", e)
     { ok: false, error: e.message }
   end
-
-  private
 
   def acquire_lock
     Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
@@ -76,17 +73,5 @@ class SystemPackageRepositorySyncJob < BaseJob
     Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
   rescue StandardError
     nil
-  end
-
-  def total_upserted(results)
-    Array(results).sum { |r| r["upserted"].to_i }
-  end
-
-  def total_obsoleted(results)
-    Array(results).sum { |r| r["obsoleted"].to_i }
-  end
-
-  def failed_count(results)
-    Array(results).count { |r| !r["ok"] }
   end
 end
