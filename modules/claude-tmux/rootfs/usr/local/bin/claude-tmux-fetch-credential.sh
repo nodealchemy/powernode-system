@@ -10,7 +10,8 @@
 #
 # Platform-URL + PKI-directory resolution mirrors the Go agent's own
 # identity resolver (agent/internal/identity/*.go), read-only, in the same
-# priority order: kernel cmdline -> qemu fw_cfg -> /boot/identity.cfg ->
+# priority order: kernel cmdline -> qemu fw_cfg -> /run/powernode/identity.cfg
+# (cidata/cicustom, the Go LocalIdentityStrategy path) -> /boot/identity.cfg ->
 # /etc/identity.cfg. Cloud-provider metadata strategies (AWS/GCP/Azure/DO)
 # are NOT replicated here — on those providers, set the credential's
 # instance manually or extend this script's resolution chain.
@@ -41,6 +42,13 @@ fi
 
 if [ -z "$PLATFORM_URL" ] && [ -r /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw ]; then
   PLATFORM_URL=$(cat /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw)
+fi
+
+# cidata/cicustom (NoCloud) enrollment stages identity here — the same path
+# the Go agent's LocalIdentityStrategy reads. Checked before the legacy
+# /boot + /etc locations so a cidata-enrolled node resolves its platform URL.
+if [ -z "$PLATFORM_URL" ] && [ -r /run/powernode/identity.cfg ]; then
+  PLATFORM_URL=$(sed -n 's/^SERVER=//p' /run/powernode/identity.cfg | head -n1)
 fi
 
 if [ -z "$PLATFORM_URL" ] && [ -r /boot/identity.cfg ]; then

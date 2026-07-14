@@ -21,10 +21,13 @@
 # Platform-URL + PKI-directory resolution mirrors claude-tmux's own
 # claude-tmux-fetch-credential.sh (itself a read-only shell re-derivation of
 # the Go agent's own identity resolver, agent/internal/identity/*.go), in
-# the same priority order: kernel cmdline -> qemu fw_cfg -> /boot/
-# identity.cfg -> /etc/identity.cfg. Same known gap as that script:
-# cloud-provider metadata strategies (AWS/GCP/Azure/DO) are not replicated
-# here.
+# the same priority order: kernel cmdline -> qemu fw_cfg ->
+# /run/powernode/identity.cfg (cidata/cicustom, the Go LocalIdentityStrategy
+# path) -> /boot/identity.cfg -> /etc/identity.cfg. NOTE: claude-tmux-fetch-
+# credential.sh still lacks the /run/powernode/identity.cfg source added here,
+# so it has the same cidata-enrollment gap this fixes — apply the same there.
+# Remaining known gap (both scripts): cloud-provider metadata strategies
+# (AWS/GCP/Azure/DO) are not replicated.
 set -eu
 
 RUNTIME_DIR="${RUNTIME_DIRECTORY:-/run/gitea-act-runner}"
@@ -60,6 +63,15 @@ fi
 
 if [ -z "$PLATFORM_URL" ] && [ -r /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw ]; then
   PLATFORM_URL=$(cat /sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/platform_url/raw)
+fi
+
+# Option 3 cicustom/NoCloud (cidata) enrollment stages identity here, and the
+# Go agent's LocalIdentityStrategy reads the very same path — check it before
+# the legacy /boot + /etc locations so a cidata-enrolled builder resolves its
+# platform URL (without this the runner service crash-loops "could not resolve
+# platform URL", never registering with Gitea).
+if [ -z "$PLATFORM_URL" ] && [ -r /run/powernode/identity.cfg ]; then
+  PLATFORM_URL=$(sed -n 's/^SERVER=//p' /run/powernode/identity.cfg | head -n1)
 fi
 
 if [ -z "$PLATFORM_URL" ] && [ -r /boot/identity.cfg ]; then
