@@ -338,6 +338,12 @@ jobs:
           # is off, --privileged in container.options doesn't make it
           # through). mmdebstrap in --mode=root just chroots; no
           # namespaces, no userns.
+          #
+          # uuid-runtime provides `uuidgen` — Stage 2 (campaign 019f5885
+          # inc5) uses `uuidgen --sha1 --namespace @oid --name` to derive
+          # a stable, content-addressed erofs filesystem UUID (`mkfs.erofs
+          # -U`) from module-name+built_sha. It's not part of Trixie's
+          # minimal base image.
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -q
           apt-get install -y --no-install-recommends \
@@ -353,7 +359,8 @@ jobs:
             ca-certificates \
             curl \
             gnupg \
-            tar
+            tar \
+            uuid-runtime
 
       - name: Clone repo (full history for cosign provenance)
         if: steps.resolve.outputs.module != ''
@@ -411,6 +418,7 @@ jobs:
           fsverity --version
           cosign version | head -1
           oras version | head -1
+          uuidgen --version || true
 
       - name: Parse manifest for the resolved module
         # `discover` already computed the build set (dirty closure |
@@ -438,14 +446,24 @@ jobs:
             jq -r '.protected_spec[]?' /tmp/manifest.json | awk '{print "+ " $0}'
             echo "- *"
           } > /tmp/rsync_spec.txt
-          # APT snapshot pin if declared.
-          snapshot=$(jq -r '.build.apt_snapshot // "20260415T000000Z"' /tmp/manifest.json)
+          # APT snapshot pin (campaign 019f5885 inc5 — determinism
+          # hardening). `build.apt_snapshot` normalizes to the literal
+          # string "none" when the manifest either omits the field or
+          # sets it explicitly to "none" (the documented per-module
+          # opt-out) — Stage 1 below treats both the same way (falls back
+          # to the live archive.ubuntu.com mirror). Every other value is
+          # consumed as a snapshot.ubuntu.com timestamp. This output used
+          # to be computed and then never read (decorative) — Stage 1
+          # now actually wires it into mmdebstrap's base_url.
+          snapshot=$(jq -r '.build.apt_snapshot // "none"' /tmp/manifest.json)
           echo "apt_snapshot=$snapshot" >> "$GITHUB_OUTPUT"
           # Module-name slug (alphanumeric + hyphens) for image tag.
           echo "slug=$MODULE" >> "$GITHUB_OUTPUT"
 
       - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
         if: steps.resolve.outputs.module != ''
+        env:
+          APT_SNAPSHOT: ${{ steps.manifest.outputs.apt_snapshot }}
         run: |
           set -euo pipefail
           # mmdebstrap produces a minimal Ubuntu noble rootfs at
@@ -460,7 +478,28 @@ jobs:
           # ca-certs. We trade buildah's OCI-runtime isolation for a
           # plain chroot, which is fine for the CI hermeticity envelope
           # (the runner container itself is the security boundary).
-          base_url="http://archive.ubuntu.com/ubuntu/"
+          #
+          # apt-snapshot pin (campaign 019f5885 inc5 — determinism
+          # hardening): archive.ubuntu.com serves whatever the current
+          # apt index is on the day the build runs, so two builds of the
+          # SAME commit on different days can resolve different package
+          # versions — a hard blocker for a bit-reproducible erofs.
+          # snapshot.ubuntu.com serves a frozen historical index at the
+          # module manifest's declared `build.apt_snapshot` timestamp, so
+          # every rebuild of an unchanged module resolves the identical
+          # package set. "none" (declared or the field's absence — both
+          # normalize to this string in the "Parse manifest" step above)
+          # is the documented per-module opt-out for the case where
+          # snapshot.ubuntu.com hasn't caught up on a package this module
+          # needs (coverage/lag risk) — it keeps today's live-mirror
+          # behavior unchanged.
+          if [[ "${APT_SNAPSHOT:-none}" != "none" ]]; then
+            base_url="https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/"
+            echo "[stage-1] apt_snapshot=${APT_SNAPSHOT} — pinning mmdebstrap base_url to ${base_url}"
+          else
+            base_url="http://archive.ubuntu.com/ubuntu/"
+            echo "[stage-1] apt_snapshot=none — using live ${base_url} (per-module opt-out, or manifest hasn't pinned yet)"
+          fi
           pkgs="ca-certificates"
           if [ -s /tmp/package_spec.txt ]; then
             pkgs="${pkgs},$(tr '\n' ',' < /tmp/package_spec.txt | sed 's/,$//')"
@@ -473,6 +512,18 @@ jobs:
           # --essential-hook so the package is resolvable when mmdebstrap's
           # --include step runs. Hook executes after essential packages
           # install but BEFORE the manifest's package_spec packages.
+          #
+          # DOCUMENTED REPRODUCIBILITY WAIVER (campaign 019f5885 inc5): both
+          # hooks below point at the vendor's live apt repo
+          # (apt.vector.dev, packages.cloud.google.com) — neither vendor
+          # offers a snapshot-pinned mirror we can substitute the way
+          # snapshot.ubuntu.com stands in for archive.ubuntu.com above. Two
+          # builds of log-forwarder-vector / storage-tools can therefore
+          # still pick up a newer `vector` / `gcsfuse` package between runs
+          # even with apt_snapshot pinned — this is residual, irreducible
+          # per-module nondeterminism until/unless either vendor ships a
+          # snapshot service. Every other module's apt_snapshot pin is
+          # unaffected.
           hook_args=()
           mkdir -p /tmp/hooks
           case "$MODULE" in
@@ -531,6 +582,25 @@ jobs:
             --aptopt='Acquire::http::Pipeline-Depth "0"' \
             noble /tmp/fat \
             "$base_url"
+
+          # Build provenance: capture the exact resolved package set (SBOM
+          # stepping stone — campaign 019f5885 inc5; full SLSA provenance
+          # is separately queued as 019f3112-f719-7152-aeac-51a3e833259f,
+          # out of scope here). mmdebstrap leaves a normal dpkg database at
+          # /tmp/fat/var/lib/dpkg — query it via --admindir from the
+          # RUNNER's own dpkg-query rather than chrooting: same technique
+          # this workflow already uses for the apt-closure-sha256
+          # annotation (APT_PROBE_MODE=local, "the runner IS
+          # debian:trixie-slim"), and dpkg's on-disk database format is
+          # stable across Debian/Ubuntu regardless of which one is being
+          # queried. Captured HERE (immediately after mmdebstrap, before
+          # Stage 1.5 layers any Class-B content that isn't apt-installed)
+          # so this is exactly "what apt resolved for package_spec", not a
+          # mix of apt + hand-staged binaries.
+          dpkg-query --admindir=/tmp/fat/var/lib/dpkg -W \
+              -f='${Package}\t${Version}\t${Architecture}\n' \
+            | LC_ALL=C sort > "/tmp/$MODULE.packages.txt"
+          echo "[stage-1] captured $(wc -l < "/tmp/$MODULE.packages.txt") resolved packages to /tmp/$MODULE.packages.txt"
 
       - name: Stage 1.5 — stage parent platform content (Class B modules)
         # Gate collapses to the same resolve check as every other step —
@@ -1122,9 +1192,47 @@ jobs:
           # cold-start) while still ~30-40% smaller than uncompressed.
           # --all-root keeps file ownership stable across CI runs +
           # production hosts so fs-verity hashes match.
+          #
+          # Determinism clamp (campaign 019f5885 inc5): --all-root alone
+          # normalizes uid/gid but NOT timestamps or the filesystem UUID —
+          # without also pinning those, mkfs.erofs stamps the wall-clock
+          # build time onto every inode and a fresh random UUID into the
+          # superblock, so two builds of an UNCHANGED module (identical
+          # /tmp/slim contents) still produce different bytes and a
+          # different fs-verity root.
+          #
+          #   -T "$SOURCE_DATE_EPOCH" — fixes the build timestamp. Its
+          #     default mode (--all-time, confirmed via `mkfs.erofs --help`
+          #     in the debian:trixie-slim build container, erofs-utils
+          #     1.8.6) also applies to every file's mtime, not just the
+          #     superblock — --all-time is passed explicitly below so a
+          #     future erofs-utils release changing that default can't
+          #     silently reopen this gap. SOURCE_DATE_EPOCH is the built
+          #     commit's own commit date, so it's identical for every
+          #     rebuild of the same SHA and follows the well-known
+          #     SOURCE_DATE_EPOCH convention (reproducible-builds.org)
+          #     other tooling in this pipeline may come to rely on.
+          #   -U "$EROFS_UUID" — fixes the filesystem UUID to a value
+          #     deterministically derived (RFC 4122 v5 / sha1) from
+          #     module-name+built-sha, so it's stable across rebuilds of
+          #     the same commit, distinct per module, and distinct per
+          #     commit (no collisions across the build matrix or across
+          #     history) — never mkfs.erofs's own random default.
+          #
+          # Verified locally (2 builds of an unchanged source tree, >1s
+          # apart, both flags set): byte-for-byte identical .erofs output
+          # — see this increment's report for the exact repro.
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "${GITHUB_SHA}")
+          export SOURCE_DATE_EPOCH
+          echo "[stage-2] SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} (commit date of ${GITHUB_SHA})"
+          EROFS_UUID=$(uuidgen --sha1 --namespace @oid --name "${MODULE}@${GITHUB_SHA}")
+          echo "[stage-2] erofs UUID for ${MODULE}@${GITHUB_SHA}: ${EROFS_UUID}"
           mkfs.erofs \
             -zlz4hc \
             --all-root \
+            -T "$SOURCE_DATE_EPOCH" \
+            --all-time \
+            -U "$EROFS_UUID" \
             /tmp/$MODULE.erofs \
             /tmp/slim
           EROFS_ROOT=$(fsverity digest --hash-alg=sha256 /tmp/$MODULE.erofs | awk '{print $1}')
@@ -1167,6 +1275,14 @@ jobs:
               apt-hash "$MODULE" 2>/dev/null || true)
           echo "[push] apt-closure-sha256 for $MODULE: ${APT_HASH:-<empty>}"
 
+          # SBOM stepping stone (campaign 019f5885 inc5): sha256 of the
+          # resolved package list Stage 1 captured, so a consumer can
+          # detect "package set changed" from the annotation alone
+          # without pulling+diffing the packages layer. Full SLSA
+          # provenance remains queued (019f3112-f719-7152-aeac-51a3e833259f).
+          PACKAGES_HASH=$(sha256sum "/tmp/$MODULE.packages.txt" | awk '{print $1}')
+          echo "[push] resolved-packages sha256 for $MODULE: $PACKAGES_HASH"
+
           # oras complains about absolute paths in source operands.
           # Run from /tmp so the file operands are bare names; the
           # registry sees them with the same shape it always has
@@ -1177,10 +1293,12 @@ jobs:
             --artifact-type application/vnd.powernode.module.v1
             "$MODULE.erofs:application/vnd.powernode.erofs"
             "$MODULE.erofs.meta:application/vnd.powernode.module.meta"
+            "$MODULE.packages.txt:application/vnd.powernode.module.packages"
           )
           if [[ -n "$APT_HASH" ]]; then
             ORAS_PUSH_ARGS+=(--annotation "org.powernode.apt-closure-sha256=$APT_HASH")
           fi
+          ORAS_PUSH_ARGS+=(--annotation "org.powernode.packages-sha256=$PACKAGES_HASH")
           # Verifiable built-from-SHA provenance (operator amendment
           # 2026-07-05): every module in this matrix — powernode-system-base
           # in particular, since its ENTIRE payload is the cross-compiled Go
@@ -1241,10 +1359,14 @@ jobs:
           EROFS_ROOT=$(grep '^fsverity_root=' /tmp/$MODULE.erofs.meta | cut -d= -f2)
           EROFS_SIZE=$(grep '^size=' /tmp/$MODULE.erofs.meta | cut -d= -f2)
           MANIFEST_B64=$(base64 -w0 "modules/$MODULE/manifest.yaml")
-          # NodeModuleVersion.artifacts is JSONB (no fixed schema), so
-          # built_from_sha rides through untouched — see the matching
-          # oras push annotation above for the artifact-side copy of the
-          # same provenance value.
+          # SBOM stepping stone (campaign 019f5885 inc5): resolved package
+          # count + sha256 alongside the erofs artifact record, so the
+          # platform's publication history carries "what packages did
+          # THIS build actually resolve" without a separate ingest path.
+          # NodeModuleVersion.artifacts is JSONB (no fixed schema) — this
+          # rides through the same way built_from_sha already does.
+          PACKAGES_COUNT=$(wc -l < "/tmp/$MODULE.packages.txt" | tr -d ' ')
+          PACKAGES_SHA256=$(sha256sum "/tmp/$MODULE.packages.txt" | awk '{print $1}')
           payload=$(jq -nc \
             --arg name       "$MODULE" \
             --arg tag        "${{ steps.push.outputs.tag }}" \
@@ -1253,6 +1375,8 @@ jobs:
             --arg size       "$EROFS_SIZE" \
             --arg sha        "${GITHUB_SHA}" \
             --arg manifest   "$MANIFEST_B64" \
+            --arg pkg_count  "$PACKAGES_COUNT" \
+            --arg pkg_sha256 "$PACKAGES_SHA256" \
             '{
                module_name: $name,
                tag:         $tag,
@@ -1264,6 +1388,12 @@ jobs:
                    size:           ($size | tonumber),
                    media_type:     "application/vnd.powernode.erofs",
                    built_from_sha: $sha
+                 },
+                 packages: {
+                   oci_ref:    $ref,
+                   media_type: "application/vnd.powernode.module.packages",
+                   count:      ($pkg_count | tonumber),
+                   sha256:     $pkg_sha256
                  }
                }
              }')

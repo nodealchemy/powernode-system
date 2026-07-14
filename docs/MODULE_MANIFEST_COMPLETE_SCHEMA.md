@@ -66,7 +66,7 @@ sudoers:  [<sudoers grant>, ...]
 # Build pipeline hints
 build:
   ubuntu_digest: <sha256 | null>
-  apt_snapshot:  <RFC-3339 timestamp | null>
+  apt_snapshot:  <YYYYMMDDTHHMMSSZ timestamp | "none" | null>
 ```
 
 > **Authoritative top-level key set.** The 20 keys above are exactly
@@ -280,15 +280,15 @@ Validation collects the full error set in one pass (not first-error-wins), so a 
 ```yaml
 build:
   ubuntu_digest: null     # falls back to Containerfile's UBUNTU_DIGEST default
-  apt_snapshot:  null     # falls back to Containerfile's APT_SNAPSHOT default
+  apt_snapshot:  "20260514T000000Z"   # or "none" / null to opt out (live archive.ubuntu.com)
 ```
 
 | Field | Description |
 |---|---|
 | `ubuntu_digest` | SHA256 digest of the Ubuntu base image used by the Containerfile's `FROM` line. Pins the base for reproducible builds. |
-| `apt_snapshot` | Snapshots.ubuntu.com timestamp (`20260514T000000Z`) — pins the apt package index for reproducibility. |
+| `apt_snapshot` | snapshot.ubuntu.com timestamp (`20260514T000000Z`) — consumed directly by `build-platform-modules.yaml` Stage 1 as the `mmdebstrap` `base_url` (`https://snapshot.ubuntu.com/ubuntu/<timestamp>/`), pinning the apt package index so two builds of an unchanged module resolve the identical package set (campaign 019f5885 inc5). `"none"` and `null` (field omitted) are equivalent, documented opt-outs — both fall back to the live `http://archive.ubuntu.com/ubuntu/` mirror (pre-inc5 behavior). Use the opt-out when snapshot.ubuntu.com hasn't caught up on a package this module needs yet. Third-party apt sources a module registers itself (e.g. `log-forwarder-vector`'s `apt.vector.dev`, `storage-tools`'s `packages.cloud.google.com`) are **not** covered by this pin — those remain a documented, irreducible reproducibility waiver until/unless the vendor offers a snapshot service. |
 
-If null, the Containerfile's defaults apply. Pin these explicitly for SLSA L3 compliance and reproducible build chains.
+If null, the live-mirror default applies (see the opt-out note above). Pin these explicitly for SLSA L3 compliance and reproducible build chains.
 
 ---
 

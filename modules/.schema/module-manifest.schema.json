@@ -222,9 +222,10 @@
           ]
         },
         "apt_snapshot": {
-          "description": "Pinned snapshot.debian.org / Ubuntu APT snapshot timestamp. Format: YYYYMMDDTHHMMSSZ, or null to inherit Containerfile default.",
+          "description": "Pinned snapshot.ubuntu.com APT snapshot timestamp, consumed by build-platform-modules.yaml Stage 1 as the mmdebstrap base_url (campaign 019f5885 inc5 — determinism hardening). Format: YYYYMMDDTHHMMSSZ. Null (field omitted) and the literal string \"none\" are equivalent documented opt-outs — both fall back to the live archive.ubuntu.com mirror (today's behavior), for a module whose exact package set snapshot.ubuntu.com hasn't caught up on yet.",
           "oneOf": [
             { "type": "null" },
+            { "const": "none" },
             { "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z$" }
           ]
         },
