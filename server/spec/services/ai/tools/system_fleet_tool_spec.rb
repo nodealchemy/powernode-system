@@ -3095,4 +3095,82 @@ end
       expect(r[:success]).to be true # ran immediately — no approval step intervened
     end
   end
+
+  describe "system_dispatch_module_build_batch (campaign 019f5885 inc9)" do
+    it "plans, creates the ModuleBuildBatch, and dispatches it via the orchestrator" do
+      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false)
+        .and_return([ { module: "mod-a", oci_ref: "abc1234" } ])
+      dispatch_result = System::NativeModuleBuildOrchestrator::Result.new(
+        ok?: true, dispatched: 1, queued: 0, succeeded: 0, retried: 0, failed: 0
+      )
+      expect(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(dispatch_result)
+
+      result = call("system_dispatch_module_build_batch", base_sha: "base0000", head_sha: "headsha1234567")
+
+      expect(result[:success]).to be true
+      batch_payload = result[:data][:module_build_batch]
+      expect(batch_payload[:status]).to eq("planning") # the stubbed orchestrator never actually transitioned it
+      expect(batch_payload[:base_sha]).to eq("base0000")
+      expect(batch_payload[:head_sha]).to eq("headsha1234567")
+      expect(batch_payload[:module_slugs]).to eq([ "mod-a" ])
+      expect(batch_payload[:planned_count]).to eq(1)
+      expect(result[:data][:dispatched]).to eq(1)
+      expect(result[:data][:queued]).to eq(0)
+      expect(System::ModuleBuildBatch.where(account: account).count).to eq(1)
+      expect(System::ModuleBuildBatch.last.trigger).to eq("manual")
+    end
+
+    it "passes force_all through to the planner and an explicit trigger through to the batch" do
+      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+        .with(base_sha: "b", head_sha: "h", force_all: true).and_return([])
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
+        System::NativeModuleBuildOrchestrator::Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
+      )
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", force_all: true, trigger: "cve")
+
+      expect(result[:success]).to be true
+      expect(result[:data][:module_build_batch][:trigger]).to eq("cve")
+    end
+
+    it "requires base_sha and head_sha" do
+      result = call("system_dispatch_module_build_batch", base_sha: "", head_sha: "h")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("base_sha and head_sha are required")
+    end
+
+    it "surfaces a planner PlanningError as an error_result rather than raising" do
+      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+        .and_raise(::System::ModuleBuildPlannerService::PlanningError, "no active Gitea credential resolvable")
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h")
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("no active Gitea credential resolvable")
+      expect(System::ModuleBuildBatch.where(account: account).count).to eq(0)
+    end
+
+    it "is gated by system.module_builds.dispatch" do
+      expect(described_class::ACTION_PERMISSIONS.fetch("system_dispatch_module_build_batch"))
+        .to eq("system.module_builds.dispatch")
+
+      user = create(:user, account: account, permissions: [])
+      gated_tool = described_class.new(account: account, user: user)
+
+      result = gated_tool.execute(params: { action: "system_dispatch_module_build_batch", base_sha: "b", head_sha: "h" })
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include("permission denied")
+    end
+
+    it "documents the action's parameter contract" do
+      defn = described_class.action_definitions.fetch("system_dispatch_module_build_batch")
+
+      expect(defn[:parameters][:base_sha][:required]).to be true
+      expect(defn[:parameters][:head_sha][:required]).to be true
+      expect(defn[:parameters].keys).to include(:force_all, :trigger)
+    end
+  end
 end

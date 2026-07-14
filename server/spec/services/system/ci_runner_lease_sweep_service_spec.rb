@@ -195,4 +195,98 @@ RSpec.describe System::CiRunnerLeaseSweepService do
       expect(summary[:advanced]).to eq(1)
     end
   end
+
+  describe "module_build purpose-aware correlation (inc9 Part B)" do
+    let!(:task) do
+      create(:system_task, account: account, operable: instance, command: "ci.module_build", status: "pending",
+                            options: { "module" => "mod-x", "sha" => "abc", "oci_ref" => "abc1234", "batch_id" => "batch-1" })
+    end
+
+    def build_module_build_lease(task:, status: "registered")
+      build_lease(status: status, purpose: "module_build", build_task_id: task.id)
+    end
+
+    it "never attempts Gitea correlation for a module_build lease (it has no GitRunner to find)" do
+      lease = build_module_build_lease(task: task)
+      expect(fake_gitea_client).not_to receive(:list_runners)
+      expect(fake_gitea_client).not_to receive(:get_workflow_run)
+
+      described_class.run!(account: account)
+
+      expect(lease.reload).to be_registered
+    end
+
+    it "marks the lease busy once the task is acknowledged (task -> running)" do
+      lease = build_module_build_lease(task: task)
+      task.update!(status: "running", started_at: Time.current)
+
+      summary = described_class.run!(account: account)
+
+      expect(lease.reload).to be_busy
+      expect(summary[:advanced]).to eq(1)
+    end
+
+    it "does not mark a leased (not-yet-registered) module_build lease busy even if its task is running" do
+      lease = build_module_build_lease(task: task, status: "leased")
+      task.update!(status: "running", started_at: Time.current)
+
+      described_class.run!(account: account)
+
+      expect(lease.reload).to be_leased
+    end
+
+    it "triggers the orchestrator's advance_for_task! once the task is terminal, and releases via its outcome" do
+      lease = build_module_build_lease(task: task, status: "busy")
+      task.update!(status: "complete", completed_at: Time.current)
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:task_batch_id).and_return("batch-1")
+      expect(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!).with(task) do
+        # Simulate the orchestrator releasing the lease itself (its real job).
+        lease.update!(status: "released", released_at: Time.current)
+      end
+
+      summary = described_class.run!(account: account)
+
+      expect(lease.reload).to be_released
+      expect(summary[:released]).to eq(0) # released by the orchestrator, not the sweep's own backstop path
+    end
+
+    it "falls back to releasing the lease itself when the orchestrator does not (never strand a finished task's lease)" do
+      lease = build_module_build_lease(task: task, status: "busy")
+      task.update!(status: "failed", completed_at: Time.current, error_message: "boom")
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:task_batch_id).and_return("batch-1")
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!) # no-op: doesn't release
+
+      summary = described_class.run!(account: account)
+
+      expect(lease.reload).to be_released
+      expect(summary[:released]).to eq(1) # the sweep's own backstop path did it
+    end
+
+    it "is a no-op (never raises) when a module_build lease's task can no longer be found" do
+      lease = build_lease(status: "registered", purpose: "module_build", build_task_id: SecureRandom.uuid)
+
+      summary = described_class.run!(account: account)
+
+      expect(summary[:errored]).to eq(0)
+      expect(lease.reload).to be_registered
+    end
+
+    it "deduplicates orchestrator advance calls within one tick for leases sharing the same batch" do
+      task_b = create(:system_task, account: account, operable: instance, command: "ci.module_build",
+                                     status: "complete", completed_at: Time.current,
+                                     options: { "module" => "mod-y", "sha" => "abc", "oci_ref" => "def5678", "batch_id" => "batch-1" })
+      task.update!(status: "complete", completed_at: Time.current)
+      build_module_build_lease(task: task, status: "busy")
+      build_module_build_lease(task: task_b, status: "busy")
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:task_batch_id).and_return("batch-1")
+
+      expect(::System::NativeModuleBuildOrchestrator).to receive(:advance_for_task!).once do |t|
+        System::CiRunnerLease.where(build_task_id: t.id).update_all(status: "released", released_at: Time.current)
+      end
+
+      described_class.run!(account: account)
+
+      expect(System::CiRunnerLease.for_account(account).active.count).to eq(0)
+    end
+  end
 end

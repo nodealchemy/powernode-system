@@ -12,6 +12,17 @@ module System
   # It also reaps orphaned fleet-* Gitea runners whose backing instance is gone
   # (the pool's ready-TTL reaper terminates members without deregistering their
   # runner — see Fable P0-2).
+  #
+  # PURPOSE-AWARE (campaign 019f5885 inc9 Part B): a `module_build` lease
+  # never runs gitea-act-runner (module-forge builders receive their work as
+  # a `ci.module_build` System::Task via the normal agent task-lease loop,
+  # not a Gitea Actions job), so it can NEVER correlate to a GitRunner —
+  # #advance_leased/#advance_running's Gitea-workflow-run logic would leave
+  # it stuck in `leased` forever. Such leases are routed to
+  # #advance_module_build instead, which correlates on the lease's
+  # `build_task_id` TASK state (acknowledged→busy, terminal→trigger
+  # System::NativeModuleBuildOrchestrator.advance_for_task! then release)
+  # rather than workflow_run_id.
   class CiRunnerLeaseSweepService
     TERMINAL_RUN_STATUSES = %w[completed failed cancelled skipped].freeze
 
@@ -23,6 +34,10 @@ module System
       @account = account
       @svc = CiRunnerLeaseService.new(account: account)
       @summary = { advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0 }
+      # Dedup within one sweep run: several active module_build leases can
+      # correlate to tasks in the SAME batch — advance the batch at most
+      # once per tick regardless of how many of its leases just finished.
+      @advanced_batch_ids = []
     end
 
     def run!
@@ -40,11 +55,60 @@ module System
     private
 
     def advance(lease)
+      return advance_module_build(lease) if lease.purpose == "module_build" && lease.build_task_id.present?
+
       case lease.status
       when "leased"                 then advance_leased(lease)
       when "registered", "busy"     then advance_running(lease)
       when "releasing"              then release(lease, reason: "resume release")
       end
+    end
+
+    # --- module_build purpose-aware correlation (inc9 Part B) -----------------
+
+    # Drives a module_build lease off its correlated ci.module_build Task
+    # instead of a Gitea workflow run: registered while the task is
+    # pending/scheduled, busy once the agent acknowledges (task -> running),
+    # and — once the task reaches ANY terminal status — triggers the
+    # orchestrator's advance! (sign + publish on success, retry-or-fail
+    # otherwise). The ORCHESTRATOR releases the lease itself as part of
+    # advance! (System::NativeModuleBuildOrchestrator#release_module_lease) —
+    # this method's own `release` call below only fires as a BACKSTOP, when
+    # the lease is somehow still active after advance! returns (orchestrator
+    # unreachable, batch_id missing, its own release attempt raised, …), so a
+    # finished task's lease is never permanently stranded. Either way,
+    # release only ever happens once task.finished? is already true, so a
+    # lease whose build might still be running is never torn down.
+    def advance_module_build(lease)
+      task = ::System::Task.find_by(id: lease.build_task_id)
+      return expire_if_due(lease) if task.nil?
+
+      if task.finished?
+        trigger_orchestrator_advance(task)
+        lease.reload
+        return if lease.finished?
+
+        return release(lease, reason: "module_build task #{task.id} #{task.status} (sweep backstop release)")
+      end
+
+      if task.running? && lease.registered? && lease.may_mark_busy?
+        lease.mark_busy!
+        @summary[:advanced] += 1
+      end
+
+      expire_if_due(lease)
+    end
+
+    def trigger_orchestrator_advance(task)
+      return unless defined?(::System::NativeModuleBuildOrchestrator)
+
+      batch_id = ::System::NativeModuleBuildOrchestrator.task_batch_id(task)
+      return if batch_id.blank? || @advanced_batch_ids.include?(batch_id)
+
+      @advanced_batch_ids << batch_id
+      ::System::NativeModuleBuildOrchestrator.advance_for_task!(task)
+    rescue StandardError => e
+      Rails.logger.warn("[CiRunnerLeaseSweep] orchestrator advance for task ##{task.id} failed: #{e.message}")
     end
 
     # Try once to correlate to the GitRunner row; expiry is the backstop if the

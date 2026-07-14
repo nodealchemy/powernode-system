@@ -188,6 +188,8 @@ module Ai
         "system_release_ci_runner"                   => "system.ci_runner_leases.update",
         "system_list_ci_runner_leases"               => "system.ci_runner_leases.read",
         "system_list_disk_image_webhooks"            => "system.modules.read",
+        # Campaign 019f5885 inc9 — native module-build batch orchestration.
+        "system_dispatch_module_build_batch"         => "system.module_builds.dispatch",
 
         # === Missing-features slice 6a — GitOps reconciler MCP surface ===
         "system_gitops_register_repository" => "system.modules.update",
@@ -1064,6 +1066,15 @@ module Ai
             description: "List DiskImageWebhook rows for the current account (the inbound webhook receivers that ingest publications from Gitea Actions).",
             parameters: {}
           },
+          "system_dispatch_module_build_batch" => {
+            description: "Plan + dispatch a native module-build batch for a base_sha..head_sha range: computes which modules need rebuilding (System::ModuleBuildPlannerService — or every module with force_all), creates the System::ModuleBuildBatch, and leases ephemeral module-forge builders to run each module's ci.module_build task (System::NativeModuleBuildOrchestrator#dispatch!). Returns the batch immediately — planning and the first dispatch pass are synchronous; build/sign/publish completion is tracked asynchronously via the batch's status (see system_list_tasks / system_get_task for the underlying ci.module_build tasks).",
+            parameters: {
+              base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
+              head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
+              force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
+              trigger: { type: "string", required: false, description: "push | manual | cve (default manual) — recorded on the batch for audit" }
+            }
+          },
 
           # === Missing-features slice 6a — GitOps reconciler MCP surface ===
           "system_gitops_register_repository" => {
@@ -1315,6 +1326,8 @@ module Ai
         when "system_release_ci_runner"             then release_ci_runner(params)
         when "system_list_ci_runner_leases"         then list_ci_runner_leases(params)
         when "system_list_disk_image_webhooks"      then list_disk_image_webhooks(params)
+        # Campaign 019f5885 inc9 — native module-build batch orchestration
+        when "system_dispatch_module_build_batch"   then dispatch_module_build_batch(params)
         # Missing-features slice 6a — GitOps reconciler
         when "system_gitops_register_repository"    then gitops_register_repository(params)
         when "system_gitops_sync_repository"        then gitops_sync_repository(params)
@@ -3664,11 +3677,54 @@ module Ai
           runner_labels: lease.runner_labels,
           workflow_run_id: lease.workflow_run_id,
           workflow_run_repo: lease.workflow_run_repo,
+          build_task_id: lease.build_task_id,
           leased_at: lease.leased_at,
           registered_at: lease.registered_at,
           released_at: lease.released_at,
           expires_at: lease.expires_at,
           error_message: lease.error_message
+        }
+      end
+
+      # === Campaign 019f5885 inc9 — native module-build batch orchestration ===
+
+      def dispatch_module_build_batch(params)
+        base_sha = params[:base_sha].to_s
+        head_sha = params[:head_sha].to_s
+        return error_result("base_sha and head_sha are required") if base_sha.blank? || head_sha.blank?
+
+        plan = ::System::ModuleBuildPlannerService.plan(
+          base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true
+        )
+
+        batch = ::System::ModuleBuildBatch.create_for(
+          account: @account, plan: plan, trigger: params[:trigger].presence || "manual",
+          base_sha: base_sha, head_sha: head_sha
+        )
+
+        dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
+
+        success_result(
+          module_build_batch: serialize_module_build_batch(batch.reload),
+          dispatched: dispatch_summary.dispatched,
+          queued: dispatch_summary.queued
+        )
+      rescue ::System::ModuleBuildPlannerService::PlanningError => e
+        error_result(e.message)
+      end
+
+      def serialize_module_build_batch(batch)
+        {
+          id: batch.id,
+          status: batch.status,
+          trigger: batch.trigger,
+          base_sha: batch.base_sha,
+          head_sha: batch.head_sha,
+          module_slugs: batch.module_slugs,
+          planned_count: batch.planned_count,
+          succeeded_count: batch.succeeded_count,
+          failed_count: batch.failed_count,
+          error_message: batch.error_message
         }
       end
 
