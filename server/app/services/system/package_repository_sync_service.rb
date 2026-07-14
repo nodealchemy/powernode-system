@@ -44,6 +44,34 @@ module System
     end
 
     def call
+      # Concurrency guard (Postgres session advisory lock keyed on the repo).
+      # A full sync is a minutes-to-hours operation; without this, a retry, the
+      # daily tick, or a second "Sync now" click could start a SECOND concurrent
+      # sync of the same repo — the two fight over the same rows (contention,
+      # wasted work, and a CardinalityViolation-class hazard). A second attempt
+      # while one is in flight becomes a fast no-op. Doubles as stale-sync
+      # recovery: if a prior sync's process died, its session lock is already
+      # released, so the next attempt simply proceeds and re-marks the repo.
+      conn = ::System::Package.connection
+      unless conn.select_value("SELECT pg_try_advisory_lock(#{advisory_lock_key})")
+        Rails.logger.info("[PackageRepositorySync] #{@repository.name}: already syncing (advisory lock held) — skipping duplicate")
+        return Result.new(success: false, package_count: @repository.package_count.to_i,
+                          upserted: 0, obsoleted: 0, error: "already syncing")
+      end
+
+      begin
+        call_locked
+      ensure
+        conn.select_value("SELECT pg_advisory_unlock(#{advisory_lock_key})")
+      end
+    end
+
+    # Stable 63-bit signed key from the repo UUID (fits a Postgres bigint).
+    def advisory_lock_key
+      ::Digest::SHA256.hexdigest("pkgrepo-sync:#{@repository.id}").to_i(16) % (2**63)
+    end
+
+    def call_locked
       @repository.mark_syncing!
       sync_start = Time.current
       upserted_count = upsert_packages

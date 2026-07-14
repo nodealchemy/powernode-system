@@ -12,42 +12,48 @@ module Api
             authorize_worker_permission!("system.package_repositories.sync")
             return if performed?
 
-            # On-demand single-repo sync (operator "Sync now" button → the
-            # enqueued SystemPackageRepositorySyncJob passes the repo id). Sync
-            # just that repo instead of the full enabled-repo tick.
+            # A full apt/rpm sync is a minutes-to-hours operation. Running it
+            # INSIDE this request blocked the caller (the worker job) well past
+            # its HTTP timeout, so the job failed + retried, and each retry
+            # kicked off ANOTHER concurrent sync of the same repo server-side
+            # (the request kept running after the client gave up) — a self-
+            # amplifying storm. Dispatch the work to a detached background
+            # thread and return immediately; the per-repo advisory lock in
+            # PackageRepositorySyncService is the real duplicate guard.
             if (repo_id = params[:repository_id]).present?
               repo = ::System::PackageRepository.find_by(id: repo_id)
               return render_error("repository not found", status: :not_found) unless repo
 
-              return render_success(tick_count: 1, results: [ sync_one(repo) ])
+              dispatch_background_sync([ repo ])
+              return render_success(queued: true, repository_id: repo.id)
             end
 
-            repos = scope_repositories
-            results = repos.map do |repo|
-              sync_one(repo)
-            rescue StandardError => e
-              Rails.logger.error("[PackageRepositorySync] repository=#{repo.id} failed: #{e.class}: #{e.message}")
-              { repository_id: repo.id, ok: false, error: e.message }
-            end
-
-            render_success(
-              tick_count: results.size,
-              results:    results
-            )
+            repos = scope_repositories.to_a
+            dispatch_background_sync(repos)
+            render_success(queued: true, tick_count: repos.size)
           end
 
           private
 
-          def sync_one(repo)
-            result = ::System::PackageRepositorySyncService.call(repository: repo)
-            {
-              repository_id: repo.id,
-              ok:            result.success?,
-              upserted:      result.upserted,
-              obsoleted:     result.obsoleted,
-              package_count: result.package_count,
-              error:         result.error
-            }
+          # Runs the sync(s) OUT of the request cycle so the worker's HTTP call
+          # returns at once. Detached thread is acceptable: a sync lost to a
+          # backend restart leaves the repo `syncing`, and the next tick/click
+          # re-syncs it (the advisory lock is released when the process dies).
+          # Rails.application.executor.wrap gives the thread its own connection
+          # + reloading; each repo is synced sequentially so one thread holds at
+          # most one sync connection.
+          def dispatch_background_sync(repos)
+            return if repos.blank?
+
+            Thread.new do
+              ::Rails.application.executor.wrap do
+                repos.each do |repo|
+                  ::System::PackageRepositorySyncService.call(repository: repo)
+                rescue StandardError => e
+                  ::Rails.logger.error("[worker_api package sync bg] repository=#{repo.id}: #{e.class}: #{e.message}")
+                end
+              end
+            end
           end
 
           # Returns repositories due for sync: enabled + (never synced OR
