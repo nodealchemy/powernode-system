@@ -130,6 +130,110 @@ RSpec.describe System::PackageClosureBuildBridge do
     end
   end
 
+  # Campaign 019f6084 inc J — multi-arch package builds. mmdebstrap can't
+  # produce a multi-arch rootfs in one invocation the way platform modules'
+  # single buildx push can, so a multi-arch package build fans out into one
+  # independent lease + ci.package_build Task PER (module, arch) — mirrored
+  # by PackageClosureBuildBridge#build_plan / NativeModuleBuildOrchestrator
+  # #load_modules_state's compound "slug@arch" state key.
+  describe ".dispatch! — multi-arch" do
+    def complete_task!(task, result:)
+      task.update!(status: "complete", completed_at: Time.current,
+                   events: (task.events || []) + [ { "type" => "completed", "message" => "done",
+                                                      "result" => result, "timestamp" => Time.current.iso8601 } ])
+    end
+
+    it "creates one ci.package_build member task per (module, arch), each on its own OCI tag" do
+      SiteSetting.set("system.module_builds.max_concurrent_builders", "10", setting_type: "integer")
+      4.times { seed_pool_member }
+      top = materialized_module("app-#{suffix}")
+      dep = materialized_module("lib-#{suffix}")
+
+      result = described_class.dispatch!(
+        repository: repo, modules: [ top, dep ], architectures: [ "amd64", "arm64" ],
+        account: account, requested_by: user
+      )
+      expect(result.ok?).to be(true)
+      batch = result.batch
+
+      # 2 modules x 2 arches = 4 independent build units.
+      tasks = batch.member_tasks.to_a
+      expect(tasks.size).to eq(4)
+      expect(tasks.map { |t| t.options["module"] }).to match_array(
+        [ "app-#{suffix}", "app-#{suffix}", "lib-#{suffix}", "lib-#{suffix}" ]
+      )
+      expect(tasks.map { |t| t.options["architecture"] }).to match_array(%w[amd64 amd64 arm64 arm64])
+
+      # Distinct OCI ref/tag per arch of the same module — two builders never
+      # race to push the same mutable registry tag.
+      app_tasks = tasks.select { |t| t.options["module"] == "app-#{suffix}" }
+      expect(app_tasks.map { |t| t.options["oci_ref"] }.uniq.size).to eq(2)
+
+      # module_slugs is the distinct-module display list, not one entry per
+      # build unit; planned_count IS the raw build-unit count.
+      expect(batch.module_slugs).to match_array([ "app-#{suffix}", "lib-#{suffix}" ])
+      expect(batch.planned_count).to eq(4)
+
+      # Plan + package_context both reflect the full requested arch set.
+      expect(batch.metadata["plan"].map { |p| p["architecture"] }.uniq).to match_array(%w[amd64 arm64])
+      expect(batch.metadata["package_context"]["architectures"]).to match_array(%w[amd64 arm64])
+    end
+
+    it "still produces exactly one task per module, with a byte-identical plan shape, for a single requested arch" do
+      seed_pool_member
+      seed_pool_member
+      top = materialized_module("solo-#{suffix}")
+      dep = materialized_module("solodep-#{suffix}")
+
+      batch = described_class.dispatch!(
+        repository: repo, modules: [ top, dep ], architectures: [ "amd64" ],
+        account: account, requested_by: user
+      ).batch
+
+      tasks = batch.member_tasks.to_a
+      expect(tasks.size).to eq(2)
+      expect(tasks.map { |t| t.options["architecture"] }).to eq(%w[amd64 amd64])
+      # No "architecture" key at all in a single-arch plan entry — same shape
+      # dispatch! produced before multi-arch fan-out existed.
+      batch.metadata["plan"].each { |entry| expect(entry.keys).to match_array(%w[module oci_ref]) }
+    end
+
+    it "finalizes each arch of a module independently — one arch's failure doesn't block the other's success" do
+      seed_pool_member
+      seed_pool_member
+      mod = materialized_module("multi-#{suffix}")
+
+      batch = described_class.dispatch!(
+        repository: repo, modules: [ mod ], architectures: [ "amd64", "arm64" ],
+        account: account, requested_by: user
+      ).batch
+
+      tasks = batch.member_tasks.to_a
+      amd64_task = tasks.detect { |t| t.options["architecture"] == "amd64" }
+      arm64_task = tasks.detect { |t| t.options["architecture"] == "arm64" }
+      complete_task!(amd64_task, result: { "oci_digest" => "sha256:amd64digest" })
+      arm64_task.update!(status: "failed", completed_at: Time.current, error_message: "builder ENOSPC")
+
+      sign_result = System::ModuleSigningService::Result.new(ok?: true, digest: "sha256:amd64digest")
+      publish_result = System::ModulePublicationProcessor::Result.new(ok?: true, node_module_version: nil)
+      # Only the amd64 finalize path should ever reach sign/publish here —
+      # arm64 failed the build itself, before signing is even attempted.
+      expect(System::ModuleSigningService).to receive(:sign!).once.and_return(sign_result)
+      expect(System::ModulePublicationProcessor).to receive(:process!).once.and_return(publish_result)
+
+      result = System::NativeModuleBuildOrchestrator.advance!(batch: batch)
+
+      expect(result.succeeded).to eq(1)
+      expect(result.retried).to eq(1) # arm64 gets a fresh-lease retry, not an immediate fail (max_attempts default 2)
+
+      modules_state = batch.reload.metadata["modules"]
+      expect(modules_state["#{mod.name}@amd64"]["state"]).to eq("succeeded")
+      expect(modules_state["#{mod.name}@arm64"]["state"]).to eq("queued")
+      # Both entries carry the real module name, never the compound key.
+      expect(modules_state.values.map { |e| e["module"] }.uniq).to eq([ mod.name ])
+    end
+  end
+
   # The finalize path is owned by NativeModuleBuildOrchestrator#advance!; here we
   # prove its package branch: apply the builder's dpkg -L file_spec via
   # PackageBuildWebhookService, THEN sign + publish through the same path as
