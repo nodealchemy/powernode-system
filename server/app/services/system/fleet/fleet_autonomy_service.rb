@@ -186,6 +186,13 @@ module System
         # agent-crashed-but-VM-up vs VM-itself-stopped.
         ::System::Fleet::Sensors::InstanceStateDriftSensor,
         ::System::Fleet::Sensors::ModuleDriftSensor,
+        # Campaign 019f6084 §2.4.3 — ModuleDriftSensor only diffs a running
+        # instance's digests against its ALREADY-ASSIGNED modules; it never
+        # re-resolves the template, so a template mutation (a new
+        # TemplateModule, or a new `requires` edge on an existing one)
+        # never reaches an already-provisioned instance. This sensor closes
+        # that gap → system.template_closure_apply gate.
+        ::System::Fleet::Sensors::TemplateClosureDriftSensor,
         # Boot-image drift: a running node booted a stale disk image (its
         # reported booted_image_git_sha != the platform's promoted
         # disk_image_git_sha). Campaign 019f505f increment 1 — observation-only

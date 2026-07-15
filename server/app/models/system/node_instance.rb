@@ -514,6 +514,33 @@ module System
       gpu_count.positive?
     end
 
+    # === Boot composition (docs/PIVOT_ROOT_CLOUD_VM_DESIGN.md) ===
+
+    # boot_mode values whose module union is composed PRE-pivot/switch_root
+    # — the node's root filesystem *is* the erofs+overlay module
+    # composition. That union is boot-time-fixed: a live module refresh
+    # updates `running_module_digests` but the mounted union is never
+    # remounted without a reboot (campaign 019f6084 §2.4.3 — the
+    # template-closure drift sensor's remediation split on this predicate).
+    # "cloud_init" (or unset — the provider default) boots a full guest OS
+    # and composes the union under a chrootable RootDirectory, which the
+    # on-node reconcile loop CAN remount live.
+    PIVOT_BOOT_MODES = %w[direct_kernel uefi_disk].freeze
+
+    # True when this instance was provisioned with a pivot boot_mode. There
+    # is no dedicated column for it — boot_mode is threaded at spawn time
+    # from the node's template config (see
+    # ProvisioningService#build_provider_params), so this reads it from the
+    # same place. Unknown/unset defaults to false (cloud_init) — the safer
+    # assumption for remediation planning is "can live-apply" rather than
+    # silently flagging a reboot for a boot mode this predicate doesn't
+    # recognize.
+    def pivot_boot?
+      tmpl_config = node&.node_template&.config
+      boot_mode = tmpl_config.is_a?(Hash) ? (tmpl_config["boot_mode"] || tmpl_config[:boot_mode]) : nil
+      PIVOT_BOOT_MODES.include?(boot_mode.to_s)
+    end
+
     private
 
     # Best-effort memory lookup used by #suggest_network_profile. Reads
