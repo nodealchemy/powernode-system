@@ -9,8 +9,24 @@ description: >
 license: Apache-2.0
 package_spec:
   - prometheus-node-exporter
+# Was under-carved (campaign 019f6084 inc0 audit) — the sole entry pointed
+# at /etc/systemd/system/node_exporter.service, a path apt never installs
+# to (the package's real unit ships at /usr/lib/systemd/system/prometheus-
+# node-exporter.service) and whose basename doesn't even match the apt
+# package's unit name, so it silently carved nothing; the actual binary
+# (/usr/bin/prometheus-node-exporter) the services: block below execs was
+# never shipped. Curated from the real apt-ownership closure (P0-C,
+# derive-file-spec.sh --mode deb-payload: 19 owned files, all covered
+# below) — a single-package closure with no extra shared libs, matching
+# the `requires: capability:os.userland` dependency below (only glibc).
 file_spec:
-  - /etc/systemd/system/node_exporter.service
+  - /etc/default/prometheus-node-exporter
+  - /etc/init.d/prometheus-node-exporter
+  - /etc/logrotate.d/prometheus-node-exporter
+  - /usr/bin/prometheus-node-exporter
+  - /usr/lib/systemd/system/prometheus-node-exporter.service
+  - /usr/share/doc/prometheus-node-exporter/**
+  - /usr/share/man/man1/prometheus-node-exporter.1.gz
 mask: []
 dependency_spec: []
 protected_spec: []
