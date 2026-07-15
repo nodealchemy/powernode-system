@@ -45,4 +45,36 @@ RSpec.describe System::Fleet::FleetAutonomyService, "#dedup_key_for" do
     expect(dedup("system.instance_terminate", { "module_id" => "m-1" }))
       .to eq([ "module_id", "m-1" ])
   end
+
+  # Regression: an instance-wide system.module_drift routes to
+  # system.module_assign, whose natural keys are module_id/module_version_id —
+  # neither of which an instance-level drift carries. Before the signal_fingerprint
+  # fallback this resolved to nil → no dedup → one ApprovalRequest minted per
+  # escalation tick (the "Fleet Operator Approval" flood; imps 019f3cdc-efc9/d0a8).
+  it "falls back to signal_fingerprint for instance-level module_assign (no module_id)" do
+    metadata = {
+      "instance_id" => "019f54fd-6083-754e-b4c1-0a571d3931a2",
+      "signal_kind" => "system.module_drift",
+      "signal_fingerprint" => "module_drift:019f54fd-6083-754e-b4c1-0a571d3931a2"
+    }
+    expect(dedup("system.module_assign", metadata))
+      .to eq([ "signal_fingerprint", "module_drift:019f54fd-6083-754e-b4c1-0a571d3931a2" ])
+  end
+
+  it "prefers the natural module key over the fingerprint fallback for module_assign" do
+    expect(dedup("system.module_assign", { "module_id" => "m-1", "signal_fingerprint" => "x:y" }))
+      .to eq([ "module_id", "m-1" ])
+  end
+
+  # The fallback is universal: any signal-driven action that lacks its natural
+  # key still dedups on the stamped fingerprint rather than the coarse
+  # action-level cooldown.
+  it "falls back to signal_fingerprint for any signal-driven action missing its natural key" do
+    expect(dedup("system.federation_peer_remediate", { "signal_fingerprint" => "fp:1" }))
+      .to eq([ "signal_fingerprint", "fp:1" ])
+  end
+
+  it "still returns nil for a non-signal action with no natural key and no fingerprint" do
+    expect(dedup("system.federation_peer_remediate", {})).to be_nil
+  end
 end

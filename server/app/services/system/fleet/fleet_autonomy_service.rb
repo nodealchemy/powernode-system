@@ -368,7 +368,7 @@ module System
       # ["request_data->'payload'->>'KEY' = ?", value] pairs to merge into
       # the WHERE clause.
       def dedup_key_for(action_category, metadata)
-        case action_category
+        natural_key = case action_category
         when "system.instance_reprovision", "system.instance_reboot",
              "system.cert_rotate", "system.cert_revoke",
              # Observation signals never create remediation outcomes
@@ -447,6 +447,18 @@ module System
         when "system.storage_assignment_reconcile"
           key_value(metadata, "storage_assignment_id")
         end
+
+        # Universal fallback: every fleet signal stamps signal_fingerprint into
+        # its payload (DecisionEngine#skill_metadata_payload). When an action has
+        # no natural key — or the routed signal didn't carry it (e.g. an
+        # instance-wide system.module_drift routes to system.module_assign, whose
+        # module_id/module_version_id keys are both absent) — dedup on the
+        # fingerprint so a persistent signal collapses to ONE open ApprovalRequest
+        # instead of minting a fresh one every escalation tick (the operator-
+        # approval flood; regression of imps 019f3cdc-efc9/d0a8). Operator-
+        # initiated (non-signal) actions carry no signal_fingerprint, so this is
+        # nil for them and the action-level cooldown still applies.
+        natural_key || key_value(metadata, "signal_fingerprint")
       end
 
       def key_value(metadata, name)
