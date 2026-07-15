@@ -42,12 +42,24 @@ module System
 
         count = 0
         parse_primary_xml(primary_xml).each do |fields|
-          next unless architectures.include?(fields[:arch]) || architectures.include?("noarch") && fields[:arch] == "noarch"
+          next unless arch_relevant?(fields[:arch], architectures)
 
           yield to_parsed_package(fields)
           count += 1
         end
         count
+      end
+
+      # A package is relevant if its arch is one of the configured architectures
+      # OR it is `noarch` (architecture-independent — the rpm analogue of apt's
+      # `Architecture: all`, always installable). The previous inline predicate
+      # (`architectures.include?(arch) || architectures.include?("noarch") &&
+      # arch == "noarch"`) parsed as `A || (B && C)` and only kept noarch
+      # packages when the operator had explicitly listed "noarch" as an
+      # architecture — which nobody does (architectures_for_kind never adds it),
+      # so every noarch package was silently dropped.
+      def arch_relevant?(arch, architectures)
+        arch == "noarch" || architectures.include?(arch)
       end
 
       # Digest repomd.xml's <revision> + every <data><checksum> — these change

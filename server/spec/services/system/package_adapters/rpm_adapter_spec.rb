@@ -121,4 +121,20 @@ RSpec.describe System::PackageAdapters::RpmAdapter do
       expect(a).not_to eq(b)
     end
   end
+
+  describe "#arch_relevant? (noarch is always included)" do
+    it "keeps a configured arch" do
+      expect(adapter.send(:arch_relevant?, "x86_64", %w[x86_64])).to be true
+    end
+
+    it "ALWAYS keeps noarch, even when the operator did not list 'noarch'" do
+      # Regression: the old inline predicate dropped noarch unless "noarch" was
+      # an explicitly configured architecture (which it never is).
+      expect(adapter.send(:arch_relevant?, "noarch", %w[x86_64])).to be true
+    end
+
+    it "drops an arch that is neither configured nor noarch" do
+      expect(adapter.send(:arch_relevant?, "aarch64", %w[x86_64])).to be false
+    end
+  end
 end
