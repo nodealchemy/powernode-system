@@ -22,6 +22,10 @@ module System
     Result = Struct.new(
       :top_level_module, :dependency_modules, :recommends_modules,
       :dependencies_created, :build_dispatches, :warnings, :errors,
+      # inc2 (§4.3.1/§4.3.2): names of baseline packages skipped (already
+      # shipped by base-os), the synthetic top-level `requires base-os` edge,
+      # and the ModuleBuildBatch the native bridge created for this closure.
+      :baseline_excluded, :base_os_requires, :build_batch,
       keyword_init: true
     ) do
       def all_modules
@@ -39,9 +43,24 @@ module System
 
     def initialize(repository:, package_name:, architectures:, account:,
                    requested_by_user:, recommends_selected: [],
-                   category: nil, dispatch_build: true)
+                   category: nil, dispatch_build: true,
+                   include_baseline: false, base_os_module_name: nil,
+                   build_mode: nil)
       @repository          = repository
       @package_name        = package_name
+      # inc2 §4.3.1 — baseline exclusion. When false (default), packages the
+      # base-OS module already ships are skipped and replaced by a single
+      # synthetic `requires: base-os` edge on the top-level module. When true,
+      # the old full-closure behavior is kept (building against a non-Powernode
+      # base).
+      @include_baseline    = include_baseline
+      @base_os_module_name = base_os_module_name
+      @base_os_module      = nil
+      # inc2 §4.3.2 — build routing. :native routes the closure through
+      # System::PackageClosureBuildBridge (ModuleBuildBatch + Vault-signed
+      # native pipeline); :gitea keeps the legacy fire-and-forget
+      # ModuleBuildDispatchService.dispatch_closure; nil → SiteSetting default.
+      @build_mode          = build_mode
       # Callers (frontend, MCP) submit canonical names (post-T2.A). The
       # PackageDependencyResolver queries Package.architecture which is
       # kind-specific (apt's "amd64" / rpm's "x86_64" — whatever the
@@ -94,6 +113,18 @@ module System
         r.packages.each { |p| packages_by_name[p.name] = p }
       end
 
+      # Baseline exclusion (§4.3.1): drop packages base-os already ships so a
+      # materialized closure obeys inc1's own-files-only-per-package standard
+      # (no duplicated libc6 layer). The top-level package is NEVER excluded
+      # even if it happens to appear in the baseline — the operator explicitly
+      # asked for it. Replaced by a single synthetic base-os requires edge below.
+      baseline_excluded = []
+      unless @include_baseline
+        baseline_names = baseline_package_names
+        baseline_excluded = (packages_by_name.keys.to_set & baseline_names).delete(@package_name).to_a.sort
+        baseline_excluded.each { |name| packages_by_name.delete(name) }
+      end
+
       # The first resolver's recommends_chosen list is authoritative (operator
       # selection is per-call, not per-arch).
       recommends_chosen = arch_results.values.first&.recommends_chosen.to_a
@@ -102,6 +133,7 @@ module System
       created_modules = {}
       recommends_module_names = Set.new
       dependencies_created = []
+      base_os_requires = nil
 
       ::System::NodeModule.transaction do
         # Phase 1: create one NodeModule + PackageModuleLink per package in closure
@@ -144,17 +176,30 @@ module System
             dependencies_created << dep
           end
         end
+
+        # Phase 2.5: synthetic base-os requires edge (§4.3.1). Replaces the
+        # per-package edges that pointed at the now-excluded baseline modules
+        # (those were dropped above by the `next unless from_mod && to_mod`
+        # guard, since the baseline modules were never created). Matches inc1's
+        # stored shape: a plain `requires` ModuleDependency from the top-level
+        # module to the base-os module (system_module_dependencies has no
+        # metadata column, so capability_match is not persisted for hand-
+        # authored os.userland edges either — this is byte-identical).
+        base_os_requires = maybe_create_base_os_edge!(created_modules[@package_name])
+        dependencies_created << base_os_requires if base_os_requires
       end
 
+      top = created_modules[@package_name]
+
+      build_batch = nil
       build_dispatches = []
       if @dispatch_build
-        build_dispatches = dispatch_closure_build(
+        build_dispatches, build_batch = dispatch_closure_build(
           modules:       created_modules.values,
           architectures: @architectures
         )
       end
 
-      top = created_modules[@package_name]
       deps = created_modules.values.reject do |m|
         m.id == top&.id || recommends_module_names.include?(m.name)
       end
@@ -166,6 +211,9 @@ module System
         recommends_modules:   recs,
         dependencies_created: dependencies_created,
         build_dispatches:     build_dispatches,
+        build_batch:          build_batch,
+        baseline_excluded:    baseline_excluded,
+        base_os_requires:     base_os_requires,
         warnings:             warnings,
         errors:               errors
       )
@@ -238,18 +286,84 @@ module System
       link
     end
 
+    # Baseline package names (§4.3.1) — union across arches of the base-os
+    # closure. Captures @base_os_module for the synthetic requires edge.
+    def baseline_package_names
+      @architectures.each_with_object(Set.new) do |arch, memo|
+        result = ::System::BaseOsBaselineResolver.call(
+          repository:          @repository,
+          architecture:        arch,
+          account:             @account,
+          base_os_module_name: @base_os_module_name
+        )
+        @base_os_module ||= result.base_os_module
+        memo.merge(result.package_names)
+      end
+    end
+
+    # Synthetic `requires base-os` edge on the top-level module. Only created
+    # when exclusion is active (a base-os module was resolved) — never when
+    # include_baseline: true, and never self-referential (a materialized
+    # package is never base-os itself). Idempotent.
+    def maybe_create_base_os_edge!(top_module)
+      return nil if @include_baseline
+      return nil unless top_module && @base_os_module
+      return nil if top_module.id == @base_os_module.id
+
+      ::System::ModuleDependency.find_or_create_by!(
+        node_module_id:  top_module.id,
+        dependency_id:   @base_os_module.id,
+        dependency_type: "requires"
+      ) do |d|
+        d.required = true
+      end
+    end
+
+    # Routes the closure build. Returns [build_dispatches, build_batch].
+    #   :native — System::PackageClosureBuildBridge → a ModuleBuildBatch
+    #     (trigger "package") driven through the Vault-signing native pipeline
+    #     (§4.3.2). The build-completion barrier inc2-A's read API polls.
+    #   :gitea  — legacy fire-and-forget ModuleBuildDispatchService.dispatch_closure
+    #     (no batch, no server-side signing).
     def dispatch_closure_build(modules:, architectures:)
+      case resolved_build_mode
+      when :native
+        result = ::System::PackageClosureBuildBridge.dispatch!(
+          repository:    @repository,
+          modules:       modules,
+          architectures: architectures,
+          account:       @account,
+          requested_by:  @user
+        )
+        batch = result.batch
+        dispatches = batch ? [ { batch_id: batch.id, trigger: "package", ok: result.ok? } ] : []
+        [ dispatches, batch ]
+      when :gitea
+        [ legacy_gitea_dispatch(modules, architectures), nil ]
+      else
+        [ [], nil ]
+      end
+    rescue NameError, NoMethodError => e
+      # Native bridge not loaded yet (incremental rollout) — degrade to logging
+      # rather than aborting the whole materialization (the modules + edges are
+      # already committed; the build can be re-dispatched).
+      Rails.logger.warn("[PackageModuleMaterializer] closure build dispatch unavailable: #{e.message}")
+      [ [], nil ]
+    end
+
+    def legacy_gitea_dispatch(modules, architectures)
       ::System::ModuleBuildDispatchService.dispatch_closure(
         repository:    @repository,
         modules:       modules,
         architectures: architectures,
         requested_by:  @user
       )
-    rescue NameError, NoMethodError => e
-      # dispatch_closure is added in Phase C — fall back to logging if
-      # the method isn't loaded yet (e.g., during incremental rollout).
-      Rails.logger.warn("[PackageModuleMaterializer] dispatch_closure not available: #{e.message}")
-      []
+    end
+
+    def resolved_build_mode
+      return @build_mode.to_sym if @build_mode
+
+      (::SiteSetting.get("system.package_builds.mode").presence || "native").to_sym
     end
   end
 end
