@@ -37,25 +37,41 @@ module Api
 
           private
 
-          # Runs the sync(s) OUT of the request cycle so the worker's HTTP call
-          # returns at once. Detached thread is acceptable: a sync lost to a
-          # backend restart leaves the repo `syncing`, and the next tick/click
-          # re-syncs it (the advisory lock is released when the process dies).
-          # Rails.application.executor.wrap gives the thread its own connection
-          # + reloading; each repo is synced sequentially so one thread holds at
-          # most one sync connection.
+          # Runs the sync(s) OUT of the request cycle AND out of this puma
+          # worker, in a detached child process. A detached in-worker Thread is
+          # NOT safe here: a full sync inflates RSS past the puma worker
+          # recycler's ceiling (config/puma.rb, MAX_WORKER_RSS_MB), the recycler
+          # QUITs the worker, and the thread dies mid-sync — stranding the repo
+          # in "syncing" (and the next tick re-ran the same in-worker path and
+          # died the same way, so large first syncs never finished). A separate
+          # process is immune to the puma worker lifecycle. Recovery needs no
+          # bespoke watchdog: the per-repo advisory lock in
+          # PackageRepositorySyncService guards duplicates, upserts are
+          # idempotent, and the daily tick re-drives any repo with a stale
+          # last_synced_at — so a process that dies before finalizing is simply
+          # re-driven next cycle.
           def dispatch_background_sync(repos, force: false)
             return if repos.blank?
 
-            Thread.new do
-              ::Rails.application.executor.wrap do
-                repos.each do |repo|
-                  ::System::PackageRepositorySyncService.call(repository: repo, force: force)
-                rescue StandardError => e
-                  ::Rails.logger.error("[worker_api package sync bg] repository=#{repo.id}: #{e.class}: #{e.message}")
-                end
-              end
-            end
+            ids = repos.map(&:id)
+            # `rails runner "<code>" id1 id2 …` exposes the trailing args as ARGV
+            # inside <code>; force is a trusted boolean (interpolated literal).
+            runner = "System::PackageRepositoryBackgroundSync.run!(repository_ids: ARGV, force: #{force ? 'true' : 'false'})"
+            logdev = ::Rails.root.join("log", "package_repository_sync.log").to_s
+
+            pid = ::Process.spawn(
+              "bundle", "exec", "rails", "runner", runner, *ids,
+              chdir: ::Rails.root.to_s,
+              pgroup: true, # own process group — puma signals don't reach it
+              %i[out err] => [ logdev, "a" ]
+            )
+            ::Process.detach(pid) # reap on exit so it doesn't zombie
+            ::Rails.logger.info("[worker_api package sync] spawned detached sync pid=#{pid} for #{ids.size} repo(s) force=#{force}")
+          rescue StandardError => e
+            # If the spawn itself fails the repos stay "syncing" and the next
+            # daily tick re-drives them — never fall back to an in-request sync
+            # (that was the original HTTP-timeout retry-storm).
+            ::Rails.logger.error("[worker_api package sync] failed to spawn detached sync: #{e.class}: #{e.message}")
           end
 
           # Returns repositories due for sync: enabled + (never synced OR
