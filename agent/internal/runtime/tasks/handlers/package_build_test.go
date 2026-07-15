@@ -23,6 +23,7 @@ func validPackageOptions() map[string]any {
 		"batch_id":          "019f6084-batch",
 		"build_kind":        "package",
 		"package_name":      "libssl3",
+		"package_version":   "3.0.13-0ubuntu3.4",
 		"architecture":      "amd64",
 		"package_repo_kind": "apt",
 		"package_repo_url":  "http://archive.ubuntu.com/ubuntu",
@@ -45,6 +46,23 @@ func TestParsePackageBuildOptions(t *testing.T) {
 	}
 	if opts.RepoKind != "apt" || opts.AptSuite != "noble" || opts.AptComponents != "main,universe" {
 		t.Fatalf("parsed repo fields: %+v", opts)
+	}
+	if opts.PackageVersion != "3.0.13-0ubuntu3.4" {
+		t.Fatalf("PackageVersion = %q, want the EVR lockfile pin", opts.PackageVersion)
+	}
+
+	// package_version is OPTIONAL (campaign 019f6084 item L — a batch
+	// dispatched before the lockfile existed, or a link with no recorded
+	// version, carries no pin) — its absence must NOT be a validation error,
+	// unlike the truly required keys checked below.
+	noVersion := validPackageOptions()
+	delete(noVersion, "package_version")
+	optsNoVersion, err := parsePackageBuildOptions(&tasks.Task{Options: noVersion})
+	if err != nil {
+		t.Fatalf("package_version should be optional, got error: %v", err)
+	}
+	if optsNoVersion.PackageVersion != "" {
+		t.Fatalf("PackageVersion = %q, want empty when absent", optsNoVersion.PackageVersion)
 	}
 
 	required := []string{"module", "oci_ref", "package_name", "architecture", "package_repo_url"}
@@ -122,6 +140,7 @@ func TestBuildPackageEnv(t *testing.T) {
 		"APT_SNAPSHOT":           "20260101T000000Z",
 		"MASK":                   "/usr/share/doc/**\n/usr/share/man/**",
 		"FILE_SPEC_SOURCE":       "package_query",
+		"PACKAGE_VERSION":        "3.0.13-0ubuntu3.4",
 	}
 	for k, v := range want {
 		if env[k] != v {
@@ -135,7 +154,9 @@ func TestBuildPackageEnv(t *testing.T) {
 		t.Errorf("RPM_RELEASEVER should be absent for an apt repo, got env=%v", env)
 	}
 
-	// Optional keys omitted when blank.
+	// Optional keys omitted when blank — includes PACKAGE_VERSION: a batch
+	// with no EVR lockfile entry for this module must build exactly as it
+	// did before the lockfile existed (backward-compatible default).
 	minimal := map[string]any{
 		"module": "m", "oci_ref": "t", "package_name": "p", "architecture": "amd64",
 		"package_repo_url": "http://x", "package_repo_kind": "apt",
@@ -146,7 +167,7 @@ func TestBuildPackageEnv(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	minEnv := envMap(buildPackageEnv(minOpts, &ciBuildContext{}))
-	for _, key := range []string{"BATCH_ID", "APT_SNAPSHOT", "GPG_KEY_ARMOR", "MASK", "FILE_SPEC_SOURCE", "RPM_RELEASEVER"} {
+	for _, key := range []string{"BATCH_ID", "APT_SNAPSHOT", "GPG_KEY_ARMOR", "MASK", "FILE_SPEC_SOURCE", "RPM_RELEASEVER", "PACKAGE_VERSION"} {
 		if _, ok := minEnv[key]; ok {
 			t.Errorf("%s should be absent when unset, got env=%v", key, minEnv)
 		}
@@ -211,6 +232,9 @@ func TestPackageBuildHandler_Execute_Success(t *testing.T) {
 	env := envMap(exec.gotEnv)
 	if env["MODULE"] != "libssl3-pkg" || env["PACKAGE_NAME"] != "libssl3" || env["OCI_REF"] != "abc1234" {
 		t.Fatalf("env: %+v", env)
+	}
+	if env["PACKAGE_VERSION"] != "3.0.13-0ubuntu3.4" {
+		t.Fatalf("PACKAGE_VERSION not threaded end-to-end from task options to the script env: %+v", env)
 	}
 	if env["ORAS_REGISTRY"] != "registry.example.com" || env["ORAS_REGISTRY_USER"] != "oras-user" || env["ORAS_REGISTRY_PASSWORD"] != "ORAS-PW" {
 		t.Fatalf("oras env should come from the SAME ci_build_context fetch as module_build: %+v", env)

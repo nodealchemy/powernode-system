@@ -75,6 +75,27 @@
 # Optional:
 #   ORAS_REGISTRY                registry host. Default: git.powernode.org
 #                              (mirrors module-forge-build.sh)
+#   PACKAGE_VERSION                exact EVR (epoch:version-release) to pin
+#                              PACKAGE_NAME to (campaign 019f6084 item L —
+#                              System::PackageClosureBuildBridge#package_lock,
+#                              sourced from PackageModuleLink#package_version
+#                              at materialize time). Only applied when
+#                              PACKAGE_NAME names EXACTLY ONE package — this
+#                              single env var has no way to carry more than
+#                              one EVR, so a comma-separated PACKAGE_NAME
+#                              logs a WARNING and builds unpinned (PARKED,
+#                              see below). When applied: mmdebstrap is asked
+#                              to install "$PACKAGE_NAME=$PACKAGE_VERSION"
+#                              (apt fails the resolve outright if that exact
+#                              version isn't available from REPO_URL at
+#                              APT_SUITE/APT_COMPONENTS), and the dpkg-query
+#                              step below additionally verifies the
+#                              INSTALLED version matches byte-for-byte,
+#                              dying with a clear error on any mismatch —
+#                              the reproducibility guarantee this pin
+#                              exists for. Absent: PACKAGE_NAME resolves
+#                              unpinned exactly as before this lockfile
+#                              existed (backward-compatible default).
 #   APT_SNAPSHOT                  informational/log-only provenance value
 #                              (PackageRepository#last_synced_at at
 #                              dispatch time) — NOT used to rewrite
@@ -114,6 +135,15 @@
 # PackageBuildHandler rejects non-apt recipes BEFORE ever invoking this
 # script (clean failure, not a partial/silent build) — see
 # agent/internal/runtime/tasks/handlers/package_build.go.
+#
+# ALSO PARKED: pinning more than one EVR when PACKAGE_NAME names multiple
+# packages. PACKAGE_VERSION is a single scalar (the platform's lockfile is
+# keyed by NodeModule, and today's closure member is always one package —
+# see PackageClosureBuildBridge's class doc); a future multi-package
+# PACKAGE_NAME would need a structured PACKAGE_VERSION (e.g. a
+# "pkg=evr,pkg=evr" list) to pin each independently. Until then a
+# multi-package PACKAGE_NAME builds unpinned, loudly (WARNING), never
+# silently applying one EVR to every listed package.
 #
 # Output — RESULT JSON, the platform-module four-key contract PLUS
 # file_spec (the one extra key a package build's result needs — see
@@ -199,6 +229,7 @@ APT_SNAPSHOT="${APT_SNAPSHOT:-}"
 GPG_KEY_ARMOR="${GPG_KEY_ARMOR:-}"
 MASK="${MASK:-}"
 BATCH_ID="${BATCH_ID:-}"
+PACKAGE_VERSION="${PACKAGE_VERSION:-}"
 
 require_cmd rsync
 require_cmd uuidgen
@@ -224,7 +255,7 @@ JOB_ROOT="$JOB_BASE/jobs/${JOB_ID}"
 BUILDENV="$JOB_ROOT/buildenv"
 WORKSPACE_HOST="$JOB_ROOT/workspace"
 mkdir -p "$BUILDENV" "$WORKSPACE_HOST"
-log "job ${JOB_ID}: module=${MODULE} package=${PACKAGE_NAME} arch=${ARCHITECTURE} batch=${BATCH_ID:-<none>} registry=${ORAS_REGISTRY}"
+log "job ${JOB_ID}: module=${MODULE} package=${PACKAGE_NAME} version=${PACKAGE_VERSION:-<unpinned>} arch=${ARCHITECTURE} batch=${BATCH_ID:-<none>} registry=${ORAS_REGISTRY}"
 
 # --- cleanup (mirrors module-forge-build.sh exactly) -----------------------
 declare -a MOUNTED=()
@@ -295,7 +326,7 @@ fi
 cat > "$BUILDENV/tmp/pkg-driver.sh" <<'DRIVER'
 #!/bin/sh
 set -eu
-MODULE="$1"; PACKAGE_NAME="$2"
+MODULE="$1"; PACKAGE_NAME="$2"; PACKAGE_VERSION="${3:-}"
 
 mkdir -p /etc/apt/sources.list.d
 cp /tmp/pkgbuild-source.list /etc/apt/sources.list.d/pkgbuild.list
@@ -305,6 +336,27 @@ if [ -s /tmp/pkgbuild-key.asc ]; then
   KEYRING_ARG="--keyring=/tmp/pkgbuild-key.gpg"
 fi
 
+# EVR lockfile pin (campaign 019f6084 item L) — apt's "pkg=version" include
+# syntax makes the resolve itself fail (mmdebstrap propagates apt's
+# non-zero exit) when that exact version isn't available from REPO_URL, so
+# a drifted mirror can never silently ship a different build than the
+# lockfile recorded. Only applied when PACKAGE_NAME names exactly one
+# package — see this script's PACKAGE_VERSION doc for why a comma-
+# separated PACKAGE_NAME can't be pinned from a single EVR value.
+INCLUDE_SPEC="$PACKAGE_NAME"
+case "$PACKAGE_NAME" in
+  *,*)
+    if [ -n "$PACKAGE_VERSION" ]; then
+      echo "pkg-driver: WARNING: PACKAGE_VERSION set but PACKAGE_NAME names multiple packages ('$PACKAGE_NAME') — building unpinned" >&2
+    fi
+    ;;
+  *)
+    if [ -n "$PACKAGE_VERSION" ]; then
+      INCLUDE_SPEC="${PACKAGE_NAME}=${PACKAGE_VERSION}"
+    fi
+    ;;
+esac
+
 mkdir -p /tmp/pkgroot
 # shellcheck disable=SC2086  # KEYRING_ARG is intentionally unquoted: empty
 # when no key was supplied, a single flag token when one was.
@@ -312,7 +364,7 @@ mmdebstrap \
   --mode=root \
   --variant=minbase \
   --components="$APT_COMPONENTS" \
-  --include="$PACKAGE_NAME" \
+  --include="$INCLUDE_SPEC" \
   $KEYRING_ARG \
   --aptopt='Acquire::http::Pipeline-Depth "0"' \
   "$APT_SUITE" /tmp/pkgroot "$REPO_URL"
@@ -321,6 +373,26 @@ mmdebstrap \
 dpkg-query --admindir=/tmp/pkgroot/var/lib/dpkg -W \
     -f='${Package}\t${Version}\t${Architecture}\n' \
   | LC_ALL=C sort > "/tmp/$MODULE.packages.txt"
+
+# EVR lockfile verification — defense-in-depth alongside the pinned
+# mmdebstrap --include above: confirm the version actually installed
+# matches the lockfile byte-for-byte before this build is allowed to
+# proceed to carve/publish. Catches anything the pinned resolve alone
+# might not (e.g. a REPO_URL swap between dispatch and build time that
+# happens to still satisfy "=version" against a different repo state).
+# Never silently ship a drifted version — die clean instead.
+case "$PACKAGE_NAME" in
+  *,*) : ;; # multi-package pin unsupported — warning already logged above
+  *)
+    if [ -n "$PACKAGE_VERSION" ]; then
+      ACTUAL_VERSION=$(awk -F'\t' -v pkg="$PACKAGE_NAME" '$1==pkg{print $2}' "/tmp/$MODULE.packages.txt")
+      if [ "$ACTUAL_VERSION" != "$PACKAGE_VERSION" ]; then
+        echo "pkg-driver: EVR lockfile mismatch for $PACKAGE_NAME: expected $PACKAGE_VERSION, resolved ${ACTUAL_VERSION:-<none>}" >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
 
 # Ownership derivation — this module's file_spec (dpkg -L, one absolute
 # path per line; directory entries and the "/." root drop out; only paths
@@ -339,13 +411,13 @@ done | LC_ALL=C sort -u > "/tmp/$MODULE.owned.txt"
 DRIVER
 chmod +x "$BUILDENV/tmp/pkg-driver.sh"
 
-log "bootstrapping ${PACKAGE_NAME} via mmdebstrap (suite=${APT_SUITE}, components=${APT_COMPONENTS})…"
+log "bootstrapping ${PACKAGE_NAME}${PACKAGE_VERSION:+=${PACKAGE_VERSION}} via mmdebstrap (suite=${APT_SUITE}, components=${APT_COMPONENTS})…"
 if ! chroot "$BUILDENV" /bin/bash -c "
   export HOME=/root
   export APT_SUITE='$APT_SUITE' APT_COMPONENTS='$APT_COMPONENTS' REPO_URL='$REPO_URL'
-  /bin/sh /tmp/pkg-driver.sh '$MODULE' '$PACKAGE_NAME'
+  /bin/sh /tmp/pkg-driver.sh '$MODULE' '$PACKAGE_NAME' '$PACKAGE_VERSION'
 " >&2; then
-  die "mmdebstrap/dpkg-query bootstrap failed for ${PACKAGE_NAME}"
+  die "mmdebstrap/dpkg-query bootstrap failed for ${PACKAGE_NAME} (EVR lockfile mismatch or unresolvable pin counts as failure here too — see pkg-driver's own die/exit)"
 fi
 
 [ -s "$BUILDENV/tmp/$MODULE.owned.txt" ] || die "pkg-driver produced no owned-file list for ${MODULE}"

@@ -72,6 +72,7 @@ type packageBuildOptions struct {
 	OCIRef         string
 	BatchID        string // log-correlation only; the platform correlates via the Task row's own options["batch_id"], already set before this handler runs.
 	PackageName    string
+	PackageVersion string // EVR lockfile pin (campaign 019f6084 item L) — see field doc below.
 	Architecture   string
 	RepoKind       string
 	RepoURL        string
@@ -99,6 +100,7 @@ func parsePackageBuildOptions(task *tasks.Task) (packageBuildOptions, error) {
 		OCIRef:         str("oci_ref"),
 		BatchID:        str("batch_id"),
 		PackageName:    str("package_name"),
+		PackageVersion: str("package_version"),
 		Architecture:   str("architecture"),
 		RepoKind:       str("package_repo_kind"),
 		RepoURL:        str("package_repo_url"),
@@ -224,9 +226,15 @@ func (h *PackageBuildHandler) Execute(ctx context.Context, task *tasks.Task) (ta
 // buildPackageEnv assembles the env slice module-forge-package-build.sh
 // expects, matching its ENV CONTRACT exactly: required keys always
 // present; optional keys (BATCH_ID/APT_SNAPSHOT/GPG_KEY_ARMOR/MASK/
-// RPM_RELEASEVER/FILE_SPEC_SOURCE) only when the platform supplied a
-// non-empty value — mirrors buildEnv's "omit rather than send empty"
-// posture for optional module_build vars.
+// RPM_RELEASEVER/FILE_SPEC_SOURCE/PACKAGE_VERSION) only when the platform
+// supplied a non-empty value — mirrors buildEnv's "omit rather than send
+// empty" posture for optional module_build vars. PACKAGE_VERSION (campaign
+// 019f6084 item L) is the EVR lockfile pin from
+// NativeModuleBuildOrchestrator#package_task_options; omitted for a batch
+// dispatched before the lockfile existed (or a link with no recorded
+// version) — the script falls back to its pre-existing unpinned
+// "--include=$PACKAGE_NAME" resolve, so this is backward-compatible by
+// construction.
 func buildPackageEnv(opts packageBuildOptions, bctx *ciBuildContext) []string {
 	env := []string{
 		"MODULE=" + opts.Module,
@@ -259,6 +267,9 @@ func buildPackageEnv(opts packageBuildOptions, bctx *ciBuildContext) []string {
 	}
 	if opts.FileSpecSource != "" {
 		env = append(env, "FILE_SPEC_SOURCE="+opts.FileSpecSource)
+	}
+	if opts.PackageVersion != "" {
+		env = append(env, "PACKAGE_VERSION="+opts.PackageVersion)
 	}
 	return env
 }
