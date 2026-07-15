@@ -119,6 +119,18 @@
     queue: system
     description: "System: hourly cloud-state reconciliation across all accounts"
 
+  # FulfillmentRequest sweep — every 60s (campaign 019f6084 inc-O, follow-up
+  # to inc-M's durable state machine). Advances every open request via the
+  # advance orchestrator (resuming ones parked at the build barrier / approved
+  # out-of-band) and reaps task-scoped instances past lease expiry. The
+  # fulfillment analog of core worker's ci_runner_lease_reconcile
+  # (worker/config/sidekiq.yml).
+  system_fulfillment_request_reconcile:
+    every: "60s"
+    class: "SystemFulfillmentRequestReconcileJob"
+    queue: system
+    description: "Fulfillment: advance open requests + reap expired task-scoped leases"
+
   # Package repository metadata sync. Daily fetch of upstream apt/rpm package
   # indexes for enabled repos (account-scoped + shared), upserts
   # system_packages rows, marks obsoleted entries. Provides the upstream

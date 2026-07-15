@@ -605,6 +605,12 @@ Rails.application.routes.draw do
           # each active lease against Gitea run state + publish arrival and
           # drives it toward release + recycle (and reaps orphaned fleet-* runners).
           post "ci_runner_leases/advance", to: "ci_runner_leases#advance"
+          # Campaign 019f6084 inc-O — every-60s FulfillmentRequest sweep.
+          # Worker invokes System::FulfillmentRequestSweepService (the
+          # fulfillment analog of System::CiRunnerLeaseSweepService) which
+          # advances every open request via the advance orchestrator and reaps
+          # task-scoped instances whose lease has elapsed.
+          post "fulfillment/sweep", to: "fulfillment#sweep"
           # Per-peer cluster_member PG replica slot + credential
           # materialization. Plan: P6.4.
           post "cluster_member/pg_replica_setup", to: "cluster_member_pg_replica#create"

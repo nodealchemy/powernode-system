@@ -23,12 +23,12 @@ module System
   #     best-effort terminate-and-log posture (a terminate failure is logged, not
   #     raised — the reaper retries next tick).
   #
-  # NOTE (integration seam): wiring a periodic worker tick to call .run! per
-  # account is the remaining integration step (mirror
-  # worker/app/jobs/system/ci_runner_lease_reconcile_job.rb → a
-  # worker_api/fulfillment_requests/advance endpoint). Until then the fulfill
-  # skill drives the first advance inline on approval, and this service is
-  # callable directly (specs + any operator/agent-invoked reconcile).
+  # Periodic tick (inc-O): SystemFulfillmentRequestReconcileJob
+  # (extensions/system/worker/app/jobs/system_fulfillment_request_reconcile_job.rb)
+  # POSTs worker_api/fulfillment/sweep every 60s, which calls .run! per
+  # account in scope — the fulfill skill still drives the first advance
+  # inline on approval, and this service remains callable directly (specs +
+  # any operator/agent-invoked reconcile).
   class FulfillmentRequestSweepService
     def self.run!(account:)
       new(account: account).run!
