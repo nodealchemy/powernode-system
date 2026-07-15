@@ -22,23 +22,517 @@ package_spec:
   - libgmp-dev
   - autoconf
   - bison
-# Ship the full tree under the four standard FHS roots. /usr covers the
-# source-compiled Ruby 3.2.8 + bundler 2.7.1 (both installed to
-# /usr/local by the build workflow — /usr/** already covers /usr/local/**)
-# + the gcc/g++ toolchain (build-essential) + Ruby stdlib/bundled gems +
-# dev headers (libpq-dev, libssl-dev, libyaml-dev, libffi-dev, ...). /lib
-# + /lib64 cover libc + libruby + ssl + crypto runtime libs. /etc carries
-# package-installed configs.
-# This module is FS-only (services: []) — it's the substrate lower
-# layer hub-backend + hub-worker overlay-stack on top of, so the
-# blob needs every transitive dep for `bundle exec puma`/`sidekiq`
-# to resolve at runtime.
+# campaign 019f6084 P0-C wave 2: curated from the real apt-ownership closure
+# (derive-file-spec.sh --mode deb-payload against [build-essential,
+# libpq-dev, libssl-dev, libyaml-dev, zlib1g-dev, libffi-dev,
+# libreadline-dev, libgdbm-dev, libncurses-dev, libgmp-dev, autoconf,
+# bison]: 6784 owned files). Previously a blanket /usr/**+/lib/**+
+# /lib64/**+/etc/** — same over-inclusion risk qemu-guest-agent's manifest
+# documents (a directory-wide glob also carves any SIBLING module's /usr
+# content unioned onto the same fat rootfs, not just this module's own).
+# Unlike that single-purpose module, runtime-ruby genuinely IS a full
+# compiler+dev-headers+runtime substrate by design (its whole point is
+# giving dependents gcc/g++/make + every -dev package's headers to
+# compile native gems against), so the correction below uses
+# DIRECTORY-WIDE globs for namespaces that are exclusively populated by
+# this closure's own packages (gcc's private /usr/lib/gcc + /usr/libexec/
+# gcc trees, perl's /usr/share/perl + /usr/lib/.../perl(-base) trees,
+# binutils's ldscripts, every -dev package's /usr/include headers — none
+# of which base-os or any sibling module's package_spec would ever
+# populate) rather than hand-enumerating thousands of individual headers.
+# The ONE multiarch dir that does NOT get a blanket glob is
+# /usr/lib/x86_64-linux-gnu/ ITSELF (not its perl/ldscripts/pkgconfig/
+# gprofng/audit/bfd-plugins subdirs, which ARE globbed broadly below) —
+# glibc's own gconv/locale modules live directly in that dir and are
+# BASE-shared candidates (every -dev package here also transitively pulls
+# libc6, same as base-os's own openssh-server/systemd chain), so a
+# directory-wide glob would over-carve them (empirically confirmed FAIL,
+# same lesson qemu-guest-agent's manifest documents for its own multiarch
+# lib carve). LITERAL per-file entries (not "libNAME.*" wildcards) for
+# every loose file in this one directory — a first "libNAME.*" compaction
+# attempt (grouping every .a/.so/.so.N/.so.N.M sharing a base into one
+# glob line) FAILED conformance empirically: several of this closure's
+# -dev packages (libc6-dev, libncurses-dev, ...) ship an unversioned
+# .a/.so symlink under the SAME base name a base-shared runtime package
+# (libc6, libncursesw6, ...) ships its OWN versioned .so.N under (e.g.
+# libc6-dev's libc.so vs. libc6's libc.so.6) — "libc.*" matches both, but
+# only the .a/.so-symlink half is actually owned; the versioned .so.N
+# half is base-shared and got wrongly carved (28 files: libc.so.6,
+# libcrypto.so.3, libgmp.so.10, the libFOOw.so.6* wide-ncurses variants,
+# ...). Literal paths sidestep the class entirely — safe by construction,
+# consistent with this pipeline's apt_snapshot-pinned reproducibility
+# (improvement L's EVR lockfile is the same "pin, don't pattern-match"
+# philosophy). /usr/bin/** and /usr/sbin's 3 non-toolchain entries are
+# enumerated individually for the same base-shared-candidate reason (not
+# directory-globbed) — this is a much bigger closure than any prior P0-C
+# pilot module, but the SHAPE of the correction is identical.
 file_spec:
-  - /usr/**
-  - /lib/**
-  - /lib64/**
-  - /etc/**
-mask: []
+  # STAGED: the source-compiled Ruby 3.2.8 + bundler 2.7.1 (stage15.sh's
+  # runtime-ruby build arm installs both to /usr/local) — NOT apt-derivable
+  # (Noble's apt ruby/bundler are deliberately not package_spec'd; see the
+  # package_spec comment above), so deb-payload mode's apt-resolved
+  # candidate universe structurally can't see this path at all (same
+  # "Fidelity blind spots" class the tool's own header documents, and the
+  # same handling claude-tmux's manifest uses for its own staged CLI paths
+  # — never flagged as over-inclusion because it's invisible, not silently
+  # wrong). Left broad (not enumerated file-by-file): every dependent
+  # module (hub-backend, hub-worker, dev-cell's scripts/validate.sh) needs
+  # the full compiled tree, including headers under
+  # /usr/local/include/ruby-3.2.0/ for compiling native gem extensions.
+  - /usr/local/**
+
+  - /usr/lib/x86_64-linux-gnu/Mcrt1.o
+  - /usr/lib/x86_64-linux-gnu/Scrt1.o
+  - /usr/lib/x86_64-linux-gnu/crt1.o
+  - /usr/lib/x86_64-linux-gnu/crti.o
+  - /usr/lib/x86_64-linux-gnu/crtn.o
+  - /usr/lib/x86_64-linux-gnu/gcrt1.o
+  - /usr/lib/x86_64-linux-gnu/grcrt1.o
+  - /usr/lib/x86_64-linux-gnu/libBrokenLocale.a
+  - /usr/lib/x86_64-linux-gnu/libBrokenLocale.so
+  - /usr/lib/x86_64-linux-gnu/libanl.a
+  - /usr/lib/x86_64-linux-gnu/libanl.so
+  - /usr/lib/x86_64-linux-gnu/libasan.so.8
+  - /usr/lib/x86_64-linux-gnu/libasan.so.8.0.0
+  - /usr/lib/x86_64-linux-gnu/libatomic.so.1
+  - /usr/lib/x86_64-linux-gnu/libatomic.so.1.2.0
+  - /usr/lib/x86_64-linux-gnu/libbfd-2.42-system.so
+  - /usr/lib/x86_64-linux-gnu/libc.a
+  - /usr/lib/x86_64-linux-gnu/libc.so
+  - /usr/lib/x86_64-linux-gnu/libc_malloc_debug.so
+  - /usr/lib/x86_64-linux-gnu/libc_nonshared.a
+  - /usr/lib/x86_64-linux-gnu/libcc1.so.0
+  - /usr/lib/x86_64-linux-gnu/libcc1.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libcrypt.a
+  - /usr/lib/x86_64-linux-gnu/libcrypt.so
+  - /usr/lib/x86_64-linux-gnu/libcrypto.a
+  - /usr/lib/x86_64-linux-gnu/libcrypto.so
+  - /usr/lib/x86_64-linux-gnu/libctf-nobfd.so.0
+  - /usr/lib/x86_64-linux-gnu/libctf-nobfd.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libctf.so.0
+  - /usr/lib/x86_64-linux-gnu/libctf.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libcurses.a
+  - /usr/lib/x86_64-linux-gnu/libcurses.so
+  - /usr/lib/x86_64-linux-gnu/libdl.a
+  - /usr/lib/x86_64-linux-gnu/libffi.a
+  - /usr/lib/x86_64-linux-gnu/libffi.so
+  - /usr/lib/x86_64-linux-gnu/libffi_pic.a
+  - /usr/lib/x86_64-linux-gnu/libform.a
+  - /usr/lib/x86_64-linux-gnu/libform.so
+  - /usr/lib/x86_64-linux-gnu/libform.so.6
+  - /usr/lib/x86_64-linux-gnu/libform.so.6.4
+  - /usr/lib/x86_64-linux-gnu/libformw.a
+  - /usr/lib/x86_64-linux-gnu/libformw.so
+  - /usr/lib/x86_64-linux-gnu/libg.a
+  - /usr/lib/x86_64-linux-gnu/libgdbm.a
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6.0.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4.0.0
+  - /usr/lib/x86_64-linux-gnu/libgmp.a
+  - /usr/lib/x86_64-linux-gnu/libgmp.so
+  - /usr/lib/x86_64-linux-gnu/libgmpxx.a
+  - /usr/lib/x86_64-linux-gnu/libgmpxx.so
+  - /usr/lib/x86_64-linux-gnu/libgmpxx.so.4
+  - /usr/lib/x86_64-linux-gnu/libgmpxx.so.4.7.0
+  - /usr/lib/x86_64-linux-gnu/libgomp.so.1
+  - /usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0
+  - /usr/lib/x86_64-linux-gnu/libgprofng.so.0
+  - /usr/lib/x86_64-linux-gnu/libgprofng.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libhistory.a
+  - /usr/lib/x86_64-linux-gnu/libhistory.so
+  - /usr/lib/x86_64-linux-gnu/libhistory.so.8
+  - /usr/lib/x86_64-linux-gnu/libhistory.so.8.2
+  - /usr/lib/x86_64-linux-gnu/libhwasan.so.0
+  - /usr/lib/x86_64-linux-gnu/libhwasan.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libisl.so.23
+  - /usr/lib/x86_64-linux-gnu/libisl.so.23.3.0
+  - /usr/lib/x86_64-linux-gnu/libitm.so.1
+  - /usr/lib/x86_64-linux-gnu/libitm.so.1.0.0
+  - /usr/lib/x86_64-linux-gnu/liblsan.so.0
+  - /usr/lib/x86_64-linux-gnu/liblsan.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libm-2.39.a
+  - /usr/lib/x86_64-linux-gnu/libm.a
+  - /usr/lib/x86_64-linux-gnu/libm.so
+  - /usr/lib/x86_64-linux-gnu/libmcheck.a
+  - /usr/lib/x86_64-linux-gnu/libmenu.a
+  - /usr/lib/x86_64-linux-gnu/libmenu.so
+  - /usr/lib/x86_64-linux-gnu/libmenu.so.6
+  - /usr/lib/x86_64-linux-gnu/libmenu.so.6.4
+  - /usr/lib/x86_64-linux-gnu/libmenuw.a
+  - /usr/lib/x86_64-linux-gnu/libmenuw.so
+  - /usr/lib/x86_64-linux-gnu/libmpc.so.3
+  - /usr/lib/x86_64-linux-gnu/libmpc.so.3.3.1
+  - /usr/lib/x86_64-linux-gnu/libmpfr.so.6
+  - /usr/lib/x86_64-linux-gnu/libmpfr.so.6.2.1
+  - /usr/lib/x86_64-linux-gnu/libmvec.a
+  - /usr/lib/x86_64-linux-gnu/libmvec.so
+  - /usr/lib/x86_64-linux-gnu/libncurses++.a
+  - /usr/lib/x86_64-linux-gnu/libncurses++w.a
+  - /usr/lib/x86_64-linux-gnu/libncurses.a
+  - /usr/lib/x86_64-linux-gnu/libncurses.so
+  - /usr/lib/x86_64-linux-gnu/libncurses.so.6
+  - /usr/lib/x86_64-linux-gnu/libncurses.so.6.4
+  - /usr/lib/x86_64-linux-gnu/libncursesw.a
+  - /usr/lib/x86_64-linux-gnu/libncursesw.so
+  - /usr/lib/x86_64-linux-gnu/libnss_compat.so
+  - /usr/lib/x86_64-linux-gnu/libnss_hesiod.so
+  - /usr/lib/x86_64-linux-gnu/libopcodes-2.42-system.so
+  - /usr/lib/x86_64-linux-gnu/libpanel.a
+  - /usr/lib/x86_64-linux-gnu/libpanel.so
+  - /usr/lib/x86_64-linux-gnu/libpanel.so.6
+  - /usr/lib/x86_64-linux-gnu/libpanel.so.6.4
+  - /usr/lib/x86_64-linux-gnu/libpanelw.a
+  - /usr/lib/x86_64-linux-gnu/libpanelw.so
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38.2
+  - /usr/lib/x86_64-linux-gnu/libpq.a
+  - /usr/lib/x86_64-linux-gnu/libpq.so
+  - /usr/lib/x86_64-linux-gnu/libpq.so.5
+  - /usr/lib/x86_64-linux-gnu/libpq.so.5.16
+  - /usr/lib/x86_64-linux-gnu/libpthread.a
+  - /usr/lib/x86_64-linux-gnu/libpthread_nonshared.a
+  - /usr/lib/x86_64-linux-gnu/libquadmath.so.0
+  - /usr/lib/x86_64-linux-gnu/libquadmath.so.0.0.0
+  - /usr/lib/x86_64-linux-gnu/libreadline.a
+  - /usr/lib/x86_64-linux-gnu/libreadline.so
+  - /usr/lib/x86_64-linux-gnu/libreadline.so.8
+  - /usr/lib/x86_64-linux-gnu/libreadline.so.8.2
+  - /usr/lib/x86_64-linux-gnu/libresolv.a
+  - /usr/lib/x86_64-linux-gnu/libresolv.so
+  - /usr/lib/x86_64-linux-gnu/librt.a
+  - /usr/lib/x86_64-linux-gnu/libsframe.so.1
+  - /usr/lib/x86_64-linux-gnu/libsframe.so.1.0.0
+  - /usr/lib/x86_64-linux-gnu/libssl.a
+  - /usr/lib/x86_64-linux-gnu/libssl.so
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33
+  - /usr/lib/x86_64-linux-gnu/libtermcap.a
+  - /usr/lib/x86_64-linux-gnu/libtermcap.so
+  - /usr/lib/x86_64-linux-gnu/libthread_db.so
+  - /usr/lib/x86_64-linux-gnu/libtic.a
+  - /usr/lib/x86_64-linux-gnu/libtic.so
+  - /usr/lib/x86_64-linux-gnu/libtinfo.a
+  - /usr/lib/x86_64-linux-gnu/libtinfo.so
+  - /usr/lib/x86_64-linux-gnu/libtsan.so.2
+  - /usr/lib/x86_64-linux-gnu/libtsan.so.2.0.0
+  - /usr/lib/x86_64-linux-gnu/libubsan.so.1
+  - /usr/lib/x86_64-linux-gnu/libubsan.so.1.0.0
+  - /usr/lib/x86_64-linux-gnu/libutil.a
+  - /usr/lib/x86_64-linux-gnu/libyaml-0.so.2
+  - /usr/lib/x86_64-linux-gnu/libyaml-0.so.2.0.9
+  - /usr/lib/x86_64-linux-gnu/libyaml.a
+  - /usr/lib/x86_64-linux-gnu/libyaml.so
+  - /usr/lib/x86_64-linux-gnu/libz.a
+  - /usr/lib/x86_64-linux-gnu/libz.so
+  - /usr/lib/x86_64-linux-gnu/rcrt1.o
+  # gcc's own private plugin/lib tree + its libexec toolchain binaries
+  # (cc1, cc1plus, collect2, lto1, ...) — package-exclusive namespaces.
+  - /usr/lib/gcc/**
+  - /usr/libexec/**
+  # perl's own runtime module trees (core + arch-specific) — package-
+  # exclusive namespaces, safe to glob broadly.
+  - /usr/lib/x86_64-linux-gnu/perl-base/**
+  - /usr/lib/x86_64-linux-gnu/perl/**
+  # binutils's linker scripts + gcc's profiler + audit/LTO plugin dirs —
+  # all package-exclusive subdirs of the multiarch lib dir (unlike the
+  # dir's own top-level .so/.a files above, these ARE safe to glob broadly
+  # since no base-shared package places anything under these subdirs).
+  - /usr/lib/x86_64-linux-gnu/ldscripts/**
+  - /usr/lib/x86_64-linux-gnu/pkgconfig/**
+  - /usr/lib/x86_64-linux-gnu/gprofng/**
+  - /usr/lib/x86_64-linux-gnu/audit/**
+  - /usr/lib/x86_64-linux-gnu/bfd-plugins/**
+  - /usr/lib/bfd-plugins/**
+  - /usr/lib/compat-ld/**
+  - /usr/lib/gold-ld/**
+  - /usr/lib/valgrind/**
+  - /usr/lib/mime/**
+  - /usr/lib/systemd/system/dpkg-db-backup.*
+  # Every -dev package's headers (libc6-dev's linux/x86_64-linux-gnu/
+  # asm-generic/..., libssl-dev's openssl/, libpq-dev's postgresql/,
+  # libncurses-dev's ncursesw/, libreadline-dev's readline/, g++'s own
+  # c++/ tree, ...) — /usr/include is exclusively a -dev-package
+  # namespace; base-os installs no -dev package, so this is safe as one
+  # blanket glob.
+  - /usr/include/**
+  - /usr/share/perl/**
+  - /usr/share/perl5/**
+  - /usr/share/autoconf/**
+  - /usr/share/bison/**
+  - /usr/share/dpkg/**
+  - /usr/share/gcc/**
+  - /usr/share/gdb/**
+  - /usr/share/build-essential/**
+  - /usr/share/bug/**
+  - /usr/share/doc-base/**
+  - /usr/share/emacs/**
+  - /usr/share/lto-disabled-list/**
+  - /usr/share/polkit-1/**
+  - /usr/share/readline/**
+  - /usr/share/zsh/**
+  - /etc/emacs/**
+  - /usr/share/aclocal/bison-i18n.m4
+  - /usr/share/lintian/profiles/dpkg/main.profile
+  # Per-package lintian overrides — not a directory-wide glob for the same
+  # base-shared-candidate reason as the multiarch lib dir above (storage-
+  # tools' manifest documents the identical lesson for its own closure).
+
+  - /usr/share/lintian/overrides/autoconf
+  - /usr/share/lintian/overrides/binutils
+  - /usr/share/lintian/overrides/binutils-common
+  - /usr/share/lintian/overrides/binutils-x86-64-linux-gnu
+  - /usr/share/lintian/overrides/bison
+  - /usr/share/lintian/overrides/cpp-13-x86-64-linux-gnu
+  - /usr/share/lintian/overrides/cpp-x86-64-linux-gnu
+  - /usr/share/lintian/overrides/dpkg
+  - /usr/share/lintian/overrides/g++-13-x86-64-linux-gnu
+  - /usr/share/lintian/overrides/gcc-13-x86-64-linux-gnu
+  - /usr/share/lintian/overrides/libasan8
+  - /usr/share/lintian/overrides/libbinutils
+  - /usr/share/lintian/overrides/libc6-dev
+  - /usr/share/lintian/overrides/libgdbm-compat4t64
+  - /usr/share/lintian/overrides/libgdbm6t64
+  - /usr/share/lintian/overrides/libgmpxx4ldbl
+  - /usr/share/lintian/overrides/libhwasan0
+  - /usr/share/lintian/overrides/liblsan0
+  - /usr/share/lintian/overrides/libperl5.38t64
+  - /usr/share/lintian/overrides/libtsan2
+  - /usr/share/lintian/overrides/libubsan1
+  - /usr/share/lintian/overrides/perl
+  - /usr/share/lintian/overrides/perl-base
+  - /usr/share/lintian/overrides/readline-common
+  # /usr/bin, /usr/sbin, /etc — enumerated individually (not globbed):
+  # this closure's toolchain binaries share the same top-level dirs base-os's
+  # own coreutils/bash/util-linux populate, so a blanket glob here risks the
+  # same class of base-shared over-carve the multiarch lib dir hit above.
+  - /usr/bin/addr2line
+  - /usr/bin/ar
+  - /usr/bin/as
+  - /usr/bin/autoconf
+  - /usr/bin/autoheader
+  - /usr/bin/autom4te
+  - /usr/bin/autoreconf
+  - /usr/bin/autoscan
+  - /usr/bin/autoupdate
+  - /usr/bin/bison
+  - /usr/bin/bison.yacc
+  - /usr/bin/bunzip2
+  - /usr/bin/bzcat
+  - /usr/bin/bzcmp
+  - /usr/bin/bzdiff
+  - /usr/bin/bzegrep
+  - /usr/bin/bzexe
+  - /usr/bin/bzfgrep
+  - /usr/bin/bzgrep
+  - /usr/bin/bzip2
+  - /usr/bin/bzip2recover
+  - /usr/bin/bzless
+  - /usr/bin/bzmore
+  - /usr/bin/c++filt
+  - /usr/bin/c89-gcc
+  - /usr/bin/c99-gcc
+  - /usr/bin/corelist
+  - /usr/bin/cpan
+  - /usr/bin/cpan5.38-x86_64-linux-gnu
+  - /usr/bin/cpp
+  - /usr/bin/cpp-13
+  - /usr/bin/dpkg
+  - /usr/bin/dpkg-architecture
+  - /usr/bin/dpkg-buildapi
+  - /usr/bin/dpkg-buildflags
+  - /usr/bin/dpkg-buildpackage
+  - /usr/bin/dpkg-buildtree
+  - /usr/bin/dpkg-checkbuilddeps
+  - /usr/bin/dpkg-deb
+  - /usr/bin/dpkg-distaddfile
+  - /usr/bin/dpkg-divert
+  - /usr/bin/dpkg-genbuildinfo
+  - /usr/bin/dpkg-genchanges
+  - /usr/bin/dpkg-gencontrol
+  - /usr/bin/dpkg-gensymbols
+  - /usr/bin/dpkg-maintscript-helper
+  - /usr/bin/dpkg-mergechangelogs
+  - /usr/bin/dpkg-name
+  - /usr/bin/dpkg-parsechangelog
+  - /usr/bin/dpkg-query
+  - /usr/bin/dpkg-realpath
+  - /usr/bin/dpkg-scanpackages
+  - /usr/bin/dpkg-scansources
+  - /usr/bin/dpkg-shlibdeps
+  - /usr/bin/dpkg-source
+  - /usr/bin/dpkg-split
+  - /usr/bin/dpkg-statoverride
+  - /usr/bin/dpkg-trigger
+  - /usr/bin/dpkg-vendor
+  - /usr/bin/dwp
+  - /usr/bin/elfedit
+  - /usr/bin/enc2xs
+  - /usr/bin/encguess
+  - /usr/bin/g++
+  - /usr/bin/g++-13
+  - /usr/bin/gcc
+  - /usr/bin/gcc-13
+  - /usr/bin/gcc-ar
+  - /usr/bin/gcc-ar-13
+  - /usr/bin/gcc-nm
+  - /usr/bin/gcc-nm-13
+  - /usr/bin/gcc-ranlib
+  - /usr/bin/gcc-ranlib-13
+  - /usr/bin/gcov
+  - /usr/bin/gcov-13
+  - /usr/bin/gcov-dump
+  - /usr/bin/gcov-dump-13
+  - /usr/bin/gcov-tool
+  - /usr/bin/gcov-tool-13
+  - /usr/bin/gencat
+  - /usr/bin/gmake
+  - /usr/bin/gold
+  - /usr/bin/gp-archive
+  - /usr/bin/gp-collect-app
+  - /usr/bin/gp-display-html
+  - /usr/bin/gp-display-src
+  - /usr/bin/gp-display-text
+  - /usr/bin/gprof
+  - /usr/bin/gprofng
+  - /usr/bin/h2ph
+  - /usr/bin/h2xs
+  - /usr/bin/ifnames
+  - /usr/bin/instmodsh
+  - /usr/bin/json_pp
+  - /usr/bin/ld
+  - /usr/bin/ld.bfd
+  - /usr/bin/ld.gold
+  - /usr/bin/libnetcfg
+  - /usr/bin/lto-dump
+  - /usr/bin/lto-dump-13
+  - /usr/bin/lzmainfo
+  - /usr/bin/m4
+  - /usr/bin/make
+  - /usr/bin/make-first-existing-target
+  - /usr/bin/ncurses6-config
+  - /usr/bin/ncursesw6-config
+  - /usr/bin/nm
+  - /usr/bin/objcopy
+  - /usr/bin/objdump
+  - /usr/bin/patch
+  - /usr/bin/perl
+  - /usr/bin/perl5.38-x86_64-linux-gnu
+  - /usr/bin/perl5.38.2
+  - /usr/bin/perlbug
+  - /usr/bin/perldoc
+  - /usr/bin/perlivp
+  - /usr/bin/perlthanks
+  - /usr/bin/pg_config
+  - /usr/bin/piconv
+  - /usr/bin/pl2pm
+  - /usr/bin/pod2html
+  - /usr/bin/pod2man
+  - /usr/bin/pod2text
+  - /usr/bin/pod2usage
+  - /usr/bin/podchecker
+  - /usr/bin/prove
+  - /usr/bin/ptar
+  - /usr/bin/ptardiff
+  - /usr/bin/ptargrep
+  - /usr/bin/ranlib
+  - /usr/bin/readelf
+  - /usr/bin/rpcgen
+  - /usr/bin/shasum
+  - /usr/bin/size
+  - /usr/bin/splain
+  - /usr/bin/streamzip
+  - /usr/bin/strings
+  - /usr/bin/strip
+  - /usr/bin/tar
+  - /usr/bin/unxz
+  - /usr/bin/update-alternatives
+  - /usr/bin/x86_64-linux-gnu-addr2line
+  - /usr/bin/x86_64-linux-gnu-ar
+  - /usr/bin/x86_64-linux-gnu-as
+  - /usr/bin/x86_64-linux-gnu-c++filt
+  - /usr/bin/x86_64-linux-gnu-cpp
+  - /usr/bin/x86_64-linux-gnu-cpp-13
+  - /usr/bin/x86_64-linux-gnu-dwp
+  - /usr/bin/x86_64-linux-gnu-elfedit
+  - /usr/bin/x86_64-linux-gnu-g++
+  - /usr/bin/x86_64-linux-gnu-g++-13
+  - /usr/bin/x86_64-linux-gnu-gcc
+  - /usr/bin/x86_64-linux-gnu-gcc-13
+  - /usr/bin/x86_64-linux-gnu-gcc-ar
+  - /usr/bin/x86_64-linux-gnu-gcc-ar-13
+  - /usr/bin/x86_64-linux-gnu-gcc-nm
+  - /usr/bin/x86_64-linux-gnu-gcc-nm-13
+  - /usr/bin/x86_64-linux-gnu-gcc-ranlib
+  - /usr/bin/x86_64-linux-gnu-gcc-ranlib-13
+  - /usr/bin/x86_64-linux-gnu-gcov
+  - /usr/bin/x86_64-linux-gnu-gcov-13
+  - /usr/bin/x86_64-linux-gnu-gcov-dump
+  - /usr/bin/x86_64-linux-gnu-gcov-dump-13
+  - /usr/bin/x86_64-linux-gnu-gcov-tool
+  - /usr/bin/x86_64-linux-gnu-gcov-tool-13
+  - /usr/bin/x86_64-linux-gnu-gold
+  - /usr/bin/x86_64-linux-gnu-gp-archive
+  - /usr/bin/x86_64-linux-gnu-gp-collect-app
+  - /usr/bin/x86_64-linux-gnu-gp-display-html
+  - /usr/bin/x86_64-linux-gnu-gp-display-src
+  - /usr/bin/x86_64-linux-gnu-gp-display-text
+  - /usr/bin/x86_64-linux-gnu-gprof
+  - /usr/bin/x86_64-linux-gnu-gprofng
+  - /usr/bin/x86_64-linux-gnu-ld
+  - /usr/bin/x86_64-linux-gnu-ld.bfd
+  - /usr/bin/x86_64-linux-gnu-ld.gold
+  - /usr/bin/x86_64-linux-gnu-lto-dump
+  - /usr/bin/x86_64-linux-gnu-lto-dump-13
+  - /usr/bin/x86_64-linux-gnu-nm
+  - /usr/bin/x86_64-linux-gnu-objcopy
+  - /usr/bin/x86_64-linux-gnu-objdump
+  - /usr/bin/x86_64-linux-gnu-ranlib
+  - /usr/bin/x86_64-linux-gnu-readelf
+  - /usr/bin/x86_64-linux-gnu-size
+  - /usr/bin/x86_64-linux-gnu-strings
+  - /usr/bin/x86_64-linux-gnu-strip
+  - /usr/bin/xsubpp
+  - /usr/bin/xz
+  - /usr/bin/xzcat
+  - /usr/bin/xzcmp
+  - /usr/bin/xzdiff
+  - /usr/bin/xzegrep
+  - /usr/bin/xzfgrep
+  - /usr/bin/xzgrep
+  - /usr/bin/xzless
+  - /usr/bin/xzmore
+  - /usr/bin/zipdetails
+  - /usr/sbin/rmt-tar
+  - /usr/sbin/start-stop-daemon
+  - /usr/sbin/tarcat
+  - /etc/alternatives/README
+  - /etc/cron.daily/dpkg
+  - /etc/dpkg/dpkg.cfg
+  - /etc/dpkg/shlibs.default
+  - /etc/dpkg/shlibs.override
+  - /etc/gprofng.rc
+  - /etc/logrotate.d/alternatives
+  - /etc/logrotate.d/dpkg
+  - /etc/perl/Net/libnet.cfg
+  - /etc/rmt
+mask:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  # m4/gdbm/libffi/readline's own GNU info manuals — same documentation-
+  # content bucket as doc/man, missed by both existing globs (storage-
+  # tools' manifest hit the identical gap for sed's own info manual).
+  - "/usr/share/info/**"
+# Owned (per the closure above) but masked out by the doc/man/locale/info
+# rules — same size-conscious convention base-os/storage-tools use.
+# Waived so conformance doesn't WARN on the deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/usr/share/info/**"
 dependency_spec: []
 protected_spec: []
 reboot_required: false
