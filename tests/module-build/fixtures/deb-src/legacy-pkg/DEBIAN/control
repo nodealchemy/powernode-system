@@ -1,0 +1,9 @@
+Package: legacy-pkg
+Version: 1.0
+Architecture: amd64
+Maintainer: Test Fixture <test@example.com>
+Description: fixture package that ships a pre-usrmerge top-level path
+ (/bin/legacy-tool instead of /usr/bin/legacy-tool) — every real Noble
+ package inspected while building deb-payload mode already ships
+ usr-merged, so this fixture is what actually exercises
+ usr_merge_canonicalize's rewrite instead of leaving it untested.

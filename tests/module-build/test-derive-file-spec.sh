@@ -193,6 +193,115 @@ echo "=== integration: conformance (base-os-stray — base-module exemption) ===
   assert_contains "conformance base-os-stray: RESULT: PASS despite the WARN" "$RUN_OUT" "RESULT: PASS"
 }
 
+echo "=== deb-payload mode: building fixture .debs (dpkg-deb --build, unprivileged) ==="
+# Ephemeral .deb files built at test-run time from the plain-file source
+# trees under fixtures/deb-src/ (kept as plain files, not committed
+# binaries, matching this suite's other fixtures) via `dpkg-deb --build
+# --root-owner-group`, which needs no root privileges. See derive-file-
+# spec.sh's deb_payload_files/payload_files_for_debs for what consumes
+# these, and apt_fetch_closure's DERIVE_FILE_SPEC_TEST_DEB_SRC escape
+# hatch for how the integration cases below avoid real apt/network access.
+DEB_FIXTURES_OK=1
+FIXTURE_DEBS_DIR=$(mktemp -d)
+for pkgdir in "$FIX"/deb-src/*/; do
+  pkgname=$(basename "$pkgdir")
+  build_log=$(mktemp)
+  if dpkg-deb --build --root-owner-group "$pkgdir" "$FIXTURE_DEBS_DIR/$pkgname.deb" > "$build_log" 2>&1; then
+    ok "fixture .deb build: $pkgname"
+  else
+    bad "fixture .deb build: $pkgname (see log below)"
+    cat "$build_log" >&2
+    DEB_FIXTURES_OK=0
+  fi
+  rm -f "$build_log"
+done
+
+echo "=== unit: usr_merge_canonicalize ==="
+{
+  inf=$(mktemp)
+  printf '/bin/legacy-tool\n/sbin/init\n/lib/x86_64-linux-gnu/libc.so.6\n/lib64/ld-linux-x86-64.so.2\n/usr/bin/already-merged\n' > "$inf"
+  got=$(usr_merge_canonicalize "$inf" | tr '\n' ',')
+  expected=$(printf '/usr/bin/legacy-tool\n/usr/sbin/init\n/usr/lib/x86_64-linux-gnu/libc.so.6\n/usr/lib64/ld-linux-x86-64.so.2\n/usr/bin/already-merged\n' | LC_ALL=C sort -u | tr '\n' ',')
+  assert_eq "usr_merge_canonicalize: rewrites /bin,/sbin,/lib,/lib64 to /usr/*, leaves already-merged paths alone" "$expected" "$got"
+  rm -f "$inf"
+}
+
+echo "=== unit: set_subtract ==="
+{
+  af=$(mktemp); bf=$(mktemp)
+  printf '/a\n/b\n/c\n' > "$af"
+  printf '/b\n' > "$bf"
+  got=$(set_subtract "$af" "$bf" | tr '\n' ',')
+  assert_eq "set_subtract: A minus B" "/a,/c," "$got"
+  rm -f "$af" "$bf"
+}
+
+echo "=== unit: expand_filter_over_candidates ==="
+{
+  candf=$(mktemp); filterf=$(mktemp)
+  printf '/etc/demo-svc/config.yaml\n/etc/passwd\n/var/log/foo\n' | LC_ALL=C sort -u > "$candf"
+  printf -- '- /var/**\n+ /etc/**\n- *\n' > "$filterf"
+  got=$(expand_filter_over_candidates "$candf" "$filterf" | tr '\n' ',')
+  assert_eq "expand_filter_over_candidates: file-level glob match, mask excludes /var/**, trailing catch-all drops the rest" "/etc/demo-svc/config.yaml,/etc/passwd," "$got"
+  rm -f "$candf" "$filterf"
+}
+
+if [ "$DEB_FIXTURES_OK" -eq 1 ]; then
+  echo "=== unit: deb_payload_files ==="
+  {
+    got=$(deb_payload_files "$FIXTURE_DEBS_DIR/demo-pkg.deb" | tr '\n' ',')
+    assert_eq "deb_payload_files: demo-pkg payload — dirs dropped, leading . stripped" \
+      "/usr/bin/demo-svc-fixture,/usr/lib/systemd/system/demo-svc-fixture.service," "$got"
+
+    got_legacy=$(deb_payload_files "$FIXTURE_DEBS_DIR/legacy-pkg.deb" | tr '\n' ',')
+    assert_eq "deb_payload_files: legacy-pkg's /bin/legacy-tool canonicalized to /usr/bin/legacy-tool" \
+      "/usr/bin/legacy-tool," "$got_legacy"
+  }
+
+  echo "=== unit: payload_files_for_debs ==="
+  {
+    archdir=$(mktemp -d)
+    cp "$FIXTURE_DEBS_DIR/demo-pkg.deb" "$FIXTURE_DEBS_DIR/shared-lib.deb" "$archdir/"
+    got=$(payload_files_for_debs "$archdir" | tr '\n' ',')
+    assert_eq "payload_files_for_debs: unions demo-pkg + shared-lib payloads" \
+      "/usr/bin/demo-svc-fixture,/usr/lib/libshared-fixture.so.1,/usr/lib/systemd/system/demo-svc-fixture.service," "$got"
+
+    empty_dir=$(mktemp -d)
+    got_empty=$(payload_files_for_debs "$empty_dir" | tr '\n' ',')
+    assert_eq "payload_files_for_debs: empty for a dir with no .deb files" "" "$got_empty"
+  }
+
+  echo "=== integration (deb-payload, stubbed apt via DERIVE_FILE_SPEC_TEST_DEB_SRC): derive (deb-good-module) ==="
+  {
+    export DERIVE_FILE_SPEC_TEST_DEB_SRC="$FIXTURE_DEBS_DIR"
+    run_cli derive --mode deb-payload --module deb-good-module --workspace "$FIX/workspace" --base-module deb-base-module
+    assert_eq "derive deb-payload good: exit 0" "0" "$RUN_RC"
+    expected=$'/usr/bin/demo-svc-fixture\n/usr/lib/systemd/system/demo-svc-fixture.service'
+    assert_eq "derive deb-payload good: owned excludes shared-lib (also resolved by deb-base-module)" "$expected" "$RUN_OUT"
+  }
+
+  echo "=== integration (deb-payload, stubbed apt): conformance (deb-good-module — PASS) ==="
+  {
+    run_cli conformance --mode deb-payload --module deb-good-module --workspace "$FIX/workspace" --base-module deb-base-module
+    assert_eq "conformance deb-payload good: exit 0 (PASS)" "0" "$RUN_RC"
+    assert_contains "conformance deb-payload good: reports mode: deb-payload" "$RUN_OUT" "mode: deb-payload"
+    assert_contains "conformance deb-payload good: over-inclusion 0" "$RUN_OUT" "over-inclusion (carved, not owned, not rootfs/):        0 files"
+    assert_contains "conformance deb-payload good: RESULT: PASS" "$RUN_OUT" "RESULT: PASS"
+  }
+
+  echo "=== integration (deb-payload, stubbed apt): conformance (deb-bad-module — RED, over-inclusion) ==="
+  {
+    run_cli conformance --mode deb-payload --module deb-bad-module --workspace "$FIX/workspace" --base-module deb-base-module
+    assert_eq "conformance deb-payload bad: exit 1 (FAIL)" "1" "$RUN_RC"
+    assert_contains "conformance deb-payload bad: reports FAIL" "$RUN_OUT" "FAIL:"
+    assert_contains "conformance deb-payload bad: names the offending shared-lib path" "$RUN_OUT" "/usr/lib/libshared-fixture.so.1"
+    unset DERIVE_FILE_SPEC_TEST_DEB_SRC
+  }
+else
+  bad "deb-payload fixture .deb build failed — skipping deb_payload_files/payload_files_for_debs/integration cases"
+fi
+rm -rf "$FIXTURE_DEBS_DIR"
+
 echo ""
 echo "=== summary: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 if [ "$FAIL_COUNT" -gt 0 ]; then

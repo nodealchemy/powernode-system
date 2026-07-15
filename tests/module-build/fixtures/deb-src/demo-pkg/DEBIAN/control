@@ -1,0 +1,8 @@
+Package: demo-pkg
+Version: 1.0
+Architecture: amd64
+Maintainer: Test Fixture <test@example.com>
+Description: fixture package for deb-payload derivation unit tests
+ Represents a module's OWN top-level declared package (see
+ test-derive-file-spec.sh's deb-payload test cases) — its payload should
+ survive the owned-set subtraction against shared-lib.
