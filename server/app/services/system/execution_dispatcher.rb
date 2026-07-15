@@ -51,12 +51,19 @@ module System
     # and execs /usr/local/bin/module-forge-build.sh — see
     # agent/internal/runtime/tasks/handlers/module_build.go. No handler
     # timeout on the poll loop, so a long native build is fine.
+    #
+    # probe.module_smoke (campaign 019f6084 inc-E): the agent runs
+    # structured post-compose health checks (systemd unit active, health
+    # endpoint, ldd closure) on ITS OWN instance via
+    # agent/internal/runtime/tasks/handlers/probe_module_smoke.go —
+    # System::ModuleSmokeProbe dispatches + bounded-polls this Task.
     AGENT_DELEGATED_COMMANDS = %w[
       upgrade_boot_image
       a2a_call
       storage.mount storage.unmount storage.exports.apply storage.smb_user.apply
       storage.gateway.provision storage.gateway.deprovision storage.chown
       ci.module_build
+      probe.module_smoke
     ].freeze
 
     def self.agent_delegated?(command)

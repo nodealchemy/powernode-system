@@ -24,6 +24,7 @@ module System
       sync sync_modules apply_config
       build_module commit_module
       ci.module_build
+      probe.module_smoke
       ssh_command
       backup restore
       a2a_call
