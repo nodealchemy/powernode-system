@@ -620,4 +620,35 @@ RSpec.describe System::NodeInstance, type: :model do
       end
     end
   end
+
+  # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor's pivot-vs-cloud_init
+  # remediation split depends on this predicate reading the SAME field
+  # ProvisioningService threads boot_mode from (node.node_template.config).
+  describe '#pivot_boot?' do
+    let(:instance) { create(:system_node_instance, node: node) }
+
+    it 'is false when the template has no boot_mode configured (cloud_init default)' do
+      expect(instance.pivot_boot?).to be false
+    end
+
+    it 'is false for an explicit cloud_init boot_mode' do
+      node.node_template.update!(config: { 'boot_mode' => 'cloud_init' })
+      expect(instance.pivot_boot?).to be false
+    end
+
+    it 'is true for a direct_kernel boot_mode' do
+      node.node_template.update!(config: { 'boot_mode' => 'direct_kernel' })
+      expect(instance.pivot_boot?).to be true
+    end
+
+    it 'is true for a uefi_disk boot_mode' do
+      node.node_template.update!(config: { 'boot_mode' => 'uefi_disk' })
+      expect(instance.pivot_boot?).to be true
+    end
+
+    it 'is false when the node has no template-resolvable config (defensive)' do
+      allow(instance).to receive(:node).and_return(nil)
+      expect(instance.pivot_boot?).to be false
+    end
+  end
 end

@@ -749,6 +749,106 @@ RSpec.describe System::Fleet::DecisionEngine do
                       fingerprint: "sdwan_peer_drift:peer-9")
       end
     end
+
+    # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor's remediation.
+    # Blast radius is TemplateApprovalPolicy's call (carried on the signal by
+    # the sensor), not the seeded InterventionPolicy's — decide() forces the
+    # gate off that flag. The actual apply (TemplateApplyService#apply! +
+    # either a live sync_modules task or a pivot rolling-reprovision flag)
+    # only runs on the execute_approved! replay, mirroring how every other
+    # blast-radius-gated remediation in this engine works.
+    context "with a system.template_closure_drift signal (campaign 019f6084 §2.4.3)" do
+      let(:platform)  { create(:system_node_platform, account: account) }
+      let(:template)  { create(:system_node_template, account: account, node_platform: platform) }
+      let(:node)      { create(:system_node, account: account, node_template: template) }
+      let!(:instance) { create(:system_node_instance, :running, node: node) }
+      let(:module_a)  { create(:system_node_module, account: account, name: "closure-a-#{SecureRandom.hex(3)}") }
+
+      before do
+        create(:system_template_module, node_template: template, node_module: module_a)
+      end
+
+      def closure_signal(requires_approval:)
+        { kind: "system.template_closure_drift", severity: :medium,
+          payload: { "instance_id" => instance.id, "node_id" => node.id, "template_id" => template.id,
+                     "missing_module_ids" => [ module_a.id ], "missing_count" => 1,
+                     "requires_approval" => requires_approval },
+          fingerprint: "template_closure_drift:#{instance.id}" }
+      end
+
+      def approved_closure_request
+        double("Ai::ApprovalRequest", id: SecureRandom.uuid,
+               request_data: { "payload" => {
+                 "instance_id" => instance.id,
+                 "signal_kind" => "system.template_closure_drift",
+                 "signal_severity" => "medium",
+                 "signal_fingerprint" => "template_closure_drift:#{instance.id}",
+                 "missing_module_ids" => [ module_a.id ]
+               } })
+      end
+
+      it "forces require_approval off the signal's own flag, even under a permissive seeded policy" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.template_closure_apply",
+                                       policy: "auto_approve", is_active: true)
+
+        d = engine.decide(closure_signal(requires_approval: true))
+
+        expect(d[:action_category]).to eq("system.template_closure_apply")
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:gate]).to eq("require_approval")
+        expect(System::NodeModuleAssignment.exists?(node: node, node_module: module_a)).to be false
+      end
+
+      it "proceeds under the seeded policy when the signal itself says requires_approval: false" do
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "system.template_closure_apply",
+                                       policy: "notify_and_proceed", is_active: true)
+
+        d = engine.decide(closure_signal(requires_approval: false))
+
+        expect(d[:decision]).to eq(:proceed)
+        expect(d[:remediation]).to include(applied: true, requires_reprovision: false)
+        expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
+        expect(System::Task.find_by(account: account, command: "sync_modules", operable: instance)).to be_present
+      end
+
+      it "creates the missing assignment and queues sync_modules for a cloud_init (non-pivot) instance on approval" do
+        result = engine.execute_approved!(approved_closure_request)
+
+        expect(result[:applied]).to be true
+        expect(result[:requires_reprovision]).to be false
+        expect(result[:assignments_created]).to contain_exactly(module_a.id)
+        expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
+        task = System::Task.find_by(account: account, command: "sync_modules", operable: instance)
+        expect(task).to be_present
+        expect(result[:task_id]).to eq(task.id)
+      end
+
+      it "creates the missing assignment WITHOUT a live sync for a pivot-booted instance, flagging reprovision" do
+        template.update!(config: { "boot_mode" => "direct_kernel" })
+
+        result = engine.execute_approved!(approved_closure_request)
+
+        expect(result[:applied]).to be true
+        expect(result[:requires_reprovision]).to be true
+        expect(result[:assignments_created]).to contain_exactly(module_a.id)
+        expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
+        expect(System::Task.where(account: account, command: "sync_modules", operable: instance)).to be_empty
+      end
+
+      it "does not duplicate an in-flight sync_modules task for the non-pivot path" do
+        System::Task.create!(account: account, operable: instance, command: "sync_modules", status: "pending")
+
+        result = engine.execute_approved!(approved_closure_request)
+
+        # The assignment is still created — only the live-sync dispatch is withheld.
+        expect(System::NodeModuleAssignment.find_by(node: node, node_module: module_a)).to be_present
+        expect(result[:applied]).to be false
+        expect(result[:reason]).to match(/in flight/)
+        expect(System::Task.where(account: account, command: "sync_modules").count).to eq(1)
+      end
+    end
   end
 
   describe "SIGNAL_BINDINGS" do
