@@ -73,19 +73,150 @@ mask:
   - "/var/lib/apt/lists/**"
   - "/usr/share/doc/**"
   - "/usr/share/man/**"
+  - "/usr/share/locale/**"
 
+# campaign 019f6084 P0-C wave 2: curated from the real apt-ownership
+# closure (derive-file-spec.sh --mode deb-payload against [git, jq,
+# ca-certificates]: 3519 owned files — ca-certificates resolves 0 owned
+# files here, same as claude-tmux's identical package, since base-os
+# already package_spec's it). git's own Depends (perl:any for git-svn/
+# git-instaweb/send-email's Perl scripts, liberror-perl, dpkg for
+# git-mergetool's version compare) is the real bulk, none of it pulled by
+# base-os's own package_spec. The old blanket
+# /usr/lib/x86_64-linux-gnu/** was the SAME over-inclusion bug qemu-guest-
+# agent's/runtime-ruby's manifests document — glibc's own gconv modules
+# and openssl's engines-3/ plugins are BASE-shared candidates in this
+# closure too (git/jq both transitively depend on libc6/libssl3t64,
+# already in base-os's own closure via openssh-server/curl), confirmed
+# empirically via conformance FAIL (359 over-carved files) before this
+# correction. LITERAL entries for the dir's 13 loose files (not
+# "libNAME.*" globs — see runtime-ruby's manifest for why that
+# compaction is unsound for base-shared library families).
 file_spec:
   - "/usr/bin/git"
   - "/usr/bin/git-shell"
+  - "/usr/bin/git-receive-pack"
+  - "/usr/bin/git-upload-archive"
+  - "/usr/bin/git-upload-pack"
+  - "/usr/bin/scalar"
   - "/usr/lib/git-core/**"
   - "/usr/share/git-core/**"
+  - "/usr/share/gitweb/**"
+  - "/usr/share/bash-completion/completions/git"
+  - "/usr/share/bash-completion/completions/gitk"
+  - "/etc/bash_completion.d/git-prompt"
   - "/usr/bin/jq"
-  # git's remote-https helper + jq both pull additional shared libraries
-  # (libcurl variants, oniguruma for jq, ...) under the multiarch lib dir —
-  # carve the whole tree rather than enumerate individual .so files, same
-  # rationale (and same directory) claude-tmux's manifest documents for its
-  # own apt-installed tmux/nodejs packages.
-  - "/usr/lib/x86_64-linux-gnu/**"
+
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.3
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.8.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6.0.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4.0.0
+  - /usr/lib/x86_64-linux-gnu/libjq.so.1
+  - /usr/lib/x86_64-linux-gnu/libjq.so.1.0.4
+  - /usr/lib/x86_64-linux-gnu/libonig.so.5
+  - /usr/lib/x86_64-linux-gnu/libonig.so.5.4.0
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38.2
+  # perl's own CORE runtime module tree — /usr/share/perl/5.38.2/ is the
+  # "perl" package's own exclusive sitedir, safe to glob broadly.
+  # /usr/share/perl5/ is NOT equally safe — it's the SHARED third-party-
+  # module sitelib every perl package installs into, and debconf (already
+  # in base-os's own closure via openssh-server, so correctly subtracted)
+  # ships its own Debconf/** tree there too; a directory-wide glob matched
+  # debconf's (candidate, not owned) files — empirically confirmed FAIL,
+  # same lesson postgres-replica's manifest documents for the identical
+  # gap — so this module's own entries (liberror-perl, git's Perl helper
+  # modules) are named explicitly instead.
+  - "/usr/share/perl/**"
+  - "/usr/share/perl5/Error.pm"
+  - "/usr/share/perl5/Error/**"
+  - "/usr/share/perl5/Git.pm"
+  - "/usr/share/perl5/Git/**"
+  - "/usr/lib/x86_64-linux-gnu/perl/**"
+  - "/usr/lib/x86_64-linux-gnu/perl-base/**"
+  # dpkg's own aux dirs (git-mergetool/git's own scripts shell out to
+  # dpkg --compare-versions) + its systemd DB-backup unit + mime handler.
+  - "/usr/libexec/dpkg/**"
+  - "/usr/share/dpkg/**"
+  - "/usr/lib/mime/packages/tar"
+  - "/usr/lib/systemd/system/dpkg-db-backup.service"
+  - "/usr/lib/systemd/system/dpkg-db-backup.timer"
+  # Per-package lintian overrides — not a directory-wide glob, same
+  # base-shared-candidate reason as runtime-ruby's/postgres-*'s manifests.
+  - "/usr/share/lintian/overrides/dpkg"
+  - "/usr/share/lintian/overrides/git"
+  - "/usr/share/lintian/overrides/libcurl3t64-gnutls"
+  - "/usr/share/lintian/overrides/libgdbm-compat4t64"
+  - "/usr/share/lintian/overrides/libgdbm6t64"
+  - "/usr/share/lintian/overrides/libperl5.38t64"
+  - "/usr/share/lintian/overrides/perl"
+  - "/usr/share/lintian/overrides/perl-base"
+  # /usr/bin (dpkg's own tools, perl's toolchain) + /usr/sbin — enumerated
+  # individually, same base-shared-candidate reason as the multiarch lib
+  # dir above.
+  - "/usr/bin/corelist"
+  - "/usr/bin/cpan"
+  - "/usr/bin/cpan5.38-x86_64-linux-gnu"
+  - "/usr/bin/dpkg"
+  - "/usr/bin/dpkg-deb"
+  - "/usr/bin/dpkg-divert"
+  - "/usr/bin/dpkg-maintscript-helper"
+  - "/usr/bin/dpkg-query"
+  - "/usr/bin/dpkg-realpath"
+  - "/usr/bin/dpkg-split"
+  - "/usr/bin/dpkg-statoverride"
+  - "/usr/bin/dpkg-trigger"
+  - "/usr/bin/enc2xs"
+  - "/usr/bin/encguess"
+  - "/usr/bin/h2ph"
+  - "/usr/bin/h2xs"
+  - "/usr/bin/instmodsh"
+  - "/usr/bin/json_pp"
+  - "/usr/bin/libnetcfg"
+  - "/usr/bin/perl"
+  - "/usr/bin/perl5.38.2"
+  - "/usr/bin/perl5.38-x86_64-linux-gnu"
+  - "/usr/bin/perlbug"
+  - "/usr/bin/perldoc"
+  - "/usr/bin/perlivp"
+  - "/usr/bin/perlthanks"
+  - "/usr/bin/piconv"
+  - "/usr/bin/pl2pm"
+  - "/usr/bin/pod2html"
+  - "/usr/bin/pod2man"
+  - "/usr/bin/pod2text"
+  - "/usr/bin/pod2usage"
+  - "/usr/bin/podchecker"
+  - "/usr/bin/prove"
+  - "/usr/bin/ptar"
+  - "/usr/bin/ptardiff"
+  - "/usr/bin/ptargrep"
+  - "/usr/bin/shasum"
+  - "/usr/bin/splain"
+  - "/usr/bin/streamzip"
+  - "/usr/bin/tar"
+  - "/usr/bin/update-alternatives"
+  - "/usr/bin/xsubpp"
+  - "/usr/bin/zipdetails"
+  - "/usr/sbin/rmt-tar"
+  - "/usr/sbin/start-stop-daemon"
+  - "/usr/sbin/tarcat"
+  - "/etc/alternatives/README"
+  - "/etc/cron.daily/dpkg"
+  - "/etc/dpkg/dpkg.cfg"
+  - "/etc/logrotate.d/alternatives"
+  - "/etc/logrotate.d/dpkg"
+  - "/etc/perl/Net/libnet.cfg"
+  - "/etc/rmt"
+  # Small remainder — genuinely owned, missed by the directory globs
+  # above (dpkg's bug-report template, polkit's dpkg-pkexec action —
+  # same two files postgres-primary's/postgres-replica's manifests hit).
+  - "/usr/share/bug/dpkg"
+  - "/usr/share/lintian/profiles/dpkg/main.profile"
+  - "/usr/share/polkit-1/actions/org.dpkg.pkexec.update-alternatives.policy"
   - "/usr/local/bin/dev-cell-bootstrap.sh"
   - "/usr/local/bin/dev-cell-provision.sh"
   - "/usr/local/bin/dev-cell-provision-pnagent.sh"
@@ -93,6 +224,14 @@ file_spec:
   - "/usr/local/bin/dev-cell-git-ssh-env.sh"
   - "/usr/local/bin/dev-cell-mcp-proxy.js"
   - "/usr/local/bin/dev-cell-executor.sh"
+
+# Owned (per the closure above) but masked out by the doc/man/locale
+# rules above — same size-conscious convention base-os/storage-tools use.
+# Waived so conformance doesn't WARN on the deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
 
 # dev-cell only ships its own service units + scripts + the git/jq
 # runtime — no other module's paths.
