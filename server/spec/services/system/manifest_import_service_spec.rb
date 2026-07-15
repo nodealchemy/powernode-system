@@ -210,6 +210,116 @@ RSpec.describe System::ManifestImportService, type: :service do
       end
     end
 
+    context "reresolve_dependencies! (campaign 019f6084 two-pass fix)" do
+      # Simulates a single-alphabetical-pass seed batch where the consumer
+      # imports BEFORE its provider exists — the exact scenario
+      # powernode_platform_modules.rb hits with claude-tmux (requires
+      # capability:runtime.node) sorting before runtime-node.
+      it "resolves a name-based requirement that was unresolved at first-pass import time" do
+        yaml = manifest_yaml.sub("requires: []", "requires: [\"powernode/late-provider@^1.0\"]")
+        first_pass = described_class.import!(node_module: mod, yaml: yaml)
+        expect(first_pass.resolved_dependencies.first[:status]).to eq("unresolved")
+        expect(System::ModuleDependency.where(node_module: mod)).not_to exist
+
+        # The provider is only created AFTER the first pass — matches the
+        # seed's ordering where every module row is created/imported once
+        # before any re-resolution sweep runs.
+        provider = create(:system_node_module, account: account, node_platform: platform,
+                          category: category, variety: "subscription", name: "late-provider")
+
+        second_pass = described_class.reresolve_dependencies!(node_module: mod, yaml: yaml)
+        expect(second_pass.ok?).to be true
+        expect(second_pass.resolved_dependencies.first[:status]).to eq("resolved")
+        expect(System::ModuleDependency.where(node_module: mod, dependency: provider)).to exist
+      end
+
+      it "resolves a capability-based requirement that was unresolved at first-pass import time" do
+        yaml = manifest_yaml.sub("requires: []", "requires: [\"capability:runtime.late\"]")
+        first_pass = described_class.import!(node_module: mod, yaml: yaml)
+        expect(first_pass.resolved_dependencies.first[:status]).to eq("unresolved")
+
+        provider = create(:system_node_module, account: account, node_platform: platform,
+                          category: category, variety: "subscription", name: "late-runtime-provider")
+        described_class.import!(
+          node_module: provider,
+          yaml: <<~YAML
+            schema_version: 1
+            name: late-runtime-provider
+            display_name: "Late provider"
+            description: "Provides runtime.late for the reresolve spec."
+            license: "MIT"
+            dependencies:
+              requires: []
+              provides:
+                - runtime.late
+          YAML
+        )
+
+        second_pass = described_class.reresolve_dependencies!(node_module: mod, yaml: yaml)
+        expect(second_pass.ok?).to be true
+        expect(second_pass.resolved_dependencies.first[:status]).to eq("resolved")
+        expect(System::ModuleDependency.where(node_module: mod, dependency: provider)).to exist
+      end
+
+      it "is idempotent — calling it again after everything already resolved doesn't duplicate edges" do
+        yaml = manifest_yaml.sub(
+          "requires: []",
+          "requires: [\"powernode/system-base@^1.0\"]"
+        )
+        base_module = ::System::NodeModule.find_or_create_by!(account: account, name: "system-base") do |m|
+          m.node_platform = platform
+          m.category      = category
+          m.variety       = "subscription"
+        end
+        described_class.import!(node_module: mod, yaml: yaml)
+        expect(System::ModuleDependency.where(node_module: mod, dependency: base_module).count).to eq(1)
+
+        described_class.reresolve_dependencies!(node_module: mod, yaml: yaml)
+        expect(System::ModuleDependency.where(node_module: mod, dependency: base_module).count).to eq(1)
+      end
+
+      it "returns a failure Result for blank yaml" do
+        result = described_class.reresolve_dependencies!(node_module: mod, yaml: "")
+        expect(result.ok?).to be false
+        expect(result.error).to include("yaml content is blank")
+      end
+    end
+
+    context "category resolution (campaign 019f6084)" do
+      it "assigns mod.category from the manifest's category: slug, creating the taxonomy triplet on first use" do
+        expect(
+          System::NodeModuleCategory.find_by(account: account, name: "Data Plane", variety: "subscription")
+        ).to be_nil
+
+        yaml = manifest_yaml + "category: data-plane\n"
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be true
+        expect(mod.reload.category.name).to eq("Data Plane")
+        expect(mod.category.position).to eq(300)
+      end
+
+      it "prefers the manifest's category over whatever was pre-set on the module" do
+        preset = create(:system_node_module_category, account: account, variety: "subscription")
+        mod.update!(category: preset)
+
+        yaml = manifest_yaml + "category: build-dev\n"
+        described_class.import!(node_module: mod, yaml: yaml)
+        expect(mod.reload.category.name).to eq("Build & Dev")
+      end
+
+      it "leaves mod.category untouched when the manifest declares no category:" do
+        expect { described_class.import!(node_module: mod, yaml: manifest_yaml) }
+          .not_to change { mod.reload.category }
+      end
+
+      it "rejects an unrecognized category slug" do
+        yaml = manifest_yaml + "category: not-a-real-tier\n"
+        result = described_class.import!(node_module: mod, yaml: yaml)
+        expect(result.ok?).to be false
+        expect(result.validation_errors.join).to include("not a recognized platform taxonomy slug")
+      end
+    end
+
     context "services parsing (Decentralized Federation plan §A)" do
       let(:services_yaml_fragment) do
         <<~YAML

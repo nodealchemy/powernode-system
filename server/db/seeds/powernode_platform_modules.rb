@@ -30,11 +30,32 @@
 # Idempotent: re-running upserts existing modules via find_or_initialize_by;
 # ManifestImportService.import! is itself idempotent.
 #
+# Categorization (campaign 019f6084): each manifest declares which
+# System::NodeModuleCategory::PLATFORM_TAXONOMY bucket it belongs in via a
+# `category:` field; ManifestImportService::import! resolves + assigns it.
+# Before that resolution runs, every module is pre-seeded into the
+# "workloads" fallback bucket below — belt-and-suspenders so a future
+# platform manifest that omits `category:` still lands somewhere sane
+# instead of nil (uncategorized, sorts as if category.position == 0 — below
+# EVERY real category, silently at the bottom of the overlay stack).
+#
+# Two-pass dependency resolution (campaign 019f6084): PLATFORM_MODULE_
+# MANIFESTS_TO_SEED.each below imports every manifest in a single
+# alphabetical pass. A `requires: capability:<tag>` (or a bare name-based
+# `requires:`) only resolves if the PROVIDING module already exists (with
+# its `capabilities` populated) at the moment the CONSUMING module is
+# imported — e.g. claude-tmux (c...) requires capability:runtime.node,
+# provided by runtime-node (r...), which sorts and therefore imports AFTER
+# it, so the edge silently defers on pass 1 (inc1's os.userland edges only
+# resolved on a single pass because base-os-ubuntu-noble happens to sort
+# first alphabetically — every consumer of that capability sorts after its
+# provider by coincidence, not by design). Pass 2 re-resolves every
+# manifest's dependencies: requires: block after all 20 modules (and their
+# capabilities) exist, so forward-reference order no longer matters.
+#
 # Invoke explicitly:
 #   cd server && bundle exec rails runner \
 #     "load Rails.root.join('../extensions/system/server/db/seeds/powernode_platform_modules.rb')"
-
-POWERNODE_PLATFORM_CATEGORY_NAME = "Powernode Platform"
 
 # P8.2: per-module manifests live on disk at
 # extensions/system/modules/<name>/manifest.yaml. The M1 supply chain
@@ -55,16 +76,7 @@ updated = 0
 errors  = []
 
 ::Account.find_each do |account|
-  category = ::System::NodeModuleCategory.find_by(
-    account: account,
-    name: POWERNODE_PLATFORM_CATEGORY_NAME,
-    variety: "subscription"
-  )
-
-  unless category
-    errors << "Account #{account.id}: Powernode Platform category missing — run powernode_platform_categories.rb first"
-    next
-  end
+  fallback_category = ::System::NodeModuleCategory.for_platform_slug!(account: account, slug: "workloads")
 
   PLATFORM_MODULE_MANIFESTS_TO_SEED.each do |module_name, manifest_yaml|
     mod = ::System::NodeModule.find_or_initialize_by(
@@ -74,7 +86,9 @@ errors  = []
     was_new = mod.new_record?
 
     mod.variety = "subscription"
-    mod.category = category
+    # Fallback only — every shipped manifest declares its own `category:`,
+    # which ManifestImportService::import! resolves and overrides below.
+    mod.category ||= fallback_category
     mod.enabled = true
     mod.public = false
     mod.priority = 50
@@ -97,6 +111,17 @@ errors  = []
     else
       errors << "Account #{account.id} / #{module_name}: #{result.error}"
     end
+  end
+
+  # Pass 2 — see the "Two-pass dependency resolution" header note above.
+  PLATFORM_MODULE_MANIFESTS_TO_SEED.each do |module_name, manifest_yaml|
+    mod = ::System::NodeModule.find_by(account: account, name: module_name)
+    next unless mod # pass 1 failed to create/import it; already in errors
+
+    reresolved = ::System::ManifestImportService.reresolve_dependencies!(
+      node_module: mod, yaml: manifest_yaml
+    )
+    errors << "Account #{account.id} / #{module_name} (pass 2 re-resolve): #{reresolved.error}" unless reresolved.ok?
   end
 end
 
