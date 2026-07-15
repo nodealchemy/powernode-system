@@ -5,20 +5,47 @@ description: QEMU guest agent (qga) — reports guest IP + clean shutdown + free
 license: GPL-2.0
 package_spec:
   - qemu-guest-agent
-# qga is a single static binary + the apt-installed systemd unit (which
-# we'll re-render via the manifest's services: block below — the agent's
-# lifecycle generator handles RootDirectory=/sysroot + MountAPIVFS=yes
-# uniformly for every service, and ad-hoc /lib/systemd/system units
-# don't get that treatment). /usr covers /usr/sbin/qemu-ga + /usr/share;
-# /lib + /lib64 cover libc + libnl3 + libgmodule that qga dynamically
-# links. /etc carries the (rarely-present) /etc/qemu/qemu-ga.conf.
-# /var is intentionally omitted — qga writes nothing persistent at
+# Curated from the real apt-ownership closure (campaign 019f6084 P0-C,
+# derive-file-spec.sh --mode deb-payload: qemu-guest-agent's package_spec
+# closure minus base-os-ubuntu-noble's = 37 owned files, all accounted for
+# below). Previously a broad /usr/**+/lib/**+/lib64/**+/etc/** carve — on
+# Noble everything is usr-merged (dpkg -L never reports a bare /lib or
+# /lib64 path for this closure), so those two globs were dead weight, and
+# the broad /usr/**+/etc/** would carve any SIBLING module's /usr or /etc
+# content unioned into the same fat rootfs, not just qga's own files.
+# The multiarch lib dir is enumerated per-library rather than carved as a
+# whole /usr/lib/x86_64-linux-gnu/** glob (unlike claude-tmux's identical
+# directory, which DOES carve broadly) — deb-payload conformance caught
+# the difference empirically: qga's OWN dependency closure (via libc6)
+# also resolves glibc's gconv/locale modules, which are candidates for
+# this module's payload but are NOT owned (base-os already ships glibc),
+# so a whole-directory glob over-carves them. Per-library globs (still
+# "**" per package so a point-release .so bump doesn't strand the
+# module) avoid that overlap. /etc/qemu/** covers fsfreeze-hook (ships
+# today) + the rarely-present qemu-ga.conf the old comment referenced.
+# /var is still intentionally omitted — qga writes nothing persistent at
 # runtime, its socket lives at /var/run via tmpfs.
 file_spec:
-  - /usr/**
-  - /lib/**
-  - /lib64/**
-  - /etc/**
+  - /etc/init.d/qemu-guest-agent
+  - /etc/qemu/**
+  - /usr/lib/systemd/system/qemu-guest-agent.service
+  - /usr/lib/udev/rules.d/60-qemu-guest-agent.rules
+  - /usr/lib/x86_64-linux-gnu/glib-2.0/**
+  - /usr/lib/x86_64-linux-gnu/libgio-2.0.so*
+  - /usr/lib/x86_64-linux-gnu/libglib-2.0.so*
+  - /usr/lib/x86_64-linux-gnu/libgmodule-2.0.so*
+  - /usr/lib/x86_64-linux-gnu/libgobject-2.0.so*
+  - /usr/lib/x86_64-linux-gnu/libgthread-2.0.so*
+  - /usr/lib/x86_64-linux-gnu/libnuma.so*
+  - /usr/lib/x86_64-linux-gnu/liburing*.so*
+  - /usr/sbin/qemu-ga
+  - /usr/share/doc/libglib2.0-0t64/**
+  - /usr/share/doc/libnuma1/**
+  - /usr/share/doc/liburing2/**
+  - /usr/share/doc/qemu-guest-agent/**
+  - /usr/share/lintian/overrides/libglib2.0-0t64
+  - /usr/share/man/man7/qemu-ga-ref.7.gz
+  - /usr/share/man/man8/qemu-ga.8.gz
 mask: []
 dependency_spec: []
 protected_spec: []
