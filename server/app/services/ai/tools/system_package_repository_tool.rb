@@ -101,7 +101,7 @@ module Ai
             parameters: { repository_id: { type: "string", required: true, description: "UUID of the package repository to delete" } }
           },
           "system_sync_package_repository" => {
-            description: "Trigger an immediate sync of the upstream apt/rpm index for this repository",
+            description: "Enqueue a background sync of the upstream apt/rpm index for this repository (returns immediately; poll get_package_repository for sync_status)",
             parameters: {
               repository_id: { type: "string", required: true, description: "UUID of the package repository to sync" },
               force:         { type: "boolean", required: false, description: "Re-write every package row + bypass the unchanged-fingerprint fast-path and the mass-obsoletion guard (metadata refresh / override a partial-upstream guard trip)" }
@@ -381,14 +381,15 @@ module Ai
 
       def sync_repository(params)
         repo = scoped_repos.find(params[:repository_id])
-        force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
-        result = ::System::PackageRepositorySyncService.call(repository: repo, force: force)
+        # Async: a full sync is minutes long — enqueue it (→ detached
+        # out-of-puma process) rather than block the MCP call. Poll
+        # get_package_repository for sync_status.
+        ::System::PackageRepositorySyncService.enqueue!(repository: repo, force: params[:force])
         success_result(
-          ok:            result.success?,
-          upserted:      result.upserted,
-          obsoleted:     result.obsoleted,
-          package_count: result.package_count,
-          error:         result.error
+          queued:        true,
+          repository_id: repo.id,
+          status:        repo.sync_status,
+          message:       "Sync queued — running in the background; poll get_package_repository for sync_status."
         )
       end
 

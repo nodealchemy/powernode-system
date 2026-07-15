@@ -45,6 +45,25 @@ module System
       new(repository: repository, architectures: architectures, force: force).call
     end
 
+    # Schedule an async sync instead of running it inline. Marks the repo
+    # `syncing` and enqueues the worker job (SystemPackageRepositorySyncJob),
+    # which POSTs worker_api and spawns the detached out-of-puma sync process.
+    # EVERY operator/API/MCP/agent entry point must use this — only the spawned
+    # PackageRepositoryBackgroundSync calls `.call` to do the work. A full sync
+    # is a minutes-long, memory-heavy job: running it inline blocks the caller
+    # and (in puma) inflates RSS past the worker recycler, killing the request
+    # worker. `force` is coerced so callers can pass a raw param value.
+    def self.enqueue!(repository:, force: false)
+      coerced = ::ActiveModel::Type::Boolean.new.cast(force) || false
+      repository.update!(sync_status: "syncing", last_sync_error: nil)
+      ::System::WorkerJobEnqueuer.enqueue(
+        job_class: "SystemPackageRepositorySyncJob",
+        args:      [ repository.id, { "force" => coerced } ],
+        queue:     "system"
+      )
+      repository
+    end
+
     def initialize(repository:, architectures: nil, force: false)
       @repository = repository
       # force: re-write EVERY package row even if its (name,version,arch) is

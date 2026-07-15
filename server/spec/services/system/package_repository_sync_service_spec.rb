@@ -171,6 +171,28 @@ RSpec.describe System::PackageRepositorySyncService do
     end
   end
 
+  describe ".enqueue! (async dispatch)" do
+    it "marks the repo syncing and enqueues the worker job — never runs the sync inline" do
+      expect(described_class).not_to receive(:new) # inline sync goes through .new.call
+
+      described_class.enqueue!(repository: repo, force: false)
+
+      expect(repo.reload.sync_status).to eq("syncing")
+      expect(System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        job_class: "SystemPackageRepositorySyncJob",
+        args:      [ repo.id, { "force" => false } ],
+        queue:     "system"
+      )
+    end
+
+    it "coerces a raw/string force value to a boolean" do
+      described_class.enqueue!(repository: repo, force: "true")
+
+      expect(System::WorkerJobEnqueuer).to have_received(:enqueue)
+        .with(hash_including(args: [ repo.id, { "force" => true } ]))
+    end
+  end
+
   describe "force" do
     it "rewrites every row + re-enqueues embeddings even with no new packages" do
       create(:system_package, package_repository: repo, name: "a", version: "1")

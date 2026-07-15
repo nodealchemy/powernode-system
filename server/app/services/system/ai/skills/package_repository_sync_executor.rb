@@ -9,7 +9,7 @@ module System
       class PackageRepositorySyncExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "package_repository_sync",
-          description: "Sync upstream apt/rpm metadata for one package repository (account-scoped or shared)",
+          description: "Enqueue a background sync of upstream apt/rpm metadata for one package repository (account-scoped or shared); returns once queued, the sync runs out-of-process",
           category:    "devops",
           inputs: {
             repository_id: { type: "string", required: true,
@@ -17,10 +17,9 @@ module System
           },
           outputs: {
             ok:            :boolean,
-            upserted:      :integer,
-            obsoleted:     :integer,
-            package_count: :integer,
-            error:         :string
+            queued:        :boolean,
+            status:        :string,
+            repository_id: :string
           }
         )
 
@@ -32,13 +31,15 @@ module System
           repo = ::System::PackageRepository.accessible_to(@account).find_by(id: repository_id)
           return failure("repository not found or not accessible") unless repo
 
-          result = ::System::PackageRepositorySyncService.call(repository: repo, force: force)
+          # Async: enqueue the sync (→ detached out-of-puma process) rather than
+          # block the autonomy loop for minutes. The reconcile tick re-observes
+          # sync_status later; no need to wait on stats here.
+          ::System::PackageRepositorySyncService.enqueue!(repository: repo, force: force)
           success(
-            ok:            result.success?,
-            upserted:      result.upserted,
-            obsoleted:     result.obsoleted,
-            package_count: result.package_count,
-            error:         result.error,
+            ok:            true,
+            queued:        true,
+            status:        repo.sync_status,
+            repository_id: repo.id,
             requires_approval: false
           )
         end

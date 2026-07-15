@@ -154,13 +154,7 @@ module Api
           # `force` re-writes every row + bypasses the fingerprint fast-path and
           # the mass-obsoletion guard — for a metadata refresh or overriding a
           # partial-upstream guard trip.
-          force = ActiveModel::Type::Boolean.new.cast(params[:force]) || false
-          @repository.update!(sync_status: "syncing", last_sync_error: nil)
-          ::System::WorkerJobEnqueuer.enqueue(
-            job_class: "SystemPackageRepositorySyncJob",
-            args:      [ @repository.id, { "force" => force } ],
-            queue:     "system"
-          )
+          ::System::PackageRepositorySyncService.enqueue!(repository: @repository, force: params[:force])
           # NOTE: pass the payload via `data:` — render_success's own `status:`
           # kwarg is the HTTP status, so a top-level `status: "syncing"` would
           # be validated as an HTTP code and 500.

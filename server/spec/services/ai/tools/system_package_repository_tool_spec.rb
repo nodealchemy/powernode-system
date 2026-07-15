@@ -92,17 +92,18 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
       expect(System::PackageRepository.exists?(repo.id)).to be false
     end
 
-    it "syncs a repository through PackageRepositorySyncService" do
+    it "enqueues a background sync (async — never runs the sync inline)" do
       repo = create(:system_package_repository, account: account)
-      allow(::System::PackageRepositorySyncService).to receive(:call)
-        .with(repository: repo)
-        .and_return(::System::PackageRepositorySyncService::Result.new(
-                      success: true, package_count: 12, upserted: 12, obsoleted: 0, error: nil
-                    ))
+      expect(::System::PackageRepositorySyncService).not_to receive(:call)
+      allow(::System::WorkerJobEnqueuer).to receive(:enqueue)
 
       r = call("system_sync_package_repository", repository_id: repo.id)
       expect(r[:success]).to be true
-      expect(r[:data][:package_count]).to eq(12)
+      expect(r[:data][:queued]).to be true
+      expect(repo.reload.sync_status).to eq("syncing")
+      expect(::System::WorkerJobEnqueuer).to have_received(:enqueue).with(
+        hash_including(job_class: "SystemPackageRepositorySyncJob")
+      )
     end
 
     it "returns a structured error (not an exception) for an unknown repository id" do
