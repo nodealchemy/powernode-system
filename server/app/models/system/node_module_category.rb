@@ -11,6 +11,37 @@ module System
     # bump on NodeModule (ensures children sit above parents in the union).
     DEFAULT_POSITION_OFFSETS = { "subscription" => 0, "config" => 1, "instance" => 2 }.freeze
 
+    # Canonical layering taxonomy for the platform's own module manifests
+    # (extensions/system/modules/<name>/manifest.yaml `category:` field).
+    # Keyed by the slug a manifest declares; ascending base_position is the
+    # bottom-to-top overlay-stack order (see NodeModule#effective_priority —
+    # higher category.position wins the union). db/seeds/powernode_platform_
+    # categories.rb is the primary creator of these rows (one triplet per
+    # entry, per account); ManifestImportService#apply_to_module resolves a
+    # manifest's declared `category:` slug against this same table and
+    # self-heals (creates the triplet) if the categories seed hasn't run yet.
+    #
+    # "workloads" is the fallback bucket for modules with no manifest
+    # `category:` (forward-compat) and for System::PackageModuleMaterializer's
+    # on-demand/operator-materialized modules when no category_id is given.
+    #
+    # campaign 019f6084 — replaces the single "Powernode Platform"
+    # position-500 catch-all that dumped all 20 platform modules into one
+    # category, tying every module's effective_priority and leaving overlay
+    # order tie-broken by name (nondeterministic from the operator's POV).
+    PLATFORM_TAXONOMY = {
+      "system-base"      => { base_name: "System Base",       base_position: 120 },
+      "base-os"          => { base_name: "Base OS",            base_position: 150 },
+      "language-runtime" => { base_name: "Language Runtime",   base_position: 250 },
+      "data-plane"       => { base_name: "Data Plane",         base_position: 300 },
+      "storage-guest"    => { base_name: "Storage & Guest",    base_position: 320 },
+      "networking-proxy" => { base_name: "Networking / Proxy", base_position: 350 },
+      "observability"    => { base_name: "Observability",      base_position: 400 },
+      "build-dev"        => { base_name: "Build & Dev",        base_position: 450 },
+      "platform-apps"    => { base_name: "Platform Apps",      base_position: 550 },
+      "workloads"        => { base_name: "Workloads",          base_position: 560 }
+    }.freeze
+
     # === Associations ===
     belongs_to :account
     belongs_to :parent, class_name: "System::NodeModuleCategory", optional: true
@@ -43,6 +74,27 @@ module System
     scope :instance_variety,     -> { where(variety: "instance") }
 
     # === Class API ===
+
+    # Resolves the subscription-variety category for a PLATFORM_TAXONOMY
+    # slug, creating the account's triplet on first use (self-healing —
+    # db/seeds/powernode_platform_categories.rb is the primary creator, but
+    # any caller that runs before that seed, e.g. an early account or a CI
+    # manifest publish, still lands the module in the right bucket instead
+    # of failing). Returns nil for an unrecognized slug (caller's manifest
+    # validation is expected to have already rejected it).
+    def self.for_platform_slug!(account:, slug:)
+      taxonomy = PLATFORM_TAXONOMY[slug.to_s]
+      return nil unless taxonomy
+
+      find_by(account: account, name: taxonomy[:base_name], variety: "subscription") ||
+        create_triplet!(
+          account: account,
+          base_name: taxonomy[:base_name],
+          base_position: taxonomy[:base_position],
+          enabled: true,
+          public: false
+        )
+    end
 
     # Creates a triplet of categories (subscription + config + instance)
     # with siblings pre-wired and ascending positions so the multiplier-based

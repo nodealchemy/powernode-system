@@ -20,6 +20,7 @@ name:          <string>            # required; matches NodeModule.name
 display_name:  <string>            # human-readable label
 description:   <string>            # one paragraph
 license:       <SPDX identifier>   # e.g., "MIT", "Apache-2.0"
+category:      <taxonomy slug>     # overlay-stack tier — see System::NodeModuleCategory::PLATFORM_TAXONOMY
 
 # Content selection (rsync-style glob lines — see "Content Specs" section below)
 mask:             [<glob>, ...]
@@ -70,7 +71,7 @@ build:
   apt_snapshot:  <YYYYMMDDTHHMMSSZ timestamp | "none" | null>
 ```
 
-> **Authoritative top-level key set.** The 20 keys above are exactly
+> **Authoritative top-level key set.** The 21 keys above are exactly
 > `System::ManifestImportService::KNOWN_TOP_KEYS`. Anything else is preserved
 > verbatim under `config.manifest_extras` (forward-compat) but is not validated.
 >
@@ -94,6 +95,7 @@ build:
 | `display_name` | string | no | UI label. Defaults to `name` if absent. |
 | `description` | string | no | One-paragraph operator-facing description. |
 | `license` | SPDX | no | License of the module's *contents*. The manifest itself is governed by the repo's LICENSE file. |
+| `category` | taxonomy slug | no | Overlay-stack layering tier — one of `System::NodeModuleCategory::PLATFORM_TAXONOMY`'s keys (`system-base`, `base-os`, `language-runtime`, `data-plane`, `storage-guest`, `networking-proxy`, `observability`, `build-dev`, `platform-apps`, `workloads`). `ManifestImportService` resolves it to a `NodeModuleCategory`, creating the account's triplet on first use. Absent: the importing seed/caller's own fallback applies (the platform seed defaults to `workloads`). |
 
 ### Content specs
 
