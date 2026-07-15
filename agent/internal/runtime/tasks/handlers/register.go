@@ -18,6 +18,10 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //     module-forge builder — campaign 019f5885 inc7)
 //   - package_build: ci.package_build (native materialized-package build on
 //     the SAME leased module-forge builder — campaign 019f6084 inc-D)
+//   - probe_module_smoke: probe.module_smoke (structured post-compose health
+//     checks — systemd unit active, health endpoint, ldd closure — the
+//     agent side of System::ModuleSmokeProbe's dispatch/poll; campaign
+//     019f6084 inc-E)
 func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterLifecycle(r, deps)
 	RegisterConfig(r, deps)
@@ -28,4 +32,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterUpgradeBootImage(r, deps)
 	RegisterModuleBuild(r, deps)
 	RegisterPackageBuild(r, deps)
+	RegisterProbeModuleSmoke(r, deps)
 }
