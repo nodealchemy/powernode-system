@@ -136,6 +136,39 @@ RSpec.describe System::Ai::Skills::ModuleComposeExecutor do
       expect(gaps.first[:package]).to eq("memcached")
       expect(gaps.first[:repository_id]).to eq("repo-1")
     end
+
+    it "surfaces a gap for the UNCOVERED capability under partial coverage" do
+      # "nginx + redis": nginx has a covering module, redis does not. The prior
+      # all-or-nothing `return [] if chosen.any?` silently dropped redis; now
+      # the request decomposes per-capability and redis surfaces its own gap.
+      ::System::NodeModule.find_or_create_by!(account: account, name: "nginx") do |m|
+        m.node_platform = platform
+        m.category      = category
+        m.variety       = "subscription"
+        m.enabled       = true
+        m.priority      = 50
+      end
+      allow_any_instance_of(System::Ai::Skills::DiscoverPackagesByIntentExecutor)
+        .to receive(:execute).and_return(
+          { success: true,
+            data: { results: [ { name: "redis", package_id: "pkg-redis", repository_id: "repo-redis" } ],
+                    confidence: "high" } }
+        )
+
+      r = exec.execute(description: "nginx + redis")
+      expect(r[:success]).to be true
+
+      # nginx is still composed (partial coverage, not dropped) ...
+      names = r[:data][:draft_template][:modules].map { |m| m[:name] }
+      expect(names).to include("nginx")
+
+      # ... and the uncovered redis capability surfaces a materialize gap.
+      gaps = r[:data][:gaps]
+      materialize = gaps.find { |g| g[:action] == "materialize" && g[:package] == "redis" }
+      expect(materialize).to be_present
+      expect(materialize[:capability]).to eq("redis")
+      expect(materialize[:repository_id]).to eq("repo-redis")
+    end
   end
 
   describe "#execute — keyword fallback" do

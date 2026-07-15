@@ -191,44 +191,82 @@ module System
           ::System::NodeModule.where(account: @account, id: ids).pluck(:id, :description).to_h
         end
 
-        # === Gap bridging =================================================
-        # When nothing cleared the floor, the requested capability has no
-        # covering module. Consult discover_packages_by_intent and surface a
-        # materialize-this-package gap so the caller can author it, rather than
-        # returning a silent empty composition.
-        def detect_gaps(description, chosen, _platform_id)
-          return [] if chosen.any?
+        # Splits a workload description into candidate capability phrases on
+        # conjunctions / separators, so gap detection is PER-CAPABILITY rather
+        # than all-or-nothing. "nginx + redis" / "nginx and redis" / "nginx with
+        # redis" all decompose to ["nginx", "redis"]; a description with no
+        # separator stays a single phrase (legacy single-capability behavior).
+        CAPABILITY_SPLIT = /\s*(?:,|\+|&|\/|\band\b|\bwith\b|\bplus\b|\balong\s+with\b)\s*/i
 
+        # === Gap bridging =================================================
+        # Surface a materialize-this-package gap for every requested capability
+        # that NO chosen module covers — even under PARTIAL coverage. The prior
+        # implementation short-circuited (`return [] if chosen.any?`), so a
+        # request like "nginx + redis" where only nginx has a module silently
+        # dropped redis. Now the request is decomposed into capability phrases
+        # and each uncovered phrase surfaces its own gap.
+        #
+        # Coverage is token-level: a phrase is "covered" when any of its tokens
+        # appears in the union of the chosen modules' matched_tokens. Residual
+        # limitation (documented, deferred): decomposition is lexical (split on
+        # conjunctions), not a true semantic capability parse — a compound phrase
+        # naming several capabilities in prose ("a cache and a database", no
+        # separator between "cache"/"database" beyond the conjunction we do split
+        # on) is handled, but capabilities fused into one noun phrase are not
+        # individually resolved. The all-or-nothing drop is gone regardless.
+        def detect_gaps(description, chosen, _platform_id)
+          phrases = split_capabilities(description)
+          phrases = [ description.to_s.strip ] if phrases.empty?
+
+          covered = chosen.flat_map { |c| Array(c[:matched_tokens]) }.map(&:downcase).to_set
+
+          uncovered = phrases.reject do |phrase|
+            ptoks = tokenize(phrase)
+            ptoks.empty? || ptoks.any? { |t| covered.include?(t) }
+          end
+          return [] if uncovered.empty?
+
+          uncovered.filter_map { |phrase| gap_for_capability(phrase) }
+        end
+
+        def split_capabilities(description)
+          description.to_s.split(CAPABILITY_SPLIT).map(&:strip).reject(&:empty?)
+        end
+
+        # Resolve a single uncovered capability phrase to a materialize gap via
+        # discover_packages_by_intent (falling back to an author_module gap when
+        # discovery is unavailable or finds no matching package).
+        def gap_for_capability(capability)
           disc = DiscoverPackagesByIntentExecutor
                  .new(account: @account, agent: @agent, user: @user)
-                 .execute(intent: description)
+                 .execute(intent: capability)
 
           unless disc[:success]
-            return [ {
-              capability: description,
+            return {
+              capability: capability,
               action: "author_module",
               reason: "no covering module and package discovery unavailable (#{disc[:error]})"
-            } ]
+            }
           end
 
           top = Array(disc.dig(:data, :results)).first
           unless top
-            return [ {
-              capability: description,
+            return {
+              capability: capability,
               action: "author_module",
               reason: "no covering module and no matching package"
-            } ]
+            }
           end
 
-          [ {
-            capability: description,
+          {
+            capability: capability,
             action: "materialize",
             package: top[:name],
             package_id: top[:package_id],
             repository_id: top[:repository_id],
             confidence: disc.dig(:data, :confidence),
             reason: "no existing module clears the similarity floor — materialize #{top[:name]}"
-          } ]
+          }
         end
 
         # === Embedding ====================================================
