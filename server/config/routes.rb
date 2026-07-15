@@ -99,6 +99,12 @@ Rails.application.routes.draw do
           member { post :rotate_token }
         end
 
+        # Read-only ModuleBuildBatch surface (campaign 019f6084 inc2-A) — the
+        # agent-pollable build-completion barrier over both platform module
+        # builds and on-demand package-closure builds. Dispatch stays
+        # worker/webhook-gated; this is list/show only.
+        resources :module_build_batches, only: %i[index show]
+
         # Physical-device claim queue (operator-facing). See plan
         # wondrous-yawning-anchor.md — devices polling /node_api/claim
         # surface here for the operator to bind to a NodeInstance.

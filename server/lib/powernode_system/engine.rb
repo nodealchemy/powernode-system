@@ -375,6 +375,21 @@ module PowernodeSystem
           permission "system.sdwan.vips.manage", "Create, update, delete, and fail over SDWAN virtual IPs",
                      grant: { admin: true }
         end
+
+        # ---------------------------------------------------------------
+        # system.module_builds.read (campaign 019f6084 inc2 — ModuleBuildBatch
+        # read API). The permission itself is declared in core
+        # server/config/permissions.rb's SYSTEM_PERMISSIONS hash, adjacent to
+        # system.module_builds.dispatch (that's the existing precedent for
+        # this permission name — .dispatch is worker/webhook-dispatched, so
+        # it lives where the git-push webhook + AI tool gate it). A raw
+        # SYSTEM_PERMISSIONS entry only reaches the system_worker role by
+        # default; granting the operator-facing read surface to admin/manager
+        # is extension policy, so it's registered here rather than inlined
+        # into core's ROLES admin/manager lists.
+        # ---------------------------------------------------------------
+        ::Permissions.register_role_permissions("admin", %w[system.module_builds.read])
+        ::Permissions.register_role_permissions("manager", %w[system.module_builds.read])
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register extension permissions: #{e.message}"
       end
