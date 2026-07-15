@@ -42,6 +42,7 @@ import { cveApi } from '@system/features/system/services/api/cveApi';
 import { gitopsApi } from '@system/features/system/services/api/gitopsApi';
 import { storageMigrationsApi } from '@system/features/system/services/api/storageMigrationsApi';
 import { platformPeersApi } from '@system/features/system/services/api/platformPeersApi';
+import { moduleBuildsApi } from '@system/features/system/services/api/moduleBuildsApi';
 
 // The registry stores every component in a single typed slot
 // (`ComponentType<Record<string, unknown>>`). Each modal was authored as a
@@ -247,6 +248,19 @@ export function registerSystemEntities(): void {
       icon: 'Share2',
       labelField: 'remote_instance_url',
       fetchById: (id: string) => platformPeersApi.getPeer(id),
+    },
+    {
+      // No `name` on a batch; `trigger` (push/manual/cve/package) is the most
+      // descriptive scalar label. Registered so notifications/signals
+      // (system.module_build_* FleetEvents) can EntityLink straight to the
+      // batch that produced them — ModuleBuildsTab itself opens
+      // BatchDetailModal directly by id instead of going through this.
+      type: 'module_build_batch',
+      label: 'Module Build Batch',
+      permission: 'system.module_builds.read',
+      icon: 'Hammer',
+      labelField: 'trigger',
+      fetchById: (id: string) => moduleBuildsApi.get(id),
     },
 
     // ---- Mode 3: SDWAN sub-resources (domain-scoped read permissions) ----
