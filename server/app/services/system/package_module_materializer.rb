@@ -74,7 +74,16 @@ module System
       @account             = account
       @user                = requested_by_user
       @recommends_selected = Array(recommends_selected).map(&:to_s)
-      @category            = category
+      # campaign 019f6084: callers (packages_controller, worker_api,
+      # AI tools) treat category_id as operator-optional, so @category was
+      # routinely nil — every materialized module (top-level + transitive
+      # deps) landed permanently uncategorized (effective_priority's
+      # category component reads as 0, sorting BELOW every real platform
+      # category regardless of the module's own priority). Default to the
+      # same "workloads" bucket the platform seed uses for manifest-less
+      # modules — a materialized apt/rpm package is, functionally, an
+      # operator workload layered on top of the platform stack.
+      @category            = category || default_category
       @dispatch_build      = dispatch_build
     end
 
@@ -220,6 +229,10 @@ module System
     end
 
     private
+
+    def default_category
+      ::System::NodeModuleCategory.for_platform_slug!(account: @account, slug: "workloads")
+    end
 
     # Module naming: top-level gets the bare package name; transitive deps
     # are prefixed with the repo slug to avoid cross-repo collisions.

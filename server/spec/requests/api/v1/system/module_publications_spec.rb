@@ -216,16 +216,18 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       expect(new_mod.versions.count).to eq(1)
     end
 
-    it "prefers the canonical 'Powernode Platform' category + 'ubuntu-24.04-lts' platform when present" do
+    it "prefers the canonical 'Workloads' taxonomy category + 'ubuntu-24.04-lts' platform when present" do
       # Verify the resolver's preference for seed-managed canonical names
-      # ("Powernode Platform" category, "ubuntu-24.04-lts" platform).
-      # Without these preferences, multi-category / multi-platform accounts
-      # would land newly-created modules in non-deterministic homes.
-      # Use find_or_create_by: the Account bootstrap step may have already
-      # seeded one (or both) of these on `publisher_account` — collisions
-      # are noise, but the IDs we want to assert against need to exist.
-      canonical_category = System::NodeModuleCategory.find_or_create_by!(
-        account: publisher_account, name: "Powernode Platform", variety: "subscription"
+      # ("Workloads" category — campaign 019f6084 retired "Powernode
+      # Platform" in favor of System::NodeModuleCategory::PLATFORM_TAXONOMY
+      # — + "ubuntu-24.04-lts" platform). Without these preferences,
+      # multi-category / multi-platform accounts would land newly-created
+      # modules in non-deterministic homes.
+      # for_platform_slug!: self-healing, matches the resolver's own
+      # lookup — the Account bootstrap step doesn't seed this bucket, but
+      # calling it twice (here + inside the resolver) is idempotent.
+      canonical_category = System::NodeModuleCategory.for_platform_slug!(
+        account: publisher_account, slug: "workloads"
       )
       canonical_platform = System::NodePlatform.find_or_create_by!(
         account: publisher_account, name: "ubuntu-24.04-lts"
@@ -240,7 +242,7 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       expect(response).to have_http_status(:ok)
       created = System::NodeModule.find_by(name: "newer-still")
       expect(created).to be_present
-      expect(created.category_id).to eq(canonical_category.id), "expected canonical 'Powernode Platform' category, got category named #{created.category&.name.inspect}"
+      expect(created.category_id).to eq(canonical_category.id), "expected canonical 'Workloads' category, got category named #{created.category&.name.inspect}"
       expect(created.node_platform_id).to eq(canonical_platform.id), "expected canonical 'ubuntu-24.04-lts' platform, got platform named #{created.node_platform&.name.inspect}"
     end
 
