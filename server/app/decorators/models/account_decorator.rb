@@ -22,7 +22,11 @@ Account.class_eval do
 
   # Nodes and node-related catalog
   has_many :system_nodes, class_name: "System::Node", dependent: :restrict_with_error
-  has_many :system_node_architectures, class_name: "System::NodeArchitecture", dependent: :restrict_with_error
+  # NOTE: System::NodeArchitecture is a PLATFORM-WIDE catalog (a single canonical
+  # "x86_64" row shared across every account) — it is deliberately NOT account-scoped
+  # and has no account_id column, so Account intentionally does NOT own it. A stale
+  # account association to it queried the nonexistent system_node_architectures.account_id
+  # and crashed seeds/account teardown with PG::UndefinedColumn (improvement 019f65bd).
   has_many :system_node_platforms, class_name: "System::NodePlatform", dependent: :restrict_with_error
   has_many :system_node_templates, class_name: "System::NodeTemplate", dependent: :restrict_with_error
 
