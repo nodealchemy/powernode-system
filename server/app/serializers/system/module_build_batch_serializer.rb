@@ -72,6 +72,7 @@ module System
         repository_id:     ctx["repository_id"],
         package_repo_kind: ctx["package_repo_kind"],
         architecture:      ctx["architecture"],
+        architectures:     ctx["architectures"],
         snapshot:          ctx["apt_snapshot"],
         tag:               ctx["tag"]
       }
@@ -85,33 +86,41 @@ module System
       @batch.metadata["parity"] || {}
     end
 
+    # Keyed by task_id (each state entry's own "task_id" pointer), not by
+    # re-deriving a lookup key from task.options — robust to both the
+    # bare-slug state key (platform / single-arch package) and the compound
+    # "slug@arch" key a multi-arch package plan entry uses (campaign
+    # 019f6084 inc J; see NativeModuleBuildOrchestrator#load_modules_state)
+    # without this serializer needing to know which shape a given batch is.
     def module_rows
-      tasks_by_slug  = index_tasks_by_slug
-      leases_by_task = index_leases_by_task(tasks_by_slug.values.compact.map(&:id))
+      tasks_by_id    = index_tasks_by_id
+      leases_by_task = index_leases_by_task(tasks_by_id.keys)
 
-      module_state.map do |slug, entry|
-        task  = tasks_by_slug[slug]
+      module_state.map do |key, entry|
+        task  = tasks_by_id[entry["task_id"]]
         lease = task && leases_by_task[task.id]
+        slug  = entry["module"] || key
 
         {
-          module:   slug,
-          tag:      entry["tag"],
-          state:    entry["state"],
-          attempts: entry["attempts"],
-          error:    entry["error"],
-          task:     task && serialize_task(task),
-          lease:    lease && serialize_lease(lease),
-          artifact: serialize_artifact(slug, entry["tag"]),
-          parity:   parity_state[slug]
+          module:       slug,
+          architecture: entry["architecture"],
+          tag:          entry["tag"],
+          state:        entry["state"],
+          attempts:     entry["attempts"],
+          error:        entry["error"],
+          task:         task && serialize_task(task),
+          lease:        lease && serialize_lease(lease),
+          artifact:     serialize_artifact(slug, entry["tag"], architecture: entry["architecture"]),
+          parity:       parity_state[key]
         }
       end
     end
 
-    def index_tasks_by_slug
+    def index_tasks_by_id
       task_ids = module_state.values.map { |e| e["task_id"] }.compact
       return {} if task_ids.empty?
 
-      ::System::Task.where(id: task_ids).index_by { |t| (t.options || {})["module"] }
+      ::System::Task.where(id: task_ids).index_by(&:id)
     end
 
     def index_leases_by_task(task_ids)
@@ -143,9 +152,15 @@ module System
     # Finds the published NodeModuleVersion for this module+tag (same lookup
     # ModulePublicationProcessor#find_or_create_version uses — config's
     # "git_tag" carries the short tag the build published under) and
-    # summarizes its canonical (amd64-preferred) ModuleArtifact. nil when the
-    # module hasn't published yet (build still in flight / failed pre-sign).
-    def serialize_artifact(slug, tag)
+    # summarizes its ModuleArtifact. nil when the module hasn't published yet
+    # (build still in flight / failed pre-sign).
+    #
+    # architecture: the row's own build-target arch (multi-arch package
+    # builds — campaign 019f6084 inc J — give each arch its own tag/version,
+    # see NativeModuleBuildOrchestrator#finalize_success!'s doc). When given,
+    # picks that arch's own artifact rather than the amd64-preferred
+    # default, so an arm64 row never shows an amd64 artifact's digest/size.
+    def serialize_artifact(slug, tag, architecture: nil)
       return nil if tag.blank?
 
       node_module = account.system_node_modules.find_by(name: slug)
@@ -158,7 +173,11 @@ module System
                   .first
       return nil unless version
 
-      artifact = version.module_artifacts.find { |a| a.architecture == "amd64" } || version.module_artifacts.first
+      artifact = if architecture.present?
+                   version.module_artifacts.find { |a| a.architecture == architecture }
+                 else
+                   version.module_artifacts.find { |a| a.architecture == "amd64" } || version.module_artifacts.first
+                 end
 
       {
         version_number:  version.version_number,
