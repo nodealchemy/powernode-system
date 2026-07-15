@@ -749,3 +749,124 @@ export interface SystemCveExposure {
     name: string;
   } | null;
 }
+
+// === Module build batches (campaign 019f6084 inc5) ===
+// Shapes mirror System::ModuleBuildBatchSerializer#as_summary / #as_full
+// exactly — field names are read directly off the serializer, not invented.
+// See extensions/system/server/app/models/system/module_build_batch.rb for
+// the AASM ladder (STATUSES) this mirrors, and
+// server/app/services/system/native_module_build_orchestrator.rb /
+// module_build_parity_service.rb for the per-module `state` / parity
+// `status` value sets.
+
+export type SystemModuleBuildBatchStatus =
+  | 'planning'
+  | 'dispatched'
+  | 'awaiting_signature'
+  | 'publishing'
+  | 'complete'
+  | 'partial'
+  | 'failed';
+
+export type SystemModuleBuildBatchTrigger = 'push' | 'manual' | 'cve' | 'package';
+
+// Narrow whitelist of metadata["package_context"] the serializer exposes for
+// "package"-trigger batches only — never gpg_key_armor or repo_url (see
+// ModuleBuildBatchSerializer#package_context_summary). null for every other
+// trigger.
+export interface SystemModuleBuildBatchPackageContext {
+  repository_id: string | null;
+  package_repo_kind: string | null;
+  architecture: string | null;
+  snapshot: string | null;
+  tag: string | null;
+}
+
+// List-shape (index) row — ModuleBuildBatchSerializer#as_summary.
+export interface SystemModuleBuildBatch {
+  id: string;
+  status: SystemModuleBuildBatchStatus;
+  trigger: SystemModuleBuildBatchTrigger;
+  shadow: boolean;
+  base_sha: string;
+  head_sha: string;
+  module_slugs: string[];
+  planned_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  active: boolean;
+  finished: boolean;
+  package_context: SystemModuleBuildBatchPackageContext | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ModuleBuildParityService::STATUSES. "waived" has no gitea_ref/native_ref/
+// diff_summary (short-circuited before comparison); "error" carries `error`
+// instead of a diff.
+export type SystemModuleBuildParityStatus = 'ok' | 'failed' | 'waived' | 'error';
+
+export interface SystemModuleBuildParity {
+  status: SystemModuleBuildParityStatus;
+  identical?: boolean;
+  gitea_ref?: string;
+  native_ref?: string;
+  diff_summary?: {
+    added: string[];
+    removed: string[];
+    changed: string[];
+  };
+  error?: string;
+  compared_at?: string;
+}
+
+export interface SystemModuleBuildBatchModuleTask {
+  id: string;
+  status: string;
+  progress: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+}
+
+export interface SystemModuleBuildBatchModuleLease {
+  id: string;
+  status: string;
+  node_instance_id?: string | null;
+  runner_name?: string | null;
+}
+
+export interface SystemModuleBuildBatchModuleArtifact {
+  version_number: string | null;
+  promotion_state: string | null;
+  oci_ref?: string | null;
+  oci_digest?: string | null;
+  size_bytes?: number | null;
+  architecture?: string | null;
+  signed: boolean;
+}
+
+// One row per module — ModuleBuildBatchSerializer#module_rows, joined into
+// #as_full. The serializer's own key is `module` (a slug), not `slug`.
+export interface SystemModuleBuildBatchModule {
+  module: string;
+  tag?: string | null;
+  state: string;
+  attempts: number;
+  error?: string | null;
+  task: SystemModuleBuildBatchModuleTask | null;
+  lease: SystemModuleBuildBatchModuleLease | null;
+  artifact: SystemModuleBuildBatchModuleArtifact | null;
+  parity: SystemModuleBuildParity | null;
+}
+
+// Detail-shape (show) — ModuleBuildBatchSerializer#as_full.
+export interface SystemModuleBuildBatchFull extends SystemModuleBuildBatch {
+  dispatched_at?: string | null;
+  awaiting_signature_at?: string | null;
+  publishing_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  error_message?: string | null;
+  modules: SystemModuleBuildBatchModule[];
+}
