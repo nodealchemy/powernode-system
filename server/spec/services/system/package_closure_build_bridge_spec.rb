@@ -88,6 +88,17 @@ RSpec.describe System::PackageClosureBuildBridge do
       expect(ctx["apt_snapshot"]).to eq("20260415T000000Z")
       expect(ctx["apt_suite"]).to eq("noble")
       expect(ctx["modules"]).to have_key("app-#{suffix}")
+
+      # Campaign 019f6084 item L — EVR lockfile: sourced from each module's
+      # PackageModuleLink#package_version (materialized_module seeds "1.0.0"
+      # above), recorded both at the batch-metadata top level (operator/audit
+      # visibility) and embedded inside package_context (what the orchestrator
+      # actually reads to thread the pin into task options).
+      expect(batch.metadata["package_lock"]).to eq(
+        "app-#{suffix}" => "1.0.0", "lib-#{suffix}" => "1.0.0"
+      )
+      expect(ctx["package_lock"]).to eq(batch.metadata["package_lock"])
+      expect(ctx["modules"]["app-#{suffix}"]["package_version"]).to eq("1.0.0")
     end
 
     it "dispatches ci.package_build member tasks correlated by batch_id, carrying the build recipe" do
@@ -113,12 +124,32 @@ RSpec.describe System::PackageClosureBuildBridge do
       web_task = tasks.detect { |t| t.options["module"] == "web-#{suffix}" }
       expect(web_task.options["build_kind"]).to eq("package")
       expect(web_task.options["package_name"]).to eq("web-#{suffix}")
+      expect(web_task.options["package_version"]).to eq("1.0.0")
       expect(web_task.options["package_repo_id"]).to eq(repo.id)
       expect(web_task.options["apt_snapshot"]).to eq("20260415T000000Z")
       expect(web_task.options["batch_id"]).to eq(batch.id)
 
       # No ci.module_build tasks were created (this is NOT the platform path).
       expect(System::Task.where(account: account, command: "ci.module_build").count).to eq(0)
+    end
+
+    it "omits package_version from task options when a module in the closure carries no PackageModuleLink at all (backward-compat: absent lockfile → unpinned)" do
+      seed_pool_member
+      # PackageModuleLink.package_version is NOT NULL at the DB level (every
+      # real materialized link always has one — see the model's own presence
+      # validation), so the realistic "nothing to pin" case isn't a link with
+      # a blank version, it's a module with NO link at all — #module_context
+      # / #package_lock are already nil-safe against that (`link&.…`).
+      mod = create(:system_node_module, account: account, name: "unpinned-#{suffix}", auto_generated: false)
+      expect(mod.package_module_link).to be_nil
+
+      batch = described_class.dispatch!(
+        repository: repo, modules: [ mod ], architectures: [ "amd64" ], account: account, requested_by: user
+      ).batch
+
+      expect(batch.metadata["package_lock"]).to eq({})
+      task = batch.member_tasks.first
+      expect(task.options).not_to have_key("package_version")
     end
 
     it "returns an error result (no batch) for an empty module set" do

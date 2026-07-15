@@ -333,9 +333,18 @@ module System
     def package_task_options(slug, entry)
       ctx     = package_context
       mod_ctx = (ctx["modules"] || {})[slug] || {}
+      # EVR lockfile pin (campaign 019f6084 item L) — sourced from
+      # PackageClosureBuildBridge#package_lock, embedded in package_context
+      # under the same key so this is the one place both a fresh
+      # metadata["package_lock"] and the older per-module mod_ctx snapshot
+      # are consulted. Absent for a batch dispatched before this lockfile
+      # existed (or a link with no recorded version) — nil here means "no
+      # pin", which PackageBuildHandler treats as today's unpinned behavior.
+      pinned_version = (ctx["package_lock"] || {})[slug] || mod_ctx["package_version"]
       {
         "build_kind"        => "package",
         "package_name"      => mod_ctx["package_name"] || slug,
+        "package_version"   => pinned_version,
         # entry["architecture"] is THIS build unit's target arch (multi-arch
         # fan-out — campaign 019f6084 inc J); mod_ctx["architecture"] is the
         # PackageModuleLink's discovery-time arch (unrelated to which arch is

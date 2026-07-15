@@ -20,6 +20,30 @@ module System
   # member task's options — a materialized package module has no modules/<slug>
   # tree in a repo to check out, so the recipe cannot come from a git ref.
   #
+  # REPRODUCIBILITY (campaign 019f6084 item L): today's only build-time
+  # "snapshot" is #snapshot_token — a timestamp, not a pin. A package build
+  # dispatched hours apart from the same repo can silently resolve a
+  # different upstream version if the mirror rolled forward in between. To
+  # close that gap, #dispatch! also records an EVR (epoch:version-release)
+  # lockfile — one entry per module, sourced from the SAME
+  # PackageModuleLink#package_version the materializer already persisted at
+  # resolve time (see PackageModuleMaterializer#upsert_link) — as
+  # metadata["package_lock"] (batch-level, operator/audit-visible) AND
+  # inside metadata["package_context"]["package_lock"] (so
+  # NativeModuleBuildOrchestrator#package_task_options, which only ever
+  # reads package_context, can thread the pin into each member task's
+  # options without a second batch.metadata lookup). PackageModuleLink is
+  # arch-blind (one package_version column, not one per arch — see that
+  # model), so the lockfile is keyed by module slug only, not (module, arch)
+  # — a multi-arch package plan's N build units for the same module all pin
+  # to the same recorded EVR.
+  #
+  # An absent/blank package_version (e.g. a hand-seeded test link) simply
+  # drops that module from the lockfile — the agent-side handler treats a
+  # missing pin as "no lockfile for this module" and falls back to today's
+  # unpinned "install latest at snapshot" behavior (see
+  # PackageBuildHandler#buildPackageEnv), so this is purely additive.
+  #
   # PARKED (reported to the driver, NOT attempted here): actually EXECUTING a
   # native package build needs the live builder fleet (module-forge /
   # gitea-act-runner), which per inc0's size-ledger finding has NEVER built in
@@ -27,6 +51,17 @@ module System
   # (never failed — see NativeModuleBuildOrchestrator's pool-exhaustion posture)
   # until a builder appears; the batch + tasks are created either way, so the
   # read/poll surface inc2-A and inc3 build on top of exists immediately.
+  #
+  # ALSO PARKED: a true snapshot-mirror base_url (e.g. a point-in-time
+  # snapshot.debian.org-style URL) so a pinned EVR is guaranteed fetchable
+  # even after the live mirror rolls forward past it. System::PackageRepository
+  # carries exactly one URL (base_url, the rolling mirror) — there is no
+  # separate immutable-snapshot endpoint anywhere in this schema to prefer.
+  # #package_context still threads base_url as package_repo_url (unchanged);
+  # the EVR lockfile below narrows what gets installed FROM that mirror, it
+  # does not make the mirror itself point-in-time. Real snapshot-mirror
+  # support needs a schema addition (e.g. a repo-level snapshot_url), which
+  # is out of scope here.
   class PackageClosureBuildBridge
     Result = Struct.new(:ok?, :batch, :error, keyword_init: true)
 
@@ -70,7 +105,10 @@ module System
         base_sha: snapshot,
         head_sha: snapshot
       )
-      batch.update!(metadata: batch.metadata.merge("package_context" => package_context(tag, snapshot)))
+      batch.update!(metadata: batch.metadata.merge(
+        "package_context" => package_context(tag, snapshot),
+        "package_lock"    => package_lock
+      ))
 
       ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
 
@@ -137,7 +175,8 @@ module System
         "apt_snapshot"      => snapshot,
         "tag"               => tag,
         "requested_by"      => @requested_by&.id,
-        "modules"           => module_context
+        "modules"           => module_context,
+        "package_lock"      => package_lock
       }.compact
     end
 
@@ -146,10 +185,26 @@ module System
         link = m.package_module_link
         memo[m.name] = {
           "package_name"     => (link&.package_name || m.name),
+          "package_version"  => link&.package_version,
           "architecture"     => (link&.architecture || @architectures.first),
           "mask"             => m.mask_text,
           "file_spec_source" => (link&.file_spec_source || "package_query")
-        }
+        }.compact
+      end
+    end
+
+    # EVR lockfile — module slug => resolved package_version (the exact
+    # apt/rpm EVR PackageModuleLink recorded at materialize time). See the
+    # class doc's REPRODUCIBILITY note for why this is keyed by module slug
+    # (not (module, arch)) and why it's recorded both here (embedded in
+    # package_context, for the orchestrator) and again at the top level of
+    # batch.metadata (for direct operator/audit visibility, mirroring how
+    # ModuleBuildBatch.create_for already keeps metadata["plan"] alongside
+    # metadata["package_context"]).
+    def package_lock
+      @modules.each_with_object({}) do |m, memo|
+        version = m.package_module_link&.package_version
+        memo[m.name] = version if version.present?
       end
     end
   end
