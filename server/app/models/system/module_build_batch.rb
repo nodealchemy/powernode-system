@@ -124,13 +124,31 @@ module System
         base_sha: base_sha,
         head_sha: head_sha,
         shadow: shadow,
-        module_slugs: plan_array.map { |p| p[:module].to_s },
+        # .uniq: a multi-arch package plan (campaign 019f6084 inc J) carries
+        # one plan entry per (module, arch) pair, so the same module slug can
+        # appear more than once here — module_slugs is the distinct-module
+        # display list, not a 1:1 mirror of plan/build-unit count (that's
+        # planned_count, left as the raw entry count below).
+        module_slugs: plan_array.map { |p| p[:module].to_s }.uniq,
         planned_count: plan_array.size,
         metadata: {
-          "plan" => plan_array.map { |p| { "module" => p[:module].to_s, "oci_ref" => p[:oci_ref].to_s } }
+          "plan" => plan_array.map { |p| plan_entry_metadata(p) }
         }
       )
     end
+
+    # Preserves an optional per-entry "architecture" (multi-arch package
+    # plans — see System::PackageClosureBuildBridge#build_plan) without
+    # adding it when absent, so a platform-module plan's metadata["plan"]
+    # stays byte-identical to the pre-inc-J shape (asserted by
+    # module_build_batch_spec's exact `contain_exactly` match).
+    def self.plan_entry_metadata(entry)
+      row = { "module" => entry[:module].to_s, "oci_ref" => entry[:oci_ref].to_s }
+      arch = entry[:architecture]
+      row["architecture"] = arch.to_s if arch.present?
+      row
+    end
+    private_class_method :plan_entry_metadata
 
     # === Instance methods ===
 

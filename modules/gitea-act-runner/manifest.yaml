@@ -69,6 +69,7 @@ description: >
   `privileged: true` with a non-empty capability list) and re-run; do not
   add explicit capabilities as a first attempt.
 license: MIT
+category: build-dev
 
 mask:
   - "/var/cache/apt/**"

@@ -3,6 +3,7 @@ name: postgres-primary
 display_name: PostgreSQL 16
 description: PostgreSQL server providing the platform's primary database
 license: PostgreSQL
+category: data-plane
 package_spec:
   - postgresql-16
   - postgresql-contrib-16

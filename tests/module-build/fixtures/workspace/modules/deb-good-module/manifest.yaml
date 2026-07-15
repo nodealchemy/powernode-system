@@ -1,0 +1,18 @@
+schema_version: 1
+name: deb-good-module
+mask: []
+file_spec:
+  - "/usr/bin/demo-svc-fixture"
+  - "/usr/lib/systemd/system/demo-svc-fixture.service"
+protected_spec: []
+# demo-pkg is this module's own package; shared-lib stands in for a
+# transitive dependency it also resolves (in the real pipeline apt would
+# pull this in automatically — the deb-payload test stub short-circuits
+# apt resolution, so the fixture lists both explicitly). shared-lib's
+# payload is excluded from the owned set (deb-base-module's closure also
+# resolves it) and this file_spec doesn't claim it — clean.
+package_spec:
+  - demo-pkg
+  - shared-lib
+build:
+  apt_snapshot: none

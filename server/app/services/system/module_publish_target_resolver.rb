@@ -58,11 +58,18 @@ module System
 
     private
 
-    # Category for auto-created NodeModules. "Powernode Platform"
-    # is the seed-managed category for platform modules; absent
-    # that, drop into whatever category the account has set up.
+    # Category for auto-created NodeModules. campaign 019f6084 retired the
+    # single "Powernode Platform" catch-all in favor of System::
+    # NodeModuleCategory::PLATFORM_TAXONOMY; a CI-published module with no
+    # prior NodeModule row (no manifest `category:` has been read yet —
+    # that happens in the apply_manifest_yaml step immediately following
+    # this resolve) is, functionally, an on-demand workload, so it lands in
+    # the same "workloads" bucket System::PackageModuleMaterializer
+    # defaults to. Self-healing (creates the triplet on first use); falls
+    # back to whatever subscription-variety category the account happens
+    # to have if taxonomy resolution somehow comes back empty.
     def resolve_publisher_category(account)
-      ::System::NodeModuleCategory.find_by(account: account, name: "Powernode Platform", variety: "subscription") ||
+      ::System::NodeModuleCategory.for_platform_slug!(account: account, slug: "workloads") ||
         ::System::NodeModuleCategory.find_by(account: account, variety: "subscription") ||
         ::System::NodeModuleCategory.find_by(account: account)
     end

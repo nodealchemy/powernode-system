@@ -1,0 +1,15 @@
+schema_version: 1
+name: deb-bad-module
+mask: []
+# RED CASE: the broad /usr/** glob also carves shared-lib's
+# /usr/lib/libshared-fixture.so.1 — that file is excluded from the owned
+# set (deb-base-module's closure resolves shared-lib too), so carving it
+# anyway is over-inclusion.
+file_spec:
+  - "/usr/**"
+protected_spec: []
+package_spec:
+  - demo-pkg
+  - shared-lib
+build:
+  apt_snapshot: none

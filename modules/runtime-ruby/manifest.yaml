@@ -3,6 +3,7 @@ name: runtime-ruby
 display_name: Powernode Base Ruby Runtime
 description: Ruby 3.2.8 (source-compiled — Noble's apt default is 3.2.3) + bundler 2.7.1 + system dependencies for Rails workloads
 license: MIT
+category: language-runtime
 package_spec:
   - build-essential
   - libpq-dev

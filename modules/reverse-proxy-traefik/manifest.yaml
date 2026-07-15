@@ -3,12 +3,31 @@ name: reverse-proxy-traefik
 display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
+category: networking-proxy
 # Traefik is in noble's universe repo, but mmdebstrap's --include applies a
 # ?priority(required) narrow filter that drops it ("Unable to locate package
 # traefik") — the same structural blocker as vector + gcsfuse. So package_spec
 # stays empty and the binary is fetched-and-sha256-verified from the upstream
 # GitHub release in the build-platform-modules Stage 1.5 step (staged into
 # /usr/bin/traefik) — hermetic, no checked-in binary, CVE fixes on bump.
+#
+# campaign 019f6084 P0-C pilot note: this module's file_spec was left
+# UNCHANGED here — deliberately, not an oversight. derive-file-spec.sh
+# --mode deb-payload derives OWNED from package_spec's resolved apt
+# closure; with package_spec empty, both the owned set AND the candidate
+# universe it checks file_spec against are empty, so `conformance --mode
+# deb-payload` for this module reports a trivial 0/0/0/0 PASS — it isn't
+# verifying anything, because the entire /usr/bin/traefik +
+# /usr/share/traefik/** + /etc/traefik/** content is staged (fetched in
+# CI, not apt-installed) and deb-payload mode has no visibility into
+# staged content at all (see the tool's own header, "Fidelity blind
+# spots"). Confirmed by running it: real output was owned=0/carved=0/
+# over=0/under=0/PASS. The existing three globs already look correct by
+# inspection (they match exactly what Stage 1.5 stages + what package_spec
+# would have carved were traefik apt-installable), but that's an eyeball
+# check, not a tool-verified one — real verification of this module needs
+# --mode fat-root against a real built rootfs (the parked builder-fleet
+# land gate), not this increment's unprivileged approximation.
 package_spec: []
 file_spec:
   - /usr/bin/traefik

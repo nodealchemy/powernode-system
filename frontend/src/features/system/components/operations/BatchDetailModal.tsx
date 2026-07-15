@@ -277,8 +277,18 @@ export const BatchDetailModal: React.FC<BatchDetailModalProps> = ({ batchId, onC
                       </thead>
                       <tbody className="divide-y divide-theme">
                         {batch.modules.map((row: SystemModuleBuildBatchModule) => (
-                          <tr key={row.module} className="hover:bg-theme-surface-hover transition-colors duration-200">
-                            <td className="py-2 px-3 font-mono text-xs text-theme-primary">{row.module}</td>
+                          <tr
+                            key={row.architecture ? `${row.module}@${row.architecture}` : row.module}
+                            className="hover:bg-theme-surface-hover transition-colors duration-200"
+                          >
+                            <td className="py-2 px-3 font-mono text-xs text-theme-primary">
+                              {row.module}
+                              {/* Multi-arch package batches (campaign 019f6084 inc J) have one row
+                                  per arch for the same module — disambiguate them in the UI. */}
+                              {row.architecture && (
+                                <span className="ml-1 text-theme-tertiary">({row.architecture})</span>
+                              )}
+                            </td>
                             <td className="py-2 px-3">
                               <Badge variant={moduleStateVariant(row.state)} size="xs">{row.state}</Badge>
                             </td>

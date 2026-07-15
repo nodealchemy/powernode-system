@@ -3,6 +3,7 @@ name: powernode-hub-worker
 display_name: Powernode Hub Worker (Sidekiq)
 description: Sidekiq worker process; communicates with hub-backend via HTTP API only
 license: MIT
+category: platform-apps
 package_spec: []
 # Ship the parent's worker/ tree into /opt/powernode/worker — matches
 # production install layout. The Sidekiq config loads via bundle exec

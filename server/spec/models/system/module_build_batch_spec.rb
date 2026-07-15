@@ -182,6 +182,28 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(batch.planned_count).to eq(0)
     end
 
+    # Campaign 019f6084 inc J — multi-arch package builds. A package plan
+    # entry carries an "architecture" (PackageClosureBuildBridge#build_plan);
+    # a platform plan entry (like `plan` above) never does — asserted by the
+    # "preserves the full plan" example above via exact `contain_exactly`.
+    it "preserves a plan entry's architecture in metadata, and dedupes module_slugs across arches" do
+      multi_arch_plan = [
+        { module: "nginx", oci_ref: "abc1234-amd64", architecture: "amd64" },
+        { module: "nginx", oci_ref: "abc1234-arm64", architecture: "arm64" }
+      ]
+      batch = described_class.create_for(account: account, plan: multi_arch_plan, trigger: "package",
+                                          base_sha: "snap1", head_sha: "snap1")
+
+      expect(batch.metadata["plan"]).to contain_exactly(
+        { "module" => "nginx", "oci_ref" => "abc1234-amd64", "architecture" => "amd64" },
+        { "module" => "nginx", "oci_ref" => "abc1234-arm64", "architecture" => "arm64" }
+      )
+      # One module, two build units — module_slugs is the distinct-module
+      # list, planned_count is the raw build-unit count.
+      expect(batch.module_slugs).to eq([ "nginx" ])
+      expect(batch.planned_count).to eq(2)
+    end
+
     # Campaign 019f5885 inc10 — dual-run shadow mode.
     it "defaults shadow to false, preserving every pre-inc10 caller" do
       batch = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")

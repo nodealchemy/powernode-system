@@ -79,7 +79,7 @@ module System
     # Top-level keys we recognize; everything else lands in
     # `config.manifest_extras` for forward compatibility.
     KNOWN_TOP_KEYS = %w[
-      schema_version name display_name description license
+      schema_version name display_name description license category
       mask file_spec package_spec dependency_spec protected_spec
       dependencies init reboot_required security skills build services
       users groups sudoers
@@ -134,6 +134,25 @@ module System
       # manifest before pushing to CI.
       def validate_only(yaml:, node_module:)
         new.send(:do_validate_only, yaml: yaml, node_module: node_module)
+      end
+
+      # Re-runs ONLY the dependency-graph resolution step (resolve_
+      # dependencies) against an already-imported node_module — no spec/
+      # identity/service writes, no version snapshot. Exists for seeds like
+      # db/seeds/powernode_platform_modules.rb that import a whole batch of
+      # manifests in one alphabetical pass: a `requires: capability:<tag>`
+      # (or a name-based `requires:`) silently defers when the PROVIDING
+      # module hasn't been created + imported yet (its `capabilities` /
+      # `name` isn't in the DB), so a module that sorts BEFORE its provider
+      # (e.g. claude-tmux before runtime-node) ends the pass with an
+      # unresolved edge even though the provider exists by the time the
+      # whole batch finishes. Calling this a second time, after every
+      # module in the batch has been created + imported once, re-resolves
+      # any edge that deferred on the first pass. Idempotent — safe to call
+      # on a node_module whose deps already fully resolved (upsert_
+      # dependency! no-ops on an existing edge).
+      def reresolve_dependencies!(node_module:, yaml:)
+        new.send(:do_reresolve_dependencies, node_module: node_module, yaml: yaml)
       end
     end
 
@@ -207,6 +226,19 @@ module System
       end
     end
 
+    def do_reresolve_dependencies(node_module:, yaml:)
+      return failure("node_module required") unless node_module.is_a?(::System::NodeModule)
+      return failure("yaml content is blank") if yaml.blank?
+
+      parsed = parse_yaml(yaml)
+      return failure("manifest YAML parse failed: #{parsed[:error]}") unless parsed[:ok]
+
+      resolved = resolve_dependencies(node_module, parsed[:data])
+      Result.new(ok?: true, node_module: node_module, validation_errors: [], resolved_dependencies: resolved)
+    rescue ImportError => e
+      failure(e.message)
+    end
+
     def failure(message, validation_errors: [])
       Result.new(ok?: false, error: message, validation_errors: validation_errors,
                  resolved_dependencies: [])
@@ -230,6 +262,11 @@ module System
 
       if manifest["name"].present? && manifest["name"] != node_module.name
         errors << "manifest name #{manifest['name'].inspect} does not match NodeModule name #{node_module.name.inspect}"
+      end
+
+      if (cat = manifest["category"]) && !::System::NodeModuleCategory::PLATFORM_TAXONOMY.key?(cat.to_s)
+        errors << "category #{cat.inspect} is not a recognized platform taxonomy slug " \
+                   "(#{::System::NodeModuleCategory::PLATFORM_TAXONOMY.keys.join(', ')})"
       end
 
       SPEC_FIELDS.each do |field|
@@ -541,6 +578,21 @@ module System
       end
 
       mod.reboot_required = manifest["reboot_required"] if manifest.key?("reboot_required")
+
+      # Layering taxonomy (campaign 019f6084): PREFER the manifest's own
+      # `category:` slug over whatever the caller pre-set on `mod` (the
+      # platform seed's fallback default) — see NodeModuleCategory::
+      # PLATFORM_TAXONOMY. Self-healing: creates the account's triplet for
+      # this slug if the categories seed hasn't run yet (e.g. an ad hoc
+      # `validate_only`/CI-publish import against a fresh account).
+      # `validate` already rejected unrecognized slugs, so a lookup miss
+      # here only happens if the categories seed truly hasn't run.
+      if manifest.key?("category")
+        resolved_category = ::System::NodeModuleCategory.for_platform_slug!(
+          account: mod.account, slug: manifest["category"].to_s
+        )
+        mod.category = resolved_category if resolved_category
+      end
 
       # Stash everything else on config so authoring iterations don't
       # require platform schema bumps. Skills, security, and build hints

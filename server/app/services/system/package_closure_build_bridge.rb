@@ -37,16 +37,17 @@ module System
     # @param repository [System::PackageRepository]
     # @param modules [Array<System::NodeModule>] the materialized closure
     #   (top-level + non-baseline deps) to build.
-    # @param architectures [Array<String>] kind-specific arches. NOTE: the
-    #   native pipeline builds one arch per module today (amd64-centric, like
-    #   platform modules) — architectures.first is the build arch; multi-arch
-    #   package builds are a documented follow-up, not handled here.
+    # @param architectures [Array<String>] kind-specific arches (campaign
+    #   019f6084 inc J) — every requested arch is fanned out into its own
+    #   member Task per module (see #build_plan); the agent-side
+    #   ci.package_build handler builds exactly the one arch its Task's
+    #   options["architecture"] names.
     # @param account [Account]
     # @param requested_by [User, nil]
     def initialize(repository:, modules:, architectures:, account:, requested_by: nil)
       @repository    = repository
       @modules       = Array(modules).compact
-      @architectures = Array(architectures)
+      @architectures = Array(architectures).map(&:to_s).uniq
       @account       = account
       @requested_by  = requested_by
     end
@@ -57,7 +58,7 @@ module System
 
       snapshot = snapshot_token
       tag      = build_tag(snapshot)
-      plan     = @modules.map { |m| { module: m.name, oci_ref: tag } }
+      plan     = build_plan(tag)
 
       batch = ::System::ModuleBuildBatch.create_for(
         account:  @account,
@@ -102,6 +103,26 @@ module System
       ::Digest::SHA256.hexdigest(key)[0, 7]
     end
 
+    # One plan entry per module when a single architecture is requested —
+    # byte-identical to the pre-multi-arch shape (no "architecture" key, no
+    # tag suffix), so single-arch dispatch is unaffected by this method
+    # existing at all. One entry per (module, arch) pair when 2+ are
+    # requested: mmdebstrap can't produce a multi-arch rootfs in one
+    # invocation the way platform modules' single buildx push can (that
+    # push yields one OCI index ModuleOciIngestService fans out into N
+    # ModuleArtifact rows at ingest time) — so a package multi-arch build is
+    # genuinely N independent build units, each needing its own lease +
+    # ci.package_build Task + OCI tag (arch-suffixed so two concurrent
+    # builders never race the same mutable registry tag) + resulting
+    # NodeModuleVersion/ModuleArtifact.
+    def build_plan(tag)
+      return @modules.map { |m| { module: m.name, oci_ref: tag } } if @architectures.size <= 1
+
+      @modules.flat_map do |m|
+        @architectures.map { |arch| { module: m.name, oci_ref: "#{tag}-#{arch}", architecture: arch } }
+      end
+    end
+
     def package_context(tag, snapshot)
       {
         "repository_id"     => @repository.id,
@@ -112,6 +133,7 @@ module System
         "rpm_releasever"    => (@repository.kind != "apt" ? @repository.releasever : nil),
         "gpg_key_armor"     => @repository.signing_key_armor,
         "architecture"      => @architectures.first,
+        "architectures"     => @architectures,
         "apt_snapshot"      => snapshot,
         "tag"               => tag,
         "requested_by"      => @requested_by&.id,

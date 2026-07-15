@@ -4,6 +4,7 @@ name: base-os-ubuntu-noble
 display_name: "Powernode Base — Ubuntu 24.04 (Noble) userland"
 description: "OS-specific layer on top of powernode-system-base — Ubuntu 24.04 LTS minbase userland: systemd as PID 1, systemd-networkd for DHCP, openssh-server, ca-certificates, libssl, coreutils, the standard Debian filesystem layout. Inherits /sbin/powernode-agent from the minimal powernode-system-base via overlay union; this module only owns the OS-specific bits. Sibling modules for Debian (trixie), Alpine, and other base images will provide the same `base.os` capability."
 license: "MIT"
+category: base-os
 
 mask:
   - "/var/cache/apt/**"

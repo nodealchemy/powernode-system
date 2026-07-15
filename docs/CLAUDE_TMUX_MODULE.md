@@ -29,7 +29,9 @@ consumption model. In-tree gets it the existing CI pipeline, existing cosign
 identity, and existing publish-notify path for free, with zero new Gitea
 repos/secrets to provision. Publish is push-based: CI POSTs to
 `/api/v1/system/module_publications` on every build, which auto-creates the
-`NodeModule` row (`variety: subscription`, category `Powernode Platform`) on
+`NodeModule` row (`variety: subscription`, category `Workloads` — the
+resolver's fallback bucket if no row pre-exists; in practice the platform
+seed pre-creates claude-tmux under `Build & Dev` before any publish runs) on
 first publish via `ModulePublishTargetResolver` — no manual pre-registration
 step.
 

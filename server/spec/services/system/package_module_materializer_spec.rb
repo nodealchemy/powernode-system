@@ -87,6 +87,43 @@ RSpec.describe System::PackageModuleMaterializer do
       }.to raise_error(System::PackageModuleMaterializer::NamingConflictError)
     end
 
+    context "category assignment (campaign 019f6084)" do
+      it "defaults every materialized module to the 'Workloads' taxonomy bucket when no category is given" do
+        result = described_class.call(
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
+          account: account, requested_by_user: user, dispatch_build: false
+        )
+        expect(result.top_level_module.category&.name).to eq("Workloads")
+        result.dependency_modules.each do |m|
+          expect(m.category&.name).to eq("Workloads")
+        end
+      end
+
+      it "creates the 'Workloads' triplet on first use if it doesn't exist yet" do
+        expect(
+          System::NodeModuleCategory.find_by(account: account, name: "Workloads", variety: "subscription")
+        ).to be_nil
+
+        described_class.call(
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
+          account: account, requested_by_user: user, dispatch_build: false
+        )
+
+        expect(
+          System::NodeModuleCategory.find_by(account: account, name: "Workloads", variety: "subscription")
+        ).to be_present
+      end
+
+      it "honors an explicit category override instead of the default" do
+        custom = create(:system_node_module_category, account: account, variety: "subscription")
+        result = described_class.call(
+          repository: repo, package_name: top_pkg, architectures: [ "amd64" ],
+          account: account, requested_by_user: user, category: custom, dispatch_build: false
+        )
+        expect(result.top_level_module.category).to eq(custom)
+      end
+    end
+
     context "with recommends selection" do
       let(:rec_pkg) { "ssl-cert-#{suffix}" }
 

@@ -778,6 +778,10 @@ export interface SystemModuleBuildBatchPackageContext {
   repository_id: string | null;
   package_repo_kind: string | null;
   architecture: string | null;
+  // Full requested arch list (campaign 019f6084 inc J — multi-arch package
+  // builds). `architecture` above stays the first-requested arch for
+  // backward compat; this is the complete set.
+  architectures?: string[] | null;
   snapshot: string | null;
   tag: string | null;
 }
@@ -847,9 +851,13 @@ export interface SystemModuleBuildBatchModuleArtifact {
 }
 
 // One row per module — ModuleBuildBatchSerializer#module_rows, joined into
-// #as_full. The serializer's own key is `module` (a slug), not `slug`.
+// #as_full. The serializer's own key is `module` (a slug), not `slug`. A
+// multi-arch package batch (campaign 019f6084 inc J) has one row PER ARCH
+// for the same module — `module` is not unique across rows in that case,
+// pair it with `architecture` for a unique row identity (e.g. a React key).
 export interface SystemModuleBuildBatchModule {
   module: string;
+  architecture?: string | null;
   tag?: string | null;
   state: string;
   attempts: number;

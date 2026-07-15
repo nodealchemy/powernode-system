@@ -12,6 +12,7 @@ description: >
   logged. Reusable standalone — any fleet instance can carry this module
   regardless of template.
 license: MIT
+category: build-dev
 
 mask:
   - "/var/cache/apt/**"
@@ -19,39 +20,80 @@ mask:
   - "/usr/share/doc/**"
   - "/usr/share/man/**"
 
+# campaign 019f6084 P0-C, Step 1 of 2 (Step 2 lands separately — see the
+# dependencies: comment below): curated from the real apt-ownership
+# closure for the CORRECTED package_spec (derive-file-spec.sh --mode
+# deb-payload against [tmux, jq, ca-certificates] — ca-certificates
+# resolves 0 owned files here since base-os already package_spec's it;
+# tmux+jq resolve 35 owned files, 20 of them doc/man now waived below,
+# leaving the 15 file_spec entries under the tmux/jq comment). This
+# replaced TWO bugs the old broad carve hid: (1) nodejs+npm's apt
+# closure was declared as this module's package_spec, but their real
+# payload is npm's own ~27,000-file vendored dev toolchain (babel,
+# eslint, node-gyp, python3, dpkg — apt's `npm` package ships its own
+# implementation as a giant node_modules tree; NONE of it is
+# claude-tmux's own content) that the old /usr/lib/node_modules/** +
+# /usr/lib/x86_64-linux-gnu/** globs were silently carving in full,
+# confirmed empirically via `derive --mode deb-payload --module
+# claude-tmux` against the unmodified manifest (27,183 owned files); (2)
+# /usr/share/tmux/** matched nothing at all — Noble's tmux package ships
+# no such directory (dead glob, apt binary is /usr/bin/tmux + a share/doc
+# tree already covered by the mask above). The staged Claude Code CLI
+# entries below are real, physically-written content (the npm-install-
+# into-prefix step in stage15.sh's claude-tmux case writes them
+# regardless of package_spec) but are NOT apt-derivable, so --mode
+# deb-payload structurally can't verify them (they never appear in the
+# apt-resolved candidate set it diffs against — see the tool's own
+# "Fidelity blind spots" header note); left declared here because
+# stage2-carve.sh's real fat-root carve still needs a "+" rule to keep
+# them.
 file_spec:
-  - "/usr/bin/tmux"
-  - "/usr/share/tmux/**"
-  - "/usr/bin/node"
-  - "/usr/bin/nodejs"
-  - "/usr/bin/npm"
-  - "/usr/bin/npx"
   - "/usr/bin/claude"
-  - "/usr/lib/node_modules/**"
-  # apt's nodejs/tmux packages can pull in shared libraries (e.g. a
-  # shared libnode.so build, ICU) under the multiarch lib dir — carve
-  # the whole tree rather than enumerate individual .so files, so a
-  # Debian/apt version bump can't silently strand the module with a
-  # dynamic-linker failure at runtime. Mirrors runtime-ruby's broader
-  # /usr/lib/** carve for the same reason (a language runtime's
-  # shared-library surface isn't something to hand-enumerate).
-  - "/usr/lib/x86_64-linux-gnu/**"
+  - "/usr/bin/jq"
+  - "/usr/bin/tmux"
+  - "/usr/lib/node_modules/@anthropic-ai/claude-code/**"
+  - "/usr/lib/x86_64-linux-gnu/libevent_core-2.1.so*"
+  - "/usr/lib/x86_64-linux-gnu/libjq.so*"
+  - "/usr/lib/x86_64-linux-gnu/libonig.so*"
+  - "/usr/lib/x86_64-linux-gnu/libutempter.so*"
+  - "/usr/lib/x86_64-linux-gnu/utempter/utempter"
+  - "/usr/share/debianutils/shells.d/tmux"
+  - "/usr/share/lintian/overrides/libevent-core-2.1-7t64"
+  - "/usr/share/lintian/overrides/libutempter0"
+  - "/usr/share/lintian/overrides/tmux"
   - "/usr/local/bin/claude-tmux-fetch-credential.sh"
   - "/usr/local/bin/claude-tmux-start.sh"
+
+# Owned (tmux/jq's real closure) but masked out by /usr/share/doc/** +
+# /usr/share/man/** above — waived so conformance doesn't WARN on the
+# deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
 
 # claude-tmux only ships its own service unit + scripts + the CLI
 # runtime — no other module's paths.
 protected_spec: []
 
-# tmux + Node.js runtime come from apt (mmdebstrap); the Claude Code CLI
-# itself is an npm package with no apt equivalent, so it is npm-installed
-# into this module's rootfs at CI build time (see the claude-tmux case in
-# .gitea/workflows/build-platform-modules.yaml Stage 1.5) rather than
-# listed here.
+# tmux + jq + ca-certificates come from apt (mmdebstrap). The Node.js
+# runtime that /usr/bin/claude's shebang needs at BOOT time does NOT ship
+# from this module as of Step 1 — apt's nodejs/npm (Noble ships v18, too
+# old to run the CLI; see runtime-node's manifest comment for the same
+# finding) were dropped from package_spec (see file_spec comment above
+# for why: their real payload was npm's own giant internal toolchain, not
+# a Node runtime claude-tmux needs). Step 2 (separate commit) adds
+# `requires: capability:runtime.node` so the shared runtime-node module
+# (Node 24.13.0 at /usr/local/bin/node) supplies the interpreter instead —
+# until Step 2 lands, an instance carrying ONLY this module has no working
+# `node` on PATH; the two steps are meant to land together, not be
+# deployed independently (runtime smoke across both steps is PARKED,
+# see this increment's report). The Claude Code CLI itself is an npm
+# package with no apt equivalent, so it is npm-installed into this
+# module's rootfs at CI build time regardless of package_spec (see the
+# claude-tmux case in scripts/module-build/stage15.sh Stage 1.5) rather
+# than listed here.
 package_spec:
   - tmux
-  - nodejs
-  - npm
   - ca-certificates
   # claude-tmux-fetch-credential.sh parses the mTLS node_api JSON response
   # with jq; declare it so the module is self-sufficient rather than
@@ -66,9 +108,27 @@ dependencies:
     # system-base, so on a strict resolver it would fail to resolve the
     # base layer for any template composing claude-tmux (e.g. dev-cell).
     - powernode/powernode-system-base@^1.0
-    # claude (Node.js binary), tmux, and this module's own scripts link
-    # against base-os's glibc — closure guarantee (campaign 019f6084 inc1).
+    # tmux, jq, and this module's own scripts link against base-os's
+    # glibc — closure guarantee (campaign 019f6084 inc1).
     - capability:os.userland
+    # Step 2 of the P0-C node-runtime correction (see file_spec's and
+    # package_spec's comments above): /usr/bin/claude's shebang needs a
+    # `node` on PATH at boot, and this module no longer ships one itself
+    # (apt nodejs/npm were dropped from package_spec in Step 1 — their
+    # real payload was npm's own internal toolchain, not a usable Node
+    # runtime; Noble's apt nodejs is v18 and can't run the CLI regardless,
+    # per runtime-node's own manifest comment). runtime-node provides
+    # Node 24.13.0 at /usr/local/bin/node; declaring this as a hard
+    # `requires:` capability edge (rather than dev-cell's existing softer
+    # "assumed co-module, co-assigned on the same NodeTemplate" pattern —
+    # see dev-cell/manifest.yaml's dependencies comment) means the
+    # DependencyResolutionService pulls runtime-node into ANY composition
+    # that includes claude-tmux automatically, matching the os.userland
+    # closure-guarantee precedent from inc1 rather than relying on every
+    # template author to remember the co-assignment by hand. Dedups the
+    # "two copies of node" risk a manually-co-assigned template could
+    # otherwise hit if it ALSO carried an apt-sourced node from elsewhere.
+    - capability:runtime.node
   provides:
     - dev.claude-cli
     - dev.tmux-session

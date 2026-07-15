@@ -3,6 +3,7 @@ name: powernode-hub-backend
 display_name: Powernode Hub Backend (Rails 8 API)
 description: The Powernode platform's Rails 8 API server with ActionCable; backed by postgres-primary and redis
 license: MIT
+category: platform-apps
 package_spec: []
 # Aligns with the production install layout (/opt/powernode/ with
 # server/ + extensions/ + worker/ as siblings) — the Gemfile uses

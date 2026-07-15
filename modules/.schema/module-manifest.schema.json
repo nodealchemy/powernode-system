@@ -20,6 +20,10 @@
     "display_name": { "type": "string", "maxLength": 200 },
     "description":  { "type": "string" },
     "license":      { "type": "string" },
+    "category": {
+      "description": "Platform layering taxonomy slug (System::NodeModuleCategory::PLATFORM_TAXONOMY) — determines this module's position in the overlay union stack (bottom = base layers, top = application layers). Optional: modules without one fall back to the seed's default 'workloads' bucket. See db/seeds/powernode_platform_categories.rb.",
+      "enum": ["system-base", "base-os", "language-runtime", "data-plane", "storage-guest", "networking-proxy", "observability", "build-dev", "platform-apps", "workloads"]
+    },
 
     "mask":            { "type": "array", "items": { "type": "string" } },
     "file_spec":       { "type": "array", "items": { "type": "string" } },

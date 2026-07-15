@@ -1,0 +1,9 @@
+Package: shared-lib
+Version: 1.0
+Architecture: amd64
+Maintainer: Test Fixture <test@example.com>
+Description: fixture package representing a transitive dependency shared
+ by both a module's and the base-module's resolved closure — its payload
+ must be excluded from the owned set (present on both sides of the
+ subtraction) but WOULD be swept up by an overly-broad file_spec glob,
+ which is what the deb-bad-module fixture's RED conformance case exercises.

@@ -3,6 +3,7 @@ name: redis
 display_name: Redis
 description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
 license: BSD-3-Clause
+category: data-plane
 package_spec:
   - redis-server
 # The apt package's own redis-server.service auto-enables via the distro's
@@ -13,17 +14,44 @@ package_spec:
 # redis-start.sh's own data-dir prep. rootfs/etc/systemd/system/
 # redis-server.service -> /dev/null masks the distro unit (same on-disk
 # state `systemctl mask` produces) so it never races the real one.
-# Ship the full apt-installed tree under the four standard FHS roots.
-# /usr covers redis-server + redis-cli + libs under /usr/lib. /lib +
-# /lib64 cover early-boot libs (libc, libsystemd, libssl) that the
-# binary dynamically links. /etc carries package-installed configs.
-# /var is intentionally omitted — runtime state (data dirs, logs)
-# materializes on first boot into the overlay's writable upper layer.
+# Curated from the real apt-ownership closure (campaign 019f6084 P0-C,
+# derive-file-spec.sh --mode deb-payload: 48 owned files; /etc/redis/
+# redis.conf isn't repeated here — it's already carved via protected_spec
+# below). Previously a broad /usr/**+/lib/**+/lib64/**+/etc/** carve —
+# on Noble everything is usr-merged (dpkg -L never reports a bare /lib or
+# /lib64 path for this closure), so those two globs were dead weight, and
+# the broad /usr/**+/etc/** would carve any SIBLING module's /usr or /etc
+# content unioned into the same fat rootfs, not just redis's own files.
+# Per-library globs under the multiarch lib dir (not a whole-directory
+# carve) — see qemu-guest-agent's file_spec comment for why a directory-
+# wide glob risks over-carving base-shared candidates. /var is still
+# intentionally omitted — runtime state (data dirs, logs) materializes
+# on first boot into the overlay's writable upper layer.
 file_spec:
-  - /usr/**
-  - /lib/**
-  - /lib64/**
-  - /etc/**
+  - /etc/default/redis-server
+  - /etc/init.d/redis-server
+  - /etc/logrotate.d/redis-server
+  - /usr/bin/redis-benchmark
+  - /usr/bin/redis-check-aof
+  - /usr/bin/redis-check-rdb
+  - /usr/bin/redis-cli
+  - /usr/bin/redis-server
+  - /usr/lib/systemd/system/redis-server.service
+  - /usr/lib/systemd/system/redis-server@.service
+  - /usr/lib/x86_64-linux-gnu/libatomic.so*
+  - /usr/lib/x86_64-linux-gnu/libjemalloc.so*
+  - /usr/lib/x86_64-linux-gnu/liblzf.so*
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so*
+  - /usr/share/bash-completion/completions/redis-cli
+  - /usr/share/doc/libatomic1
+  - /usr/share/doc/libjemalloc2/**
+  - /usr/share/doc/liblzf1/**
+  - /usr/share/doc/libstdc++6
+  - /usr/share/doc/redis-server/**
+  - /usr/share/doc/redis-tools/**
+  - /usr/share/gcc/python/libstdcxx/**
+  - /usr/share/gdb/auto-load/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33-gdb.py
+  - /usr/share/man/man1/redis-*.1.gz
 mask: []
 dependency_spec: []
 protected_spec:

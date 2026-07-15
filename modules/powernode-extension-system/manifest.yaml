@@ -3,6 +3,7 @@ name: powernode-extension-system
 display_name: Powernode System Extension
 description: The Powernode System extension Rails engine (nodes, modules, SDWAN, fleet autonomy, Go agent control plane)
 license: MIT
+category: platform-apps
 package_spec: []
 # Ships THIS submodule's content under /opt/powernode/extensions/system/.
 # The extension.json sibling is what extensions_loader_helper.rb scans

@@ -29,8 +29,10 @@ module System
   #     state (succeeded or failed).
   #
   # Per-module bookkeeping (state/attempts/lease id/task id) lives in
-  # batch.metadata["modules"] (keyed by slug) — ModuleBuildBatch has no
-  # per-module table, only the aggregate succeeded_count/failed_count (see
+  # batch.metadata["modules"] (keyed by slug — or "slug@arch" for a
+  # multi-arch package plan entry, campaign 019f6084 inc J; see
+  # #load_modules_state) — ModuleBuildBatch has no per-module table, only
+  # the aggregate succeeded_count/failed_count (see
   # #recompute_counts!), so this orchestrator is the one place that tracks
   # retry/concurrency state. Seeded from batch.metadata["plan"] (written by
   # ModuleBuildBatch.create_for) — each plan entry's "oci_ref" is actually a
@@ -126,12 +128,19 @@ module System
       retried   = 0
       failed    = 0
 
+      # Reverse index by task_id rather than re-deriving a state key from
+      # task.options — robust to both the bare-slug key (platform / single-
+      # arch package) and the compound "slug@arch" key (multi-arch package,
+      # campaign 019f6084 inc J) without needing to know which shape a given
+      # batch uses.
+      entries_by_task_id = modules.values.index_by { |e| e["task_id"] }
+
       terminal_member_tasks(modules).each do |task|
-        slug  = task_module_slug(task)
-        entry = modules[slug]
+        entry = entries_by_task_id[task.id]
         next unless entry
-        next if entry["task_id"] != task.id # stale entry (a prior attempt's task) — not this one's concern
         next if TERMINAL_MODULE_STATES.include?(entry["state"]) # already resolved
+
+        slug = entry["module"]
 
         # Captured BEFORE attempt_retry! (which nils lease_id for the NEW
         # attempt) — this task's lease is done being built on either way
@@ -179,6 +188,16 @@ module System
 
     # === Per-module state (persisted in batch.metadata["modules"]) ===
 
+    # Keyed by module slug — EXCEPT a multi-arch package plan entry (campaign
+    # 019f6084 inc J), which carries an "architecture" and is keyed
+    # "<slug>@<arch>" so its own independent lease/Task/tag never collides
+    # with a sibling arch's state for the same module. A single-arch plan
+    # entry never carries "architecture" (see PackageClosureBuildBridge
+    # #build_plan) so its key stays the bare slug — byte-identical to the
+    # pre-inc-J shape, no regression. Every entry keeps its real module name
+    # in "module" (never the compound key) so callers never need to parse
+    # the key back apart — see #finalize_success!/#dispatch_one!, which take
+    # the module name from entry["module"], not from the hash key.
     def load_modules_state
       existing = @batch.metadata["modules"]
       return existing.dup if existing.present?
@@ -186,9 +205,12 @@ module System
       Array(@batch.metadata["plan"]).each_with_object({}) do |plan_entry, memo|
         slug = plan_entry["module"] || plan_entry[:module]
         tag  = plan_entry["oci_ref"] || plan_entry[:oci_ref]
+        arch = plan_entry["architecture"] || plan_entry[:architecture]
         next if slug.blank?
 
-        memo[slug.to_s] = {
+        key = arch.present? ? "#{slug}@#{arch}" : slug.to_s
+        memo[key] = {
+          "module" => slug.to_s, "architecture" => arch,
           "tag" => tag, "state" => "queued", "attempts" => 0,
           "lease_id" => nil, "task_id" => nil, "error" => nil
         }
@@ -206,11 +228,11 @@ module System
     # === Dispatch (lease + task creation), capacity-bounded ===
 
     def try_dispatch_queued!(modules)
-      modules.each do |slug, entry|
+      modules.each_value do |entry|
         next unless entry["state"] == "queued"
         next unless capacity_available?
 
-        dispatch_one!(slug, entry)
+        dispatch_one!(entry)
       end
     end
 
@@ -222,12 +244,17 @@ module System
       ::System::CiRunnerLease.for_account(@account).active.where(purpose: "module_build").count
     end
 
-    # Leases a builder + creates the ci.module_build Task for one module.
-    # Mutates `entry` in place; returns true when dispatched. Leaves entry
-    # in "queued" (pool unavailable right now — NOT a batch failure) unless
-    # the module itself is unresolvable, in which case it's marked "failed"
-    # directly (no retry can fix a missing NodeModule).
-    def dispatch_one!(slug, entry)
+    # Leases a builder + creates the ci.module_build Task for one module (one
+    # arch of it, for a multi-arch package entry). Mutates `entry` in place;
+    # returns true when dispatched. Leaves entry in "queued" (pool
+    # unavailable right now — NOT a batch failure) unless the module itself
+    # is unresolvable, in which case it's marked "failed" directly (no retry
+    # can fix a missing NodeModule). Always takes the real module slug from
+    # entry["module"] — never a (possibly compound "slug@arch") state key —
+    # so a NodeModule lookup / task options["module"] is never handed a
+    # synthetic key.
+    def dispatch_one!(entry)
+      slug = entry["module"]
       lease = acquire_lease
       return false unless lease
 
@@ -300,16 +327,21 @@ module System
       }
       return base unless package_batch?
 
-      base.merge(package_task_options(slug))
+      base.merge(package_task_options(slug, entry))
     end
 
-    def package_task_options(slug)
+    def package_task_options(slug, entry)
       ctx     = package_context
       mod_ctx = (ctx["modules"] || {})[slug] || {}
       {
         "build_kind"        => "package",
         "package_name"      => mod_ctx["package_name"] || slug,
-        "architecture"      => mod_ctx["architecture"] || ctx["architecture"],
+        # entry["architecture"] is THIS build unit's target arch (multi-arch
+        # fan-out — campaign 019f6084 inc J); mod_ctx["architecture"] is the
+        # PackageModuleLink's discovery-time arch (unrelated to which arch is
+        # being built); ctx["architecture"] (single arch, pre-inc-J) is the
+        # final fallback for a plan entry that never set one.
+        "architecture"      => entry["architecture"] || mod_ctx["architecture"] || ctx["architecture"],
         "package_repo_id"   => ctx["repository_id"],
         "package_repo_url"  => ctx["package_repo_url"],
         "package_repo_kind" => ctx["package_repo_kind"],
@@ -369,6 +401,19 @@ module System
     # AASM status through awaiting_signature/publishing the first time any
     # module reaches each phase (a best-effort real-time signal; the final
     # complete/partial/failed call happens once in #advance_batch_status!).
+    #
+    # Multi-arch package builds (campaign 019f6084 inc J): each arch's entry
+    # carries its OWN entry["tag"] (arch-suffixed — see
+    # PackageClosureBuildBridge#build_plan), so this runs the exact same
+    # sign→publish call once per arch, unmodified. #process!'s
+    # #find_or_create_version keys on that tag, so each arch lands its own
+    # NodeModuleVersion + single ModuleArtifact rather than one shared
+    # version with N per-arch artifacts (the shape a platform module's
+    # single multi-arch OCI index push ingests into). Unifying them into one
+    # version would need either an OCI-index-assembly step after all arches
+    # land, or decoupling ModulePublicationProcessor's version-identity tag
+    # from its OCI-ref tag — flagged as a follow-up, not attempted here (no
+    # real builder exists in this dev env to exercise either path yet).
     def finalize_success!(slug, entry, task)
       node_module = find_node_module(slug)
       unless node_module
@@ -445,11 +490,6 @@ module System
     end
 
     # === Helpers ===
-
-    def task_module_slug(task)
-      opts = task.options || {}
-      opts["module"] || opts[:module]
-    end
 
     def task_result(task)
       completed_event = Array(task.events).reverse.find { |e| (e["type"] || e[:type]).to_s == "completed" }
