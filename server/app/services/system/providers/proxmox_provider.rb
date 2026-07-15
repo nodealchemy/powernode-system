@@ -376,6 +376,19 @@ module System
           nil
         end
 
+        # Clear the protection flag before delete. VMs are created with
+        # protection=1 (apply_protection!), and Proxmox REFUSES to DELETE a
+        # protected VM ("protection mode enabled"). Without this the DELETE fails,
+        # the rescue below turns it into a best-effort error, and the reaper
+        # silently accumulates orphaned STOPPED VMs (33 such orphans cleaned up on
+        # dna 2026-07-15). Best-effort: a config-PUT failure must not abort the
+        # teardown — the delete attempt still follows.
+        begin
+          c.put("/api2/json/nodes/#{node}/#{kind}/#{vmid}/config", { "protection" => 0 })
+        rescue Proxmox::Client::Error
+          nil
+        end
+
         # `purge=1` removes the VM's references from job configs (backup, replication);
         # `destroy-unreferenced-disks=1` cleans up any storage volumes attached.
         delete_upid = c.delete("/api2/json/nodes/#{node}/#{kind}/#{vmid}",

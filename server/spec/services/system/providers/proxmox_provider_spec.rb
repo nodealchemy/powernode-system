@@ -1149,6 +1149,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
     it "issues stop best-effort, then DELETEs with purge + destroy-unreferenced-disks" do
       allow(client).to receive(:post).and_return("UPID:dna:stop")
       allow(client).to receive(:wait_task)
+      allow(client).to receive(:put) # protection-clear before delete
       allow(client).to receive(:delete).with(
         "/api2/json/nodes/dna/qemu/100",
         hash_including("purge" => 1, "destroy-unreferenced-disks" => 1)
@@ -1159,9 +1160,22 @@ RSpec.describe System::Providers::ProxmoxProvider do
       expect(result[:status]).to eq("terminated")
     end
 
+    it "clears the protection flag before DELETE (a protected VM otherwise refuses to delete → orphaned stopped VM)" do
+      allow(client).to receive(:post).and_return("UPID:dna:stop")
+      allow(client).to receive(:wait_task)
+      allow(client).to receive(:delete).and_return("UPID:dna:destroy")
+      expect(client).to receive(:put)
+        .with("/api2/json/nodes/dna/qemu/100/config", { "protection" => 0 })
+        .and_return("UPID:dna:config")
+
+      result = provider.terminate_instance("dna/qemu/100")
+      expect(result[:success]).to be true
+    end
+
     it "treats an already-gone instance as success" do
       allow(client).to receive(:post).and_return("UPID:dna:stop")
       allow(client).to receive(:wait_task)
+      allow(client).to receive(:put) # protection-clear before delete
       allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "404")
 
       result = provider.terminate_instance("dna/qemu/999")
