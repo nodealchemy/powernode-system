@@ -138,49 +138,176 @@ mask:
   - "/var/lib/apt/lists/**"
   - "/usr/share/doc/**"
   - "/usr/share/man/**"
+  - "/usr/share/locale/**"
 
+# campaign 019f6084 P0-C wave 2: curated from the real apt-ownership
+# closure (derive-file-spec.sh --mode deb-payload against [git, rsync, jq,
+# ca-certificates, uuid-runtime]: 3572 owned files). Verified via diff
+# against dev-cell's own derive output (dev-cell's closure is [git, jq,
+# ca-certificates] — a strict subset): identical for every git/jq/perl/
+# dpkg-owned path, plus 53 rsync + uuid-runtime-owned files this module
+# alone needs. ca-certificates itself resolves 0 owned files (base-os
+# already package_spec's it, same finding claude-tmux's/dev-cell's
+# manifests document) — the /etc/ssl/certs/**, /usr/share/ca-
+# certificates/**, /etc/ca-certificates.conf entries the PRE-correction
+# manifest carved were themselves base-shared candidates (over-inclusion,
+# confirmed empirically), so they're dropped rather than kept (base-os's
+# own broader /etc/** already ships them; this module doesn't need its
+# own duplicate copy). The old blanket /usr/lib/x86_64-linux-gnu/** hit
+# the SAME over-carve class the multiarch lib dir always does in this
+# closure family (glibc's gconv, openssl's engines-3/ — see dev-cell's/
+# runtime-ruby's manifests) — LITERAL entries for the dir's 17 loose
+# files instead.
 file_spec:
-  # The build contract entrypoint (Part B invokes this — see its own header
-  # for the full env-var contract).
+  # The build contract entrypoints (Part B invokes module-forge-build.sh;
+  # module-forge-package-build.sh is its ci.package_build sibling — see
+  # each script's own header for its env-var contract).
   - "/usr/local/bin/module-forge-build.sh"
-  # The materialized-package build contract entrypoint (campaign 019f6084
-  # inc-D — agent ci.package_build handler). Sibling of module-forge-
-  # build.sh: builds ONE apt package's closure member (no git checkout —
-  # the recipe travels entirely via env, see its own header) and reuses
-  # the SAME /opt/module-build/push.sh push step above.
   - "/usr/local/bin/module-forge-package-build.sh"
-  # The baked buildroot (nested debian:trixie tree — see description) and
-  # the copied build scripts (scripts/module-build/*.sh) — both staged by
-  # this module's own Stage 1.5 arm in scripts/module-build/stage15.sh, not
-  # apt packages.
+  # The baked buildroot (nested debian:trixie tree) and the copied build
+  # scripts (scripts/module-build/*.sh) — both staged by this module's own
+  # Stage 1.5 arm, not apt packages.
   - "/opt/buildenv/**"
   - "/opt/module-build/**"
-  # git (host-side clone of MODULE_SOURCE_URL@BUILD_SHA — see
-  # module-forge-build.sh). Binary + its helper/template trees (Debian's
-  # `git` package layout splits these three ways).
   - "/usr/bin/git"
+  - "/usr/bin/git-receive-pack"
+  - "/usr/bin/git-shell"
+  - "/usr/bin/git-upload-archive"
+  - "/usr/bin/git-upload-pack"
+  - "/usr/bin/scalar"
   - "/usr/lib/git-core/**"
   - "/usr/share/git-core/**"
-  # rsync — seeds the ephemeral per-job /opt/buildenv copy from the golden
-  # template (see module-forge-build.sh); same tool Stage 2's own carve
-  # already depends on inside the buildroot.
+  - "/usr/share/gitweb/**"
+  - "/usr/share/bash-completion/completions/git"
+  - "/usr/share/bash-completion/completions/gitk"
+  - "/etc/bash_completion.d/git-prompt"
   - "/usr/bin/rsync"
-  # jq — assembles the final RESULT JSON (module-forge-build.sh).
+  - "/usr/bin/rrsync"
+  - "/usr/bin/rsync-ssl"
+  - "/usr/share/rsync/scripts/**"
+  - "/usr/share/lintian/overrides/rsync"
+  - "/etc/default/rsync"
+  - "/etc/init.d/rsync"
+  - "/usr/lib/systemd/system/rsync.service"
   - "/usr/bin/jq"
-  # uuidgen (uuid-runtime) — per-job scratch directory naming
-  # (module-forge-build.sh), avoiding any collision across build jobs on a
-  # reused/pooled instance.
   - "/usr/bin/uuidgen"
-  # ca-certificates — TLS verification for the host-side git clone over
-  # https (MODULE_SOURCE_URL).
-  - "/etc/ssl/certs/**"
-  - "/usr/share/ca-certificates/**"
-  - "/etc/ca-certificates.conf"
-  # git/rsync/jq/uuidgen's own shared-library closure beyond glibc (e.g.
-  # libpcre2 for git, libpopt for rsync) — carve the whole multiarch lib
-  # tree rather than enumerate individual .so files, same rationale
-  # gitea-act-runner's manifest documents for its own apt packages.
-  - "/usr/lib/x86_64-linux-gnu/**"
+  - "/usr/bin/uuidparse"
+  - "/usr/sbin/uuidd"
+  - "/etc/init.d/uuidd"
+  - "/usr/lib/systemd/system/uuidd.service"
+  - "/usr/lib/systemd/system/uuidd.socket"
+  - "/usr/share/bash-completion/completions/uuidd"
+  - "/usr/share/bash-completion/completions/uuidgen"
+  - "/usr/share/bash-completion/completions/uuidparse"
+
+  - "/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.3"
+  - "/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4"
+  - "/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.8.0"
+  - "/usr/lib/x86_64-linux-gnu/libgdbm.so.6"
+  - "/usr/lib/x86_64-linux-gnu/libgdbm.so.6.0.0"
+  - "/usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4"
+  - "/usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4.0.0"
+  - "/usr/lib/x86_64-linux-gnu/libjq.so.1"
+  - "/usr/lib/x86_64-linux-gnu/libjq.so.1.0.4"
+  - "/usr/lib/x86_64-linux-gnu/libonig.so.5"
+  - "/usr/lib/x86_64-linux-gnu/libonig.so.5.4.0"
+  - "/usr/lib/x86_64-linux-gnu/libperl.so.5.38"
+  - "/usr/lib/x86_64-linux-gnu/libperl.so.5.38.2"
+  - "/usr/lib/x86_64-linux-gnu/libpopt.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libpopt.so.0.0.2"
+  - "/usr/lib/x86_64-linux-gnu/libxxhash.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.2"
+  # perl's own CORE runtime module tree — see dev-cell's manifest for why
+  # /usr/share/perl5/ (the SHARED third-party sitelib debconf also
+  # populates) is named explicitly instead of directory-globbed.
+  - "/usr/share/perl/**"
+  - "/usr/share/perl5/Error.pm"
+  - "/usr/share/perl5/Error/**"
+  - "/usr/share/perl5/Git.pm"
+  - "/usr/share/perl5/Git/**"
+  - "/usr/lib/x86_64-linux-gnu/perl/**"
+  - "/usr/lib/x86_64-linux-gnu/perl-base/**"
+  # dpkg's own aux dirs + systemd DB-backup unit + mime handler.
+  - "/usr/libexec/dpkg/**"
+  - "/usr/share/dpkg/**"
+  - "/usr/lib/mime/packages/tar"
+  - "/usr/lib/systemd/system/dpkg-db-backup.service"
+  - "/usr/lib/systemd/system/dpkg-db-backup.timer"
+  # Per-package lintian overrides — not a directory-wide glob.
+  - "/usr/share/lintian/overrides/dpkg"
+  - "/usr/share/lintian/overrides/git"
+  - "/usr/share/lintian/overrides/libcurl3t64-gnutls"
+  - "/usr/share/lintian/overrides/libgdbm-compat4t64"
+  - "/usr/share/lintian/overrides/libgdbm6t64"
+  - "/usr/share/lintian/overrides/libperl5.38t64"
+  - "/usr/share/lintian/overrides/perl"
+  - "/usr/share/lintian/overrides/perl-base"
+  # /usr/bin (dpkg's own tools, perl's toolchain) + /usr/sbin.
+  - "/usr/bin/corelist"
+  - "/usr/bin/cpan"
+  - "/usr/bin/cpan5.38-x86_64-linux-gnu"
+  - "/usr/bin/dpkg"
+  - "/usr/bin/dpkg-deb"
+  - "/usr/bin/dpkg-divert"
+  - "/usr/bin/dpkg-maintscript-helper"
+  - "/usr/bin/dpkg-query"
+  - "/usr/bin/dpkg-realpath"
+  - "/usr/bin/dpkg-split"
+  - "/usr/bin/dpkg-statoverride"
+  - "/usr/bin/dpkg-trigger"
+  - "/usr/bin/enc2xs"
+  - "/usr/bin/encguess"
+  - "/usr/bin/h2ph"
+  - "/usr/bin/h2xs"
+  - "/usr/bin/instmodsh"
+  - "/usr/bin/json_pp"
+  - "/usr/bin/libnetcfg"
+  - "/usr/bin/perl"
+  - "/usr/bin/perl5.38.2"
+  - "/usr/bin/perl5.38-x86_64-linux-gnu"
+  - "/usr/bin/perlbug"
+  - "/usr/bin/perldoc"
+  - "/usr/bin/perlivp"
+  - "/usr/bin/perlthanks"
+  - "/usr/bin/piconv"
+  - "/usr/bin/pl2pm"
+  - "/usr/bin/pod2html"
+  - "/usr/bin/pod2man"
+  - "/usr/bin/pod2text"
+  - "/usr/bin/pod2usage"
+  - "/usr/bin/podchecker"
+  - "/usr/bin/prove"
+  - "/usr/bin/ptar"
+  - "/usr/bin/ptardiff"
+  - "/usr/bin/ptargrep"
+  - "/usr/bin/shasum"
+  - "/usr/bin/splain"
+  - "/usr/bin/streamzip"
+  - "/usr/bin/tar"
+  - "/usr/bin/update-alternatives"
+  - "/usr/bin/xsubpp"
+  - "/usr/bin/zipdetails"
+  - "/usr/sbin/rmt-tar"
+  - "/usr/sbin/start-stop-daemon"
+  - "/usr/sbin/tarcat"
+  - "/etc/alternatives/README"
+  - "/etc/cron.daily/dpkg"
+  - "/etc/dpkg/dpkg.cfg"
+  - "/etc/logrotate.d/alternatives"
+  - "/etc/logrotate.d/dpkg"
+  - "/etc/perl/Net/libnet.cfg"
+  - "/etc/rmt"
+  # Small remainder — genuinely owned (same set dev-cell's manifest hit).
+  - "/usr/share/bug/dpkg"
+  - "/usr/share/lintian/profiles/dpkg/main.profile"
+  - "/usr/share/polkit-1/actions/org.dpkg.pkexec.update-alternatives.policy"
+
+# Owned (per the closure above) but masked out by the doc/man/locale
+# rules above — same size-conscious convention base-os/storage-tools use.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
 
 # Deliberately empty — this module ships nothing under a path another
 # module needs to protect, and claims no path another module should be
