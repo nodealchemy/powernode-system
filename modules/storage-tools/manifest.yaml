@@ -20,12 +20,78 @@ package_spec:
   - s3fs
   - rclone
   - keyutils
-file_spec: []
+# Was empty (campaign 019f6084 inc0 audit flagged this module as BROKEN —
+# nothing carved at all despite 4 real packages). Curated from the real
+# apt-ownership closure (P0-C, derive-file-spec.sh --mode deb-payload:
+# 108 owned files, all accounted for below or under the doc/man mask).
+# fscrypt/s3fs/rclone/keyutils's own transitive deps pull in fuse
+# (libfuse2t64 — s3fs FUSE-mounts), libcurl3t64-gnutls + libxml2 (rclone's
+# HTTP/XML plumbing), libicu74 (rclone), libstdc++6 (rclone, C++), sed +
+# media-types (fscrypt's own deps) — none of which base-os's own
+# package_spec provides, so they're genuinely this module's to ship.
+# Per-library globs (not a whole-directory /usr/lib/x86_64-linux-gnu/**
+# carve) — a directory-wide glob would also match this closure's
+# transitively-resolved-but-base-owned candidates (the same gconv-module
+# over-inclusion qemu-guest-agent's correction hit against libc6; see
+# that manifest's file_spec comment) even though none of THIS module's
+# own libraries happen to collide today.
+file_spec:
+  - /etc/fuse.conf
+  - /etc/mime.types
+  - /etc/request-key.conf
+  - /usr/bin/fscrypt
+  - /usr/bin/fusermount
+  - /usr/bin/keyctl
+  - /usr/bin/rclone
+  - /usr/bin/s3fs
+  - /usr/bin/sed
+  - /usr/bin/ulockmgr_server
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so*
+  - /usr/lib/x86_64-linux-gnu/libfuse.so*
+  - /usr/lib/x86_64-linux-gnu/libicu*.so*
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so*
+  - /usr/lib/x86_64-linux-gnu/libulockmgr.so*
+  - /usr/lib/x86_64-linux-gnu/libxml2.so*
+  - /usr/sbin/key.dns_resolver
+  - /usr/sbin/mount.fuse
+  - /usr/sbin/request-key
+  - /usr/share/bash-completion/completions/rclone
+  - /usr/share/bug/media-types/presubj
+  - /usr/share/doc-base/rclone.rclone
+  - /usr/share/gcc/python/libstdcxx/**
+  - /usr/share/gdb/auto-load/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33-gdb.py
+  - /usr/share/initramfs-tools/hooks/fuse
+  - /usr/share/keyutils/request-key-debug.sh
+  # Per-package, not a whole-directory /usr/share/lintian/overrides/** —
+  # deb-payload conformance caught the same over-inclusion class as the
+  # /usr/lib/x86_64-linux-gnu/ lesson above: this closure's TLS/crypto
+  # transitive deps (libcurl-gnutls needs libgnutls -> libp11-kit,
+  # libidn2, libkrb5 for GSSAPI, etc.) pull in candidates that overlap
+  # heavily with base-os's own package set, and EVERY package in that
+  # overlap also ships a lintian-overrides file — none of them owned by
+  # this module.
+  - /usr/share/lintian/overrides/libcurl3t64-gnutls
+  - /usr/share/lintian/overrides/libfuse2t64
+  - /usr/share/lintian/overrides/libicu74
+  - /usr/share/lintian/overrides/libxml2
+  - /usr/share/lintian/overrides/rclone
 mask:
   - "/var/cache/apt/**"
   - "/var/lib/apt/lists/**"
   - "/usr/share/doc/**"
   - "/usr/share/man/**"
+  # sed ships a GNU info manual — same documentation-content bucket as
+  # doc/man above; not caught by either glob since /usr/share/info/ is a
+  # third tree apt uses for the same purpose.
+  - "/usr/share/info/**"
+# Owned (per the closure above) but intentionally not carved — masked out
+# by the /usr/share/{doc,man,info}/** rules above, same size-conscious
+# convention base-os uses. Waived so derive-file-spec.sh's conformance
+# check doesn't WARN on a deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/info/**"
 dependency_spec: []
 protected_spec: []
 reboot_required: false
