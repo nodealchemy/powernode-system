@@ -77,6 +77,20 @@ module System
           side_effectful: false, # drift report + remediation plan only
           input_mapper: ->(signal) { { instance_id: signal.dig(:payload, "instance_id") } }
         },
+        # Campaign 019f6084 §2.4.3 (TemplateClosureDriftSensor). No skill —
+        # the signal payload already carries the missing-module plan
+        # (TemplateApprovalPolicy's classification travels with it), so
+        # there's nothing an executor would add for the ApprovalRequest to
+        # display. Blast radius is ALWAYS provisioned (the sensor only
+        # fires for an instance that already exists on the template), so
+        # `decide` forces require_approval off the signal's own
+        # `requires_approval` flag rather than trusting the seeded policy —
+        # see the force_policy branch below. Remediation
+        # (apply_template_closure_drift) lives in REMEDIATION_APPLIERS.
+        "system.template_closure_drift" => {
+          skill: nil,
+          action_category: "system.template_closure_apply"
+        },
         # Boot-image drift (BootImageDriftSensor): a node booted a stale disk
         # image. Campaign 019f505f increment 4 — route to the drift-driven fleet
         # rollout executor, gated by system.node_boot_image_drift (require_approval:
@@ -404,7 +418,8 @@ module System
         gate_result = autonomy_service.gate_action!(
           binding[:action_category],
           metadata: skill_metadata_payload(signal, skill_result),
-          reasoning: { summary: build_summary(signal, skill_result) }
+          reasoning: { summary: build_summary(signal, skill_result) },
+          force_policy: force_policy_for(signal)
         )
 
         record_decision!(signal)
@@ -568,6 +583,26 @@ module System
         0
       end
 
+      # Campaign 019f6084 §2.4.3: system.template_closure_drift's blast
+      # radius is TemplateApprovalPolicy's call, not the seeded
+      # InterventionPolicy's — the sensor only ever fires for an instance
+      # that already exists on the template (that's the drift condition),
+      # so `provisioned_node_count` is never zero and the classification is
+      # effectively always require_approval. Rather than duplicate that
+      # reasoning here, trust the flag TemplateClosureDriftSensor already
+      # computed via TemplateApprovalPolicy and force the gate with it —
+      # same force_policy mechanism escalate_stuck_remediation! uses to
+      # override a resolved policy that doesn't fit the moment. Every other
+      # signal kind is unaffected (nil = let gate_action! resolve normally).
+      def force_policy_for(signal)
+        return nil unless signal.kind == "system.template_closure_drift"
+
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        return nil unless payload["requires_approval"] || payload[:requires_approval]
+
+        "require_approval"
+      end
+
       # F3-11: the escalation lane. Emits the fleet.remediation_stuck event
       # (the operator-facing alert; bounded to once per DEDUP_TTL by the
       # engine's fingerprint dedup) and gates with a forced require_approval —
@@ -677,7 +712,14 @@ module System
         # apply_remediation! fell through to the "no applier" branch and the
         # compromised instance was never terminated despite the operator
         # approving the quarantine.
-        "system.honeypot_access" => { method: :quarantine_honeypot_instance }
+        "system.honeypot_access" => { method: :quarantine_honeypot_instance },
+        # Campaign 019f6084 §2.4.3 — TemplateApplyService#apply! creates the
+        # missing assignments; a cloud_init instance also gets a sync_modules
+        # task (reuses dispatch_reconcile_task, same as system.module_drift).
+        # A pivot instance's composed union is boot-time-fixed, so the task
+        # is skipped in favor of a requires_reprovision flag — see
+        # #apply_template_closure_drift.
+        "system.template_closure_drift" => { method: :apply_template_closure_drift }
       }.freeze
 
       OPEN_TASK_STATUSES = %w[pending scheduled running].freeze
@@ -828,6 +870,52 @@ module System
 
         ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
         { applied: true, storage_assignment_id: assignment.id }
+      end
+
+      # Campaign 019f6084 §2.4.3 — the approved arm of
+      # TemplateClosureDriftSensor. Reuses TemplateApplyService (never
+      # reimplements closure resolution) to materialize the assignments the
+      # template's current closure is missing, then splits on boot
+      # composition:
+      #   - cloud_init instance: the on-node reconcile loop CAN remount the
+      #     union live, so this reuses dispatch_reconcile_task — the SAME
+      #     sync_modules apply path system.module_drift uses — to converge
+      #     it now.
+      #   - pivot instance (direct_kernel/uefi_disk): the composed union is
+      #     boot-time-fixed (memory: live-module-refresh-no-remount-pivot —
+      #     a live sync updates running_module_digests but never remounts
+      #     the union), so queuing sync_modules would be a silent no-op.
+      #     The assignments are still created (a future reboot/reprovision
+      #     picks them up); the result is flagged requires_reprovision so
+      #     nothing downstream mistakes this for a completed convergence.
+      def apply_template_closure_drift(signal, skill_result)
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        instance_id = payload["instance_id"] || payload[:instance_id]
+        instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
+        return { applied: false, reason: "instance not found: #{instance_id.inspect}" } unless instance
+
+        node = instance.node
+        return { applied: false, reason: "instance has no node" } unless node
+
+        apply_result = ::System::TemplateApplyService.new(node).apply!
+        unless apply_result.ok?
+          reason = Array(apply_result.errors).join("; ").presence || "template apply failed"
+          return { applied: false, instance_id: instance.id, reason: reason }
+        end
+
+        created_module_ids = apply_result.created.map(&:node_module_id)
+
+        if instance.pivot_boot?
+          return {
+            applied: true, instance_id: instance.id, node_id: node.id,
+            assignments_created: created_module_ids, requires_reprovision: true,
+            reason: "pivot-booted instance composes its module union at boot — assignments created; " \
+                    "a rolling reprovision (reboot) is required for them to take effect"
+          }
+        end
+
+        sync_result = dispatch_reconcile_task(signal, skill_result, command: "sync_modules")
+        sync_result.merge(assignments_created: created_module_ids, requires_reprovision: false)
       end
 
       def dispatch_reconcile_task(signal, skill_result, command:)

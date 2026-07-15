@@ -142,6 +142,16 @@ fleet_policies = {
   # reboot rollout is high blast radius → require_approval; the executor plans
   # canary-first and dispatches the batch on approval.
   "system.node_boot_image_drift"   => "require_approval",
+  # Campaign 019f6084 §2.4.3 — TemplateClosureDriftSensor → apply the
+  # template's current closure onto an already-provisioned instance
+  # (TemplateApplyService#apply! + sync_modules, or a rolling-reprovision
+  # flag for pivot-booted instances). Seeded require_approval as a
+  # baseline, but DecisionEngine#force_policy_for pins it there regardless:
+  # the sensor only ever fires for an instance that already exists on the
+  # template, so TemplateApprovalPolicy's blast-radius classification is
+  # never the "nothing provisioned" case — a manifest change is about to
+  # propagate to live fleet, same rationale as node_boot_image_drift above.
+  "system.template_closure_apply"  => "require_approval",
   "system.region_expansion"        => "require_approval",
   "system.capacity_resize"         => "require_approval",
 
