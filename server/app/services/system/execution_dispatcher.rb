@@ -52,6 +52,13 @@ module System
     # agent/internal/runtime/tasks/handlers/module_build.go. No handler
     # timeout on the poll loop, so a long native build is fine.
     #
+    # ci.package_build (campaign 019f6084 inc-D): the SAME lease-gated build
+    # path for a materialized package closure (which has no git tree) — the
+    # agent execs /usr/local/bin/module-forge-package-build.sh; see
+    # agent/internal/runtime/tasks/handlers/package_build.go. Without this
+    # delegation entry the dispatcher rejects the Task server-side before the
+    # agent's lease loop ever polls it.
+    #
     # probe.module_smoke (campaign 019f6084 inc-E): the agent runs
     # structured post-compose health checks (systemd unit active, health
     # endpoint, ldd closure) on ITS OWN instance via
@@ -63,6 +70,7 @@ module System
       storage.mount storage.unmount storage.exports.apply storage.smb_user.apply
       storage.gateway.provision storage.gateway.deprovision storage.chown
       ci.module_build
+      ci.package_build
       probe.module_smoke
     ].freeze
 
