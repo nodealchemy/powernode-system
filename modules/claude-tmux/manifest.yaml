@@ -110,6 +110,24 @@ dependencies:
     # tmux, jq, and this module's own scripts link against base-os's
     # glibc — closure guarantee (campaign 019f6084 inc1).
     - capability:os.userland
+    # Step 2 of the P0-C node-runtime correction (see file_spec's and
+    # package_spec's comments above): /usr/bin/claude's shebang needs a
+    # `node` on PATH at boot, and this module no longer ships one itself
+    # (apt nodejs/npm were dropped from package_spec in Step 1 — their
+    # real payload was npm's own internal toolchain, not a usable Node
+    # runtime; Noble's apt nodejs is v18 and can't run the CLI regardless,
+    # per runtime-node's own manifest comment). runtime-node provides
+    # Node 24.13.0 at /usr/local/bin/node; declaring this as a hard
+    # `requires:` capability edge (rather than dev-cell's existing softer
+    # "assumed co-module, co-assigned on the same NodeTemplate" pattern —
+    # see dev-cell/manifest.yaml's dependencies comment) means the
+    # DependencyResolutionService pulls runtime-node into ANY composition
+    # that includes claude-tmux automatically, matching the os.userland
+    # closure-guarantee precedent from inc1 rather than relying on every
+    # template author to remember the co-assignment by hand. Dedups the
+    # "two copies of node" risk a manually-co-assigned template could
+    # otherwise hit if it ALSO carried an apt-sourced node from elsewhere.
+    - capability:runtime.node
   provides:
     - dev.claude-cli
     - dev.tmux-session
