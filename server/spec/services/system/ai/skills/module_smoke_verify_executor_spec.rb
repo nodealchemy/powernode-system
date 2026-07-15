@@ -1,0 +1,186 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+# Campaign 019f6084 inc2 §4.3.3 — ModuleSmokeVerifyExecutor. The live
+# instance-compose + health-probe calls need the real fleet/pool (PARKED —
+# see ModuleSmokeProbe's class doc), so both InstancePoolService.acquire!
+# and System::ModuleSmokeProbe.run are mocked throughout; only the DB-level
+# orchestration (template composition, Task creation) runs for real.
+RSpec.describe System::Ai::Skills::ModuleSmokeVerifyExecutor do
+  let(:account)  { create(:account) }
+  let(:platform) { create(:system_node_platform, account: account) }
+  let(:category) { create(:system_node_module_category, account: account) }
+  let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+  let(:node)     { create(:system_node, account: account, node_template: template) }
+  let(:instance) { create(:system_node_instance, :running, node: node) }
+
+  let!(:target_module) do
+    create(:system_node_module, account: account, node_platform: platform, category: category, name: "nginx-fresh")
+  end
+  let!(:base_os_module) do
+    create(:system_node_module, account: account, node_platform: platform, category: category,
+           name: described_class::DEFAULT_BASE_OS_MODULE_NAME)
+  end
+
+  let(:exec) { described_class.new(account: account) }
+
+  before do
+    allow(::System::InstancePoolService).to receive(:acquire!).with(account: account).and_return(instance)
+  end
+
+  describe ".descriptor" do
+    it "is read-shape — no operator approval required" do
+      expect(described_class.descriptor[:requires_approval]).to eq(false)
+    end
+  end
+
+  describe "bindings" do
+    it "binds to Fleet Autonomy and System Concierge" do
+      entry = System::Ai::Skills::SkillBindings.by_skill.find { |r| r[:executor] == described_class }
+      expect(entry).not_to be_nil
+      expect(entry[:agents]).to include("Fleet Autonomy", "System Concierge")
+    end
+  end
+
+  describe "#execute" do
+    context "input validation" do
+      it "fails fast without module_name or module_id" do
+        result = exec.execute
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/module_name or module_id is required/)
+      end
+
+      it "fails when the module isn't found" do
+        result = exec.execute(module_name: "does-not-exist")
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/module not found/)
+      end
+
+      it "fails when the base-os module isn't found" do
+        base_os_module.destroy!
+        result = exec.execute(module_name: target_module.name)
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/base-os module not found/)
+      end
+    end
+
+    context "when the pool has no ready members" do
+      before do
+        allow(::System::InstancePoolService).to receive(:acquire!)
+          .and_raise(::System::InstancePoolService::NoReadyMembersError, "pool empty")
+      end
+
+      it "surfaces a failure instead of raising" do
+        result = exec.execute(module_name: target_module.name)
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/no ready pool members/)
+      end
+    end
+
+    context "on healthy mocks" do
+      before do
+        allow(::System::ModuleSmokeProbe).to receive(:run)
+          .with(instance: instance, node_module: target_module, base_os_module_name: base_os_module.name)
+          .and_return(
+            System::ModuleSmokeProbe::Result.new(
+              ok?: true,
+              checks: %w[unit_active health_endpoint ldd_closure].map do |name|
+                System::ModuleSmokeProbe::CheckResult.new(name: name, pass: true, detail: "ok")
+              end
+            )
+          )
+      end
+
+      it "returns a well-formed passing smoke report and composes the template pairing" do
+        result = exec.execute(module_name: target_module.name)
+
+        expect(result[:success]).to be true
+        data = result[:data]
+        expect(data[:ok]).to be true
+        expect(data[:module_name]).to eq("nginx-fresh")
+        expect(data[:base_os_module_name]).to eq(described_class::DEFAULT_BASE_OS_MODULE_NAME)
+        expect(data[:instance_id]).to eq(instance.id)
+        expect(data[:template_id]).to eq(template.id)
+        expect(data[:checks].size).to eq(3)
+        expect(data[:checks]).to all(include(pass: true))
+
+        expect(System::TemplateModule.where(node_template: template, node_module: target_module)).to exist
+        expect(System::TemplateModule.where(node_template: template, node_module: base_os_module)).to exist
+        expect(System::Task.where(operable: instance, command: "sync_modules")).to exist
+      end
+
+      it "accepts module_id in place of module_name" do
+        result = exec.execute(module_id: target_module.id)
+        expect(result[:success]).to be true
+        expect(result[:data][:module_name]).to eq("nginx-fresh")
+      end
+    end
+
+    context "on a failing probe" do
+      before do
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(
+            ok?: false,
+            checks: [
+              System::ModuleSmokeProbe::CheckResult.new(name: "unit_active", pass: true, detail: "ok"),
+              System::ModuleSmokeProbe::CheckResult.new(name: "health_endpoint", pass: false, detail: "connection refused"),
+              System::ModuleSmokeProbe::CheckResult.new(name: "ldd_closure", pass: true, detail: "ok")
+            ]
+          )
+        )
+      end
+
+      it "returns a well-formed failing smoke report (still success: true — the report itself is the payload)" do
+        result = exec.execute(module_name: target_module.name)
+
+        expect(result[:success]).to be true
+        expect(result[:data][:ok]).to be false
+        failing = result[:data][:checks].find { |c| c[:name] == "health_endpoint" }
+        expect(failing[:pass]).to be false
+        expect(failing[:detail]).to match(/connection refused/)
+      end
+    end
+
+    context "template resolution" do
+      it "uses an explicit template_id instead of the instance's own template" do
+        other_template = create(:system_node_template, account: account, node_platform: platform)
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+
+        result = exec.execute(module_name: target_module.name, template_id: other_template.id)
+
+        expect(result[:success]).to be true
+        expect(result[:data][:template_id]).to eq(other_template.id)
+        expect(System::TemplateModule.where(node_template: other_template, node_module: target_module)).to exist
+      end
+    end
+
+    context "pool release" do
+      it "releases a claimed pooled instance back to its pool" do
+        pool = System::InstancePool.create!(
+          account: account, node_template: template, name: "smoke-pool",
+          lifecycle_class: "ephemeral", status: "active",
+          target_size: 1, min_size: 0, max_size: 1
+        )
+        instance.update!(instance_pool: pool, pool_state: "claimed")
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+        expect(::System::InstancePoolService).to receive(:release!).with(instance: instance, pool: pool)
+
+        exec.execute(module_name: target_module.name)
+      end
+
+      it "does not attempt release for a non-pool instance" do
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+        expect(::System::InstancePoolService).not_to receive(:release!)
+
+        exec.execute(module_name: target_module.name)
+      end
+    end
+  end
+end
