@@ -3,6 +3,7 @@ name: qemu-guest-agent
 display_name: QEMU Guest Agent
 description: QEMU guest agent (qga) — reports guest IP + clean shutdown + freeze/thaw for snapshots when the hypervisor speaks the qga protocol. No-op on bare metal and on hypervisors that don't expose /dev/virtio-ports/org.qemu.guest_agent.0.
 license: GPL-2.0
+category: storage-guest
 package_spec:
   - qemu-guest-agent
 # Curated from the real apt-ownership closure (campaign 019f6084 P0-C,

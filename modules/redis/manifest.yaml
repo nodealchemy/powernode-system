@@ -3,6 +3,7 @@ name: redis
 display_name: Redis
 description: Redis for Sidekiq queues, ActionCable pub/sub, and Rails cache
 license: BSD-3-Clause
+category: data-plane
 package_spec:
   - redis-server
 # The apt package's own redis-server.service auto-enables via the distro's

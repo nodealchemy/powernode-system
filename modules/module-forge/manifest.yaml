@@ -122,6 +122,7 @@ description: >
   e.g. base-os-ubuntu-noble, a NodeTemplate composes alongside it — the same
   implicit template-level pairing gitea-act-runner already relies on).
 license: MIT
+category: build-dev
 
 mask:
   - "/var/cache/apt/**"

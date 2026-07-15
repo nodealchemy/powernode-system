@@ -2,6 +2,7 @@ schema_version: 1
 name: runtime-node
 display_name: Powernode Base Node.js Runtime
 description: Node.js 24.13.0 (official prebuilt linux-x64 binary) + npm/npx, installed to /usr/local. Sibling of runtime-ruby — the dev-cell composes this so `npm ci`, the mcp-proxy, and scripts/validate.sh's `npx tsc` run against the platform's exact Node toolchain.
+category: language-runtime
 
 # No apt packages. Node ships as a self-contained prebuilt tarball extracted
 # into /usr/local by the runtime-node case arm in

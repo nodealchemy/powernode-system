@@ -3,6 +3,7 @@ name: postgres-replica
 display_name: PostgreSQL 16 Streaming Replica
 description: PostgreSQL streaming replica following a parent platform's primary (cluster_member spawn mode)
 license: PostgreSQL
+category: data-plane
 package_spec:
   - postgresql-16
   - postgresql-client-16

@@ -4,6 +4,7 @@ name: powernode-system-base
 display_name: "Powernode System Base (minimal — agent runtime only)"
 description: "The truly-minimal Powernode base — ships the cross-compiled Go agent binary at /sbin/powernode-agent and an /etc/powernode/ skeleton. NOT bootable alone (no init system, no userland). Designed as the shared substrate that every OS-specific base module (powernode-system-base-ubuntu-noble, -debian-trixie, -alpine, etc.) depends on, so the agent binary is built once + signed once + verified once regardless of which OS variant a node runs. Capability provided: powernode.agent."
 license: "MIT"
+category: system-base
 
 # No apt packages — this module is hermetic, built from a fresh
 # mmdebstrap that contributes nothing but the ca-certificates floor

@@ -3,6 +3,7 @@ name: reverse-proxy-traefik
 display_name: Powernode Reverse Proxy (Traefik + ACME DNS-01)
 description: Traefik handles TLS termination and ACME DNS-01 cert issuance for all federated peers
 license: MIT
+category: networking-proxy
 # Traefik is in noble's universe repo, but mmdebstrap's --include applies a
 # ?priority(required) narrow filter that drops it ("Unable to locate package
 # traefik") — the same structural blocker as vector + gcsfuse. So package_spec

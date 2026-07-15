@@ -7,6 +7,7 @@ description: >
   module (it costs ~20MB RSS per node). Pairs with a Prometheus instance
   (deployed separately) configured to scrape this port over the SDWAN mesh.
 license: Apache-2.0
+category: observability
 package_spec:
   - prometheus-node-exporter
 # Was under-carved (campaign 019f6084 inc0 audit) — the sole entry pointed

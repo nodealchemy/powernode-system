@@ -8,6 +8,7 @@ description: >
   module's /etc/vector/upstream.toml (declared in dependency_spec) so
   per-fleet override doesn't require a custom build.
 license: MPL-2.0
+category: observability
 # vector intentionally not in package_spec: mmdebstrap's --include applies
 # a `?narrow(?archive(^noble$))` filter on the apt-get install command that
 # excludes the Datadog vector apt repo (which has Codename: stable, not

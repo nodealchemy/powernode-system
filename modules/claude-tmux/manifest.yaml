@@ -12,6 +12,7 @@ description: >
   logged. Reusable standalone — any fleet instance can carry this module
   regardless of template.
 license: MIT
+category: build-dev
 
 mask:
   - "/var/cache/apt/**"

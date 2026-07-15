@@ -66,6 +66,7 @@ description: >
   decide whether its own work gets pushed, and cannot get root to execute
   anything through git hooks/config/attributes it controls.
 license: MIT
+category: build-dev
 
 mask:
   - "/var/cache/apt/**"
