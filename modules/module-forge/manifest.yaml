@@ -116,6 +116,15 @@ description: >
   duplicating oras-login/push/tag logic a second time. The existing Gitea
   workflow invocation (no `--registry` passed) is untouched.
   .
+  /usr/local/bin/module-forge-package-build.sh (campaign 019f6084 inc-D)
+  is module-forge-build.sh's sibling entrypoint for the agent's
+  ci.package_build task: it builds a MATERIALIZED PACKAGE module (one
+  apt package + its resolved closure member, no git checkout — the whole
+  recipe travels via env, since there is no modules/<slug> tree for an
+  auto-generated package module) using the SAME per-job /opt/buildenv
+  chroot copy and the SAME push.sh push step described above. See that
+  script's own header for its full env-var contract.
+  .
   Only requires powernode-system-base (same single dependency
   gitea-act-runner declares) — this module ships no userland/init/coreutils
   of its own (mount/chroot/bash/coreutils all come from whichever OS module,
@@ -133,6 +142,12 @@ file_spec:
   # The build contract entrypoint (Part B invokes this — see its own header
   # for the full env-var contract).
   - "/usr/local/bin/module-forge-build.sh"
+  # The materialized-package build contract entrypoint (campaign 019f6084
+  # inc-D — agent ci.package_build handler). Sibling of module-forge-
+  # build.sh: builds ONE apt package's closure member (no git checkout —
+  # the recipe travels entirely via env, see its own header) and reuses
+  # the SAME /opt/module-build/push.sh push step above.
+  - "/usr/local/bin/module-forge-package-build.sh"
   # The baked buildroot (nested debian:trixie tree — see description) and
   # the copied build scripts (scripts/module-build/*.sh) — both staged by
   # this module's own Stage 1.5 arm in scripts/module-build/stage15.sh, not
