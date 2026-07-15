@@ -7,8 +7,305 @@ category: data-plane
 package_spec:
   - postgresql-16
   - postgresql-client-16
-file_spec: []
-mask: []
+# campaign 019f6084 P0-C wave 2: was completely empty (module shipped
+# NOTHING despite 2 real packages — inc0 audit flagged this module BROKEN,
+# same class of bug storage-tools' pilot fix addressed). Curated from the
+# real apt-ownership closure (derive-file-spec.sh --mode deb-payload
+# against [postgresql-16, postgresql-client-16]: 5457 owned files).
+# postgresql-16/postgresql-client-16's maintainer-script deps (adduser,
+# debconf, ucf, sensible-utils — already in base-os's own closure via
+# openssh-server, so correctly subtracted) are NOT what inflates this
+# closure — perl (postgresql-common's cluster-management scripts are
+# perl), dpkg (version-compare helpers the same scripts shell out to),
+# netbase, locales (/usr/share/i18n), tzdata (/usr/share/zoneinfo), and
+# readline-common are the real owned bulk, none of which base-os's own
+# package_spec (bash/coreutils/systemd/openssh-server/...) transitively
+# pulls. Directory-wide globs below are namespaces exclusively populated
+# by ONE package each (postgres's own /usr/lib/postgresql + /usr/share/
+# postgresql(-common) trees, perl's /usr/share/perl(5) + /usr/lib/.../
+# perl/ tree, locales's /usr/share/i18n, tzdata's /usr/share/zoneinfo,
+# dpkg's own aux dirs) — safe the same way runtime-ruby's manifest
+# documents for its own package-exclusive namespaces. The multiarch lib
+# dir's own top-level .so/.a files (NOT its perl/ subdir, globbed broadly
+# above) are LITERAL entries, not "libNAME.*" globs — runtime-ruby's
+# manifest hit an empirically-confirmed FAIL from exactly that
+# compaction (a -dev package's unversioned libX.so/.a symlink and a
+# base-shared runtime package's own versioned libX.so.N sharing the same
+# glob base, e.g. libpq.so vs libpq.so.5 — libpq itself is this module's
+# own, but the SAME class of bug applies to any future closure change),
+# so literal per-file entries are used here from the start. /usr/bin,
+# /usr/sbin, /etc are enumerated individually for the same base-shared-
+# candidate reason. /var is intentionally omitted — the data dir at
+# /var/lib/postgresql/16/replica initializes from the streaming base
+# backup at first boot (see the services: start_command below); this
+# module's own hand-authored /etc/postgresql/16/replica/conf.d/replica.conf
+# rides rootfs/ overlay (stage2-carve.sh layers it unconditionally,
+# exempted from this check's over-inclusion count — see the tool's own
+# header), declared here anyway for readability, matching claude-tmux's/
+# dev-cell's precedent for their own rootfs/-provided scripts.
+file_spec:
+  - /etc/postgresql/16/replica/conf.d/replica.conf
+
+  - /usr/lib/x86_64-linux-gnu/libLLVM-17.so
+  - /usr/lib/x86_64-linux-gnu/libLLVM-17.so.1
+  - /usr/lib/x86_64-linux-gnu/libexslt.so.0
+  - /usr/lib/x86_64-linux-gnu/libexslt.so.0.8.21
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6.0.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4.0.0
+  - /usr/lib/x86_64-linux-gnu/libhistory.so.8
+  - /usr/lib/x86_64-linux-gnu/libhistory.so.8.2
+  - /usr/lib/x86_64-linux-gnu/libicudata.so.74
+  - /usr/lib/x86_64-linux-gnu/libicudata.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libicui18n.so.74
+  - /usr/lib/x86_64-linux-gnu/libicui18n.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libicuio.so.74
+  - /usr/lib/x86_64-linux-gnu/libicuio.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libicutest.so.74
+  - /usr/lib/x86_64-linux-gnu/libicutest.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libicutu.so.74
+  - /usr/lib/x86_64-linux-gnu/libicutu.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libicuuc.so.74
+  - /usr/lib/x86_64-linux-gnu/libicuuc.so.74.2
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38.2
+  - /usr/lib/x86_64-linux-gnu/libpq.so.5
+  - /usr/lib/x86_64-linux-gnu/libpq.so.5.16
+  - /usr/lib/x86_64-linux-gnu/libreadline.so.8
+  - /usr/lib/x86_64-linux-gnu/libreadline.so.8.2
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+  - /usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33
+  - /usr/lib/x86_64-linux-gnu/libxml2.so.2
+  - /usr/lib/x86_64-linux-gnu/libxml2.so.2.9.14
+  - /usr/lib/x86_64-linux-gnu/libxslt.so.1
+  - /usr/lib/x86_64-linux-gnu/libxslt.so.1.1.39
+  # postgres's own binary/library tree + share/doc tree — package-exclusive
+  # namespaces (only postgresql-16/-client-16 would ever populate these).
+  - /usr/lib/postgresql/16/**
+  - /usr/share/postgresql/16/**
+  - /usr/share/postgresql-common/**
+  # perl's own CORE runtime module tree (postgresql-common's cluster
+  # scripts are perl) — /usr/share/perl/5.38.2/ is the "perl" package's
+  # own exclusive sitedir, safe to glob broadly. /usr/share/perl5/ is
+  # NOT equally safe — it's the SHARED third-party-module sitelib every
+  # perl package installs into, and debconf (already in base-os's own
+  # closure via openssh-server, so correctly subtracted) ships its own
+  # Debconf/** tree there too; a directory-wide glob matched debconf's
+  # (candidate, not owned) files — empirically confirmed FAIL, so this
+  # module's own two entries (libjson-perl's JSON.pm, postgresql-
+  # common's own PgCommon.pm) are named explicitly instead.
+  - /usr/share/perl/**
+  - /usr/share/perl5/JSON.pm
+  - /usr/share/perl5/JSON/**
+  - /usr/share/perl5/PgCommon.pm
+  - /usr/lib/x86_64-linux-gnu/perl/**
+  - /usr/lib/x86_64-linux-gnu/perl-base/**
+  # locales (/usr/share/i18n — locale DEFINITION data, distinct from the
+  # /usr/share/locale/** gettext translation catalogs masked below) +
+  # tzdata (/usr/share/zoneinfo) + the C.utf8 locale postgres's own
+  # collation defaults to.
+  - /usr/share/i18n/**
+  - /usr/share/zoneinfo/**
+  - /usr/lib/locale/**
+  # dpkg's own aux dirs (postgresql-common's scripts shell out to
+  # dpkg --compare-versions).
+  - /usr/libexec/dpkg/**
+  - /usr/share/dpkg/**
+  - /usr/lib/mime/packages/tar
+  - /usr/lib/tmpfiles.d/postgresql-common.conf
+  # postgresql-common's/dpkg's own systemd units (timers for basebackup/
+  # WAL-compress/dump cron jobs, the postgresql-generator, dpkg's DB
+  # backup unit) — not wired into this module's services: lifecycle (this
+  # module's actual replica process is the services: entry below), listed
+  # here only so the apt-shipped files themselves are carved.
+
+  - /usr/lib/systemd/system-generators/postgresql-generator
+  - /usr/lib/systemd/system/dpkg-db-backup.service
+  - /usr/lib/systemd/system/dpkg-db-backup.timer
+  - /usr/lib/systemd/system/pg_basebackup@.service
+  - /usr/lib/systemd/system/pg_basebackup@.timer
+  - /usr/lib/systemd/system/pg_compresswal@.service
+  - /usr/lib/systemd/system/pg_compresswal@.timer
+  - /usr/lib/systemd/system/pg_dump@.service
+  - /usr/lib/systemd/system/pg_dump@.timer
+  - /usr/lib/systemd/system/pg_receivewal@.service
+  - /usr/lib/systemd/system/postgresql.service
+  - /usr/lib/systemd/system/postgresql@.service
+  - /usr/lib/systemd/system/ssl-cert.service
+  # Per-package lintian overrides — not a directory-wide glob, same
+  # base-shared-candidate reason as runtime-ruby's/storage-tools' manifests.
+  - /usr/share/lintian/overrides/dpkg
+  - /usr/share/lintian/overrides/libc-bin
+  - /usr/share/lintian/overrides/libgdbm-compat4t64
+  - /usr/share/lintian/overrides/libgdbm6t64
+  - /usr/share/lintian/overrides/libicu74
+  - /usr/share/lintian/overrides/libllvm17t64
+  - /usr/share/lintian/overrides/libperl5.38t64
+  - /usr/share/lintian/overrides/libxml2
+  - /usr/share/lintian/overrides/libxslt1.1
+  - /usr/share/lintian/overrides/perl
+  - /usr/share/lintian/overrides/perl-base
+  - /usr/share/lintian/overrides/postgresql-16
+  - /usr/share/lintian/overrides/postgresql-client-16
+  - /usr/share/lintian/overrides/postgresql-client-common
+  - /usr/share/lintian/overrides/postgresql-common
+  - /usr/share/lintian/overrides/readline-common
+  - /usr/share/lintian/overrides/ssl-cert
+  - /usr/share/lintian/overrides/tzdata
+  # /usr/bin, /usr/sbin, /usr/libexec/dpkg, /etc — enumerated individually.
+  - /usr/bin/clusterdb
+  - /usr/bin/corelist
+  - /usr/bin/cpan
+  - /usr/bin/cpan5.38-x86_64-linux-gnu
+  - /usr/bin/createdb
+  - /usr/bin/createlang
+  - /usr/bin/createuser
+  - /usr/bin/dpkg
+  - /usr/bin/dpkg-deb
+  - /usr/bin/dpkg-divert
+  - /usr/bin/dpkg-maintscript-helper
+  - /usr/bin/dpkg-query
+  - /usr/bin/dpkg-realpath
+  - /usr/bin/dpkg-split
+  - /usr/bin/dpkg-statoverride
+  - /usr/bin/dpkg-trigger
+  - /usr/bin/dropdb
+  - /usr/bin/droplang
+  - /usr/bin/dropuser
+  - /usr/bin/enc2xs
+  - /usr/bin/encguess
+  - /usr/bin/getconf
+  - /usr/bin/getent
+  - /usr/bin/h2ph
+  - /usr/bin/h2xs
+  - /usr/bin/iconv
+  - /usr/bin/instmodsh
+  - /usr/bin/json_pp
+  - /usr/bin/ld.so
+  - /usr/bin/ldd
+  - /usr/bin/libnetcfg
+  - /usr/bin/locale
+  - /usr/bin/localedef
+  - /usr/bin/perl
+  - /usr/bin/perl5.38-x86_64-linux-gnu
+  - /usr/bin/perl5.38.2
+  - /usr/bin/perlbug
+  - /usr/bin/perldoc
+  - /usr/bin/perlivp
+  - /usr/bin/perlthanks
+  - /usr/bin/pg_archivecleanup
+  - /usr/bin/pg_backupcluster
+  - /usr/bin/pg_basebackup
+  - /usr/bin/pg_buildext
+  - /usr/bin/pg_config
+  - /usr/bin/pg_conftool
+  - /usr/bin/pg_createcluster
+  - /usr/bin/pg_ctlcluster
+  - /usr/bin/pg_dropcluster
+  - /usr/bin/pg_dump
+  - /usr/bin/pg_dumpall
+  - /usr/bin/pg_isready
+  - /usr/bin/pg_lsclusters
+  - /usr/bin/pg_receivewal
+  - /usr/bin/pg_receivexlog
+  - /usr/bin/pg_recvlogical
+  - /usr/bin/pg_renamecluster
+  - /usr/bin/pg_restore
+  - /usr/bin/pg_restorecluster
+  - /usr/bin/pg_upgradecluster
+  - /usr/bin/pg_virtualenv
+  - /usr/bin/pgbench
+  - /usr/bin/piconv
+  - /usr/bin/pl2pm
+  - /usr/bin/pldd
+  - /usr/bin/pod2html
+  - /usr/bin/pod2man
+  - /usr/bin/pod2text
+  - /usr/bin/pod2usage
+  - /usr/bin/podchecker
+  - /usr/bin/prove
+  - /usr/bin/psql
+  - /usr/bin/ptar
+  - /usr/bin/ptardiff
+  - /usr/bin/ptargrep
+  - /usr/bin/reindexdb
+  - /usr/bin/shasum
+  - /usr/bin/splain
+  - /usr/bin/streamzip
+  - /usr/bin/tar
+  - /usr/bin/tzselect
+  - /usr/bin/update-alternatives
+  - /usr/bin/vacuumdb
+  - /usr/bin/vacuumlo
+  - /usr/bin/xsubpp
+  - /usr/bin/zdump
+  - /usr/bin/zipdetails
+  - /usr/sbin/iconvconfig
+  - /usr/sbin/ldconfig
+  - /usr/sbin/ldconfig.real
+  - /usr/sbin/locale-gen
+  - /usr/sbin/make-ssl-cert
+  - /usr/sbin/pg_updatedicts
+  - /usr/sbin/rmt-tar
+  - /usr/sbin/start-stop-daemon
+  - /usr/sbin/tarcat
+  - /usr/sbin/update-locale
+  - /usr/sbin/validlocale
+  - /usr/sbin/zic
+  - /usr/libexec/dpkg/dpkg-db-backup
+  - /usr/libexec/dpkg/dpkg-db-keeper
+  - /etc/alternatives/README
+  - /etc/bindresvport.blacklist
+  - /etc/cron.daily/dpkg
+  - /etc/dpkg/dpkg.cfg
+  - /etc/ethertypes
+  - /etc/gai.conf
+  - /etc/init.d/postgresql
+  - /etc/ld.so.conf
+  - /etc/ld.so.conf.d/libc.conf
+  - /etc/locale.alias
+  - /etc/logrotate.d/alternatives
+  - /etc/logrotate.d/dpkg
+  - /etc/logrotate.d/postgresql-common
+  - /etc/perl/Net/libnet.cfg
+  - /etc/postgresql-common/**
+  - /etc/protocols
+  - /etc/rmt
+  - /etc/rpc
+  - /etc/services
+  # Small remainder caught by the first conformance pass's under-carve
+  # WARN — genuinely owned, just missed by the directory globs above
+  # (dpkg's bug-report template, gcc/gdb's libstdc++ pretty-printers
+  # postgres's own libstdc++6 link pulls in, libc-bin's default
+  # nsswitch.conf, dpkg's lintian profile, locales' language-pack
+  # helper scripts, polkit's dpkg-pkexec action, readline's default
+  # inputrc, ssl-cert's openssl config template).
+  - /usr/share/bug/dpkg
+  - /usr/share/gcc/python/libstdcxx/**
+  - /usr/share/gdb/auto-load/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33-gdb.py
+  - /usr/share/libc-bin/nsswitch.conf
+  - /usr/share/lintian/profiles/dpkg/main.profile
+  - /usr/share/locales/install-language-pack
+  - /usr/share/locales/remove-language-pack
+  - /usr/share/polkit-1/actions/org.dpkg.pkexec.update-alternatives.policy
+  - /usr/share/readline/inputrc
+  - /usr/share/ssl-cert/ssleay.cnf
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/usr/share/info/**"
+# Owned (per the closure above) but masked out by the doc/man/locale/info
+# rules above — same size-conscious convention base-os/storage-tools use.
+# Waived so conformance doesn't WARN on the deliberate exclusion.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/usr/share/info/**"
 dependency_spec: []
 protected_spec:
   - /etc/postgresql/16/replica/postgresql.conf
