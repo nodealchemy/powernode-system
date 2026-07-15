@@ -1,0 +1,11 @@
+schema_version: 1
+name: base-os-stray
+mask: []
+# /etc/hostname is a stray file physically present in the fixture tree
+# but owned by no package (simulating the machine-id / ssh-host-key style
+# hazard) — over-inclusion, but this module IS the base-module in this
+# scenario, so it must WARN, never FAIL.
+file_spec:
+  - "/bin/bash"
+  - "/etc/hostname"
+protected_spec: []

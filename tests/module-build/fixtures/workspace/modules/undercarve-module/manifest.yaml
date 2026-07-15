@@ -1,0 +1,8 @@
+schema_version: 1
+name: undercarve-module
+mask: []
+# Only claims part of what demo-svc owns — /etc/demo-svc/config.yaml and
+# the systemd unit are owned-but-not-carved (WARN, unwaived).
+file_spec:
+  - "/usr/bin/demo-svc"
+protected_spec: []

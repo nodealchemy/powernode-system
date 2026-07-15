@@ -1,0 +1,2 @@
+bash	5.2-6ubuntu1	amd64
+base-files	13ubuntu10	amd64

@@ -1,0 +1,10 @@
+schema_version: 1
+name: rootfs-module
+mask: []
+# /etc/custom-app.conf is NOT owned by any package in the fat tree — it's
+# shipped via this module's own rootfs/ overlay (stage2-carve.sh layers
+# rootfs/ onto the fat tree before the carve). Must NOT be flagged as
+# over-inclusion.
+file_spec:
+  - "/etc/custom-app.conf"
+protected_spec: []

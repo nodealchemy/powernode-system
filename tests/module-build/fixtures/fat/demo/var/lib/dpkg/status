@@ -1,0 +1,30 @@
+Package: bash
+Status: install ok installed
+Priority: required
+Section: shells
+Installed-Size: 10
+Maintainer: Test <test@example.com>
+Architecture: amd64
+Version: 5.2-6ubuntu1
+Description: fixture stub for bash
+
+Package: base-files
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 5
+Maintainer: Test <test@example.com>
+Architecture: amd64
+Version: 13ubuntu10
+Description: fixture stub for base-files
+
+Package: demo-svc
+Status: install ok installed
+Priority: optional
+Section: utils
+Installed-Size: 3
+Maintainer: Test <test@example.com>
+Architecture: amd64
+Version: 1.0-1
+Description: fixture stub for a module-owned demo service
+

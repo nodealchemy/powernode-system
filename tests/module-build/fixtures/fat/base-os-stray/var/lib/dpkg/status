@@ -1,0 +1,10 @@
+Package: bash
+Status: install ok installed
+Priority: required
+Section: shells
+Installed-Size: 10
+Maintainer: Test <test@example.com>
+Architecture: amd64
+Version: 5.2-6ubuntu1
+Description: fixture stub for bash
+

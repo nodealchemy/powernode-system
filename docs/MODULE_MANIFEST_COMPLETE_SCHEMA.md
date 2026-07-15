@@ -27,6 +27,7 @@ file_spec:        [<glob>, ...]
 protected_spec:   [<glob>, ...]
 dependency_spec:  [<glob>, ...]
 package_spec:     [<package>, ...]
+carve_waivers:    [<glob>, ...]  # build-tooling only — see "Content Specs" below
 
 # Module-to-module dependencies
 dependencies:
@@ -72,6 +73,13 @@ build:
 > **Authoritative top-level key set.** The 20 keys above are exactly
 > `System::ManifestImportService::KNOWN_TOP_KEYS`. Anything else is preserved
 > verbatim under `config.manifest_extras` (forward-compat) but is not validated.
+>
+> **Exception: `carve_waivers`.** Schema-validated (module-validate.yaml) but
+> intentionally NOT in `KNOWN_TOP_KEYS` — it's build-tooling input for
+> `scripts/module-build/derive-file-spec.sh`'s conformance check, read
+> directly from the manifest YAML, not a NodeModule DB column. It still
+> round-trips harmlessly through the `manifest_extras` forward-compat path on
+> import.
 
 ---
 
@@ -145,6 +153,16 @@ package_spec:
 ```
 
 > **Naming conflicts**: package_spec uses native package names (apt). For RPM modules, the package_repository ingestion service handles cross-format translation; see `system_create_module_from_package` MCP action.
+
+#### `carve_waivers`
+Build-tooling only — not one of the five rsync-glob content-selection fields above, and not carved by stage2-carve.sh (it never reads this key). Consumed exclusively by `scripts/module-build/derive-file-spec.sh`'s `conformance` check (campaign 019f6084 inc0): globs of paths this module's `package_spec` owns (per `dpkg -L`, minus the base-os baseline) that are deliberately left OUT of `file_spec` — e.g. optional binaries/docs the module intentionally doesn't ship. Without a matching waiver, the conformance check WARNs (never fails the build) on every such "owned but not carved" path; a waiver silences the WARN for the matched paths only.
+
+```yaml
+carve_waivers:
+  - "/usr/share/nginx/html/**"   # default placeholder site — intentionally not shipped
+```
+
+Matched via case-pattern matching against the absolute path (a `**` behaves like a single `*` — see the script's own comment for why that's still correct for this purpose). Does not affect what gets carved into the erofs blob; only affects the conformance report.
 
 ### Dependencies
 

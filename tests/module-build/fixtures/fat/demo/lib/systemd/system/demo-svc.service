@@ -1,0 +1,5 @@
+[Unit]
+Description=demo-svc fixture unit
+
+[Service]
+ExecStart=/usr/bin/demo-svc

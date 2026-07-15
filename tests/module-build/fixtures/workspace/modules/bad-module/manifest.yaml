@@ -1,0 +1,11 @@
+schema_version: 1
+name: bad-module
+mask: []
+file_spec:
+  - "/usr/bin/demo-svc"
+  - "/etc/demo-svc/**"
+  - "/lib/systemd/system/demo-svc.service"
+  # RED CASE: /etc/passwd is owned by base-files (present in the
+  # baseline), not by this module's demo-svc package — over-inclusion.
+  - "/etc/passwd"
+protected_spec: []

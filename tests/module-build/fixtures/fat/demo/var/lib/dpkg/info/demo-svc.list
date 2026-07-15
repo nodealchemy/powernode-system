@@ -1,0 +1,11 @@
+/.
+/usr
+/usr/bin
+/usr/bin/demo-svc
+/etc
+/etc/demo-svc
+/etc/demo-svc/config.yaml
+/lib
+/lib/systemd
+/lib/systemd/system
+/lib/systemd/system/demo-svc.service

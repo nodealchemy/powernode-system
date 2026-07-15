@@ -1,0 +1,229 @@
+# carve-conformance — CHECK (not a build): runs
+# scripts/module-build/derive-file-spec.sh's `conformance` subcommand
+# against each module in scope, to catch file_spec drift (over-inclusion
+# / under-carve vs. what the module's own packages actually own) before
+# it ships in an erofs blob.
+#
+# Deliberately a SEPARATE workflow from build-platform-modules.yaml, not a
+# step bolted onto its per-module matrix job. Each of that workflow's
+# matrix slots is an independent container with no shared state, but
+# conformance needs BOTH a module's own fat rootfs AND the base-os
+# baseline's resolved package list (see derive-file-spec.sh's header) —
+# computing the base-os baseline once and reusing it across every module
+# is only straightforward in a SINGLE sequential job, so this workflow
+# runs its own loop instead. Zero risk of regressing the existing build
+# pipeline (campaign 019f6084 inc0).
+#
+# Non-blocking by design for under-carve (WARN — see derive-file-spec.sh),
+# BLOCKING for over-inclusion (FAIL) on every module except the base-os
+# baseline itself (which is exempt — see the script's header).
+#
+# Cost note: this job builds a fat rootfs per module IN SEQUENCE inside
+# one container (mmdebstrap + dpkg-query, not the full erofs build — no
+# mkfs.erofs/fsverity/cosign/oras here), plus one extra run for the
+# base-os baseline. A full-fleet sweep (force_all / no dirty-closure
+# match) is O(module count) mmdebstrap runs and can take real wall-clock
+# minutes; the push-triggered path is scoped to the dirty closure of
+# whatever manifest actually changed, which is normally small. A future
+# increment could matrix this out (one container per module) once a
+# cheap way exists to share the base-os baseline package list across
+# matrix slots (e.g. a small job-output artifact) — out of scope here
+# (Phase 0: measurement + tooling only).
+
+name: carve-conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "Single module slug to check (default: dirty closure since the last push)"
+        required: false
+        type: string
+        default: ""
+      base_sha:
+        description: "Diff base for dirty-closure detection (default: parent commit)"
+        required: false
+        type: string
+        default: ""
+      force_all:
+        description: "Skip dirty-closure detection and check every module"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [ develop, master ]
+    paths:
+      - "modules/**/manifest.yaml"
+      - "modules/**/rootfs/**"
+      - "scripts/module-build/derive-file-spec.sh"
+      - "scripts/module-build/stage1-rootfs.sh"
+      - ".gitea/workflows/carve-conformance.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    container:
+      image: docker.io/library/debian:trixie-slim
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Clone repo
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Raw git clone (not actions/checkout@v4) — matches
+          # build-platform-modules.yaml's rationale: keeps the Debian
+          # base image clean of a Node.js runtime for a two-second git
+          # operation. safe.directory='*' silences the dubious-ownership
+          # warning from uid mismatches inside the container.
+          git config --global --add safe.directory '*'
+          ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
+          mkdir -p "$ws"
+          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
+          if [ -n "${GIT_TOKEN:-}" ]; then
+            clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
+          else
+            clone_url="${base}/${GITHUB_REPOSITORY}.git"
+          fi
+          tmp="$(mktemp -d)"
+          git clone "${clone_url}" "$tmp/repo"
+          cp -a "$tmp/repo/." "$ws/"
+          rm -rf "$tmp"
+          cd "$ws"
+          git checkout "${GITHUB_SHA}"
+
+      - name: Install build tools (mmdebstrap + jq + rsync + python3-yaml)
+        run: |
+          set -euo pipefail
+          # Only what stage1-rootfs.sh + derive-file-spec.sh actually
+          # need — no erofs-utils/fsverity/cosign/oras/uuid-runtime here
+          # (this job never carves an erofs blob or signs/pushes
+          # anything, unlike build-platform-modules.yaml's build job).
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -q
+          apt-get install -y --no-install-recommends \
+            git \
+            mmdebstrap \
+            arch-test \
+            ubuntu-keyring \
+            jq \
+            rsync \
+            python3-yaml \
+            ca-certificates \
+            curl \
+            gnupg
+
+      - name: Determine module set (dirty closure | single module | force_all)
+        id: plan
+        env:
+          REQUESTED_MODULE: ${{ inputs.module }}
+          FORCE_ALL: ${{ inputs.force_all }}
+          OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          SLUG_RE='^[A-Za-z0-9._-]+$'
+          validate_slug() {
+            local s="$1"
+            if [[ ! "$s" =~ $SLUG_RE ]]; then
+              echo "::error::module slug '$s' fails validation ($SLUG_RE) — refusing to check it"
+              exit 1
+            fi
+          }
+
+          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
+            validate_slug "$REQUESTED_MODULE"
+            [[ -f "modules/${REQUESTED_MODULE}/manifest.yaml" ]] || {
+              echo "::error::inputs.module='${REQUESTED_MODULE}' has no modules/${REQUESTED_MODULE}/manifest.yaml"
+              exit 1
+            }
+            SET="$REQUESTED_MODULE"
+            echo "[plan] inputs.module=${REQUESTED_MODULE} — checking this module only"
+          elif [[ "${FORCE_ALL:-false}" == "true" ]]; then
+            SET=$(for d in modules/*/; do [[ -f "${d}manifest.yaml" ]] || continue; basename "$d"; done | sort | xargs)
+            echo "[plan] force_all=true — checking every module"
+          else
+            # Same dirty-closure detection build-platform-modules.yaml's
+            # `discover` job uses (scripts/ci-compute-dirty-closure.sh) —
+            # reused as-is rather than re-implementing path-filter logic.
+            if [[ -n "${OPERATOR_BASE_SHA:-}" ]]; then
+              RAW=$(bash scripts/ci-compute-dirty-closure.sh "${OPERATOR_BASE_SHA}" "${GITHUB_SHA}")
+            else
+              RAW=$(bash scripts/ci-compute-dirty-closure.sh)
+            fi
+            SET=$(echo "$RAW" | sort | xargs)
+          fi
+
+          for m in $SET; do validate_slug "$m"; done
+          echo "[plan] module set: ${SET:-<empty>}"
+          echo "module_set=$SET" >> "$GITHUB_OUTPUT"
+
+      - name: Build base-os baseline packages.txt (once, shared by every module below)
+        if: steps.plan.outputs.module_set != ''
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          base_module="base-os-ubuntu-noble"
+          mfpath="modules/$base_module/manifest.yaml"
+          [ -f "$mfpath" ] || { echo "::error::no $mfpath — cannot compute the carve-conformance baseline"; exit 1; }
+          snapshot=$(python3 -c "import yaml,sys; d=yaml.safe_load(open('$mfpath')); print((d.get('build') or {}).get('apt_snapshot') or 'none')")
+          echo "[baseline] building $base_module at apt_snapshot=$snapshot"
+          bash scripts/module-build/stage1-rootfs.sh --module "$base_module" --apt-snapshot "$snapshot"
+          # /tmp/fat (this baseline build's own fat tree) is intentionally
+          # discarded — only its packages.txt is reused below. The next
+          # step's loop wipes /tmp/fat before every per-module stage1 run.
+          rm -rf /tmp/fat /tmp/hooks
+
+      - name: Run conformance check per module
+        if: steps.plan.outputs.module_set != ''
+        env:
+          MODULE_SET: ${{ steps.plan.outputs.module_set }}
+        run: |
+          set -uo pipefail
+          # NOT -e: a FAIL on one module must not skip the conformance
+          # report for the rest of the set — the loop below accumulates
+          # failures and exits non-zero once at the end instead.
+          cd "$GITHUB_WORKSPACE"
+          overall_status=0
+          for m in $MODULE_SET; do
+            echo "::group::carve-conformance: $m"
+            mfpath="modules/$m/manifest.yaml"
+            snapshot=$(python3 -c "import yaml,sys; d=yaml.safe_load(open('$mfpath')); print((d.get('build') or {}).get('apt_snapshot') or 'none')")
+            echo "[check] building $m at apt_snapshot=$snapshot"
+            # Fresh fat tree per module — mmdebstrap refuses to bootstrap
+            # into a non-empty target, and every prior loop iteration
+            # left one behind.
+            rm -rf /tmp/fat /tmp/hooks
+            if ! bash scripts/module-build/stage1-rootfs.sh --module "$m" --apt-snapshot "$snapshot"; then
+              echo "::error::stage1-rootfs.sh failed for $m — cannot run its conformance check"
+              overall_status=1
+              echo "::endgroup::"
+              continue
+            fi
+            if ! bash scripts/module-build/derive-file-spec.sh conformance \
+                   --module "$m" \
+                   --workspace "$GITHUB_WORKSPACE" \
+                   --fat-root /tmp/fat \
+                   --packages-dir /tmp \
+                   --base-module base-os-ubuntu-noble; then
+              echo "::error::carve conformance FAIL for $m"
+              overall_status=1
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "$overall_status" -ne 0 ]; then
+            echo "::error::one or more modules FAILed carve conformance (over-inclusion) — see the grouped logs above"
+          else
+            echo "[check] all modules in the set passed (under-carve WARNs, if any, are non-blocking — see logs above)"
+          fi
+          exit "$overall_status"
+
+      - name: No modules to check
+        if: steps.plan.outputs.module_set == ''
+        run: echo "[carve-conformance] dirty closure is empty — nothing to check on this push"

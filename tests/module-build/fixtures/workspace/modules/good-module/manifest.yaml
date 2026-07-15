@@ -1,0 +1,8 @@
+schema_version: 1
+name: good-module
+mask: []
+file_spec:
+  - "/usr/bin/demo-svc"
+  - "/etc/demo-svc/**"
+  - "/lib/systemd/system/demo-svc.service"
+protected_spec: []

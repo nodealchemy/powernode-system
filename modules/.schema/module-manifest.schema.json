@@ -26,6 +26,11 @@
     "protected_spec":  { "type": "array", "items": { "type": "string" } },
     "dependency_spec": { "type": "array", "items": { "type": "string" } },
     "package_spec":    { "type": "array", "items": { "type": "string" } },
+    "carve_waivers": {
+      "description": "Build-tooling-only (not yet a NodeModule DB column — read directly from the YAML by scripts/module-build/derive-file-spec.sh, so an unrecognized key here still round-trips through ManifestImportService's manifest_extras forward-compat path). Globs of paths this module's package_spec owns (per dpkg -L) but deliberately does NOT carve into file_spec — silences derive-file-spec.sh's conformance under-carve WARN for the matched paths. See docs/MODULE_MANIFEST_COMPLETE_SCHEMA.md's Content specs section.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
 
     "dependencies": {
       "type": "object",
