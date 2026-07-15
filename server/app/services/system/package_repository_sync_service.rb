@@ -25,6 +25,12 @@ module System
     # stale metadata — restoring the auto-heal the always-upsert path had.
     PARSER_VERSION = 1
 
+    # Per-KIND overrides — bump a kind's number when THAT adapter's parse/store
+    # format changes, so only repos of that kind reparse (apt stays put). rpm/dnf
+    # went to 2 when `version` switched from bare version to full EVR
+    # (epoch:version-release); existing rpm rows reparse once from bare→EVR.
+    PARSER_VERSIONS = { "rpm" => 2, "dnf" => 2 }.freeze
+
     # Fraction of a repo's active packages that may be obsoleted in one sync
     # before the run is refused as a likely partial-upstream failure (a mirror
     # mid-publish 404ing a slice). Operator-tunable; `force:` overrides.
@@ -178,7 +184,10 @@ module System
     end
 
     def change_detection_eligible?
-      @repository.kind.to_s == "apt"
+      # apt's full Debian version and rpm/dnf's full EVR (both stored in
+      # `version`) are immutable per-artifact identities, so an existing
+      # (name, arch, version) tuple can be skipped safely.
+      %w[apt rpm dnf].include?(@repository.kind.to_s)
     end
 
     # Change-detection (apt). An existing (name, version, arch) tuple names the
@@ -256,9 +265,19 @@ module System
       # large prune, or overriding a false-positive on a small repo).
       return if @force
 
+      # An empty upstream is ALWAYS a failure (mirror/publish outage) — never
+      # auto-bypass, even during a reparse.
       if seen_count.zero?
         raise SyncGuardError, "upstream yielded zero packages — refusing to obsolete the whole repo (likely a mirror/publish failure)"
       end
+
+      # A rpm/dnf bare-version → EVR reparse deliberately rewrites every row
+      # under a new KEY, obsoleting all old-key rows as new-key rows replace
+      # them — that mass obsoletion is expected, so skip the fraction check (the
+      # empty-upstream check above still stands). Only kinds with a
+      # PARSER_VERSIONS override reformat their key; apt reparses keep the same
+      # key, so a genuine upstream shrink there must still be caught.
+      return if parser_stale? && PARSER_VERSIONS.key?(@repository.kind.to_s)
 
       frac = obsolete_guard_fraction
       if active_count.positive? && obsolete_count > (active_count * frac)
@@ -284,7 +303,13 @@ module System
     end
 
     def parser_stale?
-      @repository.parser_version.to_i < PARSER_VERSION
+      @repository.parser_version.to_i < target_parser_version
+    end
+
+    # The parser version this repo's KIND should be synced with (rpm/dnf = 2 for
+    # the EVR reformat, apt = the default 1).
+    def target_parser_version
+      PARSER_VERSIONS.fetch(@repository.kind.to_s, PARSER_VERSION)
     end
 
     def active_package_count
@@ -297,7 +322,7 @@ module System
     # counts are already consistent.
     def finalize_synced!(fingerprint, package_count)
       @repository.mark_synced!(package_count: package_count)
-      cols = { parser_version: PARSER_VERSION }
+      cols = { parser_version: target_parser_version }
       cols[:sync_fingerprint] = fingerprint if fingerprint.present?
       @repository.update_columns(cols)
       # Package rows landed via raw upsert/update (no callbacks); refresh the

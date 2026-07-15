@@ -106,4 +106,19 @@ RSpec.describe System::PackageAdapters::RpmAdapter do
       expect(f[:provides].first.first["name"]).to eq("openssl(api)")
     end
   end
+
+  describe "#rpm_evr (version stored as the full EVR identity)" do
+    it "builds [epoch:]version-release, omitting a zero/absent epoch" do
+      expect(adapter.send(:rpm_evr, "0", "2.34", "60.el9_3.7")).to eq("2.34-60.el9_3.7")
+      expect(adapter.send(:rpm_evr, nil, "2.34", "60.el9")).to eq("2.34-60.el9")
+      expect(adapter.send(:rpm_evr, "1", "2.34", "60.el9")).to eq("1:2.34-60.el9")
+      expect(adapter.send(:rpm_evr, "0", "1.0", nil)).to eq("1.0")
+    end
+
+    it "gives errata that share a bare version DISTINCT identities" do
+      a = adapter.send(:rpm_evr, "0", "2.34", "60.el9")
+      b = adapter.send(:rpm_evr, "0", "2.34", "60.el9_3.7")
+      expect(a).not_to eq(b)
+    end
+  end
 end

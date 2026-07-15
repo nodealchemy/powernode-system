@@ -175,7 +175,7 @@ module System
       def to_parsed_package(f)
         ParsedPackage.new(
           name:                 f[:name],
-          version:              f[:version],
+          version:              rpm_evr(f[:epoch], f[:version], f[:release]),
           architecture:         f[:arch],
           release_version:      f[:release],
           section_or_group:     f[:group],
@@ -199,6 +199,19 @@ module System
           maintainer:   f[:packager],
           raw_metadata: f.transform_keys(&:to_s)
         )
+      end
+
+      # Canonical rpm EVR — "[epoch:]version-release". Stored in `version` so
+      # (name, architecture, version) is a true immutable identity (NEVRA-
+      # complete with name+arch): errata that share a bare version but differ
+      # by release (glibc 2.34-60.el9 vs 2.34-60.el9_3.7) get DISTINCT keys, so
+      # change-detection no longer collides them into one row (which blinded
+      # CVE/upgrade sensors and forced rpm onto the slow full-upsert path). The
+      # format matches split_evr (used by compare_versions) and dnf/rpm display
+      # — epoch shown only when meaningful (non-zero).
+      def rpm_evr(epoch, version, release)
+        vr = release.to_s.empty? ? version.to_s : "#{version}-#{release}"
+        epoch.present? && epoch.to_s != "0" ? "#{epoch}:#{vr}" : vr
       end
 
       def split_evr(evr)

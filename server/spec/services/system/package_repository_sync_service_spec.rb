@@ -155,19 +155,43 @@ RSpec.describe System::PackageRepositorySyncService do
     end
   end
 
-  describe "rpm uses the full-upsert path (does NOT skip existing)" do
+  # rpm/dnf now store the full EVR in `version` (a true identity), so they get
+  # change-detection like apt. Existing bare-version rows reparse to EVR once
+  # (rpm PARSER_VERSION=2); that reformat obsoletes every old-key row, which the
+  # guard's fraction check would refuse — so a parser reparse skips that check.
+  describe "rpm (EVR identity → change-detection + one-time bare→EVR reparse)" do
     let(:repo) { create(:system_package_repository, :rpm, account: account) }
 
-    it "rewrites an existing row (rpm version isn't a full immutable identity)" do
-      pkg = create(:system_package, package_repository: repo, name: "glibc", version: "2.34",
-                   architecture: "x86_64", description: "old")
-      repo.update_columns(sync_fingerprint: "OLD")
-      stub_adapter(packages: [ parsed("glibc", "2.34", arch: "x86_64", description: "new") ],
-                   fingerprint: "NEW", kind: "rpm")
+    def rpm_pkg(name, evr, **extra)
+      parsed(name, evr, arch: "x86_64", **extra)
+    end
+
+    it "reparses bare-version rows to EVR on a parser-stale sync (retires the bare row)" do
+      # Pre-EVR row: bare version; :rpm factory leaves parser_version 0 (< 2).
+      old = create(:system_package, package_repository: repo, name: "glibc", version: "2.34", architecture: "x86_64")
+      stub_adapter(packages: [ rpm_pkg("glibc", "2.34-60.el9_3.7") ], fingerprint: "NEW", kind: "rpm")
+
+      result = described_class.call(repository: repo)
+
+      expect(result.success?).to be true # the 100%-of-old-keys obsoletion is NOT guard-blocked
+      expect(old.reload.obsoleted_at).to be_present
+      live = System::Package.where(package_repository_id: repo.id, obsoleted_at: nil)
+      expect(live.pluck(:version)).to eq([ "2.34-60.el9_3.7" ])
+      expect(repo.reload.parser_version).to eq(2)
+    end
+
+    it "skips unchanged errata and obsoletes a superseded release once EVR-current" do
+      repo.update_columns(parser_version: 2, sync_fingerprint: "OLD")
+      10.times { |i| create(:system_package, package_repository: repo, name: "keep#{i}", version: "1.0-1.el9", architecture: "x86_64") }
+      create(:system_package, package_repository: repo, name: "glibc", version: "2.34-60.el9", architecture: "x86_64")
+      # keeps unchanged; glibc's old release superseded by a new one (distinct EVR key)
+      upstream = (0..9).map { |i| rpm_pkg("keep#{i}", "1.0-1.el9") } + [ rpm_pkg("glibc", "2.34-60.el9_3.7") ]
+      stub_adapter(packages: upstream, fingerprint: "NEW", kind: "rpm")
 
       described_class.call(repository: repo)
 
-      expect(pkg.reload.description).to eq("new") # full path refreshed it
+      expect(System::Package.find_by(package_repository_id: repo.id, name: "glibc", version: "2.34-60.el9").obsoleted_at).to be_present
+      expect(System::Package.find_by(package_repository_id: repo.id, name: "glibc", version: "2.34-60.el9_3.7")).to be_present
     end
   end
 
