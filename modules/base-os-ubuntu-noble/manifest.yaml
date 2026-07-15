@@ -12,6 +12,36 @@ mask:
   - "/usr/share/man/**"
   - "/usr/share/locale/**"
   - "/var/log/**"
+  # Build-chroot identity that must NOT ship fleet-wide (campaign 019f6084
+  # inc0 — carve-conformance audit). Both are generated INSIDE the
+  # mmdebstrap chroot by package postinst scripts during Stage 1, before
+  # this mask ever runs — confirmed by reading the actual Ubuntu Noble
+  # postinst scripts (same distro/packages this module builds against):
+  #   - systemd.postinst calls `systemd-machine-id-setup` unconditionally,
+  #     which WRITES a real (non-empty) /etc/machine-id — not the usual
+  #     "ships empty, populated at first boot" story.
+  #   - openssh-server.postinst generates /etc/ssh/ssh_host_{rsa,ecdsa,
+  #     ed25519}_key via `ssh-keygen -q -f ... -N ''` if they don't
+  #     already exist in the chroot.
+  # file_spec's broad "/etc/**" would otherwise carve both into the
+  # shipped erofs blob, baking ONE identity into every fleet node that
+  # boots this module. For the ssh host keys specifically this also
+  # silently defeats rootfs/etc/systemd/system/ssh-host-keygen.service's
+  # first-boot regeneration: that unit's
+  # `ConditionPathExistsGlob=!/etc/ssh/ssh_host_ed25519_key` checks the
+  # MERGED overlay view, so if the read-only erofs lower already ships
+  # that file the condition is false on every boot and the unit never
+  # runs — every node would keep the one host key baked into the blob
+  # forever, not just on first boot. protected_spec below already
+  # protects these paths from being overridden by a NEIGHBOR module;
+  # that does not stop base-os's OWN build from carving them, hence the
+  # mask. Needs an independent parity check on the next real erofs build
+  # (not run here — no build environment in this increment) to confirm
+  # the masked blob still boots clean and ssh-host-keygen.service still
+  # fires on first boot.
+  - "/etc/machine-id"
+  - "/etc/ssh/ssh_host_*_key"
+  - "/etc/ssh/ssh_host_*_key.pub"
 
 file_spec:
   - "/etc/**"
