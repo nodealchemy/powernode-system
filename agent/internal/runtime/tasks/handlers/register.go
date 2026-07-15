@@ -16,6 +16,8 @@ import "github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
 //   - a2a: a2a_call (execute a mission-delegated peer call over the A2A mesh)
 //   - module_build: ci.module_build (native NodeModule build on a leased
 //     module-forge builder — campaign 019f5885 inc7)
+//   - package_build: ci.package_build (native materialized-package build on
+//     the SAME leased module-forge builder — campaign 019f6084 inc-D)
 func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterLifecycle(r, deps)
 	RegisterConfig(r, deps)
@@ -25,4 +27,5 @@ func RegisterDefaults(r *tasks.Registry, deps tasks.Dependencies) {
 	RegisterA2ADelegate(r, deps)
 	RegisterUpgradeBootImage(r, deps)
 	RegisterModuleBuild(r, deps)
+	RegisterPackageBuild(r, deps)
 }
