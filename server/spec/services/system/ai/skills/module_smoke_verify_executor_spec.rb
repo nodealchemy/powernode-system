@@ -92,7 +92,7 @@ RSpec.describe System::Ai::Skills::ModuleSmokeVerifyExecutor do
           )
       end
 
-      it "returns a well-formed passing smoke report and composes the template pairing" do
+      it "returns a well-formed passing smoke report and queues the on-node sync" do
         result = exec.execute(module_name: target_module.name)
 
         expect(result[:success]).to be true
@@ -105,9 +105,19 @@ RSpec.describe System::Ai::Skills::ModuleSmokeVerifyExecutor do
         expect(data[:checks].size).to eq(3)
         expect(data[:checks]).to all(include(pass: true))
 
-        expect(System::TemplateModule.where(node_template: template, node_module: target_module)).to exist
-        expect(System::TemplateModule.where(node_template: template, node_module: base_os_module)).to exist
+        # The on-node re-apply WAS queued (the probe needs the module mounted)...
         expect(System::Task.where(operable: instance, command: "sync_modules")).to exist
+      end
+
+      it "does NOT permanently widen the acquired member's own (shared/pool) template" do
+        # No explicit template_id → the acquired member's own template. A
+        # transient smoke composes the pairing to probe, then tears exactly
+        # those additions back out so the shared template is left untouched for
+        # the next pool consumer (the mutation TemplateApprovalPolicy flags).
+        exec.execute(module_name: target_module.name)
+
+        expect(System::TemplateModule.where(node_template: template, node_module: target_module)).not_to exist
+        expect(System::TemplateModule.where(node_template: template, node_module: base_os_module)).not_to exist
       end
 
       it "accepts module_id in place of module_name" do
@@ -154,6 +164,41 @@ RSpec.describe System::Ai::Skills::ModuleSmokeVerifyExecutor do
         expect(result[:success]).to be true
         expect(result[:data][:template_id]).to eq(other_template.id)
         expect(System::TemplateModule.where(node_template: other_template, node_module: target_module)).to exist
+      end
+    end
+
+    context "caller-owned instance (instance_id given)" do
+      let(:caller_template) { create(:system_node_template, account: account, node_platform: platform) }
+      let(:caller_node)     { create(:system_node, account: account, node_template: caller_template) }
+      let(:caller_instance) { create(:system_node_instance, :running, node: caller_node) }
+
+      before do
+        allow(::System::ModuleSmokeProbe).to receive(:run).and_return(
+          System::ModuleSmokeProbe::Result.new(ok?: true, checks: [])
+        )
+      end
+
+      it "verifies THAT instance without acquiring a second member or releasing the caller's" do
+        # The caller (e.g. fulfill) owns the instance lifecycle — smoke must not
+        # acquire its own member (the bug that verified the WRONG instance) nor
+        # release/terminate the one it was handed.
+        expect(::System::InstancePoolService).not_to receive(:acquire!)
+        expect(::System::InstancePoolService).not_to receive(:release!)
+
+        result = exec.execute(module_name: target_module.name,
+                              instance_id: caller_instance.id, template_id: caller_template.id)
+
+        expect(result[:success]).to be true
+        expect(result[:data][:instance_id]).to eq(caller_instance.id)
+        expect(result[:data][:template_id]).to eq(caller_template.id)
+        expect(caller_instance.reload.status).to eq("running") # not terminated
+      end
+
+      it "fails cleanly when the given instance_id does not exist" do
+        result = exec.execute(module_name: target_module.name,
+                              instance_id: "00000000-0000-7000-8000-000000000000")
+        expect(result[:success]).to be false
+        expect(result[:error]).to match(/instance not found/)
       end
     end
 

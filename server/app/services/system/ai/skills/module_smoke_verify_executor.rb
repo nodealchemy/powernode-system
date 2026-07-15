@@ -37,7 +37,10 @@ module System
             base_os_module_name: { type: "string", required: false, default: DEFAULT_BASE_OS_MODULE_NAME,
                                    description: "Base-os module composed alongside the target module" },
             template_id: { type: "string", required: false,
-                          description: "Existing NodeTemplate to reuse instead of the acquired instance's own template" }
+                          description: "Existing NodeTemplate to reuse instead of the acquired instance's own template" },
+            instance_id: { type: "string", required: false,
+                          description: "Verify THIS already-provisioned instance in place (caller-owned: not acquired from a pool, not released/terminated). " \
+                                       "Omit to self-acquire an ephemeral pool member for a standalone smoke (which IS released afterward)." }
           },
           outputs: {
             ok: :boolean,
@@ -54,7 +57,7 @@ module System
         protected
 
         def perform(module_name: nil, module_id: nil, base_os_module_name: DEFAULT_BASE_OS_MODULE_NAME,
-                    template_id: nil, **_extras)
+                    template_id: nil, instance_id: nil, **_extras)
           return failure("module_name or module_id is required") if module_name.blank? && module_id.blank?
 
           node_module = resolve_module(module_name: module_name, module_id: module_id)
@@ -63,19 +66,33 @@ module System
           base_os_module = @account.system_node_modules.find_by(name: base_os_module_name)
           return failure("base-os module not found: #{base_os_module_name}") unless base_os_module
 
-          begin
-            instance = ::System::InstancePoolService.acquire!(account: @account)
-          rescue ::System::InstancePoolService::NoReadyMembersError => e
-            return failure("no ready pool members: #{e.message}")
-          rescue ::System::InstancePoolService::PoolError => e
-            return failure(e.message)
-          end
+          if instance_id.present?
+            # Caller-owned path (e.g. fulfill's leased instance): verify THAT
+            # instance in place. NEVER acquire a second pool member, NEVER
+            # release/terminate the caller's instance — its lifecycle belongs
+            # to the caller.
+            instance = ::System::NodeInstance.where(account_id: @account.id).find_by(id: instance_id)
+            return failure("instance not found: #{instance_id}") unless instance
 
-          begin
             run_smoke(instance: instance, node_module: node_module, base_os_module: base_os_module,
-                      template_id: template_id)
-          ensure
-            release_pooled_instance(instance)
+                      template_id: template_id, caller_owned: true)
+          else
+            # Standalone path: self-acquire an ephemeral pool member and release
+            # it afterward.
+            begin
+              instance = ::System::InstancePoolService.acquire!(account: @account)
+            rescue ::System::InstancePoolService::NoReadyMembersError => e
+              return failure("no ready pool members: #{e.message}")
+            rescue ::System::InstancePoolService::PoolError => e
+              return failure(e.message)
+            end
+
+            begin
+              run_smoke(instance: instance, node_module: node_module, base_os_module: base_os_module,
+                        template_id: template_id, caller_owned: false)
+            ensure
+              release_pooled_instance(instance)
+            end
           end
         end
 
@@ -87,24 +104,40 @@ module System
           @account.system_node_modules.find_by(name: module_name)
         end
 
-        def run_smoke(instance:, node_module:, base_os_module:, template_id:)
+        def run_smoke(instance:, node_module:, base_os_module:, template_id:, caller_owned:)
+          # An EXPLICIT template_id is the caller's dedicated template (e.g.
+          # fulfill's freshly-authored NEW template) — trusted as already
+          # composed, so anything we add to it stays. Without a template_id we
+          # fall back to the acquired instance's OWN (pool/shared) template,
+          # which must NEVER be permanently widened by a transient smoke — so we
+          # compose the pairing, probe, then remove exactly the pairings we
+          # added (leaving the shared template untouched for the next member).
+          explicit_template = template_id.present?
           template = resolve_template(instance: instance, template_id: template_id)
           return failure("template not found: #{template_id || "instance #{instance.id} has no node_template"}") unless template
 
-          compose_pairing!(template: template, node_module: node_module, base_os_module: base_os_module, instance: instance)
-
-          report = ::System::ModuleSmokeProbe.run(
-            instance: instance, node_module: node_module, base_os_module_name: base_os_module.name
+          created_pairings = compose_pairing!(
+            template: template, node_module: node_module, base_os_module: base_os_module, instance: instance
           )
 
-          success(
-            ok: report.ok?,
-            module_name: node_module.name,
-            base_os_module_name: base_os_module.name,
-            instance_id: instance.id,
-            template_id: template.id,
-            checks: report.checks.map { |c| { name: c.name, pass: c.pass, detail: c.detail } }
-          )
+          begin
+            report = ::System::ModuleSmokeProbe.run(
+              instance: instance, node_module: node_module, base_os_module_name: base_os_module.name
+            )
+
+            success(
+              ok: report.ok?,
+              module_name: node_module.name,
+              base_os_module_name: base_os_module.name,
+              instance_id: instance.id,
+              template_id: template.id,
+              checks: report.checks.map { |c| { name: c.name, pass: c.pass, detail: c.detail } }
+            )
+          ensure
+            # Only tear down transient widening of a shared/pool template. A
+            # caller-supplied template is dedicated (its modules must persist).
+            created_pairings.each(&:destroy) unless explicit_template
+          end
         rescue ActiveRecord::RecordInvalid => e
           failure("compose failed: #{e.message}")
         end
@@ -119,19 +152,30 @@ module System
           instance.node&.node_template
         end
 
-        # Ensures `template` carries both modules, then queues a sync_modules
-        # Task so the on-node agent re-applies the (possibly just-widened)
-        # template to the live instance — the same mechanism
-        # system_refresh_instance_modules uses.
+        # Ensures `template` carries both modules, then — only when it actually
+        # widened the template — queues a sync_modules Task so the on-node agent
+        # applies the just-widened template to the live instance (the same
+        # mechanism system_refresh_instance_modules uses). Returns the
+        # TemplateModule rows it CREATED (so a transient smoke can tear exactly
+        # those down); pre-existing pairings are left in the return empty, so a
+        # dedicated template that already carries both modules is a no-op.
         def compose_pairing!(template:, node_module:, base_os_module:, instance:)
+          created = []
           [ base_os_module, node_module ].each do |node_mod|
-            ::System::TemplateModule.find_or_create_by!(node_template: template, node_module: node_mod)
+            existing = ::System::TemplateModule.find_by(node_template: template, node_module: node_mod)
+            next if existing
+
+            created << ::System::TemplateModule.create!(node_template: template, node_module: node_mod)
           end
 
-          ::System::Task.create!(
-            account: @account, operable: instance, command: "sync_modules", status: "pending",
-            options: { "source" => "module_smoke_verify", "module" => node_module.name }
-          )
+          if created.any?
+            ::System::Task.create!(
+              account: @account, operable: instance, command: "sync_modules", status: "pending",
+              options: { "source" => "module_smoke_verify", "module" => node_module.name }
+            )
+          end
+
+          created
         end
 
         def release_pooled_instance(instance)
