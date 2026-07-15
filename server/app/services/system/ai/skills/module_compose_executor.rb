@@ -4,25 +4,48 @@ module System
   module Ai
     module Skills
       # Assemble a Template *draft* from a natural-language workload description.
-      # v0 uses keyword overlap between the description and module name;
-      # M-FE-1 (Visual Template Composer) layers a richer ranking over this
-      # same skill.
       #
-      # Output is a *draft* — never a persisted Template. The Concierge or
-      # an operator confirms via system_create_template + system_assign_module_to_template
-      # against the returned module list.
+      # v1 (campaign 019f6084 inc3) ranks modules SEMANTICALLY: it embeds the
+      # description and each candidate module's `name + description`, then ranks
+      # by cosine similarity (reusing the same Ai::Memory::EmbeddingService the
+      # package-intent discovery skill uses). Keyword overlap on the module name
+      # is kept as a graceful FALLBACK for when the embedding provider is
+      # unavailable — discovery still degrades to *something* rather than an
+      # error, unlike discover_packages_by_intent whose whole premise is the
+      # vector match.
       #
-      # Reference: Golden Eclipse plan M6 — Skills catalog (module_compose row).
+      # v1 also BRIDGES module gaps: when no existing module clears the semantic
+      # floor for the requested capability, it consults
+      # discover_packages_by_intent and surfaces a `gap: materialize <pkg>`
+      # entry (rather than silently returning an empty composition), so a
+      # caller — notably fulfill_capability_request — can author the missing
+      # capability from a package instead of giving up.
+      #
+      # Output is a *draft* — never a persisted Template. The Concierge or an
+      # operator confirms via system_create_template +
+      # system_assign_module_to_template against the returned module list; the
+      # gaps are materialized via the package_module_create path.
+      #
+      # Reference: Golden Eclipse plan M6 — Skills catalog (module_compose row);
+      # campaign 019f6084 inc3 (on-demand template + instance slice).
       class ModuleComposeExecutor < BaseSkillExecutor
         DEFAULT_MAX_MODULES = 10
-        # Minimum keyword overlap to include a module. Ratio is matched
-        # tokens / total description tokens. 0.05 = 1 match per 20 description
-        # tokens, which is generous on purpose so v0 catches anything plausible
-        # for the operator to review.
+
+        # Minimum keyword overlap to include a module in the FALLBACK ranker.
+        # Ratio is matched tokens / total description tokens. 0.05 = 1 match per
+        # 20 description tokens, generous on purpose so the fallback catches
+        # anything plausible for the operator to review.
         INCLUDE_THRESHOLD = 0.05
 
+        # Cosine-similarity floor a module must clear to count as "covering" the
+        # request in the SEMANTIC ranker. Below the floor the capability is
+        # treated as uncovered → a package gap is surfaced. Configurable via
+        # SiteSetting `system.module_compose.min_similarity` (never a bare
+        # constant — this is the fallback default only).
+        DEFAULT_MIN_SIMILARITY = 0.5
+
         # Common English stopwords stripped before token matching. Not language-
-        # aware — fine for v0 since module catalogs are predominantly English.
+        # aware — fine here since module catalogs are predominantly English.
         STOPWORDS = %w[
           a an the and or but if then in on for to of with at from by as is are
           be been being do does did done have has had this that these those it
@@ -32,7 +55,7 @@ module System
 
         skill_descriptor(
           name: "module_compose",
-          description: "Compose a Template draft from a workload description — keyword-matches modules and proposes a composition with conflict checks",
+          description: "Compose a Template draft from a workload description — SEMANTICALLY ranks modules (embedding cosine, keyword fallback), runs conflict checks, and surfaces package gaps to materialize when no module covers a capability",
           category: "devops",
           inputs: {
             description: { type: "string", required: true,
@@ -44,12 +67,16 @@ module System
           outputs: {
             draft_template: :object,
             conflicts: [ :object ],
+            gaps: [ :object ],
             candidate_count: :integer,
+            ranking_mode: :string,
             reasoning: :string
           }
         )
 
-        binds_to "Fleet Autonomy"
+        # System Concierge is the NL surface for on-demand composition; Fleet
+        # Autonomy drives it policy-gated.
+        binds_to "Fleet Autonomy", "System Concierge"
 
         protected
 
@@ -61,18 +88,21 @@ module System
           return failure("module listing failed: #{modules_resp[:error]}") unless modules_resp[:success]
 
           candidates = filter_for_platform(modules_resp[:data][:modules], platform_id)
-          ranked = rank_candidates(candidates, tokens)
+          ranked, mode = rank(candidates, description, tokens)
           chosen = ranked.first(max_modules.to_i)
 
           conflicts = detect_conflicts(chosen)
+          gaps = detect_gaps(description, chosen, platform_id)
 
           success(
             draft_template: build_draft_template(description, chosen),
             conflicts: conflicts,
+            gaps: gaps,
             candidate_count: candidates.size,
-            reasoning: build_reasoning(tokens, ranked, chosen),
+            ranking_mode: mode,
+            reasoning: build_reasoning(tokens, ranked, chosen, mode, gaps),
             requires_approval: false,
-            note: "draft only — operator/concierge must confirm via system_create_template + system_assign_module_to_template"
+            note: "draft only — operator/concierge confirms via system_create_template + system_assign_module_to_template; gaps materialize via package_module_create"
           )
         end
 
@@ -91,9 +121,51 @@ module System
           modules.select { |m| ids.include?(m[:id]) }
         end
 
-        def rank_candidates(modules, tokens)
+        # === Ranking ======================================================
+        # Returns [ranked, mode]. Prefers semantic (embedding cosine); falls
+        # back to keyword overlap when the embedding provider can't embed the
+        # description (returns nil) — that's the only signal the provider is
+        # down, since a live provider always yields a vector.
+        def rank(candidates, description, tokens)
+          query_vec = embed(description)
+          if query_vec
+            [ semantic_rank(candidates, description, tokens, query_vec), "semantic" ]
+          else
+            [ keyword_rank(candidates, tokens), "keyword" ]
+          end
+        end
+
+        # Semantic ranker: embeds each candidate's `name + description` on the
+        # fly (NodeModule stores no persisted embedding) and scores it against
+        # the pre-computed description embedding. Modules below the similarity
+        # floor are dropped — the capabilities they'd cover surface as gaps.
+        def semantic_rank(candidates, description, tokens, query_vec)
+          floor = min_similarity
+          descriptions = load_descriptions(candidates)
+          svc = embedding_service
+
+          Array(candidates).filter_map do |m|
+            text = [ m[:name], descriptions[m[:id]] ].compact.join(" ").strip
+            vec = embed(text)
+            next unless vec
+
+            sim = svc.similarity(query_vec, vec).to_f
+            next if sim < floor
+
+            {
+              module: m,
+              score: sim.round(4),
+              similarity: sim.round(4),
+              matched_tokens: overlap_tokens(text, tokens)
+            }
+          end.sort_by { |r| -r[:score] }
+        end
+
+        # Keyword-overlap fallback (v0 behavior, preserved verbatim in shape so
+        # build_draft_template / detect_conflicts consume it unchanged).
+        def keyword_rank(candidates, tokens)
           token_count = tokens.size.to_f
-          Array(modules).filter_map do |m|
+          Array(candidates).filter_map do |m|
             haystack = "#{m[:name]} #{m[:gitea_repo_full_name]}".downcase
             matched = tokens.uniq.select { |t| haystack.include?(t) }
             next if matched.empty?
@@ -105,6 +177,80 @@ module System
           end.sort_by { |r| -r[:score] }
         end
 
+        def overlap_tokens(text, tokens)
+          haystack = text.downcase
+          tokens.uniq.select { |t| haystack.include?(t) }
+        end
+
+        # Bulk-load descriptions for the candidate module ids in one query
+        # (the serialized tool payload omits description). Keyed by id.
+        def load_descriptions(candidates)
+          ids = Array(candidates).map { |m| m[:id] }.compact
+          return {} if ids.empty?
+
+          ::System::NodeModule.where(account: @account, id: ids).pluck(:id, :description).to_h
+        end
+
+        # === Gap bridging =================================================
+        # When nothing cleared the floor, the requested capability has no
+        # covering module. Consult discover_packages_by_intent and surface a
+        # materialize-this-package gap so the caller can author it, rather than
+        # returning a silent empty composition.
+        def detect_gaps(description, chosen, _platform_id)
+          return [] if chosen.any?
+
+          disc = DiscoverPackagesByIntentExecutor
+                 .new(account: @account, agent: @agent, user: @user)
+                 .execute(intent: description)
+
+          unless disc[:success]
+            return [ {
+              capability: description,
+              action: "author_module",
+              reason: "no covering module and package discovery unavailable (#{disc[:error]})"
+            } ]
+          end
+
+          top = Array(disc.dig(:data, :results)).first
+          unless top
+            return [ {
+              capability: description,
+              action: "author_module",
+              reason: "no covering module and no matching package"
+            } ]
+          end
+
+          [ {
+            capability: description,
+            action: "materialize",
+            package: top[:name],
+            package_id: top[:package_id],
+            repository_id: top[:repository_id],
+            confidence: disc.dig(:data, :confidence),
+            reason: "no existing module clears the similarity floor — materialize #{top[:name]}"
+          } ]
+        end
+
+        # === Embedding ====================================================
+        def embedding_service
+          @embedding_service ||= ::Ai::Memory::EmbeddingService.new(account: @account)
+        end
+
+        def embed(text)
+          return nil if text.to_s.strip.empty?
+
+          embedding_service.generate(text.to_s)
+        rescue StandardError => e
+          Rails.logger.warn("[ModuleCompose] embedding failed: #{e.class}: #{e.message}")
+          nil
+        end
+
+        def min_similarity
+          raw = ::SiteSetting.get("system.module_compose.min_similarity")
+          raw.nil? ? DEFAULT_MIN_SIMILARITY : raw.to_f
+        end
+
+        # === Conflict detection (unchanged) ===============================
         def detect_conflicts(chosen)
           conflicts = []
 
@@ -126,6 +272,7 @@ module System
           conflicts
         end
 
+        # === Draft assembly ===============================================
         def build_draft_template(description, chosen)
           {
             name_suggestion: suggest_template_name(description),
@@ -144,12 +291,13 @@ module System
           "#{base.join('-')}-template"
         end
 
-        def build_reasoning(tokens, ranked, chosen)
+        def build_reasoning(tokens, ranked, chosen, mode, gaps)
           if chosen.empty?
-            "No modules matched the description tokens (#{tokens.first(8).join(', ')}). " \
-            "Consider authoring a new module or broadening the description."
+            gap_note = gaps.any? ? " Suggested gap: #{gaps.first[:action]} #{gaps.first[:package]}.".rstrip : ""
+            "No modules matched the description tokens (#{tokens.first(8).join(', ')}) via #{mode} ranking." \
+            "#{gap_note} Consider authoring a new module or broadening the description."
           else
-            "Matched #{ranked.size} candidate modules; selected top #{chosen.size}. " \
+            "Matched #{ranked.size} candidate modules via #{mode} ranking; selected top #{chosen.size}. " \
             "Top match: #{chosen.first[:module][:name]} (score=#{chosen.first[:score]})."
           end
         end
