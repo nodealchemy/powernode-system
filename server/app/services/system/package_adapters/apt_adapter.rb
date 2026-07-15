@@ -163,28 +163,44 @@ module System
         [ release, sig ]
       end
 
+      # Returns the decompressed Packages bytes for one (component, arch), or
+      # nil when the file is GENUINELY ABSENT (every compression variant 404s —
+      # normal, since not every component carries every arch). RAISES on a
+      # transport failure (timeout, 5xx, 429, connection reset): the file may
+      # well exist but we couldn't retrieve it, so the caller must ABORT the
+      # sync rather than silently drop this architecture — a partial fetch that
+      # looks authoritative would make the sync service mass-obsolete every
+      # package of the un-fetched arches.
       def fetch_packages_file(repository, component:, architecture:)
         base = repository.base_url.chomp("/")
         suite = repository.suite
         path_base = "#{base}/dists/#{suite}/#{component}/binary-#{architecture}/Packages"
 
+        transport_failure = nil
         COMPRESSION_EXTENSIONS.each do |ext|
           url = "#{path_base}#{ext}"
           begin
-            bytes = http_get(url, timeout: 120)
-            return case ext
-                   when ".xz"
-                     xz_decompress(bytes)
-                   when ".gz"
-                     gunzip(bytes)
-                   else
-                     bytes
-                   end
-          rescue FetchError
+            return decompress_packages(ext, http_get(url, timeout: 120))
+          rescue FetchError => e
+            # 404 for this variant → mirror just doesn't serve that compression;
+            # try the next. Anything else → remember it and, if no variant
+            # succeeds, raise (never report the arch as absent on a fetch error).
+            transport_failure = e unless e.not_found?
             next
           end
         end
+
+        raise transport_failure if transport_failure
+
         nil
+      end
+
+      def decompress_packages(ext, bytes)
+        case ext
+        when ".xz" then xz_decompress(bytes)
+        when ".gz" then gunzip(bytes)
+        else bytes
+        end
       end
 
       # Stream-parse a Debian control-file format Packages blob. Yields a
