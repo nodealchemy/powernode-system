@@ -113,4 +113,52 @@ RSpec.describe "Api::V1::System::NodePlatforms", type: :request do
       expect(response).to have_http_status(:not_found)
     end
   end
+
+  # Regression: the serializer emitted `templates_count` (plural) while the
+  # frontend reads `template_count`, and never emitted a module count at all —
+  # so the catalog always showed 0/0 despite real associations. The counts are
+  # now batched across the page in the controller (grouped queries) and fall
+  # back to per-record queries on the single-record show path.
+  describe "template_count and module_count" do
+    # Two templates sharing one module:
+    #   template_a → mod_1, mod_2
+    #   template_b → mod_2, mod_3   (mod_2 shared)
+    # distinct modules on the platform = {mod_1, mod_2, mod_3} = 3
+    let!(:counted_platform) { create(:system_node_platform, account: account, node_architecture: architecture) }
+    let(:template_a) { create(:system_node_template, account: account, node_platform: counted_platform) }
+    let(:template_b) { create(:system_node_template, account: account, node_platform: counted_platform) }
+    let(:mod_1) { create(:system_node_module, account: account, node_platform: counted_platform) }
+    let(:mod_2) { create(:system_node_module, account: account, node_platform: counted_platform) }
+    let(:mod_3) { create(:system_node_module, account: account, node_platform: counted_platform) }
+
+    before do
+      create(:system_template_module, node_template: template_a, node_module: mod_1)
+      create(:system_template_module, node_template: template_a, node_module: mod_2)
+      create(:system_template_module, node_template: template_b, node_module: mod_2)
+      create(:system_template_module, node_template: template_b, node_module: mod_3)
+    end
+
+    it "reports batched template_count and DISTINCT module_count in the index" do
+      get "/api/v1/system/node_platforms", headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+      row = json_response_data["node_platforms"].find { |p| p["id"] == counted_platform.id }
+      expect(row["template_count"]).to eq(2)
+      expect(row["module_count"]).to eq(3)
+    end
+
+    it "defaults both counts to 0 for a platform with no templates" do
+      get "/api/v1/system/node_platforms", headers: auth_headers_for(read_user)
+      row = json_response_data["node_platforms"].find { |p| p["id"] == platform.id }
+      expect(row["template_count"]).to eq(0)
+      expect(row["module_count"]).to eq(0)
+    end
+
+    it "reports the same counts on the single-record show (serializer fallback)" do
+      get "/api/v1/system/node_platforms/#{counted_platform.id}", headers: auth_headers_for(read_user)
+      expect(response).to have_http_status(:ok)
+      body = json_response_data["node_platform"]
+      expect(body["template_count"]).to eq(2)
+      expect(body["module_count"]).to eq(3)
+    end
+  end
 end

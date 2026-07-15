@@ -140,12 +140,56 @@ module Api
           scope.ordered
         end
 
-        def serialize_platform(platform)
-          ::System::NodePlatformSerializer.new(platform).as_json
+        def serialize_platform(platform, template_count: nil, module_count: nil)
+          ::System::NodePlatformSerializer.new(
+            platform, template_count: template_count, module_count: module_count
+          ).as_json
         end
 
+        # Batches the template/module counts for the whole page into two
+        # grouped queries (instead of two per platform), then hands each
+        # serializer its pre-computed counts. Platforms with no templates are
+        # simply absent from the grouped hashes → default to 0.
         def serialize_collection(platforms)
-          platforms.map { |p| serialize_platform(p) }
+          platforms = platforms.to_a
+          ids = platforms.map(&:id)
+          template_counts = template_counts_for(ids)
+          module_counts   = module_counts_for(ids)
+
+          platforms.map do |p|
+            serialize_platform(
+              p,
+              template_count: template_counts.fetch(p.id, 0),
+              module_count:   module_counts.fetch(p.id, 0)
+            )
+          end
+        end
+
+        # => { platform_id => template_count }
+        def template_counts_for(platform_ids)
+          return {} if platform_ids.empty?
+
+          ::System::NodeTemplate
+            .where(node_platform_id: platform_ids)
+            .group(:node_platform_id)
+            .count
+        end
+
+        # => { platform_id => distinct module count across its templates }.
+        # DISTINCT collapses a module shared by several templates on the same
+        # platform to one, matching the serializer's single-record fallback.
+        def module_counts_for(platform_ids)
+          return {} if platform_ids.empty?
+
+          templates_table = ::System::NodeTemplate.table_name
+          modules_table   = ::System::TemplateModule.table_name
+
+          ::System::TemplateModule
+            .joins(:node_template)
+            .where(templates_table => { node_platform_id: platform_ids })
+            .group("#{templates_table}.node_platform_id")
+            .distinct
+            .count("#{modules_table}.node_module_id")
         end
       end
     end

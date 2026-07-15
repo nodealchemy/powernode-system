@@ -2,8 +2,16 @@
 
 module System
   class NodePlatformSerializer
-    def initialize(platform)
+    # template_count / module_count may be supplied pre-computed by the caller
+    # (see NodePlatformsController#serialize_collection, which batches both
+    # counts across the whole page in two grouped queries to avoid an N+1).
+    # When omitted — e.g. the single-record show/create/update paths — they
+    # fall back to per-record queries. `nil` means "not provided"; a real 0
+    # from a batched hash is preserved (0 is truthy in Ruby).
+    def initialize(platform, template_count: nil, module_count: nil)
       @platform = platform
+      @template_count = template_count
+      @module_count = module_count
     end
 
     def as_json
@@ -18,7 +26,11 @@ module System
         build_script: @platform.build_script,
         init_script: @platform.init_script,
         sync_script: @platform.sync_script,
-        templates_count: @platform.node_templates.count,
+        template_count: template_count,
+        # Distinct modules across all templates on this platform. There is no
+        # direct platform→module association — modules attach to templates via
+        # TemplateModule — so this collapses shared modules to one.
+        module_count: module_count,
         # Disk image (claim-flow / fleet generic image) — populated by the
         # disk-image publication processor when CI builds + uploads an .img.
         # The UI uses disk_image_publication_status to offer "Download image";
@@ -37,6 +49,18 @@ module System
         created_at: @platform.created_at,
         updated_at: @platform.updated_at
       }
+    end
+
+    private
+
+    def template_count
+      @template_count ||= @platform.node_templates.count
+    end
+
+    def module_count
+      @module_count ||= System::TemplateModule
+                        .where(node_template_id: @platform.node_templates.select(:id))
+                        .distinct.count(:node_module_id)
     end
   end
 end
