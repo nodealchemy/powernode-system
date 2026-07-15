@@ -225,7 +225,11 @@ module System
           module_id:        m.id,
           package_name:     link&.package_name || m.name,
           architecture:     link&.architecture,
-          mask:             m.decode_spec_text(m.mask),
+          # mask_text (public) — NodeModule#decode_spec_text is private, so the
+          # bare decode_spec_text(m.mask) here raised NoMethodError whenever this
+          # legacy dispatch path ran against a real module (campaign 019f6084
+          # inc2 — surfaced by the native-bridge switchover).
+          mask:             m.mask_text,
           file_spec_source: link&.file_spec_source || "package_query"
         }
       end

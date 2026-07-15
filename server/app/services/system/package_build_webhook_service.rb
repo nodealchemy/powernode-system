@@ -32,8 +32,26 @@ module System
       new(payload: payload).call
     end
 
+    # Public finalize seam for the native package-build path (campaign 019f6084
+    # inc2 §4.3.2). System::NativeModuleBuildOrchestrator owns versioning + OCI
+    # artifact ingest for a package batch (via ModulePublicationProcessor —
+    # exactly as for platform modules), so it must NOT re-run the full webhook
+    # (#call, which also creates a NodeModuleVersion + ModuleArtifact and would
+    # double-count). The ONE package-specific finalize step the native path
+    # still needs is writing the builder's discovered dpkg -L / rpm -ql file
+    # list to file_spec + dependency_spec — that is this method, the single
+    # source of truth for the "write to both columns" semantics.
+    def self.apply_file_spec!(node_module:, file_spec:)
+      new(payload: {}).apply_file_spec!(node_module: node_module, file_spec: file_spec)
+    end
+
     def initialize(payload:)
       @payload = payload.with_indifferent_access
+    end
+
+    def apply_file_spec!(node_module:, file_spec:)
+      update_module_specs(node_module, file_spec: file_spec)
+      node_module
     end
 
     def call

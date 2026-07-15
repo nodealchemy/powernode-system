@@ -276,18 +276,51 @@ module System
       ::System::Task.create!(
         account: @account,
         operable: lease.node_instance,
-        command: "ci.module_build",
+        command: @batch.member_task_command,
         status: "pending",
-        options: {
-          "module"   => slug,
-          "sha"      => @batch.head_sha,
-          "oci_ref"  => entry["tag"],
-          "batch_id" => @batch.id
-        }
+        options: build_task_options(slug, entry)
       )
     rescue ActiveRecord::RecordInvalid => e
       entry["error"] = "task creation failed: #{e.message}"
       nil
+    end
+
+    # Platform (ci.module_build) tasks carry {module, sha, oci_ref, batch_id}.
+    # Package (ci.package_build — campaign 019f6084 inc2 §4.3.2) tasks carry the
+    # same four PLUS the mmdebstrap build inputs (package name, arch, repo
+    # coordinates, pinned apt snapshot) the leased builder needs — there is no
+    # modules/<slug> tree in a repo to check out for a materialized package
+    # module, so the whole build recipe travels in the task options.
+    def build_task_options(slug, entry)
+      base = {
+        "module"   => slug,
+        "sha"      => @batch.head_sha,
+        "oci_ref"  => entry["tag"],
+        "batch_id" => @batch.id
+      }
+      return base unless package_batch?
+
+      base.merge(package_task_options(slug))
+    end
+
+    def package_task_options(slug)
+      ctx     = package_context
+      mod_ctx = (ctx["modules"] || {})[slug] || {}
+      {
+        "build_kind"        => "package",
+        "package_name"      => mod_ctx["package_name"] || slug,
+        "architecture"      => mod_ctx["architecture"] || ctx["architecture"],
+        "package_repo_id"   => ctx["repository_id"],
+        "package_repo_url"  => ctx["package_repo_url"],
+        "package_repo_kind" => ctx["package_repo_kind"],
+        "apt_suite"         => ctx["apt_suite"],
+        "apt_components"    => ctx["apt_components"],
+        "rpm_releasever"    => ctx["rpm_releasever"],
+        "apt_snapshot"      => ctx["apt_snapshot"],
+        "gpg_key_armor"     => ctx["gpg_key_armor"],
+        "mask"              => mod_ctx["mask"],
+        "file_spec_source"  => mod_ctx["file_spec_source"]
+      }.compact
     end
 
     # Only ever called for a lease that never got a Task dispatched onto it
@@ -344,6 +377,15 @@ module System
       end
 
       result = task_result(task)
+
+      # Package builds (§4.3.2): the ONE package-specific finalize step the
+      # native path adds — write the builder's discovered dpkg -L / rpm -ql
+      # file list to file_spec + dependency_spec BEFORE signing. Versioning +
+      # OCI artifact ingest are then handled by the SAME sign→publish path as
+      # platform modules (ModulePublicationProcessor below), so this does NOT
+      # run the full PackageBuildWebhookService (which would double-create the
+      # version + artifact) — only its file_spec seam.
+      apply_package_file_spec!(node_module, result) if package_batch?
 
       @batch.await_signature! if @batch.may_await_signature?
       sign_result = ::System::ModuleSigningService.sign!(
@@ -417,6 +459,34 @@ module System
 
     def find_node_module(slug)
       @account.system_node_modules.find_by(name: slug)
+    end
+
+    # === Package-build (campaign 019f6084 inc2 §4.3.2) ===
+
+    def package_batch?
+      @batch.trigger == "package"
+    end
+
+    def package_context
+      @batch.metadata["package_context"] || {}
+    end
+
+    # Non-fatal: an absent/failed file_spec application does not fail the build
+    # (the sign→publish path still runs and the operator sees the module), but
+    # it IS logged — a package module that publishes with an empty file_spec
+    # carves nothing, which the size ledger / carve-conformance check surfaces.
+    def apply_package_file_spec!(node_module, result)
+      file_spec = result["file_spec"] || result[:file_spec]
+      if file_spec.blank?
+        Rails.logger.warn("[NativeModuleBuildOrchestrator] package build for #{node_module.name} " \
+                          "reported no file_spec — module will carry an empty file_spec")
+        return
+      end
+
+      ::System::PackageBuildWebhookService.apply_file_spec!(node_module: node_module, file_spec: file_spec)
+    rescue StandardError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] package file_spec apply failed " \
+                        "for #{node_module.name}: #{e.message}")
     end
 
     # Mirrors System::ModulePublicationProcessor#build_oci_ref — CONFIRMED

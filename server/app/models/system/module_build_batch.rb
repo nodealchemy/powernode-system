@@ -25,7 +25,13 @@ module System
 
     # === Constants ===
     STATUSES = %w[planning dispatched awaiting_signature publishing complete partial failed].freeze
-    TRIGGERS = %w[push manual cve].freeze
+    # "package" (campaign 019f6084 inc2 §4.3.2): an on-demand package-closure
+    # build materialized by System::PackageModuleMaterializer and routed through
+    # the native pipeline via System::PackageClosureBuildBridge. Unlike push/
+    # manual/cve (git-sha-driven platform-module builds), a package batch's
+    # base_sha/head_sha carry the repository sync-snapshot token (no git ref
+    # exists) and its per-module build context lives in metadata["package_context"].
+    TRIGGERS = %w[push manual cve package].freeze
 
     # === Associations ===
     belongs_to :account
@@ -128,12 +134,25 @@ module System
 
     # === Instance methods ===
 
-    # The ci.module_build Tasks dispatched for this batch. Correlated by
-    # option (options["batch_id"] == id), not FK — see class comment.
-    # options is JSONB with a GIN index (system_tasks baseline migration),
-    # so the containment query below is index-backed.
+    # The System::Task command for this batch's member build tasks. Package
+    # batches (campaign 019f6084 inc2 §4.3.2) dispatch `ci.package_build`
+    # (mmdebstrap-a-closure) tasks; every other trigger dispatches the platform
+    # `ci.module_build` (checkout-and-build-modules/<slug>) task. Keeping the
+    # correlation command trigger-derived lets one orchestrator + one batch
+    # model serve both build kinds.
+    PACKAGE_TASK_COMMAND  = "ci.package_build"
+    PLATFORM_TASK_COMMAND = "ci.module_build"
+
+    def member_task_command
+      trigger == "package" ? PACKAGE_TASK_COMMAND : PLATFORM_TASK_COMMAND
+    end
+
+    # The build Tasks dispatched for this batch. Correlated by option
+    # (options["batch_id"] == id), not FK — see class comment. options is JSONB
+    # with a GIN index (system_tasks baseline migration), so the containment
+    # query below is index-backed.
     def member_tasks
-      ::System::Task.where(account_id: account_id, command: "ci.module_build")
+      ::System::Task.where(account_id: account_id, command: member_task_command)
                      .where("options @> ?", { batch_id: id }.to_json)
     end
 
