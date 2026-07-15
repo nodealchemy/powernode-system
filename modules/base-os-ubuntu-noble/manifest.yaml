@@ -154,6 +154,18 @@ dependencies:
     - net.systemd-networkd
     - sshd
     - init.systemd
+    # Closure guarantee (campaign 019f6084 inc1): base-os owns the base
+    # userland (glibc, coreutils, the FHS layout) that every ELF-shipping
+    # module dynamically links against. Modules whose binaries aren't
+    # statically linked declare `requires: capability:os.userland` so the
+    # dependency resolver (System::DependencyResolutionService, via
+    # TemplateExpansionService/TemplateApplyService) always folds base-os
+    # into a template's closure even when no module explicitly requires
+    # base-os by name. See the sibling `requires: capability:os.userland`
+    # edges added on claude-tmux, dev-cell, gitea-act-runner, module-forge,
+    # postgres-primary, postgres-replica, redis, qemu-guest-agent,
+    # runtime-ruby, node-exporter, storage-tools, runtime-node.
+    - os.userland
 
 # Deliberately empty. The post-switch_root agent service is shipped
 # as a HAND-CURATED unit file at rootfs/etc/systemd/system/

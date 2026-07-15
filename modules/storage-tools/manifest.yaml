@@ -31,7 +31,10 @@ protected_spec: []
 reboot_required: false
 
 dependencies:
-  requires: []
+  requires:
+    # fscrypt/s3fs/rclone/keyutils binaries link against base-os's glibc —
+    # closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - storage.fscrypt
     - storage.fuse.s3fs

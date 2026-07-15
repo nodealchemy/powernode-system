@@ -66,6 +66,9 @@ dependencies:
     # system-base, so on a strict resolver it would fail to resolve the
     # base layer for any template composing claude-tmux (e.g. dev-cell).
     - powernode/powernode-system-base@^1.0
+    # claude (Node.js binary), tmux, and this module's own scripts link
+    # against base-os's glibc — closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - dev.claude-cli
     - dev.tmux-session

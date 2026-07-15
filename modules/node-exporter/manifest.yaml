@@ -17,7 +17,10 @@ protected_spec: []
 reboot_required: false
 
 dependencies:
-  requires: []
+  requires:
+    # prometheus-node-exporter dynamically links against base-os's glibc —
+    # closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - observability.metrics
 

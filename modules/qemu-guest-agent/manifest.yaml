@@ -57,7 +57,10 @@ services:
       socket_path: /dev/virtio-ports/org.qemu.guest_agent.0
 
 dependencies:
-  requires: []
+  requires:
+    # qga dynamically links against base-os's glibc/libnl3/libgmodule —
+    # closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - hypervisor.guest-agent
     - hypervisor.guest-agent.qemu

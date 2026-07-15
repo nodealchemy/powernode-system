@@ -140,6 +140,10 @@ dependencies:
     # time in this module) to obtain its own ANTHROPIC_API_KEY — a real
     # file dependency, not just a documentation note.
     - powernode/claude-tmux@^1.0
+    # dev-cell's own scripts + the apt packages in package_spec (git, rsync,
+    # etc.) link against base-os's glibc — closure guarantee (campaign
+    # 019f6084 inc1).
+    - capability:os.userland
   provides:
     - dev.cell
     - dev.cell.executor

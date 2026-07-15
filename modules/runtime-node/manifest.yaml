@@ -27,7 +27,11 @@ protected_spec: []
 reboot_required: false
 
 dependencies:
-  requires: []
+  requires:
+    # The prebuilt Node 24 binary links against base-os's libc/libstdc++ at
+    # runtime (see the file_spec comment above) — closure guarantee
+    # (campaign 019f6084 inc1) makes that implicit reliance explicit.
+    - capability:os.userland
   # Capability tag the dev-cell (and any future Node workload) matches against.
   # Like runtime-ruby, this is an FS-only substrate module (services: []) — the
   # modules layered on top declare their own services.

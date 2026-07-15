@@ -186,6 +186,9 @@ package_spec:
 dependencies:
   requires:
     - powernode/powernode-system-base@^1.0
+    # module-forge-build.sh and its apt packages (git, rsync, etc.) link
+    # against base-os's glibc — closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - ci.module-forge
 

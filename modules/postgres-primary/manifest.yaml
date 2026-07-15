@@ -91,7 +91,10 @@ services:
       pg_version: "16"
 
 dependencies:
-  requires: []
+  requires:
+    # postgres server binaries link against base-os's glibc — closure
+    # guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - database.postgres
     - database.postgres.primary

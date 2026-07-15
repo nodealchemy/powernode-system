@@ -54,7 +54,10 @@ services:
     # ModuleService.HEALTH_METHODS constraint.
 
 dependencies:
-  requires: []
+  requires:
+    # redis-server dynamically links against base-os's glibc/libssl —
+    # closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - cache.redis
     - cache.kv

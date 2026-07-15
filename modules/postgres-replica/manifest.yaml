@@ -30,7 +30,10 @@ services:
       notes: "Replication slot + primary connection string injected via virtio-fw-cfg at spawn time."
 
 dependencies:
-  requires: []
+  requires:
+    # postgres server binaries link against base-os's glibc — closure
+    # guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
   provides:
     - database.postgres
     - database.postgres.replica
