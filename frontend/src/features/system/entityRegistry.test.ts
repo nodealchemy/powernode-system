@@ -53,6 +53,7 @@ const mockCveApiGet = jest.fn();
 const mockGitopsApiGet = jest.fn();
 const mockStorageMigrationsApiGet = jest.fn();
 const mockPlatformPeersApiGetPeer = jest.fn();
+const mockModuleBuildsApiGet = jest.fn();
 
 jest.mock('@system/features/system/services/api/nodesApi', () => ({
   nodesApi: { getNodeInstance: (...a: unknown[]) => mockNodesApiGetNodeInstance(...a) },
@@ -100,6 +101,9 @@ jest.mock('@system/features/system/services/api/storageMigrationsApi', () => ({
 jest.mock('@system/features/system/services/api/platformPeersApi', () => ({
   platformPeersApi: { getPeer: (...a: unknown[]) => mockPlatformPeersApiGetPeer(...a) },
 }));
+jest.mock('@system/features/system/services/api/moduleBuildsApi', () => ({
+  moduleBuildsApi: { get: (...a: unknown[]) => mockModuleBuildsApiGet(...a) },
+}));
 
 // =============================================================================
 // Import subjects under test — AFTER mocks are declared
@@ -134,6 +138,7 @@ beforeEach(() => {
   mockGitopsApiGet.mockReset();
   mockStorageMigrationsApiGet.mockReset();
   mockPlatformPeersApiGetPeer.mockReset();
+  mockModuleBuildsApiGet.mockReset();
 });
 
 // =============================================================================
@@ -176,21 +181,22 @@ describe('registerSystemEntities()', () => {
         'sdwan_ipfix_collector',
         'sdwan_virtual_ip',
         'sdwan_route_policy',
+        'module_build_batch',
       ];
       for (const type of expectedTypes) {
         expect(entityRegistry.hasEntity(type)).toBe(true);
       }
     });
 
-    it('exposes 24 total registered types', () => {
-      expect(entityRegistry.getEntities('system')).toHaveLength(24);
+    it('exposes 25 total registered types', () => {
+      expect(entityRegistry.getEntities('system')).toHaveLength(25);
     });
 
     it('is idempotent — calling twice does not corrupt the registry (last write wins)', () => {
       registerSystemEntities();
-      // The "system" owner list will have 48 entries (2 × 24) but the byType
-      // map still holds exactly 24 unique keys.
-      expect(entityRegistry.getEntities().length).toBe(24);
+      // The "system" owner list will have 50 entries (2 × 25) but the byType
+      // map still holds exactly 25 unique keys.
+      expect(entityRegistry.getEntities().length).toBe(25);
     });
   });
 
@@ -406,6 +412,19 @@ describe('registerSystemEntities()', () => {
       const result = await def!.fetchById!('peer-1');
       expect(mockPlatformPeersApiGetPeer).toHaveBeenCalledWith('peer-1');
       expect(result).toEqual(peer);
+    });
+
+    it('module_build_batch uses labelField="trigger" and delegates to moduleBuildsApi.get', async () => {
+      const batch = { id: 'batch-1', trigger: 'push' };
+      mockModuleBuildsApiGet.mockResolvedValue(batch);
+
+      const def = entityRegistry.getEntity('module_build_batch');
+      expect(def!.labelField).toBe('trigger');
+      expect(def!.permission).toBe('system.module_builds.read');
+
+      const result = await def!.fetchById!('batch-1');
+      expect(mockModuleBuildsApiGet).toHaveBeenCalledWith('batch-1');
+      expect(result).toEqual(batch);
     });
   });
 

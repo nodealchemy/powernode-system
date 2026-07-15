@@ -52,6 +52,7 @@ const mockGitopsOpenCreate = jest.fn();
 const mockCveRefresh = jest.fn();
 const mockCiWorkersOpenCreate = jest.fn();
 const mockCiWebhooksOpenCreate = jest.fn();
+const mockModuleBuildsRefresh = jest.fn();
 
 jest.mock('@system/features/system/components/operations', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -100,6 +101,17 @@ jest.mock('@system/features/system/components/operations', () => {
         'div',
         { 'data-testid': 'ci-webhooks-tab' },
         'CiWebhooksTab',
+      );
+    },
+    ModuleBuildsTab: (props: { onActionsReady?: (h: { refresh: () => void } | null) => void }) => {
+      useEffect(() => {
+        props.onActionsReady?.({ refresh: mockModuleBuildsRefresh });
+        return () => props.onActionsReady?.(null);
+      }, []);
+      return require('react').createElement(
+        'div',
+        { 'data-testid': 'module-builds-tab' },
+        'ModuleBuildsTab',
       );
     },
   };
@@ -153,6 +165,7 @@ const ALL_PERMISSIONS = [
   'system.ci_workers.create',
   'system.disk_image_webhooks.create',
   'system.infra_tasks.read',
+  'system.module_builds.read',
 ];
 
 // =============================================================================
@@ -176,7 +189,7 @@ describe('OperationsHubPage', () => {
     expect(screen.getByRole('heading', { name: 'Operations', level: 1 })).toBeInTheDocument();
   });
 
-  it('renders all 6 tab links when user has all permissions', () => {
+  it('renders all 7 tab links when user has all permissions', () => {
     renderPage();
     expect(screen.getByRole('link', { name: 'Fleet' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Tasks' })).toBeInTheDocument();
@@ -184,6 +197,7 @@ describe('OperationsHubPage', () => {
     expect(screen.getByRole('link', { name: 'CVE' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'CI Workers' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'CI Webhooks' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Module Builds' })).toBeInTheDocument();
   });
 
   it('renders FleetTab at the /fleet path', () => {
@@ -214,6 +228,11 @@ describe('OperationsHubPage', () => {
   it('renders CiWebhooksTab at the /ci-webhooks path', () => {
     renderPage('/app/system/operations/ci-webhooks');
     expect(screen.getByTestId('ci-webhooks-tab')).toBeInTheDocument();
+  });
+
+  it('renders ModuleBuildsTab at the /module-builds path', () => {
+    renderPage('/app/system/operations/module-builds');
+    expect(screen.getByTestId('module-builds-tab')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -253,6 +272,12 @@ describe('OperationsHubPage', () => {
   it('marks the CI Webhooks tab link as active on /ci-webhooks', () => {
     renderPage('/app/system/operations/ci-webhooks');
     const link = screen.getByRole('link', { name: 'CI Webhooks' });
+    expect(link.className).toContain('border-theme-focus');
+  });
+
+  it('marks the Module Builds tab link as active on /module-builds', () => {
+    renderPage('/app/system/operations/module-builds');
+    const link = screen.getByRole('link', { name: 'Module Builds' });
     expect(link.className).toContain('border-theme-focus');
   });
 
@@ -313,6 +338,15 @@ describe('OperationsHubPage', () => {
     );
     renderPage('/app/system/operations/fleet');
     expect(screen.queryByRole('link', { name: 'CI Webhooks' })).not.toBeInTheDocument();
+  });
+
+  it('hides Module Builds tab when system.module_builds.read permission is absent', () => {
+    mockHasPermission.mockImplementation(
+      (perm: string) =>
+        perm !== 'system.module_builds.read' && ALL_PERMISSIONS.includes(perm),
+    );
+    renderPage('/app/system/operations/fleet');
+    expect(screen.queryByRole('link', { name: 'Module Builds' })).not.toBeInTheDocument();
   });
 
   it('shows the no-permission message when user has no tab permissions at all', () => {
@@ -487,6 +521,26 @@ describe('OperationsHubPage', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Header action — Module Builds "Refresh" button
+  // ---------------------------------------------------------------------------
+
+  it('shows "Refresh" action button on the module-builds tab', async () => {
+    renderPage('/app/system/operations/module-builds');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument(),
+    );
+  });
+
+  it('calls moduleBuildsActions.refresh when "Refresh" is clicked on the module-builds tab', async () => {
+    renderPage('/app/system/operations/module-builds');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /refresh/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /refresh/i }));
+    expect(mockModuleBuildsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
   // No action button for fleet and tasks tabs
   // ---------------------------------------------------------------------------
 
@@ -535,6 +589,10 @@ describe('OperationsHubPage', () => {
     expect(screen.getByRole('link', { name: 'CI Webhooks' })).toHaveAttribute(
       'href',
       '/app/system/operations/ci-webhooks',
+    );
+    expect(screen.getByRole('link', { name: 'Module Builds' })).toHaveAttribute(
+      'href',
+      '/app/system/operations/module-builds',
     );
   });
 
