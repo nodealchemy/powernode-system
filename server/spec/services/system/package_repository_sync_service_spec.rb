@@ -181,4 +181,40 @@ RSpec.describe System::PackageRepositorySyncService do
       described_class.call(repository: repo, force: true)
     end
   end
+
+  # Regression: the full-upsert path (rpm / force / parser bump) obsoletes rows
+  # it "did not see this run" via `updated_at < sync_start`. `upsert_all`'s
+  # default (record_timestamps) only bumps `updated_at` when a row's DATA
+  # changed (a CASE-WHEN guard), so re-upserting UNCHANGED rows left updated_at
+  # stale → every row looked unseen → the whole repo would be obsoleted. Seen
+  # live 2026-07-14: parser-stale apt mirrors failing "would obsolete N/N".
+  describe "full-sync re-sync of unchanged data (updated_at bump)" do
+    it "obsoletes nothing on a forced full re-sync where every package still exists" do
+      5.times { |i| create(:system_package, package_repository: repo, name: "pkg#{i}", version: "1") }
+      stub_adapter(packages: (0..4).map { |i| parsed("pkg#{i}", "1") }, fingerprint: "NEW")
+
+      # force → full-upsert path AND bypasses the guard, so a stale-updated_at
+      # bug would actually obsolete all 5 (not just be caught by the guard).
+      result = described_class.call(repository: repo, force: true)
+
+      expect(result.success?).to be true
+      expect(result.obsoleted).to eq(0)
+      expect(System::Package.where(package_repository_id: repo.id, obsoleted_at: nil).count).to eq(5)
+    end
+
+    it "a parser-stale full re-sync of unchanged data finalizes instead of guard-tripping" do
+      10.times { |i| create(:system_package, package_repository: repo, name: "pkg#{i}", version: "1") }
+      # parser_version behind PARSER_VERSION forces the full path (like the live
+      # apt mirrors that had no fingerprint yet); no force, so the guard is armed.
+      repo.update_columns(parser_version: described_class::PARSER_VERSION - 1, sync_fingerprint: nil)
+      stub_adapter(packages: (0..9).map { |i| parsed("pkg#{i}", "1") }, fingerprint: "FP1")
+
+      result = described_class.call(repository: repo)
+
+      expect(result.success?).to be true
+      expect(System::Package.where(package_repository_id: repo.id, obsoleted_at: nil).count).to eq(10)
+      expect(repo.reload.parser_version).to eq(described_class::PARSER_VERSION)
+      expect(repo.reload.sync_fingerprint).to eq("FP1") # finalized → next run fast-paths
+    end
+  end
 end

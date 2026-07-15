@@ -335,11 +335,20 @@ module System
         .uniq { |r| [ r[:package_repository_id], r[:name], r[:architecture], r[:version] ] }
         .reverse
 
-      # `update_only` must NOT include `updated_at`: Rails 7.1+ already
-      # appends `updated_at = NOW()` to the ON CONFLICT SET clause when
-      # `record_timestamps: true` (the default). Listing it here too
-      # produces a duplicate column assignment and PG raises
-      # "multiple assignments to same column updated_at".
+      # `updated_at` MUST be rewritten on every conflicting row — and
+      # unconditionally. Rails' default `record_timestamps` does NOT do that:
+      # it emits `updated_at = CASE WHEN <any update_only column differs>
+      # THEN now ELSE updated_at END`, so re-upserting a row whose data is
+      # UNCHANGED leaves its `updated_at` at the old value. `sync_full`'s
+      # `soft_delete_unseen` treats "updated_at < sync_start" as "vanished
+      # upstream" — so under the conditional bump, a full re-sync of an
+      # unchanged upstream marks EVERY row unseen and the mass-obsoletion
+      # guard fail-closes (the repo can never finalize, seen live 2026-07-14
+      # on the parser-stale apt mirrors). Disable the conditional
+      # auto-timestamp and list `updated_at` in `update_only` so it is set
+      # unconditionally to the row's stamp (build_row sets it), making
+      # "seen this run" reliable. created_at is explicit in every row too, so
+      # inserts still get both timestamps despite record_timestamps: false.
       ::System::Package.upsert_all(
         rows,
         # Reference the conflict target by COLUMNS, not by index name: the
@@ -350,12 +359,13 @@ module System
         # "No unique index found" on EVERY sync. Columns resolve to whichever
         # unique index covers exactly them, independent of its name / any DB.
         unique_by: %i[package_repository_id name architecture version],
+        record_timestamps: false,
         update_only: %i[
           release_version section_or_group description summary
           installed_size_bytes download_size_bytes
           depends pre_depends recommends suggests conflicts provides replaces breaks
           filename sha256 sha512 homepage license maintainer raw_metadata
-          obsoleted_at
+          obsoleted_at updated_at
         ]
       )
     end
