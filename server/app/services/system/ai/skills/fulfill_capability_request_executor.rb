@@ -18,8 +18,11 @@ module System
       #   4. system_create_template + system_assign_module_to_template
       #                                        → NEW template = [base-os, resolved+materialized]
       #   5. TemplateApplyService.apply!(dry_run:true) → assert the closure resolves + includes base-os (inc1)
-      #   6. InstancePoolService.acquire! (leased) or ProvisionFullStackExecutor  [LIVE PARKED]
-      #   7. module_smoke_verify on the new instance                             [PROBE PARKED]
+      #   6. FRESH provision (ProvisionFullStackExecutor) — the primary path — or,
+      #      when an operator designates a SCOPED fulfillment pool, a re-templated
+      #      pool member; every returned instance is leased + carries the fulfill
+      #      template's modules (ensure_template_applied!)                        [LIVE PARKED]
+      #   7. module_smoke_verify the leased instance IN PLACE (instance_id)       [PROBE PARKED]
       #   8. structured fulfillment report (reused vs materialized, batch/template/instance ids, lease, smoke)
       #
       # APPROVAL — ONE consolidated, audited decision. Without `approved: true`
@@ -75,7 +78,9 @@ module System
             build_batch_id: :string,
             template_id: :string,
             instance_id: :string,
+            instance_ids: [ :string ],
             lease: :object,
+            leases: [ :object ],
             smoke: :object,
             parked: [ :object ]
           },
@@ -137,14 +142,29 @@ module System
 
           materialized, build_batch = materialize_gaps(gaps: gaps, base_os: base_os, parked: parked)
 
-          # Step 3 — await the build. LIVE PARKED: no builder fleet, so the
-          # batch stays non-terminal; the poll is wired + bounded regardless.
+          # Step 3 — await the build barrier. On a NON-terminal batch (timeout /
+          # no builder fleet) we STOP HERE: authoring a template + provisioning
+          # from a module with no built artifact means real cloud spend on a
+          # broken instance. Return a non-executed, parked result BEFORE any
+          # template create or provision.
           if build_batch && !await_build_batch(build_batch)
-            parked << {
-              step: "module_build",
-              batch_id: build_batch.id,
-              reason: "no builder fleet in this env — batch stays #{build_batch.reload.status}; poll wired + bounded"
-            }
+            return success(
+              plan: plan,
+              executed: false,
+              requires_approval: true,
+              reused_modules: reused.map { |m| m[:name] },
+              materialized_modules: materialized.map(&:name),
+              build_batch_id: build_batch.id,
+              instance_ids: [],
+              leases: [],
+              parked: parked + [ {
+                step: "module_build",
+                batch_id: build_batch.id,
+                reason: "build batch did not reach a terminal state within the poll window " \
+                        "(status=#{build_batch.reload.status}) — STOPPING before template/provision " \
+                        "(will not provision from an unbuilt module)"
+              } ]
+            )
           end
 
           # Step 4 — NEW template = [base-os, reused, materialized].
@@ -156,13 +176,17 @@ module System
           closure = assert_closure!(template: template, base_os: base_os)
           return closure if closure.is_a?(Hash) && closure[:success] == false
 
-          # Step 6 — provision 1 leased instance. LIVE PARKED (mocked in specs).
-          instance, lease = provision_leased_instance(
+          # Step 6 — provision + lease N instances, each carrying the fulfill
+          # template's modules. LIVE PARKED (mocked in specs).
+          instances, leases = provision_leased_instance(
             template: template, count: count, region: region, type: type,
             request: request, parked: parked
           )
+          instance = instances.first
+          lease    = leases.first
 
-          # Step 7 — smoke-verify. PROBE PARKED (mocked in specs).
+          # Step 7 — smoke-verify the representative instance IN PLACE (no second
+          # pool acquire, no terminate of the leased instance). PROBE PARKED.
           smoke = instance ? run_smoke(instance: instance, template: template,
                                        module_name: primary_module_name(materialized, reused),
                                        base_os: base_os, parked: parked) : nil
@@ -176,7 +200,9 @@ module System
             build_batch_id: build_batch&.id,
             template_id: template.id,
             instance_id: instance&.id,
+            instance_ids: instances.map(&:id),
             lease: lease,
+            leases: leases,
             smoke: smoke,
             parked: parked
           )
@@ -278,44 +304,110 @@ module System
           closure_names
         end
 
-        # ---- Step 6: provision a leased instance. Prefers the pool (real
-        # lease/TTL + reaper via pool_acquired_at + claimed_ttl); falls back to
-        # a fresh full-stack provision. LIVE PARKED: neither can run here (no
-        # ready pool, no cloud provider) — specs mock InstancePoolService /
-        # ProvisionFullStackExecutor. ----
+        # ---- Step 6: provision + lease N instances that ACTUALLY carry the
+        # fulfill template's modules. FRESH provision is the primary path.
+        #
+        # A SCOPED fulfillment pool is an optional fast path: only used when an
+        # operator has designated one (by name or lifecycle_class via
+        # SiteSetting) — otherwise fulfill NEVER touches a pool, so an unscoped
+        # acquire can't starve ci-native-builders. Any acquired member is
+        # RE-TEMPLATED onto the fulfill template (never handed back generic).
+        #
+        # Every returned instance is run through ensure_template_applied! so it
+        # carries the fulfill template's module closure + has a queued on-node
+        # sync. LIVE PARKED here (no cloud provider) — specs mock the seams.
+        # Returns [instances, leases] (parallel arrays, size == number leased).
         def provision_leased_instance(template:, count:, region:, type:, request:, parked:)
-          instance = acquire_from_pool
-          if instance
-            lease = apply_fulfillment_lease!(instance, request: request)
-            return [ instance, lease ]
+          instances = []
+          leases    = []
+
+          # (1) Optional scoped-pool fast path — acquire up to `count` members.
+          count.times do
+            member = acquire_from_fulfillment_pool
+            break unless member
+
+            ensure_template_applied!(instance: member, template: template)
+            instances << member
+            leases    << apply_fulfillment_lease!(member, request: request)
           end
 
-          unless region && type
-            parked << { step: "provision", reason: "no resolvable provider_region / provider_instance_type — provision parked" }
-            return [ nil, nil ]
+          # (2) Fresh-provision the remainder (the PRIMARY path). Each fresh
+          # instance is authored on the fulfill template by ProvisionFullStack;
+          # ensure_template_applied! makes the assignment closure explicit.
+          remaining = count - instances.size
+          if remaining.positive?
+            if region && type
+              fresh_provision(template: template, count: remaining, region: region, type: type, parked: parked).each do |inst|
+                ensure_template_applied!(instance: inst, template: template)
+                instances << inst
+                leases    << apply_fulfillment_lease!(inst, request: request)
+              end
+            elsif instances.empty?
+              parked << { step: "provision", reason: "no resolvable provider_region / provider_instance_type — provision parked" }
+            else
+              parked << { step: "provision",
+                          reason: "requested #{count}, leased #{instances.size} from the fulfillment pool; " \
+                                  "remainder parked (no resolvable provider_region / provider_instance_type)" }
+            end
           end
 
+          [ instances, leases ]
+        end
+
+        # Acquire ONE member from a fulfillment-SCOPED pool, or nil. Returns nil
+        # (skipping pools entirely) unless an operator has designated a
+        # fulfillment pool via SiteSetting — this is the guard that stops an
+        # unscoped acquire from grabbing an unrelated pool's member (e.g.
+        # ci-native-builders).
+        def acquire_from_fulfillment_pool
+          pool_name = ::SiteSetting.get("system.fulfill.pool_name").presence
+          lifecycle = ::SiteSetting.get("system.fulfill.pool_lifecycle_class").presence
+          return nil unless pool_name || lifecycle
+
+          ::System::InstancePoolService.acquire!(
+            account: @account, pool_name: pool_name, lifecycle_class: lifecycle
+          )
+        rescue ::System::InstancePoolService::PoolError
+          # Scoped pool absent / empty — caller fresh-provisions the shortfall.
+          nil
+        end
+
+        # Fresh full-stack provision of `count` instances on the fulfill
+        # template. Returns the created NodeInstance records (empty on a parked /
+        # failed provision, with a park note appended).
+        def fresh_provision(template:, count:, region:, type:, parked:)
           prov = ProvisionFullStackExecutor
                  .new(account: @account, agent: @agent, user: @user)
                  .execute(template_id: template.id, count: count,
                           provider_region_id: region.id, provider_instance_type_id: type.id)
 
-          unless prov[:success] && Array(prov.dig(:data, :outputs, :node_instance_ids)).any?
+          ids = Array(prov.dig(:data, :outputs, :node_instance_ids))
+          unless prov[:success] && ids.any?
             parked << { step: "provision", reason: "live provision unavailable in this env (#{prov[:error] || 'no instances created'})" }
-            return [ nil, nil ]
+            return []
           end
 
-          instance = ::System::NodeInstance.where(account_id: @account.id)
-                                           .find_by(id: prov.dig(:data, :outputs, :node_instance_ids).first)
-          lease = instance ? apply_fulfillment_lease!(instance, request: request) : nil
-          [ instance, lease ]
+          ::System::NodeInstance.where(account_id: @account.id, id: ids).to_a
         end
 
-        def acquire_from_pool
-          ::System::InstancePoolService.acquire!(account: @account)
-        rescue ::System::InstancePoolService::PoolError
-          # No ready pool member (or no pool) — caller falls back to provision.
-          nil
+        # Guarantees `instance` carries the fulfill template's module closure:
+        # rebind its node onto the fulfill template (a no-op for a fresh instance
+        # already authored on it; the actual re-template for a re-used pool
+        # member), materialize the assignment closure via TemplateApplyService,
+        # and queue a sync_modules Task so the on-node agent applies it. This
+        # repoints THIS node only — it never widens a shared/pool template, so
+        # other pool members are untouched.
+        def ensure_template_applied!(instance:, template:)
+          node = instance.node
+          return unless node
+
+          node.update!(node_template: template) unless node.node_template_id == template.id
+          ::System::TemplateApplyService.new(node).apply!(dry_run: false)
+
+          ::System::Task.create!(
+            account: @account, operable: instance, command: "sync_modules", status: "pending",
+            options: { "source" => "fulfill_capability_request", "template_id" => template.id }
+          )
         end
 
         # Task-scoped lease tag so on-demand creation can't accrete zombie
@@ -343,14 +435,17 @@ module System
           )
         end
 
-        # ---- Step 7: smoke-verify (probe PARKED — mocked in specs) ----
+        # ---- Step 7: smoke-verify the LEASED instance in place (probe PARKED —
+        # mocked in specs). Passing instance_id keeps smoke on THIS instance: it
+        # does not acquire a second pool member, and it does not release/
+        # terminate the leased instance. ----
         def run_smoke(instance:, template:, module_name:, base_os:, parked:)
           return nil if module_name.blank?
 
           result = ModuleSmokeVerifyExecutor
                    .new(account: @account, agent: @agent, user: @user)
                    .execute(module_name: module_name, base_os_module_name: base_os.name,
-                            template_id: template.id)
+                            template_id: template.id, instance_id: instance.id)
           parked << { step: "smoke_probe", reason: "health probe parked platform-wide (no remote-exec primitive)" }
           result[:success] ? result[:data] : { ok: false, error: result[:error] }
         end
