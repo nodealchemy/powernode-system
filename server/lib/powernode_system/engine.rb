@@ -390,6 +390,58 @@ module PowernodeSystem
         # ---------------------------------------------------------------
         ::Permissions.register_role_permissions("admin", %w[system.module_builds.read])
         ::Permissions.register_role_permissions("manager", %w[system.module_builds.read])
+
+        # ---------------------------------------------------------------
+        # Operator-facing gap closure (improvement 019f6479). These names are
+        # all declared in core server/config/permissions.rb's SYSTEM_PERMISSIONS
+        # hash (disk-image publication / CI worker / CI runner lease block), but
+        # a raw SYSTEM_PERMISSIONS entry only reaches system_worker by default —
+        # same reason system.module_builds.read is registered here rather than
+        # inlined into core's ROLES. Confirmed operator-facing by grepping the
+        # actual controllers/AI-tool gates (not just the permission name):
+        #   CiWorkersController, DiskImageWebhooksController, and
+        #   DiskImagePublicationsController#rollback all gate on
+        #   require_permission(...) against current_user (operator auth), and
+        #   SystemFleetTool::ACTION_PERMISSIONS maps the ci_runner_lease MCP
+        #   actions (lease/release/list) to the same names for the chat/agent
+        #   surface. Read -> admin + manager (list-only, and the serializers
+        #   for both CiWorker and DiskImageWebhook deliberately never return
+        #   token/secret plaintext — see their CRITICAL comments — so read
+        #   access can't leak credential material). Create/delete/rotate/
+        #   rollback/manage -> admin only, mirroring every other admin-only
+        #   resource CRUD block above (architectures, instances, platforms,
+        #   providers, ...) — manager doesn't get infra-mutation rights
+        #   anywhere else in this file either.
+        #
+        #   Deliberately EXCLUDED: system.platforms.publish_disk_image and
+        #   system.module_builds.dispatch. Both are worker/webhook-only by
+        #   explicit design (see the core permissions.rb comments beside each)
+        #   — publish_disk_image is authorized exclusively via
+        #   authorize_worker_permission!/@current_ci_worker.has_permission? in
+        #   the WorkerApi:: and DiskImageRegistryConfig controllers, never via
+        #   require_permission against a User. Granting them to admin/manager
+        #   would widen a deliberately narrow leaked-token blast radius.
+        # ---------------------------------------------------------------
+        ::Permissions.register_role_permissions("admin", %w[
+          system.ci_workers.read
+          system.ci_workers.create
+          system.ci_workers.delete
+          system.ci_workers.rotate_token
+          system.disk_image_webhooks.read
+          system.disk_image_webhooks.create
+          system.disk_image_webhooks.delete
+          system.disk_image_webhooks.rotate_secret
+          system.platforms.rollback_disk_image
+          system.platforms.manage_disk_image_policy
+          system.ci_runner_leases.read
+          system.ci_runner_leases.create
+          system.ci_runner_leases.update
+        ])
+        ::Permissions.register_role_permissions("manager", %w[
+          system.ci_workers.read
+          system.disk_image_webhooks.read
+          system.ci_runner_leases.read
+        ])
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register extension permissions: #{e.message}"
       end
