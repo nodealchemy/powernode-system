@@ -120,6 +120,17 @@ package_spec:
   - openssh-server
   - ca-certificates
   - curl
+  # sudo provides /usr/bin/sudo (+ visudo). The break-glass + manifest
+  # sudoers-grant subsystem (agent/internal/etcsudoers) is fully built and
+  # boot-wired but INERT without the binary — no module shipped it, so
+  # /usr/bin/sudo was reserved in protected_spec (below) yet never installed.
+  # Installing it activates: (1) operator break-glass
+  # (POWERNODE_OPERATOR_BREAK_GLASS=1 → pnadmin NOPASSWD:ALL, breakglass.go),
+  # (2) manifest SudoersGrant rows (e.g. postgres-primary's ACME cert reload,
+  # previously inert), and (3) etcsudoers' `visudo -cf` validation (which
+  # silently no-ops when visudo is absent). No per-machine secret in sudo's
+  # postinst, so no mask needed.
+  - sudo
   - dosfstools
   # systemd-boot provides /usr/bin/bootctl + the systemd-bless-boot*.service /
   # boot-complete.target boot-assessment units the node needs for A/B boot-image
