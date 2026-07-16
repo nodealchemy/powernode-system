@@ -336,6 +336,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.cfg.OnError("reconciler:sudoers_write", err)
 	}
 
+	// Reassert the platform-assigned hostname every reconcile tick — live
+	// /etc/hostname + the running kernel hostname — the same way the agent
+	// owns /etc/passwd. Idempotent; a no-op when no authoritative source is
+	// present this boot (e.g. a non-QEMU/cloud node with no instance_name
+	// fw-cfg, where the hostname is set by cloud-init and left untouched here).
+	if name := desiredHostname(); name != "" {
+		if _, err := etcidentity.ApplyHostname("", name, true); err != nil {
+			r.cfg.OnError("reconciler:hostname_write", err)
+		}
+	}
+
 	// Attaches in priority order (low → high). Walks toAttach (new
 	// mounts: fresh erofs pull + verify + mount + AttachServices) and
 	// toReattach (already-mounted but manifest-changed: skips the pull/

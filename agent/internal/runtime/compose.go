@@ -114,6 +114,19 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		r.cfg.OnError("compose:sudoers_write", err)
 	}
 
+	// Set the node's hostname in the composed union so the switch_root'd system
+	// boots with its platform-assigned name. base-os masks /etc/hostname out of
+	// its erofs (build-chroot identity must not ship fleet-wide), so without
+	// this the union carries no /etc/hostname and systemd falls back to
+	// "localhost". File-only (applyLive=false): systemd-in-the-union applies
+	// /etc/hostname at boot; the initramfs's own hostname is irrelevant. No-op
+	// when no authoritative source is present this boot.
+	if name := desiredHostname(); name != "" {
+		if _, err := etcidentity.ApplyHostname(sysroot, name, false); err != nil {
+			r.cfg.OnError("compose:hostname_write", err)
+		}
+	}
+
 	// Render + offline-enable native units in the union (no start — systemd in
 	// the union starts them on boot after switch_root).
 	for _, mod := range stack {

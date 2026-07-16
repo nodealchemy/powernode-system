@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/bootupgrade"
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/k3sd"
@@ -626,36 +625,31 @@ func (s *Service) fetchAuthorizedKeys(ctx context.Context, client *transport.Cli
 	})
 }
 
-// applyHostnameFromFwCfg reads instance_name from virtio-fw-cfg and applies
-// it as the host's transient hostname (`hostnamectl set-hostname --transient`).
-// We use --transient because the modules root is overlayfs-mounted with the
-// lower layer read-only, so writing /etc/hostname directly fails. Calling
-// this on every agent boot keeps the hostname stable across reboots without
-// needing a writable upper-layer hostname file.
+// applyHostnameFromFwCfg sets the node's hostname from the platform-provided
+// instance_name fw-cfg blob (desiredHostname): it writes /etc/hostname AND
+// applies the value to the running kernel via sethostname(2), idempotently.
+// Runs once early in Run() — before the reconcile loop — so journald and the
+// bootstrap logs carry the correct hostname immediately; the reconcile loop
+// reasserts it every tick thereafter.
 //
-// Returns nil silently when the fw-cfg entry is absent (older provisioning
-// runs, non-libvirt providers, or instance.name was empty server-side).
+// Durable, not transient. The prior implementation used
+// `hostnamectl set-hostname --transient` on the belief that /etc/hostname
+// couldn't be persisted on the overlay rootfs. It can: the writable upper
+// layer accepts the write, and base-os now masks /etc/hostname out of its
+// erofs lower, so the agent's write is authoritative on every boot instead of
+// losing to a build-chroot hostname baked into the shipped blob. Writing the
+// file (not just the transient kernel value) is what makes it survive across
+// systemd-hostnamed re-reads and reboots.
+//
+// Returns nil silently when no fw-cfg instance_name is present (bare
+// provision, non-QEMU provider, or an empty name server-side).
 func (s *Service) applyHostnameFromFwCfg() error {
-	const fwcfgPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/instance_name/raw"
-	raw, err := os.ReadFile(fwcfgPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // not a libvirt boot OR pre-instance_name fw-cfg seed
-		}
-		return fmt.Errorf("read instance_name fw-cfg: %w", err)
-	}
-	name := strings.TrimSpace(string(raw))
+	name := desiredHostname()
 	if name == "" {
 		return nil
 	}
-	// `hostnamectl set-hostname --transient` is best-effort. On a writable
-	// rootfs (e.g. cloud images), drop --transient to make it persistent;
-	// here we always use --transient because the platform's overlay-rootfs
-	// node images don't have a writable /etc.
-	cmd := exec.CommandContext(context.Background(), "hostnamectl", "set-hostname", "--transient", name)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("hostnamectl set-hostname %q: %w (%s)", name, err, strings.TrimSpace(string(out)))
+	if _, err := etcidentity.ApplyHostname("", name, true); err != nil {
+		return err
 	}
 	return nil
 }

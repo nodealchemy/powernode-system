@@ -43,6 +43,17 @@ mask:
   - "/etc/machine-id"
   - "/etc/ssh/ssh_host_*_key"
   - "/etc/ssh/ssh_host_*_key.pub"
+  # /etc/hostname is likewise build-chroot identity that must NOT ship fleet-
+  # wide: the mmdebstrap/native build chroot writes its own hostname (observed
+  # live as a container id like "2f87ea2fe15b" on ops-hub base-os #24), and
+  # file_spec's broad "/etc/**" would carve that into the erofs so every pivot
+  # node boots with the builder's hostname instead of its own. Masking it out
+  # makes the on-node agent's write authoritative on every boot — the agent
+  # renders /etc/hostname into the composed union from the platform-supplied
+  # instance_name (agent/internal/etcidentity.ApplyHostname, sourced by
+  # runtime.desiredHostname); with the erofs no longer shipping a competing
+  # lower-layer file, the agent's writable-upper write wins.
+  - "/etc/hostname"
 
 file_spec:
   - "/etc/**"
