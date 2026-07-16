@@ -58,6 +58,15 @@ file_spec:
   # post-pivot. The carve omitted /usr/share entirely; include the dbus tree
   # specifically (a blanket /usr/share/** would balloon the erofs blob).
   - "/usr/share/dbus-1/**"
+  # sudo's private libs + policy plugins live under /usr/libexec/sudo on
+  # Ubuntu Noble (sudo 1.9.15): libsudo_util.so.0, sudoers.so, group_file.so,
+  # etc. The carve above (/usr/lib, /usr/bin, /usr/sbin) misses /usr/libexec
+  # ENTIRELY, so base-os #23 shipped /usr/bin/sudo + /usr/sbin/visudo as
+  # BROKEN binaries ("libsudo_util.so.0: cannot open shared object file").
+  # That wedged the agent reconciler at sudoers_write (visudo -cf exits 127),
+  # which in turn blocked module service-unit generation post-pivot. Carve
+  # /usr/libexec so the full sudo runtime closure ships.
+  - "/usr/libexec/**"
 
 # Sensitive paths that NO higher-priority module may override at union mount.
 # Build pipeline folds these into every higher neighbor's effective_mask, so
