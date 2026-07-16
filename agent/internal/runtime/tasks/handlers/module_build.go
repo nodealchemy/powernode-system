@@ -25,7 +25,15 @@ const moduleForgeBuildScript = "/usr/local/bin/module-forge-build.sh"
 // logTailMaxBytes bounds how much of the script's stdout/stderr rides along
 // on the task result (System::Task#events is JSONB on a shared table — an
 // unbounded build log would bloat it for every failed/succeeded build).
-const logTailMaxBytes = 4096
+// stdout carries essentially just the one result-JSON line, so it stays small;
+// stderr carries every stage's build diagnostics (apt, curl, the Stage 1.5
+// node-install + npm/Vite build output), so it gets a far larger budget —
+// enough to reach a mid-build failure whose error would otherwise be pushed out
+// of the tail by later stages' output. Tune down if event-table growth bites.
+const (
+	logTailMaxBytes       = 4096
+	logTailStderrMaxBytes = 131072
+)
 
 // Execer runs the module-forge-build.sh entrypoint with an explicit
 // environment. Secrets travel ONLY via env (never args, never logged) — see
@@ -287,7 +295,7 @@ func parseBuildResult(stdout []byte) (*moduleBuildResult, error) {
 // logTail bounds stdout/stderr for inclusion in the task result — enough
 // for operator diagnosis without bloating System::Task#events JSONB.
 func logTail(stdout, stderr []byte) string {
-	return "stdout: " + tailBytes(stdout, logTailMaxBytes) + "\nstderr: " + tailBytes(stderr, logTailMaxBytes)
+	return "stdout: " + tailBytes(stdout, logTailMaxBytes) + "\nstderr: " + tailBytes(stderr, logTailStderrMaxBytes)
 }
 
 func tailBytes(b []byte, max int) string {
