@@ -52,7 +52,8 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		Success bool   `json:"success"`
 		Error   string `json:"error,omitempty"`
 		Data    struct {
-			Modules []AssignedModule `json:"modules"`
+			Modules  []AssignedModule `json:"modules"`
+			Hostname string           `json:"hostname,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -61,6 +62,13 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 	if !env.Success {
 		return nil, fmt.Errorf("platform returned success=false: %s", env.Error)
 	}
+	// Persist the platform-assigned hostname (node.name) so desiredHostname()
+	// can apply it even on nodes with no fw-cfg instance_name blob. This runs on
+	// BOTH the pre-pivot compose fetch and the post-pivot reconcile fetch, and
+	// happens before the same pass calls ApplyHostname — so the sysroot
+	// /etc/hostname is correct before switch_root + DHCP. Best-effort; empty is
+	// a no-op.
+	persistAssignedHostname(env.Data.Hostname)
 	_ = ctx // ctx reserved for future cancellation hook in the GetJSON impl
 	return env.Data.Modules, nil
 }

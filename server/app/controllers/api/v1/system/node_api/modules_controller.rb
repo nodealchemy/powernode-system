@@ -17,7 +17,12 @@ module Api
 
             render_success(
               modules: resolved_modules.map { |m| ::System::NodeModuleNodeApiSerializer.new(m).summary },
-              count: resolved_modules.size
+              count: resolved_modules.size,
+              # The node's operator-facing name (e.g. "ops-hub") — the agent
+              # persists this and applies it as the hostname (etcidentity), so a
+              # node with no fw-cfg instance_name still gets the right hostname
+              # before DHCP/DNS. See agent runtime/hostname.go.
+              hostname: current_node&.name
             )
           end
 
