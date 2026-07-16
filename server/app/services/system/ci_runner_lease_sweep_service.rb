@@ -48,8 +48,6 @@ module System
         safe_fail(lease, e.message)
       end
 
-      redispatch_queued_module_batches
-
       @summary[:orphans_reaped] = reap_orphans
       @summary[:redispatched]   = redispatch_queued_batches!
       @summary
@@ -83,51 +81,6 @@ module System
           Rails.logger.error("[CiRunnerLeaseSweep] re-dispatch batch ##{batch.id} failed: #{e.class}: #{e.message}")
         end
       redispatched
-    end
-
-    # Re-dispatch pass for native module_build batches whose queued modules
-    # hold NO active lease (campaign 019f5885 inc9 Part B — retry-stranding
-    # fix). #attempt_retry! re-queues a FAILED build with a nil lease/task so
-    # the next dispatch re-leases a fresh builder — but the active-lease loop
-    # above only advances a batch that STILL holds a lease. So when the LAST
-    # in-flight module of a batch fails (or a single-module batch fails — the
-    # common CI case), the re-queued module has no lease/task left for the
-    # sweep to correlate on, and it would sit "queued" forever with no trigger
-    # to ever re-dispatch it. This pass finds non-terminal native batches that
-    # still carry a queued module and re-invokes the orchestrator's advance!
-    # (which re-runs #try_dispatch_queued! against freed lease capacity),
-    # skipping any batch the active-lease loop already advanced this tick
-    # (@advanced_batch_ids dedup). Idempotent: with no free capacity, advance!
-    # leaves the module queued for the next tick; with no queued modules a
-    # batch is skipped entirely.
-    def redispatch_queued_module_batches
-      return unless defined?(::System::ModuleBuildBatch)
-      return unless defined?(::System::NativeModuleBuildOrchestrator)
-
-      ::System::ModuleBuildBatch
-        .where(account: @account, status: %w[planning dispatched awaiting_signature publishing])
-        .find_each do |batch|
-          next if @advanced_batch_ids.include?(batch.id)
-          next unless batch_has_queued_modules?(batch)
-
-          @advanced_batch_ids << batch.id
-          ::System::NativeModuleBuildOrchestrator.advance!(batch: batch)
-          @summary[:redispatched] += 1
-        rescue StandardError => e
-          Rails.logger.warn("[CiRunnerLeaseSweep] queued-batch re-dispatch for batch ##{batch.id} failed: #{e.message}")
-        end
-    end
-
-    # True when the batch's per-module bookkeeping still carries at least one
-    # "queued" module (dispatched-but-unleased, or re-queued by a retry). Reads
-    # the same batch.metadata["modules"] map the orchestrator maintains; a batch
-    # with no modules-state yet (never dispatched) or an all-terminal map is not
-    # a re-dispatch candidate.
-    def batch_has_queued_modules?(batch)
-      modules = batch.metadata.is_a?(Hash) ? batch.metadata["modules"] : nil
-      return false unless modules.is_a?(Hash)
-
-      modules.values.any? { |e| e.is_a?(Hash) && e["state"] == "queued" }
     end
 
     def advance(lease)

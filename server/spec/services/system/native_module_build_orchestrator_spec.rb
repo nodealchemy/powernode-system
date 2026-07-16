@@ -180,7 +180,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         node_module_id: mod.id
       ).and_return(sign_result)
       expect(System::ModulePublicationProcessor).to receive(:process!)
-        .with(node_module: mod, tag: "abc1234", promote: true).and_return(publish_result)
+        .with(node_module: mod, tag: "abc1234", promote: true, native_build: anything).and_return(publish_result)
 
       result = described_class.advance!(batch: batch)
 
@@ -344,7 +344,7 @@ RSpec.describe System::NativeModuleBuildOrchestrator do
         node_module_id: mod.id
       ).and_return(sign_result)
       expect(System::ModulePublicationProcessor).to receive(:process!)
-        .with(node_module: mod, tag: "native-abc1234", promote: false).and_return(publish_result)
+        .with(node_module: mod, tag: "native-abc1234", promote: false, native_build: anything).and_return(publish_result)
 
       result = described_class.advance!(batch: batch)
 

@@ -172,7 +172,7 @@ RSpec.describe System::CiRunnerLeaseSweepService do
   describe "summary shape" do
     it "returns the full counters hash even with nothing to do" do
       summary = described_class.run!(account: account)
-      expect(summary).to eq(advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0)
+      expect(summary).to eq(advanced: 0, released: 0, flagged: 0, errored: 0, orphans_reaped: 0, redispatched: 0)
     end
 
     it "isolates one lease's advance failure (fail!s it) from the rest of the sweep" do
