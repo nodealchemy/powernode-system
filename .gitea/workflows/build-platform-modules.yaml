@@ -1,12 +1,13 @@
-# Platform modules build pipeline — builds each module in
-# modules/*/ into an OCI artifact + composefs blob,
-# signs with cosign, and pushes to the Gitea registry under
+# Platform modules build pipeline (BOOTSTRAP-ONLY) — builds a single
+# module from modules/*/ into an OCI artifact + composefs blob, signs
+# with cosign, and pushes to the Gitea registry under
 # powernode/<module-name>:<version>.
 #
-# Triggered by:
-#   - workflow_dispatch (operator-initiated rebuild of all or one module)
-#   - push to develop/master touching modules/**
-#   - tag push v*.*.* (release builds — signed for production)
+# Bootstrap-only: this workflow builds ONE module on demand via
+# workflow_dispatch, to seed the native build pipeline. Future module
+# builds happen natively within instances — the multi-module build
+# queue this workflow used to run (dirty-closure discovery + matrix
+# fan-out across all modules) has been removed.
 #
 # Two-stage build per module:
 #   Stage 1 (builder): templates/module-repo/Containerfile + apt-install
@@ -16,8 +17,7 @@
 #                       mkcomposefs, fs-verity merkle root, cosign sign,
 #                       oras push.
 #
-# This workflow is the canonical M1 entry point for the platform's own
-# modules — third-party modules use the per-repo workflow at
+# Third-party modules use the per-repo workflow at
 # templates/module-repo/.gitea/workflows/build.yaml.
 #
 # Plan reference: P8.2 (Containerfiles per module + M1 supply-chain
@@ -29,50 +29,14 @@ on:
   workflow_dispatch:
     inputs:
       module:
-        description: "Single module slug to rebuild (default: all)"
-        required: false
+        description: "Module slug to build"
+        required: true
         type: string
-        default: ""
       tag:
         description: "Version tag for the published artifact (e.g. v1.0.0)"
         required: false
         type: string
         default: ""
-      base_sha:
-        description: "Diff base for dirty-closure detection (default: parent commit)"
-        required: false
-        type: string
-        default: ""
-      force_all:
-        description: "Skip dirty-closure detection and rebuild every module"
-        required: false
-        type: boolean
-        default: false
-      apt_drift_check:
-        description: "Enable apt-closure drift detection (probes upstream apt for version changes)"
-        required: false
-        type: boolean
-        default: false
-      runner_label:
-        description: "Optional fleet runner label to build on instead of the static ubuntu-24.04 runner (dual-run seam, campaign 019f5885 inc4)"
-        required: false
-        type: string
-        default: ""
-  push:
-    branches: [ develop, master ]
-    paths:
-      - "modules/**"
-      - "templates/module-repo/Containerfile"
-      - ".gitea/workflows/build-platform-modules.yaml"
-      # Agent source changes must trigger a rebuild because
-      # powernode-system-base's Stage 1.5 cross-compiles the agent
-      # binary into its rootfs. Without this filter, an agent fix
-      # would land in the repo but the in-fleet binary (baked into
-      # system-base's erofs) would still be the old one until someone
-      # bumped a module manifest.
-      - "agent/**"
-  release:
-    types: [ published ]
 
 permissions:
   contents: read
@@ -80,181 +44,9 @@ permissions:
   packages: write    # oras push
 
 jobs:
-  # Computes the BUILD SET — an ordered, space-separated list of module
-  # slugs to build this run — from modules/*/ on disk, the dirty
-  # closure, or a single `inputs.module` dispatch. This does NOT feed a
-  # dynamic matrix: Gitea Actions expands `strategy.matrix` **server-side
-  # at run-creation time**, before any job (including this one) has
-  # executed, so `matrix.module: ${{ fromJSON(needs.discover.outputs.X) }}`
-  # was empirically confirmed BROKEN here — `needs` outputs don't exist
-  # yet at that evaluation point, the fork gracefully collapses the
-  # expression to an empty scalar, and every matrix entry resolves to
-  # `module: ''` (nothing builds; a prior revision of this workflow hit
-  # exactly this on a `module=dev-cell` dispatch). Confirmed against
-  # upstream: go-gitea/gitea#25179 ("dynamic array in strategy:matrix
-  # generates only one job") is still open; PR #36564 (deferred matrix
-  # expansion) is an open draft, not shipped.
-  #
-  # The fix used here: `build`'s matrix is a STATIC list of integer
-  # slots (a capacity knob, not a module list — see its comment). Each
-  # slot resolves its module in a **step**, not the matrix — steps are
-  # evaluated by the runner at execution time, by which point `needs`
-  # outputs ARE available (that asymmetry is documented from the other
-  # direction in go-gitea/gitea#29020). This job's `build_set` output is
-  # what that per-slot resolver step indexes into.
-  discover:
-    # Dual-run seam (campaign 019f5885 inc4): inputs.runner_label (set only by
-    # System::CiBuildOrchestrator's leased fleet path) overrides the static
-    # runner. Empty on every push/tag-triggered run — the static path is
-    # unchanged there.
-    runs-on: ${{ inputs.runner_label || 'ubuntu-24.04' }}
-    container:
-      image: docker.io/library/debian:trixie-slim
-    defaults:
-      run:
-        shell: bash
-    outputs:
-      build_set: ${{ steps.plan.outputs.build_set }}
-      count: ${{ steps.plan.outputs.count }}
-    steps:
-      - name: Plan build set
-        id: plan
-        env:
-          # Operator-supplied diff base / flags via workflow_dispatch
-          # inputs take precedence; otherwise the closure script uses its
-          # own resolution chain (GITEA_EVENT_BEFORE / GITHUB_BASE_SHA /
-          # HEAD~1).
-          REQUESTED_MODULE: ${{ inputs.module }}
-          FORCE_ALL: ${{ inputs.force_all }}
-          OPERATOR_BASE_SHA: ${{ inputs.base_sha }}
-          APT_DRIFT_CHECK: ${{ inputs.apt_drift_check && '1' || '0' }}
-          # Gitea injects GITHUB_TOKEN for workflows running on private
-          # repos. Threading it through the clone URL covers the
-          # private-mirror case without an SSH key in the runner.
-          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          SLUG_RE='^[A-Za-z0-9._-]+$'
-          MATRIX_CAP=24
-
-          # Word-splitting safety: build_set is consumed downstream via
-          # unquoted `for m in $SET` / `read -ra`, so every slug — from
-          # any path (operator input, disk enumeration, or the closure
-          # script) — must be validated before it lands in the set.
-          validate_slug() {
-            local s="$1"
-            if [[ ! "$s" =~ $SLUG_RE ]]; then
-              echo "::error::module slug '$s' fails validation ($SLUG_RE) — refusing to build it"
-              exit 1
-            fi
-          }
-
-          # Bootstrap: git + jq (+ curl/ca-certificates for the closure
-          # script's own yq self-install and for the oras fetch below
-          # when APT_DRIFT_CHECK=1).
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update -q
-          apt-get install -y --no-install-recommends git jq curl ca-certificates
-
-          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
-            validate_slug "$REQUESTED_MODULE"
-          fi
-
-          git config --global --add safe.directory '*'
-          ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
-          mkdir -p "$ws"
-          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
-          if [ -n "${GIT_TOKEN:-}" ]; then
-            clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
-          else
-            clone_url="${base}/${GITHUB_REPOSITORY}.git"
-          fi
-
-          tmp="$(mktemp -d)"
-          if [[ -n "${REQUESTED_MODULE:-}" || "${FORCE_ALL:-false}" == "true" ]]; then
-            # Single-module and force_all paths only need a directory
-            # listing at this ref — shallow clone (branch/tag-scoped,
-            # with an unscoped-shallow + direct-SHA-fetch fallback).
-            if [ -n "${GITHUB_REF_NAME:-}" ]; then
-              git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${clone_url}" "$tmp/repo" 2>/dev/null \
-                || git clone --depth 1 "${clone_url}" "$tmp/repo"
-            else
-              git clone --depth 1 "${clone_url}" "$tmp/repo"
-            fi
-            cp -a "$tmp/repo/." "$ws/"
-            rm -rf "$tmp"
-            cd "$ws"
-            if ! git cat-file -e "${GITHUB_SHA}^{commit}" 2>/dev/null; then
-              git fetch --depth 1 origin "${GITHUB_SHA}" 2>/dev/null || git fetch origin "${GITHUB_SHA}"
-            fi
-            git checkout "${GITHUB_SHA}"
-          else
-            # Default (dirty-closure) path needs full history for
-            # `git diff BASE_SHA..HEAD_SHA` inside the closure script.
-            git clone "${clone_url}" "$tmp/repo"
-            cp -a "$tmp/repo/." "$ws/"
-            rm -rf "$tmp"
-            cd "$ws"
-            git checkout "${GITHUB_SHA}"
-          fi
-
-          if [[ -n "${REQUESTED_MODULE:-}" ]]; then
-            # Hot path — operator asked for exactly one module, at any
-            # time, regardless of what's dirty. Validate it exists, then
-            # skip the closure/force_all machinery entirely: this is
-            # what makes `module=<slug>` build unconditionally.
-            if [[ ! -f "modules/${REQUESTED_MODULE}/manifest.yaml" ]]; then
-              echo "::error::inputs.module='${REQUESTED_MODULE}' has no modules/${REQUESTED_MODULE}/manifest.yaml — check the slug."
-              exit 1
-            fi
-            SET="$REQUESTED_MODULE"
-            echo "[discover] inputs.module=${REQUESTED_MODULE} — build set forced to this module only"
-          elif [[ "${FORCE_ALL:-false}" == "true" ]]; then
-            SET=$(for d in modules/*/; do [[ -f "${d}manifest.yaml" ]] || continue; basename "$d"; done | sort | xargs)
-            echo "[discover] FORCE_ALL=true — every module in the build set"
-          else
-            if [[ "${APT_DRIFT_CHECK:-0}" == "1" ]] && ! command -v oras >/dev/null 2>&1; then
-              echo "[discover] APT_DRIFT_CHECK=1 — installing oras for apt-closure drift probes"
-              ORAS_VERSION="1.2.0"
-              curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
-                | tar -xz -C /usr/local/bin oras
-              chmod +x /usr/local/bin/oras
-            fi
-            # The script accepts BASE_SHA HEAD_SHA as positional args.
-            # When the operator didn't supply one, fall through to the
-            # script's own GITEA_EVENT_BEFORE / HEAD~1 resolver.
-            if [[ -n "${OPERATOR_BASE_SHA:-}" ]]; then
-              RAW=$(bash scripts/ci-compute-dirty-closure.sh "${OPERATOR_BASE_SHA}" "${GITHUB_SHA}")
-            else
-              RAW=$(bash scripts/ci-compute-dirty-closure.sh)
-            fi
-            SET=$(echo "$RAW" | sort | xargs)
-          fi
-
-          COUNT=0
-          if [[ -n "$SET" ]]; then
-            for m in $SET; do
-              validate_slug "$m"
-              COUNT=$((COUNT + 1))
-            done
-          fi
-
-          if (( COUNT > MATRIX_CAP )); then
-            echo "::error::build set ($COUNT) exceeds matrix capacity ${MATRIX_CAP} — widen jobs.build.strategy.matrix.idx"
-            exit 1
-          fi
-
-          echo "[discover] build_set (${COUNT}): ${SET:-<empty>}"
-          echo "build_set=$SET" >> "$GITHUB_OUTPUT"
-          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-
   build:
-    needs: discover
-    # Dual-run seam (campaign 019f5885 inc4): inputs.runner_label (set only by
-    # System::CiBuildOrchestrator's leased fleet path) overrides the static
-    # runner. Empty on every push/tag-triggered run — the static path is
-    # unchanged there.
-    runs-on: ${{ inputs.runner_label || 'ubuntu-24.04' }}
+    name: build ${{ inputs.module }}
+    runs-on: ubuntu-24.04
     # `runs-on` is just a label in Gitea Actions 1.x — the actual
     # container is set below. Use Debian Trixie because:
     #   - composefs (userspace + tools) ships in Trixie's main repo
@@ -273,50 +65,9 @@ jobs:
     defaults:
       run:
         shell: bash
-    strategy:
-      # fail-fast: true so the first failure (e.g. a broken notify step,
-      # a manifest schema regression) auto-cancels the remaining matrix
-      # entries instead of grinding through all 12 modules serially.
-      # Cuts wasted CI time when a systemic problem hits — the cost of
-      # losing diagnostic info on later modules is acceptable because
-      # the failure pattern almost always repeats across the matrix.
-      # Operators iterate faster: fix → push → see result in ~5 min
-      # instead of ~50 min.
-      fail-fast: true
-      matrix:
-        # CAPACITY KNOB, not a module list — see the `discover` job's
-        # comment for why this can't be `module: ${{ fromJSON(needs...) }}`.
-        # 17 modules today; 24 gives headroom. Bump this list (never
-        # hand-list module names here) if `discover`'s MATRIX_CAP guard
-        # ever fails. Each slot's "Resolve build slot" step below maps
-        # `idx` to a module name (or '' when idx has no corresponding
-        # entry in this run's build set — that slot idle-skips every
-        # remaining step).
-        idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    env:
+      MODULE: ${{ inputs.module }}
     steps:
-      - name: Resolve build slot
-        # Runner-side step evaluation (unlike matrix expansion) has the
-        # `needs` context available, so this is where
-        # `needs.discover.outputs.build_set` becomes usable — see the
-        # `discover` job's comment for why it can't be read at the
-        # matrix level. Pure bash `read -ra` needs zero expression
-        # features beyond "needs output → step env" and degrades
-        # out-of-range indices to an explicit empty string.
-        id: resolve
-        env:
-          BUILD_SET: ${{ needs.discover.outputs.build_set }}
-        run: |
-          set -euo pipefail
-          read -ra SLOTS <<< "${BUILD_SET}"
-          MODULE="${SLOTS[${{ matrix.idx }}]:-}"
-          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
-          echo "MODULE=$MODULE" >> "$GITHUB_ENV"
-          if [ -n "$MODULE" ]; then
-            echo "=== slot ${{ matrix.idx }} builds: $MODULE ==="
-          else
-            echo "=== slot ${{ matrix.idx }} idle (build set has ${#SLOTS[@]} entries) ==="
-          fi
-
       # Bootstrap the container with all the tooling the workflow needs.
       # `actions/checkout@v4` is intentionally skipped — it pulls in a
       # node runtime requirement (the action is a Node.js bundle) which
@@ -324,13 +75,12 @@ jobs:
       # `git clone` does the same job in two seconds AND keeps the
       # container Debian-base-image clean.
       - name: Install build tools (git + mmdebstrap + erofs-utils + fsverity + cosign + oras)
-        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # The Gitea runner container is Debian Trixie. Install the
           # rootfs bootstrap + read-only-FS + signing toolchain here.
-          # ~30s per matrix entry, but avoids baking a custom runner
-          # image (which is its own ops chore).
+          # ~30s per build, but avoids baking a custom runner image
+          # (which is its own ops chore).
           #
           # mmdebstrap replaces buildah for the rootfs build step.
           # buildah needed CLONE_NEWUSER which the Gitea Actions
@@ -363,7 +113,6 @@ jobs:
             uuid-runtime
 
       - name: Clone repo (full history for cosign provenance)
-        if: steps.resolve.outputs.module != ''
         env:
           # Gitea injects GITHUB_TOKEN for workflows running on private
           # repos. Threading it through the clone URL covers the
@@ -397,8 +146,28 @@ jobs:
           cd "$ws"
           git checkout "${GITHUB_SHA}"
 
+      - name: Validate module
+        # Mirrors the slug-regex + manifest-existence checks the old
+        # `discover` job ran before computing the build set (removed —
+        # this workflow now builds exactly the one module the operator
+        # requested, no dirty-closure/matrix machinery). Placed after
+        # "Clone repo" rather than as the literal first step because
+        # checking modules/$MODULE/manifest.yaml needs the repo on disk;
+        # neither "Install build tools" nor "Clone repo" reads $MODULE,
+        # so nothing upstream of this depended on it running earlier.
+        run: |
+          set -euo pipefail
+          SLUG_RE='^[A-Za-z0-9._-]+$'
+          if [[ ! "$MODULE" =~ $SLUG_RE ]]; then
+            echo "::error::module slug '$MODULE' fails validation ($SLUG_RE) — refusing to build it"
+            exit 1
+          fi
+          if [[ ! -f "modules/${MODULE}/manifest.yaml" ]]; then
+            echo "::error::inputs.module='${MODULE}' has no modules/${MODULE}/manifest.yaml — check the slug."
+            exit 1
+          fi
+
       - name: Install signing toolchain (cosign + oras)
-        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # cosign — Sigstore keyless signing. Pin to a known-good release.
@@ -421,11 +190,6 @@ jobs:
           uuidgen --version || true
 
       - name: Parse manifest for the resolved module
-        # `discover` already computed the build set (dirty closure |
-        # single module | force_all) once for the whole run; this slot
-        # just needs to know whether it has work. No more per-matrix-entry
-        # DIRTY_MODULES contains() gate.
-        if: steps.resolve.outputs.module != ''
         id: manifest
         run: |
           set -euo pipefail
@@ -462,13 +226,13 @@ jobs:
 
       - name: Stage 1 — bootstrap fat rootfs (mmdebstrap + package_spec)
         # Extracted to scripts/module-build/stage1-rootfs.sh (campaign
-        # 019f5885 inc6 — pure refactor). $MODULE comes from GITHUB_ENV
-        # (the "Resolve build slot" step, untouched); $APT_SNAPSHOT from
-        # this step's own env: block (the "Parse manifest" step,
+        # 019f5885 inc6 — pure refactor). $MODULE comes from the build
+        # job's job-level env: block (inputs.module — no per-slot
+        # resolution needed for a single-module build); $APT_SNAPSHOT
+        # from this step's own env: block (the "Parse manifest" step,
         # untouched) — both threaded through as explicit CLI args so the
         # script itself never reads GITHUB_ENV or this step's env:
         # directly. See the script's header for the full env-var mapping.
-        if: steps.resolve.outputs.module != ''
         env:
           APT_SNAPSHOT: ${{ steps.manifest.outputs.apt_snapshot }}
         run: |
@@ -482,7 +246,6 @@ jobs:
         # the process environment (never a CLI arg — it's a secret; see the
         # script's crypto-material-safety note). $GITHUB_WORKSPACE is passed
         # explicitly since the script has no implicit Actions cwd to rely on.
-        if: steps.resolve.outputs.module != ''
         env:
           PARENT_PAT: ${{ secrets.POWERNODE_PARENT_PAT || secrets.POWERNODE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -495,7 +258,6 @@ jobs:
         # are threaded through as explicit CLI args (the script has no
         # implicit Actions cwd, and never reads GITHUB_SHA from the
         # environment directly).
-        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           bash scripts/module-build/stage2-carve.sh --module "$MODULE" --sha "${GITHUB_SHA}" --workspace "$GITHUB_WORKSPACE"
@@ -514,7 +276,6 @@ jobs:
         # env: block and are inherited by the script from the process
         # environment (never CLI args — see the script's
         # crypto-material-safety note).
-        if: steps.resolve.outputs.module != ''
         id: push
         env:
           ORAS_REGISTRY_USERNAME: ${{ secrets.POWERNODE_REGISTRY_USER }}
@@ -537,7 +298,6 @@ jobs:
         # from the oras-push step above (same step id: push, same output
         # shape, so this and the untouched "Notify platform" step below
         # both keep working unchanged).
-        if: steps.resolve.outputs.module != ''
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -554,7 +314,6 @@ jobs:
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${{ steps.push.outputs.erofs_ref }}"
 
       - name: Notify platform — module published
-        if: steps.resolve.outputs.module != ''
         run: |
           set -euo pipefail
           # POSTs the erofs artifact reference so the platform's ingest
