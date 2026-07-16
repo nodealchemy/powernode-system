@@ -230,7 +230,14 @@ users:
     home: /run/systemd
     gecos: "systemd Resolver"
 
-reboot_required: false
+# base-os IS the root OS layer itself (glibc, coreutils, systemd, the FHS
+# layout every other module dynamically links against / runs on top of) —
+# it is deliberately the safety boundary that keeps the pivot-node
+# hot-reconcile file-copy path (agent/internal/runtime/hotreconcile.go) OUT
+# of scope for base-os changes. A rebuilt base-os erofs genuinely needs a
+# reboot to apply safely; hot-copying glibc/systemd out from under a live
+# running root is not something to attempt.
+reboot_required: true
 
 security:
   capabilities:
