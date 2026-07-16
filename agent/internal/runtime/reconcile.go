@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,6 +19,14 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/verify"
 )
+
+// pivotAwareRootMode indirects lifecycle.PivotAwareRootMode so tests in
+// this package can force the native-root (pivot node) gate without
+// touching lifecycle's own root probe, which is unexported and keyed off
+// the live process's actual "/" filesystem type — not fakeable from
+// outside that package. Mirrors the same var-indirection pattern
+// lifecycle/service.go itself uses internally (rootFSType).
+var pivotAwareRootMode = lifecycle.PivotAwareRootMode
 
 // PullerAPI is the subset of *oci.Puller the reconciler depends on.
 // Defined as an interface so tests can stub without standing up an
@@ -228,6 +237,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		return r.lastError
 	}
 
+	// Captured before anything below mutates current.AttachedModules.
+	// ComposeForPivot doesn't persist a state.json at boot, so on the
+	// FIRST reconcile tick after a pivot boot, current is empty and every
+	// boot module shows up in toAttach even though its files are ALREADY
+	// part of the boot union — hotReconcileIfNeeded must not copy on that
+	// baseline tick (see its doc comment). Tick 2+ has real prior state
+	// (RunOnce SaveState's at the end of every cycle), so stateWasEmpty
+	// correctly reflects "is this a genuine post-boot change".
+	stateWasEmpty := len(current.AttachedModules) == 0
+
 	toAttach, toDetach := mount.Reconcile(current, desired)
 
 	// Detect already-attached modules whose manifest content changed
@@ -336,6 +355,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 		current.AttachedModules = append(current.AttachedModules, mod)
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
+		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty)
 	}
 
 	// Re-attach loop for manifest-only changes. attachModule is
@@ -353,6 +373,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			continue
 		}
 		current.LastAttachedManifestHashes[mod.ID] = mf.ServicesHash()
+		r.hotReconcileIfNeeded(mod, mf, stateWasEmpty)
 	}
 
 	// Filter out detached modules from current — both from the attached
@@ -552,6 +573,51 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 	}
 
 	return nil
+}
+
+// hotReconcileIfNeeded is called after a successful attachModule for BOTH
+// freshly-attached (toAttach) and manifest-reattached (toReattach)
+// modules. It closes the pivot-node file-hotreload gap described on
+// SyncModuleFilesToRoot: a changed module's systemd units already
+// hot-restart against new content via attachModule above, but on a pivot
+// node the new content itself never lands in / (the union-skip block
+// further down in RunOnce deliberately never re-extends /'s lowerdir
+// post-boot) — without this, the restarted service silently keeps running
+// the OLD files until a reboot.
+//
+// Gate, in order:
+//   - DryRun / stateWasEmpty / nil manifest: nothing to do (see
+//     stateWasEmpty's doc at its capture site above — tick 1 post-boot
+//     must never hot-copy the whole base image as if it were new).
+//   - Not a pivot node (pivotAwareRootMode() != RootModeNative): the
+//     cloud_init model chroots units into /sysroot, which already gets a
+//     full union remount on every attach — no gap to close there.
+//   - RebootRequired: the module explicitly declares its files can't be
+//     safely hot-swapped (base-os-ubuntu-noble is the canonical example —
+//     it's the root OS layer itself). Surface a "reboot pending" signal
+//     via OnError instead of copying, once per module per tick.
+//   - Otherwise: copy the module's mounted erofs content onto the live
+//     root. Errors surface via OnError; a quiet success (including
+//     changed == 0, i.e. nothing had actually drifted) is not logged —
+//     OnError is reserved for failures and there's no dedicated
+//     benign/info-log hook in this package.
+func (r *Reconciler) hotReconcileIfNeeded(mod mount.Module, mf *manifest.Manifest, stateWasEmpty bool) {
+	if r.cfg.DryRun || stateWasEmpty || mf == nil {
+		return
+	}
+	if pivotAwareRootMode() != lifecycle.RootModeNative {
+		return
+	}
+	if mf.RebootRequired {
+		r.cfg.OnError("reconciler:reboot_pending",
+			fmt.Errorf("module %s changed but reboot_required=true; a reboot is needed to apply", mod.ID))
+		return
+	}
+	srcDir := r.cfg.Layout.ModuleMountPath(mod.Digest)
+	dstRoot := filepath.Join(r.cfg.Layout.Root, "/")
+	if _, err := SyncModuleFilesToRoot(srcDir, dstRoot); err != nil {
+		r.cfg.OnError("reconciler:hot_reconcile", fmt.Errorf("module %s: %w", mod.ID, err))
+	}
 }
 
 // detachModule stops the module's units and unmounts it.

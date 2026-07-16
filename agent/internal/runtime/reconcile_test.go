@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/oci"
@@ -500,5 +501,244 @@ func writeFile(t *testing.T, p, body string) {
 	t.Helper()
 	if err := osWriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// forcePivotNative overrides the package-level pivotAwareRootMode
+// indirection for the duration of the test, so RunOnce's hot-reconcile
+// gate believes it's running on a pivot node without needing a real
+// overlayfs root (lifecycle.PivotAwareRootMode's own root probe is
+// unexported and keyed off the live process's actual "/" — not fakeable
+// from this package).
+func forcePivotNative(t *testing.T) {
+	t.Helper()
+	orig := pivotAwareRootMode
+	pivotAwareRootMode = func() lifecycle.RootMode { return lifecycle.RootModeNative }
+	t.Cleanup(func() { pivotAwareRootMode = orig })
+}
+
+// TestReconcilerHotReconcileSkipsFirstTickOnPivotNode covers the
+// ComposeForPivot baseline gap: on a pivot node's very first reconcile
+// tick there's no state.json yet, so every boot module looks like a fresh
+// attach even though its files are ALREADY part of the boot union.
+// hotReconcileIfNeeded must not hot-copy on that tick — doing so would be
+// redundant at best (the file is already at the live root from boot).
+func TestReconcilerHotReconcileSkipsFirstTickOnPivotNode(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json") // no pre-seed: this IS the no-state-yet first tick
+
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"hub-frontend", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"hub-frontend", "digest":"d1",
+				         "priority":100, "effective_priority":100,
+				         "reboot_required": false,
+				         "services": []}
+			}`,
+		},
+	}
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	// Fake "already part of the boot union" content at the module's
+	// mountpoint. RecorderRunner never actually issues the erofs loop
+	// mount, so this stands in for what a real mount would have already
+	// made visible pre-pivot.
+	mountDir := layout.ModuleMountPath("d1")
+	mkdirAll(t, filepath.Join(mountDir, "opt", "hub-frontend"))
+	writeFile(t, filepath.Join(mountDir, "opt", "hub-frontend", "index.html"), "<html>boot</html>")
+
+	forcePivotNative(t)
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(layout.Root, "opt", "hub-frontend", "index.html")); !os.IsNotExist(err) {
+		t.Errorf("expected NO hot-copy on the first (empty-state) tick, but found one (stat err=%v)", err)
+	}
+}
+
+// TestReconcilerHotReconcileCopiesChangedModuleOnPivotNode covers the
+// primary case this feature exists for: a SECOND tick (real prior state,
+// so stateWasEmpty is false) where a module's digest changed. The new
+// content — standing in for what a real erofs loop-mount would expose at
+// the module's per-digest mountpoint — must land at the live root without
+// a reboot.
+func TestReconcilerHotReconcileCopiesChangedModuleOnPivotNode(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+
+	// Pre-seed real prior state (module m1 already attached at d1, with
+	// its (empty) services hash recorded) so this run is tick 2+, not the
+	// empty-state baseline tick.
+	emptyHash := (&manifest.Manifest{Services: []manifest.Service{}}).ServicesHash()
+	if err := mount.SaveState(statePath, &mount.State{
+		AttachedModules:            []mount.Module{{ID: "m1", Digest: "d1", Priority: 100}},
+		LastAttachedManifestHashes: map[string]string{"m1": emptyHash},
+	}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"hub-frontend", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"hub-frontend", "digest":"d2",
+				         "priority":100, "effective_priority":100,
+				         "reboot_required": false,
+				         "services": []}
+			}`,
+		},
+	}
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	newMountDir := layout.ModuleMountPath("d2")
+	mkdirAll(t, filepath.Join(newMountDir, "opt", "hub-frontend"))
+	writeFile(t, filepath.Join(newMountDir, "opt", "hub-frontend", "index.html"), "<html>v2</html>")
+
+	forcePivotNative(t)
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(layout.Root, "opt", "hub-frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("expected hot-copied file at the live root, got error: %v", err)
+	}
+	if string(got) != "<html>v2</html>" {
+		t.Errorf("hot-copied content = %q, want %q", got, "<html>v2</html>")
+	}
+}
+
+// TestReconcilerHotReconcileSkipsAndWarnsWhenRebootRequired covers the
+// other half of the gate: a module that declares reboot_required: true
+// (base-os-ubuntu-noble, post this change) must NOT be hot-copied — its
+// changed content is left for the next reboot — and the reconciler must
+// surface a "reboot pending" signal via OnError instead.
+func TestReconcilerHotReconcileSkipsAndWarnsWhenRebootRequired(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+
+	emptyHash := (&manifest.Manifest{Services: []manifest.Service{}}).ServicesHash()
+	if err := mount.SaveState(statePath, &mount.State{
+		AttachedModules:            []mount.Module{{ID: "m1", Digest: "d1", Priority: 100}},
+		LastAttachedManifestHashes: map[string]string{"m1": emptyHash},
+	}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"base-os", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"base-os", "digest":"d2",
+				         "priority":100, "effective_priority":100,
+				         "reboot_required": true,
+				         "services": []}
+			}`,
+		},
+	}
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	newMountDir := layout.ModuleMountPath("d2")
+	mkdirAll(t, filepath.Join(newMountDir, "etc"))
+	writeFile(t, filepath.Join(newMountDir, "etc", "os-release"), "v2")
+
+	forcePivotNative(t)
+
+	var stages []string
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+		OnError: func(stage string, _ error) {
+			stages = append(stages, stage)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(layout.Root, "etc", "os-release")); !os.IsNotExist(err) {
+		t.Errorf("reboot_required module must NOT be hot-copied, but found a copy (stat err=%v)", err)
+	}
+
+	found := 0
+	for _, s := range stages {
+		if s == "reconciler:reboot_pending" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("expected exactly one reconciler:reboot_pending OnError, got %d (stages=%v)", found, stages)
 	}
 }
