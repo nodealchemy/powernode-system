@@ -325,4 +325,97 @@ RSpec.describe System::ModuleOciIngestService do
       expect(result[:ok]).to be true
     end
   end
+
+  # Campaign hub-durable-modules — native single-arch build path. The
+  # module-forge builder pushes a PLAIN image manifest (erofs layer +
+  # module.meta/module.packages sidecars), and reports the MANIFEST descriptor
+  # digest + fs-verity root. The recorded artifact digest MUST be the erofs
+  # BLOB (layer) digest the agent verifies on pull — never the manifest digest
+  # and never the LocalOciAdapter dev stub's fabricated value.
+  describe ".ingest_native!" do
+    # Real base-os:e4806f2 shape (verified live against git.powernode.org).
+    let(:erofs_digest)    { "sha256:59ddd433e3712fe2edb10c717773140b2417b7ec35369b86be9a0491bf80ffa7" }
+    let(:manifest_digest) { "sha256:6c7ae5bdd2a3eca8db8d9e8408fabf9a59911f8e9b79e256a0d00d1ee5107cd8" }
+    let(:meta_digest)     { "sha256:295c76ff1f99519015f0781ba576a440de800b515748a8ca5cf07d0293df0e67" }
+    let(:agent_fsverity)  { "sha256:70615610329859e27ff3fd7bf26e4d9573e9d012e289fc262d2e3b549201f684" }
+    let(:native_ref)      { "git.powernode.org/powernode/base-os-ubuntu-noble:e4806f2" }
+
+    # Three-layer plain image manifest: erofs FS + two powernode.module.*
+    # descriptor sidecars. The erofs layer is NOT first-by-media-prefix, so
+    # this catches a selector that keys off application/vnd.powernode.module.*.
+    let(:manifest_doc) do
+      {
+        "mediaType" => "application/vnd.oci.image.manifest.v1+json",
+        "layers" => [
+          { "mediaType" => "application/vnd.powernode.erofs",          "digest" => erofs_digest, "size" => 140_546_048 },
+          { "mediaType" => "application/vnd.powernode.module.meta",     "digest" => meta_digest,  "size" => 101 },
+          { "mediaType" => "application/vnd.powernode.module.packages", "digest" => "sha256:185f2839076f833272d77c401c52173c915ed5e9590759b3e139b3c843029b92", "size" => 5181 }
+        ]
+      }
+    end
+
+    before do
+      # Stub the registry manifest GET; exercise the REAL layer selection +
+      # persistence. Auth resolution is bypassed (no network).
+      allow_any_instance_of(described_class)
+        .to receive(:fetch_native_manifest).and_return(doc: manifest_doc)
+    end
+
+    it "records the erofs LAYER (blob) digest — not the manifest digest, not the stub" do
+      result = described_class.ingest_native!(
+        node_module_version: version, oci_ref: native_ref,
+        account: account, fsverity_root: agent_fsverity, architecture: nil
+      )
+
+      expect(result.ok?).to be true
+      expect(result.module_artifacts.size).to eq(1)
+      artifact = result.module_artifacts.first
+
+      expect(artifact.architecture).to eq("amd64")
+      expect(artifact.oci_digest).to eq(erofs_digest)         # the blob the agent hashes
+      expect(artifact.oci_digest).not_to eq(manifest_digest)  # NOT the reported manifest digest
+      expect(artifact.oci_digest).not_to eq(meta_digest)      # NOT the module.meta sidecar
+      expect(artifact.size_bytes).to eq(140_546_048)
+      expect(artifact.media_type).to eq("application/vnd.powernode.erofs")
+      expect(artifact.fsverity_root_hash).to eq(agent_fsverity)
+      expect(artifact.cosign_bundle).to be_nil                # native pushes are unsigned
+
+      # NOT the LocalOciAdapter stub shape (…"0000" digest / "fsv-…" fsverity).
+      expect(artifact.oci_digest).not_to end_with("0000")
+      expect(artifact.fsverity_root_hash).not_to start_with("fsv-")
+    end
+
+    it "denormalizes the erofs blob digest onto the NodeModuleVersion column" do
+      described_class.ingest_native!(
+        node_module_version: version, oci_ref: native_ref,
+        account: account, fsverity_root: agent_fsverity
+      )
+      version.reload
+      expect(version.oci_digest).to eq(erofs_digest)
+      expect(version.fsverity_root_hash).to eq(agent_fsverity)
+    end
+
+    it "is idempotent — a re-run updates the single arch row instead of duplicating" do
+      2.times do
+        described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref,
+          account: account, fsverity_root: agent_fsverity
+        )
+      end
+      expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(1)
+    end
+
+    it "fails closed when the erofs layer can't be resolved (no fabricated digest)" do
+      allow_any_instance_of(described_class)
+        .to receive(:fetch_native_manifest).and_return(error: "manifest fetch HTTP 404")
+
+      result = described_class.ingest_native!(
+        node_module_version: version, oci_ref: native_ref,
+        account: account, fsverity_root: agent_fsverity
+      )
+      expect(result.ok?).to be false
+      expect(result.error).to match(/erofs layer resolution failed/)
+      expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
+    end
+  end
 end

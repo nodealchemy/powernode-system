@@ -461,8 +461,19 @@ module System
       # native dispatch, and every pre-inc10 manual/CVE dispatch) promote
       # exactly as before — @batch.shadow? defaults false so this is a no-op
       # change for every existing caller.
+      # native_build routes ModulePublicationProcessor to record the artifact
+      # from the registry-resolved erofs LAYER (blob) digest — the sha256 the
+      # agent verifies on pull — instead of the dev LocalOciAdapter stub /
+      # multi-arch index ingest path. fs-verity root comes from the builder's
+      # result (computed over the erofs bytes); the reported result["oci_digest"]
+      # is the MANIFEST descriptor digest (used for signing above) and is
+      # deliberately NOT passed as the artifact digest.
       publish_result = ::System::ModulePublicationProcessor.process!(
-        node_module: node_module, tag: entry["tag"], promote: !@batch.shadow?
+        node_module: node_module, tag: entry["tag"], promote: !@batch.shadow?,
+        native_build: {
+          fsverity_root: result["fsverity_root"],
+          architecture: entry["architecture"]
+        }
       )
       unless publish_result.ok?
         entry["error"] = "publish failed: #{publish_result.error}"

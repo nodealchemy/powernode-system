@@ -24,8 +24,8 @@ module System
                         :resolved_dependencies, keyword_init: true)
 
     class << self
-      def process!(node_module:, tag:, promote: true)
-        new.process!(node_module: node_module, tag: tag, promote: promote)
+      def process!(node_module:, tag:, promote: true, native_build: nil)
+        new.process!(node_module: node_module, tag: tag, promote: promote, native_build: native_build)
       end
     end
 
@@ -38,7 +38,15 @@ module System
     #   ModuleArtifact rows (parity comparison needs those) without ever
     #   moving current_version_id off whatever the Gitea build published —
     #   the fleet keeps consuming exactly what it consumed before.
-    def process!(node_module:, tag:, promote: true)
+    # @param native_build [Hash, nil] present ONLY for native (module-forge)
+    #   builds — carries the agent build result's {fsverity_root:,
+    #   architecture:}. When present, the artifact is recorded from the
+    #   registry-resolved erofs LAYER (blob) digest via
+    #   ModuleOciIngestService.ingest_native! instead of the multi-arch
+    #   index + cosign ingest! path. nil (every Gitea webhook / CI-direct
+    #   caller) preserves the exact prior behavior — ingest! is called
+    #   byte-for-byte as before. See NativeModuleBuildOrchestrator#finalize_success!.
+    def process!(node_module:, tag:, promote: true, native_build: nil)
       return failure("node_module required") unless node_module
       return failure("tag required") if tag.blank?
 
@@ -52,10 +60,7 @@ module System
       # inside ModuleOciIngestService; this processor records the
       # canonical metadata into NodeModuleVersion.artifacts JSONB.
       oci_ref = build_oci_ref(node_module, tag)
-      result = ::System::ModuleOciIngestService.ingest!(
-        node_module_version: node_module_version,
-        oci_ref: oci_ref
-      )
+      result = ingest_artifact(node_module, node_module_version, oci_ref, native_build)
 
       if result.ok?
         canonical = result.module_artifacts.find { |a| a.architecture == "amd64" } ||
@@ -98,6 +103,29 @@ module System
 
     def failure(message)
       Result.new(ok?: false, error: message, resolved_dependencies: [])
+    end
+
+    # Routes to the correct OCI ingest path. native_build present (module-forge
+    # single-arch push) → resolve the real erofs blob digest from the registry;
+    # nil (Gitea webhook / CI-direct publish) → the unchanged multi-arch index +
+    # cosign ingest! path.
+    def ingest_artifact(node_module, node_module_version, oci_ref, native_build)
+      return ingest_default(node_module_version, oci_ref) unless native_build
+
+      ::System::ModuleOciIngestService.ingest_native!(
+        node_module_version: node_module_version,
+        oci_ref: oci_ref,
+        account: node_module.account,
+        fsverity_root: native_build[:fsverity_root] || native_build["fsverity_root"],
+        architecture: native_build[:architecture] || native_build["architecture"]
+      )
+    end
+
+    def ingest_default(node_module_version, oci_ref)
+      ::System::ModuleOciIngestService.ingest!(
+        node_module_version: node_module_version,
+        oci_ref: oci_ref
+      )
     end
 
     # Registry host resolves through the same platform config DK1/DK4 built
