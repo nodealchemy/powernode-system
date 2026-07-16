@@ -1,15 +1,29 @@
 schema_version: 1
 name: powernode-hub-frontend
-display_name: Powernode Hub Frontend (Vite static assets)
-description: React TypeScript frontend built artifacts; served as static files by reverse-proxy-traefik
+display_name: Powernode Hub Frontend (Vite static assets + Caddy)
+description: React TypeScript frontend build artifacts, served by a vendored Caddy static file server on 127.0.0.1:3001; reverse-proxy-traefik terminates TLS and proxies to it
 license: MIT
 category: platform-apps
 package_spec: []
-# Ships the Vite build output at /opt/powernode/frontend/dist — the
-# reverse-proxy module's traefik picks up these static assets via its
-# dynamic-config router (`service: powernode-frontend`).
+# Ships the Vite build output at /opt/powernode/frontend/dist PLUS a
+# vendored Caddy static binary that actually serves it. Traefik CE has
+# no static-file-serving mode — it's a reverse proxy only — so the
+# module's old comment ("reverse proxy serves dist directly") was
+# wrong: nothing listened on the powernode-frontend router's upstream
+# (http://127.0.0.1:3001 / POWERNODE_PROXY_FRONTEND_URL, see
+# Acme::TraefikConfigWriter), so the frontend 502'd — no login page.
+# Caddy now owns 127.0.0.1:3001 (plain HTTP, loopback-only, no TLS —
+# Traefik keeps doing TLS termination + host/path routing and proxies
+# to this port). package_spec stays empty (Caddy is a hermetic
+# fetch-and-verify in Stage 1.5, not apt-installed — same as
+# reverse-proxy-traefik's own vendored /usr/bin/traefik), so
+# derive-file-spec.sh conformance for this file_spec is a trivial 0/0
+# PASS, not something package_spec ownership actually verifies; no
+# carve_waivers needed since there's no apt closure to under-carve.
 file_spec:
   - /opt/powernode/frontend/dist/**
+  - /usr/bin/caddy
+  - /etc/caddy/**
 mask: []
 dependency_spec: []
 protected_spec: []
@@ -18,13 +32,54 @@ reboot_required: false
 dependencies:
   requires:
     - powernode/reverse-proxy-traefik@^1.0
+  # Deliberately NO `capability:os.userland` edge: the vendored Caddy
+  # release is a CGO_ENABLED=0 static Go binary (confirmed via `ldd
+  # /usr/bin/caddy` → "not a dynamic executable"), so — unlike a
+  # package_spec-installed binary — it does not dynamically link
+  # against base-os's glibc/coreutils userland. Same reasoning as
+  # reverse-proxy-traefik's own empty `requires:` for its vendored
+  # traefik binary.
 
-# Frontend is a static-asset module: no long-running service. The
-# reverse proxy serves /opt/powernode-frontend/dist directly via its
-# dynamic config (router with `service: powernode-frontend`). The
-# build pipeline materializes Vite's dist/ output and the agent's
-# composefs layer makes those files available at attach time.
-services: []
+services:
+  - name: caddy
+    # `mkdir -p /run/caddy` before exec: Caddy's file_system storage
+    # module (see Caddyfile) needs its root dir to exist up front — it
+    # creates locks/ and last_clean.json *inside* an existing root, but
+    # won't create the root itself on first use (verified empirically:
+    # without the pre-existing dir it logs a non-fatal "could not
+    # acquire storage_clean lock" warning every start). /run is tmpfs
+    # and always present, so this is a plain mkdir, not a new writable
+    # mount. `exec` replaces the shell so systemd still tracks the
+    # actual caddy PID for restart_policy/health.
+    start_command: "/bin/sh -c 'mkdir -p /run/caddy && exec /usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'"
+    restart_policy: always
+    user: root
+    working_directory: /etc/caddy
+    env:
+      # Caddy's own app-data marker (instance.uuid, used for anonymous
+      # crash/usage telemetry) is written to $XDG_DATA_HOME/caddy
+      # independent of the Caddyfile's `storage` directive (which only
+      # covers the TLS/certmagic module — verified empirically: with
+      # XDG_DATA_HOME unset it falls back to $HOME/.local/share/caddy,
+      # i.e. the read-only overlay under root's $HOME). Redirecting
+      # XDG_DATA_HOME to /run means BOTH that marker and the Caddyfile's
+      # `storage file_system /run/caddy` land under the same pre-created
+      # /run/caddy — one writable dir, nothing touches /var.
+      XDG_DATA_HOME: /run
+    exposed_ports:
+      - { port: 3001, protocol: tcp, name: http }
+    # No `capabilities:` needed — 3001 is an unprivileged port (unlike
+    # traefik's CAP_NET_BIND_SERVICE for 80/443). user: root is
+    # acceptable here (hub-backend's rails service also runs as root);
+    # Caddy binds loopback-only, so there's no exposure win from a
+    # dedicated system user + the etcidentity users:/groups: machinery
+    # reverse-proxy-traefik carries for its own `traefik` user.
+    health:
+      endpoint: "/"
+      method: GET
+      interval_seconds: 15
+      timeout_seconds: 3
+      initial_delay_seconds: 5
 
 security:
   capabilities: []
@@ -33,5 +88,10 @@ security:
   user_namespace: true
 
 build:
-  # Vite build runs in CI; dist/ is the only artifact this module ships.
+  # Vite build runs in CI and produces dist/ — the other deliverable
+  # is /usr/bin/caddy + /etc/caddy/Caddyfile, hermetically fetched +
+  # sha256-verified (Caddyfile generated inline) in
+  # build-platform-modules Stage 1.5, the same pattern as
+  # reverse-proxy-traefik's vendored binary — see that step (and this
+  # module's own Stage 1.5 case arm) for the pinned version + checksum.
   apt_snapshot: "20260415T000000Z"

@@ -402,9 +402,9 @@ case "$MODULE" in
     ;;
   powernode-hub-frontend)
     # Vite build needs node — install if missing. dist/ is
-    # the only deliverable; if the build fails the module
-    # still ships (just with an empty dist that traefik
-    # serves a default error page from).
+    # one of two deliverables (the other is the Caddy static
+    # server below); if the Vite build fails the module still
+    # ships (just with an empty dist that Caddy 404s on).
     mkdir -p /tmp/fat/opt/powernode/frontend/dist
     if ! command -v npm >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
@@ -418,6 +418,91 @@ case "$MODULE" in
     else
       echo "no npm or no frontend package.json — shipping empty dist"
     fi
+    # Traefik (reverse-proxy-traefik) has no static-file-serving mode —
+    # it's a reverse proxy only. Something has to actually listen on
+    # 127.0.0.1:3001 (the powernode-frontend router's upstream) and
+    # serve dist/ with SPA fallback, so this module vendors Caddy the
+    # same hermetic fetch-and-sha256-verify pattern as
+    # reverse-proxy-traefik's own vendored /usr/bin/traefik below in
+    # this same stage: no checked-in binary, a version bump here picks
+    # up upstream CVE fixes. amd64-only (matches the dogfood VMs).
+    # Static (CGO_ENABLED=0) build confirmed via `ldd` — no dynamic
+    # libc dependency, so unlike an apt-installed binary this module
+    # does NOT need a `capability:os.userland` edge on base-os (see
+    # manifest comment).
+    CADDY_VERSION="2.11.4"
+    CADDY_SHA256="527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9"
+    curl -fsSL \
+      "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/caddy.tar.gz
+    echo "${CADDY_SHA256}  /tmp/caddy.tar.gz" | sha256sum -c -
+    mkdir -p /tmp/fat/usr/bin
+    tar -xzf /tmp/caddy.tar.gz -C /tmp/fat/usr/bin caddy
+    chmod 0755 /tmp/fat/usr/bin/caddy
+    mkdir -p /tmp/fat/etc/caddy
+    # Static SPA config, generated the same printf way as
+    # reverse-proxy-traefik's /etc/traefik/traefik.yml below (avoids
+    # YAML/Caddyfile heredoc indent conflicts). Immutable-overlay-rootfs
+    # constraints (only /run, /tmp, /persist are writable; /var/log is
+    # masked by base-os): `admin off` means no admin-API listener/socket
+    # to carve or write state for; `auto_https off` means no ACME/TLS
+    # activity at all (Traefik already terminates TLS and proxies here
+    # in plain HTTP — this must stay TLS-free); `persist_config off`
+    # stops Caddy autosaving the loaded config to disk; `storage
+    # file_system /run/caddy` (paired with the service's `mkdir -p
+    # /run/caddy` start_command + `XDG_DATA_HOME=/run` env — see
+    # manifest services: block) points every on-disk write Caddy might
+    # make — TLS/certmagic storage AND the separate app-data
+    # instance.uuid marker, which is NOT governed by this `storage`
+    # directive — at /run's writable tmpfs, never the read-only overlay
+    # or /var. `log { output stdout }` (global + per-site) sends all
+    # logging to stdout/journald — no /var/log/**, no on-disk log file.
+    #
+    # Site address is bare `:3001` + an explicit `bind 127.0.0.1`, NOT
+    # `http://127.0.0.1:3001` — verified empirically that the latter is
+    # a trap: in the Caddyfile, a host in the site address is a
+    # Host-header MATCH, not a listen-interface restriction, so
+    # `http://127.0.0.1:3001` still binds 0.0.0.0:3001 (wrong — must be
+    # loopback-only) AND only matches requests whose Host header is
+    # literally "127.0.0.1", which real traffic never has (Traefik
+    # forwards the ORIGINAL Host header to this upstream, e.g. the
+    # node's cert CN) — so it would 404 every real proxied request
+    # while looking fine under `caddy validate`. `bind 127.0.0.1` +
+    # site address `:3001` (no host component, so no Host matcher at
+    # all) is the correct combination: confirmed via `ss` that Caddy
+    # listens on 127.0.0.1:3001 only (non-loopback connect attempts
+    # fail), and a curl with an arbitrary Host header still gets a 200.
+    #
+    # try_files + file_server is the SPA fallback: any path that isn't
+    # an existing file under dist/ resolves to /index.html for React
+    # Router (confirmed byte-identical response); existing files (the
+    # Vite build's hashed JS/CSS/assets) are served as-is with Caddy's
+    # built-in extension-based Content-Type detection (confirmed
+    # text/javascript, text/css — no mime.types file needed, unlike
+    # nginx).
+    printf '%s\n' \
+      '{' \
+      '	admin off' \
+      '	auto_https off' \
+      '	persist_config off' \
+      '	storage file_system /run/caddy' \
+      '	log {' \
+      '		output stdout' \
+      '	}' \
+      '}' \
+      '' \
+      ':3001 {' \
+      '	bind 127.0.0.1' \
+      '	log {' \
+      '		output stdout' \
+      '	}' \
+      '' \
+      '	root * /opt/powernode/frontend/dist' \
+      '	encode gzip' \
+      '	try_files {path} /index.html' \
+      '	file_server' \
+      '}' \
+      > /tmp/fat/etc/caddy/Caddyfile
     ;;
   powernode-extension-system)
     # THIS submodule (powernode-system) IS the system extension.
