@@ -232,13 +232,54 @@ module System
       instance_pool_id.present?
     end
 
+    # Server-side SDWAN reachability gate for pool promotion (native-CI pool
+    # reliability fix). A pool builder enrolled onto an SDWAN overlay at
+    # provision time (ProvisioningService#auto_enroll_sdwan_peer! creates an
+    # Sdwan::Peer whenever the pool declares metadata["sdwan_network_id"]) is
+    # NOT usable the instant it first heartbeats: its WireGuard tunnel to the
+    # overlay hub may not have handshaked yet, so overlay-only names — e.g. the
+    # CI git registry git.powernode.org, which resolves to an overlay address —
+    # are unreachable and a dispatched `git clone` times out. Gating readiness
+    # on the tunnel being live is what keeps a still-isolating builder from
+    # being acquired and handed a build it can't fetch.
+    #
+    # The agent already reports per-peer handshake state to
+    # NodeApi::SdwanController#report, which persists Sdwan::Peer#last_handshake_at
+    # — so the platform reliably knows, with NO agent change, whether the overlay
+    # tunnel is live. Read last_handshake_at directly (against the model's healthy
+    # window) rather than the recompute-lagged status column, mirroring
+    # Fleet::Sensors::SdwanReachabilitySensor.
+    #
+    #   - No Sdwan::Peer rows → true. The instance is not overlay-attached
+    #     (non-SDWAN pool); overlay reachability is not a precondition, so this
+    #     preserves the pre-existing "ready on first heartbeat" behavior.
+    #   - Has peer rows       → true only once at least one peer has a fresh
+    #     WireGuard handshake (last_handshake_at within Sdwan::Peer's healthy
+    #     window) — i.e. the overlay is actually up from this node.
+    #
+    # Guarded by defined?(::Sdwan::Peer): if the SDWAN layer is somehow absent,
+    # degrade to "ready" (no worse than the pre-gate behavior) rather than
+    # stranding pool promotion.
+    def sdwan_overlay_ready?
+      return true unless defined?(::Sdwan::Peer)
+
+      peers = ::Sdwan::Peer.where(node_instance_id: id)
+      return true unless peers.exists?
+
+      peers.where("last_handshake_at >= ?", ::Sdwan::Peer::HEALTHY_HANDSHAKE_WINDOW.ago).exists?
+    end
+
     # Idempotent transition: warming → ready (called from provisioning
     # success callback / heartbeat success). Returns true if the
     # transition succeeded, false if state didn't allow it (e.g. already
-    # ready, claimed, draining, etc.).
+    # ready, claimed, draining, etc.) or if the instance's SDWAN overlay
+    # tunnel is not yet live (#sdwan_overlay_ready?) — a builder acquired
+    # before its overlay handshake completes cannot reach overlay-only build
+    # inputs (git.powernode.org), so it must stay "warming" until it can.
     def mark_pool_ready!
       return false unless in_pool?
       return false unless pool_state == "warming"
+      return false unless sdwan_overlay_ready?
       update!(pool_state: "ready")
       true
     end

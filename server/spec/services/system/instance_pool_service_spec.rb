@@ -803,6 +803,35 @@ RSpec.describe System::NodeInstance, "pool methods (slice 7)", type: :model do
       i = create(:system_node_instance, node: node)
       expect(i.mark_pool_ready!).to be false
     end
+
+    # Native-CI pool reliability: a warming member enrolled onto an SDWAN
+    # overlay must not become acquirable until its WireGuard tunnel is live,
+    # otherwise a dispatched build's `git clone git.powernode.org` (an
+    # overlay-only address) times out on a still-isolating builder.
+    context "SDWAN overlay reachability gate" do
+      let(:i) do
+        create(:system_node_instance, node: node,
+               instance_pool_id: pool.id, pool_state: "warming")
+      end
+
+      it "holds warming when an enrolled peer has not yet handshaked" do
+        create(:sdwan_peer, node_instance: i, account: account) # status pending, last_handshake_at nil
+        expect(i.mark_pool_ready!).to be false
+        expect(i.reload.pool_state).to eq("warming")
+      end
+
+      it "holds warming when the peer's handshake is stale (tunnel dropped)" do
+        create(:sdwan_peer, node_instance: i, account: account,
+               last_handshake_at: (Sdwan::Peer::HEALTHY_HANDSHAKE_WINDOW + 1.minute).ago)
+        expect(i.mark_pool_ready!).to be false
+      end
+
+      it "promotes warming → ready once the peer has a fresh handshake" do
+        create(:sdwan_peer, :active, node_instance: i, account: account)
+        expect(i.mark_pool_ready!).to be true
+        expect(i.reload.pool_state).to eq("ready")
+      end
+    end
   end
 
   describe "DB-level pool_state CHECK constraint" do
