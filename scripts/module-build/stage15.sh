@@ -435,8 +435,12 @@ case "$MODULE" in
       else
         echo "[stage-1.5] hub-frontend: FRONTEND BUILD FAILED — shipping empty dist (npm output above)" >&2
       fi
-      if [ -d /tmp/parent/frontend/dist ] && [ -n "$(ls -A /tmp/parent/frontend/dist 2>/dev/null)" ]; then
-        rsync -a /tmp/parent/frontend/dist/ /tmp/fat/opt/powernode/frontend/dist/
+      # Vite's outDir is `build/` (frontend/vite.config.ts), NOT the default
+      # `dist/` — read Vite's build/ output and ship it into the Caddy-served
+      # /opt/powernode/frontend/dist. (This mismatch is why the Vite build
+      # "succeeded" yet every module shipped an empty dist.)
+      if [ -d /tmp/parent/frontend/build ] && [ -n "$(ls -A /tmp/parent/frontend/build 2>/dev/null)" ]; then
+        rsync -a /tmp/parent/frontend/build/ /tmp/fat/opt/powernode/frontend/dist/
         echo "[stage-1.5] hub-frontend: dist shipped ($(find /tmp/fat/opt/powernode/frontend/dist -type f | wc -l) files)" >&2
       else
         echo "[stage-1.5] hub-frontend: dist EMPTY after build" >&2
