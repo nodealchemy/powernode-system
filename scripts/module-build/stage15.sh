@@ -401,22 +401,48 @@ case "$MODULE" in
     echo "=== hub-worker vendored cache: $(ls /tmp/fat/opt/powernode/worker/vendor/cache/*.gem 2>/dev/null | wc -l) gems ==="
     ;;
   powernode-hub-frontend)
-    # Vite build needs node — install if missing. dist/ is
-    # one of two deliverables (the other is the Caddy static
-    # server below); if the Vite build fails the module still
-    # ships (just with an empty dist that Caddy 404s on).
+    # The Vite build needs a modern Node — the frontend's package.json engines
+    # require >=24.9.0. Noble's apt `nodejs` is v18 with NO npm (see the
+    # runtime-node arm above), which is why the old `apt-get install nodejs npm`
+    # path here ALWAYS failed `command -v npm` and shipped an empty dist. Instead
+    # fetch the same pinned prebuilt Node the runtime-node arm ships — but onto
+    # the BUILDER (/opt/node-build, not the shipped rootfs) — and build with it.
+    # dist/ is one of two deliverables (the Caddy static server below is the
+    # other); a build failure still ships the module with an empty dist that
+    # Caddy 404s on rather than failing the whole module. Every build diagnostic
+    # goes to stderr (>&2) so it rides the task's stderr log_tail for diagnosis;
+    # each fetch/build step is guarded so a failure degrades to empty-dist under
+    # `set -e` instead of aborting the module.
     mkdir -p /tmp/fat/opt/powernode/frontend/dist
     if ! command -v npm >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get install -y --no-install-recommends nodejs npm || true
+      FE_NODE_VER=$(jq -r '.build.node_version // "24.13.0"' /tmp/manifest.json)
+      # KEEP IN SYNC with the runtime-node arm's NODE_SHA256 (same tarball).
+      FE_NODE_SHA256="6223aad1a81f9d1e7b682c59d12e2de233f7b4c37475cd40d1c89c42b737ffa8"
+      echo "[stage-1.5] hub-frontend: fetching pinned node v${FE_NODE_VER} onto the builder for the Vite build" >&2
+      if curl -fsSL "https://nodejs.org/dist/v${FE_NODE_VER}/node-v${FE_NODE_VER}-linux-x64.tar.gz" -o /tmp/node-build.tar.gz \
+         && echo "${FE_NODE_SHA256}  /tmp/node-build.tar.gz" | sha256sum -c - >&2 \
+         && mkdir -p /opt/node-build \
+         && tar -xzf /tmp/node-build.tar.gz -C /opt/node-build --strip-components=1; then
+        export PATH="/opt/node-build/bin:$PATH"
+      else
+        echo "[stage-1.5] hub-frontend: node fetch/verify FAILED — shipping empty dist" >&2
+      fi
     fi
     if command -v npm >/dev/null 2>&1 && [ -f /tmp/parent/frontend/package.json ]; then
-      (cd /tmp/parent/frontend && npm ci --no-audit --prefer-offline 2>&1 | tail -20 && npm run build 2>&1 | tail -20) || echo "frontend build failed — shipping empty dist"
-      if [ -d /tmp/parent/frontend/dist ]; then
+      echo "[stage-1.5] hub-frontend: node=$(node -v 2>&1) npm=$(npm -v 2>&1) — running npm ci + build" >&2
+      if ( cd /tmp/parent/frontend && npm ci --no-audit && npm run build ) 1>&2; then
+        echo "[stage-1.5] hub-frontend: Vite build succeeded" >&2
+      else
+        echo "[stage-1.5] hub-frontend: FRONTEND BUILD FAILED — shipping empty dist (npm output above)" >&2
+      fi
+      if [ -d /tmp/parent/frontend/dist ] && [ -n "$(ls -A /tmp/parent/frontend/dist 2>/dev/null)" ]; then
         rsync -a /tmp/parent/frontend/dist/ /tmp/fat/opt/powernode/frontend/dist/
+        echo "[stage-1.5] hub-frontend: dist shipped ($(find /tmp/fat/opt/powernode/frontend/dist -type f | wc -l) files)" >&2
+      else
+        echo "[stage-1.5] hub-frontend: dist EMPTY after build" >&2
       fi
     else
-      echo "no npm or no frontend package.json — shipping empty dist"
+      echo "[stage-1.5] hub-frontend: no npm/node available — shipping empty dist" >&2
     fi
     # Traefik (reverse-proxy-traefik) has no static-file-serving mode —
     # it's a reverse proxy only. Something has to actually listen on
