@@ -60,7 +60,17 @@ module System
   class NativeModuleBuildOrchestrator
     DEFAULT_POOL_NAME               = "ci-native-builders-amd64"
     DEFAULT_MAX_CONCURRENT_BUILDERS = 2
-    DEFAULT_MAX_ATTEMPTS            = 2
+    # 3 total dispatch attempts = up to 2 retries. A FAILED ci.module_build
+    # task (any non-`complete` terminal state — incl. a git-clone/connectivity
+    # exit-128) routes through #attempt_retry!, which re-queues the module with
+    # a nil lease/task so the next #try_dispatch_queued! re-leases a FRESH
+    # builder (acquire_lease → a different ready pool member). That is the
+    # resilience for a transient per-builder networking hiccup (one builder
+    # momentarily can't reach git.powernode.org over its bridge) that its peers
+    # don't share; raised from 2 → 3 so a second, still-transient failure gets
+    # one more fresh builder rather than burning the module. Overridable via
+    # SiteSetting("system.module_builds.max_attempts").
+    DEFAULT_MAX_ATTEMPTS            = 3
 
     TERMINAL_MODULE_STATES = %w[succeeded failed].freeze
 
@@ -480,6 +490,14 @@ module System
         return false
       end
 
+      # Re-sync ModuleService (+ file_spec/etc) from the manifest — see
+      # #apply_module_manifest! for why ModulePublicationProcessor's own
+      # refresh_manifest! is a no-op on this path. Skipped for a package
+      # batch: a materialized package module has no modules/<slug>/
+      # manifest.yaml on disk (apply_package_file_spec! above is its only
+      # spec source).
+      apply_module_manifest!(node_module, slug) unless package_batch?
+
       emit_event("system.module_build_batch_module_succeeded", module: node_module.name, tag: entry["tag"])
       true
     end
@@ -519,6 +537,65 @@ module System
 
     def find_node_module(slug)
       @account.system_node_modules.find_by(name: slug)
+    end
+
+    # Re-applies the module's own manifest.yaml via ManifestImportService —
+    # the SAME sync module_publications_controller#apply_manifest_yaml runs
+    # for a Gitea-webhook publish. Without this, ModulePublicationProcessor
+    # #process!'s own refresh_manifest! (System::ManifestFetchService) is a
+    # no-op on this path: it fetches via node_module.gitea_repo_full_name,
+    # which is BLANK for every platform module (only the 5 custom per-repo
+    # modules populate it — see #oci_repo_path) — so a natively-built
+    # platform module's ModuleService/file_spec/etc rows never sync, and the
+    # agent generates no systemd unit for its `services:` block (confirmed
+    # live on ops-hub: hub-frontend's `caddy` service never got a unit; only
+    # the Gitea-built postgres/redis/traefik services did, since those
+    # publish through the webhook path — see module_publications_controller.rb).
+    #
+    # Reads the CURRENT on-disk source-tree manifest — NOT pinned to this
+    # build's exact head_sha. A checkout resolvable at an arbitrary
+    # historical sha doesn't exist anywhere in this codebase today: the
+    # leased builder's own checkout is ephemeral and gone by the time this
+    # runs, and even ModuleBuildPlannerService's diff (a much lighter read)
+    # goes through the Gitea compare API rather than a local git op for the
+    # same reason (see that class's doc comment). Same root
+    # PlatformModuleManifestLoader uses for the seed catalog, so this stays
+    # a single source of truth for "where does a platform module's
+    # manifest.yaml live on this box."
+    #
+    # Non-fatal by design, mirroring #apply_package_file_spec! above: a
+    # manifest apply failure (missing file, schema drift, validation error)
+    # does NOT fail the module build — the erofs artifact already published
+    # successfully, so the build itself succeeded; only the ModuleService/
+    # spec sync is affected, and the operator needs a loud log line, not a
+    # retried build (retrying can't fix a bad manifest).
+    def apply_module_manifest!(node_module, slug)
+      yaml = read_platform_module_manifest(slug)
+      if yaml.blank?
+        Rails.logger.warn("[NativeModuleBuildOrchestrator] no on-disk manifest.yaml for #{slug} under " \
+                          "#{::System::PlatformModuleManifestLoader::DEFAULT_ROOT} — ModuleService/spec " \
+                          "rows NOT re-synced for this native publish")
+        return
+      end
+
+      result = ::System::ManifestImportService.import!(node_module: node_module, yaml: yaml)
+      return if result.ok?
+
+      msg = "manifest apply failed for #{slug}: #{result.error}"
+      msg += " — validation: #{Array(result.validation_errors).join('; ')}" if Array(result.validation_errors).any?
+      Rails.logger.error("[NativeModuleBuildOrchestrator] #{msg}")
+    rescue StandardError => e
+      Rails.logger.error("[NativeModuleBuildOrchestrator] manifest apply crashed for #{slug}: #{e.class}: #{e.message}")
+    end
+
+    def read_platform_module_manifest(slug)
+      path = ::File.join(::System::PlatformModuleManifestLoader::DEFAULT_ROOT, slug, "manifest.yaml")
+      return nil unless ::File.file?(path)
+
+      ::File.read(path)
+    rescue ::SystemCallError => e
+      Rails.logger.warn("[NativeModuleBuildOrchestrator] manifest read failed for #{slug}: #{e.message}")
+      nil
     end
 
     # === Package-build (campaign 019f6084 inc2 §4.3.2) ===
