@@ -108,8 +108,11 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-BUILDENV_GOLDEN="/opt/buildenv"
-BUILD_SCRIPTS="/opt/module-build"
+# Both default to the paths the module-forge module bakes them at; overridable
+# for a fork that bakes elsewhere, and for hermetic testing of this script's
+# control flow (same env-override pattern as MODULE_FORGE_JOB_ROOT below).
+BUILDENV_GOLDEN="${MODULE_FORGE_BUILDENV_GOLDEN:-/opt/buildenv}"
+BUILD_SCRIPTS="${MODULE_FORGE_BUILD_SCRIPTS:-/opt/module-build}"
 
 log()  { echo "[$SCRIPT_NAME] $*" >&2; }
 die()  { echo "$SCRIPT_NAME: error: $*" >&2; exit 2; }
@@ -258,6 +261,25 @@ fi
 
 MFPATH="$WORKSPACE_HOST/modules/$MODULE/manifest.yaml"
 [ -f "$MFPATH" ] || die "no modules/$MODULE/manifest.yaml at ${BUILD_SHA} in ${MODULE_SOURCE_URL}"
+
+# --- Build scripts: prefer the ones checked out at BUILD_SHA over the baked
+# /opt/module-build. The module-forge module bakes scripts/module-build/* into
+# /opt/module-build at ITS OWN build time (see manifest.yaml), so a build "at
+# BUILD_SHA" that runs the baked stage1/stage15/stage2/push scripts silently
+# uses whatever commit the forge was last built from — NOT the requested sha —
+# producing artifacts that don't reflect BUILD_SHA. The workspace we just
+# cloned already carries scripts/module-build/ at BUILD_SHA, and
+# build-one-module.sh resolves its sibling stage scripts relative to itself
+# (SCRIPT_DIR), so re-pointing at this directory makes the WHOLE stage chain
+# reflect the requested commit. Fall back to the baked copy only when the
+# checkout genuinely lacks them (a sha/fork predating the script extraction).
+WS_BUILD_SCRIPTS="$WORKSPACE_HOST/scripts/module-build"
+if [ -x "$WS_BUILD_SCRIPTS/build-one-module.sh" ] && [ -x "$WS_BUILD_SCRIPTS/push.sh" ]; then
+  BUILD_SCRIPTS="$WS_BUILD_SCRIPTS"
+  log "using build scripts checked out at ${BUILD_SHA} (${WS_BUILD_SCRIPTS})"
+else
+  log "WARNING: no scripts/module-build/ at ${BUILD_SHA} in the checkout — falling back to baked ${BUILD_SCRIPTS}"
+fi
 
 # --- APT_SNAPSHOT: assertion, not a mutator (see file header). Best-effort
 # grep/sed — this host layer deliberately carries no YAML parser (see
