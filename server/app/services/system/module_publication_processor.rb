@@ -195,9 +195,10 @@ module System
     # resolves (agents read node_module.current_version&.artifact; the
     # drift sensor + system_fleet_tool key off current_version&.oci_digest).
     def promote_current_version(node_module, version)
-      return if node_module.current_version_id == version.id
-
-      node_module.update_columns(current_version_id: version.id, updated_at: Time.current)
+      # Writes current_version_id AND the denormalized current_version_number
+      # atomically (idempotent) — never just the id, which drifts the number the
+      # drift sensor / fleet reconciler / UI read. See NodeModule#promote_to_version!.
+      node_module.promote_to_version!(version)
     end
 
     def register_skills_for(node_module)

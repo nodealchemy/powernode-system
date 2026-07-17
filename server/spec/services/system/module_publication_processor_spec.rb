@@ -35,6 +35,18 @@ RSpec.describe System::ModulePublicationProcessor do
       expect(node_module.reload.current_version_id).to eq(result.node_module_version.id)
     end
 
+    # Regression (imp 019f6d9a): a promoting publish must advance BOTH the FK and
+    # the denormalized current_version_number together — the old id-only write
+    # drifted the number the drift sensor / fleet reconciler / UI read.
+    it "promote: true advances current_version_number in lockstep with current_version_id" do
+      result = described_class.process!(node_module: node_module, tag: "abc1234")
+      node_module.reload
+
+      expect(node_module.current_version_id).to eq(result.node_module_version.id)
+      expect(node_module.current_version_number).to eq(result.node_module_version.version_number)
+      expect(node_module.current_version_number).to be_positive
+    end
+
     it "promote: false ingests + records a version WITHOUT advancing current_version_id" do
       result = described_class.process!(node_module: node_module, tag: "native-abc1234", promote: false)
 

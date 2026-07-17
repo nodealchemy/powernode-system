@@ -25,6 +25,40 @@ RSpec.describe 'System::NodeModule versioning', type: :model do
     end
   end
 
+  # Regression (imp 019f6d9a): promotion must advance the denormalized
+  # current_version_number in lockstep with current_version_id. The old
+  # id-only writes left the number at its default while the id moved — the
+  # drift the sensor / fleet reconciler / UI mis-read.
+  describe 'current_version_number consistency' do
+    let!(:version) { create(:system_node_module_version, node_module: node_module, version_number: 7) }
+
+    describe '#promote_to_version!' do
+      it 'writes current_version_id AND current_version_number in one atomic update' do
+        expect(node_module.promote_to_version!(version)).to be true
+
+        node_module.reload
+        expect(node_module.current_version_id).to eq(version.id)
+        expect(node_module.current_version_number).to eq(7)
+      end
+
+      it 'is idempotent — a no-op (false) when the version is already current' do
+        node_module.promote_to_version!(version)
+        expect(node_module.promote_to_version!(version)).to be false
+      end
+
+      it 'returns false and writes nothing when handed nil' do
+        expect(node_module.promote_to_version!(nil)).to be false
+        expect(node_module.reload.current_version_id).to be_nil
+      end
+    end
+
+    it 'self-heals a normal save that flips only current_version_id (before_save guard)' do
+      node_module.update!(current_version_id: version.id)
+
+      expect(node_module.reload.current_version_number).to eq(7)
+    end
+  end
+
   describe 'locking behavior' do
     describe '#locked?' do
       it 'returns false by default' do

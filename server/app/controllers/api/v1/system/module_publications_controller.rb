@@ -152,9 +152,10 @@ module Api
           # Operators who want gated rollout should pin via the rolling-
           # upgrade orchestrator (per-template canary windows), not by
           # withholding current_version_id at the module level.
-          unless node_module.current_version_id == version.id
-            node_module.update_columns(current_version_id: version.id, updated_at: Time.current)
-          end
+          # Promote via the model's single-writer so current_version_number is
+          # written alongside current_version_id (idempotent) — an id-only flip
+          # drifts the denormalized number the fleet/agent/UI read.
+          node_module.promote_to_version!(version)
 
           emit_published_event(node_module, version, tag)
 

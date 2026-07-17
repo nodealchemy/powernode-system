@@ -229,6 +229,13 @@ module System
     before_validation :encode_specs
     before_update :check_lock_status, if: :will_save_change_to_versioned_attributes?
     after_update :auto_create_version, if: :saved_change_to_versioned_attributes?
+    # Keep the denormalized current_version_number in lockstep with
+    # current_version_id on every save/update path that touches the version
+    # linkage, so the two can never drift (the drift sensor, fleet reconciler,
+    # and UI all read the denormalized number). update_columns bypasses this
+    # callback — the sanctioned atomic writer for that path is #promote_to_version!.
+    before_save :sync_current_version_number,
+                if: -> { current_version_id.present? && (will_save_change_to_current_version_id? || will_save_change_to_current_version_number?) }
 
     # === Methods ===
 
@@ -482,6 +489,25 @@ module System
       version_service(current_user: user).rollback_to_previous
     end
 
+    # Sanctioned single-writer for current-version promotion. Writes BOTH the
+    # current_version_id FK and the denormalized current_version_number in ONE
+    # atomic update_columns so the two can never drift (the drift sensor, fleet
+    # reconciler, and UI all read the denormalized number). update_columns is
+    # deliberate — promotion is a post-publish bookkeeping flip that must not
+    # fire validations/versioning callbacks mid-publish, matching the inline
+    # update_columns writes it replaces. Idempotent: a no-op (returns false)
+    # when handed nil or the version is already current.
+    def promote_to_version!(version)
+      return false if version.nil? || current_version_id == version.id
+
+      update_columns(
+        current_version_id: version.id,
+        current_version_number: version.version_number,
+        updated_at: Time.current
+      )
+      true
+    end
+
     # Check if module has any versions
     def versioned?
       versions.exists?
@@ -517,6 +543,23 @@ module System
     end
 
     private
+
+    # Self-heals current_version_number to match the version_number of whatever
+    # current_version_id is being saved, so the two never drift. Corrects rather
+    # than rejects, so it never blocks an unrelated update on an already-drifted
+    # row. Resolves by the id VALUE being saved (falling back to a lightweight
+    # lookup when the cached association is stale/for a different id), not a
+    # possibly-stale loaded association. The update_columns fast path
+    # (#promote_to_version!) writes both columns itself and bypasses this callback.
+    def sync_current_version_number
+      loaded = association(:current_version).loaded? ? current_version : nil
+      number = if loaded && loaded.id == current_version_id
+                 loaded.version_number
+               else
+                 ::System::NodeModuleVersion.where(id: current_version_id).pick(:version_number)
+               end
+      self.current_version_number = number if number && current_version_number != number
+    end
 
     # === Spec encoding / decoding (legacy node_module.rb:304-321) ===
     # All four glob-spec fields are stored as Array<String> where each String
