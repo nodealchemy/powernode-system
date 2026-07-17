@@ -51,18 +51,20 @@ RSpec.describe System::ModuleBuildPlannerService do
   let(:head_sha) { "b" * 40 }
   let(:all_module_names) { %w[base-os hub-backend postgres-primary postgres-replica powernode-system-base redis] }
 
-  # Stubs a single synthetic commit (head_sha) touching the given paths —
-  # mirrors the bash fixture's "one commit, N changed paths" shape. The changed
-  # files ride on the compare response itself now (the planner reads
-  # comparison[:files] directly; the old per-commit get_commit_diff walk was a
-  # workaround for the core client discarding that field).
+  # Stubs a single synthetic commit (head_sha) touching the given paths. Mirrors
+  # the REAL live Gitea shape (confirmed by probe): the compare API returns only
+  # {commits,total_commits} — NO files array — so the planner enumerates the
+  # commits and reads each commit's own changed files via #get_commit.
   def stub_changed_paths(paths, source_repo: "powernode/powernode-system")
     owner, repo = source_repo.split("/", 2)
     fake_client = instance_double(Devops::Git::GiteaApiClient)
     allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
     allow(fake_client).to receive(:compare_commits)
       .with(owner, repo, base_sha, head_sha)
-      .and_return(commits: [ { sha: head_sha } ], files: paths.map { |p| { filename: p } })
+      .and_return(commits: [ { sha: head_sha } ])
+    allow(fake_client).to receive(:get_commit)
+      .with(owner, repo, head_sha)
+      .and_return(files: paths.map { |p| { filename: p } })
     fake_client
   end
 
@@ -192,19 +194,39 @@ RSpec.describe System::ModuleBuildPlannerService do
       }.to raise_error(System::ModuleBuildPlannerService::PlanningError, /Gitea compare/)
     end
 
-    # HARD-FAIL guard: a real commit range that returns zero changed files is the
-    # silent-diff-failure signature the whole increment exists to catch — the
-    # batch must fail loudly instead of "succeeding" having built nothing.
+    # HARD-FAIL guard: a real commit range that returns zero changed files (via
+    # both the compare list AND the per-commit walk) is the silent-diff-failure
+    # signature the whole increment exists to catch — the batch must fail loudly
+    # instead of "succeeding" having built nothing.
     it "raises PlanningError when a real commit range yields zero changed files" do
       fake_client = instance_double(Devops::Git::GiteaApiClient)
       allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
       allow(fake_client).to receive(:compare_commits)
         .with("powernode", "powernode-system", base_sha, head_sha)
-        .and_return(commits: [ { sha: head_sha } ], files: [])
+        .and_return(commits: [ { sha: head_sha } ])
+      allow(fake_client).to receive(:get_commit)
+        .with("powernode", "powernode-system", head_sha)
+        .and_return(files: [])
 
       expect {
         described_class.plan(base_sha: base_sha, head_sha: head_sha)
       }.to raise_error(System::ModuleBuildPlannerService::PlanningError, /zero changed files/)
+    end
+  end
+
+  describe "compare-files forward-compat fast path (imp 019f71e3)" do
+    # Today's Gitea omits a top-level files[] on compare; if a future version
+    # adds it, the planner uses it directly and skips the per-commit walk.
+    it "derives changed paths from the compare response's files when present, without walking commits" do
+      fake_client = instance_double(Devops::Git::GiteaApiClient)
+      allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
+      allow(fake_client).to receive(:compare_commits)
+        .with("powernode", "powernode-system", base_sha, head_sha)
+        .and_return(commits: [ { sha: head_sha } ], files: [ { filename: "modules/redis/rootfs/marker" } ])
+      expect(fake_client).not_to receive(:get_commit)
+
+      plan = described_class.plan(base_sha: base_sha, head_sha: head_sha)
+      expect(modules_in(plan)).to eq(%w[hub-backend redis])
     end
   end
 end

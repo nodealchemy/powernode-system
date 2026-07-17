@@ -165,14 +165,17 @@ module System
       ::System::NodeModule.where(id: closure_ids.to_a).pluck(:name).to_set
     end
 
-    # Changed paths for base_sha..head_sha via the Gitea compare API, without a
-    # checkout. Reads the compare response's affected-files list directly —
-    # Devops::Git::GiteaApiClient#compare_commits now surfaces it (the per-commit
-    # get_commit_diff walk this used to do was a workaround for that client
-    # discarding `files` as an unconditional [], fixed in core). `source_repo`
-    # overrides the default manifest repo (#ci_build_source_repo) so a build
-    # dispatched for a CORE (powernode-platform) change diffs the repo the change
-    # actually lives in — diffing the wrong repo silently planned 0 modules.
+    # Changed paths for base_sha..head_sha, without a checkout. Empirically
+    # (live probe, 2026-07-17) today's Gitea compare API returns ONLY
+    # {commits,total_commits} — no top-level `files` array — and the raw `.diff`
+    # endpoint that Devops::Git::GiteaApiClient#get_commit_diff walks 404s, so
+    # neither yields changed files. The reliable source is each commit's own
+    # /git/commits/<sha> detail, whose `files[]` array #get_commit surfaces. So:
+    # compare to enumerate the range's commit shas, then union each commit's own
+    # changed filenames. `source_repo` overrides the default manifest repo
+    # (#ci_build_source_repo) so a build dispatched for a CORE (powernode-platform)
+    # change diffs the repo the change actually lives in — diffing the wrong repo
+    # silently planned 0 modules.
     def changed_paths_for(account, base_sha, head_sha, source_repo)
       credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
       raise PlanningError, "no active Gitea credential resolvable for account #{account.id}" unless credential
@@ -183,16 +186,28 @@ module System
 
       comparison = client.compare_commits(owner, repo, base_sha, head_sha)
       commits = Array(comparison && comparison[:commits])
-      files   = Array(comparison && comparison[:files]).filter_map { |f| f[:filename] }.uniq
+      return [] if commits.empty? # base == head / nothing pushed — a legit no-op
 
-      # HARD-FAIL guard (imp 019f71e2 / 019f71e3): a non-empty commit range that
-      # yields ZERO changed files is the silent-diff-failure signature — a real
-      # commit always changes >= 1 file, so an empty file set here means the diff
-      # fetch failed or the wrong repo was compared, NOT "nothing to build".
-      # Refuse to plan off it: building nothing while reporting success is exactly
-      # the bug this guard exists to prevent. (An empty commit RANGE — base == head
-      # or no commits — is a legitimate no-op and still returns [].)
-      if commits.any? && files.empty?
+      # Forward-compat fast path: if a future Gitea populates the compare's own
+      # affected-files list (#compare_commits maps it when present), use it and
+      # skip the per-commit round-trips. Empty on today's Gitea.
+      files = Array(comparison[:files]).filter_map { |f| f[:filename] }.uniq
+
+      if files.empty?
+        # Today's reality: union each commit's own /git/commits/<sha> files[]
+        # (#get_commit). A failed detail fetch RAISES (ApiError) — caught below
+        # and surfaced as a hard PlanningError, never a silent empty change.
+        files = commits.filter_map { |c| c[:sha] }.flat_map do |sha|
+          detail = client.get_commit(owner, repo, sha)
+          Array(detail && detail[:files]).filter_map { |f| f[:filename] }
+        end.uniq
+      end
+
+      # HARD-FAIL guard (imp 019f71e2 / 019f71e3): a real commit range that yields
+      # ZERO changed files across BOTH the compare list and the per-commit walk is
+      # the silent-diff-failure signature — refuse to plan an empty build off it
+      # (building nothing while reporting success is the bug this guard prevents).
+      if files.empty?
         raise PlanningError,
               "Gitea compare of #{repo_full_name} #{base_sha.to_s[0, 7]}..#{head_sha.to_s[0, 7]} returned " \
               "#{commits.size} commit(s) but zero changed files — refusing to plan an empty build " \
