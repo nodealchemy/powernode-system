@@ -69,19 +69,24 @@ module System
       #   reference despite the key name).
       # @param force_all [Boolean] skip the diff entirely and plan every
       #   module with a manifest (manual full-rebuild / CVE sweep).
+      # @param source_repo [String, nil] "<owner>/<repo>" whose modules/<slug>
+      #   tree the base_sha..head_sha diff is taken against. nil → the default
+      #   manifest repo (#ci_build_source_repo). A build dispatched for a CORE
+      #   (powernode-platform) change MUST pass the core repo here — diffing the
+      #   default manifest repo for a core sha range silently plans 0 modules.
       # @return [Array<Hash>] [{ module: "<slug>", oci_ref: "<tag>" }, ...]
       #   sorted by module slug. Empty array = nothing to build.
       # @raise [PlanningError] the plan could not be computed (no account,
-      #   no Gitea credential, or the Gitea compare API call failed) — a
-      #   raised error must NOT be treated as "empty plan" by the caller;
-      #   silently planning zero modules on a failed diff would be worse
-      #   than surfacing the failure.
-      def plan(base_sha:, head_sha:, force_all: false)
-        new.plan(base_sha: base_sha, head_sha: head_sha, force_all: force_all)
+      #   no Gitea credential, the Gitea compare API call failed, or a real
+      #   commit range yielded zero changed files) — a raised error must NOT be
+      #   treated as "empty plan" by the caller; silently planning zero modules
+      #   on a failed diff would be worse than surfacing the failure.
+      def plan(base_sha:, head_sha:, force_all: false, source_repo: nil)
+        new.plan(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo)
       end
     end
 
-    def plan(base_sha:, head_sha:, force_all: false)
+    def plan(base_sha:, head_sha:, force_all: false, source_repo: nil)
       account = resolve_account
       raise PlanningError, "no account resolvable" unless account
 
@@ -89,7 +94,7 @@ module System
       catch_all = force_all
 
       unless catch_all
-        changed_paths_for(account, base_sha, head_sha).each do |path|
+        changed_paths_for(account, base_sha, head_sha, source_repo).each do |path|
           if path.match?(CATCH_ALL_TRIGGER_RX)
             catch_all = true
             next
@@ -160,29 +165,41 @@ module System
       ::System::NodeModule.where(id: closure_ids.to_a).pluck(:name).to_set
     end
 
-    # Changed paths for base_sha..head_sha via the Gitea compare API,
-    # without a checkout. NOTE: Devops::Git::GiteaApiClient#compare_commits
-    # normalizes its `files` field as an unconditional empty array (observed
-    # gap, not fixed here — core file, out of scope for this extension-only
-    # increment; flagged for a follow-up). Its `commits` ARE populated with
-    # real shas, so this walks each commit's own diff via #get_commit_diff
-    # (which parses the raw unified-diff text directly and is reliable) and
-    # unions the changed filenames across the range.
-    def changed_paths_for(account, base_sha, head_sha)
+    # Changed paths for base_sha..head_sha via the Gitea compare API, without a
+    # checkout. Reads the compare response's affected-files list directly —
+    # Devops::Git::GiteaApiClient#compare_commits now surfaces it (the per-commit
+    # get_commit_diff walk this used to do was a workaround for that client
+    # discarding `files` as an unconditional [], fixed in core). `source_repo`
+    # overrides the default manifest repo (#ci_build_source_repo) so a build
+    # dispatched for a CORE (powernode-platform) change diffs the repo the change
+    # actually lives in — diffing the wrong repo silently planned 0 modules.
+    def changed_paths_for(account, base_sha, head_sha, source_repo)
       credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
       raise PlanningError, "no active Gitea credential resolvable for account #{account.id}" unless credential
 
+      repo_full_name = source_repo.presence || ci_build_source_repo
       client = ::Devops::Git::ApiClient.for(credential)
-      owner, repo = ci_build_source_repo.split("/", 2)
+      owner, repo = repo_full_name.split("/", 2)
 
       comparison = client.compare_commits(owner, repo, base_sha, head_sha)
-      shas = Array(comparison && comparison[:commits]).filter_map { |c| c[:sha] }.uniq
-      return [] if shas.empty?
+      commits = Array(comparison && comparison[:commits])
+      files   = Array(comparison && comparison[:files]).filter_map { |f| f[:filename] }.uniq
 
-      shas.flat_map do |sha|
-        diff = client.get_commit_diff(owner, repo, sha)
-        Array(diff && diff[:files]).filter_map { |f| f[:filename] }
-      end.uniq
+      # HARD-FAIL guard (imp 019f71e2 / 019f71e3): a non-empty commit range that
+      # yields ZERO changed files is the silent-diff-failure signature — a real
+      # commit always changes >= 1 file, so an empty file set here means the diff
+      # fetch failed or the wrong repo was compared, NOT "nothing to build".
+      # Refuse to plan off it: building nothing while reporting success is exactly
+      # the bug this guard exists to prevent. (An empty commit RANGE — base == head
+      # or no commits — is a legitimate no-op and still returns [].)
+      if commits.any? && files.empty?
+        raise PlanningError,
+              "Gitea compare of #{repo_full_name} #{base_sha.to_s[0, 7]}..#{head_sha.to_s[0, 7]} returned " \
+              "#{commits.size} commit(s) but zero changed files — refusing to plan an empty build " \
+              "(a requested change that maps to 0 modules is a failure, not a no-op)"
+      end
+
+      files
     rescue ::Devops::Git::ApiClient::ApiError => e
       raise PlanningError, "Gitea compare #{base_sha}..#{head_sha} failed: #{e.class}: #{e.message}"
     end

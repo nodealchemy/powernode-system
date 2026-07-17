@@ -52,16 +52,17 @@ RSpec.describe System::ModuleBuildPlannerService do
   let(:all_module_names) { %w[base-os hub-backend postgres-primary postgres-replica powernode-system-base redis] }
 
   # Stubs a single synthetic commit (head_sha) touching the given paths —
-  # mirrors the bash fixture's "one commit, N changed paths" shape.
-  def stub_changed_paths(paths)
+  # mirrors the bash fixture's "one commit, N changed paths" shape. The changed
+  # files ride on the compare response itself now (the planner reads
+  # comparison[:files] directly; the old per-commit get_commit_diff walk was a
+  # workaround for the core client discarding that field).
+  def stub_changed_paths(paths, source_repo: "powernode/powernode-system")
+    owner, repo = source_repo.split("/", 2)
     fake_client = instance_double(Devops::Git::GiteaApiClient)
     allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
     allow(fake_client).to receive(:compare_commits)
-      .with("powernode", "powernode-system", base_sha, head_sha)
-      .and_return(commits: [ { sha: head_sha } ])
-    allow(fake_client).to receive(:get_commit_diff)
-      .with("powernode", "powernode-system", head_sha)
-      .and_return(files: paths.map { |p| { filename: p } })
+      .with(owner, repo, base_sha, head_sha)
+      .and_return(commits: [ { sha: head_sha } ], files: paths.map { |p| { filename: p } })
     fake_client
   end
 
@@ -154,6 +155,23 @@ RSpec.describe System::ModuleBuildPlannerService do
     end
   end
 
+  describe "repo-aware source (imp 019f71e2)" do
+    it "diffs the caller-specified source_repo instead of the default manifest repo" do
+      # The stub only answers for powernode-platform; a call against the default
+      # manifest repo (powernode-system) would not match and raise, so this test
+      # fails unless the source_repo is actually threaded through to the compare.
+      stub_changed_paths([ "modules/redis/rootfs/marker" ], source_repo: "powernode/powernode-platform")
+      plan = described_class.plan(base_sha: base_sha, head_sha: head_sha, source_repo: "powernode/powernode-platform")
+      expect(modules_in(plan)).to eq(%w[hub-backend redis])
+    end
+
+    it "falls back to the default manifest repo when source_repo is nil" do
+      fake = stub_changed_paths([ "modules/redis/rootfs/marker" ])
+      described_class.plan(base_sha: base_sha, head_sha: head_sha)
+      expect(fake).to have_received(:compare_commits).with("powernode", "powernode-system", base_sha, head_sha)
+    end
+  end
+
   describe "planning failures surface, rather than silently returning an empty plan" do
     it "raises PlanningError when the account has no active Gitea credential" do
       gitea_credential.update!(is_active: false)
@@ -172,6 +190,21 @@ RSpec.describe System::ModuleBuildPlannerService do
       expect {
         described_class.plan(base_sha: base_sha, head_sha: head_sha)
       }.to raise_error(System::ModuleBuildPlannerService::PlanningError, /Gitea compare/)
+    end
+
+    # HARD-FAIL guard: a real commit range that returns zero changed files is the
+    # silent-diff-failure signature the whole increment exists to catch — the
+    # batch must fail loudly instead of "succeeding" having built nothing.
+    it "raises PlanningError when a real commit range yields zero changed files" do
+      fake_client = instance_double(Devops::Git::GiteaApiClient)
+      allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
+      allow(fake_client).to receive(:compare_commits)
+        .with("powernode", "powernode-system", base_sha, head_sha)
+        .and_return(commits: [ { sha: head_sha } ], files: [])
+
+      expect {
+        described_class.plan(base_sha: base_sha, head_sha: head_sha)
+      }.to raise_error(System::ModuleBuildPlannerService::PlanningError, /zero changed files/)
     end
   end
 end

@@ -116,8 +116,14 @@ module System
     # persists the flag so System::NativeModuleBuildOrchestrator#advance!
     # knows to publish with promote: false (System::ModulePublicationProcessor)
     # instead of the normal promote-on-publish default.
-    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false)
+    # source_repo: the "<owner>/<repo>" the base_sha..head_sha diff was planned
+    # against (nil → the default manifest repo). Recorded in metadata for audit
+    # so an operator can see which repo a build's change set came from — a core
+    # build diffs powernode-platform, a module build the manifest repo.
+    def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil)
       plan_array = Array(plan)
+      metadata = { "plan" => plan_array.map { |p| plan_entry_metadata(p) } }
+      metadata["source_repo"] = source_repo.to_s if source_repo.present?
       create!(
         account: account,
         trigger: trigger,
@@ -131,9 +137,7 @@ module System
         # planned_count, left as the raw entry count below).
         module_slugs: plan_array.map { |p| p[:module].to_s }.uniq,
         planned_count: plan_array.size,
-        metadata: {
-          "plan" => plan_array.map { |p| plan_entry_metadata(p) }
-        }
+        metadata: metadata
       )
     end
 

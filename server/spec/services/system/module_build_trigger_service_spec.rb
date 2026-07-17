@@ -9,9 +9,9 @@ require "rails_helper"
 RSpec.describe System::ModuleBuildTriggerService do
   let!(:account) { create(:account, name: "Powernode") }
 
-  def stub_plan(modules:)
+  def stub_plan(modules:, source_repo: nil)
     allow(::System::ModuleBuildPlannerService).to receive(:plan)
-      .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false)
+      .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: source_repo)
       .and_return(modules.map { |m| { module: m, oci_ref: "headsha1" } })
   end
 
@@ -123,14 +123,30 @@ RSpec.describe System::ModuleBuildTriggerService do
     it "forwards force_all: true to the planner" do
       SiteSetting.set("system.module_builds.mode", "native")
       allow(::System::ModuleBuildPlannerService).to receive(:plan)
-        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true)
+        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true, source_repo: nil)
         .and_return([])
       stub_dispatch!(dispatched: 0)
 
       described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567", force_all: true)
 
       expect(::System::ModuleBuildPlannerService).to have_received(:plan)
-        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true)
+        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: true, source_repo: nil)
+    end
+  end
+
+  describe "source_repo passthrough (imp 019f71e2)" do
+    it "threads source_repo to the planner and records it on the batch" do
+      SiteSetting.set("system.module_builds.mode", "native")
+      stub_plan(modules: %w[mod-a], source_repo: "powernode/powernode-platform")
+      stub_dispatch!
+
+      result = described_class.trigger!(
+        base_sha: "base0000", head_sha: "headsha1234567", source_repo: "powernode/powernode-platform"
+      )
+
+      expect(::System::ModuleBuildPlannerService).to have_received(:plan)
+        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: "powernode/powernode-platform")
+      expect(result.batch.metadata["source_repo"]).to eq("powernode/powernode-platform")
     end
   end
 end

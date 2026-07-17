@@ -182,6 +182,18 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(batch.planned_count).to eq(0)
     end
 
+    # imp 019f71e2 — records the repo the base_sha..head_sha diff was planned
+    # against (a core build diffs powernode-platform, a module build the manifest
+    # repo). Absent when the caller didn't specify one (backward compatible).
+    it "records source_repo in metadata when supplied, and omits it otherwise" do
+      with_repo = described_class.create_for(account: account, plan: plan, trigger: "manual",
+                                             base_sha: "a", head_sha: "b", source_repo: "powernode/powernode-platform")
+      without = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")
+
+      expect(with_repo.metadata["source_repo"]).to eq("powernode/powernode-platform")
+      expect(without.metadata).not_to have_key("source_repo")
+    end
+
     # Campaign 019f6084 inc J — multi-arch package builds. A package plan
     # entry carries an "architecture" (PackageClosureBuildBridge#build_plan);
     # a platform plan entry (like `plan` above) never does — asserted by the

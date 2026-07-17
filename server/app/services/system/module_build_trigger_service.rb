@@ -36,8 +36,8 @@ module System
     NATIVE_TAG_PREFIX = "native-"
 
     class << self
-      def trigger!(base_sha:, head_sha:, account: nil, force_all: false)
-        new(account: account).trigger!(base_sha: base_sha, head_sha: head_sha, force_all: force_all)
+      def trigger!(base_sha:, head_sha:, account: nil, force_all: false, source_repo: nil)
+        new(account: account).trigger!(base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo)
       end
     end
 
@@ -45,7 +45,11 @@ module System
       @account = account || resolve_account
     end
 
-    def trigger!(base_sha:, head_sha:, force_all: false)
+    # @param source_repo [String, nil] "<owner>/<repo>" the base_sha..head_sha
+    #   diff is taken against (default: the manifest repo — see
+    #   System::ModuleBuildPlannerService#ci_build_source_repo). A push of a CORE
+    #   change must thread the pushed repo here so the planner diffs the right tree.
+    def trigger!(base_sha:, head_sha:, force_all: false, source_repo: nil)
       return failure("no account resolvable") unless @account
 
       mode = ::System::ModuleBuildModeResolver.current
@@ -54,9 +58,9 @@ module System
       when ::System::ModuleBuildModeResolver::GITEA
         Result.new(ok?: true, mode: mode, dispatched: false, shadow: false, batch: nil)
       when ::System::ModuleBuildModeResolver::DUAL
-        dispatch_batch(mode: mode, base_sha: base_sha, head_sha: head_sha, force_all: force_all, shadow: true)
+        dispatch_batch(mode: mode, base_sha: base_sha, head_sha: head_sha, force_all: force_all, shadow: true, source_repo: source_repo)
       when ::System::ModuleBuildModeResolver::NATIVE
-        dispatch_batch(mode: mode, base_sha: base_sha, head_sha: head_sha, force_all: force_all, shadow: false)
+        dispatch_batch(mode: mode, base_sha: base_sha, head_sha: head_sha, force_all: force_all, shadow: false, source_repo: source_repo)
       else
         # ModuleBuildModeResolver.current already folds unknown values to
         # "gitea" — this branch is unreachable in practice, kept as a
@@ -69,13 +73,15 @@ module System
 
     private
 
-    def dispatch_batch(mode:, base_sha:, head_sha:, force_all:, shadow:)
-      plan = ::System::ModuleBuildPlannerService.plan(base_sha: base_sha, head_sha: head_sha, force_all: force_all)
+    def dispatch_batch(mode:, base_sha:, head_sha:, force_all:, shadow:, source_repo:)
+      plan = ::System::ModuleBuildPlannerService.plan(
+        base_sha: base_sha, head_sha: head_sha, force_all: force_all, source_repo: source_repo
+      )
       plan = shadow ? plan.map { |p| { module: p[:module], oci_ref: "#{NATIVE_TAG_PREFIX}#{p[:oci_ref]}" } } : plan
 
       batch = ::System::ModuleBuildBatch.create_for(
         account: @account, plan: plan, trigger: "push",
-        base_sha: base_sha, head_sha: head_sha, shadow: shadow
+        base_sha: base_sha, head_sha: head_sha, shadow: shadow, source_repo: source_repo
       )
 
       ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)

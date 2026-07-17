@@ -1072,7 +1072,8 @@ module Ai
               base_sha: { type: "string", required: true, description: "Pre-push commit SHA (diff base) the planner compares from" },
               head_sha: { type: "string", required: true, description: "Post-push commit SHA (diff head); also the source of each build's short tag" },
               force_all: { type: "boolean", required: false, description: "Skip the diff and plan every module with a manifest (manual full rebuild / CVE-driven sweep). Default false." },
-              trigger: { type: "string", required: false, description: "push | manual | cve (default manual) — recorded on the batch for audit" }
+              trigger: { type: "string", required: false, description: "push | manual | cve (default manual) — recorded on the batch for audit" },
+              source_repo: { type: "string", required: false, description: "\"<owner>/<repo>\" the base_sha..head_sha diff is taken against (default: the ci_build_source_repo manifest repo). Pass the CORE repo (e.g. powernode/powernode-platform) for a core-change build so the planner diffs the tree the change actually lives in — diffing the wrong repo plans 0 modules." }
             }
           },
 
@@ -3693,13 +3694,16 @@ module Ai
         head_sha = params[:head_sha].to_s
         return error_result("base_sha and head_sha are required") if base_sha.blank? || head_sha.blank?
 
+        source_repo = params[:source_repo].presence
+
         plan = ::System::ModuleBuildPlannerService.plan(
-          base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true
+          base_sha: base_sha, head_sha: head_sha, force_all: params[:force_all] == true,
+          source_repo: source_repo
         )
 
         batch = ::System::ModuleBuildBatch.create_for(
           account: @account, plan: plan, trigger: params[:trigger].presence || "manual",
-          base_sha: base_sha, head_sha: head_sha
+          base_sha: base_sha, head_sha: head_sha, source_repo: source_repo
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)

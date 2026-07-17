@@ -3099,7 +3099,7 @@ end
   describe "system_dispatch_module_build_batch (campaign 019f5885 inc9)" do
     it "plans, creates the ModuleBuildBatch, and dispatches it via the orchestrator" do
       allow(::System::ModuleBuildPlannerService).to receive(:plan)
-        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false)
+        .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: nil)
         .and_return([ { module: "mod-a", oci_ref: "abc1234" } ])
       dispatch_result = System::NativeModuleBuildOrchestrator::Result.new(
         ok?: true, dispatched: 1, queued: 0, succeeded: 0, retried: 0, failed: 0
@@ -3123,7 +3123,7 @@ end
 
     it "passes force_all through to the planner and an explicit trigger through to the batch" do
       allow(::System::ModuleBuildPlannerService).to receive(:plan)
-        .with(base_sha: "b", head_sha: "h", force_all: true).and_return([])
+        .with(base_sha: "b", head_sha: "h", force_all: true, source_repo: nil).and_return([])
       allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
         System::NativeModuleBuildOrchestrator::Result.new(ok?: true, dispatched: 0, queued: 0, succeeded: 0, retried: 0, failed: 0)
       )
@@ -3132,6 +3132,20 @@ end
 
       expect(result[:success]).to be true
       expect(result[:data][:module_build_batch][:trigger]).to eq("cve")
+    end
+
+    it "threads source_repo through to the planner and records it on the batch (imp 019f71e2)" do
+      allow(::System::ModuleBuildPlannerService).to receive(:plan)
+        .with(base_sha: "b", head_sha: "h", force_all: false, source_repo: "powernode/powernode-platform")
+        .and_return([ { module: "mod-a", oci_ref: "abc1234" } ])
+      allow(::System::NativeModuleBuildOrchestrator).to receive(:dispatch!).and_return(
+        System::NativeModuleBuildOrchestrator::Result.new(ok?: true, dispatched: 1, queued: 0, succeeded: 0, retried: 0, failed: 0)
+      )
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h", source_repo: "powernode/powernode-platform")
+
+      expect(result[:success]).to be true
+      expect(System::ModuleBuildBatch.last.metadata["source_repo"]).to eq("powernode/powernode-platform")
     end
 
     it "requires base_sha and head_sha" do
@@ -3170,7 +3184,7 @@ end
 
       expect(defn[:parameters][:base_sha][:required]).to be true
       expect(defn[:parameters][:head_sha][:required]).to be true
-      expect(defn[:parameters].keys).to include(:force_all, :trigger)
+      expect(defn[:parameters].keys).to include(:force_all, :trigger, :source_repo)
     end
   end
 end
