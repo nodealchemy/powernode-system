@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -138,6 +139,13 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		}
 	}
 
+	// Redirect the composed union's Traefik dynamic config + certs to durable
+	// storage, when reverse-proxy-traefik is part of this boot's module set.
+	// Same rationale as the hostname/hosts block above: must happen here,
+	// before switch_root, not from either service's own startup script (see
+	// applyTraefikIngressPersistence's doc comment for the race this avoids).
+	applyTraefikIngressPersistence(sysroot, TraefikIngressPersistRoot, manifests, r.cfg.OnError)
+
 	// Render + offline-enable native units in the union (no start — systemd in
 	// the union starts them on boot after switch_root).
 	for _, mod := range stack {
@@ -184,6 +192,95 @@ func unionIdentityPaths(sysroot string) etcidentity.Paths {
 		Group:   filepath.Join(sysroot, "etc", "group"),
 		Shadow:  filepath.Join(sysroot, "etc", "shadow"),
 		Gshadow: filepath.Join(sysroot, "etc", "gshadow"),
+	}
+}
+
+// TraefikIngressPersistRoot is where the composed union's Traefik dynamic
+// config + certs are redirected so ACME-issued router/cert state survives a
+// pivot reboot. Traefik's own static config (baked read-only at build time —
+// modules/reverse-proxy-traefik's stage-1.5 build step) hardcodes `directory:
+// /etc/traefik/dynamic`; Core::IngressConfigWriter (the Rails writer that
+// actually produces the per-account dynamic YAML + certs, running inside the
+// hub-backend module) independently defaults to /etc/traefik/{dynamic,certs}
+// whenever that path exists and is writable (its ENV-var override is the
+// alternative, but repointing it there wouldn't help — Traefik itself would
+// still be watching the old, un-redirected path). Planting a symlink at that
+// shared path is therefore the fix BOTH sides pick up for free, with zero
+// Ruby/Traefik-static-config changes needed.
+const TraefikIngressPersistRoot = "/persist/powernode-traefik"
+
+// applyTraefikIngressPersistence redirects the composed union's
+// /etc/traefik/{dynamic,certs} to durable storage when reverse-proxy-traefik
+// is part of this boot's assigned module set. Without this, both dirs live
+// on the pivot root's ephemeral overlay upper — every ACME-issued cert and
+// Traefik dynamic router config (written at runtime by
+// Core::IngressConfigWriter, inside hub-backend) is lost on reboot, and the
+// HTTPS login ingress has to be manually regenerated after every reboot
+// (imp 019f6c3d — the reboot-durability gap this closes).
+//
+// This runs BEFORE switch_root (here, in the pre-pivot compose phase), not
+// from either service's own startup script: whichever of {hub-backend's
+// rails process, the traefik binary} happened to start first would
+// otherwise win a race against the other. In particular, Traefik opens its
+// dynamic-config directory watch (inotify) almost instantly at start; an
+// inotify watch tracks the inode, not the path, so if the symlink swap ran
+// later inside a service's own startup script, Traefik could already be
+// watching the STALE pre-swap directory and would silently never see
+// newly-written config until manually restarted. Running this at compose
+// time, before ANY post-pivot systemd unit starts, avoids that race
+// entirely — the same reason ApplyHostname/ApplyHosts above run here rather
+// than in a service script.
+//
+// /persist is already a live mount at this point — mounted earlier in the
+// initramfs's own persist-setup step, well before ComposeForPivot runs (see
+// cmd/powernode-agent's persist-setup / bindAndCheckSysroot) — so creating
+// the persist-backed target directories here, at the literal host path (NOT
+// sysroot-relative — /persist is a host-level mount, not part of the union
+// under construction), is safe.
+//
+// No-op when reverse-proxy-traefik isn't part of this boot's module set (a
+// hub-backend-only node has no /etc/traefik at all in the union — creating
+// one would be wrong). Best-effort otherwise: any single I/O failure surfaces
+// via onErr but never aborts the compose — a node that fails this step still
+// boots, just without durable ingress config, exactly today's status quo.
+//
+// persistRoot is TraefikIngressPersistRoot in production; parameterized
+// (rather than reading the const directly) purely for testability — mirrors
+// etcidentity.ApplyHostname/ApplyHosts taking root as a parameter.
+func applyTraefikIngressPersistence(sysroot, persistRoot string, manifests map[string]*manifest.Manifest, onErr func(stage string, err error)) {
+	if _, ok := manifests["reverse-proxy-traefik"]; !ok {
+		return
+	}
+
+	etcTraefik := filepath.Join(sysroot, "etc", "traefik")
+	if err := os.MkdirAll(etcTraefik, 0o755); err != nil {
+		onErr("compose:traefik_persist_mkdir", fmt.Errorf("%s: %w", etcTraefik, err))
+		return
+	}
+
+	for _, sub := range []string{"dynamic", "certs"} {
+		target := filepath.Join(persistRoot, sub)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			onErr("compose:traefik_persist_mkdir", fmt.Errorf("%s: %w", target, err))
+			continue
+		}
+
+		link := filepath.Join(etcTraefik, sub)
+		if cur, err := os.Readlink(link); err == nil && cur == target {
+			continue // already correct — nothing to do
+		}
+		// RemoveAll handles both "doesn't exist yet" (certs — never baked at
+		// build time) and "a real directory shipped in the read-only lower
+		// layer" (dynamic — see stage15.sh's `mkdir -p .../etc/traefik/dynamic`)
+		// identically: on the mounted overlay union this creates the whiteout
+		// automatically, same as any other rm through an overlayfs union.
+		if err := os.RemoveAll(link); err != nil {
+			onErr("compose:traefik_persist_clear", fmt.Errorf("%s: %w", link, err))
+			continue
+		}
+		if err := os.Symlink(target, link); err != nil {
+			onErr("compose:traefik_persist_symlink", fmt.Errorf("%s -> %s: %w", link, target, err))
+		}
 	}
 }
 
