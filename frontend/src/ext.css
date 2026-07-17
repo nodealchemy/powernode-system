@@ -1,0 +1,37 @@
+/* Tailwind CSS 4 utilities for the system extension's dedicated-module
+ * frontend bundle (P2 — see vite.config.build.ts's file header for the
+ * full architecture). NOT imported by register.ts or any other extension
+ * module — it's wired in as its own Rollup input (vite.config.build.ts's
+ * `build.rollupOptions.input.style`) purely so this build emits it as a
+ * hashed CSS asset core's manifest.json (`css: [...]`) can reference and
+ * <link>-inject before the bundle's `register()` runs. Untouched by core's
+ * own "eager glob" build (extensionLoader.ts) since nothing imports it.
+ *
+ * Only theme.css + utilities.css — NOT the top-level "tailwindcss" import
+ * (which also pulls in preflight.css). Core's own bundle already applies
+ * Preflight's reset exactly once; a second one here would be redundant
+ * (duplicate utilities are harmless — same rules, deduped by the cascade —
+ * but a duplicate RESET is pointless bytes for zero benefit). */
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+
+/* Core's theme-token layer: the raw --color-… / --node-…-bg custom
+ * properties (themes.css, including its .dark / [data-theme] overrides) and
+ * the @theme block that maps them onto Tailwind v4 utility names
+ * (tailwind-theme.css). Imported directly from core's own files — NOT
+ * copied — so extension markup resolves the exact same custom properties
+ * core's pages do (operator theme toggling then applies uniformly) and the
+ * two can never drift out of sync.
+ *
+ * IMPORTANT: @source below MUST stay after every @import above — CSS
+ * requires @import to precede all other rules (except @charset/@layer);
+ * an @source in between silently invalidates every @import that follows
+ * it (see core's own frontend/src/index.css, which hit exactly this and
+ * left the same warning). */
+@import '../../../../frontend/src/assets/styles/themes.css';
+@import '../../../../frontend/src/assets/styles/tailwind-theme.css';
+
+/* Explicit content scan: this extension lives outside frontend/'s own
+ * project root, so Tailwind's automatic detection can't be trusted to find
+ * it. Scoped to this extension's own src (relative to this file). */
+@source "./**/*.{ts,tsx}";
