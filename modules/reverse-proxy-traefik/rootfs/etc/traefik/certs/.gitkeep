@@ -1,0 +1,4 @@
+# Keeps /etc/traefik/certs present at boot so the serving cert can be written
+# there (or, under durable-persistence, so the symlink target exists). Traefik
+# does not scan this directory as config — it only reads cert files referenced
+# by certFile:/keyFile: in the dynamic config — so this file is never parsed.

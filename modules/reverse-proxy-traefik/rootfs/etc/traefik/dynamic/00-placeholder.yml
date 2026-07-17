@@ -1,0 +1,13 @@
+# Placeholder shipped by the reverse-proxy-traefik module so /etc/traefik/dynamic
+# EXISTS at boot. Root cause it closes (imp 019f6c3d): Traefik's file provider
+# is configured with `directory: /etc/traefik/dynamic` (watch: true); if that
+# directory is absent when traefik starts it logs
+#   ERR Cannot start the provider *file.Provider ... no such file or directory
+# and never begins watching — so any dynamic config written later (the host
+# login config from hub-backend's Core::IngressConfigWriter.ensure_host_login_
+# ingress!) is silently ignored until traefik is manually restarted.
+#
+# This file intentionally declares NO routers / services / tls — it exists only
+# to guarantee the directory is present. The real per-host login config lands in
+# a sibling 00-host-login.yaml at boot; Traefik merges both files.
+{}

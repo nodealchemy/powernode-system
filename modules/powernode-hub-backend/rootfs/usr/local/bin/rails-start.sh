@@ -208,5 +208,48 @@ else
   /usr/local/bin/bundle exec rails db:migrate
 fi
 
+# --- Ensure the host's own HTTPS login ingress for the bundled reverse proxy ---
+# Root cause this closes (imp 019f6c3d): the reverse-proxy-traefik service runs
+# `traefik` directly and never generates a dynamic config, and in extension mode
+# Core::IngressConfigWriter.write! delegates to the ACME writer, which emits
+# NOTHING without a valid System::AcmeCertificate for the hub's own hostname —
+# so the login page was 404 after every boot. ensure_host_login_ingress! writes
+# a self-signed, host-agnostic HTTPS config DIRECTLY (never touches the ACME
+# seam), so the operator can always reach the UI/API. Idempotent.
+#
+# Persistence WITHOUT a re-provision: the serving cert lives on durable /persist
+# (stable fingerprint — no per-boot churn), and the dynamic YAML is regenerated
+# here every boot into the Traefik-watched dir (deterministic, references the
+# /persist cert). Combined with the reverse-proxy-traefik module now shipping an
+# /etc/traefik/dynamic placeholder (so the file provider never crashes on a
+# missing dir), Traefik's file-watch picks this up live — no Traefik restart.
+# Only runs when the traefik module is co-located (a hub-backend-only instance
+# has no /etc/traefik to configure).
+if [ -d /etc/traefik ]; then
+  if mountpoint -q /persist 2>/dev/null; then
+    TRAEFIK_CERT_DIR=/persist/powernode-traefik/certs
+  else
+    TRAEFIK_CERT_DIR=/var/lib/powernode-traefik/certs
+  fi
+  echo "[rails-start] Ensuring host login ingress (self-signed, host-agnostic) -> $TRAEFIK_CERT_DIR"
+  mkdir -p /etc/traefik/dynamic "$TRAEFIK_CERT_DIR" || true
+  cat > /tmp/ensure-host-login-ingress.rb <<RUBY
+Core::IngressConfigWriter.ensure_host_login_ingress!(
+  dynamic_dir: "/etc/traefik/dynamic",
+  cert_dir:    "${TRAEFIK_CERT_DIR}"
+)
+RUBY
+  if POWERNODE_INGRESS_HOST="${POWERNODE_INGRESS_HOST:-$(hostname -f 2>/dev/null || hostname)}" \
+       /usr/local/bin/bundle exec rails runner /tmp/ensure-host-login-ingress.rb; then
+    # The traefik service runs as User=traefik and must read the serving key
+    # (written 0600). chown the durable cert tree to it; best-effort so a
+    # missing user identity never aborts the boot.
+    chown -R traefik:traefik "$(dirname "$TRAEFIK_CERT_DIR")" 2>/dev/null || true
+    echo "[rails-start] host login ingress ready"
+  else
+    echo "[rails-start] host login ingress generation failed (non-fatal — backend still starts)"
+  fi
+fi
+
 echo "[rails-start] Starting puma"
 exec /usr/local/bin/bundle exec puma -C config/puma.rb
