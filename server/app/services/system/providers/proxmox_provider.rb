@@ -94,6 +94,18 @@ module System
       DEFAULT_OSTYPE           = "l26"
       DEFAULT_LXC_OSTYPE       = "ubuntu"
 
+      # Reboot fallback tuning (improvement 019f6db4-2985). Defaults; overridable
+      # per-connection via connection.config so an operator can tune for guests
+      # that legitimately take longer to shut down.
+      #   - graceful window PVE waits for the guest to shut down before the reboot
+      #     task fails (and we fall back to a force stop+start),
+      #   - extra headroom on our own wait_task so the client doesn't time out
+      #     BEFORE PVE fails the reboot task,
+      #   - the per-op wait for each force stop / start in the fallback.
+      DEFAULT_GRACEFUL_REBOOT_TIMEOUT_SEC = 60
+      REBOOT_TASK_WAIT_GRACE_SEC          = 30
+      DEFAULT_REBOOT_FORCE_CYCLE_TIMEOUT_SEC = 120
+
       # ----------------------------------------------------------------
       # Identity
       # ----------------------------------------------------------------
@@ -297,11 +309,30 @@ module System
         log_operation("reboot_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
-        # NOTE: qmreboot is graceful; if the caller really needs to discard
-        # cloud-init seed state (e.g., after sshkeys change), use stop+start
-        # instead. Documented in project_pve_api_learnings.md item #5.
-        upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/reboot")
-        c.wait_task(node: node, upid: upid)
+
+        # Graceful first: PVE's `reboot` shuts the guest down (ACPI /
+        # qemu-guest-agent) then starts it — cheap and RAM-warm when the guest
+        # cooperates. BOUNDED via the `timeout` param so a MINIMAL guest (no
+        # qemu-guest-agent, ignores ACPI) doesn't hang here: PVE fails the reboot
+        # task once `timeout` elapses (leaving the VM still running), which the
+        # fallback below recovers. Note: qmreboot NEVER reloads the cloud-init
+        # seed — a caller that needs that must use power_cycle_instance /
+        # reload_cloudinit_seed! (project_pve_api_learnings.md item #5); the
+        # force stop+start fallback here is a reboot of last resort, not a seed
+        # reload.
+        timeout = graceful_reboot_timeout
+        begin
+          upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/reboot", { "timeout" => timeout })
+          c.wait_task(node: node, upid: upid, timeout: timeout + REBOOT_TASK_WAIT_GRACE_SEC)
+          return sync_status(instance_id)
+        rescue Proxmox::Client::TaskFailedError, Proxmox::Client::TaskTimeoutError => e
+          Rails.logger.warn(
+            "[ProxmoxProvider] graceful reboot of #{instance_id} did not complete (#{e.message}); " \
+            "falling back to force stop+start"
+          )
+        end
+
+        force_stop_then_start!(c, node: node, kind: kind, vmid: vmid)
         sync_status(instance_id)
       rescue Proxmox::Client::Error => e
         build_error_response("PVE reboot failed: #{e.message}")
@@ -677,6 +708,42 @@ module System
       # ----------------------------------------------------------------
 
       private
+
+      # ============================================================
+      # Reboot fallback (improvement 019f6db4-2985)
+      # ============================================================
+
+      # Force stop, then start — a reboot of last resort for a minimal guest
+      # whose graceful shutdown never lands. The stop is best-effort: a graceful
+      # reboot that got as far as shutting the guest down leaves it stopped, and
+      # `qm stop` on an already-stopped VM errors — that must NOT abort the
+      # reboot, since the start below is what actually brings it back. The start
+      # (and its wait) is NOT swallowed: a genuine failure to power the VM back
+      # on propagates to reboot_instance's rescue and surfaces as an error.
+      def force_stop_then_start!(c, node:, kind:, vmid:)
+        begin
+          stop_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/stop")
+          c.wait_task(node: node, upid: stop_upid, timeout: reboot_force_cycle_timeout)
+        rescue Proxmox::Client::Error => e
+          Rails.logger.warn(
+            "[ProxmoxProvider] force-stop during reboot fallback for #{node}/#{kind}/#{vmid} " \
+            "(guest may already be down): #{e.message}"
+          )
+        end
+
+        start_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/start")
+        c.wait_task(node: node, upid: start_upid, timeout: reboot_force_cycle_timeout)
+      end
+
+      def graceful_reboot_timeout
+        (connection&.config&.dig("graceful_reboot_timeout").presence ||
+          DEFAULT_GRACEFUL_REBOOT_TIMEOUT_SEC).to_i
+      end
+
+      def reboot_force_cycle_timeout
+        (connection&.config&.dig("reboot_force_cycle_timeout").presence ||
+          DEFAULT_REBOOT_FORCE_CYCLE_TIMEOUT_SEC).to_i
+      end
 
       # ============================================================
       # VM creation

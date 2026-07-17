@@ -38,6 +38,86 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # inc29 fix (improvement 019f6db4-2985): a graceful-only reboot hangs on a
+  # minimal guest with no qemu-guest-agent / no ACPI shutdown handler — PVE
+  # waits on a shutdown that never lands. reboot_instance now issues a bounded
+  # graceful reboot and, on timeout/failure, falls back to a force stop+start.
+  describe "#reboot_instance" do
+    let(:reboot_url) { "/api2/json/nodes/dna/qemu/200/status/reboot" }
+    let(:stop_url)   { "/api2/json/nodes/dna/qemu/200/status/stop" }
+    let(:start_url)  { "/api2/json/nodes/dna/qemu/200/status/start" }
+    let(:ok_task)    { { "status" => "stopped", "exitstatus" => "OK" } }
+
+    before do
+      allow(client).to receive(:get)
+        .with("/api2/json/nodes/dna/qemu/200/status/current")
+        .and_return({ "status" => "running", "name" => "vm-200" })
+    end
+
+    it "issues a bounded graceful reboot and does NOT force stop+start when it succeeds" do
+      allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
+      allow(client).to receive(:wait_task)
+        .with(node: "dna", upid: "UPID:reboot", timeout: anything).and_return(ok_task)
+
+      result = provider.reboot_instance("dna/qemu/200")
+
+      expect(client).to have_received(:post).with(reboot_url, hash_including("timeout"))
+      expect(client).not_to have_received(:post).with(stop_url)
+      expect(client).not_to have_received(:post).with(start_url)
+      expect(result[:success]).to be true
+      expect(result[:status]).to eq("running")
+    end
+
+    it "falls back to force stop+start when the graceful reboot TIMES OUT (minimal guest)" do
+      allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+        .and_raise(System::Providers::Proxmox::Client::TaskTimeoutError, "timed out waiting for reboot")
+      allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
+      allow(client).to receive(:post).with(start_url).and_return("UPID:start")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+
+      result = provider.reboot_instance("dna/qemu/200")
+
+      expect(client).to have_received(:post).with(stop_url)
+      expect(client).to have_received(:post).with(start_url)
+      expect(result[:success]).to be true
+      expect(result[:status]).to eq("running")
+    end
+
+    it "falls back to force stop+start when the graceful reboot TASK FAILS" do
+      allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+        .and_raise(System::Providers::Proxmox::Client::TaskFailedError.new("reboot failed", exit_status: "timeout"))
+      allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
+      allow(client).to receive(:post).with(start_url).and_return("UPID:start")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything).and_return(ok_task)
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+
+      result = provider.reboot_instance("dna/qemu/200")
+
+      expect(client).to have_received(:post).with(stop_url)
+      expect(client).to have_received(:post).with(start_url)
+      expect(result[:success]).to be true
+    end
+
+    it "still starts the VM when the force-stop errors because the guest is already down" do
+      allow(client).to receive(:post).with(reboot_url, hash_including("timeout")).and_return("UPID:reboot")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:reboot", timeout: anything)
+        .and_raise(System::Providers::Proxmox::Client::TaskTimeoutError, "timed out")
+      allow(client).to receive(:post).with(stop_url).and_return("UPID:stop")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:stop", timeout: anything)
+        .and_raise(System::Providers::Proxmox::Client::TaskFailedError.new("VM is not running", exit_status: "err"))
+      allow(client).to receive(:post).with(start_url).and_return("UPID:start")
+      allow(client).to receive(:wait_task).with(node: "dna", upid: "UPID:start", timeout: anything).and_return(ok_task)
+
+      result = provider.reboot_instance("dna/qemu/200")
+
+      expect(client).to have_received(:post).with(start_url)
+      expect(result[:success]).to be true
+    end
+  end
+
   describe "#authenticate?" do
     context "when credentials authenticate and the token has ACL grants" do
       before do
