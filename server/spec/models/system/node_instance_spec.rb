@@ -651,4 +651,58 @@ RSpec.describe System::NodeInstance, type: :model do
       expect(instance.pivot_boot?).to be false
     end
   end
+
+  # inc29 fix (improvement 019f6ecc-7e0e): a native-CI builder leased before its
+  # module-forge union is mounted execs a module-forge-provided build script that
+  # isn't on the union yet, and the agent dead-ends the ci.module_build task at
+  # "unknown_command". mark_pool_ready! now also gates on the build-critical module
+  # actually being reported composed (running_module_digests), the module-composition
+  # analog of the existing #sdwan_overlay_ready? gate.
+  describe '#mark_pool_ready! module-forge composition gate' do
+    let(:account) { create(:account) }
+    let(:node) { create(:system_node, account: account) }
+    let(:pool) do
+      System::InstancePool.create!(
+        account: account, node_template: node.node_template,
+        name: "forge-gate-pool-#{SecureRandom.hex(4)}", target_size: 1, min_size: 0, max_size: 3,
+        lifecycle_class: "ephemeral", status: "active",
+        provider_region: create(:system_provider_region),
+        provider_instance_type: create(:system_provider_instance_type)
+      )
+    end
+    let(:instance) do
+      create(:system_node_instance, node: node,
+                                    instance_pool_id: pool.id, pool_state: "warming",
+                                    pool_warming_started_at: 1.minute.ago)
+    end
+
+    context 'when the node is assigned the module-forge module' do
+      let(:forge) { create(:system_node_module, account: account, name: "module-forge") }
+
+      before { create(:system_node_module_assignment, node: node, node_module: forge) }
+
+      it 'stays warming until module-forge is reported composed in running_module_digests' do
+        instance.update!(running_module_digests: { "some-other-module-id" => "sha256:aaaa" })
+
+        expect(instance.mark_pool_ready!).to be false
+        expect(instance.reload.pool_state).to eq("warming")
+      end
+
+      it 'promotes to ready once module-forge appears in running_module_digests' do
+        instance.update!(running_module_digests: { forge.id.to_s => "sha256:bbbb" })
+
+        expect(instance.mark_pool_ready!).to be true
+        expect(instance.reload.pool_state).to eq("ready")
+      end
+    end
+
+    context 'when the node is NOT assigned module-forge (non-builder pool)' do
+      it 'promotes on the normal path — the module-composition gate is not applicable' do
+        instance.update!(running_module_digests: {})
+
+        expect(instance.mark_pool_ready!).to be true
+        expect(instance.reload.pool_state).to eq("ready")
+      end
+    end
+  end
 end

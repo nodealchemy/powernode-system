@@ -269,17 +269,58 @@ module System
       peers.where("last_handshake_at >= ?", ::Sdwan::Peer::HEALTHY_HANDSHAKE_WINDOW.ago).exists?
     end
 
+    # Module names whose actual composition on the node — reported in the
+    # agent heartbeat's running_module_digests — is a precondition for a pool
+    # member to become acquirable. A native-CI builder leased before its
+    # module-forge union is mounted execs a module-forge-provided build script
+    # that isn't on the union yet, and the agent dead-ends the ci.module_build
+    # task at "unknown_command" (agent tasks/loop.go). Keeping the builder
+    # "warming" until the module is reported running closes that race — the
+    # module-composition analog of #sdwan_overlay_ready?. Kept in step with the
+    # module-forge module the native build path gates on
+    # (Api::V1::System::NodeApi::ConfigController::MODULE_FORGE_MODULE_NAME).
+    POOL_READINESS_REQUIRED_MODULE_NAMES = %w[module-forge].freeze
+
+    # Server-side module-composition gate for pool promotion (native-CI pool
+    # reliability fix — improvement 019f6ecc-7e0e). running_module_digests is
+    # the agent heartbeat's map of node_module_id → mounted oci_digest, so the
+    # platform knows exactly which of a node's assigned modules are actually
+    # composed. A builder whose node is assigned a build-critical module (see
+    # POOL_READINESS_REQUIRED_MODULE_NAMES) is only ready once that module
+    # appears there.
+    #
+    #   - Node assigned none of the required modules → true. Every non-builder
+    #     pool is unaffected; overlay + heartbeat liveness alone decide, exactly
+    #     as before this gate (mirrors how #sdwan_overlay_ready? degrades for a
+    #     non-SDWAN pool).
+    #   - Node assigned one/more → true only once EACH is reported composed in
+    #     running_module_digests (keyed by node_module_id, matching
+    #     Fleet::PromotionCriteria's own digest lookups).
+    def required_modules_composed?
+      return true unless node
+
+      required = node.node_modules.where(name: POOL_READINESS_REQUIRED_MODULE_NAMES)
+      required_ids = required.pluck(:id)
+      return true if required_ids.empty?
+
+      running = running_module_digests || {}
+      required_ids.all? { |mid| running.key?(mid.to_s) }
+    end
+
     # Idempotent transition: warming → ready (called from provisioning
     # success callback / heartbeat success). Returns true if the
     # transition succeeded, false if state didn't allow it (e.g. already
-    # ready, claimed, draining, etc.) or if the instance's SDWAN overlay
+    # ready, claimed, draining, etc.), if the instance's SDWAN overlay
     # tunnel is not yet live (#sdwan_overlay_ready?) — a builder acquired
     # before its overlay handshake completes cannot reach overlay-only build
-    # inputs (git.powernode.org), so it must stay "warming" until it can.
+    # inputs (git.powernode.org) — or if a build-critical module the node is
+    # assigned is not yet composed (#required_modules_composed?), so it must
+    # stay "warming" until it can.
     def mark_pool_ready!
       return false unless in_pool?
       return false unless pool_state == "warming"
       return false unless sdwan_overlay_ready?
+      return false unless required_modules_composed?
       update!(pool_state: "ready")
       true
     end
