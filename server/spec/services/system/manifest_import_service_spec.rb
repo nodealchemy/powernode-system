@@ -106,6 +106,8 @@ RSpec.describe System::ManifestImportService, type: :service do
       decoded = version.protected_spec.map { |e| Base64.decode64(e) }
       expect(decoded).to include("/etc/demo/secret")
       expect(mod.reload.current_version).to eq(version)
+      # imp 019f6d9a — the denormalized number must move with the id, never lag.
+      expect(mod.current_version_number).to eq(version.version_number)
     end
 
     it "skips version creation by default" do

@@ -990,7 +990,9 @@ module System
         promotion_state: "built"
       )
       version.save!
-      mod.update!(current_version: version)
+      # Set BOTH the FK and the denormalized number so they never drift (imp
+      # 019f6d9a). NodeModule#sync_current_version_number backstops this on save.
+      mod.update!(current_version: version, current_version_number: version.version_number)
       version
     end
   end

@@ -279,7 +279,9 @@ module System
         )
         v.save!
 
-        m.update!(current_version: v) if m.current_version_id != v.id
+        # Set BOTH the FK and the denormalized number so they never drift (imp
+        # 019f6d9a). NodeModule#sync_current_version_number backstops this on save.
+        m.update!(current_version: v, current_version_number: v.version_number) if m.current_version_id != v.id
 
         modules[spec[:name]] = m
         log.call("    ✓ NodeModule: #{spec[:name]} (priority=#{spec[:priority]}, v#{v.version_number})")
