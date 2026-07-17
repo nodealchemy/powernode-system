@@ -125,6 +125,17 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		if _, err := etcidentity.ApplyHostname(sysroot, name, false); err != nil {
 			r.cfg.OnError("compose:hostname_write", err)
 		}
+		// Same rationale, applied to /etc/hosts: base-os's static rootfs file
+		// (masked from carrying a per-node line — hostname is unknown at build
+		// time) only has the bare loopback + ::1 lines. Without this, a pivot
+		// node's union has localhost resolvable but nothing resolves the node's
+		// OWN hostname via /etc/hosts. This also fully repopulates /etc/hosts
+		// on every compose — including the loopback line base-os already ships
+		// — so a node still boots with localhost resolvable even if base-os's
+		// own file is ever missing from the union for some reason.
+		if _, err := etcidentity.ApplyHosts(sysroot, name); err != nil {
+			r.cfg.OnError("compose:hosts_write", err)
+		}
 	}
 
 	// Render + offline-enable native units in the union (no start — systemd in
