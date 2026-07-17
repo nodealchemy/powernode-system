@@ -86,8 +86,12 @@
 # Optional:
 #   PARENT_PAT (env var, NOT a flag)  PAT for cloning the parent
 #                                powernode-platform repo (only used by the
-#                                powernode-hub-backend/worker/frontend
-#                                arms); default: empty. Set in the calling
+#                                powernode-hub-backend/worker/frontend and
+#                                powernode-extension-system arms — the last
+#                                needs core's frontend/ to build this
+#                                extension's dedicated-module bundle against
+#                                its host-api/modules.ts contract); default:
+#                                empty. Set in the calling
 #                                environment (the workflow step's `env:`
 #                                block) — never pass secrets as CLI args.
 #   --parent-host HOST             default: git.powernode.org
@@ -180,7 +184,7 @@ cd "$ws"
 
 needs_parent=0
 case "$MODULE" in
-  powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend) needs_parent=1 ;;
+  powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system) needs_parent=1 ;;
 esac
 
 if [ "$needs_parent" = "1" ]; then
@@ -545,6 +549,86 @@ case "$MODULE" in
       server/ /tmp/fat/opt/powernode/extensions/system/server/
     if [ -f extension.json ]; then
       cp extension.json /tmp/fat/opt/powernode/extensions/system/extension.json
+    fi
+
+    # --- Dedicated-module frontend build (P2) ---------------------------
+    # Builds this extension's frontend as a standalone ESM bundle (every
+    # HOST_EXPOSED_IDS id — core's @/… surface + the npm singletons — left
+    # EXTERNAL, resolved at runtime through core's injected import map; see
+    # frontend/src/shared/host-api/modules.ts and this extension's own
+    # frontend/vite.config.build.ts for the full contract) and ships it to
+    # /opt/powernode/frontend/dist/extensions/system/ — the SAME root
+    # powernode-hub-frontend serves from (Caddy), so the overlay union
+    # exposes /extensions/system/manifest.json same-origin with zero serve
+    # config change (see this module's manifest.yaml file_spec).
+    #
+    # Needs /tmp/parent (core's frontend/, cloned above because this module
+    # is now in the `needs_parent` list) for the modules.ts contract +
+    # node_modules. A build failure degrades to shipping NO dedicated-module
+    # bundle — the extension simply stays off the runtime menu until the
+    # next successful build — never aborts the whole module; every step
+    # below is guarded and every diagnostic goes to stderr, mirroring the
+    # powernode-hub-frontend arm's own degrade-gracefully pattern above.
+    if [ ! -f /tmp/parent/frontend/package.json ]; then
+      echo "[stage-1.5] extension-system: /tmp/parent/frontend missing — skipping dedicated-module frontend build" >&2
+    elif ! command -v jq >/dev/null 2>&1; then
+      echo "[stage-1.5] extension-system: jq missing — skipping dedicated-module frontend build" >&2
+    else
+      if ! command -v npm >/dev/null 2>&1; then
+        FE_NODE_VER=$(jq -r '.build.node_version // "24.13.0"' /tmp/manifest.json)
+        # KEEP IN SYNC with the runtime-node / powernode-hub-frontend arms'
+        # NODE_SHA256 (same tarball).
+        FE_NODE_SHA256="6223aad1a81f9d1e7b682c59d12e2de233f7b4c37475cd40d1c89c42b737ffa8"
+        echo "[stage-1.5] extension-system: fetching pinned node v${FE_NODE_VER} onto the builder for the extension Vite build" >&2
+        if curl -fsSL "https://nodejs.org/dist/v${FE_NODE_VER}/node-v${FE_NODE_VER}-linux-x64.tar.gz" -o /tmp/node-build-ext.tar.gz \
+           && echo "${FE_NODE_SHA256}  /tmp/node-build-ext.tar.gz" | sha256sum -c - >&2 \
+           && mkdir -p /opt/node-build \
+           && tar -xzf /tmp/node-build-ext.tar.gz -C /opt/node-build --strip-components=1; then
+          export PATH="/opt/node-build/bin:$PATH"
+        else
+          echo "[stage-1.5] extension-system: node fetch/verify FAILED — skipping dedicated-module frontend build" >&2
+        fi
+      fi
+
+      if command -v npm >/dev/null 2>&1; then
+        echo "[stage-1.5] extension-system: node=$(node -v 2>&1) npm=$(npm -v 2>&1) — running npm ci" >&2
+        if ( cd /tmp/parent/frontend && npm ci --no-audit ) 1>&2; then
+          # Stage THIS extension's frontend/ + extension.json into the
+          # freshly-cloned parent's extensions/system/ (a plain `git clone`
+          # of the parent never checks out submodules, so extensions/system/
+          # is empty there) — vite.config.build.ts resolves its own
+          # `../../../frontend/…` imports relative to ITS OWN location, so
+          # it must live at that exact depth under the parent checkout.
+          mkdir -p /tmp/parent/extensions/system
+          rsync -a \
+            --exclude='.git' --exclude='node_modules' --exclude='dist' \
+            frontend/ /tmp/parent/extensions/system/frontend/
+          cp extension.json /tmp/parent/extensions/system/extension.json
+
+          # Same symlink trick scripts/setup-extension-frontend-symlinks.sh
+          # uses for Jest: the extension ships no node_modules of its own,
+          # so its bare imports (react, lucide-react, …) resolve through the
+          # parent frontend's install.
+          ln -sf ../../../frontend/node_modules /tmp/parent/extensions/system/frontend/node_modules
+
+          if ( cd /tmp/parent/extensions/system/frontend && npx vite build --config vite.config.build.ts ) 1>&2; then
+            echo "[stage-1.5] extension-system: dedicated-module Vite build succeeded" >&2
+            if [ -d /tmp/parent/extensions/system/frontend/dist ] && [ -n "$(ls -A /tmp/parent/extensions/system/frontend/dist 2>/dev/null)" ]; then
+              mkdir -p /tmp/fat/opt/powernode/frontend/dist/extensions/system
+              rsync -a /tmp/parent/extensions/system/frontend/dist/ /tmp/fat/opt/powernode/frontend/dist/extensions/system/
+              echo "[stage-1.5] extension-system: dedicated-module bundle shipped ($(find /tmp/fat/opt/powernode/frontend/dist/extensions/system -type f | wc -l) files)" >&2
+            else
+              echo "[stage-1.5] extension-system: dist EMPTY after build — shipping no dedicated-module bundle" >&2
+            fi
+          else
+            echo "[stage-1.5] extension-system: DEDICATED-MODULE BUILD FAILED — shipping no dedicated-module bundle (npm/vite output above)" >&2
+          fi
+        else
+          echo "[stage-1.5] extension-system: npm ci FAILED in /tmp/parent/frontend — skipping dedicated-module frontend build" >&2
+        fi
+      else
+        echo "[stage-1.5] extension-system: no npm/node available — skipping dedicated-module frontend build" >&2
+      fi
     fi
     ;;
   reverse-proxy-traefik)

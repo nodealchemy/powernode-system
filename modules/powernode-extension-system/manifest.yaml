@@ -9,8 +9,18 @@ package_spec: []
 # The extension.json sibling is what extensions_loader_helper.rb scans
 # (it walks /opt/powernode/extensions/*/extension.json). server/ is the
 # Rails engine the helper turns into a path-gem in hub-backend's Gemfile.
+#
+# The second entry ships the extension's DEDICATED-MODULE frontend build
+# (stage15.sh's powernode-extension-system arm: `vite build --config
+# vite.config.build.ts`, an ESM bundle with core's HOST_EXPOSED_IDS left
+# external) under the SAME path core's own hub-frontend module serves from
+# (/opt/powernode/frontend/dist/**) — the overlay union lands
+# extensions/system/** under that root, so Caddy (powernode-hub-frontend's
+# static server) serves /extensions/system/manifest.json + its entry/css
+# same-origin, with zero change to the serving config.
 file_spec:
   - /opt/powernode/extensions/system/**
+  - /opt/powernode/frontend/dist/extensions/system/**
 mask:
   - /opt/powernode/extensions/system/tmp/***
   - /opt/powernode/extensions/system/.git/***
