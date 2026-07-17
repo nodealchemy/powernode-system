@@ -48,11 +48,19 @@ module Api
           # Modules whose Stage-1.5 arm actually clones the PARENT platform
           # repo (stage15.sh's `needs_parent` case — NOT the broader "Class B"
           # 11-arm set, which also includes modules that stage parent-adjacent
-          # content without needing the clone). Only these three ever consume
-          # PARENT_PAT, so it's the only set worth minting/handing over the
-          # credential for.
+          # content without needing the clone). Only these consume PARENT_PAT,
+          # so it's the only set worth minting/handing over the credential for.
+          #
+          # MUST stay in sync with stage15.sh's `needs_parent` case. The
+          # powernode-extension-system arm was added to `needs_parent` for the
+          # dedicated-module frontend build (it clones the parent for core's
+          # shared frontend node_modules + the HOST_EXPOSED_IDS contract in
+          # frontend/src/shared/host-api/modules.ts), so it must receive the
+          # PAT too — otherwise the parent clone auths with an empty token and
+          # the build fails "remote: Failed to authenticate user".
           CLASS_B_PARENT_MODULES = %w[
             powernode-hub-backend powernode-hub-worker powernode-hub-frontend
+            powernode-extension-system
           ].freeze
 
           # GET /api/v1/system/node_api/config
