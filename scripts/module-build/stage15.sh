@@ -569,6 +569,17 @@ case "$MODULE" in
     # next successful build — never aborts the whole module; every step
     # below is guarded and every diagnostic goes to stderr, mirroring the
     # powernode-hub-frontend arm's own degrade-gracefully pattern above.
+    #
+    # Wrap the whole frontend-build block so its stderr diagnostics are
+    # BOTH surfaced live AND persisted into a carved marker
+    # (/opt/powernode/extensions/system/.frontend-build.log — under the
+    # first file_spec entry, so it ships in the erofs). The builder is an
+    # ephemeral pool instance, terminated before its journal can be read,
+    # and the task log_tail is truncated to the (later) carve output — so
+    # a silent degrade left no way to see WHY. This marker makes every
+    # build self-diagnosing: read it out of the composed module post-boot.
+    FE_TMPLOG=$(mktemp)
+    {
     if [ ! -f /tmp/parent/frontend/package.json ]; then
       echo "[stage-1.5] extension-system: /tmp/parent/frontend missing — skipping dedicated-module frontend build" >&2
     elif ! command -v jq >/dev/null 2>&1; then
@@ -630,6 +641,10 @@ case "$MODULE" in
         echo "[stage-1.5] extension-system: no npm/node available — skipping dedicated-module frontend build" >&2
       fi
     fi
+    } 2>"$FE_TMPLOG"
+    cat "$FE_TMPLOG" >&2
+    mkdir -p /tmp/fat/opt/powernode/extensions/system
+    cp "$FE_TMPLOG" /tmp/fat/opt/powernode/extensions/system/.frontend-build.log 2>/dev/null || true
     ;;
   reverse-proxy-traefik)
     # Traefik isn't in noble's required-priority apt set
