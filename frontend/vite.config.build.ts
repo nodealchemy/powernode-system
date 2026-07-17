@@ -117,6 +117,13 @@ export default defineConfig({
     // nothing at runtime (browsers only fetch them on request).
     sourcemap: true,
     rollupOptions: {
+      // CRITICAL: Vite defaults preserveEntrySignatures to `false` for
+      // app-style builds (rollupOptions.input), which tree-shakes the entry's
+      // exports as "unused" — that dropped register()'s entire body (the
+      // featureRegistry.register* calls), leaving only bare side-effect imports
+      // and NO menu registration. Preserve the register export so the extension
+      // actually registers its routes/nav on import().
+      preserveEntrySignatures: 'strict',
       input: {
         register: path.resolve(__dirname, 'src/register.ts'),
         style: path.resolve(__dirname, 'src/ext.css'),
