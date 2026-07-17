@@ -645,6 +645,21 @@ case "$MODULE" in
     cat "$FE_TMPLOG" >&2
     mkdir -p /tmp/fat/opt/powernode/extensions/system
     cp "$FE_TMPLOG" /tmp/fat/opt/powernode/extensions/system/.frontend-build.log 2>/dev/null || true
+    # A dedicated-module FRONTEND with no frontend dist is a broken module —
+    # its whole purpose is the System menu + pages. Silently degrading to a
+    # backend-only erofs (the prior behavior) shipped a module that looked
+    # fine but rendered no menu, and the later carve stage overwrote the
+    # arm's stderr in the task log_tail so the reason was invisible. Hard-fail
+    # instead: aborting here BEFORE the carve leaves the arm's diagnostics as
+    # the build's log_tail (readable via system_get_task), and refuses to
+    # publish a useless module.
+    if [ ! -d /tmp/fat/opt/powernode/frontend/dist/extensions/system ] || \
+       [ -z "$(ls -A /tmp/fat/opt/powernode/frontend/dist/extensions/system 2>/dev/null)" ]; then
+      echo "[stage-1.5] extension-system: FATAL — dedicated-module frontend dist was NOT produced; refusing to ship a frontend module with no frontend. Arm diagnostics follow:" >&2
+      cat "$FE_TMPLOG" >&2
+      exit 1
+    fi
+    echo "[stage-1.5] extension-system: dedicated-module frontend dist present ($(find /tmp/fat/opt/powernode/frontend/dist/extensions/system -type f | wc -l) files) — OK" >&2
     ;;
   reverse-proxy-traefik)
     # Traefik isn't in noble's required-priority apt set
