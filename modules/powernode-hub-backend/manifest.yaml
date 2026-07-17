@@ -59,6 +59,19 @@ services:
       RAILS_LOG_TO_STDOUT: "1"
       DATABASE_URL: "postgres://powernode@localhost:5432/powernode_production"
       REDIS_URL: "redis://localhost:6379/0"
+      # Gate for extensions_loader_helper.rb's discover_extension_gems_by_visibility:
+      # without it, a deployed node has no .gitmodules (not in file_spec below), so
+      # every on-disk extension (including the public system extension composed
+      # via the powernode-extension-system module) reads as private-by-determination
+      # and gets silently skipped — the Gemfile resolves core-only and the composed
+      # extension never loads, with no error. Setting this to "1" tells the Gemfile
+      # a node's disk contents ARE the composition decision (a NodeModule put an
+      # extension there on purpose), loading every present extension regardless of
+      # public/private. MUST live here (systemd env, not the generated
+      # backend-default.conf secrets file): rails-start.sh only writes that file on
+      # first-boot secret generation, so a persisted secrets file from an older
+      # image would never pick this up on a later image upgrade.
+      POWERNODE_DEPLOYED: "1"
       # This all-in-one hub ships neither the solid_cache nor solid_queue tables
       # (their schemas live in db/{cache,queue}_schema.rb and are never loaded by
       # db:migrate). The Rails 8 defaults (solid_cache_store / solid_queue) then hit
