@@ -87,3 +87,23 @@ func TestApplyHostname_TrimsAndTruncates(t *testing.T) {
 		t.Fatalf("hostname len = %d, want capped at %d", len(strings.TrimSpace(string(got))), HostNameMax)
 	}
 }
+
+func TestApplyHostname_WritesDhcpHostnameDropin(t *testing.T) {
+	root, _ := mkEtc(t)
+
+	if _, err := ApplyHostname(root, "ops-hub", false); err != nil {
+		t.Fatalf("ApplyHostname: %v", err)
+	}
+	// networkd must announce the assigned name to DHCP regardless of the base
+	// image's baked /etc/hostname, so DNS registers the right name at first
+	// boot instead of the build-time machine name.
+	dropin := filepath.Join(root, "etc", "systemd", "network", "10-dhcp.network.d", "50-powernode-hostname.conf")
+	got, err := os.ReadFile(dropin)
+	if err != nil {
+		t.Fatalf("read dhcp hostname drop-in: %v", err)
+	}
+	want := "[DHCPv4]\nHostname=ops-hub\n[DHCPv6]\nHostname=ops-hub\n"
+	if string(got) != want {
+		t.Fatalf("dhcp hostname drop-in = %q, want %q", string(got), want)
+	}
+}

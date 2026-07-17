@@ -61,6 +61,29 @@ func ApplyHostname(root, name string, applyLive bool) (changed bool, err error) 
 		changed = true
 	}
 
+	// Pin the name systemd-networkd announces to DHCP. The base image bakes a
+	// build-time /etc/hostname (a random machine name), and networkd's DHCP
+	// client sends whatever /etc/hostname holds at request time. Writing
+	// /etc/hostname above is only sufficient when this pass runs on the
+	// pre-pivot sysroot BEFORE networkd's first DHCP; a stale lease or an early
+	// DHCP still leaks the baked name into DNS. An explicit [DHCPv4]/[DHCPv6]
+	// Hostname= drop-in decouples the announced name from /etc/hostname timing
+	// entirely. Best-effort: the hostname write above is the primary contract,
+	// so a read-only or missing networkd dir never fails ApplyHostname.
+	dropinDir := "/etc/systemd/network/10-dhcp.network.d"
+	if root != "" {
+		dropinDir = filepath.Join(root, "etc", "systemd", "network", "10-dhcp.network.d")
+	}
+	if os.MkdirAll(dropinDir, 0o755) == nil {
+		dropin := []byte("[DHCPv4]\nHostname=" + name + "\n[DHCPv6]\nHostname=" + name + "\n")
+		dropinPath := filepath.Join(dropinDir, "50-powernode-hostname.conf")
+		if cur, rerr := os.ReadFile(dropinPath); rerr != nil || !bytes.Equal(cur, dropin) {
+			if fsutil.AtomicWrite(dropinPath, dropin, 0o644) == nil {
+				changed = true
+			}
+		}
+	}
+
 	if applyLive {
 		if cur, _ := os.Hostname(); cur != name {
 			if serr := syscall.Sethostname([]byte(name)); serr != nil {
