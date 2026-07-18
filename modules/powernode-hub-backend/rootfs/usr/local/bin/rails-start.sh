@@ -125,6 +125,27 @@ set -a
 . "$SECRETS_FILE"
 set +a
 
+# CREDENTIAL_ENCRYPTION_KEY_DEFAULT — the AES-256 key Security::CredentialEncryptionService
+# uses to encrypt operator-entered credentials (git/AI provider tokens, provider
+# connections, ...). DISTINCT from the ActiveRecord encryption keys above and from
+# SECRET_KEY_BASE. Production has NO Rails credentials file (config/credentials.yml.enc
+# + master.key are gitignored and never shipped), and that service now fails closed
+# without an explicit key — so the self-contained hub generates + persists its OWN,
+# the same way it does SECRET_KEY_BASE (no DEV master key, no coupling). It is a
+# base64-encoded 32 RAW bytes (openssl rand -base64 32 → Base64.decode64 == 32 bytes,
+# what the service's validate_key_format expects) — NOT the -hex form the AR keys use.
+# Idempotent ADD (not part of the first-boot heredoc) so a secrets file written by an
+# OLDER image gains the key on the next boot without disturbing SECRET_KEY_BASE, the
+# AR keys, or any already-encrypted data; regenerated only if genuinely absent.
+if ! grep -q '^CREDENTIAL_ENCRYPTION_KEY_DEFAULT=' "$SECRETS_FILE"; then
+  echo "[rails-start] Generating CREDENTIAL_ENCRYPTION_KEY_DEFAULT (credential-encryption key)"
+  umask 077
+  printf 'CREDENTIAL_ENCRYPTION_KEY_DEFAULT=%s\n' "$(openssl rand -base64 32)" >> "$SECRETS_FILE"
+  set -a
+  . "$SECRETS_FILE"
+  set +a
+fi
+
 cd "$RAILS_DIR"
 
 # --- Render config/database.yml from the shipped template ---
