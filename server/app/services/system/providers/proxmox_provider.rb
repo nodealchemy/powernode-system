@@ -997,6 +997,51 @@ module System
         body["cicustom"] = cicustom_parts.join(",") unless cicustom_parts.empty?
       end
 
+      # True when this connection delivers the NoCloud seed as an attached ISO
+      # (built + uploaded via the PVE storage API) instead of cicustom snippets
+      # on a shared NFS storage. Opt-in per connection so DEV's default NFS path
+      # is untouched.
+      def cidata_iso_transport?
+        connection&.config&.dig("cidata_transport").to_s == "iso"
+      end
+
+      # ISO-transport counterpart to stage_cicustom. Builds the NoCloud seed as
+      # an ISO in-process (CidataIsoBuilder — no genisoimage/xorriso, which the
+      # appliance image lacks), uploads it to a PVE storage over the
+      # token-authenticated storage API (needs Datastore.Allocate — NOT root@pam,
+      # NOT the `args` field), and attaches it as the VM's CD-ROM. The guest's
+      # initramfs powernode-cidata-payload.sh mounts it off /dev/sr[01] and reads
+      # user-data/meta-data exactly as it does a cicustom-built NoCloud drive, so
+      # no guest/image change is needed. Mutates body["ide2"] in place (replacing
+      # the empty PVE cloudinit drive build_qemu_vm_body sets there — this path
+      # does not use cicustom).
+      def stage_cidata_iso(c, body, params, vmid:, node:, storage:)
+        return unless params[:user_data].present? || params[:meta_data].present?
+
+        files = {}
+        files["user-data"] = params[:user_data].to_s if params[:user_data].present?
+        # NoCloud expects a meta-data file to exist even when empty; PVE's own
+        # cloudinit drive always writes both, so mirror that.
+        files["meta-data"] = params[:meta_data].to_s
+
+        iso_bytes = ::System::Providers::Proxmox::CidataIsoBuilder.build(files: files)
+        iso_storage = params[:cidata_iso_storage] ||
+                      connection&.config&.dig("cidata_iso_storage").presence ||
+                      storage
+        filename = "cidata-#{vmid}.iso"
+
+        Tempfile.create([ "cidata-#{vmid}-", ".iso" ]) do |tmp|
+          tmp.binmode
+          tmp.write(iso_bytes)
+          tmp.flush
+          tmp.rewind
+          upid = c.upload_file(node: node, storage: iso_storage, filename: filename, io: tmp, content: "iso")
+          c.wait_task(node: node, upid: upid) if upid_like?(upid)
+        end
+
+        body["ide2"] = "#{iso_storage}:iso/#{filename},media=cdrom"
+      end
+
       # Resize the imported disk to the final target size.
       # (PVE quirk #3 cont'd: import sets disk to source size; resize after.)
       def resize_boot_disk!(c, node:, vmid:, params:, preset:)
@@ -1269,7 +1314,16 @@ module System
           end
         end
 
-        stage_cicustom(body, params, vmid: vmid)
+        # Transport for the NoCloud seed. DEFAULT (DEV): cicustom snippets on a
+        # shared NFS storage. OPT-IN (config["cidata_transport"]=="iso"): build
+        # the seed as an ISO + upload via the token-authenticated PVE storage API
+        # + attach as a CD-ROM — for control planes that can't mount the NFS
+        # snippets storage (e.g. an appliance image with no kernel NFS client).
+        if cidata_iso_transport?
+          stage_cidata_iso(c, body, params, vmid: vmid, node: node, storage: storage)
+        else
+          stage_cicustom(body, params, vmid: vmid)
+        end
 
         # Enrollment identity fw-cfg — opt-in, see the class comment above.
         # Gated on POWERNODE_PVE_USE_FWCFG=1 for the exact same reason
