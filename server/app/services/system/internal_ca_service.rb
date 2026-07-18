@@ -157,6 +157,13 @@ module System
       # deployment) auto-selects the local adapter so it can still mint node
       # mTLS certs from its own on-disk CA instead of 500ing on first issue with
       # a Vault error. An explicit POWERNODE_CA_MODE always overrides this.
+      #
+      # CAVEAT: vault_usable? is a live probe, so a Vault-BACKED deployment that
+      # leaves POWERNODE_CA_MODE unset could transiently flip to the local
+      # adapter during a Vault outage (minting certs from a different CA). A
+      # deployment committed to Vault should set POWERNODE_CA_MODE=vault
+      # EXPLICITLY so an outage surfaces as a clear error rather than a silent
+      # CA switch. (A Vault-less hub like ops-hub is unaffected — always local.)
       def resolve_default_mode
         return "local" unless Rails.env.production?
 
