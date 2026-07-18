@@ -139,8 +139,11 @@ set +a
 # AR keys, or any already-encrypted data; regenerated only if genuinely absent.
 if ! grep -q '^CREDENTIAL_ENCRYPTION_KEY_DEFAULT=' "$SECRETS_FILE"; then
   echo "[rails-start] Generating CREDENTIAL_ENCRYPTION_KEY_DEFAULT (credential-encryption key)"
-  umask 077
-  printf 'CREDENTIAL_ENCRYPTION_KEY_DEFAULT=%s\n' "$(openssl rand -base64 32)" >> "$SECRETS_FILE"
+  # Scope the 0600 umask to the append ONLY, in a subshell, so it does NOT
+  # leak into this process (and thence puma). A leaked 077 umask made
+  # Core::IngressConfigWriter write /etc/traefik/dynamic/00-host-login.yaml at
+  # 0600 root → unreadable by the traefik user → all :443 → 404.
+  ( umask 077; printf 'CREDENTIAL_ENCRYPTION_KEY_DEFAULT=%s\n' "$(openssl rand -base64 32)" >> "$SECRETS_FILE" )
   set -a
   . "$SECRETS_FILE"
   set +a
