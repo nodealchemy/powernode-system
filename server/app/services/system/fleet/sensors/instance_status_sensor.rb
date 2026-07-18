@@ -12,6 +12,11 @@ module System
       # response) and ultimately to the system.instance_reprovision action
       # if drift remediation cannot recover the instance.
       class InstanceStatusSensor < BaseSensor
+        # Control-plane fence: a silent instance owned by ANOTHER control plane
+        # must not even emit a signal here — that signal drives the presumed-dead
+        # reap. Inert for a single-plane deployment (no self-id configured).
+        include ::System::Autonomy::ControlPlaneFence
+
         # Conservative — assumes 30s heartbeat * 3 + 30s grace.
         # Tuned to agree with CapacityRecommendExecutor::SILENT_HEARTBEAT_AGE.
         SILENT_THRESHOLD = 3.minutes
@@ -24,11 +29,13 @@ module System
           # during replenishment. Side effect of the same perception pass.
           stamp_region_health(cutoff)
 
-          ::System::NodeInstance
+          silent = ::System::NodeInstance
             .joins(:node)
             .where(system_nodes: { account_id: account.id })
             .where(status: %w[running starting])
             .where("last_heartbeat_at < ? OR last_heartbeat_at IS NULL", cutoff)
+
+          fence_to_control_plane(silent)
             .find_each.map do |inst|
             signal(
               kind: "system.instance_silent",

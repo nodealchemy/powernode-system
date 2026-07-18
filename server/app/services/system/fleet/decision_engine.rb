@@ -13,6 +13,12 @@ module System
     # for v0; the trading service has additional flow control we don't yet
     # need (concurrency caps, role-based dispatch).
     class DecisionEngine
+      # Control-plane fence — never reap/actuate on an instance owned by a
+      # DIFFERENT control plane (imp 019f6d6b-63e5). Kept ALONGSIDE the existing
+      # account scoping (belt-and-suspenders). Inert until a self-id is
+      # configured (single-plane) and until #14 stamps owners.
+      include ::System::Autonomy::ControlPlaneFence
+
       # Maps a CVE signal payload to CveResponseExecutor inputs — a
       # side-effect-free triage whose plan lands in approval request
       # metadata for operator review. The CveResponderService handles the
@@ -493,6 +499,13 @@ module System
 
       private
 
+      # Control-plane fence skip result — uniform applied:false for an actuate
+      # path asked to act on an instance owned by another control plane.
+      def foreign_control_plane_skip(instance)
+        { applied: false, instance_id: instance.id,
+          reason: "instance owned by another control plane — skipped (control-plane fence)" }
+      end
+
       def recently_decided?(signal)
         return false unless Rails.cache.respond_to?(:exist?)
 
@@ -537,6 +550,8 @@ module System
 
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
         return nil unless instance && instance.status == "running"
+        # Control-plane fence: never reap a fleet member owned by another plane.
+        return nil unless owned_by_this_control_plane?(instance)
 
         heartbeat = instance.last_heartbeat_at
         return nil if heartbeat.nil?
@@ -766,6 +781,7 @@ module System
         id = signal.payload.is_a?(Hash) ? (signal.payload["instance_id"] || signal.payload[:instance_id]) : nil
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
 
         action = if instance.may_reboot?
                    "reboot"
@@ -816,6 +832,7 @@ module System
         id = payload["instance_id"] || payload[:instance_id]
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
 
         actual_status = (payload["actual_status"] || payload[:actual_status]).to_s
         event = CONVERGENCE_EVENT_FOR_ACTUAL_STATUS[actual_status]
@@ -853,6 +870,7 @@ module System
 
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
+        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
 
         result = ::System::InstanceControlService.execute(instance: instance, action: "terminate")
         if result.respond_to?(:success?)
@@ -893,6 +911,7 @@ module System
         instance_id = payload["instance_id"] || payload[:instance_id]
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
         return { applied: false, reason: "instance not found: #{instance_id.inspect}" } unless instance
+        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
 
         node = instance.node
         return { applied: false, reason: "instance has no node" } unless node
@@ -931,6 +950,7 @@ module System
         target_id = payload["instance_id"] || Array(payload["instance_ids"]).first
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: target_id)
         return { applied: false, reason: "instance not found" } unless instance
+        return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
 
         if ::System::Task.where(account: account, operable: instance,
                                 command: command, status: OPEN_TASK_STATUSES).exists?
