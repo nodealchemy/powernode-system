@@ -73,8 +73,16 @@ module System
       # Cosign trust policy is mandatory for the production OrasDiskImageAdapter
       # but not for the LocalDiskImageAdapter (smoke/dev path skips cosign
       # entirely). Defer the check to the adapter layer.
-      if adapter.is_a?(OrasDiskImageAdapter) && !platform.cosign_trust_configured?
-        return failure("platform '#{platform.name}' has no cosign trust policy configured (set cosign_identity_regexp + cosign_issuer_regexp)")
+      trusted_keys = trusted_disk_image_public_keys
+      # Cosign trust for the production OrasDiskImageAdapter is satisfied by
+      # EITHER a keyless identity/issuer policy OR at least one trusted public
+      # key. Key-signed disk images (the base UEFI image is signed with a
+      # cosign KEY, not keyless) carry no Fulcio cert in their bundle, so the
+      # identity/issuer regexps can't apply — they're verified against the
+      # platform-trusted public keys instead. LocalDiskImageAdapter skips cosign.
+      if adapter.is_a?(OrasDiskImageAdapter) && !platform.cosign_trust_configured? && trusted_keys.empty?
+        return failure("platform '#{platform.name}' has no cosign trust policy configured " \
+                       "(set cosign_identity_regexp + cosign_issuer_regexp, or configure trusted public keys for key-signed images)")
       end
 
       adapter.verify_and_pull!(
@@ -82,6 +90,7 @@ module System
         expected_sha256:       publication.sha256,
         identity_regexp:       platform.cosign_identity_regexp,
         issuer_regexp:         platform.cosign_issuer_regexp,
+        trusted_public_keys:   trusted_keys,
         expected_payload_json: build_payload_predicate(publication),
         registry_credentials:  registry_credentials_for(publication.account)
       )
@@ -123,6 +132,22 @@ module System
         "oci_ref"       => publication.oci_ref,
         "arch"          => publication.arch
       }
+    end
+
+    # Trusted cosign PUBLIC keys (PEM) for verifying KEY-signed disk images —
+    # the counterpart to the keyless identity/issuer policy. Sourced from the
+    # same platform-global SiteSetting the module supply chain uses (disk
+    # images and modules are signed by the same offline keys). Empty when none
+    # configured (keyless-only platforms). Public keys — never a secret.
+    def trusted_disk_image_public_keys
+      raw = ::SiteSetting.get("system.module_signing.trusted_public_keys")
+      Array(raw).filter_map do |entry|
+        pem = entry.is_a?(::Hash) ? (entry["pem"] || entry["public_key"] || entry["key"]) : entry
+        pem.to_s.strip.presence
+      end
+    rescue StandardError => e
+      ::Rails.logger.warn("[DiskImageOciIngestService] trusted_public_keys read failed: #{e.class}: #{e.message}")
+      []
     end
 
     # ─── OrasRegistryAuth ──────────────────────────────────────────────
@@ -264,7 +289,7 @@ module System
     class OrasDiskImageAdapter
       include OrasRegistryAuth
 
-      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil)
+      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil, trusted_public_keys: [])
         work = Dir.mktmpdir("powernode-disk-image-ingest-")
 
         out, err, status = oras_pull_with_optional_auth(oci_ref, work, registry_credentials)
@@ -289,13 +314,13 @@ module System
         cosign_bundle_path = Dir["#{work}/**/*.cosign-bundle"].first
         attestation_bundle_path = Dir["#{work}/**/*.attestation-bundle"].first
 
-        verify_result = run_cosign_verify_blob(img_path, cosign_bundle_path, identity_regexp, issuer_regexp)
+        verify_result = run_cosign_verify_blob(img_path, cosign_bundle_path, identity_regexp, issuer_regexp, trusted_public_keys)
         unless verify_result[:ok]
           FileUtils.remove_entry(work)
           return Result.new(ok?: false, error: "cosign verify-blob failed: #{verify_result[:error]}")
         end
 
-        attest_result = run_cosign_verify_attestation(img_path, attestation_bundle_path, identity_regexp, issuer_regexp, expected_payload_json)
+        attest_result = run_cosign_verify_attestation(img_path, attestation_bundle_path, identity_regexp, issuer_regexp, expected_payload_json, trusted_public_keys, actual_sha)
         unless attest_result[:ok]
           FileUtils.remove_entry(work)
           return Result.new(ok?: false, error: "cosign verify-attestation failed: #{attest_result[:error]}")
@@ -304,7 +329,12 @@ module System
         # Move .img out of the work dir into a sibling tmp file so
         # callers can safely delete it without removing the cosign
         # bundles (which might be inspected post-publish).
-        final_path = "/tmp/powernode-disk-image-#{SecureRandom.hex(8)}.img"
+        # Keep the moved .img on the SAME filesystem as the work dir (both under
+        # Dir.tmpdir / $TMPDIR) so this is a rename, not a cross-device copy —
+        # disk images are multi-GB and the root fs is small; a hardcoded /tmp
+        # here cross-copied onto a 512MB root and ENOSPC'd. Callers delete
+        # local_path after upload.
+        final_path = File.join(Dir.tmpdir, "powernode-disk-image-#{SecureRandom.hex(8)}.img")
         FileUtils.mv(img_path, final_path)
 
         Result.new(
@@ -319,9 +349,21 @@ module System
 
       private
 
-      def run_cosign_verify_blob(img_path, bundle_path, identity_regexp, issuer_regexp)
+      def run_cosign_verify_blob(img_path, bundle_path, identity_regexp, issuer_regexp, trusted_public_keys = [])
         unless bundle_path && File.exist?(bundle_path)
           return { ok: false, error: "missing .cosign-bundle layer" }
+        end
+
+        # Prefer key verification when the platform has trusted public keys
+        # configured (the base disk images are KEY-signed); the keyless
+        # identity/issuer policy is the fallback for keyless-signed images.
+        # Selection is by configured trust + which signature actually
+        # validates — not by sniffing the bundle shape (the .cosign-bundle and
+        # .attestation-bundle differ: the attestation carries a cert yet is
+        # still key-signed, so cert-presence is not a reliable discriminator).
+        if trusted_public_keys.present?
+          keyed = verify_signed_blob_with_keys("verify-blob", bundle_path, trusted_public_keys, [ img_path ])
+          return keyed if keyed[:ok]
         end
 
         args = [
@@ -339,7 +381,47 @@ module System
         end
       end
 
-      def run_cosign_verify_attestation(img_path, attestation_path, identity_regexp, issuer_regexp, expected_payload_json)
+      # Verifies a cosign bundle against each trusted public key; the first key
+      # that validates wins. --insecure-ignore-tlog: a private
+      # key-signed artifact is NOT recorded in the public Rekor transparency
+      # log (that facility is for keyless / public-good signing), so a tlog
+      # lookup is not applicable — the trusted key IS the provenance anchor.
+      # This is a full cryptographic signature verification, NOT a bypass.
+      # subject_ref locates what the signature/attestation is over:
+      #   * verify-blob            → [img_path] — cosign streams the .img to hash
+      #     it (no size cap on the signature path).
+      #   * verify-blob-attestation → ["--digest", <sha256>, "--digestAlg",
+      #     "sha256"] — cosign's blob READER caps at 128MB, so for large disk
+      #     images we pass the precomputed digest instead; --check-claims still
+      #     verifies the in-toto subject against it WITHOUT reading the blob.
+      # Either way this is a full cryptographic verification (DSSE signature +
+      # subject-digest claim), NOT a bypass.
+      def verify_signed_blob_with_keys(subcommand, bundle_path, trusted_public_keys, subject_ref)
+        keys = Array(trusted_public_keys).map(&:to_s).map(&:strip).reject(&:empty?)
+        return { ok: false, error: "key-signed bundle but no trusted public keys configured" } if keys.empty?
+
+        last_err = nil
+        Dir.mktmpdir("powernode-cosign-keys-") do |dir|
+          keys.each_with_index do |pem, i|
+            keyfile = File.join(dir, "key_#{i}.pem")
+            File.write(keyfile, pem.end_with?("\n") ? pem : "#{pem}\n")
+            args = [
+              "cosign", subcommand,
+              "--key", keyfile,
+              "--bundle", bundle_path,
+              "--insecure-ignore-tlog=true",
+              *subject_ref
+            ]
+            _out, err, status = Open3.capture3(*args)
+            return { ok: true } if status.success?
+
+            last_err = ::System::ShellOutputSanitizer.redact(err.to_s.strip)
+          end
+        end
+        { ok: false, error: "no trusted public key verified the signature (#{last_err})" }
+      end
+
+      def run_cosign_verify_attestation(img_path, attestation_path, identity_regexp, issuer_regexp, expected_payload_json, trusted_public_keys = [], img_sha256 = nil)
         unless attestation_path && File.exist?(attestation_path)
           # Attestation is a defense-in-depth layer; mark as warning
           # via cosign_attestation_skipped event in caller (deferred to
@@ -348,6 +430,19 @@ module System
           # AND blanking attestation_bundle in the publication, but
           # default behavior is fail-closed.
           return { ok: false, error: "missing .attestation-bundle layer (cosign attest-blob output required)" }
+        end
+
+        # Prefer key verification (see run_cosign_verify_blob). Pass the .img's
+        # precomputed sha256 as --digest so cosign checks the in-toto subject
+        # claim WITHOUT reading the (multi-GB) blob through its 128MB-capped
+        # reader; the keyless path (which reads the blob) is the fallback.
+        if trusted_public_keys.present?
+          sha = img_sha256.presence || Digest::SHA256.file(img_path).hexdigest
+          keyed = verify_signed_blob_with_keys(
+            "verify-blob-attestation", attestation_path, trusted_public_keys,
+            [ "--digest", sha, "--digestAlg", "sha256" ]
+          )
+          return keyed if keyed[:ok]
         end
 
         args = [
