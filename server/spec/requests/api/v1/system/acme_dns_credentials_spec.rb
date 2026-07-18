@@ -189,6 +189,52 @@ RSpec.describe "Api::V1::System::AcmeDnsCredentials", type: :request do
       expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to match(/no credential/i)
     end
+
+    # The two examples above stub ::Security::VaultClient.sealed? directly,
+    # so they never exercise its real implementation — masking the bug this
+    # context reproduces. On a Vault-less deployment (ops-hub, by design:
+    # VAULT_ROLE_ID/VAULT_SECRET_ID absent, credentials fall back to DB
+    # encryption), Security::VaultClient.instance raises AuthenticationError
+    # while constructing the Vault::Client (AppRole login). The controller's
+    # direct `::Security::VaultClient.sealed?` call was unguarded, so that
+    # raise escaped as a 500 whenever the DB-fallback read came back empty.
+    context "when Vault is genuinely unconfigured (VAULT_ROLE_ID/VAULT_SECRET_ID absent)" do
+      around do |example|
+        ::Security::VaultClient.reconfigure!
+        example.run
+        ::Security::VaultClient.reconfigure!
+      end
+
+      before do
+        allow(::Security::VaultClient).to receive(:admin_setting_config).and_return({})
+        allow(ENV).to receive(:[]).and_call_original
+        allow(ENV).to receive(:[]).with("VAULT_ROLE_ID").and_return(nil)
+        allow(ENV).to receive(:[]).with("VAULT_SECRET_ID").and_return(nil)
+      end
+
+      it "runs the DNS validator against the DB-fallback credential without ever touching Vault" do
+        ok = ::Acme::DnsCredentialValidator::Result.ok(message: "Cloudflare token verified")
+        allow_any_instance_of(::Acme::DnsCredentialValidator).to receive(:verify).and_return(ok)
+        # fake_vault#get_credential (top-level before block) already returns a
+        # present credential hash, standing in for a DB-encrypted read.
+
+        post test_path, headers: auth_headers_for(reader).merge("Content-Type" => "application/json")
+
+        expect(response).to have_http_status(:ok)
+        body = JSON.parse(response.body)["data"]
+        expect(body["ok"]).to be true
+        expect(body["credential"]["status"]).to eq("valid")
+      end
+
+      it "returns 503 — not a 500 — when the DB-fallback read is also empty" do
+        allow(fake_vault).to receive(:get_credential).and_return({})
+
+        post test_path, headers: auth_headers_for(reader).merge("Content-Type" => "application/json")
+
+        expect(response).to have_http_status(:service_unavailable)
+        expect(response.body).to match(/sealed|unreachable/i)
+      end
+    end
   end
 
   describe "DELETE /acme_dns_credentials/:id" do
