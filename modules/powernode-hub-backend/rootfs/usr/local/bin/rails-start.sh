@@ -85,7 +85,12 @@ if [ ! -f "$SECRETS_FILE" ]; then
   ARD=$(openssl rand -hex 32)
   ARS=$(openssl rand -hex 32)
   JWT_KEY=$(openssl rand -hex 64)
-  umask 077
+  # Scope the 0600 umask to the secrets-file write ONLY, in a subshell, so it
+  # does NOT leak into this process (and thence puma) — same leak class as the
+  # CREDENTIAL_ENCRYPTION_KEY_DEFAULT append below. A leaked 077 umask made
+  # Core::IngressConfigWriter write /etc/traefik/dynamic/00-host-login.yaml at
+  # 0600 root → unreadable by the traefik user → all :443 → 404.
+  ( umask 077
   cat > "$SECRETS_FILE" <<EOF
 RAILS_ENV=production
 RAILS_LOG_TO_STDOUT=1
@@ -118,6 +123,7 @@ REDIS_URL=redis://${REDIS_HOST}:6379/0
 JWT_ALGORITHM=HS256
 JWT_SECRET_KEY=$JWT_KEY
 EOF
+  )
   echo "[rails-start] Wrote $SECRETS_FILE"
 fi
 
