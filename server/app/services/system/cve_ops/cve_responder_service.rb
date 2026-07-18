@@ -23,6 +23,10 @@ module System
     # other domain agents (SDWAN, Disk Image, Runtime Manager) all use
     # the same shape.
     class CveResponderService
+      # Emergency kill-switch is authoritative across every reconciler — a halt
+      # must stop CVE remediation too, not just the AI execution jobs.
+      include ::System::Autonomy::KillSwitchGuard
+
       attr_reader :account, :agent, :role
 
       ADVANCEMENT_ACTIONS = %w[
@@ -53,6 +57,11 @@ module System
       end
 
       def tick!
+        # Authoritative kill-switch check FIRST — an engaged emergency halt
+        # no-ops the entire reconcile (no sensing, deciding, or inline CVE
+        # dispatch) before any state is touched.
+        return halted_tick_result if kill_switch_engaged?
+
         tick_correlation = "tick:#{SecureRandom.hex(8)}"
         emit_event(kind: "cve_responder.tick_started", payload: { agent_id: agent.id }, correlation_id: tick_correlation)
 

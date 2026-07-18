@@ -12,6 +12,10 @@ module System
     # ADVANCEMENT_ACTIONS set, the source_type, and the chain lookup are
     # domain-specific. Everything else follows the trading pattern row-for-row.
     class FleetAutonomyService
+      # Emergency kill-switch is authoritative across every reconciler — a halt
+      # must stop the fleet reconcile loop, not just the AI execution jobs.
+      include ::System::Autonomy::KillSwitchGuard
+
       attr_reader :account, :agent, :role
 
       # Actions that represent fleet-wide advancement (live promotion,
@@ -48,6 +52,11 @@ module System
       end
 
       def tick!
+        # Authoritative kill-switch check FIRST — an engaged emergency halt
+        # no-ops the entire reconcile (no sensing, deciding, reaping, or task
+        # dispatch) before any state is touched.
+        return halted_tick_result if kill_switch_engaged?
+
         # Sweep BEFORE sensing: expired pending approvals must transition
         # (timeout_action) so the rejected-cooldown — not a fresh duplicate
         # request — absorbs any still-firing signal in this same tick.
