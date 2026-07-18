@@ -209,7 +209,10 @@ module System
     class LocalDiskImageAdapter
       include OrasRegistryAuth
 
-      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil)
+      # trusted_public_keys: accepted for a uniform adapter interface (the
+      # top-level verify_and_pull! passes it to whichever adapter is active) but
+      # ignored here — the local/smoke adapter deliberately skips cosign verify.
+      def verify_and_pull!(oci_ref:, expected_sha256:, identity_regexp:, issuer_regexp:, expected_payload_json:, registry_credentials: nil, trusted_public_keys: [])
         path = resolve_local_path(oci_ref)
 
         # If the path resolved isn't on disk, try oras pull as a smoke-mode
@@ -409,9 +412,16 @@ module System
               "cosign", subcommand,
               "--key", keyfile,
               "--bundle", bundle_path,
-              "--insecure-ignore-tlog=true",
-              *subject_ref
+              "--insecure-ignore-tlog=true"
             ]
+            # --check-claims binds the attestation's in-toto subject to the
+            # --digest we pass (verify-blob-attestation only — plain verify-blob
+            # rejects the flag). cosign defaults it to true today; pin it
+            # explicitly so a future default flip can't silently drop the
+            # subject binding and accept a signature-only (subject-unbound)
+            # attestation as valid.
+            args << "--check-claims=true" if subcommand == "verify-blob-attestation"
+            args.concat(subject_ref)
             _out, err, status = Open3.capture3(*args)
             return { ok: true } if status.success?
 
@@ -423,12 +433,11 @@ module System
 
       def run_cosign_verify_attestation(img_path, attestation_path, identity_regexp, issuer_regexp, expected_payload_json, trusted_public_keys = [], img_sha256 = nil)
         unless attestation_path && File.exist?(attestation_path)
-          # Attestation is a defense-in-depth layer; mark as warning
-          # via cosign_attestation_skipped event in caller (deferred to
-          # a worker event handler). For now: if missing, fail the verify
-          # — operator can opt out by removing the attest step from CI
-          # AND blanking attestation_bundle in the publication, but
-          # default behavior is fail-closed.
+          # Fail-closed: a signed disk image MUST carry its .attestation-bundle
+          # (cosign attest-blob output); a missing attestation rejects the
+          # ingest — never a silent skip. Opting out is an explicit CI choice
+          # (drop the attest step AND blank attestation_bundle on the
+          # publication); absent that, this is a hard failure.
           return { ok: false, error: "missing .attestation-bundle layer (cosign attest-blob output required)" }
         end
 

@@ -177,4 +177,77 @@ RSpec.describe System::DiskImageOciIngestService do
       end
     end
   end
+
+  # Hardening (d3b634f1 review): the key-based cosign gate must actually GATE.
+  # Prove it fails CLOSED on (a) an untrusted key, (b) a subject-digest
+  # mismatch, and (c) a missing attestation, and that the keyless fallback
+  # stays wired. Exercises OrasDiskImageAdapter's private cosign methods with
+  # Open3 stubbed (no real cosign binary, no network, no Rekor).
+  describe "OrasDiskImageAdapter cosign key-verify gate (negative paths)" do
+    let(:adapter)         { described_class::OrasDiskImageAdapter.new }
+    let(:trusted_key_pem) { "-----BEGIN PUBLIC KEY-----\nMFkwEwYHtrusted\n-----END PUBLIC KEY-----" }
+    let(:img_file)    { Tempfile.new([ "img-", ".img" ]).tap { |f| f.write("disk"); f.close } }
+    let(:bundle_file) { Tempfile.new([ "sig-", ".cosign-bundle" ]).tap { |f| f.write("{}"); f.close } }
+    let(:attest_file) { Tempfile.new([ "att-", ".attestation-bundle" ]).tap { |f| f.write("{}"); f.close } }
+
+    after { [ img_file, bundle_file, attest_file ].each { |f| f.close! rescue nil } }
+
+    def status(ok)
+      instance_double(Process::Status, success?: ok)
+    end
+
+    it "fails closed when no trusted key validates the signature (untrusted/wrong key)" do
+      allow(Open3).to receive(:capture3).and_return([ "", "error: no matching signatures", status(false) ])
+
+      result = adapter.send(:verify_signed_blob_with_keys, "verify-blob", bundle_file.path,
+                            [ trusted_key_pem ], [ img_file.path ])
+
+      expect(result[:ok]).to be false
+      expect(result[:error]).to match(/no trusted public key verified/)
+    end
+
+    it "fails closed on a subject-digest mismatch, pinning --check-claims=true + --digest on the key-verify" do
+      real_sha     = "a" * 64
+      tampered_sha = "b" * 64
+      captured = []
+      allow(Open3).to receive(:capture3) do |*args|
+        cmd = args.reject { |a| a.is_a?(Hash) }
+        captured << cmd
+        passed = cmd.include?("--digest") ? cmd[cmd.index("--digest") + 1] : nil
+        ok = passed == real_sha # only the correct subject digest verifies
+        [ "", ok ? "" : "error: no matching attestations: subject digest mismatch", status(ok) ]
+      end
+
+      result = adapter.send(:run_cosign_verify_attestation, img_file.path, attest_file.path,
+                            "id-re", "iss-re", nil, [ trusted_key_pem ], tampered_sha)
+
+      expect(result[:ok]).to be false
+      keyed = captured.find { |c| c.include?("verify-blob-attestation") && c.include?("--key") }
+      expect(keyed).not_to be_nil
+      expect(keyed).to include("--check-claims=true", "--digest", tampered_sha, "--digestAlg", "sha256")
+    end
+
+    it "fails closed when the .attestation-bundle layer is missing" do
+      result = adapter.send(:run_cosign_verify_attestation, img_file.path, nil,
+                            "id-re", "iss-re", nil, [ trusted_key_pem ], "a" * 64)
+
+      expect(result[:ok]).to be false
+      expect(result[:error]).to match(/missing \.attestation-bundle/)
+    end
+
+    it "falls back to the keyless identity/issuer policy when no trusted keys are configured" do
+      captured = []
+      allow(Open3).to receive(:capture3) do |*args|
+        cmd = args.reject { |a| a.is_a?(Hash) }
+        captured << cmd
+        [ "", "", status(true) ]
+      end
+
+      result = adapter.send(:run_cosign_verify_blob, img_file.path, bundle_file.path, "id-re", "iss-re", [])
+
+      expect(result[:ok]).to be true
+      expect(captured.last).to include("cosign", "verify-blob", "--certificate-identity-regexp", "id-re")
+      expect(captured.last).not_to include("--key")
+    end
+  end
 end
