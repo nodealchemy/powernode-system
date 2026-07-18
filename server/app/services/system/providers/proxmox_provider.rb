@@ -1708,8 +1708,26 @@ module System
       end
 
       def allocate_next_vmid!(c)
-        result = c.get("/api2/json/cluster/nextid")
-        Integer(result.to_s)
+        nextid = Integer(c.get("/api2/json/cluster/nextid").to_s)
+
+        # Reserved-band allocation on a SHARED PVE cluster. When this
+        # connection sets `config["vmid_min"]`, VMIDs are floored into that
+        # connection's own band so two Powernode control planes driving the
+        # same cluster (e.g. dev + ops-hub, both running pools named
+        # ci-native-builders-amd64) never collide on `cluster/nextid` — which
+        # has no per-tenant floor and would otherwise hand out an id another
+        # plane's VM already owns. Unset/0 = plain nextid (single-tenant).
+        floor = connection&.config&.dig("vmid_min").to_i
+        return nextid if floor <= 0 || nextid >= floor
+
+        # nextid is below our band: pick the first free id at/above the floor,
+        # skipping any already in use cluster-wide (each resources row carries
+        # its own vmid).
+        used = (c.get("/api2/json/cluster/resources", { "type" => "vm" }) || [])
+               .filter_map { |r| r["vmid"].to_i if r["vmid"] }
+        id = floor
+        id += 1 while used.include?(id)
+        id
       end
 
       # PVE expects a node-name STRING (e.g. "pve1", "dna"). Filter out
