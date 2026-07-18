@@ -7,9 +7,11 @@ module System
   # Issues mTLS certificates for NodeInstances against the platform's
   # internal Certificate Authority. Two adapters:
   #
-  # - LocalCaAdapter (test/dev) : generates an in-memory Ed25519 CA on first
-  #   use, caches it per-process. Used when Vault is unavailable or we're in
-  #   a test environment.
+  # - LocalCaAdapter (test/dev + Vault-less production) : generates an Ed25519
+  #   CA on first use and PERSISTS it (root.key 0600, root.crt) under
+  #   POWERNODE_CA_LOCAL_DIR so it is stable across process restarts. Selected
+  #   when POWERNODE_CA_MODE=local, in non-production, or when Vault is
+  #   unconfigured/unavailable (a Vault-less hub mints its own node certs).
   #
   # - VaultCaAdapter (production) : delegates to HashiCorp Vault's PKI
   #   secrets engine via Security::VaultClient. The CA root key never
@@ -138,7 +140,7 @@ module System
       private
 
       def build_adapter
-        mode = ENV.fetch("POWERNODE_CA_MODE", default_mode_for_env)
+        mode = ENV["POWERNODE_CA_MODE"].presence || resolve_default_mode
         case mode
         when "vault"
           VaultCaAdapter.new
@@ -149,15 +151,36 @@ module System
         end
       end
 
-      def default_mode_for_env
-        # Test and dev default to local adapter (no Vault dependency).
-        # Staging/production default to vault adapter.
-        Rails.env.production? ? "vault" : "local"
+      # Adapter chosen when POWERNODE_CA_MODE is unset. Non-production keeps the
+      # local adapter (no Vault dependency). Production PREFERS Vault, but only
+      # when it is genuinely configured + reachable — a Vault-less hub (no Vault
+      # deployment) auto-selects the local adapter so it can still mint node
+      # mTLS certs from its own on-disk CA instead of 500ing on first issue with
+      # a Vault error. An explicit POWERNODE_CA_MODE always overrides this.
+      def resolve_default_mode
+        return "local" unless Rails.env.production?
+
+        vault_usable? ? "vault" : "local"
+      end
+
+      # Fail-closed Vault probe: ANY inability to confirm a healthy, reachable
+      # Vault resolves to "not usable" so we fall back to local rather than
+      # raise. Uses the core class-level Security::VaultClient.healthy? (an
+      # extension may depend on core security). That predicate is fail-closed
+      # once fix/vault-unconfigured-failsafe lands; the rescue keeps an
+      # unconfigured-Vault raise on current code resolving to false as well.
+      def vault_usable?
+        return false unless defined?(::Security::VaultClient)
+
+        ::Security::VaultClient.healthy?
+      rescue StandardError => e
+        Rails.logger.warn("[InternalCaService] Vault probe failed; defaulting to local CA: #{e.class}: #{e.message}") if defined?(Rails)
+        false
       end
     end
 
     # ----------------------------------------------------------------------
-    # Local CA adapter (in-memory, test + dev)
+    # Local CA adapter (on-disk persisted; test/dev + Vault-less production)
     # ----------------------------------------------------------------------
     class LocalCaAdapter
       attr_reader :ca_cert, :ca_key
@@ -247,9 +270,10 @@ module System
       def preflight_check
         {
           status: :ok,
-          message: "LocalCaAdapter active (dev/test). Ephemeral in-memory CA.",
+          message: "LocalCaAdapter active. On-disk CA persisted at #{@persist_dir}.",
           details: {
             adapter: "local",
+            persist_dir: @persist_dir,
             subject: ca_cert.subject.to_s,
             not_after: ca_cert.not_after.iso8601
           }

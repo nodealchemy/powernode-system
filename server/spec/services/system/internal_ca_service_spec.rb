@@ -113,5 +113,73 @@ RSpec.describe System::InternalCaService do
       described_class.reset!
       expect { described_class.adapter }.to raise_error(described_class::CaError, /Unknown POWERNODE_CA_MODE/)
     end
+
+    context "in production with POWERNODE_CA_MODE unset (Vault-less auto-detect)" do
+      before do
+        stub_const("ENV", ENV.to_h.tap { |h| h.delete("POWERNODE_CA_MODE") })
+        allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
+        described_class.reset!
+      end
+
+      it "falls back to LocalCaAdapter when Vault is unconfigured/unavailable" do
+        allow(::Security::VaultClient).to receive(:healthy?).and_return(false)
+        expect(described_class.adapter).to be_a(described_class::LocalCaAdapter)
+      end
+
+      it "treats a raising Vault probe as unusable and still uses local (fail-closed)" do
+        allow(::Security::VaultClient).to receive(:healthy?).and_raise(StandardError, "no VAULT_ADDR")
+        expect(described_class.adapter).to be_a(described_class::LocalCaAdapter)
+      end
+
+      it "selects VaultCaAdapter when Vault is configured + healthy" do
+        allow(::Security::VaultClient).to receive(:healthy?).and_return(true)
+        fake = instance_double(described_class::VaultCaAdapter)
+        allow(described_class::VaultCaAdapter).to receive(:new).and_return(fake)
+        expect(described_class.adapter).to be(fake)
+      end
+
+      it "an explicit POWERNODE_CA_MODE=vault still wins over auto-detect" do
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_MODE" => "vault"))
+        described_class.reset!
+        fake = instance_double(described_class::VaultCaAdapter)
+        allow(described_class::VaultCaAdapter).to receive(:new).and_return(fake)
+        # healthy? must NOT be consulted when the mode is explicit
+        expect(::Security::VaultClient).not_to receive(:healthy?)
+        expect(described_class.adapter).to be(fake)
+      end
+    end
+  end
+
+  describe "LocalCaAdapter on-disk persistence" do
+    it "generates + persists a root (key 0600) on first use, then reloads the SAME root" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+        first = described_class::LocalCaAdapter.new
+
+        key_path  = File.join(dir, "root.key")
+        cert_path = File.join(dir, "root.crt")
+        expect(File.exist?(key_path)).to be(true)
+        expect(File.exist?(cert_path)).to be(true)
+        expect(format("%o", File.stat(key_path).mode & 0o777)).to eq("600")
+
+        # A second adapter over the same dir loads the persisted root rather
+        # than generating a new one — cross-process stability.
+        second = described_class::LocalCaAdapter.new
+        expect(second.ca_cert.to_pem).to eq(first.ca_cert.to_pem)
+      end
+    end
+
+    it "signs a CSR that verifies against the persisted CA root (gen→sign→verify)" do
+      Dir.mktmpdir do |dir|
+        stub_const("ENV", ENV.to_h.merge("POWERNODE_CA_LOCAL_DIR" => dir))
+        adapter = described_class::LocalCaAdapter.new
+        result  = adapter.issue_certificate(csr_pem: csr_pem, ttl_seconds: 3600, common_name: "node-x")
+
+        leaf  = OpenSSL::X509::Certificate.new(result[:cert_pem])
+        store = OpenSSL::X509::Store.new
+        store.add_cert(adapter.ca_cert)
+        expect(store.verify(leaf)).to be(true)
+      end
+    end
   end
 end
