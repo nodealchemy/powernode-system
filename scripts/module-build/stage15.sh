@@ -551,6 +551,45 @@ case "$MODULE" in
       cp extension.json /tmp/fat/opt/powernode/extensions/system/extension.json
     fi
 
+    # --- Worker component (Sidekiq jobs + scheduler) --------------------
+    # extension.json declares components.worker:true, so BOTH runtime seams
+    # in the hub-worker process look for this extension's worker tree under
+    # /opt/powernode/extensions/system/worker/ (paths are relative to the
+    # core worker checkout, ../../extensions):
+    #   * worker/config/boot.rb — its generic extension loader requires
+    #     worker/app/{services,jobs}/**; the loop GATES on
+    #     `Dir.exist?(<ext>/worker)` and `next`s when it's absent.
+    #   * worker/config/application.rb — its generic scheduler scan merges
+    #     <ext>/worker/config/sidekiq_*.yml into sidekiq-scheduler.
+    # Nothing staged this tree before now: the powernode-hub-worker arm
+    # copies ONLY the core worker (/opt/powernode/worker/), and this arm
+    # shipped only server/ + extension.json. So on the composed node the
+    # worker dir did not exist, boot.rb skipped it, and the extension's
+    # top-level job classes (SystemExecuteTaskJob — enqueued by
+    # WorkerDispatch on every System::Task create — SystemTaskReaperJob,
+    # and the seven scheduled reconcilers) were never loaded: every
+    # worker-dispatched system task died with `uninitialized constant
+    # SystemExecuteTaskJob`, and the sidekiq_system.yml schedule never ran.
+    # Ship it here (this module already owns everything under
+    # /opt/powernode/extensions/system/**, so its file_spec carves it with
+    # no manifest change, and the worker component lands with the same
+    # extension.json that declares it — no split ownership with hub-worker).
+    # The jobs need no extension SERVER code and no path-gem: each is a thin
+    # BaseJob (core) that POSTs to the backend worker_api over HTTP and rides
+    # the core worker's own bundle — same rationale as the server arm cloning
+    # no worker gems.
+    if [ -d worker ]; then
+      rsync -a \
+        --exclude='.git' --exclude='tmp' --exclude='log' \
+        --exclude='node_modules' --exclude='coverage' \
+        worker/ /tmp/fat/opt/powernode/extensions/system/worker/
+      # shellcheck disable=SC2012  # ls glob is fine here — just counting the shipped job files
+      echo "=== extension-system worker component: $(ls /tmp/fat/opt/powernode/extensions/system/worker/app/jobs/*.rb 2>/dev/null | wc -l) job files + $(ls /tmp/fat/opt/powernode/extensions/system/worker/config/sidekiq_*.yml 2>/dev/null | wc -l) scheduler yml ==="
+    else
+      echo "[stage-1.5] extension-system: FATAL — worker/ tree missing from workspace; extension.json declares components.worker:true but no worker code to ship" >&2
+      exit 1
+    fi
+
     # --- Dedicated-module frontend build (P2) ---------------------------
     # Builds this extension's frontend as a standalone ESM bundle (every
     # HOST_EXPOSED_IDS id — core's @/… surface + the npm singletons — left
