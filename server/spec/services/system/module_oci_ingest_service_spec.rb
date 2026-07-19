@@ -324,6 +324,27 @@ RSpec.describe System::ModuleOciIngestService do
       )
       expect(result[:ok]).to be true
     end
+
+    # Fable #9 (task #48): R6's `cosign verify` must PULL the manifest + .sig from
+    # the PRIVATE registry (401s anonymous), so the verify subprocess MUST carry
+    # the registry auth env (DOCKER_CONFIG) threaded down from the ingest service.
+    # The R6 unit tests stub verify_signature wholesale, which is why the missing
+    # auth stayed green — this asserts the env actually reaches the cosign
+    # subprocess at the verify_with_key level.
+    it "threads registry_env (DOCKER_CONFIG) onto the cosign verify subprocess" do
+      ::SiteSetting.set(trusted_keys_setting, [ vault_pem ].to_json, setting_type: "json")
+      captured_env = nil
+      allow(Open3).to receive(:capture3) do |*args|
+        next [ "", "", status_double(true) ] if args == [ "which", "cosign" ]
+
+        captured_env = args.first
+        [ '{"critical":{}}', "", status_double(true) ]
+      end
+
+      result = adapter.verify_signature(oci_ref, registry_env: { "DOCKER_CONFIG" => "/tmp/verify-auth-xyz" })
+      expect(result[:ok]).to be true
+      expect(captured_env).to eq("DOCKER_CONFIG" => "/tmp/verify-auth-xyz")
+    end
   end
 
   # Campaign hub-durable-modules — native single-arch build path. The
@@ -419,6 +440,12 @@ RSpec.describe System::ModuleOciIngestService do
     end
 
     context "R6 signature re-verification (task #48)" do
+      # These unit tests exercise the R6 GATE, not the registry auth: with the
+      # registry unconfigured, with_registry_docker_config yields {} (no oras
+      # login), so verify_signature is called with registry_env: {}. The auth
+      # threading itself is locked by OrasOciAdapter's registry_env spec above.
+      before { allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(false) }
+
       # resolve_erofs_layer works via the stubbed fetch_native_manifest above;
       # only R6 touches the adapter, so a two-method double is safe.
       def adapter_double(available:, verify:)

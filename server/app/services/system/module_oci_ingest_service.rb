@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "tempfile"
+require "tmpdir"
+require "open3"
 require "net/http"
 require "uri"
 require "json"
@@ -196,7 +198,15 @@ module System
       # ModuleSigningService.sign!) BEFORE this ingest.
       adapter = self.class.adapter
       if adapter.respond_to?(:key_verification_available?) && adapter.key_verification_available?
-        verification = adapter.verify_signature(oci_ref)
+        # Fable #1: cosign verify must PULL the manifest + .sig from the registry,
+        # which 401s anonymous on the private Gitea OCI registry. Thread the SAME
+        # throwaway-DOCKER_CONFIG registry auth ModuleSigningService.sign! used to
+        # PUSH the signature moments earlier, so the just-made signature can
+        # actually be fetched + verified. An auth-setup failure returns {error} →
+        # fail-closed (never a silent skip that would promote an unverified build).
+        verification = with_registry_docker_config(account) do |reg_env|
+          adapter.verify_signature(oci_ref, registry_env: reg_env)
+        end
         if verification[:error]
           return failure("R6 signature verification failed for #{oci_ref}: #{verification[:error]}")
         end
@@ -341,6 +351,39 @@ module System
       "Basic " + ::Base64.strict_encode64("#{user}:#{token}")
     end
 
+    # Logs in to the platform's Gitea OCI registry into a THROWAWAY DOCKER_CONFIG
+    # for the duration of the block and yields { "DOCKER_CONFIG" => dir } to thread
+    # onto the R6 `cosign verify` (cosign honors DOCKER_CONFIG). Mirrors
+    # ModuleSigningService#with_registry_auth exactly — same creds resolver, same
+    # throwaway scope (never the shared ~/.docker/config.json; Puma serves many
+    # accounts concurrently), token piped via stdin (never argv). Yields an empty
+    # env when the registry is unconfigured (dev/public), matching the rest of
+    # this service. A login FAILURE returns {error:} (fail-closed) so R6 never
+    # records an artifact whose signature it could not fetch to verify.
+    def with_registry_docker_config(account)
+      return yield({}) unless account && ::System::DiskImageRegistryConfig.configured?(account: account)
+
+      host  = ::System::DiskImageRegistryConfig.registry_host(account: account)
+      user  = ::System::DiskImageRegistryConfig.registry_user(account: account)
+      token = ::System::DiskImageRegistryConfig.registry_token(account: account)
+      return yield({}) if host.blank? || user.blank? || token.blank?
+
+      Dir.mktmpdir("powernode-verify-auth-") do |dir|
+        env = { "DOCKER_CONFIG" => dir }
+        _out, login_err, login_status = ::Open3.capture3(
+          env, "oras", "login", host,
+          "--username", user, "--password-stdin",
+          stdin_data: token.to_s
+        )
+        if login_status.success?
+          yield env
+        else
+          { error: "registry login for verify failed: " \
+                   "#{::System::ShellOutputSanitizer.redact(login_err.presence) || "exit #{login_status.exitstatus}"}" }
+        end
+      end
+    end
+
     # ----------------------------------------------------------------------
     # Local adapter — test/dev. Returns a deterministic stub manifest so
     # specs don't need a real registry or oras binary on PATH.
@@ -376,7 +419,7 @@ module System
         }
       end
 
-      def verify_signature(_oci_ref, expected_signers: nil, issuer_regexp: nil)
+      def verify_signature(_oci_ref, expected_signers: nil, issuer_regexp: nil, registry_env: {})
         return @stub_verification if @stub_verification
 
         { ok: true, bundle: "stub-cosign-bundle", signers: expected_signers || [],
@@ -429,12 +472,12 @@ module System
       # signing). Each entry is a PEM public key string.
       TRUSTED_KEYS_SETTING = "system.module_signing.trusted_public_keys"
 
-      def verify_signature(oci_ref, expected_signers: nil, issuer_regexp: nil)
+      def verify_signature(oci_ref, expected_signers: nil, issuer_regexp: nil, registry_env: {})
         ensure_binary!("cosign")
 
         keys = trusted_public_keys
         if keys.any?
-          verify_with_trusted_keys(oci_ref, keys)
+          verify_with_trusted_keys(oci_ref, keys, registry_env: registry_env)
         else
           # Keyless fallback path — only works for modules signed by
           # an issuer Sigstore Fulcio trusts (GitHub, GitLab.com, etc).
@@ -442,7 +485,7 @@ module System
           # trusted key configured at all (neither the Vault key nor
           # the legacy static key) is exactly the pre-existing
           # "nothing configured" case.
-          verify_keyless(oci_ref, expected_signers: expected_signers, issuer_regexp: issuer_regexp)
+          verify_keyless(oci_ref, expected_signers: expected_signers, issuer_regexp: issuer_regexp, registry_env: registry_env)
         end
       end
 
@@ -493,10 +536,10 @@ module System
         end
       end
 
-      def verify_with_trusted_keys(oci_ref, keys)
+      def verify_with_trusted_keys(oci_ref, keys, registry_env: {})
         last_error = nil
         keys.each do |pubkey_pem|
-          result = verify_with_key(oci_ref, pubkey_pem)
+          result = verify_with_key(oci_ref, pubkey_pem, registry_env: registry_env)
           return result if result[:ok]
 
           last_error = result[:error]
@@ -512,12 +555,15 @@ module System
       # (rather than the old single-key path's global `ENV[...] =`
       # mutation) keeps concurrent verifications on different threads
       # from stepping on each other's key value.
-      def verify_with_key(oci_ref, pubkey_pem)
+      def verify_with_key(oci_ref, pubkey_pem, registry_env: {})
         Tempfile.create([ "cosign_pub", ".pem" ]) do |f|
           f.write(pubkey_pem)
           f.flush
           cmd = [ "cosign", "verify", "--output", "json", "--key", f.path, oci_ref ]
-          out, err, status = Open3.capture3(*cmd)
+          # registry_env carries the DOCKER_CONFIG cosign needs to PULL the
+          # manifest + .sig from the private registry (Fable #1); {} inherits the
+          # ambient env (dev / public registry), matching prior behavior.
+          out, err, status = Open3.capture3(registry_env, *cmd)
           unless status.success?
             return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "cosign exit #{status.exitstatus}" }
           end
@@ -526,7 +572,7 @@ module System
         end
       end
 
-      def verify_keyless(oci_ref, expected_signers:, issuer_regexp:)
+      def verify_keyless(oci_ref, expected_signers:, issuer_regexp:, registry_env: {})
         cmd = [ "cosign", "verify", "--output", "json" ]
         if expected_signers&.any?
           cmd += [ "--certificate-identity-regexp", expected_signers.join("|") ]
@@ -536,7 +582,7 @@ module System
         end
         cmd << oci_ref
 
-        out, err, status = Open3.capture3(*cmd)
+        out, err, status = Open3.capture3(registry_env, *cmd)
         # cosign's verify failures often quote the certificate body,
         # which is fine to surface; sanitizer strips anything
         # secret-shaped regardless. nil-safe for the empty-err exit path.
