@@ -1,0 +1,20 @@
+[Unit]
+Description=Dev-cell: prepare durable /persist-backed pnadmin home before it is bind-mounted
+Documentation=https://github.com/nodealchemy/powernode-platform
+# Runs in early boot alongside the local filesystem mounts (/persist is
+# already mounted by the initramfs pivot before systemd starts), and BEFORE
+# home-pnadmin.mount binds it and before any login can read the home.
+DefaultDependencies=no
+ConditionPathIsMountPoint=/persist
+After=systemd-remount-fs.service
+Before=home-pnadmin.mount local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/dev-cell-persist-home.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=local-fs.target

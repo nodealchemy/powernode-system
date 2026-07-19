@@ -1,0 +1,23 @@
+[Unit]
+Description=Persistent bind mount: /home/pnadmin -> /persist/home/pnadmin (survives reboot/recompose)
+Documentation=https://github.com/nodealchemy/powernode-platform
+# Same early-boot pattern gitea-act-runner's var-lib-docker.mount uses.
+# The bind source is created + owned by dev-cell-persist-home.service, which
+# this unit requires and orders after; it must be up before login (and before
+# systemd-tmpfiles-setup applies base-os's powernode-home.conf, so those
+# entries land on the persisted dir) — hence Before=systemd-user-sessions.
+DefaultDependencies=no
+ConditionPathIsMountPoint=/persist
+Requires=dev-cell-persist-home.service
+After=dev-cell-persist-home.service
+Before=local-fs.target systemd-user-sessions.service systemd-tmpfiles-setup.service
+Conflicts=umount.target
+
+[Mount]
+What=/persist/home/pnadmin
+Where=/home/pnadmin
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

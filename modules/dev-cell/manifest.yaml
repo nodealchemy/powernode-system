@@ -225,6 +225,158 @@ file_spec:
   - "/usr/local/bin/dev-cell-mcp-proxy.js"
   - "/usr/local/bin/dev-cell-executor.sh"
 
+  # Persistent-home mechanism (this module's own rootfs overlay files):
+  # binds /home/pnadmin onto the durable /persist partition so the operator's
+  # Claude Code auth, cloned source, ~/.ssh and shell history survive a
+  # recompose/reboot (the root overlay upper is ephemeral 512M tmpfs). Same
+  # rootfs .mount + local-fs.target.wants shipping convention gitea-act-runner
+  # uses for var-lib-docker.mount.
+  - "/usr/local/bin/dev-cell-persist-home.sh"
+  - "/etc/systemd/system/dev-cell-persist-home.service"
+  - "/etc/systemd/system/home-pnadmin.mount"
+  - "/etc/systemd/system/local-fs.target.wants/dev-cell-persist-home.service"
+  - "/etc/systemd/system/local-fs.target.wants/home-pnadmin.mount"
+
+  # === Interactive dev userland (campaign #40 / dev-cell dev-readiness) ===
+  # Derived via derive-file-spec.sh --mode deb-payload against
+  # [ncurses-base, ncurses-term, less, vim-tiny, nano, rsync, wget, gnupg,
+  #  file, tree, unzip] minus base-os-ubuntu-noble's closure: 3291 owned
+  # files (2870 terminfo + 226 masked doc/man/locale + 195 payload). The
+  # operator logs in as pnadmin over SSH/tmux and runs Claude Code here;
+  # base-os ships NO terminfo (infocmp failed on the live cell) and no
+  # pager/editor, so xterm/tmux/screen-256color, less and an editor are
+  # the acute gaps. dpkg's DB isn't carved into the immutable compose, so
+  # apt can't install at runtime — these MUST be baked.
+  #
+  # terminfo + the other dev-cell-EXCLUSIVE subtrees (nano/vim/rsync/gnupg/
+  # tabset — none carried by base-os) as globs; everything in base-shared
+  # dirs (/usr/bin, /usr/sbin, the multiarch lib dir, /etc, systemd units,
+  # ...) enumerated literally, same convention as this module's git/dpkg
+  # closure above.
+  - "/usr/share/terminfo/**"
+  - "/etc/terminfo/**"
+  - "/usr/share/nano/**"
+  - "/usr/share/vim/**"
+  - "/usr/share/rsync/**"
+  - "/usr/share/gnupg/**"
+  - "/usr/lib/gnupg/**"
+  - "/usr/lib/gnupg2/**"
+  - "/usr/share/tabset/**"
+  - "/etc/X11/Xsession.d/90gpg-agent"
+  - "/etc/default/rsync"
+  - "/etc/init.d/rsync"
+  - "/etc/logcheck/ignore.d.server/gpg-agent"
+  - "/etc/magic"
+  - "/etc/magic.mime"
+  - "/etc/nanorc"
+  - "/etc/vim/vimrc"
+  - "/etc/vim/vimrc.tiny"
+  - "/etc/wgetrc"
+  - "/usr/bin/dirmngr"
+  - "/usr/bin/dirmngr-client"
+  - "/usr/bin/file"
+  - "/usr/bin/funzip"
+  - "/usr/bin/gpg"
+  - "/usr/bin/gpg-agent"
+  - "/usr/bin/gpg-connect-agent"
+  - "/usr/bin/gpgconf"
+  - "/usr/bin/gpgparsemail"
+  - "/usr/bin/gpgsm"
+  - "/usr/bin/gpgsplit"
+  - "/usr/bin/gpgtar"
+  - "/usr/bin/gpgv"
+  - "/usr/bin/helpztags"
+  - "/usr/bin/kbxutil"
+  - "/usr/bin/less"
+  - "/usr/bin/lessecho"
+  - "/usr/bin/lessfile"
+  - "/usr/bin/lesskey"
+  - "/usr/bin/lesspipe"
+  - "/usr/bin/lspgpot"
+  - "/usr/bin/migrate-pubring-from-classic-gpg"
+  - "/usr/bin/nano"
+  - "/usr/bin/pinentry-curses"
+  - "/usr/bin/rnano"
+  - "/usr/bin/rrsync"
+  - "/usr/bin/rsync"
+  - "/usr/bin/rsync-ssl"
+  - "/usr/bin/tree"
+  - "/usr/bin/unzip"
+  - "/usr/bin/unzipsfx"
+  - "/usr/bin/vim.tiny"
+  - "/usr/bin/watchgnupg"
+  - "/usr/bin/wget"
+  - "/usr/bin/zipgrep"
+  - "/usr/bin/zipinfo"
+  - "/usr/lib/file/magic.mgc"
+  - "/usr/lib/mime/packages/less"
+  - "/usr/lib/mime/packages/unzip"
+  - "/usr/lib/mime/packages/vim-common"
+  - "/usr/lib/systemd/system/rsync.service"
+  - "/usr/lib/systemd/user/dirmngr.service"
+  - "/usr/lib/systemd/user/dirmngr.socket"
+  - "/usr/lib/systemd/user/gpg-agent-browser.socket"
+  - "/usr/lib/systemd/user/gpg-agent-extra.socket"
+  - "/usr/lib/systemd/user/gpg-agent-ssh.socket"
+  - "/usr/lib/systemd/user/gpg-agent.service"
+  - "/usr/lib/systemd/user/gpg-agent.socket"
+  - "/usr/lib/systemd/user/keyboxd.service"
+  - "/usr/lib/systemd/user/keyboxd.socket"
+  - "/usr/lib/x86_64-linux-gnu/libassuan.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libassuan.so.0.8.6"
+  - "/usr/lib/x86_64-linux-gnu/libhistory.so.8"
+  - "/usr/lib/x86_64-linux-gnu/libhistory.so.8.2"
+  - "/usr/lib/x86_64-linux-gnu/libksba.so.8"
+  - "/usr/lib/x86_64-linux-gnu/libksba.so.8.14.6"
+  - "/usr/lib/x86_64-linux-gnu/libmagic.so.1"
+  - "/usr/lib/x86_64-linux-gnu/libmagic.so.1.0.0"
+  - "/usr/lib/x86_64-linux-gnu/libnpth.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libnpth.so.0.1.2"
+  - "/usr/lib/x86_64-linux-gnu/libpopt.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libpopt.so.0.0.2"
+  - "/usr/lib/x86_64-linux-gnu/libreadline.so.8"
+  - "/usr/lib/x86_64-linux-gnu/libreadline.so.8.2"
+  - "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6"
+  - "/usr/lib/x86_64-linux-gnu/libxxhash.so.0"
+  - "/usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.2"
+  - "/usr/sbin/addgnupghome"
+  - "/usr/sbin/applygnupgdefaults"
+  - "/usr/share/applications/vim.desktop"
+  - "/usr/share/bug/file/control"
+  - "/usr/share/bug/file/presubj"
+  - "/usr/share/bug/libmagic1t64/control"
+  - "/usr/share/bug/libmagic1t64/presubj"
+  - "/usr/share/bug/vim-tiny/presubj"
+  - "/usr/share/bug/vim-tiny/script"
+  - "/usr/share/doc-base/nano.nano"
+  - "/usr/share/doc-base/nano.nano-faq"
+  - "/usr/share/file/magic.mgc"
+  - "/usr/share/icons/hicolor/48x48/apps/gvim.png"
+  - "/usr/share/icons/hicolor/scalable/apps/gvim.svg"
+  - "/usr/share/icons/locolor/16x16/apps/gvim.png"
+  - "/usr/share/icons/locolor/32x32/apps/gvim.png"
+  - "/usr/share/info/gnupg-card-architecture.png"
+  - "/usr/share/info/gnupg-module-overview.png"
+  - "/usr/share/info/gnupg.info-1.gz"
+  - "/usr/share/info/gnupg.info-2.gz"
+  - "/usr/share/info/gnupg.info-3.gz"
+  - "/usr/share/info/gnupg.info.gz"
+  - "/usr/share/info/nano.info.gz"
+  - "/usr/share/info/rluserman.info.gz"
+  - "/usr/share/info/wget.info.gz"
+  - "/usr/share/lintian/overrides/gpg-agent"
+  - "/usr/share/lintian/overrides/libmagic1t64"
+  - "/usr/share/lintian/overrides/libnpth0t64"
+  - "/usr/share/lintian/overrides/ncurses-base"
+  - "/usr/share/lintian/overrides/readline-common"
+  - "/usr/share/lintian/overrides/rsync"
+  - "/usr/share/lintian/overrides/vim-common"
+  - "/usr/share/lintian/overrides/vim-tiny"
+  - "/usr/share/misc/magic"
+  - "/usr/share/misc/magic.mgc"
+  - "/usr/share/readline/inputrc"
+
 # Owned (per the closure above) but masked out by the doc/man/locale
 # rules above — same size-conscious convention base-os/storage-tools use.
 # Waived so conformance doesn't WARN on the deliberate exclusion.
@@ -270,6 +422,25 @@ package_spec:
   - git
   - jq
   - ca-certificates
+  # Interactive dev userland (campaign #40): the operator SSHes in as pnadmin
+  # and runs Claude Code / tmux here, so this cell needs a real terminal
+  # userland base-os doesn't carry. terminfo (ncurses-base + ncurses-term:
+  # xterm/tmux/screen-256color), a pager (less), editors (vim-tiny, nano) and
+  # the common dev tools (rsync/wget/gnupg/file/tree/unzip). Baked, not
+  # apt-installed — the immutable EROFS compose carves no dpkg DB, so runtime
+  # apt is inert (dpkg-query returns 0 packages on the live cell). file_spec
+  # below carries the derive-file-spec.sh --mode deb-payload closure.
+  - ncurses-base
+  - ncurses-term
+  - less
+  - vim-tiny
+  - nano
+  - rsync
+  - wget
+  - gnupg
+  - file
+  - tree
+  - unzip
 
 dependencies:
   requires:
