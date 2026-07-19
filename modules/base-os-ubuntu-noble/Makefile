@@ -33,11 +33,24 @@ COSIGN_VERSION      ?= 3.0.6
 COSIGN_SHA256_amd64 ?= c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
 COSIGN_SHA256_arm64 ?= bedac92e8c3729864e13d4a17048007cfafa79d5deca993a43a90ffe018ef2b8
 
-.PHONY: stage-agent stage-agent-amd64 stage-agent-arm64 stage-cosign tarball clean
+# Pinned oras release staged at rootfs/usr/bin/oras for on-node native module
+# signing (#39 P2 / #48): cosign's registry sign+verify path shells out to oras
+# for `oras login` (DOCKER_CONFIG registry auth) and `oras manifest fetch
+# --descriptor` (digest binding). Baked durably here so ops-hub keeps signing
+# across a reboot without the ephemeral runtime install. Same fail-closed
+# contract as cosign: the fetch verifies the checksum and FAILS the build on
+# mismatch. Bump ORAS_VERSION + BOTH checksums together from the oras-project
+# release (sha256 of the official oras_<ver>_linux_<arch>.tar.gz asset).
+ORAS_VERSION      ?= 1.2.0
+ORAS_SHA256_amd64 ?= 5b3f1cbb86d869eee68120b9b45b9be983f3738442f87ee5f06b00edd0bab336
+ORAS_SHA256_arm64 ?= 27df680a39fc2fcedc549cb737891623bc696c9a92a03fd341e9356a35836bae
 
-# stage-agent also stages cosign so the existing CI (update-system-base.yaml),
-# which invokes `make stage-agent`, ships both without a workflow change.
-stage-agent: stage-agent-$(ARCH) stage-cosign
+.PHONY: stage-agent stage-agent-amd64 stage-agent-arm64 stage-cosign stage-oras tarball clean
+
+# stage-agent also stages cosign + oras so the existing CI
+# (update-system-base.yaml), which invokes `make stage-agent`, ships all three
+# without a workflow change.
+stage-agent: stage-agent-$(ARCH) stage-cosign stage-oras
 
 stage-cosign:
 	@want=$(COSIGN_SHA256_$(ARCH)); \
@@ -51,6 +64,22 @@ stage-cosign:
 	[ "$$got" = "$$want" ] || { echo "FATAL: cosign sha256 mismatch (want $$want got $$got)"; rm -f "$$out"; exit 1; }; \
 	chmod +x "$$out"; \
 	echo "staged cosign v$(COSIGN_VERSION) $(ARCH) → $$out"
+
+stage-oras:
+	@want=$(ORAS_SHA256_$(ARCH)); \
+	[ -n "$$want" ] || { echo "ERROR: no pinned oras sha256 for ARCH=$(ARCH)"; exit 1; }; \
+	mkdir -p $(ROOTFS_DIR)/usr/bin; \
+	tmp=$$(mktemp -d); \
+	tgz="$$tmp/oras.tar.gz"; \
+	url="https://github.com/oras-project/oras/releases/download/v$(ORAS_VERSION)/oras_$(ORAS_VERSION)_linux_$(ARCH).tar.gz"; \
+	echo "fetching oras v$(ORAS_VERSION) $(ARCH): $$url"; \
+	curl -fsSL "$$url" -o "$$tgz"; \
+	got=$$(sha256sum "$$tgz" | awk '{print $$1}'); \
+	[ "$$got" = "$$want" ] || { echo "FATAL: oras sha256 mismatch (want $$want got $$got)"; rm -rf "$$tmp"; exit 1; }; \
+	tar -xzf "$$tgz" -C "$$tmp" oras; \
+	install -m 0755 "$$tmp/oras" $(ROOTFS_DIR)/usr/bin/oras; \
+	rm -rf "$$tmp"; \
+	echo "staged oras v$(ORAS_VERSION) $(ARCH) → $(ROOTFS_DIR)/usr/bin/oras"
 
 stage-agent-amd64:
 	$(MAKE) -C $(AGENT_DIR) build-amd64
@@ -87,4 +116,5 @@ tarball:
 clean:
 	rm -f $(ROOTFS_DIR)/usr/sbin/powernode-agent
 	rm -f $(ROOTFS_DIR)/usr/bin/cosign
+	rm -f $(ROOTFS_DIR)/usr/bin/oras
 	rm -rf $(DIST_DIR)
