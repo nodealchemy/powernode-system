@@ -46,6 +46,18 @@ if id "$u" >/dev/null 2>&1; then
   install -d -m 0755 -o root -g root /home
   install -d -m 0700 -o "$u" -g "$u" "/home/$u"
 
+  # First-boot skeleton seed: without this the operator lands in a bare home
+  # (no .bashrc/.profile → no prompt, PATH quirks, no persistent history).
+  # Idempotent + first-boot-only — guarded on .bashrc absence so it NEVER
+  # clobbers the operator's own edits on later boots. Also pre-create a
+  # persistent .bash_history file so shell history survives reboots.
+  if [ ! -e "$h/.bashrc" ] && [ -d /etc/skel ]; then
+    cp -a /etc/skel/. "$h/" 2>/dev/null || true
+    : > "$h/.bash_history"
+    chown -R "$u:$u" "$h"
+    echo "[persist-home] seeded /etc/skel into fresh home $h"
+  fi
+
   echo "[persist-home] prepared durable home $h for $u (+ mountpoint /home/$u)"
 else
   echo "[persist-home] user $u absent — nothing to prepare"

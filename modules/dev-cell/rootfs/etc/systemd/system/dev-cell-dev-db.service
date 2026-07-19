@@ -1,0 +1,26 @@
+[Unit]
+Description=Dev-cell: ensure operator development DB (powernode role + powernode_development)
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/dev-cell-dev-db.sh
+# psql/createuser/createdb come from postgres-primary (co-assigned); skip
+# cleanly on a template without it rather than crash-loop.
+ConditionPathExists=/usr/bin/psql
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Waits for Postgres internally (pg_isready poll); disable the default 90s
+# ExecStart timeout so the poll can run its full bounded window on a cold boot.
+TimeoutStartSec=0
+ExecStart=/usr/local/bin/dev-cell-dev-db.sh
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=1800
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

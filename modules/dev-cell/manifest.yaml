@@ -236,6 +236,11 @@ file_spec:
   - "/etc/systemd/system/home-pnadmin.mount"
   - "/etc/systemd/system/local-fs.target.wants/dev-cell-persist-home.service"
   - "/etc/systemd/system/local-fs.target.wants/home-pnadmin.mount"
+  # Operator development database (powernode role + powernode_development) —
+  # creds-free local trust-auth Postgres; operator migrates from source.
+  - "/usr/local/bin/dev-cell-dev-db.sh"
+  - "/etc/systemd/system/dev-cell-dev-db.service"
+  - "/etc/systemd/system/multi-user.target.wants/dev-cell-dev-db.service"
 
   # === Interactive dev userland (campaign #40 / dev-cell dev-readiness) ===
   # Derived via derive-file-spec.sh --mode deb-payload against
