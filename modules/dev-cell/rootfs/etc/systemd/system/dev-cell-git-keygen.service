@@ -1,0 +1,27 @@
+[Unit]
+Description=Dev-cell: generate operator's on-VM git SSH key + pin Gitea host key (as pnadmin)
+Documentation=https://github.com/nodealchemy/powernode-platform
+# Needs the persisted home mounted (key lands in ~/.ssh on /persist) and the
+# network up (ssh-keyscan of the Gitea host). Runs once; the key persists.
+After=network-online.target home-pnadmin.mount
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/dev-cell-git-keygen.sh
+ConditionPathIsMountPoint=/persist
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Runs AS THE OPERATOR (pnadmin) — the private key must be owned by and confined
+# to the operator, never root/pnagent. The dev-cell module is privileged, so
+# root may runuser. No secret is handled by this unit beyond the key it
+# generates locally into the operator's own home.
+ExecStart=/usr/sbin/runuser -u pnadmin -- /usr/local/bin/dev-cell-git-keygen.sh
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=1800
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

@@ -241,6 +241,13 @@ file_spec:
   - "/usr/local/bin/dev-cell-dev-db.sh"
   - "/etc/systemd/system/dev-cell-dev-db.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-dev-db.service"
+  # Operator git source workspace: on-VM key generation (private NEVER leaves
+  # the cell) + a re-runnable `dev-cell-clone` that clones from git.powernode.net
+  # once the operator registers his public key. No key material handled here.
+  - "/usr/local/bin/dev-cell-git-keygen.sh"
+  - "/usr/local/bin/dev-cell-clone.sh"
+  - "/etc/systemd/system/dev-cell-git-keygen.service"
+  - "/etc/systemd/system/multi-user.target.wants/dev-cell-git-keygen.service"
 
   # === Interactive dev userland (campaign #40 / dev-cell dev-readiness) ===
   # Derived via derive-file-spec.sh --mode deb-payload against
