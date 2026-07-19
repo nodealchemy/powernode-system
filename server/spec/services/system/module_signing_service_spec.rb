@@ -204,4 +204,58 @@ RSpec.describe System::ModuleSigningService do
       end
     end
   end
+
+  describe "local signing mode (task #48 — no Vault)" do
+    let(:key_path) { "/var/lib/powernode/internal-ca/module-signing/cosign.key" }
+    let(:cosign_password) { "local-key-password-not-a-real-secret" }
+    let(:local_material) do
+      System::ModuleSigningKey::Material.new(
+        key_path: key_path,
+        password: cosign_password,
+        public_key_pem: "-----BEGIN PUBLIC KEY-----\nX\n-----END PUBLIC KEY-----\n"
+      )
+    end
+    # NO injected vault client — proves local mode never resolves Vault at all.
+    let(:local_service) { described_class.new }
+
+    before do
+      ::SiteSetting.set("system.module_signing.mode", "local", setting_type: "string")
+      allow(System::ModuleSigningKey).to receive(:ensure!).and_return(local_material)
+    end
+
+    it "signs with the on-disk key file (--key <path>) + COSIGN_PASSWORD env, and NEVER resolves Vault" do
+      stub_manifest_fetch
+      expect(Security::VaultClient).not_to receive(:instance)
+      expect(Open3).to receive(:capture3)
+        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--key", key_path, ref_at_digest)
+        .and_return([ "signed", "", status_double(true) ])
+
+      result = local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account)
+      expect(result.ok?).to be true
+    end
+
+    it "passes the password via env only — nothing key/password-shaped in argv" do
+      stub_manifest_fetch
+      expect(Open3).to receive(:capture3) do |env, *argv|
+        expect(env).to eq("COSIGN_PASSWORD" => cosign_password)
+        expect(argv).to eq([ "cosign", "sign", "--yes", "--key", key_path, ref_at_digest ])
+        expect(argv).not_to include(cosign_password)
+        [ "signed", "", status_double(true) ]
+      end
+
+      expect(local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account).ok?).to be true
+    end
+
+    it "emits the module_signed event with mode=local and keyname=local" do
+      stub_manifest_fetch
+      allow(Open3).to receive(:capture3)
+        .with({ "COSIGN_PASSWORD" => cosign_password }, "cosign", "sign", "--yes", "--key", key_path, ref_at_digest)
+        .and_return([ "signed", "", status_double(true) ])
+      expect(::System::Fleet::EventBroadcaster).to receive(:emit!)
+        .with(hash_including(payload: hash_including(mode: "local", keyname: "local")))
+        .and_call_original
+
+      local_service.sign!(oci_ref: oci_ref, expected_digest: digest, account: account)
+    end
+  end
 end

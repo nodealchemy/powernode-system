@@ -417,5 +417,43 @@ RSpec.describe System::ModuleOciIngestService do
       expect(result.error).to match(/erofs layer resolution failed/)
       expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
     end
+
+    context "R6 signature re-verification (task #48)" do
+      # resolve_erofs_layer works via the stubbed fetch_native_manifest above;
+      # only R6 touches the adapter, so a two-method double is safe.
+      def adapter_double(available:, verify:)
+        instance_double(described_class::OrasOciAdapter,
+                        key_verification_available?: available, verify_signature: verify)
+      end
+
+      it "fails closed (no artifact, no promote) when trusted keys are set and the signature doesn't verify" do
+        described_class.adapter = adapter_double(available: true, verify: { error: "no trusted key verified this artifact" })
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref, account: account, fsverity_root: agent_fsverity
+        )
+        expect(result.ok?).to be false
+        expect(result.error).to match(/R6 signature verification failed/)
+        expect(System::ModuleArtifact.where(node_module_version: version).count).to eq(0)
+      end
+
+      it "records the artifact when the just-made signature verifies" do
+        described_class.adapter = adapter_double(available: true, verify: { ok: true })
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref, account: account, fsverity_root: agent_fsverity
+        )
+        expect(result.ok?).to be true
+        expect(result.module_artifacts.size).to eq(1)
+      end
+
+      it "skips verification (legacy unsigned) when no trusted key is configured" do
+        adapter = adapter_double(available: false, verify: { error: "must not be called" })
+        expect(adapter).not_to receive(:verify_signature)
+        described_class.adapter = adapter
+        result = described_class.ingest_native!(
+          node_module_version: version, oci_ref: native_ref, account: account, fsverity_root: agent_fsverity
+        )
+        expect(result.ok?).to be true
+      end
+    end
   end
 end

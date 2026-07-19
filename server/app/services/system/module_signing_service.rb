@@ -46,6 +46,14 @@ module System
     KEYNAME_SETTING = "system.module_signing.keyname"
     DEFAULT_KEYNAME = "powernode-module-signing"
 
+    # Signing MODE (task #48): "vault" (default — sign via the platform's Vault
+    # transit key, unchanged) or "local" (sign with a self-generated on-box
+    # cosign key, for a plane with NO Vault — e.g. ops-hub). Operator-driven via
+    # SiteSetting; defaults to "vault" so every existing plane's behavior is
+    # byte-identical. See System::ModuleSigningKey for the local key custody.
+    MODE_SETTING    = "system.module_signing.mode"
+    DEFAULT_MODE    = "vault"
+
     def self.sign!(oci_ref:, expected_digest:, account: nil, node_module_id: nil, node_module_version_id: nil)
       new.sign!(
         oci_ref: oci_ref,
@@ -57,7 +65,11 @@ module System
     end
 
     def initialize(vault_client: nil)
-      @vault_client = vault_client || ::Security::VaultClient.instance
+      # LAZY: do NOT eagerly resolve Security::VaultClient.instance here — its
+      # AppRole login raises "VAULT_ROLE_ID not configured" on a Vault-less plane
+      # (ops-hub), which would break local-mode signing before a mode is even
+      # chosen. The client is resolved only inside #vault_env (vault mode only).
+      @vault_client = vault_client
     end
 
     # @param oci_ref [String] the pushed artifact reference (registry/name:tag)
@@ -173,16 +185,37 @@ module System
     end
 
     def cosign_sign!(ref_at_digest, env: {})
-      cmd = [ "cosign", "sign", "--yes", "--key", "hashivault://#{keyname}", ref_at_digest ]
-      # vault_env carries VAULT_ADDR/VAULT_TOKEN for the transit key; env carries
-      # DOCKER_CONFIG for the registry auth cosign needs to PUSH the signature.
-      out, err, status = ::Open3.capture3(vault_env.merge(env), *cmd)
+      key_flag, sign_env = signing_key_flag_and_env
+      cmd = [ "cosign", "sign", "--yes", "--key", key_flag, ref_at_digest ]
+      # sign_env carries the signing credential (vault: VAULT_ADDR/VAULT_TOKEN;
+      # local: COSIGN_PASSWORD for the on-disk 0600 key) — ALWAYS via Open3's env
+      # hash, NEVER argv. env carries DOCKER_CONFIG for the registry auth cosign
+      # needs to PUSH the signature.
+      out, err, status = ::Open3.capture3(sign_env.merge(env), *cmd)
       unless status.success?
         raise CosignError,
               "cosign sign failed: #{::System::ShellOutputSanitizer.redact(err.presence) || "exit #{status.exitstatus}"}"
       end
 
       ::System::ShellOutputSanitizer.redact(out)
+    end
+
+    def signing_mode
+      ::SiteSetting.get(MODE_SETTING).presence || DEFAULT_MODE
+    end
+
+    # Returns [cosign --key value, subprocess env]. The VAULT branch is
+    # byte-identical to the historical path (hashivault:// + the server's Vault
+    # session). The LOCAL branch points cosign at the self-generated on-box key
+    # file (0600) and hands its password via env ONLY (never argv) — the private
+    # key stays on disk, the password never reaches a process listing.
+    def signing_key_flag_and_env
+      if signing_mode == "local"
+        material = ::System::ModuleSigningKey.ensure!
+        [ material.key_path, { "COSIGN_PASSWORD" => material.password } ]
+      else
+        [ "hashivault://#{keyname}", vault_env ]
+      end
     end
 
     # Builds the subprocess ENV hash cosign's hashivault:// KMS provider
@@ -196,7 +229,7 @@ module System
     # command string) so it never touches process listings or shell
     # history, and this method never logs its return value.
     def vault_env
-      client = @vault_client.client
+      client = (@vault_client ||= ::Security::VaultClient.instance).client
       { "VAULT_ADDR" => client.address, "VAULT_TOKEN" => client.token }
     end
 
@@ -227,7 +260,8 @@ module System
         payload: {
           oci_ref: oci_ref,
           digest: digest,
-          keyname: keyname
+          mode: signing_mode,
+          keyname: (signing_mode == "local" ? "local" : keyname)
         }
       )
     end

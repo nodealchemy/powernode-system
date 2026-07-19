@@ -185,6 +185,23 @@ module System
       return failure("erofs layer resolution failed: #{layer[:error]}") if layer[:error]
 
       arch    = native_arch(architecture)
+
+      # R6 (task #48, Fable): the native promote path must VERIFY the signature it
+      # just made — otherwise the signature is write-only and anchors nothing.
+      # Enforced fail-closed ONLY when a trusted-key list is configured
+      # (LocalOciAdapter/dev has none → skipped, preserving the legacy "unsigned
+      # by design" behavior). Both the ops-hub LOCAL pubkey and the DEV Vault-
+      # transit pubkey live in trusted_public_keys, so DEV-built ingested
+      # artifacts pass too. Signing happens upstream (finalize_success! →
+      # ModuleSigningService.sign!) BEFORE this ingest.
+      adapter = self.class.adapter
+      if adapter.respond_to?(:key_verification_available?) && adapter.key_verification_available?
+        verification = adapter.verify_signature(oci_ref)
+        if verification[:error]
+          return failure("R6 signature verification failed for #{oci_ref}: #{verification[:error]}")
+        end
+      end
+
       created = []
       ::ActiveRecord::Base.transaction do
         artifact = ::System::ModuleArtifact.find_or_initialize_by(
@@ -427,6 +444,15 @@ module System
           # "nothing configured" case.
           verify_keyless(oci_ref, expected_signers: expected_signers, issuer_regexp: issuer_regexp)
         end
+      end
+
+      # R6 (task #48): whether a trusted KEY-verification path is configured
+      # (the SiteSetting list or the legacy env key). When true, ingest_native!
+      # MUST key-verify the just-signed artifact before recording it
+      # (fail-closed). When false (no trusted keys — dev / legacy-unsigned),
+      # native ingest skips verification, preserving today's behavior.
+      def key_verification_available?
+        trusted_public_keys.any?
       end
 
       private
