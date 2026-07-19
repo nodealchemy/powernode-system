@@ -49,7 +49,23 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 		cleanup()
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		cleanup()
+		return err
+	}
+	// Best-effort parent-dir fsync so the rename itself is durable across a
+	// crash. The temp file is already fsync'd and the rename is atomic within
+	// the directory, but the directory ENTRY change (old name → new name) is
+	// only guaranteed on disk after the dir is synced — otherwise a crash in the
+	// window between rename and the kernel's implicit dir writeback can leave the
+	// target absent on the next boot. Best-effort (ignore errors): it can only
+	// improve durability, never regress a caller on a filesystem that doesn't
+	// support directory fsync (the pre-rename behavior is preserved on failure).
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // AtomicWriteJSON marshals v with encoding/json and writes the result

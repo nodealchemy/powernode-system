@@ -193,7 +193,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	desiredModules, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
+	desiredModules, _, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
 	if err != nil {
 		r.lastError = fmt.Errorf("fetch assigned modules: %w", err)
 		return r.lastError
@@ -853,6 +853,9 @@ type FactoryConfig struct {
 	StatePath      string
 	DryRun         bool
 	OnError        func(stage string, err error)
+	// PlatformURL is recorded as the boot-LKG breadcrumb Source (the control
+	// plane the compose fetched from). Purely informational for the snapshot.
+	PlatformURL string
 }
 
 // NewReconcilerForCLI builds a Reconciler suitable for one-shot CLI
@@ -873,6 +876,7 @@ func NewReconcilerForCLI(cfg FactoryConfig) (*Reconciler, error) {
 		Interval:       0, // not used for one-shot
 		DryRun:         cfg.DryRun,
 		OnError:        cfg.OnError,
+		PlatformURL:    cfg.PlatformURL,
 	})
 }
 

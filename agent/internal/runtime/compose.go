@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -48,31 +49,14 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		sysroot = r.cfg.Layout.SysRoot
 	}
 
-	desiredModules, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
+	// Resolve the module set for this boot: the live platform assignment when
+	// reachable (retry-live-first), else the frozen boot-LKG fallback (#39). bc
+	// is the breadcrumb of exactly what was resolved — written to /persist at the
+	// end so the post-boot capturer promotes THIS set (never a later hot-
+	// reconcile) and the heartbeat can report booted_from_lkg.
+	desired, manifests, bc, err := r.resolveComposeSet(ctx)
 	if err != nil {
-		return fmt.Errorf("fetch assigned modules: %w", err)
-	}
-
-	desired := make(mount.ModuleStack, 0, len(desiredModules))
-	manifests := make(map[string]*manifest.Manifest, len(desiredModules))
-	for _, mod := range desiredModules {
-		if !mod.HasDataFile {
-			continue // config-variety + skill modules have no blob to mount
-		}
-		m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, r.cfg.ManifestTTL)
-		if err != nil {
-			r.cfg.OnError("compose:fetch_manifest", fmt.Errorf("module %s: %w", mod.ID, err))
-			continue
-		}
-		if m.Digest == "" {
-			r.cfg.OnError("compose:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
-			continue
-		}
-		desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority})
-		manifests[mod.ID] = m
-	}
-	if len(desired) == 0 {
-		return errors.New("no mountable modules assigned — cannot compose a pivot root")
+		return err
 	}
 
 	// Pull + verify + loop-mount every module, low→high priority. A failure here
@@ -179,7 +163,165 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		}
 	}
 
+	// Record what THIS boot composed (best-effort — a failed breadcrumb write
+	// must not abort an otherwise-successful boot; the node just can't self-
+	// provision an LKG this cycle). The post-boot capturer reads this after an
+	// app-health confirm; the heartbeat reads FromLKG/age for observability.
+	if bc != nil {
+		if err := WriteBreadcrumb(BootBreadcrumbPath, bc); err != nil {
+			r.cfg.OnError("compose:breadcrumb_write", err)
+		}
+	}
+
 	return nil
+}
+
+// lkgFetchAttempts / lkgFetchBackoff bound the retry-live-first behavior before
+// ComposeForPivot falls back to the boot-LKG — enough to ride out a transient
+// blip while the control plane is up, without hanging boot indefinitely. Vars
+// for test override.
+var (
+	lkgFetchAttempts = 3
+	lkgFetchBackoff  = 2 * time.Second
+)
+
+// resolveComposeSet obtains the module set to compose for this boot. It prefers
+// the live platform assignment (retry-live-first with bounded backoff). On
+// exhausted failure — and unless the fallback is disabled by sentinel/cmdline —
+// it composes from the frozen, validated boot-LKG. Returns the (desired,
+// manifests) pair the downstream compose logic consumes, plus a breadcrumb
+// describing exactly what was resolved.
+func (r *Reconciler) resolveComposeSet(ctx context.Context) (mount.ModuleStack, map[string]*manifest.Manifest, *BootComposedBreadcrumb, error) {
+	desiredModules, meta, ferr := r.fetchAssignedWithRetry(ctx)
+	if ferr == nil {
+		desired := make(mount.ModuleStack, 0, len(desiredModules))
+		manifests := make(map[string]*manifest.Manifest, len(desiredModules))
+		bcMods := make([]LKGModule, 0, len(desiredModules))
+		fetchedData := 0 // count of assigned data modules the platform expects mounted
+		for _, mod := range desiredModules {
+			lm := LKGModule{ID: mod.ID, Name: mod.Name, EffectivePriority: mod.EffectivePriority, HasDataFile: mod.HasDataFile, Variety: mod.Variety}
+			if mod.HasDataFile {
+				fetchedData++
+				m, err := manifest.LoadOrFetch(r.cfg.ManifestClient, r.cfg.ManifestRoot, mod.ID, r.cfg.ManifestTTL)
+				if err != nil {
+					r.cfg.OnError("compose:fetch_manifest", fmt.Errorf("module %s: %w", mod.ID, err))
+					continue
+				}
+				if m.Digest == "" {
+					r.cfg.OnError("compose:no_digest", fmt.Errorf("module %s has no digest (not published)", mod.ID))
+					continue
+				}
+				desired = append(desired, mount.Module{ID: mod.ID, Digest: m.Digest, Priority: m.EffectivePriority})
+				manifests[mod.ID] = m
+				lm.EffectivePriority = m.EffectivePriority
+				lm.Digest = m.Digest
+				if raw, merr := json.Marshal(m); merr == nil {
+					lm.Manifest = raw
+				}
+			}
+			bcMods = append(bcMods, lm)
+		}
+		if len(desired) == 0 {
+			return nil, nil, nil, errors.New("no mountable modules assigned — cannot compose a pivot root")
+		}
+		// Completeness (MED-4): a data module dropped above (unresolved manifest /
+		// no digest) still lets the node boot on the rest, but the composed set is
+		// NOT the complete assignment. Flag it so the capturer never freezes a
+		// degraded set as last-known-good.
+		incomplete := len(desired) < fetchedData
+		if incomplete {
+			r.cfg.OnError("compose:incomplete_set",
+				fmt.Errorf("composed %d of %d assigned data modules — LKG capture will be skipped this boot", len(desired), fetchedData))
+		}
+		bc := &BootComposedBreadcrumb{
+			ComposedAt:                time.Now().UTC(),
+			FromLKG:                   false,
+			Source:                    r.cfg.PlatformURL,
+			Hostname:                  meta.Hostname,
+			StalenessThresholdSeconds: meta.StalenessThresholdSeconds,
+			AppHealth: AppHealthCfg{
+				URL:                 meta.AppHealthURL,
+				RequiredConsecutive: meta.AppHealthRequiredConsecutive,
+				PollIntervalSeconds: meta.AppHealthPollIntervalSeconds,
+			},
+			Incomplete: incomplete,
+			Modules:    bcMods,
+		}
+		return desired, manifests, bc, nil
+	}
+
+	// Live fetch failed. Kill-switch (default-ON): sentinel/cmdline reverts to
+	// today's live-only boot — surface the original fetch error.
+	if LKGFallbackDisabled(LKGDisableSentinel) {
+		return nil, nil, nil, fmt.Errorf("fetch assigned modules: %w (boot-LKG fallback disabled)", ferr)
+	}
+	lkg, lerr := loadValidatedBootLKG(r.cfg.Layout)
+	if lerr != nil {
+		// No usable fallback — fail LOUD rather than compose a half-broken root.
+		return nil, nil, nil, fmt.Errorf("live fetch failed (%v) AND boot-LKG unusable: %w", ferr, lerr)
+	}
+	desired, manifests, cerr := lkg.ToComposeInputs()
+	if cerr != nil {
+		return nil, nil, nil, fmt.Errorf("boot-LKG compose inputs: %w", cerr)
+	}
+	// Staleness is advisory: warn loudly (→ heartbeat alert) but never block —
+	// a stale boot beats a brick.
+	age := time.Since(lkg.ConfirmedAt)
+	if thr := stalenessThreshold(lkg.StalenessThresholdSeconds); age > thr {
+		r.cfg.OnError("compose:lkg_stale",
+			fmt.Errorf("booting from boot-LKG aged %s > threshold %s (control plane unreachable)", age.Round(time.Second), thr))
+	}
+	r.cfg.OnError("compose:booted_from_lkg",
+		fmt.Errorf("live fetch failed (%v) — composed from frozen boot-LKG: %d modules, confirmed %s", ferr, len(desired), lkg.ConfirmedAt.Format(time.RFC3339)))
+	bc := &BootComposedBreadcrumb{
+		ComposedAt:                time.Now().UTC(),
+		FromLKG:                   true,
+		LKGConfirmedAt:            lkg.ConfirmedAt,
+		Source:                    lkg.Source,
+		NodeID:                    lkg.NodeID,
+		Hostname:                  lkg.Hostname,
+		StalenessThresholdSeconds: lkg.StalenessThresholdSeconds,
+		AppHealth:                 lkg.AppHealth,
+		Modules:                   lkg.Modules,
+	}
+	return desired, manifests, bc, nil
+}
+
+// fetchAssignedWithRetry calls FetchAssignedModules up to lkgFetchAttempts times
+// with exponential backoff, so a transient reachability blip doesn't trip the
+// boot-LKG fallback while the control plane is actually up.
+func (r *Reconciler) fetchAssignedWithRetry(ctx context.Context) ([]AssignedModule, AssignmentMeta, error) {
+	var lastErr error
+	backoff := lkgFetchBackoff
+	for attempt := 1; attempt <= lkgFetchAttempts; attempt++ {
+		mods, meta, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
+		if err == nil {
+			return mods, meta, nil
+		}
+		lastErr = err
+		if attempt < lkgFetchAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, AssignmentMeta{}, ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+		}
+	}
+	return nil, AssignmentMeta{}, lastErr
+}
+
+// loadValidatedBootLKG loads + fail-loud-validates the frozen boot-LKG (schema,
+// checksum, per-module blob presence in the digest-keyed cache).
+func loadValidatedBootLKG(layout mount.Layout) (*BootLKG, error) {
+	lkg, err := LoadBootLKG(BootLKGPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateBootLKG(lkg, layout.ModuleCachePath); err != nil {
+		return nil, err
+	}
+	return lkg, nil
 }
 
 // unionIdentityPaths returns etcidentity.Paths rooted under the composed union
@@ -320,5 +462,6 @@ func NewPivotComposer(platformURL, pkiDir string, onError func(string, error)) (
 		Layout:      mount.DefaultLayout(),
 		StatePath:   mount.StatePath,
 		OnError:     onError,
+		PlatformURL: client.PlatformURL,
 	})
 }

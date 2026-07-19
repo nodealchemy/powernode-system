@@ -22,7 +22,22 @@ module Api
               # persists this and applies it as the hostname (etcidentity), so a
               # node with no fw-cfg instance_name still gets the right hostname
               # before DHCP/DNS. See agent runtime/hostname.go.
-              hostname: current_node&.name
+              hostname: current_node&.name,
+              # Boot-LKG config (#39 Level-1 boot-independence). The agent stamps
+              # these onto the boot breadcrumb → frozen last-known-good at capture.
+              # All 0/"" when unset → the agent uses its compile-time defaults /
+              # kernel-cmdline overrides. Config-driven, no hardcoded values here.
+              #
+              # - staleness threshold: at a fallback boot, age past this → ALERT,
+              #   never block. See agent runtime/lkg.go stalenessThreshold().
+              # - app-health probe url/N/window: the promotion gate the post-boot
+              #   capturer uses (composed /up 200 ×N). Delivering it here lets us
+              #   later strengthen the gate (e.g. a composed-API check) with NO new
+              #   agent binary. See agent runtime/lkg_capture.go resolveGate().
+              lkg_staleness_threshold_seconds:      boot_lkg_setting_int("staleness_threshold_seconds"),
+              lkg_app_health_url:                   ::SiteSetting.get("system.boot_lkg.app_health_url").to_s.presence,
+              lkg_app_health_required_consecutive:  boot_lkg_setting_int("app_health_required_consecutive"),
+              lkg_app_health_poll_interval_seconds: boot_lkg_setting_int("app_health_poll_interval_seconds")
             )
           end
 
@@ -99,6 +114,13 @@ module Api
           end
 
           private
+
+          # Integer boot-LKG SiteSetting under the "system.boot_lkg." namespace.
+          # Returns 0 when unset (the agent then uses its own compile-time default
+          # / cmdline override) — config-driven with no hardcoded value here.
+          def boot_lkg_setting_int(suffix)
+            (::SiteSetting.get("system.boot_lkg.#{suffix}").presence || 0).to_i
+          end
 
           def set_module
             @module = node_modules.find(params[:id])

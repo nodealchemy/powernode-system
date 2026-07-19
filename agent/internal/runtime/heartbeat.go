@@ -46,6 +46,27 @@ type HeartbeatPayload struct {
 	// (omitted) on netboot / non-UKI / pre-019f505f images that don't bake it —
 	// the server reads that as "unknown", never drift.
 	BootedImageGitSHA string `json:"booted_image_git_sha,omitempty"`
+	// BootedFromLKG is true when this boot's ComposeForPivot fell back to the
+	// frozen boot-LKG because the control plane was unreachable (#39 Level-1
+	// boot-independence). Read from the boot breadcrumb; the platform surfaces it
+	// so an operator can SEE which nodes are surviving on a frozen composition.
+	BootedFromLKG bool `json:"booted_from_lkg,omitempty"`
+	// LKGAgeSeconds is the age of the boot-LKG this node booted from (only
+	// meaningful when BootedFromLKG). Lets the platform ALERT on a node running
+	// an increasingly-stale frozen composition after its control plane went away.
+	LKGAgeSeconds int64 `json:"lkg_age_seconds,omitempty"`
+	// LKGPresent + LKGConfirmedAt + LKGModuleCount are ARM-telemetry (#39 HIGH-1):
+	// emitted on EVERY boot's heartbeat (not just fallback boots) from the
+	// on-disk frozen LKG, so an operator can VERIFY a node is armed with a valid
+	// last-known-good BEFORE decommissioning its control plane (#14). Absence of
+	// lkg_present=true means "not armed" — a decommission-blocking signal.
+	LKGPresent     bool   `json:"lkg_present,omitempty"`
+	LKGConfirmedAt string `json:"lkg_confirmed_at,omitempty"`
+	LKGModuleCount int    `json:"lkg_module_count,omitempty"`
+	// BootIncomplete is true when THIS boot composed an incomplete assigned set
+	// (a data module was dropped at compose). The capturer skips LKG capture on
+	// such a boot; this field makes the degraded boot directly visible.
+	BootIncomplete bool `json:"boot_incomplete,omitempty"`
 }
 
 // HeartbeatResponse is what the platform sends back. Includes a hint at

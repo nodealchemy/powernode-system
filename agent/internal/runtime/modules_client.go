@@ -28,39 +28,60 @@ type ModulesClient interface {
 	GetJSON(path string) (*http.Response, error)
 }
 
+// AssignmentMeta carries the envelope-level fields (beyond the module list) the
+// agent needs from GET /api/v1/system/node_api/modules: the platform-assigned
+// hostname (node.name) plus boot-LKG config the backend derives from
+// SiteSettings. All the LKG fields are 0/"" when unset — the agent then falls to
+// its compile-time defaults / kernel-cmdline overrides. Stamping the app-health
+// probe config here (not just compiling it in) lets us later strengthen the
+// promotion gate (e.g. a composed-API check instead of /up) by changing a
+// SiteSetting, with NO new agent binary.
+type AssignmentMeta struct {
+	Hostname                     string
+	StalenessThresholdSeconds    int64
+	AppHealthURL                 string
+	AppHealthRequiredConsecutive int
+	AppHealthPollIntervalSeconds int
+}
+
 // FetchAssignedModules returns the rich-shape module list the
-// reconciler needs (id + priority + variety + has_data_file flag).
+// reconciler needs (id + priority + variety + has_data_file flag)
+// plus the envelope AssignmentMeta.
 //
 // The platform endpoint `/api/v1/system/node_api/modules` returns
 // `serialize_module` per row — this decoder picks out the fields
 // the reconciler cares about and ignores the rest.
-func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModule, error) {
+func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModule, AssignmentMeta, error) {
 	if c == nil {
-		return nil, errors.New("FetchAssignedModules: nil client")
+		return nil, AssignmentMeta{}, errors.New("FetchAssignedModules: nil client")
 	}
 	resp, err := c.GetJSON("/api/v1/system/node_api/modules")
 	if err != nil {
-		return nil, fmt.Errorf("get modules: %w", err)
+		return nil, AssignmentMeta{}, fmt.Errorf("get modules: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("modules status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, AssignmentMeta{}, fmt.Errorf("modules status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var env struct {
 		Success bool   `json:"success"`
 		Error   string `json:"error,omitempty"`
 		Data    struct {
-			Modules  []AssignedModule `json:"modules"`
-			Hostname string           `json:"hostname,omitempty"`
+			Modules                   []AssignedModule `json:"modules"`
+			Hostname                  string           `json:"hostname,omitempty"`
+			LKGStalenessThresholdSecs int64            `json:"lkg_staleness_threshold_seconds,omitempty"`
+			LKGAppHealthURL           string           `json:"lkg_app_health_url,omitempty"`
+			LKGAppHealthRequiredN     int              `json:"lkg_app_health_required_consecutive,omitempty"`
+			LKGAppHealthPollSecs      int              `json:"lkg_app_health_poll_interval_seconds,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("decode modules: %w", err)
+		return nil, AssignmentMeta{}, fmt.Errorf("decode modules: %w", err)
 	}
 	if !env.Success {
-		return nil, fmt.Errorf("platform returned success=false: %s", env.Error)
+		return nil, AssignmentMeta{}, fmt.Errorf("platform returned success=false: %s", env.Error)
 	}
 	// Persist the platform-assigned hostname (node.name) so desiredHostname()
 	// can apply it even on nodes with no fw-cfg instance_name blob. This runs on
@@ -70,5 +91,11 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 	// a no-op.
 	persistAssignedHostname(env.Data.Hostname)
 	_ = ctx // ctx reserved for future cancellation hook in the GetJSON impl
-	return env.Data.Modules, nil
+	return env.Data.Modules, AssignmentMeta{
+		Hostname:                     env.Data.Hostname,
+		StalenessThresholdSeconds:    env.Data.LKGStalenessThresholdSecs,
+		AppHealthURL:                 env.Data.LKGAppHealthURL,
+		AppHealthRequiredConsecutive: env.Data.LKGAppHealthRequiredN,
+		AppHealthPollIntervalSeconds: env.Data.LKGAppHealthPollSecs,
+	}, nil
 }

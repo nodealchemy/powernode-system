@@ -52,8 +52,19 @@ type Config struct {
 	A2AListenAddr        string   // agent-to-agent MCP server listen addr (empty = disabled)
 	A2AInferenceEndpoint string   // local inference runtime (ollama) for the A2A inference.* skills (empty = no inference skills)
 	IsolationRuntimes    []string // isolation runtimes to provision on the docker daemon (e.g. ["gvisor"]) — substrate L0
-	OnError              func(string, error)
+	// AppHealthURL is the composed control-plane health endpoint the boot-LKG
+	// capturer probes before promoting the frozen last-known-good (#39). Empty
+	// defaults to defaultAppHealthURL (loopback Traefik → hub-backend /up).
+	AppHealthURL string
+	OnError      func(string, error)
 }
+
+// defaultAppHealthURL probes the composed control plane end-to-end over
+// loopback: Traefik (:443) → hub-backend Rails /up. Verified on VM104 to return
+// 200 anonymously (the /up health route is NOT behind the host-login mTLS gate),
+// so no client cert is required — the probe only needs to skip server-name
+// verification (the loopback IP won't match the node serving-cert SAN).
+const defaultAppHealthURL = "https://127.0.0.1/up"
 
 // Service is the top-level long-running agent loop. Run blocks until
 // ctx is canceled, then returns the first error any goroutine surfaced.
@@ -395,6 +406,33 @@ func (s *Service) Run(ctx context.Context) error {
 	spawn("reconciler", func() {
 		reconciler.Run(ctx)
 	})
+
+	// Boot-LKG one-shot capture (#39 Level-1 boot-independence). Promotes THIS
+	// boot's breadcrumb (what ComposeForPivot cold-composed) to the frozen
+	// last-known-good — but ONLY after the COMPOSED control plane passes an
+	// app-level health check (loopback Traefik → hub-backend /up), never on the
+	// agent's own liveness. No-op after the first capture (frozen) or on a boot
+	// that itself fell back to the LKG. Deliberately its own goroutine reading
+	// only the boot breadcrumb — it never touches the live reconcile state, so a
+	// module the reconciler hot-mounts post-boot (whose new code only runs after
+	// a future reboot) can never be promoted as last-known-good.
+	healthURL := s.cfg.AppHealthURL
+	if healthURL == "" {
+		healthURL = defaultAppHealthURL
+	}
+	capturer := &LKGCapturer{
+		BreadcrumbPath:      BootBreadcrumbPath,
+		LKGPath:             BootLKGPath,
+		DefaultAppHealthURL: healthURL,
+		Hostname:            desiredHostname(),
+		CachePath:           mount.DefaultLayout().Resolve().ModuleCachePath,
+		OnError:             s.cfg.OnError,
+	}
+	spawn("lkg_capture", func() {
+		if err := capturer.Run(ctx); err != nil {
+			s.cfg.OnError("lkg_capture", err)
+		}
+	})
 	if rotator != nil {
 		spawn("cert_rotation", func() {
 			rotator.Run(ctx)
@@ -506,6 +544,27 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 	}
 	if sdwanMgr != nil {
 		payload.SdwanState = sdwanMgr.HeartbeatStatuses()
+	}
+	// Boot-LKG observability (#39). Two reads of tiny /persist files:
+	//   1. The boot breadcrumb — whether THIS boot fell back to the LKG (+ age),
+	//      and whether it composed an incomplete set.
+	//   2. The frozen LKG itself — ARM-telemetry (HIGH-1): emitted on EVERY boot
+	//      so the operator can verify a node is armed before #14 pulls its
+	//      control plane. Read here (not snapshotted) so confirmed_at reflects
+	//      the current on-disk LKG even after a re-provision.
+	if bc, err := LoadBreadcrumb(BootBreadcrumbPath); err == nil {
+		payload.BootIncomplete = bc.Incomplete
+		if bc.FromLKG {
+			payload.BootedFromLKG = true
+			if !bc.LKGConfirmedAt.IsZero() {
+				payload.LKGAgeSeconds = int64(time.Since(bc.LKGConfirmedAt).Seconds())
+			}
+		}
+	}
+	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
+		payload.LKGPresent = true
+		payload.LKGConfirmedAt = lkg.ConfirmedAt.UTC().Format(time.RFC3339)
+		payload.LKGModuleCount = len(lkg.Modules)
 	}
 	return payload
 }

@@ -95,6 +95,42 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index", type: :request do
     end
   end
 
+  describe "boot-LKG envelope fields (#39)" do
+    it "emits lkg_staleness_threshold_seconds: 0 when the SiteSetting is unset (agent uses its own default)" do
+      get "/api/v1/system/node_api/modules", headers: headers
+      expect(response).to have_http_status(:ok)
+      data = JSON.parse(response.body)["data"]
+      expect(data).to have_key("lkg_staleness_threshold_seconds")
+      expect(data["lkg_staleness_threshold_seconds"]).to eq(0)
+    end
+
+    it "emits the SiteSetting-configured staleness threshold when set" do
+      ::SiteSetting.set("system.boot_lkg.staleness_threshold_seconds", "3600")
+      get "/api/v1/system/node_api/modules", headers: headers
+      data = JSON.parse(response.body)["data"]
+      expect(data["lkg_staleness_threshold_seconds"]).to eq(3600)
+    end
+
+    it "emits app-health gate config as 0/nil when unset (agent uses its defaults)" do
+      get "/api/v1/system/node_api/modules", headers: headers
+      data = JSON.parse(response.body)["data"]
+      expect(data["lkg_app_health_url"]).to be_nil
+      expect(data["lkg_app_health_required_consecutive"]).to eq(0)
+      expect(data["lkg_app_health_poll_interval_seconds"]).to eq(0)
+    end
+
+    it "emits the SiteSetting-configured app-health gate (strengthenable without an agent rebuild)" do
+      ::SiteSetting.set("system.boot_lkg.app_health_url", "https://127.0.0.1/api/v1/system/health")
+      ::SiteSetting.set("system.boot_lkg.app_health_required_consecutive", "5")
+      ::SiteSetting.set("system.boot_lkg.app_health_poll_interval_seconds", "20")
+      get "/api/v1/system/node_api/modules", headers: headers
+      data = JSON.parse(response.body)["data"]
+      expect(data["lkg_app_health_url"]).to eq("https://127.0.0.1/api/v1/system/health")
+      expect(data["lkg_app_health_required_consecutive"]).to eq(5)
+      expect(data["lkg_app_health_poll_interval_seconds"]).to eq(20)
+    end
+  end
+
   describe "agent-needed fields in the response" do
     before do
       base_module.update!(

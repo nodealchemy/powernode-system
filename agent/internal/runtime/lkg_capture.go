@@ -1,0 +1,309 @@
+package runtime
+
+// One-shot, app-health-gated capture of the frozen boot-LKG (Level 1, #39).
+//
+// The capturer runs as its own goroutine in the service (post-pivot). It exists
+// solely to promote the CURRENT boot's breadcrumb (what ComposeForPivot actually
+// composed) to the frozen last-known-good — and ONLY after the COMPOSED control
+// plane passes an application-level health check.
+//
+// Why app-level (composed /up 200), not the agent heartbeat: the agent lives in
+// base-os and heartbeats regardless of whether the composed hub-backend is
+// healthy. A hub-backend that boots-but-500s would falsely "confirm" on agent
+// liveness. The gate must probe the composed app actually serving.
+//
+// Why the breadcrumb, not the live reconcile state: a hot-mounted new module
+// version's erofs is on disk, but the running code is still the OLD version
+// until a future reboot (hot-mount != code-active). Promoting the live/
+// hot-reconciled set would certify an unproven composition against still-running
+// old code and brick the next cold boot. Promoting the breadcrumb — the set THIS
+// boot cold-composed and is now serving — guarantees the LKG is always a
+// proven-cold-boots-healthy composition.
+//
+// One-shot + frozen: the capturer promotes at most once per boot and never
+// overwrites an existing frozen LKG. Re-provisioning (to capture a newer desired
+// composition before a decommission) is a deliberate operator action that
+// removes the LKG file so the next app-health-confirmed boot recaptures.
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+)
+
+// HealthProber reports whether the composed control plane is serving. Injected
+// so tests can drive the gate deterministically.
+type HealthProber interface {
+	Healthy(ctx context.Context) (bool, error)
+}
+
+// HTTPHealthProber probes the composed control plane's health endpoint and
+// treats a 2xx as healthy. It carries the node's mTLS identity (Client) so the
+// probe passes the host-login ingress if that endpoint is mTLS-gated; HostHeader
+// lets it target a loopback IP while presenting the node's SNI/Host.
+type HTTPHealthProber struct {
+	URL        string
+	HostHeader string
+	Client     *http.Client
+	Timeout    time.Duration
+}
+
+// Healthy issues one GET and reports 2xx.
+func (p *HTTPHealthProber) Healthy(ctx context.Context) (bool, error) {
+	if p.URL == "" {
+		return false, errors.New("health prober: empty URL")
+	}
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, p.URL, nil)
+	if err != nil {
+		return false, err
+	}
+	if p.HostHeader != "" {
+		req.Host = p.HostHeader
+	}
+	client := p.Client
+	if client == nil {
+		// Loopback self-probe default: skip cert-name verification (we only care
+		// that the composed app answers 200; the SNI cert is the node's own).
+		client = &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // loopback self-probe
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
+}
+
+// LKGCapturer promotes the boot breadcrumb to the frozen LKG once the composed
+// app is health-confirmed.
+type LKGCapturer struct {
+	// Prober, when set, overrides the config-built prober (tests inject a stub).
+	Prober         HealthProber
+	BreadcrumbPath string
+	LKGPath        string
+	// DefaultAppHealthURL is the loopback health URL used when the breadcrumb
+	// carries no SiteSetting-delivered override.
+	DefaultAppHealthURL string
+	// Hostname is the SNI/Host header for the loopback probe.
+	Hostname string
+	// CachePath maps a digest to its erofs blob path (mount.Layout.ModuleCachePath)
+	// for the capture-time blob-presence belt; nil skips it (tests).
+	CachePath func(digest string) string
+	// RequiredConsecutive healthy probes before promotion (default 3) — a
+	// short window that avoids capturing on a single flapping 200. Overridden by
+	// the breadcrumb's SiteSetting-delivered value when >0.
+	RequiredConsecutive int
+	// PollInterval between probes (default 15s). Overridden by the breadcrumb's
+	// SiteSetting-delivered value when >0.
+	PollInterval time.Duration
+	Now          func() time.Time
+	OnError      func(stage string, err error)
+}
+
+// resolveGate reads the SiteSetting-delivered promotion-gate config (probe URL +
+// required-consecutive + poll interval) from THIS boot's breadcrumb snapshot,
+// falling back to the capturer's compile-time defaults. Returns the prober to
+// use (an injected Prober always wins, for tests) plus the resolved N + interval.
+// This is what lets the gate be strengthened (e.g. /up → a composed-API check,
+// or a longer window) centrally, with NO new agent binary.
+func (c *LKGCapturer) resolveGate(bc *BootComposedBreadcrumb) (HealthProber, int, time.Duration) {
+	url := c.DefaultAppHealthURL
+	required := c.required()
+	interval := c.interval()
+	if bc != nil {
+		if bc.AppHealth.URL != "" {
+			url = bc.AppHealth.URL
+		}
+		if bc.AppHealth.RequiredConsecutive > 0 {
+			required = bc.AppHealth.RequiredConsecutive
+		}
+		if bc.AppHealth.PollIntervalSeconds > 0 {
+			interval = time.Duration(bc.AppHealth.PollIntervalSeconds) * time.Second
+		}
+	}
+	prober := c.Prober
+	if prober == nil {
+		// Build the health client ONCE here and reuse it across every probe.
+		// Constructing a fresh http.Client/Transport per probe would leak idle
+		// connections + FDs on a never-healthy node, where the gate can probe for
+		// the whole life of the boot. IdleConnTimeout reaps idle keep-alives.
+		prober = &HTTPHealthProber{
+			URL:        url,
+			HostHeader: c.Hostname,
+			Timeout:    5 * time.Second,
+			Client: &http.Client{
+				Timeout: 5 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback self-probe
+					IdleConnTimeout: 30 * time.Second,
+				},
+			},
+		}
+	}
+	return prober, required, interval
+}
+
+func (c *LKGCapturer) required() int {
+	if c.RequiredConsecutive > 0 {
+		return c.RequiredConsecutive
+	}
+	return 3
+}
+
+func (c *LKGCapturer) interval() time.Duration {
+	if c.PollInterval > 0 {
+		return c.PollInterval
+	}
+	return 15 * time.Second
+}
+
+func (c *LKGCapturer) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now().UTC()
+}
+
+func (c *LKGCapturer) onError(stage string, err error) {
+	if c.OnError != nil && err != nil {
+		c.OnError(stage, err)
+	}
+}
+
+// Run blocks until it promotes an LKG, determines there is nothing to do, or ctx
+// is canceled. Returns nil on a clean exit (promoted / already-frozen / ctx
+// done); it never propagates a fatal error — capture is best-effort and its
+// failure must never take down the service.
+func (c *LKGCapturer) Run(ctx context.Context) error {
+	// Already have a frozen LKG (fresh boot that fell back to it, or a prior
+	// boot already captured) → nothing to do. Only a genuinely-absent file
+	// warrants a promotion; a present-but-unreadable file is left alone for the
+	// operator rather than clobbered.
+	if existing, err := LoadBootLKG(c.LKGPath); err == nil {
+		if existing.Frozen {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		c.onError("lkg_capture:load_existing", err)
+		return nil
+	}
+
+	// Snapshot THIS boot's breadcrumb ONCE, at entry, and promote this in-memory
+	// copy — never a re-read at promotion time. This makes correction-#1
+	// structural across the ENTIRE pre-freeze window: even if something rewrote
+	// the on-disk breadcrumb after boot, the capturer freezes the set THIS boot
+	// actually cold-composed. (Today nothing else writes the breadcrumb, but
+	// "safe by absence" would silently break the instant a future post-boot
+	// writer appeared.)
+	bc, err := LoadBreadcrumb(c.BreadcrumbPath)
+	if err != nil {
+		// No breadcrumb (compose wrote none, e.g. its best-effort write failed)
+		// → nothing proven to promote; don't run the gate.
+		c.onError("lkg_capture:no_breadcrumb", err)
+		return nil
+	}
+	if bc.FromLKG {
+		return nil // this boot fell back to the LKG — nothing new to promote
+	}
+	if bc.Incomplete {
+		// Degraded boot (a data module was dropped at compose) — never freeze an
+		// incomplete set as last-known-good. Surfaces via the arm-telemetry
+		// (the LKG's confirmed_at won't advance).
+		c.onError("lkg_capture:incomplete_boot",
+			errors.New("this boot composed an INCOMPLETE assigned set — skipping LKG capture"))
+		return nil
+	}
+
+	prober, required, interval := c.resolveGate(bc)
+	consecutive := 0
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		healthy, err := prober.Healthy(ctx)
+		if err != nil {
+			c.onError("lkg_capture:probe", err)
+			consecutive = 0
+		} else if healthy {
+			consecutive++
+		} else {
+			consecutive = 0
+		}
+
+		if consecutive >= required {
+			if err := c.promote(bc); err != nil {
+				c.onError("lkg_capture:promote", err)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+// promote writes the ENTRY-SNAPSHOT breadcrumb (bc, captured at Run() entry) as
+// the frozen LKG. Re-checks for an existing frozen LKG immediately before writing
+// (belt: never overwrite one). Promotes the snapshot VERBATIM — never a re-read
+// of the on-disk breadcrumb and never the live/hot-reconciled mount state.
+func (c *LKGCapturer) promote(bc *BootComposedBreadcrumb) error {
+	if existing, err := LoadBootLKG(c.LKGPath); err == nil && existing.Frozen {
+		return nil // already captured (or re-provision raced) — do not overwrite
+	}
+	if bc == nil {
+		return errors.New("promote: nil breadcrumb snapshot")
+	}
+	if bc.FromLKG {
+		// This boot itself fell back to the LKG — nothing new to promote (Run()
+		// already returns before the gate on this, but keep the guard).
+		return nil
+	}
+	if len(bc.Modules) == 0 {
+		return errors.New("breadcrumb has no modules — refusing to promote an empty LKG")
+	}
+	// Capture-time belt: the breadcrumb records THIS boot's composed set; verify
+	// each data module's blob is actually present in the digest-keyed cache
+	// before freezing, so the LKG is valid the instant it is written (never a
+	// frozen snapshot pointing at a blob that isn't there). This validates the
+	// breadcrumb against what's actually on disk — NOT against the live
+	// AttachedModules mount state, which a post-boot hot-reconcile may already
+	// have drifted (validating against that would re-open the poison).
+	if c.CachePath != nil {
+		for _, m := range bc.Modules {
+			if !m.HasDataFile {
+				continue
+			}
+			if m.Digest == "" {
+				return fmt.Errorf("breadcrumb module %s has_data_file but no digest", m.ID)
+			}
+			if _, err := os.Stat(c.CachePath(m.Digest)); err != nil {
+				return fmt.Errorf("breadcrumb module %s blob absent at capture: %w", m.ID, err)
+			}
+		}
+	}
+	lkg := &BootLKG{
+		ConfirmedAt:               c.now(),
+		Source:                    bc.Source,
+		NodeID:                    bc.NodeID,
+		Hostname:                  bc.Hostname,
+		StalenessThresholdSeconds: bc.StalenessThresholdSeconds,
+		AppHealth:                 bc.AppHealth,
+		Modules:                   bc.Modules,
+	}
+	return WriteBootLKG(c.LKGPath, lkg)
+}
