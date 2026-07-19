@@ -854,6 +854,32 @@ case "$MODULE" in
     [ "$got" = "$COSIGN_SHA" ] || { echo "[stage-1.5] FATAL: cosign sha256 mismatch (want $COSIGN_SHA got $got)"; rm -f /tmp/fat/usr/bin/cosign; exit 1; }
     chmod +x /tmp/fat/usr/bin/cosign
     echo "[stage-1.5] staged cosign v${COSIGN_VERSION} ${ARCH:-amd64} → /usr/bin/cosign"
+    # Stage oras (checksum-verified) → /usr/bin/oras for the on-node native
+    # module-build + local cosign-signing path, which shells out to `oras` to
+    # push/pull erofs artifacts (campaign 019f71dc #48 local-signing proof
+    # found oras MISSING on PATH — base-os shipped cosign but never oras, so
+    # ops-hub's Vault-less native signing had no oras to publish the signature).
+    # Mirrors the cosign stage above: base-os's file_spec includes /usr/bin/**
+    # so Stage-2's carve keeps it; pinned version + BOTH per-arch checksums are
+    # the vendor-published oras_${ORAS_VERSION}_checksums.txt values (same
+    # ORAS_VERSION already pinned in the module-forge arm's /opt/buildenv oras
+    # below — bump them together). oras ships as a tarball (unlike cosign's raw
+    # binary), so it is downloaded to /tmp, checksum-verified, then extracted —
+    # the identical fetch idiom this stage already uses for oras further down.
+    ORAS_VERSION=1.2.0
+    case "${ARCH:-amd64}" in
+      amd64) ORAS_SHA256=5b3f1cbb86d869eee68120b9b45b9be983f3738442f87ee5f06b00edd0bab336 ;;
+      arm64) ORAS_SHA256=27df680a39fc2fcedc549cb737891623bc696c9a92a03fd341e9356a35836bae ;;
+      *) echo "[stage-1.5] FATAL: no pinned oras sha256 for ARCH=${ARCH:-amd64}"; exit 1 ;;
+    esac
+    mkdir -p /tmp/fat/usr/bin
+    curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_${ARCH:-amd64}.tar.gz" -o /tmp/oras.tar.gz
+    got=$(sha256sum /tmp/oras.tar.gz | awk '{print $1}')
+    [ "$got" = "$ORAS_SHA256" ] || { echo "[stage-1.5] FATAL: oras sha256 mismatch (want $ORAS_SHA256 got $got)"; rm -f /tmp/oras.tar.gz; exit 1; }
+    tar -xzf /tmp/oras.tar.gz -C /tmp/fat/usr/bin oras
+    chmod +x /tmp/fat/usr/bin/oras
+    rm -f /tmp/oras.tar.gz
+    echo "[stage-1.5] staged oras v${ORAS_VERSION} ${ARCH:-amd64} → /usr/bin/oras"
     ;;
   claude-tmux)
     # The Claude Code CLI (@anthropic-ai/claude-code) is an npm
