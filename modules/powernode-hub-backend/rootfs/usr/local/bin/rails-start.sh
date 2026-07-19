@@ -238,6 +238,22 @@ else
   /usr/local/bin/bundle exec rails db:migrate
 fi
 
+# INVARIANT (imp 019f77c5): this hub initializes + advances its DB with
+# `db:migrate` ONLY — NEVER a bare `db:schema:load` / `db:setup` / `db:prepare`.
+# Those load the CORE-ONLY schema.rb and `assume_migrated_upto_version`-stamp the
+# private-extension migrations (timestamped below the core schema version) as
+# applied WITHOUT running their DDL → a "stamped-without-DDL" drift db:migrate
+# then skips forever (this is exactly what historically drifted ops-hub's
+# system_node_instances.lifecycle_class). If a schema:load path is ever needed
+# here, it MUST be followed by the un-assume-private-versions + db:migrate step
+# from scripts/prepare-extension-test-db.sh. The check below is the backstop.
+
+# --- Schema-drift backstop (advisory, NEVER fatal) --------------------------
+# Catch a stamped-without-DDL drift and shout about it (log + System::FleetEvent);
+# `|| true` + the script's own guards guarantee it can never fail the boot.
+echo "[rails-start] schema-drift backstop check…"
+/usr/local/bin/bundle exec rails runner /usr/local/bin/schema-drift-check.rb || true
+
 # --- Ensure the host's own HTTPS login ingress for the bundled reverse proxy ---
 # Root cause this closes (imp 019f6c3d): the reverse-proxy-traefik service runs
 # `traefik` directly and never generates a dynamic config, and in extension mode
