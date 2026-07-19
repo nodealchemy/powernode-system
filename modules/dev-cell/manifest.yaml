@@ -247,7 +247,9 @@ file_spec:
   - "/usr/local/bin/dev-cell-git-keygen.sh"
   - "/usr/local/bin/dev-cell-clone.sh"
   - "/etc/systemd/system/dev-cell-git-keygen.service"
+  - "/etc/systemd/system/dev-cell-clone.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-git-keygen.service"
+  - "/etc/systemd/system/multi-user.target.wants/dev-cell-clone.service"
 
   # === Interactive dev userland (campaign #40 / dev-cell dev-readiness) ===
   # Derived via derive-file-spec.sh --mode deb-payload against

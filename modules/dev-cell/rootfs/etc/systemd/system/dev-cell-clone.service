@@ -1,0 +1,34 @@
+[Unit]
+Description=Dev-cell: auto-clone operator source workspace once the git key is authorized (as pnadmin)
+Documentation=https://github.com/nodealchemy/powernode-platform
+After=network-online.target home-pnadmin.mount dev-cell-git-keygen.service dev-cell-dev-db.service
+Wants=network-online.target
+Requires=dev-cell-git-keygen.service
+ConditionPathExists=/usr/local/bin/dev-cell-clone.sh
+ConditionPathIsMountPoint=/persist
+# Skip once the workspace is cloned (idempotent belt beside the script's own
+# git-dir check), so a reboot doesn't re-run bundle/npm needlessly.
+ConditionPathExists=!/persist/home/pnadmin/work/powernode-platform/.git
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Runs AS THE OPERATOR (pnadmin). WAIT mode: polls for the delivery-time key
+# registration for ~20 min, then clones + bundle + npm — so the operator
+# reconnects to an already-cloned box with no manual step. Cloning + bundling +
+# npm ci legitimately take many minutes; disable the 90s ExecStart timeout.
+TimeoutStartSec=0
+Environment=DEV_CELL_CLONE_WAIT=1
+ExecStart=/usr/sbin/runuser -u pnadmin -- /usr/local/bin/dev-cell-clone.sh
+StandardOutput=journal
+StandardError=journal
+# If the key never gets registered (poll window elapses) the unit fails; the
+# operator can run `dev-cell-clone` by hand later. Bounded retries so it isn't
+# a permanent crash-loop.
+Restart=on-failure
+RestartSec=60s
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

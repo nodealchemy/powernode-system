@@ -31,15 +31,31 @@ say() { echo "[dev-cell-clone] $*"; }
 # Gitea answers an SSH auth probe with "Hi <user>! You've successfully
 # authenticated, but Gitea does not provide shell access." (exit 1, but that
 # banner on stderr is the success signal). No banner => key not registered yet.
-probe="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+#
+# The public key is registered on Gitea via the Gitea API at delivery time
+# (only the PUBLIC half is ever handled — the private key never leaves this
+# box). In DEV_CELL_CLONE_WAIT mode (the boot service) we poll for that
+# authorization for a bounded window so the box self-clones once the key lands,
+# with no operator step; run interactively (no WAIT) it fails fast and prints
+# the public key so a human can register it manually if needed.
+probe_authorized() {
+  local out
+  out="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
           -T "git@${GIT_HOST}" 2>&1 || true)"
-if ! printf '%s' "$probe" | grep -qiE 'successfully authenticated|does not provide shell'; then
-  say "your git key is NOT yet authorized on ${GIT_HOST}."
-  say "Add this PUBLIC key to Gitea (Settings -> SSH / GPG Keys), then re-run 'dev-cell-clone':"
+  printf '%s' "$out" | grep -qiE 'successfully authenticated|does not provide shell'
+}
+
+if [ "${DEV_CELL_CLONE_WAIT:-0}" = "1" ]; then
+  # ~20 min bounded poll (40 x 30s) — covers the delivery key-registration.
+  for _ in $(seq 1 40); do probe_authorized && break; sleep 30; done
+fi
+
+if ! probe_authorized; then
+  say "git key NOT yet authorized on ${GIT_HOST}."
+  say "Register this PUBLIC key with Gitea (Settings -> SSH / GPG Keys), then run 'dev-cell-clone':"
   echo "-----8<----- PUBLIC KEY -----8<-----"
   cat "$HOME/.ssh/id_ed25519.pub"
   echo "-----8<----------------------8<-----"
-  say "(probe said: ${probe})"
   exit 1
 fi
 say "git key authorized on ${GIT_HOST}."
