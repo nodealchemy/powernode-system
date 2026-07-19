@@ -242,25 +242,44 @@ bind_mount() {
 # can be any point in history, and stage2-carve.sh's SOURCE_DATE_EPOCH
 # derivation (`git log -1 --format=%ct`) needs the commit object present.
 #
-# MODULE_SOURCE_URL is cloned VERBATIM, exactly as given — this script does
-# NOT rewrite it or embed anything into it. PARENT_PAT is a SEPARATE
-# credential for a SEPARATE repo (the parent powernode-platform clone
-# stage15.sh's own Class-B arms perform, inside the chroot, in step 4
-# below) — it has nothing to do with cloning MODULE_SOURCE_URL, whether or
-# not MODULE_SOURCE_URL already has its own credential embedded in its
-# userinfo (the caller's job — e.g. the agent's ci.module_build handler
-# embeds source_repo_url + source_token itself before ever setting this
-# env var). Never echoed either way, so this script is safe regardless of
-# which shape MODULE_SOURCE_URL arrives in. -------------------------------
+# MODULE_SOURCE_URL may arrive with a credential embedded in its userinfo
+# (…://x-access-token:<token>@host/…) — the caller (the agent's ci.module_build
+# handler) builds source_repo_url + source_token into it. A `git clone`/`fetch`
+# FAILURE prints the URL to stderr, so a verbatim clone (and this script's own
+# die() below) would leak that token in cleartext into the captured log_tail →
+# System::Task.error_message. To make that leak impossible fleet-wide: STRIP the
+# userinfo, clone the CREDENTIAL-FREE url, and hand the credential to git
+# out-of-band via GIT_ASKPASS — the token then lives only in a helper's env,
+# never in argv, the URL, or ANY error output. PARENT_PAT (a SEPARATE credential
+# for the SEPARATE parent powernode-platform repo, cloned inside the chroot in
+# step 4) is unaffected by all of this. ----------------------------------------
+SOURCE_URL_SAFE="$MODULE_SOURCE_URL"
+case "$MODULE_SOURCE_URL" in
+  *"://"*"@"*)
+    _proto="${MODULE_SOURCE_URL%%://*}"
+    _rest="${MODULE_SOURCE_URL#*://}"
+    _cred="${_rest%%@*}"
+    _hostpath="${_rest#*@}"
+    SOURCE_URL_SAFE="${_proto}://${_hostpath}"
+    ASKPASS_HELPER="$JOB_ROOT/.git-askpass"   # under JOB_ROOT → wiped by cleanup trap
+    printf '#!/bin/sh\ncase "$1" in Username*) printf %%s "$PN_GIT_USER";; *) printf %%s "$PN_GIT_PASS";; esac\n' > "$ASKPASS_HELPER"
+    chmod 700 "$ASKPASS_HELPER"
+    export GIT_ASKPASS="$ASKPASS_HELPER" GIT_TERMINAL_PROMPT=0
+    export PN_GIT_USER="${_cred%%:*}"
+    PN_GIT_PASS="${_cred#*:}"; [ "$PN_GIT_PASS" = "$_cred" ] && PN_GIT_PASS=""
+    export PN_GIT_PASS
+    unset _proto _rest _cred _hostpath
+    ;;
+esac
 log "cloning module source at ${BUILD_SHA}…"
-git clone --quiet "$MODULE_SOURCE_URL" "$WORKSPACE_HOST"
+git clone --quiet "$SOURCE_URL_SAFE" "$WORKSPACE_HOST"
 if ! git -C "$WORKSPACE_HOST" checkout --quiet "$BUILD_SHA" 2>/dev/null; then
   git -C "$WORKSPACE_HOST" fetch --quiet origin "$BUILD_SHA"
   git -C "$WORKSPACE_HOST" checkout --quiet "$BUILD_SHA"
 fi
 
 MFPATH="$WORKSPACE_HOST/modules/$MODULE/manifest.yaml"
-[ -f "$MFPATH" ] || die "no modules/$MODULE/manifest.yaml at ${BUILD_SHA} in ${MODULE_SOURCE_URL}"
+[ -f "$MFPATH" ] || die "no modules/$MODULE/manifest.yaml at ${BUILD_SHA} in ${SOURCE_URL_SAFE}"
 
 # --- Build scripts: prefer the ones checked out at BUILD_SHA over the baked
 # /opt/module-build. The module-forge module bakes scripts/module-build/* into
