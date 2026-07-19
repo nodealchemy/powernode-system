@@ -7,8 +7,10 @@ Requires=dev-cell-git-keygen.service
 ConditionPathExists=/usr/local/bin/dev-cell-clone.sh
 ConditionPathIsMountPoint=/persist
 # Skip once the workspace is cloned (idempotent belt beside the script's own
-# git-dir check), so a reboot doesn't re-run bundle/npm needlessly.
-ConditionPathExists=!/persist/home/pnadmin/work/powernode-platform/.git
+# git-dir check), so a reboot doesn't re-run bundle/npm needlessly. The platform
+# repo is cloned to the root of ~/work (REPOS "powernode-platform:." in
+# dev-cell-clone.sh), so its git dir is ~/work/.git — NOT ~/work/powernode-platform/.git.
+ConditionPathExists=!/persist/home/pnadmin/work/.git
 
 [Service]
 Type=oneshot

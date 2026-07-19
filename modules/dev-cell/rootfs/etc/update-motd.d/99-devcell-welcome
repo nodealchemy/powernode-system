@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dev-cell login banner. Ubuntu's pam_motd runs /etc/update-motd.d/* on login;
+# point the operator at the full get-started doc in their persisted home.
+printf '\nPowernode dev cell — run `cat ~/DEVCELL.md` to get started (cd ~/work/server; bin/rails db:migrate; tmux; claude).\n\n'
