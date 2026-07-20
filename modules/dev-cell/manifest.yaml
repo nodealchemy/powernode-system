@@ -218,6 +218,7 @@ file_spec:
   - "/usr/share/lintian/profiles/dpkg/main.profile"
   - "/usr/share/polkit-1/actions/org.dpkg.pkexec.update-alternatives.policy"
   - "/usr/local/bin/dev-cell-bootstrap.sh"
+  - "/usr/local/bin/dev-cell-breakglass.sh"
   - "/usr/local/bin/dev-cell-provision.sh"
   - "/usr/local/bin/dev-cell-provision-pnagent.sh"
   - "/usr/local/bin/dev-cell-validate-pnagent.sh"
@@ -671,6 +672,33 @@ services:
       RuntimeDirectoryMode=0700
 
       ExecStart=/usr/local/bin/dev-cell-bootstrap.sh
+      StandardOutput=journal
+      StandardError=journal
+
+      Restart=on-failure
+      RestartSec=15s
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - name: breakglass
+    unit_body: |
+      [Unit]
+      Description=Dev-cell: durably re-materialize the operator break-glass sudo drop-in (ephemeral /etc, every boot)
+      Documentation=https://github.com/nodealchemy/powernode-platform
+      ConditionPathExists=/usr/local/bin/dev-cell-breakglass.sh
+
+      [Service]
+      # Oneshot + RemainAfterExit=yes, same shape as bootstrap.service. No
+      # network dependency (unlike bootstrap, this never leaves the box) and
+      # deliberately NOT gated behind /persist/dev-cell/state/provisioned
+      # (unlike provision.service) -- /etc is wiped every reboot, so this
+      # must re-run every boot to keep the drop-in in place, not just once.
+      Type=oneshot
+      RemainAfterExit=yes
+      User=root
+
+      ExecStart=/usr/local/bin/dev-cell-breakglass.sh
       StandardOutput=journal
       StandardError=journal
 
