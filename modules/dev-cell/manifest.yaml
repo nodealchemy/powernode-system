@@ -252,6 +252,33 @@ file_spec:
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-git-keygen.service"
   - "/etc/systemd/system/multi-user.target.wants/dev-cell-clone.service"
 
+  # SSH host-key persistence (#43, "disposable not ephemeral"): the root
+  # overlay upper is ephemeral tmpfs, so /etc/ssh/ssh_host_*_key otherwise
+  # regenerates every boot — the operator's client hits "REMOTE HOST
+  # IDENTIFICATION HAS CHANGED" on every reconnect, not just on a
+  # deliberate instance replacement. Same rootfs .service + local-fs.
+  # target.wants shipping convention as dev-cell-persist-home.service
+  # above. See dev-cell-ssh-hostkeys.sh's own comment for the generate-
+  # once-in-/persist, restore-before-sshd-reads mechanics.
+  - "/usr/local/bin/dev-cell-ssh-hostkeys.sh"
+  - "/etc/systemd/system/dev-cell-ssh-hostkeys.service"
+  - "/etc/systemd/system/local-fs.target.wants/dev-cell-ssh-hostkeys.service"
+
+  # vi/vim/editor symlinks to vim.tiny (#43): vim-tiny is already carved
+  # (see the Interactive dev userland section below), but the immutable
+  # EROFS compose runs no update-alternatives postinst, so the vi/editor
+  # alternatives dpkg would normally create never existed — nano worked,
+  # vi didn't.
+  - "/usr/bin/vi"
+  - "/usr/bin/vim"
+  - "/usr/bin/editor"
+
+  # Self-doc (#43): a dev box should introduce itself. Seeded to
+  # ~/DEVCELL.md on first boot by dev-cell-persist-home.sh's /etc/skel
+  # copy-in; the motd script just points at it.
+  - "/etc/skel/DEVCELL.md"
+  - "/etc/update-motd.d/99-devcell-welcome"
+
   # === Interactive dev userland (campaign #40 / dev-cell dev-readiness) ===
   # Derived via derive-file-spec.sh --mode deb-payload against
   # [ncurses-base, ncurses-term, less, vim-tiny, nano, rsync, wget, gnupg,
