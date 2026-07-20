@@ -34,13 +34,16 @@
 # below) instead of an account-wide PAT — scoped to exactly the one
 # source repo dev-cell-provision.sh clones, nothing else.
 #
-# Platform-URL + PKI-directory resolution is copied verbatim from
-# claude-tmux's claude-tmux-fetch-credential.sh (itself a read-only shell
-# re-derivation of the Go agent's own identity resolver,
-# agent/internal/identity/*.go), in the same priority order: kernel
-# cmdline -> qemu fw_cfg -> /boot/identity.cfg -> /etc/identity.cfg. Same
-# known gap as that script: cloud-provider metadata strategies
-# (AWS/GCP/Azure/DO) are not replicated here.
+# Platform-URL + PKI-directory resolution mirrors the Go agent's own
+# identity resolver (agent/internal/identity/*.go for the enrollment-time
+# discovery chain; agent/internal/enroll.ReadPlatformURL for the persisted
+# post-enrollment path), in priority order: $PKI_DIR/meta.json (durable,
+# written by enroll.Save() at enroll time — what every boot after the first
+# actually relies on) -> kernel cmdline -> qemu fw_cfg -> /boot/identity.cfg
+# -> /etc/identity.cfg (enrollment-time / cloud-init-style fallbacks, before
+# meta.json exists). Known gap, same as claude-tmux-fetch-credential.sh:
+# cloud-provider metadata strategies (AWS/GCP/Azure/DO) are not replicated
+# here.
 set -eu
 
 RUNTIME_DIR="${RUNTIME_DIRECTORY:-/run/dev-cell}"
@@ -61,10 +64,26 @@ else
   exit 1
 fi
 
-# --- Resolve the platform base URL (same priority order as the agent) -
+# --- Resolve the platform base URL --------------------------------------
+# $PKI_DIR/meta.json checked FIRST: it's the durable record the Go agent's
+# own enroll.Save() writes at enroll time (agent/internal/enroll/storage.go)
+# and re-reads on every later boot via ReadPlatformURL — the exact mechanism
+# that lets the post-pivot service adopt an already-enrolled identity
+# without cmdline/fw_cfg carrying platform_url again. A live in-place boot-
+# image upgrade (UpgradeDispatcher/bootupgrade) swaps only the UKI — its
+# cmdline is minimal (powernode.boot=1 + image_git_sha for tracking), no
+# powernode.platform_url= — so on every boot after the first enrollment,
+# cmdline/fw_cfg/identity.cfg are ALL empty and this script refused to start
+# (observed: 100+ restart loop on VM9000 after an in-place upgrade). The
+# remaining channels stay as the enrollment-time / cloud-init-style fallback
+# for a node's very first boot, before meta.json exists.
 PLATFORM_URL=""
 
-if [ -r /proc/cmdline ]; then
+if [ -r "$PKI_DIR/meta.json" ]; then
+  PLATFORM_URL=$(sed -n 's/.*"platform_url":"\([^"]*\)".*/\1/p' "$PKI_DIR/meta.json" | head -n1)
+fi
+
+if [ -z "$PLATFORM_URL" ] && [ -r /proc/cmdline ]; then
   PLATFORM_URL=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^powernode\.platform_url=//p' | head -n1)
 fi
 
@@ -81,7 +100,7 @@ if [ -z "$PLATFORM_URL" ] && [ -r /etc/identity.cfg ]; then
 fi
 
 if [ -z "$PLATFORM_URL" ]; then
-  log "could not resolve platform URL from cmdline/fw_cfg/identity.cfg — refusing to start"
+  log "could not resolve platform URL from meta.json/cmdline/fw_cfg/identity.cfg — refusing to start"
   exit 1
 fi
 PLATFORM_URL=${PLATFORM_URL%/}
