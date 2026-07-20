@@ -559,7 +559,17 @@ module System
         Tempfile.create([ "cosign_pub", ".pem" ]) do |f|
           f.write(pubkey_pem)
           f.flush
-          cmd = [ "cosign", "verify", "--output", "json", "--key", f.path, oci_ref ]
+          # --insecure-ignore-tlog=true: ModuleSigningService#cosign_sign! signs
+          # via `cosign sign --key hashivault://...` with tlog upload left at
+          # its default (on) — the resulting bundle carries a real Rekor entry
+          # when the signer reached the public tlog. Verifying that entry's
+          # inclusion proof requires fetching Sigstore's TUF trusted root
+          # (tuf-repo-cdn.sigstore.dev), which egress-restricted fleet nodes —
+          # and ops-hub's own self-hosted platform — can't reach. The keyed
+          # signature itself is still fully checked; only the optional tlog
+          # inclusion proof is skipped. Mirrors the identical fix already
+          # applied to DiskImageOciIngestService's verify_signed_blob_with_keys.
+          cmd = [ "cosign", "verify", "--output", "json", "--insecure-ignore-tlog=true", "--key", f.path, oci_ref ]
           # registry_env carries the DOCKER_CONFIG cosign needs to PULL the
           # manifest + .sig from the private registry (Fable #1); {} inherits the
           # ambient env (dev / public registry), matching prior behavior.
