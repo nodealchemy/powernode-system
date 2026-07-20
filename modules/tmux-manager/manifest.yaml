@@ -1,0 +1,107 @@
+schema_version: 1
+
+name: tmux-manager
+display_name: "tmux-manager — declarative tmux session boot manager"
+description: >
+  Installs the tmux-manager CLI (github.com/rett/tmux-manager, MIT) and its
+  systemd@ template unit. Lets an operator declare named tmux sessions (via
+  ~<user>/.tmux-manager/*.conf) that boot/attach deterministically instead of
+  ad hoc `tmux new -s ...`. Ships INSTALLED, NOT ENABLED — this module makes
+  no session-management decisions and starts nothing on its own; an operator
+  later runs `systemctl enable --now tmux-manager@<user>` for whichever user
+  should own boot-time sessions. Reusable standalone — any fleet instance can
+  carry this module regardless of template.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# tmux-manager's own payload (fetched from github.com/rett/tmux-manager,
+# pinned to a commit sha since the repo has no releases — see stage15.sh's
+# tmux-manager case for the fetch+verify) plus tmux's own apt closure. No
+# rootfs/ tree here — every shipped file originates from the external clone
+# at build time (same shape as gitea-act-runner's module directory).
+#
+# tmux's file list mirrors claude-tmux's already-derived closure
+# (derive-file-spec.sh --mode deb-payload against [tmux, jq,
+# ca-certificates] — see claude-tmux/manifest.yaml's file_spec comment for
+# the full derivation story), MINUS its jq-specific entries (/usr/bin/jq,
+# libjq.so*, libonig.so*, jq's own lintian override) — this module has no jq
+# dependency. Declared directly here (package_spec below) rather than
+# depending on claude-tmux for tmux, per the package_spec comment.
+file_spec:
+  - "/opt/tmux-manager/bin/tmux-manager"
+  - "/usr/local/bin/tmux-manager"
+  - "/etc/systemd/system/tmux-manager@.service"
+  - "/usr/share/bash-completion/completions/tmux-manager"
+  - "/usr/bin/tmux"
+  - "/usr/lib/x86_64-linux-gnu/libevent_core-2.1.so*"
+  - "/usr/lib/x86_64-linux-gnu/libutempter.so*"
+  - "/usr/lib/x86_64-linux-gnu/utempter/utempter"
+  - "/usr/share/debianutils/shells.d/tmux"
+  - "/usr/share/lintian/overrides/libevent-core-2.1-7t64"
+  - "/usr/share/lintian/overrides/libutempter0"
+  - "/usr/share/lintian/overrides/tmux"
+
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+
+# tmux-manager only ships its own binary + systemd template unit + tmux's
+# own apt closure — no other module's paths.
+protected_spec: []
+
+# Declare tmux directly rather than `requires: powernode/claude-tmux@^1.0`.
+# tmux-manager is a generic session-boot tool, unrelated to Claude Code;
+# depending on claude-tmux to get tmux would drag in an entirely orthogonal
+# payload (the npm-installed Claude Code CLI + its capability:runtime.node
+# edge) just for one small apt package. tmux itself is a tiny closure (8
+# file_spec entries above, no heavy transitive deps) — cheap to duplicate.
+# Direct package_spec duplication across sibling build-dev modules is
+# already established precedent here: claude-tmux itself independently
+# lists jq + ca-certificates rather than depending on a neighbor for them.
+package_spec:
+  - tmux
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+    # tmux-manager's shell script + the tmux binary link against base-os's
+    # glibc — same closure-guarantee pattern as every other userland module
+    # here (claude-tmux, dev-cell, redis, ...).
+    - capability:os.userland
+  provides:
+    # Deliberately NOT `dev.tmux-session` — claude-tmux already claims that
+    # tag for "a Claude session is running in tmux"; reusing it here would
+    # make these two semantically different tools look interchangeable to
+    # the dependency resolver. Distinct tag for a generic session-boot
+    # manager capability.
+    - dev.tmux-manager
+
+# No services: stanza. tmux-manager's real unit (tmux-manager@.service) is a
+# systemd TEMPLATE unit — instantiated per-user, deliberately NOT
+# self-enabling upstream. The module-manifest schema's services: entries
+# each map to exactly one agent-rendered, auto-ENABLED concrete unit (name
+# pattern ^[a-z0-9][a-z0-9-]{0,62}$ — no `@` allowed), so a template unit
+# can't be expressed there, and using it here would be actively wrong: it
+# would make the agent auto-enable a unit this module explicitly ships
+# installed-but-inert. The unit ships as a plain file via file_spec instead
+# (same as claude-tmux ships its own helper scripts as raw files).
+
+reboot_required: false
+
+security:
+  capabilities: []
+  egress_allow: []
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  # Reuses claude-tmux/dev-cell's pin — same Noble tmux package, cache-friendly.
+  apt_snapshot: "20260415T000000Z"

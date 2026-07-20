@@ -1,0 +1,388 @@
+schema_version: 1
+
+name: dev-cell-browser
+display_name: "dev-cell browser (Google Chrome, X11 + headless)"
+description: >
+  Real, non-snap Google Chrome (google-chrome-stable) for interactive
+  development on dev-cell: an operator SSHed in with X11 forwarding can run
+  `google-chrome` and see windows locally, or drive it headless
+  (`--headless=new`) for scripted use. One real Chrome binary supports both.
+  .
+  Ubuntu Noble's apt `chromium-browser`/`firefox` are transitional
+  snap-redirect stubs, not real .deb packages — snapd is incompatible with
+  this platform's mmdebstrap/immutable-EROFS build model outright, so a real
+  browser has to come from outside Ubuntu's own apt. The Docker-official
+  essential-hook approach for adding a third-party apt repo mid-mmdebstrap
+  is empirically unreliable (see gitea-act-runner/manifest.yaml's
+  package_spec comment: tried for the docker-ce repo, failed — "the hook
+  runs AFTER the package index is built, with no re-index before
+  --include"). This module sidesteps that failure mode entirely: instead of
+  adding Google's apt repo, stage15.sh's dev-cell-browser case fetches the
+  google-chrome-stable .deb DIRECTLY (pinned exact version + sha256, same
+  discipline as the traefik/cosign/oras/act_runner fetches elsewhere in that
+  script) and extracts it with `dpkg-deb -x` — no repo add, no hook, no
+  re-index race. Chrome's own real Ubuntu-apt dependency closure (libnss3,
+  libgtk-3-0t64, fonts-liberation, xdg-utils, etc. below in package_spec)
+  comes from Noble's own main/universe archive, resolved normally by
+  mmdebstrap — no third-party repo needed for those.
+  .
+  Being stock consumer Chrome (not Playwright's bundled "Chrome for
+  Testing") measurably reduces OAuth2 automation-fingerprinting exposure
+  for a human operator's own interactive session — though it is not a
+  magic bullet; driving it via CDP/automation tooling would still leave
+  signals. The point here is enabling genuine interactive, X11-forwarded
+  use, not scripted automation.
+  .
+  X11Forwarding is fleet-wide `no` (base-os-ubuntu-noble's own
+  sshd_config.d/10-powernode.conf), deliberately, for every instance class.
+  This module ships its own sshd_config.d/05-dev-cell-browser.conf
+  re-enabling it — see that file's own comment for why the `05-` filename
+  prefix (not `20-` or similar) is load-bearing: sshd's Include directive
+  takes the FIRST value it sees per keyword, so this file must sort BEFORE
+  base-os's `10-powernode.conf` to actually win. Scoped to only instances
+  carrying this module — base-os's own default stays untouched for
+  everything else. `xauth` is in package_spec (below) for the SSH-side
+  MIT-cookie handoff X11 forwarding needs — without it, forwarding silently
+  degrades to nothing happening rather than failing loudly.
+  .
+  Chrome's own self-update cron trigger (`/etc/cron.daily/google-chrome`) is
+  deliberately masked out below — this platform's module system is the
+  authoritative, signed, versioned update path; letting Chrome silently
+  self-update via cron would drift the running binary away from what this
+  module's own signed artifact says is installed. Desktop-shell integration
+  files (.desktop launchers, appdata.xml, gnome-control-center entries) are
+  masked too — irrelevant noise on a headless/X11-forwarded CLI-launched
+  instance with no desktop shell to read them.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  # See the description above — Chrome's own self-update trigger and
+  # desktop-shell integration files, neither of which fit this module's
+  # headless/X11-forwarded CLI use case.
+  - "/etc/cron.daily/google-chrome"
+  - "/usr/share/applications/**"
+  - "/usr/share/appdata/**"
+  - "/usr/share/gnome-control-center/**"
+
+# Two distinct sources: (1) Chrome's own payload — fetched directly (pinned
+# google-chrome-stable_150.0.7871.128-1_amd64.deb, sha256-verified) and
+# dpkg-deb -x'd by stage15.sh's dev-cell-browser case, since Chrome isn't
+# apt-resolvable on Noble; (2) Chrome's real Ubuntu-apt dependency closure,
+# resolved normally via package_spec below and curated here via
+# `derive-file-spec.sh derive --mode deb-payload --module dev-cell-browser
+# --workspace extensions/system` (12,966 owned files post-mask — GTK3 +
+# fontconfig + icon-theme closures are legitimately this large; see
+# dev-cell/manifest.yaml's own "Interactive dev userland" precedent for the
+# same order-of-magnitude finding on a different apt set). Directory-wide
+# globs are used only for subtrees confirmed package-exclusive (icon
+# themes, fontconfig, GTK/glib/gio/gdk-pixbuf/avahi's own multiarch
+# subdirs, X11 app-defaults) — the SHARED multiarch lib dir's loose .so
+# files use per-library `.so*` globs instead (89 of them), matching
+# claude-tmux's/redis's/gitea-act-runner's existing convention of never
+# directory-globbing /usr/lib/x86_64-linux-gnu/** directly (that glob
+# would over-carve unrelated sibling-module content living in the SAME
+# shared directory).
+file_spec:
+  # ── Chrome's own payload (not apt-derivable — see stage15.sh) ──────────
+  - "/opt/google/chrome/**"
+  - "/usr/bin/google-chrome-stable"
+  # update-alternatives symlink Chrome's postinst would normally create
+  # (dpkg-deb -x doesn't run postinst — see stage15.sh's dev-cell-browser
+  # case, which creates this by hand). The common invocation name most
+  # tooling/scripts expect.
+  - "/usr/bin/google-chrome"
+
+  # ── Dependency closure: package-exclusive directory-wide globs ─────────
+  - "/etc/X11/Xsession.d/**"
+  - "/etc/fonts/**"
+  - "/etc/gtk-3.0/**"
+  - "/usr/lib/x86_64-linux-gnu/avahi/**"
+  - "/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/**"
+  - "/usr/lib/x86_64-linux-gnu/gio/**"
+  - "/usr/lib/x86_64-linux-gnu/glib-2.0/**"
+  - "/usr/lib/x86_64-linux-gnu/gtk-3.0/**"
+  - "/usr/lib/x86_64-linux-gnu/libgtk-3-0t64/**"
+  - "/usr/share/X11/**"
+  - "/usr/share/alsa/**"
+  - "/usr/share/fontconfig/**"
+  - "/usr/share/fonts/**"
+  - "/usr/share/gcc/**"
+  - "/usr/share/gettext/**"
+  - "/usr/share/glib-2.0/**"
+  - "/usr/share/gtk-3.0/**"
+  - "/usr/share/icons/**"
+  - "/usr/share/libdrm/**"
+  - "/usr/share/libthai/**"
+  - "/usr/share/mime/**"
+  - "/usr/share/themes/**"
+  - "/usr/share/xml/**"
+
+  # ── Dependency closure: shared multiarch lib dir, per-library globs ────
+  - "/usr/lib/x86_64-linux-gnu/libLerc.so*"
+  - "/usr/lib/x86_64-linux-gnu/libX11.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXau.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXcomposite.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXcursor.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXdamage.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXdmcp.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXext.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXfixes.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXi.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXinerama.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXmuu.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXrandr.so*"
+  - "/usr/lib/x86_64-linux-gnu/libXrender.so*"
+  - "/usr/lib/x86_64-linux-gnu/libasound.so*"
+  - "/usr/lib/x86_64-linux-gnu/libatk-1.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libatk-bridge-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libatspi.so*"
+  - "/usr/lib/x86_64-linux-gnu/libavahi-client.so*"
+  - "/usr/lib/x86_64-linux-gnu/libavahi-common.so*"
+  - "/usr/lib/x86_64-linux-gnu/libcairo-gobject.so*"
+  - "/usr/lib/x86_64-linux-gnu/libcairo.so*"
+  - "/usr/lib/x86_64-linux-gnu/libcolord.so*"
+  - "/usr/lib/x86_64-linux-gnu/libcolordprivate.so*"
+  - "/usr/lib/x86_64-linux-gnu/libcups.so*"
+  - "/usr/lib/x86_64-linux-gnu/libdatrie.so*"
+  - "/usr/lib/x86_64-linux-gnu/libdconf.so*"
+  - "/usr/lib/x86_64-linux-gnu/libdeflate.so*"
+  - "/usr/lib/x86_64-linux-gnu/libdrm.so*"
+  - "/usr/lib/x86_64-linux-gnu/libepoxy.so*"
+  - "/usr/lib/x86_64-linux-gnu/libfontconfig.so*"
+  - "/usr/lib/x86_64-linux-gnu/libfreebl3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libfreeblpriv3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libfreetype.so*"
+  - "/usr/lib/x86_64-linux-gnu/libfribidi.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgbm.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgdk-3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgio-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libglib-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgmodule-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgobject-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgraphite2.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgthread-2.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libgtk-3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libharfbuzz.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicudata.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicui18n.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicuio.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicutest.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicutu.so*"
+  - "/usr/lib/x86_64-linux-gnu/libicuuc.so*"
+  - "/usr/lib/x86_64-linux-gnu/libjbig.so*"
+  - "/usr/lib/x86_64-linux-gnu/libjpeg.so*"
+  - "/usr/lib/x86_64-linux-gnu/liblcms2.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnspr4.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnss3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnssckbi.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnssdbm3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnssutil3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libpango-1.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libpangocairo-1.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libpangoft2-1.0.so*"
+  - "/usr/lib/x86_64-linux-gnu/libpixman-1.so*"
+  - "/usr/lib/x86_64-linux-gnu/libplc4.so*"
+  - "/usr/lib/x86_64-linux-gnu/libplds4.so*"
+  - "/usr/lib/x86_64-linux-gnu/libpng16.so*"
+  - "/usr/lib/x86_64-linux-gnu/libsharpyuv.so*"
+  - "/usr/lib/x86_64-linux-gnu/libsmime3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libsoftokn3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libsqlite3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libssl3.so*"
+  - "/usr/lib/x86_64-linux-gnu/libstdc++.so*"
+  - "/usr/lib/x86_64-linux-gnu/libthai.so*"
+  - "/usr/lib/x86_64-linux-gnu/libtiff.so*"
+  - "/usr/lib/x86_64-linux-gnu/libvulkan.so*"
+  - "/usr/lib/x86_64-linux-gnu/libwayland-client.so*"
+  - "/usr/lib/x86_64-linux-gnu/libwayland-cursor.so*"
+  - "/usr/lib/x86_64-linux-gnu/libwayland-egl.so*"
+  - "/usr/lib/x86_64-linux-gnu/libwayland-server.so*"
+  - "/usr/lib/x86_64-linux-gnu/libwebp.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxcb-randr.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxcb-render.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxcb-shm.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxcb.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxkbcommon.so*"
+  - "/usr/lib/x86_64-linux-gnu/libxml2.so*"
+
+  # ── Dependency closure: loose files in shared dirs ──────────────────────
+  # /usr/share/{bug,dbus-1,apport,pam-configs,pkgconfig}/** are NOT
+  # package-exclusive (systemd, the dbus daemon, init-system-helpers, and
+  # other base-os packages also ship content under these same trees —
+  # confirmed by an actual over-carve FAIL when several of these were first
+  # tried as directory-wide globs: base-os-owned files like
+  # /usr/share/pam-configs/{mkhomedir,unix} and /usr/share/pkgconfig/
+  # {systemd,udev}.pc got swept in). Narrowed to the exact package-scoped
+  # subpaths this module's own dependency closure owns.
+  - "/usr/share/apport/package-hooks/source_fontconfig.py"
+  - "/usr/share/bug/fonts-liberation/**"
+  - "/usr/share/bug/libgbm1/**"
+  - "/usr/share/bug/libgtk-3-0t64/**"
+  - "/usr/share/bug/xdg-utils/**"
+  - "/usr/share/dbus-1/services/ca.desrt.dconf.service"
+  - "/usr/share/pam-configs/systemd"
+  - "/usr/share/pkgconfig/adwaita-icon-theme.pc"
+  - "/usr/share/pkgconfig/shared-mime-info.pc"
+  - "/usr/share/pkgconfig/xkeyboard-config.pc"
+  - "/etc/wgetrc"
+  - "/usr/bin/browse"
+  - "/usr/bin/fc-cache"
+  - "/usr/bin/fc-cat"
+  - "/usr/bin/fc-conflist"
+  - "/usr/bin/fc-list"
+  - "/usr/bin/fc-match"
+  - "/usr/bin/fc-pattern"
+  - "/usr/bin/fc-query"
+  - "/usr/bin/fc-scan"
+  - "/usr/bin/fc-validate"
+  - "/usr/bin/gtk-update-icon-cache"
+  - "/usr/bin/update-mime-database"
+  - "/usr/bin/wget"
+  - "/usr/bin/xauth"
+  - "/usr/bin/xdg-desktop-icon"
+  - "/usr/bin/xdg-desktop-menu"
+  - "/usr/bin/xdg-email"
+  - "/usr/bin/xdg-icon-resource"
+  - "/usr/bin/xdg-mime"
+  - "/usr/bin/xdg-open"
+  - "/usr/bin/xdg-screensaver"
+  - "/usr/bin/xdg-settings"
+  - "/usr/lib/systemd/user/dbus.service"
+  - "/usr/lib/systemd/user/dbus.socket"
+  - "/usr/lib/systemd/user/dconf.service"
+  - "/usr/lib/systemd/user/sockets.target.wants/dbus.socket"
+  - "/usr/lib/x86_64-linux-gnu/libfreebl3.chk"
+  - "/usr/lib/x86_64-linux-gnu/libfreeblpriv3.chk"
+  - "/usr/lib/x86_64-linux-gnu/libnssdbm3.chk"
+  - "/usr/lib/x86_64-linux-gnu/libsoftokn3.chk"
+  - "/usr/lib/x86_64-linux-gnu/security/pam_systemd.so"
+  - "/usr/lib/x86_64-linux-gnu/security/pam_systemd_loadkey.so"
+  - "/usr/libexec/dconf-service"
+  - "/usr/sbin/update-icon-caches"
+  - "/usr/share/doc-base/fontconfig.fontconfig-user"
+  - "/usr/share/doc-base/libpng16-16t64.libpng16"
+  - "/usr/share/doc-base/shared-mime-info.shared-mime-info"
+  - "/usr/share/gdb/auto-load/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33-gdb.py"
+  - "/usr/share/info/wget.info.gz"
+  - "/usr/share/lintian/overrides/adwaita-icon-theme"
+  - "/usr/share/lintian/overrides/dbus-user-session"
+  - "/usr/share/lintian/overrides/hicolor-icon-theme"
+  - "/usr/share/lintian/overrides/libasound2t64"
+  - "/usr/share/lintian/overrides/libatk-bridge2.0-0t64"
+  - "/usr/share/lintian/overrides/libatk1.0-0t64"
+  - "/usr/share/lintian/overrides/libatspi2.0-0t64"
+  - "/usr/share/lintian/overrides/libcairo-gobject2"
+  - "/usr/share/lintian/overrides/libcups2t64"
+  - "/usr/share/lintian/overrides/libgbm1"
+  - "/usr/share/lintian/overrides/libglib2.0-0t64"
+  - "/usr/share/lintian/overrides/libgtk-3-0t64"
+  - "/usr/share/lintian/overrides/libicu74"
+  - "/usr/share/lintian/overrides/libjpeg-turbo8"
+  - "/usr/share/lintian/overrides/libnspr4"
+  - "/usr/share/lintian/overrides/libnss3"
+  - "/usr/share/lintian/overrides/libpam-systemd"
+  - "/usr/share/lintian/overrides/libpixman-1-0"
+  - "/usr/share/lintian/overrides/libpng16-16t64"
+  - "/usr/share/lintian/overrides/libx11-6"
+  - "/usr/share/lintian/overrides/libxml2"
+
+  # ── This module's own authored rootfs content ───────────────────────────
+  - "/etc/ssh/sshd_config.d/05-dev-cell-browser.conf"
+
+# Owned (per the closure above) but masked out by the doc/man/locale rules
+# above.
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/etc/cron.daily/google-chrome"
+  - "/usr/share/applications/**"
+  - "/usr/share/appdata/**"
+  - "/usr/share/gnome-control-center/**"
+
+# dev-cell-browser only ships its own browser + X11-forwarding drop-in — no
+# other module's paths.
+protected_spec: []
+
+package_spec:
+  # Chrome's own real Ubuntu-apt Depends: line, verified against the
+  # google-chrome-stable_150.0.7871.128-1 package's actual apt metadata
+  # (dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages)
+  # and each name confirmed resolvable on Noble via `apt-cache policy`
+  # (several are Ubuntu's 64-bit-time_t "t64" renames — libasound2 ->
+  # libasound2t64, libatk1.0-0 -> libatk1.0-0t64, etc. — not a typo).
+  - ca-certificates
+  - fonts-liberation
+  - libasound2t64
+  - libatk-bridge2.0-0t64
+  - libatk1.0-0t64
+  - libatspi2.0-0t64
+  - libcairo2
+  - libcups2t64
+  - libcurl4t64
+  - libdbus-1-3
+  - libexpat1
+  - libgbm1
+  - libglib2.0-0t64
+  - libgtk-3-0t64
+  - libnspr4
+  - libnss3
+  - libpango-1.0-0
+  - libudev1
+  - libvulkan1
+  - libx11-6
+  - libxcb1
+  - libxcomposite1
+  - libxdamage1
+  - libxext6
+  - libxfixes3
+  - libxkbcommon0
+  - libxrandr2
+  - wget
+  - xdg-utils
+  # Not a Chrome dependency — needed for the SSH-side MIT-cookie handoff
+  # X11 forwarding requires (see the description + sshd drop-in comment).
+  # Declared here so this module is self-sufficient rather than silently
+  # relying on a neighbor module to pull it in (same philosophy
+  # claude-tmux's own package_spec comment documents for jq).
+  - xauth
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+    - capability:os.userland
+  provides:
+    - dev.browser
+
+# No services: stanza — Chrome is launched on demand (interactively over an
+# X11-forwarded SSH session, or invoked headless by a script), not a
+# long-running daemon this module should supervise.
+
+reboot_required: false
+
+security:
+  capabilities: []
+  # Real internet egress — Chrome needs to actually reach the sites an
+  # operator is testing OAuth2 flows against (arbitrary origins), not a
+  # fixed allowlist.
+  egress_allow:
+    - "0.0.0.0/0"
+  privileged: false
+  user_namespace: true
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
+  # Chrome's own pinned version (150.0.7871.128-1) + sha256 are hardcoded
+  # directly in stage15.sh's dev-cell-browser case (same convention as the
+  # traefik/cosign/oras fetches in that file — no generic custom-version
+  # slot exists on this manifest's `build:` schema, unlike act_runner's
+  # dedicated `act_runner_version` field).

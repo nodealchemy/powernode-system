@@ -23,6 +23,14 @@
 # A 12th arm, `module-forge`, landed in campaign 019f5885 inc7 (Part A) —
 # this one is NOT a verbatim extraction of anything (there is no prior
 # inline workflow step for it): it bakes module-forge's own /opt/buildenv
+#
+# A 13th arm, `tmux-manager`, landed later still: fetches
+# github.com/rett/tmux-manager (pinned commit sha, no releases exist) and
+# installs it via plain install(1) calls — see that arm's own comment.
+#
+# A 14th arm, `dev-cell-browser`, fetches a pinned-version, sha256-verified
+# google-chrome-stable .deb directly from Google's own pool (no apt repo,
+# no essential-hook) and dpkg-deb -x's it — see that arm's own comment.
 # (a nested debian:trixie buildroot) + stages scripts/module-build/*.sh
 # into /opt/module-build/, the two things the module-forge NodeModule
 # needs to natively build OTHER modules on a fleet instance. See its case
@@ -953,6 +961,139 @@ case "$MODULE" in
     # actually landed dockerd; catch a silently-empty docker install
     # here rather than ship a runner with no daemon to talk to.
     test -e /tmp/fat/usr/bin/dockerd || { echo "[stage-1.5] FATAL: /tmp/fat/usr/bin/dockerd missing — docker.io did not install"; exit 1; }
+    ;;
+  tmux-manager)
+    # tmux-manager (github.com/rett/tmux-manager, MIT, Everett C. Haimes
+    # III) is a pure-bash tool with no apt package and no GitHub Releases
+    # (`gh api repos/rett/tmux-manager/tags` returns empty as of this
+    # writing) — so unlike traefik/cosign/oras/act_runner above, there is
+    # no tagged release artifact to fetch+verify. Pin to a specific commit
+    # SHA on `develop` instead of a floating branch ref, and verify the
+    # clone actually landed on it before trusting anything in the tree —
+    # same hermetic discipline as the sha256-pinned fetches elsewhere in
+    # this stage, just keyed on a commit rather than a release checksum.
+    #
+    # Do NOT run the repo's own scripts/install.sh here — it self-elevates
+    # via sudo and assumes a live systemd/bash-completion/host environment
+    # (an already-booted machine), not a build chroot. Replicate exactly
+    # what it does with plain install(1) calls instead.
+    TMUX_MANAGER_REF="develop"
+    TMUX_MANAGER_SHA="58892994f9f5afc753feb8dfe017fbc59d7088eb"
+
+    rm -rf /tmp/tmux-manager-src
+    git clone --depth 1 --branch "$TMUX_MANAGER_REF" \
+      https://github.com/rett/tmux-manager.git /tmp/tmux-manager-src
+    got_sha=$(cd /tmp/tmux-manager-src && git rev-parse HEAD)
+    if [ "$got_sha" != "$TMUX_MANAGER_SHA" ]; then
+      echo "[stage-1.5] FATAL: tmux-manager HEAD sha mismatch (want $TMUX_MANAGER_SHA got $got_sha) — refusing to build against an unpinned/moved upstream ref" >&2
+      exit 1
+    fi
+    echo "[stage-1.5] tmux-manager: verified clone at pinned commit ${TMUX_MANAGER_SHA}"
+
+    # Main binary — mirrors install.sh's 0755 install to /opt/tmux-manager/bin/.
+    mkdir -p /tmp/fat/opt/tmux-manager/bin
+    install -m 0755 /tmp/tmux-manager-src/bin/tmux-manager /tmp/fat/opt/tmux-manager/bin/tmux-manager
+
+    # Symlink on PATH — mirrors install.sh's /usr/local/bin symlink.
+    mkdir -p /tmp/fat/usr/local/bin
+    ln -sf /opt/tmux-manager/bin/tmux-manager /tmp/fat/usr/local/bin/tmux-manager
+
+    # systemd TEMPLATE unit — installed only, never enabled by this module
+    # (see manifest.yaml's file_spec comment for why this isn't a
+    # `services:` entry).
+    mkdir -p /tmp/fat/etc/systemd/system
+    install -m 0644 /tmp/tmux-manager-src/systemd/tmux-manager@.service \
+      /tmp/fat/etc/systemd/system/tmux-manager@.service
+
+    # bash completion — install whatever single file is in the repo's
+    # completions/ dir under the canonical target name `tmux-manager`.
+    # FATAL if the directory is empty or ambiguous rather than guessing.
+    mkdir -p /tmp/fat/usr/share/bash-completion/completions
+    comp_files=(/tmp/tmux-manager-src/completions/*)
+    if [ "${#comp_files[@]}" -ne 1 ] || [ ! -f "${comp_files[0]}" ]; then
+      echo "[stage-1.5] FATAL: expected exactly one file in tmux-manager's completions/ dir, found: ${comp_files[*]:-<none>}" >&2
+      exit 1
+    fi
+    install -m 0644 "${comp_files[0]}" \
+      /tmp/fat/usr/share/bash-completion/completions/tmux-manager
+
+    # Guard what actually SHIPS: this module's entire payload beyond apt
+    # tmux is these 4 files — a failed/partial clone or install must not
+    # silently carve an empty module (same discipline as claude-tmux's
+    # npm-install guard and act_runner's binary guard above).
+    if [ ! -s /tmp/fat/opt/tmux-manager/bin/tmux-manager ] || \
+       [ ! -L /tmp/fat/usr/local/bin/tmux-manager ] || \
+       [ ! -s /tmp/fat/etc/systemd/system/tmux-manager@.service ] || \
+       [ ! -s /tmp/fat/usr/share/bash-completion/completions/tmux-manager ]; then
+      echo "[stage-1.5] FATAL: tmux-manager did not fully install into /tmp/fat" >&2
+      exit 1
+    fi
+    echo "=== tmux-manager: install result ==="
+    ls -la /tmp/fat/opt/tmux-manager/bin/tmux-manager \
+           /tmp/fat/usr/local/bin/tmux-manager \
+           /tmp/fat/etc/systemd/system/tmux-manager@.service \
+           /tmp/fat/usr/share/bash-completion/completions/tmux-manager
+    ;;
+  dev-cell-browser)
+    # Google Chrome (google-chrome-stable) has no apt package on Ubuntu
+    # Noble — chromium-browser/firefox are both transitional snap-redirect
+    # stubs, and adding Google's own apt repo via an mmdebstrap
+    # essential-hook hits the same failure already documented for the
+    # docker-ce repo (see gitea-act-runner/manifest.yaml's package_spec
+    # comment: the hook runs AFTER the package index is built, with no
+    # re-index before --include, so a newly-added repo's packages are
+    # never found). Sidestep both problems: fetch the exact-version .deb
+    # directly from Google's own pool (a real, versioned, sha256-pinned
+    # artifact — verified against dl.google.com/linux/chrome/deb/dists/
+    # stable/main/binary-amd64/Packages at authoring time, then
+    # independently re-downloaded and re-hashed to confirm) and extract it
+    # with dpkg-deb -x. Chrome's real Ubuntu-apt Depends: closure is
+    # declared in this module's package_spec instead (ordinary Noble
+    # packages, resolved normally by mmdebstrap — no third-party repo
+    # needed for those).
+    CHROME_VERSION="150.0.7871.128-1"
+    CHROME_SHA256="83ed59c85878ebb8fa53915ebe7066cafc58d1c04c1c95449486e6f9d99a1efb"
+    CHROME_DEB_URL="https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb"
+
+    curl -fsSL "$CHROME_DEB_URL" -o /tmp/google-chrome-stable.deb
+    echo "${CHROME_SHA256}  /tmp/google-chrome-stable.deb" | sha256sum -c -
+
+    # dpkg-deb -x extracts the archive's data.tar payload only — it does
+    # NOT run postinst (no update-alternatives, no doc-base/menu
+    # registration triggers). That's fine for the plain file payload under
+    # /opt/google/chrome/**, but the `google-chrome` alternatives symlink
+    # postinst would normally create has to be made by hand below.
+    mkdir -p /tmp/fat
+    dpkg-deb -x /tmp/google-chrome-stable.deb /tmp/fat
+
+    # Postinst-equivalent: the common invocation name most tooling/scripts
+    # expect is `google-chrome`, not the literal `google-chrome-stable`
+    # binary the .deb ships — normally an update-alternatives symlink
+    # (/usr/bin/google-chrome -> /etc/alternatives/google-chrome ->
+    # .../google-chrome-stable) that dpkg-deb -x never creates. A plain
+    # symlink gets the same practical result without needing the
+    # alternatives system's own bookkeeping files at boot.
+    ln -sf /usr/bin/google-chrome-stable /tmp/fat/usr/bin/google-chrome
+
+    # Guard what actually SHIPS: a failed/partial fetch or extraction must
+    # not silently carve an empty module (same discipline as every other
+    # arm in this file). NOTE: /usr/bin/google-chrome-stable ships as a
+    # symlink to the ABSOLUTE path /opt/google/chrome/google-chrome (the
+    # .deb's own doing) — that only resolves correctly once /tmp/fat is
+    # deployed AS the real root (chroot/boot), not while merely staged
+    # here, so `-s` on the symlink itself would falsely report missing.
+    # Check the real underlying file at its actual staged path instead,
+    # and just confirm the symlinks themselves exist (`-L`) rather than
+    # trying to resolve through them.
+    if [ ! -s /tmp/fat/opt/google/chrome/google-chrome ] || \
+       [ ! -L /tmp/fat/usr/bin/google-chrome-stable ] || \
+       [ ! -L /tmp/fat/usr/bin/google-chrome ]; then
+      echo "[stage-1.5] FATAL: google-chrome-stable did not fully install into /tmp/fat" >&2
+      exit 1
+    fi
+    echo "=== dev-cell-browser: install result ==="
+    ls -la /tmp/fat/usr/bin/google-chrome /tmp/fat/usr/bin/google-chrome-stable /tmp/fat/opt/google/chrome/google-chrome
+    du -sh /tmp/fat/opt/google/chrome
     ;;
   module-forge)
     # Bakes /opt/buildenv: a NESTED mmdebstrap'd debian:trixie tree
