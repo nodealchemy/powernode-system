@@ -3,11 +3,12 @@
 module System
   # One per-instance Gitea deploy key per dev-cell NodeInstance. The Ed25519
   # keypair is generated in-service (System::DevCell::SshKeyGenerator); the
-  # PRIVATE half is stored ONLY in Vault and returned to the cell ONLY in the
-  # dev_cell_bootstrap mTLS response body. Vault-only storage mirrors
-  # System::ClaudeCodeCredential / System::AcmeDnsCredential — no
-  # encrypted_credentials column, so there is no plaintext DB fallback for the
-  # private key (a Vault outage fails closed).
+  # PRIVATE half is stored via Vault when available, returned to the cell
+  # ONLY in the dev_cell_bootstrap mTLS response body. Prefers Vault; falls
+  # back to an encrypted_credentials column (Security::CredentialEncryptionService,
+  # via the VaultCredential concern's default DB-fallback path) on
+  # Vault-less deployments (e.g. ops-hub, POWERNODE_CA_MODE=local) — same
+  # shape as System::ClaudeCodeCredential / System::AcmeDnsCredential.
   #
   # The public, non-secret columns (public_key_openssh, fingerprint,
   # deploy_key_id, source_repo, title) exist to drive idempotent

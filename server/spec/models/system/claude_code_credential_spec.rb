@@ -34,8 +34,16 @@ RSpec.describe System::ClaudeCodeCredential, type: :model do
       expect(credential.vault_path_credentials).to eq("system/claude-code-api-keys/some-id")
     end
 
-    it "has no encrypted_credentials column (Vault-only, no plaintext DB fallback)" do
-      expect(described_class.column_names).not_to include("encrypted_credentials")
+    it "encrypts the api key at rest via encrypted_credentials on the Vault-less DB fallback path" do
+      credential = create(:system_claude_code_credential)
+      plaintext = "sk-ant-fake-api-key"
+
+      result = credential.store_in_vault("api_key" => plaintext)
+
+      expect(result[:stored_in]).to eq(:database)
+      expect(credential.reload.encrypted_credentials).to be_present
+      expect(credential.encrypted_credentials).not_to include(plaintext)
+      expect(credential.credentials["api_key"]).to eq(plaintext)
     end
   end
 end

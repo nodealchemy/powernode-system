@@ -2,9 +2,10 @@
 
 require "rails_helper"
 
-# SECURITY: these specs assert the Vault-only storage wiring + revocation
-# behaviour. They NEVER assert a private key value, and confirm the model has
-# no plaintext DB column that could hold one.
+# SECURITY: these specs assert the storage wiring + revocation behaviour.
+# They NEVER assert a private key value, and confirm the DB-fallback path
+# (used on Vault-less deployments) only ever holds the key encrypted, never
+# plaintext.
 RSpec.describe System::DevCellDeployKey, type: :model do
   let(:instance) { create(:system_node_instance) }
 
@@ -38,13 +39,10 @@ RSpec.describe System::DevCellDeployKey, type: :model do
       expect(record.vault_path_credentials).to eq("system/dev-cell-deploy-keys/some-id")
     end
 
-    it "has no encrypted_credentials column (Vault-only, no plaintext DB fallback)" do
-      expect(described_class.column_names).not_to include("encrypted_credentials")
-    end
   end
 
   describe "#store_in_vault" do
-    it "routes the private key to the Vault credential provider and never a DB column" do
+    it "routes the private key to the Vault credential provider and never a DB column, when Vault succeeds" do
       record = described_class.create!(node_instance: instance)
       provider = instance_double(Security::VaultCredentialProvider)
       allow(Security::VaultCredentialProvider).to receive(:new).and_return(provider)
@@ -56,6 +54,18 @@ RSpec.describe System::DevCellDeployKey, type: :model do
 
       # The private key must not have landed in any DB-backed attribute.
       expect(record.attributes.values.map(&:to_s)).not_to include(a_string_including("OPENSSH PRIVATE KEY"))
+    end
+
+    it "encrypts the private key at rest via encrypted_credentials on the Vault-less DB fallback path" do
+      record = described_class.create!(node_instance: instance)
+      plaintext = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
+
+      result = record.store_in_vault("private_key_openssh" => plaintext)
+
+      expect(result[:stored_in]).to eq(:database)
+      expect(record.reload.encrypted_credentials).to be_present
+      expect(record.encrypted_credentials).not_to include("OPENSSH PRIVATE KEY")
+      expect(record.credentials["private_key_openssh"]).to eq(plaintext)
     end
   end
 

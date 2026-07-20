@@ -53,7 +53,10 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
   let(:path) { "/api/v1/system/node_api/config/dev_cell_bootstrap" }
   let(:expected_ssh_url) { "git@gitea.example.com:powernode/powernode-platform.git" }
 
-  # Vault store confirmed (:vault); the fail-closed test overrides to :database.
+  # Vault store confirmed (:vault); the DB-fallback test overrides to
+  # :database (Vault-less deployments — also a confirmed store, since
+  # 20260720180000 gave System::DevCellDeployKey a real encrypted_credentials
+  # column); the fail-closed test overrides to an unconfirmed shape.
   let(:vault_provider) { instance_double(Security::VaultCredentialProvider) }
 
   # Stub the Gitea client so no real HTTP is issued; assert on shape only.
@@ -191,8 +194,8 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
       expect(System::NodeInstancePeer.find_by(node_instance_id: instance.id)).to be_nil
     end
 
-    it "503s, rolls back, and deletes the orphan key when Vault does not confirm storage" do
-      allow(vault_provider).to receive(:store_credential).and_return({ stored_in: :database })
+    it "503s, rolls back, and deletes the orphan key when neither vault nor database confirm storage" do
+      allow(vault_provider).to receive(:store_credential).and_return({ stored_in: :none })
 
       get path, headers: headers
 
@@ -202,6 +205,16 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
       expect(fake_gitea_client).to have_received(:delete_deploy_key).with("powernode", "powernode-platform", 7)
       # Grant is last → never ran.
       expect(System::NodeInstancePeer.find_by(node_instance_id: instance.id)).to be_nil
+    end
+
+    it "succeeds on the Vault-less database fallback (encrypted_credentials, e.g. ops-hub)" do
+      allow(vault_provider).to receive(:store_credential).and_return({ stored_in: :database })
+
+      get path, headers: headers
+
+      expect(response).to have_http_status(:ok)
+      expect(System::DevCellDeployKey.find_by(node_instance_id: instance.id)).to be_present
+      expect(fake_gitea_client).not_to have_received(:delete_deploy_key)
     end
   end
 

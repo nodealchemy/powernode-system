@@ -3,9 +3,11 @@
 module System
   # One Claude Code CLI credential (Anthropic API key) per NodeInstance,
   # consumed by the claude-tmux NodeModule's boot-time fetch script over
-  # the mTLS-authenticated node_api. Vault-only storage — mirrors
-  # System::AcmeDnsCredential's design (no encrypted_credentials column,
-  # so there is no plaintext DB fallback for this secret).
+  # the mTLS-authenticated node_api. Prefers Vault; falls back to an
+  # encrypted_credentials column (Security::CredentialEncryptionService,
+  # via the VaultCredential concern's default DB-fallback path) on
+  # Vault-less deployments (e.g. ops-hub, POWERNODE_CA_MODE=local) — same
+  # shape as System::AcmeDnsCredential.
   class ClaudeCodeCredential < ApplicationRecord
     self.table_name = "system_claude_code_credentials"
 

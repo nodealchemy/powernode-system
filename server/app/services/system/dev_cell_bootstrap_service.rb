@@ -184,11 +184,13 @@ module System
       end
     end
 
-    # Persist the (public) key metadata + store the PRIVATE key in Vault, in a
-    # short transaction. Treats anything other than a confirmed :vault store as
-    # a HARD failure — so a Vault outage rolls the row back and fails closed
-    # (the caller then deletes the Gitea key). No plaintext DB fallback exists
-    # for this Vault-only credential, so a silent DB no-op must not read as OK.
+    # Persist the (public) key metadata + store the PRIVATE key in Vault (or,
+    # on a Vault-less deployment, the encrypted_credentials column via the
+    # same VaultCredential DB-fallback path other credential models use), in
+    # a short transaction. :vault and :database are both confirmed, real
+    # storage — accept either. Anything else (nil, an unrecognized shape) is
+    # a HARD failure: rolls the row back and fails closed (the caller then
+    # deletes the Gitea key) rather than let an unconfirmed store read as OK.
     def persist_and_store!(keypair:, owner:, repo:, key_id:, title:)
       record = ::System::DevCellDeployKey.find_or_initialize_by(node_instance_id: @instance.id)
 
@@ -204,8 +206,8 @@ module System
         record.save!
 
         stored = record.store_in_vault("private_key_openssh" => keypair.private_key_openssh)
-        unless stored.is_a?(Hash) && stored[:stored_in] == :vault
-          raise VaultStoreError, "vault did not confirm secure storage (got #{stored.inspect})"
+        unless stored.is_a?(Hash) && %i[vault database].include?(stored[:stored_in])
+          raise VaultStoreError, "neither vault nor database confirmed secure storage (got #{stored.inspect})"
         end
       end
 
