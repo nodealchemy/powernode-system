@@ -9,6 +9,17 @@ Wants=basic.target systemd-networkd-wait-online.service
 
 [Service]
 Type=simple
+# Guaranteed belt for overlay + erofs, alongside the modules-load.d drop-in
+# (powernode-overlay.conf) — this service's own reconciler.RunOnce union-mount
+# step (reconcile.go reconciler:union_mount) is what actually observed the
+# race in practice: the kernel's on-demand module autoload triggered by the
+# mount(2) syscall intermittently lost the race, failing with "mount:
+# /sysroot: special device overlay does not exist" and sending the boot into
+# its degraded fallback path. Leading `-` keeps a modprobe failure non-fatal
+# so a missing module never blocks startup (same pattern BUG-J established
+# for nf_tables in powernode-mount.service).
+ExecStartPre=-/bin/sh -c 'modprobe -a overlay erofs'
+
 # Intentionally no --pki-dir flag — enroll.ResolveDefaultPKIDir() picks
 # /persist/var/lib/powernode/pki in the initramfs context (where
 # persist.mount has staged the persistent tmpfs), matching the path

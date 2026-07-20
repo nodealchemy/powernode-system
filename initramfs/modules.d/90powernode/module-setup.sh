@@ -228,6 +228,12 @@ install() {
     inst_simple "${moddir}/powernode-nftables.conf" \
         /etc/modules-load.d/powernode-nftables.conf
 
+    # overlay + erofs — same force-included-but-never-explicitly-loaded gap
+    # as nf_tables above, hitting the union mount itself instead of nft.
+    # See powernode-overlay.conf for the full incident writeup.
+    inst_simple "${moddir}/powernode-overlay.conf" \
+        /etc/modules-load.d/powernode-overlay.conf
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.

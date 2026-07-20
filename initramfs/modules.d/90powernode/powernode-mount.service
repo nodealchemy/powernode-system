@@ -22,6 +22,13 @@ RemainAfterExit=yes
 # modprobe failure non-fatal so a missing module never blocks the pivot (BUG-J).
 ExecStartPre=-/bin/sh -c 'modprobe -a nf_tables nft_ct nf_conntrack'
 
+# Same belt for overlay + erofs, guarding THIS unit's own ComposeForPivot ->
+# MountUnion call below — see powernode-overlay.conf for the incident this
+# guards against (union mount intermittently failing with "special device
+# overlay does not exist" because the kernel's on-demand module autoload
+# raced the mount(2) call).
+ExecStartPre=-/bin/sh -c 'modprobe -a overlay erofs'
+
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`
 # isn't applicable to oneshot; if this fails the smoke run continues with
