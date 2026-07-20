@@ -43,7 +43,16 @@ DEV_CELL_MODULES = %w[
   qemu-guest-agent
   claude-tmux
   dev-cell
+  redis
+  dev-cell-docker
+  dev-cell-browser
+  tmux-manager
 ].freeze
+# tmux-manager ships installed-but-not-enabled (see its own manifest) —
+# template-wide assignment is safe: no dev-cell instance auto-starts a tmux
+# session just by carrying this module. The operator's personal session
+# config (~pnadmin/.tmux-manager/powernode.conf) is still delivered
+# per-instance, separately, not via this module.
 
 DEV_CELL_TEMPLATE_NAME = "powernode-dev-cell"
 DEV_CELL_POOL_NAME     = "dev-cell-pool"
