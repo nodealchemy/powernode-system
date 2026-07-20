@@ -1,0 +1,45 @@
+# Renamed from apt's docker.service (same [Service] body, minus
+# --bridge=none — see this module's manifest.yaml description and
+# gitea-act-runner-docker.service's own comment for why the rename is
+# load-bearing: the platform's Container Runtimes (Phase 1 Docker)
+# reconciler (agent/internal/dockerd/manager.go) watches the literal unit
+# name "docker.service" and stops it unconditionally whenever the
+# account-wide `docker-engine` NodeModule isn't assigned to the node — with
+# no way to tell "docker-engine-managed daemon" apart from any other
+# module's own local Docker install using the same well-known unit name.
+# This module deliberately does NOT use the docker-engine module (local
+# unix-socket-only, no SDWAN, no managed DockerHost — see manifest.yaml),
+# so under the apt-shipped name the reconciler would kill this daemon ~5s
+# after every start. Enabling it under a name the reconciler never looks
+# for sidesteps the conflict entirely — no Go agent changes needed.
+#
+# Unlike gitea-act-runner-docker.service, this does NOT set --bridge=none:
+# dev-cell-docker is a general-purpose interactive dev daemon (an operator
+# manually running/testing containers), not a CI image-build sandbox — real
+# container networking (bridge + published ports) is expected to work.
+[Unit]
+Description=dev-cell Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network-online.target containerd.service
+Wants=network-online.target containerd.service
+Requires=dev-cell-docker.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutSec=0
+RestartSec=2
+Restart=always
+StartLimitBurst=3
+StartLimitInterval=60s
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

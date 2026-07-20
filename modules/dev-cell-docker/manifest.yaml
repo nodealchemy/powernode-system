@@ -1,0 +1,196 @@
+schema_version: 1
+
+name: dev-cell-docker
+display_name: "dev-cell local Docker (docker.io + docker-buildx)"
+description: >
+  A LOCAL, unix-socket-only Docker daemon for interactive development use on
+  dev-cell — running/testing containers by hand, exercising docker_*
+  platform features, `docker build`/`docker-buildx` locally. Ubuntu Noble's
+  in-universe docker.io + docker-buildx (no third-party apt repo needed —
+  the official docker-ce repo cannot be added via an mmdebstrap
+  essential-hook; that hook runs AFTER the package index is built, with no
+  re-index before the --include install, so docker-ce is never found — see
+  gitea-act-runner/manifest.yaml's package_spec comment, which already hit
+  and documented this). docker.io installs its daemon as dockerd + the
+  apt-shipped docker.service/docker.socket/containerd.service units (deb
+  postinst, CI build time), but this module enables it under its OWN
+  renamed units, rootfs/etc/systemd/system/dev-cell-docker.{service,socket}
+  — see that .service file's [Unit] Description comment for why the rename
+  is load-bearing (the platform's docker-engine reconciler stops any node's
+  literal "docker.service" unit when the account-wide `docker-engine`
+  NodeModule isn't assigned, with no way to tell it apart from another
+  module's own local Docker). Enabled the same way gitea-act-runner enables
+  its own renamed unit — deliberately NOT the manifest `services:`
+  lifecycle: raw units never go through the agent's per-module
+  capability/user-namespace drop-ins, so dockerd's own privilege needs are
+  never subject to this module's `security:` block.
+  .
+  Unlike gitea-act-runner's CI-sandbox posture (--bridge=none, no real
+  container networking needed for image builds), this daemon runs with
+  Docker's normal default bridge networking — an interactive operator is
+  expected to `docker run -p ...` and reach published ports normally.
+  .
+  No SDWAN, no docker-engine module, no managed DockerHost — dockerd talks
+  to clients over the local unix socket only (/run/docker.sock).
+  protected_spec is deliberately empty: this module ships NOTHING under
+  /etc/docker/** — the account-wide `docker-engine` module owns that path's
+  protection, and stepping on it here would be a silent conflict on any
+  node composing both.
+  .
+  `pnadmin` (dev-cell's own interactive operator account — not declared by
+  this module, it's an agent-baseline identity, see claude-tmux/dev-cell's
+  own manifest comments for the same note) is added to the `docker` group
+  below so the operator can run `docker` commands directly over SSH without
+  sudo, the same way dockerd chowns /run/docker.sock to root:docker BY NAME
+  at daemon start.
+  .
+  SECURITY POSTURE (operator-reviewed, not incidental): local Docker access
+  is root-equivalent on the host by nature — this is accepted for the same
+  reason dev-cell already grants its operator breakglass sudo (see
+  dev-cell/manifest.yaml): the instance itself is the trust boundary, not
+  in-container confinement. Real internet egress is needed to pull images
+  from arbitrary registries — same posture as gitea-act-runner's.
+license: MIT
+category: build-dev
+
+mask:
+  - "/var/cache/apt/**"
+  - "/var/lib/apt/lists/**"
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+
+# Mirrors gitea-act-runner/manifest.yaml's already-derived docker.io +
+# docker-buildx closure (derive-file-spec.sh --mode deb-payload against
+# [docker.io, docker-buildx]) minus its CI-specific act_runner/iptables/jq
+# entries — this module has no act_runner binary, no iptables dependency
+# (dockerd manages its own nftables/iptables rules via the same base-os
+# nftables base gitea-act-runner assumes; re-verify with
+# `derive-file-spec.sh derive --mode deb-payload --module dev-cell-docker`
+# before merging if dockerd's default bridge networking needs iptables
+# present — gitea-act-runner needed it explicitly for --bridge=none's NAT
+# rules; this module's default bridge mode may need the same, TBD at build
+# verification time), no jq. Starting point copied from gitea-act-runner's
+# already-verified docker.io/docker-buildx-only subset.
+file_spec:
+  # docker.io / docker-buildx / containerd.io payload (apt, Stage 1).
+  - "/usr/bin/docker"
+  - "/usr/bin/dockerd"
+  - "/usr/bin/docker-proxy"
+  - "/usr/bin/docker-init"
+  - "/usr/bin/containerd*"
+  - "/usr/bin/ctr"
+  - "/usr/bin/runc"
+  - "/usr/bin/recvtty"
+  - "/usr/bin/sd-helper"
+  - "/usr/bin/seccompagent"
+  - "/usr/sbin/runc"
+  - "/usr/sbin/recvtty"
+  - "/usr/sbin/sd-helper"
+  - "/usr/sbin/seccompagent"
+  - "/usr/libexec/docker/**"
+  - "/usr/lib/systemd/system/containerd.service"
+  # dev-cell-docker.service/.socket, NOT the apt-shipped docker.service/
+  # .socket names — see the [Unit] Description comment in
+  # rootfs/etc/systemd/system/dev-cell-docker.service for why the rename is
+  # load-bearing. The apt-shipped docker.service/docker.socket originals
+  # are deliberately NOT carved (see carve_waivers below) — shipping them
+  # under their literal names would be actively harmful (the docker-engine
+  # reconciler this module's description warns about), not just redundant.
+  - "/etc/systemd/system/dev-cell-docker.service"
+  - "/etc/systemd/system/dev-cell-docker.socket"
+  # This module's own rootfs/ enablement symlinks — same enablement pattern
+  # gitea-act-runner/base-os-ubuntu-noble use, NOT generated by the
+  # manifest services lifecycle.
+  - "/etc/systemd/system/multi-user.target.wants/dev-cell-docker.service"
+  - "/etc/systemd/system/sockets.target.wants/dev-cell-docker.socket"
+  # docker.io/docker-buildx's own small share/ footprint — package-exclusive
+  # files, no directory-wide risk at this size.
+  - "/usr/share/bash-completion/completions/docker"
+  - "/usr/share/docker.io/**"
+  - "/usr/share/lintian/overrides/docker.io"
+  - "/usr/share/zsh/vendor-completions/_docker"
+  # tmpfs mount for /var/lib/docker (below) — dockerd's overlay2 storage
+  # driver can't nest on this instance's own overlay rootfs (same finding
+  # gitea-act-runner's manifest documents: overlay-on-overlay is
+  # unsupported by the kernel). tmpfs isn't overlayfs, so overlay2 works
+  # fine on top of it — matches "disposable not ephemeral": this instance's
+  # own IDENTITY (host keys, home dir) persists across reboot, but Docker's
+  # image/layer cache is fine to lose on reboot, same as CI's ephemeral
+  # posture.
+  - "/etc/systemd/system/var-lib-docker.mount"
+  - "/etc/systemd/system/local-fs.target.wants/var-lib-docker.mount"
+
+# Owned (per the closure above) but masked out by the doc/man/locale rules
+# above, PLUS the apt-shipped docker.service/docker.socket originals
+# (deliberately excluded — see the file_spec comment above: shipping them
+# under their literal names would collide with the docker-engine
+# reconciler, not just be redundant with this module's own renamed units).
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
+  - "/usr/lib/systemd/system/docker.service"
+  - "/usr/lib/systemd/system/docker.socket"
+
+# Deliberately empty: this module ships nothing under /etc/docker/** — the
+# account-wide docker-engine module owns protecting that path. See the
+# module description for why colliding here would be a silent conflict.
+protected_spec: []
+
+package_spec:
+  # Ubuntu noble's in-universe Docker: docker.io provides dockerd + the
+  # docker CLI and pulls containerd; docker-buildx is the buildx plugin.
+  # Resolvable straight from the base noble universe with NO third-party
+  # apt repo — see the module description for why the official docker-ce
+  # repo is not used.
+  - docker.io
+  - docker-buildx
+
+dependencies:
+  requires:
+    - powernode/powernode-system-base@^1.0
+    # dockerd + docker CLI + containerd link against base-os's glibc —
+    # closure guarantee (campaign 019f6084 inc1).
+    - capability:os.userland
+  provides:
+    - dev.docker
+
+# pnadmin membership in the `docker` group — load-bearing, not cosmetic:
+# dockerd chowns /run/docker.sock to root:docker BY NAME at every daemon
+# start, so pnadmin must already be a member of a `docker` group for the
+# socket to be reachable without sudo. `members:` references pnadmin by
+# name only — it does not need to also be declared under this module's own
+# `users:` (pnadmin is an agent-baseline identity, declared nowhere; see
+# claude-tmux/dev-cell's own manifest comments for the same note). Declared
+# explicitly (rather than left to docker.io's own postinst) so
+# etcidentity's /etc/group render is authoritative and idempotent across
+# reconciles.
+groups:
+  - name: docker
+    members: [pnadmin]
+
+# No services: stanza (same reasoning as gitea-act-runner's own dockerd
+# unit): raw units never go through the agent's per-module
+# capability/user-namespace drop-ins, so dockerd's own privilege needs are
+# never subject to this module's `security:` block below. Enabled instead
+# via the rootfs/ *.wants/ symlinks declared in file_spec above.
+
+reboot_required: false
+
+security:
+  capabilities: []
+  # Real internet egress needed — an interactive operator legitimately
+  # pulls arbitrary images from arbitrary registries, same posture
+  # gitea-act-runner's manifest documents for the identical reason.
+  egress_allow:
+    - "0.0.0.0/0"
+  privileged: false
+  # user_namespace:false → PrivateUsers=no, matching gitea-act-runner's own
+  # documented contingency for the same class of dockerd privilege need.
+  user_namespace: false
+
+skills: []
+
+build:
+  apt_snapshot: "20260415T000000Z"
