@@ -742,3 +742,114 @@ func TestReconcilerHotReconcileSkipsAndWarnsWhenRebootRequired(t *testing.T) {
 		t.Errorf("expected exactly one reconciler:reboot_pending OnError, got %d (stages=%v)", found, stages)
 	}
 }
+
+// TestReconcilerRunOnce_EgressUnionsAcrossModules_PermissiveSurvives is the
+// end-to-end regression for the real dev-cell + claude-tmux bug: two
+// modules attach in the SAME reconcile pass, one declaring a restrictive
+// explicit-empty egress policy (claude-tmux's real manifest), the other an
+// unrestricted wildcard (dev-cell's real manifest, "a dev-cell is by
+// nature an unbounded egress sandbox"). Before the fix, ApplyEgressAllowlist
+// ran per-module against one shared nftables chain, so whichever module's
+// attachModule call happened to run LAST silently overwrote the other's
+// policy — observed live as claude-tmux's restriction winning and dev-cell
+// having no internet access despite its manifest explicitly asking for it.
+// After the fix, egress is unioned once per RunOnce tick from every
+// currently-desired module's declared policy, so the wildcard must survive
+// regardless of attach order.
+func TestReconcilerRunOnce_EgressUnionsAcrossModules_PermissiveSurvives(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"m1", "name":"claude-tmux", "priority":100, "effective_priority":100, "has_data_file":true},
+					{"id":"m2", "name":"dev-cell", "priority":200, "effective_priority":200, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/m1": `{
+				"success": true,
+				"data": {"id":"m1", "name":"claude-tmux", "digest":"digm1",
+				         "priority":100, "effective_priority":100,
+				         "config": {"security": {"egress_allow": []}},
+				         "services": [{"name":"claude", "start_command":"/usr/bin/claude", "restart_policy":"always"}]}
+			}`,
+			"/api/v1/system/node_api/modules/m2": `{
+				"success": true,
+				"data": {"id":"m2", "name":"dev-cell", "digest":"digm2",
+				         "priority":200, "effective_priority":200,
+				         "config": {"security": {"egress_allow": ["0.0.0.0/0"]}},
+				         "services": [{"name":"executor", "start_command":"/usr/local/bin/dev-cell-executor.sh", "restart_policy":"always"}]}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	puller := &stubPuller{cacheDir: layout.ModulesCacheRoot}
+	runner := &mount.RecorderRunner{}
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   filepath.Join(tmpRoot, "manifests"),
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// The FINAL egress chain (last "nft add chain ... policy drop" plus
+	// whatever rules follow it) must contain the wildcard — proving the
+	// permissive module's policy is what's actually enforced, not
+	// clobbered by the restrictive sibling.
+	var lastChainAt = -1
+	for i, inv := range runner.Invocations {
+		if inv.Name == "nft" && len(inv.Args) >= 3 && inv.Args[0] == "add" && inv.Args[1] == "chain" {
+			lastChainAt = i
+		}
+	}
+	if lastChainAt < 0 {
+		t.Fatalf("expected at least one `nft add chain` invocation; got %+v", runner.Invocations)
+	}
+	foundWildcard := false
+	for _, inv := range runner.Invocations[lastChainAt:] {
+		if inv.Name != "nft" {
+			continue
+		}
+		for _, a := range inv.Args {
+			if a == "0.0.0.0/0" {
+				foundWildcard = true
+			}
+		}
+	}
+	if !foundWildcard {
+		t.Errorf("expected the effective egress chain to allow 0.0.0.0/0 (dev-cell's declared policy must survive claude-tmux's restrictive sibling); got: %+v", runner.Invocations)
+	}
+
+	// And there must be only ONE "add chain ... policy drop" for the
+	// egress table across the whole run — proving this is a single unioned
+	// apply, not two competing per-module chain replacements.
+	chainAdds := 0
+	for _, inv := range runner.Invocations {
+		if inv.Name == "nft" && len(inv.Args) >= 3 && inv.Args[0] == "add" && inv.Args[1] == "chain" {
+			joined := strings.Join(inv.Args, " ")
+			if strings.Contains(joined, "powernode_module_egress") {
+				chainAdds++
+			}
+		}
+	}
+	if chainAdds != 1 {
+		t.Errorf("expected exactly ONE egress chain install across both modules attaching together, got %d; invocations: %+v", chainAdds, runner.Invocations)
+	}
+}

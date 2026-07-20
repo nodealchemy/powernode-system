@@ -336,6 +336,41 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		r.cfg.OnError("reconciler:sudoers_write", err)
 	}
 
+	// Node-wide egress enforcement, same pattern as identity/sudoers just
+	// above: one shared nftables OUTPUT chain governs the WHOLE node, so it
+	// must reflect the UNION of every currently-desired module's declared
+	// policy, recomputed fresh from the same manifestsSlice every tick —
+	// never a single module's own Policy.Apply, which would let whichever
+	// module happens to reconcile last silently clobber every sibling's
+	// intent (see security.UnionEgressPolicy's doc comment for the full
+	// history of that bug).
+	egressPolicies := make([]*security.Policy, 0, len(manifestsSlice))
+	for _, m := range manifestsSlice {
+		egressPolicies = append(egressPolicies, buildPolicy(m))
+	}
+	egressAllow, egressEnforced := security.UnionEgressPolicy(egressPolicies)
+	if egressEnforced {
+		var protectedHosts []string
+		if h := hostFromURL(r.cfg.PlatformURL); h != "" {
+			// The agent's own control-plane URL host must stay reachable
+			// regardless of any module's policy — without this, a
+			// restrictive module attaching would firewall the agent off
+			// from its own parent on the very next tick (dial i/o timeout
+			// after the chain installs).
+			protectedHosts = append(protectedHosts, h)
+		}
+		if err := security.ApplyEgressAllowlistWithProtected(ctx, r.cfg.MountRunner, egressAllow, protectedHosts); err != nil {
+			r.cfg.OnError("reconciler:egress", err)
+		}
+	} else {
+		// No currently-desired module declared an egress policy this tick
+		// (e.g. the one module that did was just detached) — best-effort
+		// teardown so a stale restrictive chain never lingers past the
+		// module that asked for it. Error ignored deliberately: "no such
+		// chain" is the common, expected case.
+		_ = security.RemoveEgressAllowlist(ctx, r.cfg.MountRunner)
+	}
+
 	// Reassert the platform-assigned hostname every reconcile tick — live
 	// /etc/hostname + the running kernel hostname — the same way the agent
 	// owns /etc/passwd. Idempotent; a no-op when no authoritative source is
@@ -492,19 +527,13 @@ func (r *Reconciler) attachModule(ctx context.Context, mod mount.Module, mf *man
 		return err
 	}
 
-	// Apply security policy. SeccompProfile is a path inside the
-	// module's mounted root; the drop-in for each unit is written
-	// here so subsequent systemctl start picks it up.
+	// Apply PER-MODULE security policy (MAC + seccomp + capabilities).
+	// SeccompProfile is a path inside the module's mounted root; the
+	// drop-in for each unit is written here so subsequent systemctl start
+	// picks it up. Egress is NOT applied here — see Policy.Apply's doc
+	// comment; it's unioned across all attached modules once per RunOnce
+	// tick (below, alongside the etcidentity/etcsudoers union step).
 	policy := buildPolicy(mf)
-	// Surface the agent's control-plane URL host as a protected
-	// destination so the host-wide egress chain doesn't drop the
-	// agent's own heartbeat / task-lease / federation traffic when a
-	// restrictive module attaches. Without this we observed the agent
-	// firewalling itself off on first reconcile in cloud-VM dogfood
-	// runs (dial 10.x.x.x:443 i/o timeout after policy.Apply).
-	if h := hostFromURL(r.cfg.PlatformURL); h != "" {
-		policy.ProtectedHosts = append(policy.ProtectedHosts, h)
-	}
 	if errs := policy.Validate(); len(errs) > 0 {
 		return fmt.Errorf("policy invalid: %v", errs)
 	}
@@ -712,10 +741,18 @@ func buildPolicy(m *manifest.Manifest) *security.Policy {
 	if v, ok := sec["seccomp_profile"].(string); ok {
 		p.SeccompProfile = v
 	}
-	if v, ok := sec["egress_allow"].([]any); ok {
-		for _, e := range v {
-			if s, ok := e.(string); ok {
-				p.EgressAllow = append(p.EgressAllow, s)
+	// EgressDeclared tracks raw KEY PRESENCE, not just a non-empty result —
+	// `security: {egress_allow: []}` (claude-tmux's deliberate "restrict me
+	// to the baseline") must still be distinguishable from a module with no
+	// security block at all (which should never force node-wide enforcement
+	// just by existing). See UnionEgressPolicy.
+	if v, ok := sec["egress_allow"]; ok {
+		p.EgressDeclared = true
+		if list, ok := v.([]any); ok {
+			for _, e := range list {
+				if s, ok := e.(string); ok {
+					p.EgressAllow = append(p.EgressAllow, s)
+				}
 			}
 		}
 	}

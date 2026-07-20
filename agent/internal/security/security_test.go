@@ -16,10 +16,15 @@ func TestPolicy_Apply_DropAllByDefault(t *testing.T) {
 	}
 	// Apply no longer shells out to capsh — capability enforcement moved
 	// to per-unit systemd drop-ins written by WriteCapabilityDropIn
-	// (covered by TestWriteCapabilityDropIn_* below). Apply should still
-	// install egress + MAC rules, so nft must run.
-	if !invokedWith(rec, "nft", "add") {
-		t.Errorf("expected nft add invocation; got %+v", rec.Invocations)
+	// (covered by TestWriteCapabilityDropIn_* below). Apply also no
+	// longer touches egress/nft at all — that's now a node-wide UNION
+	// computed once per reconcile tick by UnionEgressPolicy, never by a
+	// single module's own Apply (see TestUnionEgressPolicy_* below and
+	// Policy.Apply's doc comment for why: a per-module nft chain write
+	// let whichever module reconciled last silently clobber every
+	// sibling's declared policy).
+	if invokedWith(rec, "nft", "add") {
+		t.Errorf("did not expect Apply to touch nft directly (egress is unioned node-wide, not per-module); got %+v", rec.Invocations)
 	}
 	if invokedWith(rec, "capsh", "--drop=all") {
 		t.Errorf("did not expect legacy capsh shellout (replaced by systemd drop-in)")
@@ -76,15 +81,94 @@ func TestPolicy_Validate_RejectsMixedPrivilegedAndPolicy(t *testing.T) {
 
 func TestPolicy_Privileged_SkipsMACAndCaps(t *testing.T) {
 	rec := &mount.RecorderRunner{}
-	p := &Policy{Privileged: true, EgressAllow: []string{"api.example.com:443"}}
+	p := &Policy{Privileged: true, EgressDeclared: true, EgressAllow: []string{"api.example.com:443"}}
 	if err := p.Apply(context.Background(), rec); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if invokedWith(rec, "capsh", "--drop=all") {
 		t.Errorf("privileged policy should NOT drop capabilities")
 	}
-	if !invokedWith(rec, "nft", "add") {
-		t.Errorf("privileged policy should still install egress rules")
+	// Apply itself never touches nft (privileged or not) — a privileged
+	// module's EgressAllow still flows into the node-wide union exactly
+	// like any other module's, via UnionEgressPolicy at the reconciler
+	// level, not here.
+	if invokedWith(rec, "nft", "add") {
+		t.Errorf("did not expect Apply to touch nft directly, even for a privileged policy; got %+v", rec.Invocations)
+	}
+}
+
+func TestUnionEgressPolicy_NoModuleDeclared_NotEnforced(t *testing.T) {
+	policies := []*Policy{
+		{}, // no security block at all
+		{Capabilities: []string{"CAP_CHOWN"}}, // has an opinion on caps, none on egress
+		nil,
+	}
+	allow, enforced := UnionEgressPolicy(policies)
+	if enforced {
+		t.Errorf("expected enforced=false when no policy declares egress_allow; got allow=%v", allow)
+	}
+	if len(allow) != 0 {
+		t.Errorf("expected empty allowlist; got %v", allow)
+	}
+}
+
+func TestUnionEgressPolicy_UnionsAcrossModules_PermissiveSurvives(t *testing.T) {
+	// Regression for the exact dev-cell + claude-tmux bug: one module
+	// declares an explicit empty (restrictive) allowlist, a sibling
+	// declares an unrestricted wildcard. Order must not matter — the
+	// wildcard must survive regardless of which policy is unioned first.
+	restrictive := &Policy{EgressDeclared: true, EgressAllow: nil}
+	permissive := &Policy{EgressDeclared: true, EgressAllow: []string{"0.0.0.0/0"}}
+
+	allowA, enforcedA := UnionEgressPolicy([]*Policy{restrictive, permissive})
+	allowB, enforcedB := UnionEgressPolicy([]*Policy{permissive, restrictive})
+
+	for _, tc := range []struct {
+		name     string
+		allow    []string
+		enforced bool
+	}{
+		{"restrictive-then-permissive", allowA, enforcedA},
+		{"permissive-then-restrictive", allowB, enforcedB},
+	} {
+		if !tc.enforced {
+			t.Errorf("%s: expected enforced=true", tc.name)
+		}
+		if len(tc.allow) != 1 || tc.allow[0] != "0.0.0.0/0" {
+			t.Errorf("%s: expected union to contain the wildcard regardless of order; got %v", tc.name, tc.allow)
+		}
+	}
+}
+
+func TestUnionEgressPolicy_DedupesOverlappingEntries(t *testing.T) {
+	a := &Policy{EgressDeclared: true, EgressAllow: []string{"api.example.com:443", "shared.example.com"}}
+	b := &Policy{EgressDeclared: true, EgressAllow: []string{"shared.example.com", "other.example.com:22"}}
+	allow, enforced := UnionEgressPolicy([]*Policy{a, b})
+	if !enforced {
+		t.Fatal("expected enforced=true")
+	}
+	counts := map[string]int{}
+	for _, e := range allow {
+		counts[e]++
+	}
+	if counts["shared.example.com"] != 1 {
+		t.Errorf("expected shared.example.com exactly once; got counts=%v allow=%v", counts, allow)
+	}
+	for _, want := range []string{"api.example.com:443", "shared.example.com", "other.example.com:22"} {
+		if counts[want] != 1 {
+			t.Errorf("expected %q present exactly once; got %v", want, allow)
+		}
+	}
+}
+
+func TestUnionEgressPolicy_UndeclaredModuleContributesNothing(t *testing.T) {
+	// A module with no security block at all must not force node-wide
+	// enforcement just by being attached alongside modules that do.
+	noOpinion := &Policy{}
+	permissive := &Policy{EgressDeclared: true, EgressAllow: []string{"0.0.0.0/0"}}
+	allow, enforced := UnionEgressPolicy([]*Policy{noOpinion, permissive})
+	if !enforced || len(allow) != 1 || allow[0] != "0.0.0.0/0" {
+		t.Errorf("expected only the declaring module's entries; got allow=%v enforced=%v", allow, enforced)
 	}
 }
 
