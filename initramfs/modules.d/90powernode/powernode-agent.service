@@ -4,8 +4,20 @@ Documentation=https://github.com/nodealchemy/powernode-platform
 ConditionKernelCommandLine=powernode.boot=1
 ConditionPathExists=/sbin/powernode-agent
 DefaultDependencies=no
-After=basic.target systemd-networkd-wait-online.service
-Wants=basic.target systemd-networkd-wait-online.service
+# systemd-modules-load.service is only Before=sysinit.target — that's NOT
+# a guarantee it has finished before this unit starts just because this
+# unit is After=basic.target (implicit target-reachability ordering, not a
+# real dependency on that specific unit). Confirmed live on VM9000: this
+# unit's own reconciler hit the exact overlay-module-not-yet-loaded race
+# (reconciler:union_mount exit 32, "special device overlay does not
+# exist") within the same second the unit started, despite the
+# modules-load.d drop-in (powernode-overlay.conf) and this unit's own
+# ExecStartPre modprobe belt both being present — the boot only survived
+# because powernode-mount.service's independent, later attempt succeeded.
+# An explicit After=+Wants= on systemd-modules-load.service closes the
+# race deterministically instead of relying on redundancy to paper over it.
+After=basic.target systemd-networkd-wait-online.service systemd-modules-load.service
+Wants=basic.target systemd-networkd-wait-online.service systemd-modules-load.service
 
 [Service]
 Type=simple

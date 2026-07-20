@@ -8,8 +8,13 @@ DefaultDependencies=no
 # Run AFTER the agent has had time to enroll and persist the mTLS cert. The
 # ExecStartPre wait-for-cert below is the actual gate; the After= just keeps
 # systemd's ordering reasonable.
-After=basic.target powernode-agent.service powernode-ssh-keygen.service
-Wants=basic.target powernode-agent.service
+#
+# systemd-modules-load.service listed explicitly for the same reason as
+# powernode-agent.service (see its own comment) — After=basic.target alone
+# does not guarantee that specific unit has finished, and this unit's own
+# ComposeForPivot -> MountUnion call races the same overlay-module-load gap.
+After=basic.target powernode-agent.service powernode-ssh-keygen.service systemd-modules-load.service
+Wants=basic.target powernode-agent.service systemd-modules-load.service
 
 [Service]
 Type=oneshot
