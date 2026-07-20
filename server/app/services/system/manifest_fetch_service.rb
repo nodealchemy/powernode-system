@@ -77,7 +77,21 @@ module System
       def fetch_file(owner:, repo:, path:, ref:)
         return nil unless defined?(::Devops::Git::GiteaApiClient)
 
-        credential = ::Devops::GitCredential.find_by(provider_type: "gitea", status: "active")
+        # Devops::GitCredential doesn't exist — the real model is
+        # Devops::GitProviderCredential, scoped through its
+        # Devops::GitProvider association (provider_type lives on the
+        # provider, not the credential; "active" is the is_active column
+        # via the .active scope, not a status string). This path is only
+        # reached by node modules that set gitea_repo_full_name (the 5
+        # custom per-repo modules) — the NameError was previously
+        # silently swallowed by this method's StandardError rescue, so
+        # manifest fetch always failed closed (returned nil) for every
+        # module on this path.
+        provider = ::Devops::GitProvider.find_by(provider_type: "gitea")
+        return nil unless provider
+
+        credential = ::Devops::GitProviderCredential.active.for_provider(provider)
+                                                     .order(is_default: :desc, created_at: :desc).first
         return nil unless credential
 
         client = ::Devops::Git::GiteaApiClient.new(credential)
