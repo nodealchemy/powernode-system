@@ -296,6 +296,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		return nil
 	}
 
+	// Pull + verify + mount every new module's erofs blob BEFORE detaching
+	// anything (see prefetchNewArtifacts doc). Must run before the detach
+	// loop below — that ordering is the entire point of this call.
+	r.prefetchNewArtifacts(ctx, toAttach)
+
 	// Detaches first, in reverse priority (highest priority unmounted first
 	// so dependency stacks come down cleanly).
 	detachStack := mount.ModuleStack(toDetach).SortByPriority()
@@ -528,6 +533,37 @@ func (r *Reconciler) mountModuleArtifact(ctx context.Context, mod mount.Module) 
 		return fmt.Errorf("mount erofs: %w", err)
 	}
 	return nil
+}
+
+// prefetchNewArtifacts pulls, verifies, and mounts every toAttach module's
+// erofs blob before RunOnce detaches anything. Fixes a circular dependency:
+// some modules' own content-serving API depends on the very service
+// instance being replaced — e.g. a self-hosted platform's own hub-backend
+// Rails process serves /api/v1/system/node_api/files/modules/:id, which
+// mountModuleArtifact's Puller.Pull fetches through. Without this, a
+// same-tick version bump (old digest in toDetach, new digest in toAttach,
+// same module ID) stops the old service in the detach loop, and the new
+// blob's pull — attempted afterward, in the attach loop — 502s against the
+// now-dead service, permanently wedging the reconcile with no module
+// mounted at all. Observed live, 2026-07-20, ops-hub's self-hosted
+// hub-backend/extension-system publish.
+//
+// mountModuleArtifact's mount step is idempotent (content-addressed by
+// digest, IsMountpoint-checked first — see erofs.go), so calling it here
+// and then again inside the normal attachModule() call later in this same
+// tick is safe and cheap: the second call finds the mountpoint already
+// populated and proceeds straight to policy + AttachServices.
+//
+// Best-effort: a prefetch failure here is surfaced via OnError but is not
+// fatal to the tick — detach still proceeds, and the normal attachModule()
+// call later will attempt (and fail again, now correctly attributed)
+// rather than silently skipping the module.
+func (r *Reconciler) prefetchNewArtifacts(ctx context.Context, toAttach mount.ModuleStack) {
+	for _, mod := range toAttach {
+		if err := r.mountModuleArtifact(ctx, mod); err != nil {
+			r.cfg.OnError("reconciler:prefetch", fmt.Errorf("module %s: %w", mod.ID, err))
+		}
+	}
 }
 
 // attachModule pulls + verifies + mounts a single module, then applies security

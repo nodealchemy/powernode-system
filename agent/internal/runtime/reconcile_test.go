@@ -135,8 +135,12 @@ func TestReconcilerRunOnceAttachesNewModule(t *testing.T) {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
-	// Puller called for m1.
-	if len(puller.calls) != 1 || puller.calls[0] != "m1" {
+	// Puller called for m1 twice — once by prefetchNewArtifacts (ahead of
+	// any detach, see its doc comment) and once by the normal attachModule
+	// call later in the same tick. The second call is a cheap no-op
+	// (MountModule is content-addressed-by-digest idempotent), not a
+	// wasted fetch.
+	if len(puller.calls) != 2 || puller.calls[0] != "m1" || puller.calls[1] != "m1" {
 		t.Errorf("puller calls: %v", puller.calls)
 	}
 
@@ -377,6 +381,120 @@ func TestReconcilerRunOnceDetachesRemovedModule(t *testing.T) {
 	state, _ := mount.LoadState(statePath)
 	if len(state.AttachedModules) != 0 {
 		t.Errorf("expected empty attached modules, got %+v", state.AttachedModules)
+	}
+}
+
+// orderTrackingPuller mimics stubPuller but also records into the SAME
+// mount.RecorderRunner.Invocations timeline as the systemd stop/start calls
+// (via a synthetic "PULL" marker), so a test can assert relative ordering
+// between "fetched the new module's blob" and "stopped the old module's
+// service" — the exact interaction the circular-dependency bug depended on.
+type orderTrackingPuller struct {
+	cacheDir string
+	runner   *mount.RecorderRunner
+}
+
+func (p *orderTrackingPuller) Pull(ref *oci.ModuleArtifactRef) (string, string, error) {
+	p.runner.Invocations = append(p.runner.Invocations,
+		mount.Invocation{Op: "Run", Name: "PULL", Args: []string{ref.ModuleID, ref.Digest}})
+	digestFs := strings.ReplaceAll(strings.ReplaceAll(ref.Digest, ":", "_"), "/", "_")
+	erofsPath := filepath.Join(p.cacheDir, digestFs+".erofs")
+	bundlePath := filepath.Join(p.cacheDir, digestFs+".cosign-bundle")
+	_ = osMkdirAll(p.cacheDir, 0o755)
+	_ = osWriteFile(erofsPath, []byte("stub-erofs-blob"), 0o644)
+	return erofsPath, bundlePath, nil
+}
+
+// TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService is the
+// regression test for the 2026-07-20 ops-hub outage: a same-tick version
+// bump (same module ID, old digest → new digest) must pull+mount the NEW
+// blob before stopping the OLD service, never after. If this test fails
+// after a refactor, the reconcile has regressed into fetching a self-hosted
+// module's replacement content through a service the SAME tick just tore
+// down — an unrecoverable circular dependency on a self-hosted platform.
+func TestReconcilerRunOnceFetchesNewArtifactBeforeDetachingOldService(t *testing.T) {
+	tmpRoot := t.TempDir()
+	statePath := filepath.Join(tmpRoot, "state.json")
+	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", t.TempDir())
+
+	// Pre-seed: "hub" attached at the old digest.
+	mount.SaveState(statePath, &mount.State{
+		AttachedModules: []mount.Module{
+			{ID: "hub", Digest: "old-digest", Priority: 100},
+		},
+	})
+	manifestRoot := filepath.Join(tmpRoot, "manifests")
+
+	// Platform now assigns "hub" at a NEW digest — a version bump, same
+	// module ID, landing "hub"@old-digest in toDetach and "hub"@new-digest
+	// in toAttach in the same RunOnce tick.
+	client := &stubModulesClient{
+		responses: map[string]string{
+			"/api/v1/system/node_api/modules": `{
+				"success": true,
+				"data": {"modules": [
+					{"id":"hub", "name":"hub-backend", "priority":100, "effective_priority":100, "has_data_file":true}
+				]}
+			}`,
+			"/api/v1/system/node_api/modules/hub": `{
+				"success": true,
+				"data": {"id":"hub", "name":"hub-backend", "digest":"new-digest",
+				         "priority":100, "effective_priority":100,
+				         "services": [{"name":"rails", "start_command":"/usr/bin/rails-start", "restart_policy":"always"}]}
+			}`,
+		},
+	}
+	layout := mount.DefaultLayout()
+	layout.Root = tmpRoot
+	layout = layout.Resolve()
+	runner := &mount.RecorderRunner{}
+	puller := &orderTrackingPuller{cacheDir: layout.ModulesCacheRoot, runner: runner}
+
+	r, err := NewReconciler(ReconcilerConfig{
+		ModulesClient:  client,
+		ManifestClient: client,
+		ManifestRoot:   manifestRoot,
+		Puller:         puller,
+		Verifier:       verify.AlwaysOK{},
+		MountRunner:    runner,
+		Layout:         layout,
+		StatePath:      statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	pullIdx, stopIdx := -1, -1
+	for i, inv := range runner.Invocations {
+		if inv.Name == "PULL" && len(inv.Args) >= 2 && inv.Args[1] == "new-digest" && pullIdx == -1 {
+			pullIdx = i
+		}
+		if inv.Name == "systemctl" && len(inv.Args) >= 2 &&
+			inv.Args[0] == "stop" && inv.Args[1] == "powernode-hub-rails.service" && stopIdx == -1 {
+			stopIdx = i
+		}
+	}
+	if pullIdx == -1 {
+		t.Fatalf("expected a PULL for the new digest, got: %v", runner.Invocations)
+	}
+	if stopIdx == -1 {
+		t.Fatalf("expected `systemctl stop powernode-hub-rails.service`, got: %v", runner.Invocations)
+	}
+	if pullIdx > stopIdx {
+		t.Errorf("new artifact must be pulled BEFORE the old service is stopped — pull at index %d, stop at index %d: %v",
+			pullIdx, stopIdx, runner.Invocations)
+	}
+
+	// Sanity: the new module actually ends up attached at the new digest.
+	state, err := mount.LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if len(state.AttachedModules) != 1 || state.AttachedModules[0].Digest != "new-digest" {
+		t.Errorf("expected hub@new-digest attached, got: %+v", state.AttachedModules)
 	}
 }
 
