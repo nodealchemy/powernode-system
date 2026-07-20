@@ -191,6 +191,81 @@ RSpec.describe System::ModuleOciIngestService do
       expect(amd64[:fsverity_root_hash]).to eq("fsv-amd64-abc123")
       expect(amd64[:oci_digest]).to eq("sha256:#{Digest::SHA256.hexdigest('amd64')}")
     end
+
+    # scripts/module-build/push.sh (bootstrap CI — .gitea/workflows/
+    # build-platform-modules.yaml) pushes a PLAIN single-arch OCI image
+    # manifest, not the multi-arch index tested above: one build, one
+    # architecture, no fan-out composition step, cosign-signed regardless.
+    # Before this fix, `manifests` came back empty and every bootstrap-
+    # pipeline module publish failed ingest with "manifest had no per-arch
+    # descriptors" — discovered 2026-07-20 delivering the ops-hub agent fix
+    # (powernode-system-base:97f36eb7). Shape below is byte-for-byte what a
+    # real `oras manifest fetch` returned for that artifact.
+    it "synthesizes one per_arch_descriptor from a single-arch image manifest's erofs layer" do
+      single_arch = {
+        schemaVersion: 2,
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        artifactType: "application/vnd.powernode.module.v1",
+        config: {
+          mediaType: "application/vnd.oci.empty.v1+json",
+          digest: "sha256:#{Digest::SHA256.hexdigest('empty')}",
+          size: 2
+        },
+        layers: [
+          {
+            mediaType: "application/vnd.powernode.erofs",
+            digest: "sha256:#{Digest::SHA256.hexdigest('erofs')}",
+            size: 6_066_176,
+            annotations: { "org.opencontainers.image.title" => "powernode-system-base.erofs" }
+          },
+          {
+            mediaType: "application/vnd.powernode.module.meta",
+            digest: "sha256:#{Digest::SHA256.hexdigest('meta')}",
+            size: 99,
+            annotations: { "org.opencontainers.image.title" => "powernode-system-base.erofs.meta" }
+          },
+          {
+            mediaType: "application/vnd.powernode.module.packages",
+            digest: "sha256:#{Digest::SHA256.hexdigest('packages')}",
+            size: 2977,
+            annotations: { "org.opencontainers.image.title" => "powernode-system-base.packages.txt" }
+          }
+        ],
+        annotations: {
+          "org.opencontainers.image.created" => "2026-07-20T19:33:54Z",
+          "org.powernode.built_from_sha" => "97f36eb7ccb170a0111370f549830dcc6b2af221",
+          "org.powernode.packages-sha256" => "#{Digest::SHA256.hexdigest('packages')}"
+        }
+      }.to_json
+      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+        .and_return([ single_arch, "", status_double(true) ])
+
+      result = adapter.fetch_manifest(oci_ref)
+      expect(result[:error]).to be_nil
+      expect(result[:per_arch_descriptors].size).to eq(1)
+
+      descriptor = result[:per_arch_descriptors].first
+      expect(descriptor[:architecture]).to eq("amd64")
+      expect(descriptor[:oci_digest]).to eq("sha256:#{Digest::SHA256.hexdigest('erofs')}")
+      expect(descriptor[:media_type]).to eq("application/vnd.powernode.erofs")
+      expect(descriptor[:size_bytes]).to eq(6_066_176)
+      expect(descriptor[:built_at]).to eq(Time.parse("2026-07-20T19:33:54Z"))
+    end
+
+    it "fails clearly when a single-arch manifest has no erofs layer at all" do
+      no_erofs = {
+        schemaVersion: 2,
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        layers: [
+          { mediaType: "application/vnd.powernode.module.meta", digest: "sha256:#{Digest::SHA256.hexdigest('meta')}", size: 10 }
+        ]
+      }.to_json
+      allow(Open3).to receive(:capture3).with("oras", "manifest", "fetch", oci_ref)
+        .and_return([ no_erofs, "", status_double(true) ])
+
+      result = adapter.fetch_manifest(oci_ref)
+      expect(result[:error]).to match(/no application\/vnd\.powernode\.erofs layer/)
+    end
   end
 
   # IMP-8776e1daf159 — found while fixing IMP-133388cddd9c. The `oras push` step

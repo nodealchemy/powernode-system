@@ -434,6 +434,10 @@ module System
     # absent so the caller can surface a clear config issue.
     # ----------------------------------------------------------------------
     class OrasOciAdapter
+      # The erofs blob's mediaType within a single-arch image manifest's
+      # `layers` array — see fetch_manifest_single_arch.
+      EROFS_LAYER_MEDIA_TYPE = "application/vnd.powernode.erofs"
+
       def fetch_manifest(oci_ref)
         ensure_binary!("oras")
         out, err, status = Open3.capture3("oras", "manifest", "fetch", oci_ref)
@@ -445,7 +449,21 @@ module System
         parsed = JSON.parse(out)
         # Expect an OCI index manifest with `manifests` array (one per arch).
         manifests = Array(parsed["manifests"])
-        return { error: "manifest had no per-arch descriptors" } if manifests.empty?
+        if manifests.empty?
+          # scripts/module-build/push.sh (the bootstrap CI pipeline —
+          # .gitea/workflows/build-platform-modules.yaml) pushes a plain
+          # single-arch OCI image manifest, not a multi-arch index: it
+          # builds and cosign-signs one architecture per invocation, with
+          # no fan-out composition step. This is NOT the module-forge
+          # "native" path (ingest_native!, UNSIGNED by design, no cosign
+          # verification at all) — push.sh's "Cosign sign" step really
+          # does sign these, so they must still go through the normal
+          # verify_signature call below. Synthesize the same
+          # per_arch_descriptors shape from the manifest's `layers` array
+          # instead of silently erroring or dropping verification.
+          return fetch_manifest_single_arch(parsed) if parsed["layers"].present?
+          return { error: "manifest had no per-arch descriptors" }
+        end
 
         per_arch = manifests.map do |m|
           arch = m.dig("platform", "architecture")
@@ -599,6 +617,32 @@ module System
         return { error: ::System::ShellOutputSanitizer.redact(err.presence) || "cosign exit #{status.exitstatus}" } unless status.success?
 
         { ok: true, bundle: out, signers: expected_signers || [], issuer: issuer_regexp }
+      end
+
+      # push.sh doesn't set a platform/architecture annotation on its
+      # single-arch pushes (confirmed: only org.opencontainers.image.created,
+      # org.powernode.built_from_sha, org.powernode.packages-sha256 are set),
+      # so there's no signal to read it from. The bootstrap CI runners that
+      # invoke push.sh build for amd64 — same fallback default already used
+      # by ModuleOciIngestService#native_arch for the sibling native-ingest
+      # path when no architecture is supplied.
+      def fetch_manifest_single_arch(parsed)
+        erofs_layer = Array(parsed["layers"]).find { |l| l["mediaType"] == EROFS_LAYER_MEDIA_TYPE }
+        return { error: "single-arch manifest has no #{EROFS_LAYER_MEDIA_TYPE} layer" } unless erofs_layer
+
+        {
+          per_arch_descriptors: [ {
+            architecture:       "amd64",
+            oci_digest:         erofs_layer["digest"],
+            media_type:         erofs_layer["mediaType"],
+            size_bytes:         erofs_layer["size"].to_i,
+            fsverity_root_hash: parsed.dig("annotations", "io.powernode.fsverity_root_hash"),
+            sbom_uri:           parsed.dig("annotations", "io.powernode.sbom_uri"),
+            provenance_uri:     parsed.dig("annotations", "io.powernode.provenance_uri"),
+            vex_uri:            parsed.dig("annotations", "io.powernode.vex_uri"),
+            built_at:           parse_built_at(parsed.dig("annotations", "org.opencontainers.image.created"))
+          } ]
+        }
       end
 
       def ensure_binary!(name)
