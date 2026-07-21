@@ -280,20 +280,39 @@ if [ -d /etc/traefik ]; then
   echo "[rails-start] Ensuring host login ingress (self-signed, host-agnostic) -> $TRAEFIK_CERT_DIR"
   mkdir -p /etc/traefik/dynamic "$TRAEFIK_CERT_DIR" || true
   cat > /tmp/ensure-host-login-ingress.rb <<RUBY
-Core::IngressConfigWriter.ensure_host_login_ingress!(
+result = Core::IngressConfigWriter.ensure_host_login_ingress!(
   dynamic_dir: "/etc/traefik/dynamic",
   cert_dir:    "${TRAEFIK_CERT_DIR}"
 )
+abort("host-login ingress file missing after write: #{result[:output_path]}") unless File.exist?(result[:output_path])
 RUBY
-  if POWERNODE_INGRESS_HOST="${POWERNODE_INGRESS_HOST:-$(hostname -f 2>/dev/null || hostname)}" \
-       /usr/local/bin/bundle exec rails runner /tmp/ensure-host-login-ingress.rb; then
+  # Verify+retry (ops-hub incident 2026-07-21): on a fresh boot, this
+  # module-composed root is still being unioned together, and the
+  # traefik module's own /etc/traefik layer can settle AFTER this script
+  # runs. The write above can report success (no exception) yet the file
+  # never lands on disk — observed live: 00-host-login.yaml absent despite
+  # "ready" being logged, leaving Traefik to fall back to its own default
+  # snakeoil cert (wrong CN, browser cert-authority-invalid warnings).
+  # Re-run a few times, letting the Ruby script itself confirm the file
+  # actually exists (File.exist?, aborts non-zero if not), before giving up.
+  ingress_ready=0
+  for attempt in 1 2 3 4 5; do
+    if POWERNODE_INGRESS_HOST="${POWERNODE_INGRESS_HOST:-$(hostname -f 2>/dev/null || hostname)}" \
+         /usr/local/bin/bundle exec rails runner /tmp/ensure-host-login-ingress.rb; then
+      ingress_ready=1
+      break
+    fi
+    echo "[rails-start] host login ingress attempt ${attempt} did not persist a file, retrying…"
+    sleep 2
+  done
+  if [ "$ingress_ready" = "1" ]; then
     # The traefik service runs as User=traefik and must read the serving key
     # (written 0600). chown the durable cert tree to it; best-effort so a
     # missing user identity never aborts the boot.
     chown -R traefik:traefik "$(dirname "$TRAEFIK_CERT_DIR")" 2>/dev/null || true
     echo "[rails-start] host login ingress ready"
   else
-    echo "[rails-start] host login ingress generation failed (non-fatal — backend still starts)"
+    echo "[rails-start] host login ingress generation failed after retries (non-fatal — backend still starts)"
   fi
 fi
 
