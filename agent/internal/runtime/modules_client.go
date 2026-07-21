@@ -42,6 +42,13 @@ type AssignmentMeta struct {
 	AppHealthURL                 string
 	AppHealthRequiredConsecutive int
 	AppHealthPollIntervalSeconds int
+	// ProtectedEgressHosts are hostnames the reconciler's egress enforcement
+	// must always allow, regardless of any individual module's own
+	// egress_allow (see security.ApplyEgressAllowlistWithProtected). Backend-
+	// configured (account settings / SiteSetting), not hardcoded — refetched
+	// on every poll so a config change or DNS change takes effect on the
+	// next reconcile tick without an agent restart.
+	ProtectedEgressHosts []string
 }
 
 // FetchAssignedModules returns the rich-shape module list the
@@ -75,6 +82,7 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 			LKGAppHealthURL           string           `json:"lkg_app_health_url,omitempty"`
 			LKGAppHealthRequiredN     int              `json:"lkg_app_health_required_consecutive,omitempty"`
 			LKGAppHealthPollSecs      int              `json:"lkg_app_health_poll_interval_seconds,omitempty"`
+			ProtectedEgressHosts      []string         `json:"protected_egress_hosts,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -97,5 +105,6 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		AppHealthURL:                 env.Data.LKGAppHealthURL,
 		AppHealthRequiredConsecutive: env.Data.LKGAppHealthRequiredN,
 		AppHealthPollIntervalSeconds: env.Data.LKGAppHealthPollSecs,
+		ProtectedEgressHosts:         env.Data.ProtectedEgressHosts,
 	}, nil
 }

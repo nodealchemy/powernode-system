@@ -37,7 +37,18 @@ module Api
               lkg_staleness_threshold_seconds:      boot_lkg_setting_int("staleness_threshold_seconds"),
               lkg_app_health_url:                   ::SiteSetting.get("system.boot_lkg.app_health_url").to_s.presence,
               lkg_app_health_required_consecutive:  boot_lkg_setting_int("app_health_required_consecutive"),
-              lkg_app_health_poll_interval_seconds: boot_lkg_setting_int("app_health_poll_interval_seconds")
+              lkg_app_health_poll_interval_seconds: boot_lkg_setting_int("app_health_poll_interval_seconds"),
+              # Hostnames the agent must ALWAYS be able to reach, regardless of
+              # any individual module's own egress_allow policy (e.g. a hub's
+              # own Gitea host — needed by DevCellBootstrapService's deploy-key
+              # provisioning + disk-image CI, but not something to bake as a
+              # static IP into a module manifest; real infra hosts belong in
+              # config, not tracked source). Resolved fresh on EVERY node_api
+              # poll (not just at agent boot) so the agent's own DNS resolution
+              # in ApplyEgressAllowlistWithProtected picks up changes without a
+              # restart. Config-driven, no hardcoded values here — see
+              # #protected_egress_hosts.
+              protected_egress_hosts: protected_egress_hosts
             )
           end
 
@@ -120,6 +131,17 @@ module Api
           # / cmdline override) — config-driven with no hardcoded value here.
           def boot_lkg_setting_int(suffix)
             (::SiteSetting.get("system.boot_lkg.#{suffix}").presence || 0).to_i
+          end
+
+          # Account → global cascade (mirrors System::Fleet::PromotionCriteria's
+          # resolution style, minus the per-module layer — this setting is
+          # deployment-level, not something an individual module should
+          # override). Empty array when neither is configured — no behavior
+          # change for accounts that never set this.
+          def protected_egress_hosts
+            raw = current_account&.settings&.dig("protected_egress_hosts")
+            raw = SiteSetting.get("protected_egress_hosts") if raw.blank?
+            Array(raw).map(&:to_s).map(&:strip).reject(&:blank?)
           end
 
           def set_module

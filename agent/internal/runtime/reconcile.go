@@ -193,7 +193,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	desiredModules, _, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
+	desiredModules, assignmentMeta, err := FetchAssignedModules(ctx, r.cfg.ModulesClient)
 	if err != nil {
 		r.lastError = fmt.Errorf("fetch assigned modules: %w", err)
 		return r.lastError
@@ -359,6 +359,16 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			// after the chain installs).
 			protectedHosts = append(protectedHosts, h)
 		}
+		// Backend-configured hosts (account settings / SiteSetting -- see
+		// Api::V1::System::NodeApi::ModulesController#protected_egress_hosts)
+		// that must ALSO always be reachable regardless of module policy,
+		// e.g. a hub's own Gitea host. Fetched fresh every tick alongside
+		// the module list, so a config change (or that host's IP changing)
+		// takes effect on the next reconcile with no agent restart and no
+		// module rebuild -- the alternative of baking a static IP into a
+		// module manifest was rejected as exactly the kind of real-hostname-
+		// in-tracked-source coupling this project avoids.
+		protectedHosts = append(protectedHosts, assignmentMeta.ProtectedEgressHosts...)
 		if err := security.ApplyEgressAllowlistWithProtected(ctx, r.cfg.MountRunner, egressAllow, protectedHosts); err != nil {
 			r.cfg.OnError("reconciler:egress", err)
 		}
