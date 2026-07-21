@@ -241,6 +241,14 @@ install() {
     inst_simple "${moddir}/powernode-bridge.conf" \
         /etc/modules-load.d/powernode-bridge.conf
 
+    # nf_nat + nft_masq + xt_MASQUERADE — one module family deeper than the
+    # bridge gap above: dockerd can create docker0 but its NAT/MASQUERADE
+    # POSTROUTING rule then has nothing to attach to. See powernode-nat.conf
+    # for the full incident writeup (found on the bridge fix's first real-boot
+    # verification).
+    inst_simple "${moddir}/powernode-nat.conf" \
+        /etc/modules-load.d/powernode-nat.conf
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.

@@ -241,7 +241,20 @@ build_kernel_initrd() {
   # (802.2 LLC + spanning tree) — force-listed explicitly for the same
   # clarity reason nft_ct/nf_conntrack are spelled out above rather than left
   # to dracut's dep resolution alone.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp"
+  # nf_nat (+ nft_masq, xt_MASQUERADE): discovered on the FIRST real-boot
+  # verification of the bridge fix above — bridge/br_netfilter/llc/stp let
+  # dockerd create docker0, but `iptables -t nat -I POSTROUTING ... -j
+  # MASQUERADE` then died with "Extension MASQUERADE revision 0 not
+  # supported, missing kernel module?" + "CHAIN_ADD failed: chain
+  # POSTROUTING" — the nat table itself never got created because nf_nat
+  # was never force-included (dracut's dep resolution only pulls a
+  # requested module's OWN deps, never modules that depend ON it, so
+  # nf_nat being absent was invisible until something needed the nat
+  # table). nft_masq is the nftables-backend MASQUERADE target iptables-nft
+  # actually invokes; xt_MASQUERADE is kept alongside for the legacy-xtables
+  # compat path. nf_nat's own hard dep (nf_conntrack) is already force-
+  # listed above.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
