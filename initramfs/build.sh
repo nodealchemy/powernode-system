@@ -230,7 +230,18 @@ build_kernel_initrd() {
   # with `ct state established,related` needs nft_ct (the ct expr) + nf_conntrack
   # (conntrack core) on top of nf_tables — all three are force-listed so the
   # whole egress ruleset applies, not just the table create.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack"
+  # bridge (+ br_netfilter, llc, stp): same class of gap as nf_tables above,
+  # hitting dockerd's default network instead of the egress reconciler.
+  # dev-cell-docker's dockerd (services: default bridge networking, unlike
+  # gitea-act-runner's --bridge=none) died with "Failed to create bridge
+  # docker0 via netlink: operation not supported" — the pivot rootfs ships
+  # no /lib/modules (same mmdebstrap-minbase chicken-and-egg as erofs/nf_tables
+  # above), so CONFIG_BRIDGE=m/CONFIG_BRIDGE_NETFILTER=m never get an on-disk
+  # .ko to autoload from. llc + stp are bridge.ko's own hard module deps
+  # (802.2 LLC + spanning tree) — force-listed explicitly for the same
+  # clarity reason nft_ct/nf_conntrack are spelled out above rather than left
+  # to dracut's dep resolution alone.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook

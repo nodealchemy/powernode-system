@@ -34,6 +34,11 @@ ExecStartPre=-/bin/sh -c 'modprobe -a nf_tables nft_ct nf_conntrack'
 # raced the mount(2) call).
 ExecStartPre=-/bin/sh -c 'modprobe -a overlay erofs'
 
+# Same belt for bridge + br_netfilter + llc + stp — see powernode-bridge.conf
+# for the incident this guards against (dockerd's default bridge network
+# creation failing with "operation not supported" post-pivot).
+ExecStartPre=-/bin/sh -c 'modprobe -a bridge br_netfilter llc stp'
+
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`
 # isn't applicable to oneshot; if this fails the smoke run continues with

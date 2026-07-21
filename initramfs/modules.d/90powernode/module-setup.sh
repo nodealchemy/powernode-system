@@ -234,6 +234,13 @@ install() {
     inst_simple "${moddir}/powernode-overlay.conf" \
         /etc/modules-load.d/powernode-overlay.conf
 
+    # bridge + br_netfilter + llc + stp — same force-included-but-never-
+    # explicitly-loaded gap as nf_tables above, hitting any module's dockerd
+    # default bridge network creation instead of the egress reconciler's
+    # `nft`. See powernode-bridge.conf for the full incident writeup.
+    inst_simple "${moddir}/powernode-bridge.conf" \
+        /etc/modules-load.d/powernode-bridge.conf
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.
