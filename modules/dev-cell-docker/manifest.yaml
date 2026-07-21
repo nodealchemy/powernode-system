@@ -60,18 +60,17 @@ mask:
   - "/usr/share/man/**"
   - "/usr/share/locale/**"
 
-# Mirrors gitea-act-runner/manifest.yaml's already-derived docker.io +
-# docker-buildx closure (derive-file-spec.sh --mode deb-payload against
-# [docker.io, docker-buildx]) minus its CI-specific act_runner/iptables/jq
-# entries — this module has no act_runner binary, no iptables dependency
-# (dockerd manages its own nftables/iptables rules via the same base-os
-# nftables base gitea-act-runner assumes; re-verify with
-# `derive-file-spec.sh derive --mode deb-payload --module dev-cell-docker`
-# before merging if dockerd's default bridge networking needs iptables
-# present — gitea-act-runner needed it explicitly for --bridge=none's NAT
-# rules; this module's default bridge mode may need the same, TBD at build
-# verification time), no jq. Starting point copied from gitea-act-runner's
-# already-verified docker.io/docker-buildx-only subset.
+# Started from gitea-act-runner/manifest.yaml's already-derived docker.io +
+# docker-buildx closure minus its CI-specific act_runner/jq entries (this
+# module has no act_runner binary, no jq). Real-boot verification (not just
+# the derive-file-spec.sh --mode deb-payload static check) confirmed this
+# module DOES need iptables, unlike gitea-act-runner's --bridge=none
+# CI-sandbox mode: dockerd's default bridge networking shells out to
+# iptables at daemon startup to create its NAT chain and failed immediately
+# without it ("failed to create NAT chain DOCKER: Iptables not found"). See
+# package_spec below — iptables' own closure (binaries, xtables extension
+# modules, shared libs) is carved via the entries further down in this
+# file_spec, conformance-verified 0 over-inclusion / 0 unwaived under-carve.
 file_spec:
   # docker.io / docker-buildx / containerd.io payload (apt, Stage 1).
   - "/usr/bin/docker"
@@ -120,6 +119,32 @@ file_spec:
   # posture.
   - "/etc/systemd/system/var-lib-docker.mount"
   - "/etc/systemd/system/local-fs.target.wants/var-lib-docker.mount"
+  # iptables' own closure (real-boot-verified need, see package_spec
+  # comment) — derive-file-spec.sh --mode deb-payload's under-carve report
+  # against the updated package_spec.
+  - "/etc/ethertypes"
+  - "/etc/protocols"
+  - "/etc/rpc"
+  - "/etc/services"
+  - "/usr/bin/iptables-xml"
+  # iptables' own /usr/sbin/ dispatcher binaries (iptables, ip6tables,
+  # ebtables, arptables, xtables-* multi-call, and their -nft/-legacy/
+  # -save/-restore/-translate variants) — package-exclusive prefix, safe as
+  # a glob for the same reason the xtables/ dir glob above is.
+  - "/usr/sbin/*tables*"
+  - "/usr/sbin/xtables-*"
+  - "/usr/sbin/nfnl_osf"
+  - "/usr/share/iptables/iptables.xslt"
+  - "/usr/share/lintian/overrides/iptables"
+  - "/usr/lib/x86_64-linux-gnu/libip4tc.so*"
+  - "/usr/lib/x86_64-linux-gnu/libip6tc.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnetfilter_conntrack.so*"
+  - "/usr/lib/x86_64-linux-gnu/libnfnetlink.so*"
+  # Package-exclusive to iptables (no other module/package owns this dir) —
+  # directory-wide glob is safe; dockerd's NAT chain creation dynamically
+  # loads xtables match/target extensions by name, so the whole set (not
+  # just the handful the happy path hits) needs to be present.
+  - "/usr/lib/x86_64-linux-gnu/xtables/**"
 
 # Owned (per the closure above) but masked out by the doc/man/locale rules
 # above, PLUS the apt-shipped docker.service/docker.socket originals
@@ -146,6 +171,14 @@ package_spec:
   # repo is not used.
   - docker.io
   - docker-buildx
+  # Confirmed at real-boot verification (not just the TBD note this file
+  # used to carry): dockerd's default bridge networking (unlike
+  # gitea-act-runner's --bridge=none) calls iptables directly at daemon
+  # startup to create its NAT chain — base-os's own nftables base does NOT
+  # provide the legacy iptables(8)/iptables-nft binary dockerd shells out
+  # to, so without this dockerd fails immediately: "failed to create NAT
+  # chain DOCKER: Iptables not found".
+  - iptables
 
 dependencies:
   requires:
