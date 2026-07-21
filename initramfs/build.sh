@@ -254,7 +254,16 @@ build_kernel_initrd() {
   # actually invokes; xt_MASQUERADE is kept alongside for the legacy-xtables
   # compat path. nf_nat's own hard dep (nf_conntrack) is already force-
   # listed above.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE"
+  # nft_chain_nat: nf_nat alone was NOT enough — `nft add table ip nat`
+  # succeeds (an empty table shell needs nothing special), but `nft add
+  # chain ip nat POSTROUTING '{ type nat hook postrouting ... }'` then died
+  # with "No such file or directory": nf_tables' "nat" CHAIN TYPE (the hook
+  # registration that lets a chain declare `type nat`) is a SEPARATE module
+  # from nf_nat (the NAT rewrite engine) and from nft_masq (the MASQUERADE
+  # target expression) — none of their modinfo deps pull it in, since
+  # dracut's resolution only follows "requires", never "is required by".
+  # Depends only on nf_nat + nf_tables, both already force-listed.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
