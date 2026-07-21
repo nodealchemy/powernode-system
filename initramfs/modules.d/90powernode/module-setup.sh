@@ -249,6 +249,13 @@ install() {
     inst_simple "${moddir}/powernode-nat.conf" \
         /etc/modules-load.d/powernode-nat.conf
 
+    # veth — one layer deeper still: bridge creation + NAT both work, but
+    # actually RUNNING a container failed at endpoint creation (the veth
+    # pair connecting the container's netns to the bridge). See
+    # powernode-veth.conf for the full incident writeup.
+    inst_simple "${moddir}/powernode-veth.conf" \
+        /etc/modules-load.d/powernode-veth.conf
+
     # Cosign trust root + Sigstore Fulcio root.
     # Pinned per-build via $POWERNODE_FULCIO_ROOT env. Default to the
     # public Sigstore root if not set; production should always pin.

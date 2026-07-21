@@ -46,6 +46,11 @@ ExecStartPre=-/bin/sh -c 'modprobe -a bridge br_netfilter llc stp'
 # "CHAIN_ADD failed" / "RULE_INSERT failed" post-pivot).
 ExecStartPre=-/bin/sh -c 'modprobe -a nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport'
 
+# Same belt for veth — see powernode-veth.conf for the incident this guards
+# against (container endpoint creation failing with "operation not
+# supported" post-pivot, one layer deeper than bridge/NAT).
+ExecStartPre=-/bin/sh -c 'modprobe -a veth'
+
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`
 # isn't applicable to oneshot; if this fails the smoke run continues with

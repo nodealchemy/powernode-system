@@ -282,7 +282,17 @@ build_kernel_initrd() {
   # force-included alongside nft_compat rather than discovering each via a
   # separate round-trip, since they are dockerd's fixed, well-known default
   # rule set, not speculative additions.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport"
+  # veth: with docker0 bridge creation AND its NAT/MASQUERADE rule both
+  # confirmed working (nf_nat/nft_masq/nft_chain_nat/nft_compat above all
+  # verified sufficient), `docker run` still failed — this time actually
+  # RUNNING a container, at endpoint creation: "failed to add the host
+  # <=> sandbox veth pair interfaces: operation not supported". veth is the
+  # driver for the virtual ethernet pair connecting a container's network
+  # namespace to the host bridge — only exercised once a container is
+  # actually started (not at daemon startup, which is why this stayed
+  # invisible through every prior round). Zero module dependencies of its
+  # own.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport veth"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
