@@ -39,11 +39,12 @@ ExecStartPre=-/bin/sh -c 'modprobe -a overlay erofs'
 # creation failing with "operation not supported" post-pivot).
 ExecStartPre=-/bin/sh -c 'modprobe -a bridge br_netfilter llc stp'
 
-# Same belt for nf_nat + nft_masq + xt_MASQUERADE + nft_chain_nat — see
+# Same belt for nf_nat + nft_masq + xt_MASQUERADE + nft_chain_nat +
+# nft_compat + xt_conntrack + xt_addrtype + xt_tcpudp + xt_multiport — see
 # powernode-nat.conf for the incident this guards against (dockerd's
 # NAT/MASQUERADE POSTROUTING rule failing with "missing kernel module?" /
-# "CHAIN_ADD failed" post-pivot).
-ExecStartPre=-/bin/sh -c 'modprobe -a nf_nat nft_masq xt_MASQUERADE nft_chain_nat'
+# "CHAIN_ADD failed" / "RULE_INSERT failed" post-pivot).
+ExecStartPre=-/bin/sh -c 'modprobe -a nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport'
 
 # Wait until the agent has enrolled. Caps at ~120s — if enrollment never
 # completes, we give up rather than hanging the boot. The unit's `Restart=`

@@ -263,7 +263,26 @@ build_kernel_initrd() {
   # target expression) — none of their modinfo deps pull it in, since
   # dracut's resolution only follows "requires", never "is required by".
   # Depends only on nf_nat + nf_tables, both already force-listed.
-  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat"
+  # nft_compat (+ xt_conntrack, xt_addrtype, xt_tcpudp, xt_multiport): with
+  # table/chain/rule all confirmed working via raw `nft` (proving nf_nat/
+  # nft_masq/nft_chain_nat above are genuinely sufficient at the nftables
+  # level), dockerd's actual `iptables -t nat -I POSTROUTING ... -j
+  # MASQUERADE` STILL failed — same "Extension MASQUERADE revision 0 not
+  # supported" warning, now "RULE_INSERT/RULE_APPEND failed: No such file or
+  # directory". Root cause: dockerd shells out to the `iptables` CLI
+  # (xtables-nft-multi), and invoking an xtables-style target/match (like
+  # MASQUERADE) THROUGH the nft backend — including the revision-negotiation
+  # the warning references — routes through nft_compat, the kernel shim that
+  # lets nf_tables evaluate legacy xt_* extensions at all; it is a distinct
+  # module from nft_masq (nftables' OWN native masquerade expression, which
+  # is why a raw `nft add rule ... masquerade` worked fine while `iptables
+  # -j MASQUERADE` didn't). xt_conntrack/xt_addrtype/xt_tcpudp/xt_multiport
+  # are docker's other default-bridge iptables extensions (ICC forwarding's
+  # conntrack state match, port-publish's tcp/udp + multiport match) —
+  # force-included alongside nft_compat rather than discovering each via a
+  # separate round-trip, since they are dockerd's fixed, well-known default
+  # rule set, not speculative additions.
+  local force_drivers="qemu_fw_cfg 9p 9pnet 9pnet_virtio overlay vfat nls_cp437 nls_ascii nls_iso8859-1 isofs ahci erofs ext4 nf_tables nft_ct nf_conntrack bridge br_netfilter llc stp nf_nat nft_masq xt_MASQUERADE nft_chain_nat nft_compat xt_conntrack xt_addrtype xt_tcpudp xt_multiport"
 
   # dracut discovers custom modules ONLY under /usr/lib/dracut/modules.d (there
   # is no CLI flag for an extra search dir). The powernode module-setup hook
