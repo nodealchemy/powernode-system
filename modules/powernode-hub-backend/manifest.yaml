@@ -104,7 +104,19 @@ services:
 
 security:
   capabilities: []
-  egress_allow: []
+  # git.powernode.org (10.125.1.37) — the Rails backend calls OUT to Gitea's
+  # API directly (System::DevCellBootstrapService's per-repo deploy-key
+  # provisioning, disk-image CI's Gitea Actions dispatch/webhook flow). With
+  # an empty egress_allow, the default-deny powernode_module_egress table
+  # only permits established/related, loopback, DNS, and traffic to the
+  # instance's own IP — every outbound Gitea call timed out after the
+  # client's 10s open_timeout, surfacing as an unhandled 500 on
+  # /api/v1/system/node_api/config/dev_cell_bootstrap (found investigating a
+  # dev-cell bootstrap-loop incident, 2026-07-21). IP-based (the egress rule
+  # emitter uses `ip daddr`, not hostnames) — update if git.powernode.org's
+  # address ever changes.
+  egress_allow:
+    - "10.125.1.37/32"
   privileged: false
   user_namespace: false
 

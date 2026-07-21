@@ -85,7 +85,12 @@ services:
 
 security:
   capabilities: []
-  egress_allow: []
+  # git.powernode.org (10.125.1.37) — same rationale as hub-backend's
+  # egress_allow: Sidekiq jobs (disk-image publication ingest, module OCI
+  # ingest, etc.) call Gitea's API/OCI registry directly. See hub-backend's
+  # manifest comment for the incident this closes (2026-07-21).
+  egress_allow:
+    - "10.125.1.37/32"
   privileged: false
   user_namespace: false
 
