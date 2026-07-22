@@ -973,6 +973,19 @@ module System
         snippets_local   = params[:snippets_local_path] ||
                            connection&.config&.dig("snippets_local_path") ||
                            "/mnt/pve-data/snippets"
+
+        # Fail fast with a clear error instead of a raw Errno::ENOENT when the
+        # snippets storage isn't mounted (e.g. a manually-mounted NFS share
+        # that didn't survive a reboot — cost a full day of silent
+        # provisioning failure on dna, 2026-07-21). Deliberately does NOT
+        # mkdir_p: creating the directory locally would mask a missing mount
+        # instead of surfacing it.
+        unless File.directory?(snippets_local) && File.writable?(snippets_local)
+          raise ProviderError,
+                "snippets storage not mounted or not writable at #{snippets_local} " \
+                "(PVE storage '#{snippets_storage}') — check the NFS mount is up"
+        end
+
         cicustom_parts = []
         # 0o600: user.yml carries the single-use acceptance_token in cleartext
         # (federation-payload.json contents), and meta.yml + network.yml may

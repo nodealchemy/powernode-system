@@ -456,6 +456,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
         allow(client).to receive(:get)
           .with("/api2/json/nodes/dna/qemu/200/status/current")
           .and_return({ "status" => "running", "name" => "uefi-vm" })
+        allow(File).to receive(:directory?).and_return(true)
+        allow(File).to receive(:writable?).and_return(true)
         allow(File).to receive(:write)
       end
 
@@ -703,6 +705,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
       allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:directory?).and_return(true)
+      allow(File).to receive(:writable?).and_return(true)
       allow(File).to receive(:write) do |path, content, **_opts|
         written_files[path] = content
         content.to_s.bytesize
@@ -760,6 +764,34 @@ RSpec.describe System::Providers::ProxmoxProvider do
         expect(client).to have_received(:post).with(
           "/api2/json/nodes/dna/qemu", hash_excluding("args")
         )
+      end
+
+      # Regression for the 2026-07-21 dna outage: a manually-mounted NFS
+      # snippets export that didn't survive a host reboot caused a raw
+      # Errno::ENOENT on File.write, misreported by ProvisioningService as a
+      # generic "Provisioning failed" with no indication it was a missing
+      # mount. stage_cicustom now checks the directory first and raises a
+      # clear ProviderError instead — never attempts to create the directory
+      # locally, since that would mask the missing mount rather than surface it.
+      it "raises a clear ProviderError instead of a raw Errno::ENOENT when the snippets storage isn't mounted" do
+        allow(File).to receive(:directory?).and_return(false)
+
+        expect { provider.create_instance(params) }.to raise_error(
+          System::Providers::BaseProvider::ProviderError,
+          /snippets storage not mounted or not writable/
+        )
+        expect(File).not_to have_received(:write)
+      end
+
+      it "raises the same ProviderError when the directory exists but isn't writable" do
+        allow(File).to receive(:directory?).and_return(true)
+        allow(File).to receive(:writable?).and_return(false)
+
+        expect { provider.create_instance(params) }.to raise_error(
+          System::Providers::BaseProvider::ProviderError,
+          /snippets storage not mounted or not writable/
+        )
+        expect(File).not_to have_received(:write)
       end
     end
 
@@ -865,6 +897,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
       # Do NOT touch the real shared snippets export — spy on the filesystem.
       allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:directory?).and_return(true)
+      allow(File).to receive(:writable?).and_return(true)
       allow(File).to receive(:write)
     end
 
@@ -1070,6 +1104,8 @@ RSpec.describe System::Providers::ProxmoxProvider do
       allow(client).to receive(:wait_task).and_return("status" => "stopped", "exitstatus" => "OK")
       allow(client).to receive(:put).and_return(nil)
       allow(FileUtils).to receive(:mkdir_p)
+      allow(File).to receive(:directory?).and_return(true)
+      allow(File).to receive(:writable?).and_return(true)
       allow(File).to receive(:write) do |path, content, **_opts|
         written_files[path] = content
         content.to_s.bytesize
