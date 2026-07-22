@@ -135,4 +135,26 @@ RSpec.describe System::DevCellBootstrapService do
       expect(service.send(:configured_ssh_port)).to eq(22)
     end
   end
+
+  # Regression: build_gitea unconditionally re-applied Gitea branch
+  # protection on every dev-cell bootstrap, silently undoing manual disables
+  # in the Gitea UI. Default stays enabled (existing safety-by-default for
+  # other deployments of this platform); an operator can turn it off via
+  # SiteSetting without it reappearing on the next bootstrap.
+  describe "#branch_protection_enabled?" do
+    it "defaults to enabled when the SiteSetting row doesn't exist (nil)" do
+      allow(::SiteSetting).to receive(:get).with("dev_cell_branch_protection_enabled").and_return(nil)
+      expect(service.send(:branch_protection_enabled?)).to be true
+    end
+
+    it "stays enabled when explicitly set true" do
+      allow(::SiteSetting).to receive(:get).with("dev_cell_branch_protection_enabled").and_return(true)
+      expect(service.send(:branch_protection_enabled?)).to be true
+    end
+
+    it "is disabled only when explicitly set false" do
+      allow(::SiteSetting).to receive(:get).with("dev_cell_branch_protection_enabled").and_return(false)
+      expect(service.send(:branch_protection_enabled?)).to be false
+    end
+  end
 end

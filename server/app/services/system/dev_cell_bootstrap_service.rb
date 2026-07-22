@@ -118,10 +118,17 @@ module System
       # protection must be set AND read back as blocking direct push. If either
       # can't be confirmed, abort the whole bootstrap (→ 503) so a read-write
       # deploy key is NEVER minted against an unprotected develop/master.
-      ensure_protected_branch!(client, owner, repo, "develop")
-      ensure_protected_branch!(client, owner, repo, "master")
-      # loop/* stays best-effort (the cell pushes here; protected ⇒ no force-push).
-      safe_branch_protection(client, owner, repo, "loop/*", enable_push: true)
+      # Operator-configurable (default ON): SiteSetting
+      # "dev_cell_branch_protection_enabled" — this platform's own operator
+      # runs single-tenant and does not want Gitea branch protection managed
+      # by dev-cell bootstrap; every bootstrap was silently re-applying it
+      # out from under manual disables in the Gitea UI.
+      if branch_protection_enabled?
+        ensure_protected_branch!(client, owner, repo, "develop")
+        ensure_protected_branch!(client, owner, repo, "master")
+        # loop/* stays best-effort (the cell pushes here; protected ⇒ no force-push).
+        safe_branch_protection(client, owner, repo, "loop/*", enable_push: true)
+      end
 
       keypair = ::System::DevCell::SshKeyGenerator.generate(comment: deploy_key_title)
       register_deploy_key!(client, owner, repo, keypair)
@@ -209,6 +216,14 @@ module System
       Array(client.list_deploy_keys(owner, repo))
         .select { |k| k["title"] == title }
         .each { |k| client.delete_deploy_key(owner, repo, k["id"]) }
+    end
+
+    # Default true (existing safety-by-default behavior for anyone else
+    # deploying this platform); nil (row absent) also reads as enabled — only
+    # an explicit false disables it. SiteSetting#get on a boolean row already
+    # coerces to true/false; nil only occurs when the row doesn't exist.
+    def branch_protection_enabled?
+      ::SiteSetting.get("dev_cell_branch_protection_enabled") != false
     end
 
     # FATAL, read-back-confirmed protection for develop/master: set enable_push
