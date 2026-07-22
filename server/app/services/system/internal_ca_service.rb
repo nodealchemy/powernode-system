@@ -31,6 +31,15 @@ module System
 
     DEFAULT_TTL_SECONDS = 90 * 24 * 3600 # 90 days
 
+    # Fully-qualified audit-action tokens this service emits. Registered
+    # into AuditActions.all_actions by the system engine initializer
+    # (single source of truth, mirrors
+    # System::LifecycleAuditable::AUDITED_ACTIONS).
+    AUDITED_ACTIONS = %w[
+      system.internal_ca.issue
+      system.internal_ca.revoke
+    ].freeze
+
     class << self
       def adapter
         @adapter ||= build_adapter
@@ -122,9 +131,11 @@ module System
       def emit_audit_event!(event_type:, serial:, common_name:, ttl_seconds:)
         return unless defined?(::AuditLog)
         ::AuditLog.create!(
-          event_type: event_type,
+          account: audit_account,
+          action: event_type,
           resource_type: "InternalCaCertificate",
           resource_id: serial.to_s,
+          source: "system",
           metadata: {
             adapter: adapter.class.name,
             common_name: common_name,
@@ -133,6 +144,14 @@ module System
         )
       rescue StandardError => e
         Rails.logger.warn("[InternalCaService] audit log emit failed: #{e.class}: #{e.message}")
+      end
+
+      # InternalCaService is a platform-wide singleton (one CA per install,
+      # not per-account), so there's no account to thread through
+      # issue_certificate/revoke_certificate — mirrors AuditLog.log_system_event's
+      # fallback-account resolution.
+      def audit_account
+        ::Account.find_by(name: "System") || ::Account.first
       end
 
       public

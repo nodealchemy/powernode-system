@@ -182,4 +182,48 @@ RSpec.describe System::InternalCaService do
       end
     end
   end
+
+  # Regression: emit_audit_event! passed `event_type:` to AuditLog.create!,
+  # but the column is `action` — every call raised ActiveRecord::RecordInvalid /
+  # NoMethodError, silently swallowed by the surrounding rescue, so no CA
+  # issue/revoke event was ever actually recorded to the audit log despite
+  # ALL key operations being required to be audited.
+  describe "audit logging" do
+    before { create(:account, name: "System") }
+
+    it "records an audit log entry with action (not event_type) on issue" do
+      expect {
+        described_class.issue_certificate(csr_pem: csr_pem, ttl_seconds: 3600, common_name: "test-instance-uuid")
+      }.to change(AuditLog, :count).by(1)
+
+      log = AuditLog.last
+      expect(log.action).to eq("system.internal_ca.issue")
+      expect(log.resource_type).to eq("InternalCaCertificate")
+      expect(log.resource_id).to be_present
+      expect(log.source).to eq("system")
+    end
+
+    it "records an audit log entry on revoke" do
+      issued = described_class.issue_certificate(csr_pem: csr_pem, ttl_seconds: 3600, common_name: "test")
+
+      expect {
+        described_class.revoke_certificate(serial: issued[:serial])
+      }.to change(AuditLog, :count).by(1)
+
+      log = AuditLog.last
+      expect(log.action).to eq("system.internal_ca.revoke")
+      expect(log.resource_id).to eq(issued[:serial].to_s)
+    end
+
+    it "never blocks certificate issuance even if no account can be resolved for the audit row" do
+      Account.destroy_all
+
+      result = nil
+      expect {
+        result = described_class.issue_certificate(csr_pem: csr_pem, ttl_seconds: 3600, common_name: "test")
+      }.not_to raise_error
+
+      expect(result[:cert_pem]).to include("BEGIN CERTIFICATE")
+    end
+  end
 end

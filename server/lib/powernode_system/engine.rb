@@ -459,11 +459,12 @@ module PowernodeSystem
         next unless defined?(::AuditActions) && ::AuditActions.respond_to?(:register_actions)
 
         # Single source of truth: the fully-qualified tokens are defined beside
-        # the emitter (System::LifecycleAuditable), so the registered set can
-        # never drift from what the lifecycle decoration actually emits.
+        # each emitter (System::LifecycleAuditable, System::InternalCaService),
+        # so the registered set can never drift from what they actually emit.
         ::AuditActions.register_actions(
           "system",
-          ::System::LifecycleAuditable::AUDITED_ACTIONS
+          ::System::LifecycleAuditable::AUDITED_ACTIONS +
+            ::System::InternalCaService::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
