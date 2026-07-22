@@ -171,6 +171,15 @@ RSpec.describe System::InstancePoolService, type: :service do
         described_class.replenish!(pool: pool)
         expect(pool.reload.last_replenished_at).to be_within(2.seconds).of(Time.current)
       end
+
+      # Pool members are ephemeral by definition; ProxmoxProvider defaults
+      # new VMs to protection=1 (meant for durable instances) unless told
+      # otherwise. Regression for the dna orphan-VM cleanup (2026-07-21).
+      it "provisions members with protection disabled" do
+        described_class.replenish!(pool: pool)
+        expect(::System::ProvisioningService).to have_received(:provision_instance)
+          .with(hash_including(options: { protection: false })).at_least(:once)
+      end
     end
 
     context "when pool is at capacity" do
@@ -264,6 +273,39 @@ RSpec.describe System::InstancePoolService, type: :service do
       m = seed_pool_member(state: "warming", warming_started_at: 2.minutes.ago)
       described_class.recycle_stale_members!(pool: pool)
       expect(m.reload.pool_state).to eq("errored")
+    end
+
+    # Regression for the ci-builder VM sprawl on dna (2026-07-21): a member
+    # stuck past warming_timeout was only marked errored in the DB — its
+    # cloud VM (if creation actually succeeded but the guest never
+    # heartbeated) was never terminated, leaking it on the provider
+    # indefinitely. Mirrors the stale_ready coverage below.
+    it "terminates the cloud VM for a member stuck past warming_timeout" do
+      m = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
+      m.update!(config: { "cloud_instance_id" => "dna/qemu/999" })
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+
+      result = described_class.recycle_stale_members!(pool: pool)
+
+      expect(m.reload.pool_state).to eq("errored")
+      expect(result[:warming_to_errored]).to eq(1)
+      expect(::System::ProvisioningService).to have_received(:terminate_instance).with(instance: m)
+    end
+
+    it "logs + continues when terminate_instance raises for a stuck warming member, without blocking the others" do
+      m1 = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
+      m1.update!(config: { "cloud_instance_id" => "dna/qemu/998" })
+      m2 = seed_pool_member(state: "warming", warming_started_at: 2.hours.ago)
+      m2.update!(config: { "cloud_instance_id" => "dna/qemu/997" })
+      allow(::System::ProvisioningService).to receive(:terminate_instance)
+        .with(instance: m1).and_raise(StandardError, "PVE unreachable")
+      allow(::System::ProvisioningService).to receive(:terminate_instance).with(instance: m2)
+
+      result = described_class.recycle_stale_members!(pool: pool)
+
+      expect(m1.reload.pool_state).to eq("errored")
+      expect(m2.reload.pool_state).to eq("errored")
+      expect(result[:warming_to_errored]).to eq(2)
     end
 
     # Audit F1-10 — claimed members had no TTL: a consumer that crashed

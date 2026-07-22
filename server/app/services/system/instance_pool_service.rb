@@ -346,7 +346,24 @@ module System
         # every 60s, so an unguarded update here terminated instances out
         # from under agents that had just acquired them.
         stale_warming.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
-          counts[:warming_to_errored] += 1 if m.mark_pool_errored!
+          next unless m.mark_pool_errored!
+
+          counts[:warming_to_errored] += 1
+
+          # Mirrors the stale_ready fix below (Audit plan P2.5 gap #3) — a
+          # member stuck in warming past warming_timeout may already have a
+          # real cloud VM (creation succeeded but the guest never came up /
+          # never heartbeated). Marking it errored without tearing down the
+          # VM leaked it on the provider forever; this was the dominant
+          # cause of the ci-builder VM sprawl on dna (2026-07-21).
+          begin
+            ::System::ProvisioningService.terminate_instance(instance: m)
+          rescue StandardError => e
+            Rails.logger.warn(
+              "[InstancePoolService] terminate failed during stale-recycle " \
+              "(instance=#{m.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
+            )
+          end
         end
         stale_ready.lock("FOR UPDATE SKIP LOCKED").find_each do |m|
           still_ready = pool.node_instances
@@ -667,10 +684,18 @@ module System
       # back to the single `provider_region_id` column (single-AZ default).
       chosen_region_id = pick_region_for_slot(pool: pool, slot_index: slot_index)
 
+      # protection: false — ProxmoxProvider defaults new VMs to protection=1
+      # (apply_protection!), a setting meant for durable/persistent
+      # instances. Pool members are inherently ephemeral (recycled on TTL,
+      # heartbeat staleness, or drain); leaving them protected adds a second
+      # way cleanup can fail to actually delete the VM (PVE refuses to
+      # DELETE a protected VM) on top of terminate_instance already having
+      # to clear the flag first.
       result = ::System::ProvisioningService.provision_instance(
         node: node,
         provider_region_id: chosen_region_id,
-        provider_instance_type_id: pool.provider_instance_type_id
+        provider_instance_type_id: pool.provider_instance_type_id,
+        options: { protection: false }
       )
 
       unless result.success?
