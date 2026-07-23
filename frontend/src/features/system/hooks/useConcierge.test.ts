@@ -196,7 +196,7 @@ describe('useConcierge', () => {
       return hook;
     }
 
-    it('posts to the correct send_message URL with the right payload', async () => {
+    it('posts to the correct messages URL with the right payload', async () => {
       const { result } = await bootstrappedHook();
 
       mockPost.mockResolvedValueOnce(
@@ -211,7 +211,7 @@ describe('useConcierge', () => {
       });
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/conv-abc123/send_message',
+        '/ai/conversations/conv-abc123/messages',
         { message: { content: 'Hello concierge' } }
       );
     });
@@ -283,7 +283,7 @@ describe('useConcierge', () => {
       });
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/conv-abc123/send_message',
+        '/ai/conversations/conv-abc123/messages',
         { message: { content: 'trimmed' } }
       );
     });

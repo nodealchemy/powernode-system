@@ -44,8 +44,10 @@ export const conciergeApi = {
   },
 
   async sendMessage(conversationId: string, content: string): Promise<ConciergeSendResponse> {
+    // Core routes.rb maps POST /ai/conversations/:id/messages to the
+    // send_message action — there is no separate /send_message URL.
     const response = await apiClient.post<ApiEnvelope<ConciergeSendResponse>>(
-      `/ai/conversations/${conversationId}/send_message`,
+      `/ai/conversations/${conversationId}/messages`,
       { message: { content } }
     );
     return extractData(response);

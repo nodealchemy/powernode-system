@@ -219,7 +219,7 @@ describe('conciergeApi', () => {
   // ---------------------------------------------------------------------------
 
   describe('sendMessage()', () => {
-    it('POSTs to /ai/conversations/:id/send_message with the correct URL', async () => {
+    it('POSTs to /ai/conversations/:id/messages with the correct URL', async () => {
       mockPost.mockResolvedValueOnce(
         envelope({
           user_message: USER_MSG,
@@ -230,7 +230,7 @@ describe('conciergeApi', () => {
       await conciergeApi.sendMessage('conv-123', 'Hello');
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/conv-123/send_message',
+        '/ai/conversations/conv-123/messages',
         expect.anything()
       );
     });
@@ -243,7 +243,7 @@ describe('conciergeApi', () => {
       await conciergeApi.sendMessage('conv-123', 'Hello, concierge!');
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/conv-123/send_message',
+        '/ai/conversations/conv-123/messages',
         { message: { content: 'Hello, concierge!' } }
       );
     });
@@ -256,7 +256,7 @@ describe('conciergeApi', () => {
       await conciergeApi.sendMessage('other-conv', 'Test');
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/other-conv/send_message',
+        '/ai/conversations/other-conv/messages',
         expect.anything()
       );
     });
@@ -291,7 +291,7 @@ describe('conciergeApi', () => {
       await conciergeApi.sendMessage('conv-123', '');
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/ai/conversations/conv-123/send_message',
+        '/ai/conversations/conv-123/messages',
         { message: { content: '' } }
       );
     });

@@ -21,7 +21,7 @@ export interface UseConciergeResult {
  * conversation via POST /api/v1/system/concierge/start, then fetches any
  * existing messages for that conversation.
  *
- * On send: posts to the standard /api/v1/ai/conversations/:id/send_message
+ * On send: posts to the standard /api/v1/ai/conversations/:id/messages
  * endpoint. The platform's ConciergeService handles tool dispatch +
  * confirmation gating; we just append messages as they arrive in the
  * response.

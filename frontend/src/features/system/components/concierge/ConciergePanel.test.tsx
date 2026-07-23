@@ -388,14 +388,14 @@ describe('ConciergePanel', () => {
   // Sending a message via button click
   // ---------------------------------------------------------------------------
 
-  it('POSTs to send_message with correct payload when Send is clicked', async () => {
+  it('POSTs to messages with correct payload when Send is clicked', async () => {
     setupHappyPath();
     // Resolve sendMessage
     mockPost.mockImplementation((url: string, body: unknown) => {
       if (url === '/system/concierge/start') {
         return Promise.resolve(envelope(START_RESPONSE));
       }
-      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/send_message`) {
+      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/messages`) {
         return Promise.resolve(
           envelope({ user_message: MSG_USER, assistant_message: MSG_ASSISTANT }),
         );
@@ -411,7 +411,7 @@ describe('ConciergePanel', () => {
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith(
-        `/ai/conversations/${START_RESPONSE.conversation_id}/send_message`,
+        `/ai/conversations/${START_RESPONSE.conversation_id}/messages`,
         { message: { content: 'Hello concierge' } },
       );
     });
@@ -421,7 +421,7 @@ describe('ConciergePanel', () => {
     setupHappyPath();
     mockPost.mockImplementation((url: string) => {
       if (url === '/system/concierge/start') return Promise.resolve(envelope(START_RESPONSE));
-      if (url.endsWith('/send_message'))
+      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/messages`)
         return Promise.resolve(envelope({ user_message: MSG_USER, assistant_message: MSG_ASSISTANT }));
       return Promise.reject(new Error(`Unexpected POST ${url}`));
     });
@@ -441,7 +441,7 @@ describe('ConciergePanel', () => {
     setupHappyPath();
     mockPost.mockImplementation((url: string) => {
       if (url === '/system/concierge/start') return Promise.resolve(envelope(START_RESPONSE));
-      if (url.endsWith('/send_message'))
+      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/messages`)
         return Promise.resolve(envelope({ user_message: MSG_USER, assistant_message: MSG_ASSISTANT }));
       return Promise.reject(new Error(`Unexpected POST ${url}`));
     });
@@ -477,7 +477,7 @@ describe('ConciergePanel', () => {
     setupHappyPath();
     mockPost.mockImplementation((url: string) => {
       if (url === '/system/concierge/start') return Promise.resolve(envelope(START_RESPONSE));
-      if (url.endsWith('/send_message'))
+      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/messages`)
         return Promise.resolve(envelope({ user_message: MSG_USER, assistant_message: MSG_ASSISTANT }));
       return Promise.reject(new Error(`Unexpected POST ${url}`));
     });
@@ -490,7 +490,7 @@ describe('ConciergePanel', () => {
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith(
-        `/ai/conversations/${START_RESPONSE.conversation_id}/send_message`,
+        `/ai/conversations/${START_RESPONSE.conversation_id}/messages`,
         { message: { content: 'Enter test' } },
       );
     });
@@ -504,10 +504,10 @@ describe('ConciergePanel', () => {
     fireEvent.change(textarea, { target: { value: 'Shift enter test' } });
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
 
-    // Only the initial start POST — no send_message call
+    // Only the initial start POST — no messages call
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
     expect(mockPost).not.toHaveBeenCalledWith(
-      expect.stringContaining('send_message'),
+      `/ai/conversations/${START_RESPONSE.conversation_id}/messages`,
       expect.anything(),
     );
   });
@@ -530,7 +530,7 @@ describe('ConciergePanel', () => {
     setupHappyPath([MSG_WITH_CVE]);
     mockPost.mockImplementation((url: string) => {
       if (url === '/system/concierge/start') return Promise.resolve(envelope(START_RESPONSE));
-      if (url.endsWith('/send_message'))
+      if (url === `/ai/conversations/${START_RESPONSE.conversation_id}/messages`)
         return Promise.resolve(envelope({ user_message: MSG_USER }));
       return Promise.reject(new Error(`Unexpected POST ${url}`));
     });
@@ -542,7 +542,7 @@ describe('ConciergePanel', () => {
 
     await waitFor(() => {
       expect(mockPost).toHaveBeenCalledWith(
-        `/ai/conversations/${START_RESPONSE.conversation_id}/send_message`,
+        `/ai/conversations/${START_RESPONSE.conversation_id}/messages`,
         {
           message: {
             content:
