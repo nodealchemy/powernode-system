@@ -246,6 +246,7 @@ FactoryBot.define do
   # System::ProviderNetwork
   factory :system_provider_network, class: "System::ProviderNetwork" do
     association :account
+    association :provider, factory: :system_provider
     association :provider_region, factory: :system_provider_region
     sequence(:name) { |n| "Network #{n}" }
     cidr_block { "10.0.0.0/16" }
@@ -255,8 +256,8 @@ FactoryBot.define do
 
   # System::ProviderNetworkSubnet
   factory :system_provider_network_subnet, class: "System::ProviderNetworkSubnet" do
-    association :provider_network, factory: :system_provider_network
-    association :provider_availability_zone, factory: :system_provider_availability_zone
+    association :network, factory: :system_provider_network
+    association :availability_zone, factory: :system_provider_availability_zone
     sequence(:name) { |n| "Subnet #{n}" }
     cidr_block { "10.0.1.0/24" }
     status { "available" }

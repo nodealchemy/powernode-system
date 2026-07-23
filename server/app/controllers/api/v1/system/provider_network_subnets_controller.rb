@@ -11,7 +11,7 @@ module Api
         def index
           require_permission("system.networks.read")
 
-          subnets = @network.provider_network_subnets
+          subnets = @network.subnets
           subnets = apply_filters(subnets)
           subnets = paginate(subnets)
 
@@ -29,7 +29,7 @@ module Api
         def create
           require_permission("system.networks.create")
 
-          subnet = @network.provider_network_subnets.build(subnet_params)
+          subnet = @network.subnets.build(subnet_params)
 
           if subnet.save
             render_success(subnet: serialize_subnet(subnet), status: :created)
@@ -67,7 +67,7 @@ module Api
         end
 
         def set_subnet
-          @subnet = @network.provider_network_subnets.find(params[:id])
+          @subnet = @network.subnets.find(params[:id])
         rescue ActiveRecord::RecordNotFound
           render_not_found("Subnet")
         end

@@ -272,7 +272,15 @@ Rails.application.routes.draw do
           collection { get :for_region }
         end
         resources :provider_networks
-        resources :provider_network_subnets
+        # Nested under provider_networks/:network_id — matches the model's
+        # `network_id` FK column and ProviderNetworkSubnetsController's
+        # existing params[:network_id] expectation (IMP-b686e5068e21). A
+        # flat `resources :provider_network_subnets` here 500'd every
+        # request: the controller's set_network before_action requires
+        # :network_id, which a flat route never populates.
+        scope "provider_networks/:network_id" do
+          resources :provider_network_subnets
+        end
         resources :provider_volumes do
           member do
             post :attach

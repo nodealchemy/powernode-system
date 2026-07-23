@@ -77,7 +77,7 @@ export const networksApi = {
   ): Promise<SystemProviderNetworkSubnet[]> => {
     const params = availabilityZoneId ? { availability_zone_id: availabilityZoneId } : {};
     const response = await apiClient.get<ApiEnvelope<{ subnets: SystemProviderNetworkSubnet[] }>>(
-      `/system/provider_networks/${networkId}/subnets`,
+      `/system/provider_networks/${networkId}/provider_network_subnets`,
       { params }
     );
     return extractData(response).subnets ?? [];
@@ -88,7 +88,7 @@ export const networksApi = {
     subnetId: string
   ): Promise<SystemProviderNetworkSubnet> => {
     const response = await apiClient.get<ApiEnvelope<{ subnet: SystemProviderNetworkSubnet }>>(
-      `/system/provider_networks/${networkId}/subnets/${subnetId}`
+      `/system/provider_networks/${networkId}/provider_network_subnets/${subnetId}`
     );
     return extractData(response).subnet;
   },

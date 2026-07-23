@@ -867,16 +867,16 @@ describe('networksApi delegation', () => {
     expect(mockDelete).toHaveBeenCalledWith('/system/provider_networks/net-1');
   });
 
-  it('getNetworkSubnets: GET /system/provider_networks/:id/subnets without az filter', async () => {
+  it('getNetworkSubnets: GET /system/provider_networks/:id/provider_network_subnets without az filter', async () => {
     mockGet.mockResolvedValue(envelope({ subnets: [] }));
     await systemApi.getNetworkSubnets('net-1');
-    expect(mockGet).toHaveBeenCalledWith('/system/provider_networks/net-1/subnets', { params: {} });
+    expect(mockGet).toHaveBeenCalledWith('/system/provider_networks/net-1/provider_network_subnets', { params: {} });
   });
 
-  it('getNetworkSubnets: GET /system/provider_networks/:id/subnets with az filter', async () => {
+  it('getNetworkSubnets: GET /system/provider_networks/:id/provider_network_subnets with az filter', async () => {
     mockGet.mockResolvedValue(envelope({ subnets: [] }));
     await systemApi.getNetworkSubnets('net-1', 'az-1');
-    expect(mockGet).toHaveBeenCalledWith('/system/provider_networks/net-1/subnets', {
+    expect(mockGet).toHaveBeenCalledWith('/system/provider_networks/net-1/provider_network_subnets', {
       params: { availability_zone_id: 'az-1' },
     });
   });

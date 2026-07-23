@@ -483,13 +483,13 @@ describe('networksApi', () => {
   // ---------------------------------------------------------------------------
 
   describe('getNetworkSubnets()', () => {
-    it('calls GET /system/provider_networks/:networkId/subnets with empty params when no AZ filter', async () => {
+    it('calls GET /system/provider_networks/:networkId/provider_network_subnets with empty params when no AZ filter', async () => {
       mockGet.mockResolvedValueOnce(envelope({ subnets: [SUBNET_A, SUBNET_B] }));
 
       await networksApi.getNetworkSubnets('net-1');
 
       expect(mockGet).toHaveBeenCalledTimes(1);
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/subnets`, { params: {} });
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/provider_network_subnets`, { params: {} });
     });
 
     it('passes availability_zone_id param when provided', async () => {
@@ -497,7 +497,7 @@ describe('networksApi', () => {
 
       await networksApi.getNetworkSubnets('net-1', 'az-1');
 
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/subnets`, {
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/provider_network_subnets`, {
         params: { availability_zone_id: 'az-1' },
       });
     });
@@ -517,7 +517,7 @@ describe('networksApi', () => {
 
       await networksApi.getNetworkSubnets('net-abc-789');
 
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-abc-789/subnets`, expect.any(Object));
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-abc-789/provider_network_subnets`, expect.any(Object));
     });
 
     it('returns the array of subnets unwrapped from the envelope', async () => {
@@ -554,7 +554,7 @@ describe('networksApi', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].provider_availability_zone_id).toBe('az-1');
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/subnets`, {
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/provider_network_subnets`, {
         params: { availability_zone_id: 'az-1' },
       });
     });
@@ -571,13 +571,13 @@ describe('networksApi', () => {
   // ---------------------------------------------------------------------------
 
   describe('getNetworkSubnet()', () => {
-    it('calls GET /system/provider_networks/:networkId/subnets/:subnetId', async () => {
+    it('calls GET /system/provider_networks/:networkId/provider_network_subnets/:subnetId', async () => {
       mockGet.mockResolvedValueOnce(envelope({ subnet: SUBNET_A }));
 
       await networksApi.getNetworkSubnet('net-1', 'subnet-1');
 
       expect(mockGet).toHaveBeenCalledTimes(1);
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/subnets/subnet-1`);
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-1/provider_network_subnets/subnet-1`);
     });
 
     it('uses both networkId and subnetId in the URL path', async () => {
@@ -585,7 +585,7 @@ describe('networksApi', () => {
 
       await networksApi.getNetworkSubnet('net-999', 'subnet-abc');
 
-      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-999/subnets/subnet-abc`);
+      expect(mockGet).toHaveBeenCalledWith(`${BASE}/net-999/provider_network_subnets/subnet-abc`);
     });
 
     it('unwraps the nested .subnet from the envelope', async () => {
