@@ -62,7 +62,7 @@ export interface ModuleCategoryCreate {
 export interface ModuleDependencyOptions {
   dependency_type?: string;
   required?: boolean;
-  version_requirement?: string;
+  version_constraint?: string;
 }
 
 // Backend collection key is `node_modules`; expose under the shorter
@@ -156,6 +156,9 @@ export const modulesApi = {
   },
 
   // ===== Module Dependencies =====
+  // getModuleDependencies stays on the read-only NodeModulesController
+  // member action (/dependencies) -- a different, derived view (dependencies
+  // + dependents) than the module_dependencies CRUD resource below.
   getModuleDependencies: async (moduleId: string): Promise<SystemNodeModule[]> => {
     const response = await apiClient.get<ApiEnvelope<{ dependencies: SystemNodeModule[] }>>(
       `/system/node_modules/${moduleId}/dependencies`
@@ -168,13 +171,13 @@ export const modulesApi = {
     dependencyId: string,
     data?: ModuleDependencyOptions
   ): Promise<void> => {
-    await apiClient.post(`/system/node_modules/${moduleId}/dependencies`, {
-      module_dependency: { dependency_id: dependencyId, ...data },
+    await apiClient.post(`/system/node_modules/${moduleId}/module_dependencies`, {
+      dependency: { dependency_id: dependencyId, ...data },
     });
   },
 
   removeModuleDependency: async (moduleId: string, dependencyId: string): Promise<void> => {
-    await apiClient.delete(`/system/node_modules/${moduleId}/dependencies/${dependencyId}`);
+    await apiClient.delete(`/system/node_modules/${moduleId}/module_dependencies/${dependencyId}`);
   },
 
   // ===== Manifest import =====

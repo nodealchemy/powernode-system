@@ -129,6 +129,12 @@ Rails.application.routes.draw do
             post :rollback
           end
           resources :module_puppet_assignments, only: %i[index create]
+          # IMP-20488c93ca35 — was a flat top-level resource; the controller's
+          # set_node_module before_action requires :node_module_id, which a
+          # flat route never populates. Segment name matches the controller's
+          # own name (module_dependencies) so it doesn't collide with the
+          # unrelated read-only `member { get :dependencies }` action above.
+          resources :module_dependencies
         end
 
         # NodeModuleVersion lifecycle — operator-driven AASM transitions
@@ -138,7 +144,6 @@ Rails.application.routes.draw do
           member { post :promote }
         end
         resources :node_module_categories
-        resources :module_dependencies
         resources :module_puppet_assignments, only: %i[show update destroy]
 
         # Package repository operator endpoints (apt/rpm catalog management).

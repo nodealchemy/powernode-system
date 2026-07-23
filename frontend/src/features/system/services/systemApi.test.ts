@@ -652,18 +652,18 @@ describe('modulesApi delegation', () => {
     expect(mockGet).toHaveBeenCalledWith('/system/node_module_categories');
   });
 
-  it('addModuleDependency: POST /system/node_modules/:id/dependencies with dependency payload', async () => {
+  it('addModuleDependency: POST /system/node_modules/:id/module_dependencies with dependency payload', async () => {
     mockPost.mockResolvedValue({ data: { success: true } });
     await systemApi.addModuleDependency('mod-1', 'mod-2', { required: true });
-    expect(mockPost).toHaveBeenCalledWith('/system/node_modules/mod-1/dependencies', {
-      module_dependency: { dependency_id: 'mod-2', required: true },
+    expect(mockPost).toHaveBeenCalledWith('/system/node_modules/mod-1/module_dependencies', {
+      dependency: { dependency_id: 'mod-2', required: true },
     });
   });
 
-  it('removeModuleDependency: DELETE /system/node_modules/:id/dependencies/:depId', async () => {
+  it('removeModuleDependency: DELETE /system/node_modules/:id/module_dependencies/:depId', async () => {
     mockDelete.mockResolvedValue({ data: { success: true } });
     await systemApi.removeModuleDependency('mod-1', 'mod-2');
-    expect(mockDelete).toHaveBeenCalledWith('/system/node_modules/mod-1/dependencies/mod-2');
+    expect(mockDelete).toHaveBeenCalledWith('/system/node_modules/mod-1/module_dependencies/mod-2');
   });
 
   it('markModuleAsCanary: POST /system/node_modules/:id/mark_canary with lure_kind', async () => {

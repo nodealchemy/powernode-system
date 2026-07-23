@@ -846,37 +846,37 @@ describe('modulesApi.getModuleDependencies', () => {
 // =============================================================================
 
 describe('modulesApi.addModuleDependency', () => {
-  it('calls POST /system/node_modules/:moduleId/dependencies with dependency_id', async () => {
+  it('calls POST /system/node_modules/:moduleId/module_dependencies with dependency_id', async () => {
     mockPost.mockResolvedValueOnce({ data: { success: true } });
 
     await modulesApi.addModuleDependency('mod-parent', 'dep-mod-id');
 
     expect(mockPost).toHaveBeenCalledTimes(1);
     expect(mockPost).toHaveBeenCalledWith(
-      '/system/node_modules/mod-parent/dependencies',
-      { module_dependency: { dependency_id: 'dep-mod-id' } }
+      '/system/node_modules/mod-parent/module_dependencies',
+      { dependency: { dependency_id: 'dep-mod-id' } }
     );
   });
 
-  it('merges dependency options into the module_dependency body', async () => {
+  it('merges dependency options into the dependency body', async () => {
     mockPost.mockResolvedValueOnce({ data: { success: true } });
 
     const opts: ModuleDependencyOptions = {
       dependency_type: 'runtime',
       required: true,
-      version_requirement: '>= 1.0.0',
+      version_constraint: '>= 1.0.0',
     };
 
     await modulesApi.addModuleDependency('mod-parent', 'dep-mod-id', opts);
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/system/node_modules/mod-parent/dependencies',
+      '/system/node_modules/mod-parent/module_dependencies',
       {
-        module_dependency: {
+        dependency: {
           dependency_id: 'dep-mod-id',
           dependency_type: 'runtime',
           required: true,
-          version_requirement: '>= 1.0.0',
+          version_constraint: '>= 1.0.0',
         },
       }
     );
@@ -888,8 +888,8 @@ describe('modulesApi.addModuleDependency', () => {
     await modulesApi.addModuleDependency('mod-a', 'dep-b');
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/system/node_modules/mod-a/dependencies',
-      { module_dependency: { dependency_id: 'dep-b' } }
+      '/system/node_modules/mod-a/module_dependencies',
+      { dependency: { dependency_id: 'dep-b' } }
     );
   });
 
@@ -899,8 +899,8 @@ describe('modulesApi.addModuleDependency', () => {
     await modulesApi.addModuleDependency('mod-a', 'dep-b', undefined);
 
     expect(mockPost).toHaveBeenCalledWith(
-      '/system/node_modules/mod-a/dependencies',
-      { module_dependency: { dependency_id: 'dep-b' } }
+      '/system/node_modules/mod-a/module_dependencies',
+      { dependency: { dependency_id: 'dep-b' } }
     );
   });
 
@@ -918,14 +918,14 @@ describe('modulesApi.addModuleDependency', () => {
 // =============================================================================
 
 describe('modulesApi.removeModuleDependency', () => {
-  it('calls DELETE /system/node_modules/:moduleId/dependencies/:dependencyId', async () => {
+  it('calls DELETE /system/node_modules/:moduleId/module_dependencies/:dependencyId', async () => {
     mockDelete.mockResolvedValueOnce({ data: { success: true } });
 
     await modulesApi.removeModuleDependency('mod-parent', 'dep-mod-id');
 
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockDelete).toHaveBeenCalledWith(
-      '/system/node_modules/mod-parent/dependencies/dep-mod-id'
+      '/system/node_modules/mod-parent/module_dependencies/dep-mod-id'
     );
   });
 
@@ -935,7 +935,7 @@ describe('modulesApi.removeModuleDependency', () => {
     await modulesApi.removeModuleDependency('module-uuid-abc', 'dep-uuid-xyz');
 
     expect(mockDelete).toHaveBeenCalledWith(
-      '/system/node_modules/module-uuid-abc/dependencies/dep-uuid-xyz'
+      '/system/node_modules/module-uuid-abc/module_dependencies/dep-uuid-xyz'
     );
   });
 
