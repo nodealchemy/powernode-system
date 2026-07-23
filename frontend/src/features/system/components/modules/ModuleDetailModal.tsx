@@ -20,10 +20,11 @@ import {
   Copy,
   Check
 } from 'lucide-react';
-import { History } from 'lucide-react';
+import { History, Wrench } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
 import { ModuleVersionsPanel } from './ModuleVersionsPanel';
+import { ModulePuppetAssignmentsPanel } from '../puppet/ModulePuppetAssignmentsPanel';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
@@ -40,7 +41,7 @@ interface ModuleDetailModalProps {
   onEdit?: (module: SystemNodeModule) => void;
 }
 
-type TabId = 'info' | 'specs' | 'dependencies' | 'versions' | 'autonomy';
+type TabId = 'info' | 'specs' | 'dependencies' | 'versions' | 'puppet' | 'autonomy';
 
 const varietyLabels: Record<string, string> = {
   config: 'Config',
@@ -214,6 +215,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     { id: 'specs' as const, label: 'Specifications', icon: FileCode },
     { id: 'dependencies' as const, label: 'Dependencies', icon: GitBranch },
     { id: 'versions' as const, label: 'Versions', icon: History },
+    { id: 'puppet' as const, label: 'Puppet', icon: Wrench },
     { id: 'autonomy' as const, label: 'Autonomy', icon: ShieldCheck }
   ];
 
@@ -706,6 +708,9 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                       systemApi.getModule(module.id).then(setModule).catch(() => undefined);
                     }}
                   />
+                )}
+                {activeTab === 'puppet' && (
+                  <ModulePuppetAssignmentsPanel moduleId={module.id} />
                 )}
                 {activeTab === 'autonomy' && renderAutonomyTab()}
               </>

@@ -131,7 +131,11 @@ Rails.application.routes.draw do
             # (promote/rollback need the list + current-version pointer).
             get :versions
           end
-          resources :module_puppet_assignments, only: %i[index create]
+          # IMP-5dba18916d37 — show/update/destroy were declared flat below,
+          # but the controller's unconditional set_node_module before_action
+          # requires :node_module_id, which a flat route never populates —
+          # every flat call 404'd (same class as module_dependencies).
+          resources :module_puppet_assignments, only: %i[index show create update destroy]
           # IMP-20488c93ca35 — was a flat top-level resource; the controller's
           # set_node_module before_action requires :node_module_id, which a
           # flat route never populates. Segment name matches the controller's
@@ -147,7 +151,6 @@ Rails.application.routes.draw do
           member { post :promote }
         end
         resources :node_module_categories
-        resources :module_puppet_assignments, only: %i[show update destroy]
 
         # Package repository operator endpoints (apt/rpm catalog management).
         # Visibility filtering happens controller-side: shared repos are visible

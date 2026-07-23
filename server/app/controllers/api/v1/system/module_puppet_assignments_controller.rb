@@ -7,7 +7,7 @@ module Api
         before_action :set_node_module
         before_action :set_assignment, only: [ :show, :update, :destroy ]
 
-        # GET /api/v1/system/node_modules/:node_module_id/puppet_assignments
+        # GET /api/v1/system/node_modules/:node_module_id/module_puppet_assignments
         def index
           require_permission("system.puppet.read")
 
@@ -24,13 +24,13 @@ module Api
           )
         end
 
-        # GET /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
+        # GET /api/v1/system/node_modules/:node_module_id/module_puppet_assignments/:id
         def show
           require_permission("system.puppet.read")
           render_success(puppet_assignment: ::System::ModulePuppetAssignmentSerializer.new(@assignment).as_json)
         end
 
-        # POST /api/v1/system/node_modules/:node_module_id/puppet_assignments
+        # POST /api/v1/system/node_modules/:node_module_id/module_puppet_assignments
         def create
           require_permission("system.puppet.create")
 
@@ -43,7 +43,7 @@ module Api
           end
         end
 
-        # PATCH/PUT /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
+        # PATCH/PUT /api/v1/system/node_modules/:node_module_id/module_puppet_assignments/:id
         def update
           require_permission("system.puppet.update")
 
@@ -54,7 +54,7 @@ module Api
           end
         end
 
-        # DELETE /api/v1/system/node_modules/:node_module_id/puppet_assignments/:id
+        # DELETE /api/v1/system/node_modules/:node_module_id/module_puppet_assignments/:id
         def destroy
           require_permission("system.puppet.delete")
           @assignment.destroy

@@ -849,3 +849,65 @@ describe('puppetApi', () => {
     });
   });
 });
+
+// =============================================================================
+// Puppet assignment writes (IMP-5dba18916d37) — nested under node_modules
+// =============================================================================
+
+describe('puppetApi.createPuppetAssignment', () => {
+  it('POSTs the nested collection with the puppet_assignment envelope', async () => {
+    const row = {
+      id: 'mpa-1',
+      node_module_id: 'mod-1',
+      puppet_module_id: 'pm-1',
+      puppet_module_name: 'profile_base',
+      enabled: true,
+      priority: 9,
+      config: {},
+      parameters: {},
+    };
+    mockPost.mockResolvedValue({
+      data: { success: true, data: { puppet_assignment: row } },
+    });
+
+    const result = await puppetApi.createPuppetAssignment('mod-1', {
+      puppet_module_id: 'pm-1',
+      priority: 9,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith(
+      '/system/node_modules/mod-1/module_puppet_assignments',
+      { puppet_assignment: { puppet_module_id: 'pm-1', priority: 9 } },
+    );
+    expect(result.id).toBe('mpa-1');
+  });
+});
+
+describe('puppetApi.updatePuppetAssignment', () => {
+  it('PUTs the nested member and unwraps the assignment', async () => {
+    const row = { id: 'mpa-1', node_module_id: 'mod-1', puppet_module_id: 'pm-1', enabled: false, priority: 2 };
+    mockPut.mockResolvedValue({
+      data: { success: true, data: { puppet_assignment: row } },
+    });
+
+    const result = await puppetApi.updatePuppetAssignment('mod-1', 'mpa-1', { enabled: false, priority: 2 });
+
+    expect(mockPut).toHaveBeenCalledWith(
+      '/system/node_modules/mod-1/module_puppet_assignments/mpa-1',
+      { puppet_assignment: { enabled: false, priority: 2 } },
+    );
+    expect(result.enabled).toBe(false);
+  });
+});
+
+describe('puppetApi.deletePuppetAssignment', () => {
+  it('DELETEs the nested member', async () => {
+    mockDelete.mockResolvedValue({ data: { success: true, data: { message: 'ok' } } });
+
+    await puppetApi.deletePuppetAssignment('mod-1', 'mpa-1');
+
+    expect(mockDelete).toHaveBeenCalledWith(
+      '/system/node_modules/mod-1/module_puppet_assignments/mpa-1',
+    );
+  });
+});

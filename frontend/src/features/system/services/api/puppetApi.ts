@@ -37,12 +37,29 @@ export interface PuppetResourceCreate {
   config?: Record<string, unknown>;
 }
 
-// Assignment shape varies (cross-references node_modules / puppet_modules)
-// — leave permissive until a dedicated PuppetAssignment type is defined.
+// Matches System::ModulePuppetAssignmentSerializer.
 export type PuppetAssignment = {
   id: string;
+  node_module_id: string;
+  node_module_name?: string | null;
   puppet_module_id: string;
+  puppet_module_name?: string | null;
+  config: Record<string, unknown> | null;
+  parameters: Record<string, unknown> | null;
+  enabled: boolean;
+  priority: number | null;
+  display_name?: string | null;
+  created_at?: string;
+  updated_at?: string;
 } & Record<string, unknown>;
+
+export interface PuppetAssignmentInput {
+  puppet_module_id?: string;
+  enabled?: boolean;
+  priority?: number;
+  config?: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+}
 
 export const puppetApi = {
   // ===== Puppet Modules =====
@@ -149,5 +166,37 @@ export const puppetApi = {
       `/system/node_modules/${nodeModuleId}/module_puppet_assignments`
     );
     return extractData(response).puppet_assignments ?? [];
+  },
+
+  // Write surface (IMP-5dba18916d37) — all nested under node_modules since
+  // the controller's set_node_module requires :node_module_id (the former
+  // flat show/update/destroy routes could never resolve and were removed).
+  createPuppetAssignment: async (
+    nodeModuleId: string,
+    input: PuppetAssignmentInput
+  ): Promise<PuppetAssignment> => {
+    const response = await apiClient.post<ApiEnvelope<{ puppet_assignment: PuppetAssignment }>>(
+      `/system/node_modules/${nodeModuleId}/module_puppet_assignments`,
+      { puppet_assignment: input },
+    );
+    return extractData(response).puppet_assignment;
+  },
+
+  updatePuppetAssignment: async (
+    nodeModuleId: string,
+    assignmentId: string,
+    input: PuppetAssignmentInput
+  ): Promise<PuppetAssignment> => {
+    const response = await apiClient.put<ApiEnvelope<{ puppet_assignment: PuppetAssignment }>>(
+      `/system/node_modules/${nodeModuleId}/module_puppet_assignments/${assignmentId}`,
+      { puppet_assignment: input },
+    );
+    return extractData(response).puppet_assignment;
+  },
+
+  deletePuppetAssignment: async (nodeModuleId: string, assignmentId: string): Promise<void> => {
+    await apiClient.delete(
+      `/system/node_modules/${nodeModuleId}/module_puppet_assignments/${assignmentId}`
+    );
   },
 };
