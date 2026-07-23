@@ -440,9 +440,58 @@ case "$MODULE" in
         echo "[stage-1.5] hub-frontend: node fetch/verify FAILED — shipping empty dist" >&2
       fi
     fi
+    # Stage the system extension's own frontend source into the parent
+    # clone's extensions/ tree BEFORE the Vite build below, so
+    # frontend/vite.config.ts's build-time extension discovery (scans
+    # ../extensions/<slug> for an extension.json + a frontend/src dir, then
+    # aliases @ext/<slug> + @<slug> to that frontend/src — see its ~lines
+    # 43-71) picks up the system extension and compiles its register.ts
+    # (menu items + routes) into the bundle. /tmp/parent is a shallow clone
+    # of the CORE repo with NO submodules, so without this the parent clone
+    # has ZERO extensions and hub-frontend ships with no system menu/pages
+    # even though the backend has the extension enabled (imp: hub-frontend
+    # v17 shipped this way).
+    #
+    # $ws (this checkout, already `cd`'d into at the top of this script) IS
+    # the system extension's own repo root — the SAME source the
+    # powernode-extension-system arm above stages server/+extension.json
+    # from. Only the PUBLIC system extension is assembled here — ops-hub
+    # runs core mode, so there is no private/business frontend to include.
+    # node_modules is excluded from the copy: the extension carries no
+    # dependencies of its own (see the symlink below); .git/coverage are
+    # dev-only noise this checkout may have accumulated.
+    if [ -f extension.json ] && [ -d frontend/src ]; then
+      echo "[stage-1.5] hub-frontend: staging system extension frontend into parent clone" >&2
+      mkdir -p /tmp/parent/extensions/system
+      cp extension.json /tmp/parent/extensions/system/extension.json
+      rsync -a --exclude='node_modules' --exclude='.git' --exclude='coverage' \
+        frontend/ /tmp/parent/extensions/system/frontend/
+    else
+      echo "[stage-1.5] hub-frontend: no extension.json/frontend/src in this checkout — system extension UI will be absent" >&2
+    fi
     if command -v npm >/dev/null 2>&1 && [ -f /tmp/parent/frontend/package.json ]; then
       echo "[stage-1.5] hub-frontend: node=$(node -v 2>&1) npm=$(npm -v 2>&1) — running npm ci + build" >&2
-      if ( cd /tmp/parent/frontend && npm ci --no-audit && npm run build ) 1>&2; then
+      if (
+        cd /tmp/parent/frontend
+        npm ci --no-audit
+        # The extension's frontend/src imports react/lucide-react/etc as
+        # bare specifiers but ships no node_modules of its own — Vite (like
+        # Node) resolves bare imports by walking UP from the importing
+        # file's directory looking for a node_modules dir, and
+        # extensions/system/frontend/ has none of its own ancestry in
+        # common with frontend/node_modules. The local dev checkout solves
+        # this with a gitignored symlink at extensions/system/frontend/
+        # node_modules -> the platform's frontend/node_modules (created by
+        # scripts/setup-extension-frontend-symlinks.sh / scripts/
+        # validate.sh's tsc gate); reproduce the identical symlink here so
+        # the exact same resolution mechanism applies inside this shallow
+        # clone. Guarded on the staged dir existing (skipped entirely if
+        # the block above found no extension source to stage).
+        if [ -d /tmp/parent/extensions/system/frontend ]; then
+          ln -sfn ../../../frontend/node_modules /tmp/parent/extensions/system/frontend/node_modules
+        fi
+        npm run build
+      ) 1>&2; then
         echo "[stage-1.5] hub-frontend: Vite build succeeded" >&2
       else
         echo "[stage-1.5] hub-frontend: FRONTEND BUILD FAILED — shipping empty dist (npm output above)" >&2
