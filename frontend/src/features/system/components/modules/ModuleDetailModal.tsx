@@ -20,8 +20,10 @@ import {
   Copy,
   Check
 } from 'lucide-react';
+import { History } from 'lucide-react';
 import { ConsentBudgetEditor } from './ConsentBudgetEditor';
 import { CanaryMarker } from './CanaryMarker';
+import { ModuleVersionsPanel } from './ModuleVersionsPanel';
 import { Button } from '@/shared/components/ui/Button';
 import { Badge } from '@/shared/components/ui/Badge';
 import { EntityLink } from '@/shared/components/entity';
@@ -38,7 +40,7 @@ interface ModuleDetailModalProps {
   onEdit?: (module: SystemNodeModule) => void;
 }
 
-type TabId = 'info' | 'specs' | 'dependencies' | 'autonomy';
+type TabId = 'info' | 'specs' | 'dependencies' | 'versions' | 'autonomy';
 
 const varietyLabels: Record<string, string> = {
   config: 'Config',
@@ -211,6 +213,7 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
     { id: 'info' as const, label: 'Information', icon: Package },
     { id: 'specs' as const, label: 'Specifications', icon: FileCode },
     { id: 'dependencies' as const, label: 'Dependencies', icon: GitBranch },
+    { id: 'versions' as const, label: 'Versions', icon: History },
     { id: 'autonomy' as const, label: 'Autonomy', icon: ShieldCheck }
   ];
 
@@ -693,6 +696,17 @@ export const ModuleDetailModal: React.FC<ModuleDetailModalProps> = ({
                 {activeTab === 'info' && renderInfoTab()}
                 {activeTab === 'specs' && renderSpecsTab()}
                 {activeTab === 'dependencies' && renderDependenciesTab()}
+                {activeTab === 'versions' && (
+                  <ModuleVersionsPanel
+                    moduleId={module.id}
+                    canUpdate={canManageDependencies}
+                    onModuleChanged={() => {
+                      // Rollback rewrites the module spec + current-version
+                      // pointer — refetch so the other tabs show the result.
+                      systemApi.getModule(module.id).then(setModule).catch(() => undefined);
+                    }}
+                  />
+                )}
                 {activeTab === 'autonomy' && renderAutonomyTab()}
               </>
             ) : (

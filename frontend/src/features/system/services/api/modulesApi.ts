@@ -1,5 +1,12 @@
 import { apiClient } from '@/shared/services/apiClient';
-import type { SystemNodeModule, SystemNodeModuleCategory } from '../../types/system.types';
+import type {
+  SystemNodeModule,
+  SystemNodeModuleCategory,
+  SystemNodeModuleVersion,
+  SystemModulePromotionState,
+  SystemModuleVersionsResponse,
+  SystemModuleRollbackResponse,
+} from '../../types/system.types';
 import { extractData, extractPaginated } from './helpers';
 import type {
   ApiEnvelope,
@@ -227,5 +234,51 @@ export const modulesApi = {
       {},
     );
     return extractData(response).node_module;
+  },
+
+  // ===== Version lifecycle (IMP-c4235dad3779) =====
+  // Backend routes: GET /system/node_modules/:id/versions (history +
+  // current-version pointer), POST /system/node_module_versions/:id/promote
+  // (AASM built → staging → blessed → live → retired), and
+  // POST /system/node_modules/:id/rollback (repoint the module spec at a
+  // prior version; empty body = previous version).
+  getModuleVersions: async (moduleId: string): Promise<SystemModuleVersionsResponse> => {
+    const response = await apiClient.get<ApiEnvelope<SystemModuleVersionsResponse>>(
+      `/system/node_modules/${moduleId}/versions`
+    );
+    const data = extractData(response);
+    return {
+      versions: data.versions ?? [],
+      current_version_id: data.current_version_id ?? null,
+      current_version_number: data.current_version_number ?? null,
+    };
+  },
+
+  promoteModuleVersion: async (
+    versionId: string,
+    targetState: SystemModulePromotionState
+  ): Promise<SystemNodeModuleVersion> => {
+    const response = await apiClient.post<ApiEnvelope<{
+      node_module_version: SystemNodeModuleVersion;
+    }>>(
+      `/system/node_module_versions/${versionId}/promote`,
+      { target_state: targetState },
+    );
+    return extractData(response).node_module_version;
+  },
+
+  rollbackModule: async (
+    moduleId: string,
+    options: { targetVersionId?: string; changelog?: string } = {}
+  ): Promise<SystemModuleRollbackResponse> => {
+    const body: Record<string, string> = {};
+    if (options.targetVersionId) body.target_version_id = options.targetVersionId;
+    if (options.changelog) body.changelog = options.changelog;
+
+    const response = await apiClient.post<ApiEnvelope<SystemModuleRollbackResponse>>(
+      `/system/node_modules/${moduleId}/rollback`,
+      body,
+    );
+    return extractData(response);
   },
 };

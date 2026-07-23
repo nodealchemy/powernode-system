@@ -438,7 +438,7 @@ describe('ModuleDetailModal', () => {
       expect(onEdit).toHaveBeenCalledWith(BASE_MODULE);
     });
 
-    it('renders all four tab buttons', async () => {
+    it('renders all five tab buttons', async () => {
       mockGetModule.mockResolvedValueOnce(BASE_MODULE);
 
       renderModal();
@@ -447,6 +447,7 @@ describe('ModuleDetailModal', () => {
       expect(screen.getByRole('button', { name: /information/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /specifications/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /dependencies/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /versions/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /autonomy/i })).toBeInTheDocument();
     });
 

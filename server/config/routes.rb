@@ -127,6 +127,9 @@ Rails.application.routes.draw do
             # may carry target_version_id + changelog. Defaults to the
             # previous version when target_version_id omitted.
             post :rollback
+            # Version history for the operator UI's lifecycle panel
+            # (promote/rollback need the list + current-version pointer).
+            get :versions
           end
           resources :module_puppet_assignments, only: %i[index create]
           # IMP-20488c93ca35 — was a flat top-level resource; the controller's

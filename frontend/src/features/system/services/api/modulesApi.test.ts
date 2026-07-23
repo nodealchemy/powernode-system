@@ -1193,3 +1193,120 @@ describe('modulesApi.unmarkModuleAsCanary', () => {
     expect(result.name).toBe('regular-module');
   });
 });
+
+// =============================================================================
+// Version lifecycle (IMP-c4235dad3779)
+// =============================================================================
+
+describe('modulesApi.getModuleVersions', () => {
+  it('GETs /system/node_modules/:id/versions and unwraps versions + current pointer', async () => {
+    const versionRow = {
+      id: 'ver-2',
+      node_module_id: 'mod-a',
+      version_number: 2,
+      promotion_state: 'built',
+      changelog: 'second cut',
+      oci_digest: 'sha256:abc',
+      staging_baked_at: null,
+      blessed_at: null,
+      live_at: null,
+      retired_at: null,
+      created_at: '2026-07-01T00:00:00Z',
+    };
+    mockGet.mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          versions: [versionRow],
+          current_version_id: 'ver-1',
+          current_version_number: 1,
+        },
+      },
+    });
+
+    const result = await modulesApi.getModuleVersions('mod-a');
+
+    expect(mockGet).toHaveBeenCalledWith('/system/node_modules/mod-a/versions');
+    expect(result.versions).toEqual([versionRow]);
+    expect(result.current_version_id).toBe('ver-1');
+    expect(result.current_version_number).toBe(1);
+  });
+
+  it('defaults to empty versions when the module has none', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        success: true,
+        data: { versions: [], current_version_id: null, current_version_number: null },
+      },
+    });
+
+    const result = await modulesApi.getModuleVersions('mod-bare');
+
+    expect(result.versions).toEqual([]);
+    expect(result.current_version_id).toBeNull();
+  });
+});
+
+describe('modulesApi.promoteModuleVersion', () => {
+  it('POSTs /system/node_module_versions/:id/promote with target_state', async () => {
+    const promoted = {
+      id: 'ver-2',
+      node_module_id: 'mod-a',
+      version_number: 2,
+      promotion_state: 'staging',
+      changelog: null,
+      staging_baked_at: '2026-07-23T00:00:00Z',
+      blessed_at: null,
+      live_at: null,
+      retired_at: null,
+      created_at: '2026-07-01T00:00:00Z',
+    };
+    mockPost.mockResolvedValue({
+      data: { success: true, data: { node_module_version: promoted } },
+    });
+
+    const result = await modulesApi.promoteModuleVersion('ver-2', 'staging');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_module_versions/ver-2/promote', {
+      target_state: 'staging',
+    });
+    expect(result.promotion_state).toBe('staging');
+  });
+});
+
+describe('modulesApi.rollbackModule', () => {
+  it('POSTs /system/node_modules/:id/rollback with target_version_id + changelog', async () => {
+    const payload = {
+      node_module: { id: 'mod-a', name: 'regular-module' },
+      new_version: { id: 'ver-3', version_number: 3, changelog: 'rollback to v1' },
+    };
+    mockPost.mockResolvedValue({ data: { success: true, data: payload } });
+
+    const result = await modulesApi.rollbackModule('mod-a', {
+      targetVersionId: 'ver-1',
+      changelog: 'rollback to v1',
+    });
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_modules/mod-a/rollback', {
+      target_version_id: 'ver-1',
+      changelog: 'rollback to v1',
+    });
+    expect(result.new_version.version_number).toBe(3);
+  });
+
+  it('sends an empty body to roll back to the previous version', async () => {
+    mockPost.mockResolvedValue({
+      data: {
+        success: true,
+        data: {
+          node_module: { id: 'mod-a' },
+          new_version: { id: 'ver-4', version_number: 4, changelog: null },
+        },
+      },
+    });
+
+    await modulesApi.rollbackModule('mod-a');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_modules/mod-a/rollback', {});
+  });
+});

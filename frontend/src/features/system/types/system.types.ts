@@ -299,6 +299,36 @@ export interface SystemPeerExecuteResponse {
   message: string;
 }
 
+// NodeModuleVersion lifecycle (built → staging → blessed → live → retired).
+// Row shape shared by GET /node_modules/:id/versions and the promote
+// response (NodeModuleVersionsController#serialize_version + oci_digest).
+export type SystemModulePromotionState = 'built' | 'staging' | 'blessed' | 'live' | 'retired';
+
+export interface SystemNodeModuleVersion {
+  id: string;
+  node_module_id: string;
+  version_number: number;
+  promotion_state: SystemModulePromotionState;
+  changelog: string | null;
+  oci_digest?: string | null;
+  staging_baked_at: string | null;
+  blessed_at: string | null;
+  live_at: string | null;
+  retired_at: string | null;
+  created_at: string;
+}
+
+export interface SystemModuleVersionsResponse {
+  versions: SystemNodeModuleVersion[];
+  current_version_id: string | null;
+  current_version_number: number | null;
+}
+
+export interface SystemModuleRollbackResponse {
+  node_module: SystemNodeModule;
+  new_version: { id: string; version_number: number; changelog: string | null };
+}
+
 export type ArchitectureFamily = 'x86' | 'arm' | 'power' | 'z' | 'risc-v' | 'mips' | 'other';
 
 export interface SystemNodeArchitecture {
