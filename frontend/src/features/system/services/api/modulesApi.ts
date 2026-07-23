@@ -3,6 +3,7 @@ import type {
   SystemNodeModule,
   SystemNodeModuleCategory,
   SystemNodeModuleVersion,
+  SystemNodeModuleAssignmentSummary,
   SystemModulePromotionState,
   SystemModuleVersionsResponse,
   SystemModuleRollbackResponse,
@@ -265,6 +266,34 @@ export const modulesApi = {
       { target_state: targetState },
     );
     return extractData(response).node_module_version;
+  },
+
+  // ===== Per-node assignment toggle (IMP-3e9620967632) =====
+  // Backend: NodeModuleAssignmentsController — POST enable/disable by
+  // assignment id (idempotent). Assignment ids arrive via the node-scoped
+  // index's embedded `node_assignment` rows.
+  enableModuleAssignment: async (
+    assignmentId: string
+  ): Promise<SystemNodeModuleAssignmentSummary> => {
+    const response = await apiClient.post<ApiEnvelope<{
+      node_module_assignment: SystemNodeModuleAssignmentSummary;
+    }>>(
+      `/system/node_module_assignments/${assignmentId}/enable`,
+      {},
+    );
+    return extractData(response).node_module_assignment;
+  },
+
+  disableModuleAssignment: async (
+    assignmentId: string
+  ): Promise<SystemNodeModuleAssignmentSummary> => {
+    const response = await apiClient.post<ApiEnvelope<{
+      node_module_assignment: SystemNodeModuleAssignmentSummary;
+    }>>(
+      `/system/node_module_assignments/${assignmentId}/disable`,
+      {},
+    );
+    return extractData(response).node_module_assignment;
   },
 
   rollbackModule: async (

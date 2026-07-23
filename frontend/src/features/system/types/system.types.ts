@@ -529,6 +529,24 @@ export interface SystemNodeModule {
   // Latest version snapshot — populated when the module has at least one
   // NodeModuleVersion row. nil for brand-new modules before publish.
   latest_version?: SystemNodeModuleVersionSummary | null;
+  // Per-(node, module) assignment row — present ONLY on the node-scoped
+  // index (getNodeModules with node_id). Carries the per-node enabled
+  // toggle state; absent on catalog-wide listings.
+  node_assignment?: SystemNodeModuleAssignmentSummary | null;
+}
+
+// Embedded assignment row on node-scoped module listings + the payload
+// returned by the enable/disable toggle endpoints
+// (NodeModuleAssignmentsController#serialize_assignment).
+export interface SystemNodeModuleAssignmentSummary {
+  id: string;
+  enabled: boolean;
+  priority: number | null;
+  config: Record<string, unknown> | null;
+  node_id?: string;
+  node_module_id?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 // Latest version snapshot returned by the node_module serializer's

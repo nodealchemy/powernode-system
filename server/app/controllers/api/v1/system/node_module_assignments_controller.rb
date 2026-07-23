@@ -11,9 +11,10 @@ module Api
       # `System::NodeModuleAssignment#enabled` column + scopes — this
       # controller exposes the toggle.
       #
-      # Reading the assignment is via the parent NodeModule's
-      # /api/v1/system/node_modules/:id (which embeds assignments). This
-      # controller's only concern is the enable/disable transition.
+      # Reading assignments is via the node-scoped module index
+      # (/api/v1/system/node_modules?node_id=... embeds `node_assignment`
+      # per row) or GET :id here. This controller's mutation concern is
+      # the enable/disable transition only.
       #
       # Permission: `system.modules.update` (same as parent module mutation).
       #

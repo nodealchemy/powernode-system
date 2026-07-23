@@ -102,6 +102,37 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
   const canUpdateInstances = hasPermission('system.instances.update');
   const canDeleteInstances = hasPermission('system.instances.delete');
   const canUpdateNode = hasPermission('system.nodes.update');
+  const canUpdateModules = hasPermission('system.modules.update');
+
+  // Per-(node, module) assignment toggle (IMP-3e9620967632). Assignment
+  // rows arrive embedded on the node-scoped module listing; enable/disable
+  // are idempotent POSTs keyed by assignment id.
+  const [togglingAssignmentId, setTogglingAssignmentId] = useState<string | null>(null);
+  const handleToggleAssignment = useCallback(async (module: SystemNodeModule) => {
+    const assignment = module.node_assignment;
+    if (!assignment || !nodeId) return;
+    setTogglingAssignmentId(assignment.id);
+    try {
+      if (assignment.enabled) {
+        await systemApi.disableModuleAssignment(assignment.id);
+      } else {
+        await systemApi.enableModuleAssignment(assignment.id);
+      }
+      // Refetch BEFORE announcing success — if the refetch throws, the
+      // operator gets one honest error instead of success + error toasts
+      // over a stale row.
+      const data = await systemApi.getNodeModules({ node_id: nodeId });
+      setModules(data.node_modules || []);
+      addNotification({
+        type: 'success',
+        message: `${module.name} ${assignment.enabled ? 'disabled' : 'enabled'} on this node`,
+      });
+    } catch (e) {
+      addNotification({ type: 'error', message: e instanceof Error ? e.message : 'Toggle failed' });
+    } finally {
+      setTogglingAssignmentId(null);
+    }
+  }, [nodeId, addNotification]);
 
   // Delete instance state
   const [deleteInstanceConfirm, setDeleteInstanceConfirm] = useState<SystemNodeInstance | null>(null);
@@ -805,11 +836,40 @@ export const NodeDetailModal: React.FC<NodeDetailModalProps> = ({
                     <Badge variant={module.enabled ? 'success' : 'secondary'} size="xs">
                       {module.enabled ? 'Enabled' : 'Disabled'}
                     </Badge>
+                    {module.node_assignment && (
+                      <Badge variant={module.node_assignment.enabled ? 'success' : 'warning'} size="xs">
+                        {module.node_assignment.enabled ? 'On this node' : 'Off this node'}
+                      </Badge>
+                    )}
                   </div>
                 </button>
                 {/* Expanded body */}
                 {expanded && (
                   <div className="px-4 pb-4 pt-2 border-t border-theme bg-theme-surface space-y-3">
+                    {module.node_assignment && (
+                      <div className="flex items-center justify-between gap-3 p-2 rounded-lg border border-theme">
+                        <div className="text-sm min-w-0">
+                          <p className="font-medium text-theme-primary">
+                            {module.node_assignment.enabled ? 'Enabled on this node' : 'Disabled on this node'}
+                          </p>
+                          <p className="text-xs text-theme-tertiary">
+                            Per-node toggle — the module stays attached; disabling keeps
+                            priority/config but stops it composing into this node.
+                          </p>
+                        </div>
+                        {canUpdateModules && (
+                          <Button
+                            size="sm"
+                            variant={module.node_assignment.enabled ? 'ghost' : 'outline'}
+                            disabled={togglingAssignmentId === module.node_assignment.id}
+                            onClick={() => handleToggleAssignment(module)}
+                            title={module.node_assignment.enabled ? 'Disable on this node' : 'Enable on this node'}
+                          >
+                            {module.node_assignment.enabled ? 'Disable on this node' : 'Enable on this node'}
+                          </Button>
+                        )}
+                      </div>
+                    )}
                     {module.description && (
                       <div>
                         <label className="block text-xs font-semibold text-theme-secondary uppercase tracking-wide mb-1">Description</label>

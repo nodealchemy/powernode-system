@@ -11,6 +11,8 @@ const mockGetNode = jest.fn();
 const mockGetNodeInstances = jest.fn();
 const mockGetNodeModules = jest.fn();
 const mockGetTasks = jest.fn();
+const mockEnableModuleAssignment = jest.fn();
+const mockDisableModuleAssignment = jest.fn();
 const mockDeleteNodeInstance = jest.fn();
 const mockAssociatePublicIp = jest.fn();
 const mockDisassociatePublicIp = jest.fn();
@@ -26,6 +28,8 @@ jest.mock('@system/features/system/services/systemApi', () => ({
     associatePublicIp: (...args: unknown[]) => mockAssociatePublicIp(...args),
     disassociatePublicIp: (...args: unknown[]) => mockDisassociatePublicIp(...args),
     downloadInstanceBootConfig: (...args: unknown[]) => mockDownloadInstanceBootConfig(...args),
+    enableModuleAssignment: (...args: unknown[]) => mockEnableModuleAssignment(...args),
+    disableModuleAssignment: (...args: unknown[]) => mockDisableModuleAssignment(...args),
   },
 }));
 
@@ -255,6 +259,14 @@ const MODULE = {
     version_number: '1.2.3',
     promotion_state: 'live',
   },
+  // Per-(node, module) assignment row — embedded by the node-scoped
+  // index (IMP-3e9620967632) and toggled from the Modules tab.
+  node_assignment: {
+    id: 'nma-1',
+    enabled: true,
+    priority: 5,
+    config: null,
+  },
   updated_at: '2026-01-01T00:00:00Z',
 };
 
@@ -366,6 +378,8 @@ describe('NodeDetailModal', () => {
     mockAssociatePublicIp.mockReset();
     mockDisassociatePublicIp.mockReset();
     mockDownloadInstanceBootConfig.mockReset();
+    mockEnableModuleAssignment.mockReset();
+    mockDisableModuleAssignment.mockReset();
     mockAddNotification.mockReset();
   });
 
@@ -854,6 +868,62 @@ describe('NodeDetailModal', () => {
       clickTab('Modules');
 
       await waitFor(() => expect(screen.getByText('No modules assigned')).toBeInTheDocument());
+    });
+
+    it('shows the per-node assignment state badge', async () => {
+      await openModulesTab();
+      await waitFor(() => expect(screen.getByText('nginx')).toBeInTheDocument());
+
+      expect(screen.getByText('On this node')).toBeInTheDocument();
+    });
+
+    it('disables the module on this node from the expanded row', async () => {
+      mockDisableModuleAssignment.mockResolvedValue({
+        id: 'nma-1',
+        node_id: 'node-1',
+        node_module_id: 'mod-1',
+        enabled: false,
+        priority: 5,
+        config: null,
+      });
+
+      await openModulesTab();
+      await waitFor(() => expect(screen.getByText('nginx')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('nginx').closest('button')!);
+
+      fireEvent.click(await screen.findByTitle('Disable on this node'));
+
+      await waitFor(() => expect(mockDisableModuleAssignment).toHaveBeenCalledWith('nma-1'));
+      // List refetches so the row reflects the new assignment state.
+      await waitFor(() => expect(mockGetNodeModules).toHaveBeenCalledTimes(2));
+    });
+
+    it('enables a node-disabled module from the expanded row', async () => {
+      setupDefaultMocks();
+      // Override AFTER setupDefaultMocks — it re-primes mockGetNodeModules.
+      mockGetNodeModules.mockResolvedValue({
+        node_modules: [{
+          ...MODULE,
+          node_assignment: { ...MODULE.node_assignment, enabled: false },
+        }],
+      });
+      mockEnableModuleAssignment.mockResolvedValue({
+        id: 'nma-1',
+        enabled: true,
+        priority: 5,
+        config: null,
+      });
+
+      renderModal();
+      await waitForModal();
+      clickTab('Modules');
+      await waitFor(() => expect(screen.getByText('nginx')).toBeInTheDocument());
+      expect(screen.getByText('Off this node')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('nginx').closest('button')!);
+
+      fireEvent.click(await screen.findByTitle('Enable on this node'));
+
+      await waitFor(() => expect(mockEnableModuleAssignment).toHaveBeenCalledWith('nma-1'));
     });
 
     it('expands module row to show version metadata on click', async () => {

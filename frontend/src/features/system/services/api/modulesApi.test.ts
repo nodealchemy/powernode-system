@@ -1310,3 +1310,53 @@ describe('modulesApi.rollbackModule', () => {
     expect(mockPost).toHaveBeenCalledWith('/system/node_modules/mod-a/rollback', {});
   });
 });
+
+// =============================================================================
+// Per-node assignment toggle (IMP-3e9620967632)
+// =============================================================================
+
+describe('modulesApi.enableModuleAssignment', () => {
+  it('POSTs /system/node_module_assignments/:id/enable and unwraps the assignment', async () => {
+    const row = {
+      id: 'nma-1',
+      node_id: 'node-1',
+      node_module_id: 'mod-a',
+      enabled: true,
+      priority: 5,
+      config: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    mockPost.mockResolvedValue({
+      data: { success: true, data: { node_module_assignment: row }, message: 'Assignment enabled' },
+    });
+
+    const result = await modulesApi.enableModuleAssignment('nma-1');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_module_assignments/nma-1/enable', {});
+    expect(result).toEqual(row);
+  });
+});
+
+describe('modulesApi.disableModuleAssignment', () => {
+  it('POSTs /system/node_module_assignments/:id/disable and unwraps the assignment', async () => {
+    const row = {
+      id: 'nma-1',
+      node_id: 'node-1',
+      node_module_id: 'mod-a',
+      enabled: false,
+      priority: 5,
+      config: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    mockPost.mockResolvedValue({
+      data: { success: true, data: { node_module_assignment: row }, message: 'Assignment disabled' },
+    });
+
+    const result = await modulesApi.disableModuleAssignment('nma-1');
+
+    expect(mockPost).toHaveBeenCalledWith('/system/node_module_assignments/nma-1/disable', {});
+    expect(result.enabled).toBe(false);
+  });
+});
