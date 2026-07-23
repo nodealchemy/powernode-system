@@ -90,7 +90,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
 
       mcp = json.dig("data", "mcp")
       expect(mcp.keys).to contain_exactly("mcp_url")
-      expect(mcp["mcp_url"]).to end_with("/mcp")
+      expect(mcp["mcp_url"]).to end_with("/mcp/message")
 
       gitea = json.dig("data", "gitea")
       expect(gitea["clone_url"]).to eq(expected_ssh_url)
