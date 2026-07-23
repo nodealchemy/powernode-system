@@ -740,57 +740,63 @@ describe('puppetApi', () => {
   // ---------------------------------------------------------------------------
 
   describe('getPuppetModuleAssignments()', () => {
-    it('calls GET /system/puppet_modules/:moduleId/assignments', async () => {
+    // Backend only supports listing puppet-module assignments FOR a given
+    // node module (ModulePuppetAssignmentsController#index is nested under
+    // node_modules/:node_module_id, not puppet_modules/:puppet_module_id —
+    // there is no route for the inverse direction). The id parameter here
+    // is therefore a NodeModule id, even though the function name refers
+    // to the type of record returned (puppet-module assignments).
+    it('calls GET /system/node_modules/:nodeModuleId/module_puppet_assignments', async () => {
       mockGet.mockResolvedValueOnce(
-        envelope({ assignments: [ASSIGNMENT_A] }),
+        envelope({ puppet_assignments: [ASSIGNMENT_A] }),
       );
 
-      await puppetApi.getPuppetModuleAssignments('mod-1');
+      await puppetApi.getPuppetModuleAssignments('nm-10');
 
       expect(mockGet).toHaveBeenCalledTimes(1);
-      expect(mockGet).toHaveBeenCalledWith(`${MODULES_BASE}/mod-1/assignments`);
+      expect(mockGet).toHaveBeenCalledWith('/system/node_modules/nm-10/module_puppet_assignments');
     });
 
-    it('returns the unwrapped assignments array', async () => {
+    it('returns the unwrapped puppet_assignments array', async () => {
       mockGet.mockResolvedValueOnce(
-        envelope({ assignments: [ASSIGNMENT_A] }),
+        envelope({ puppet_assignments: [ASSIGNMENT_A] }),
       );
 
-      const result = await puppetApi.getPuppetModuleAssignments('mod-1');
+      const result = await puppetApi.getPuppetModuleAssignments('nm-10');
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual(ASSIGNMENT_A);
-      expect(result[0].puppet_module_id).toBe('mod-1');
+      expect(result[0].node_module_id).toBe('nm-10');
     });
 
-    it('returns an empty array when assignments is absent', async () => {
-      mockGet.mockResolvedValueOnce(envelope({ assignments: undefined }));
+    it('returns an empty array when puppet_assignments is absent', async () => {
+      mockGet.mockResolvedValueOnce(envelope({ puppet_assignments: undefined }));
 
-      const result = await puppetApi.getPuppetModuleAssignments('mod-1');
+      const result = await puppetApi.getPuppetModuleAssignments('nm-10');
 
       expect(result).toEqual([]);
     });
 
     it('returns an empty array when there are no assignments', async () => {
-      mockGet.mockResolvedValueOnce(envelope({ assignments: [] }));
+      mockGet.mockResolvedValueOnce(envelope({ puppet_assignments: [] }));
 
-      const result = await puppetApi.getPuppetModuleAssignments('mod-1');
+      const result = await puppetApi.getPuppetModuleAssignments('nm-10');
 
       expect(result).toEqual([]);
     });
 
-    it('uses the supplied puppetModuleId in the URL', async () => {
-      mockGet.mockResolvedValueOnce(envelope({ assignments: [] }));
+    it('uses the supplied nodeModuleId in the URL', async () => {
+      mockGet.mockResolvedValueOnce(envelope({ puppet_assignments: [] }));
 
-      await puppetApi.getPuppetModuleAssignments('mod-xyz-999');
+      await puppetApi.getPuppetModuleAssignments('nm-xyz-999');
 
-      expect(mockGet).toHaveBeenCalledWith(`${MODULES_BASE}/mod-xyz-999/assignments`);
+      expect(mockGet).toHaveBeenCalledWith('/system/node_modules/nm-xyz-999/module_puppet_assignments');
     });
 
     it('propagates API errors', async () => {
       mockGet.mockRejectedValueOnce(new Error('Not authorized'));
 
-      await expect(puppetApi.getPuppetModuleAssignments('mod-1')).rejects.toThrow(
+      await expect(puppetApi.getPuppetModuleAssignments('nm-10')).rejects.toThrow(
         'Not authorized',
       );
     });

@@ -785,10 +785,10 @@ describe('puppetApi delegation', () => {
     expect(result).toBe('file { "/etc/nginx.conf": }');
   });
 
-  it('getPuppetModuleAssignments: GET /system/puppet_modules/:id/assignments', async () => {
-    mockGet.mockResolvedValue(envelope({ assignments: [] }));
-    await systemApi.getPuppetModuleAssignments('pup-1');
-    expect(mockGet).toHaveBeenCalledWith('/system/puppet_modules/pup-1/assignments');
+  it('getPuppetModuleAssignments: GET /system/node_modules/:id/module_puppet_assignments', async () => {
+    mockGet.mockResolvedValue(envelope({ puppet_assignments: [] }));
+    await systemApi.getPuppetModuleAssignments('nm-1');
+    expect(mockGet).toHaveBeenCalledWith('/system/node_modules/nm-1/module_puppet_assignments');
   });
 });
 

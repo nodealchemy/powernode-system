@@ -140,10 +140,14 @@ export const puppetApi = {
   },
 
   // ===== Puppet Module Assignments =====
-  getPuppetModuleAssignments: async (puppetModuleId: string): Promise<PuppetAssignment[]> => {
-    const response = await apiClient.get<ApiEnvelope<{ assignments: PuppetAssignment[] }>>(
-      `/system/puppet_modules/${puppetModuleId}/assignments`
+  // Backend: ModulePuppetAssignmentsController#index, nested under
+  // node_modules/:node_module_id (not puppet_modules) -- there is no route
+  // for "assignments of a puppet module", only "assignments of a node
+  // module". nodeModuleId is a NodeModule id.
+  getPuppetModuleAssignments: async (nodeModuleId: string): Promise<PuppetAssignment[]> => {
+    const response = await apiClient.get<ApiEnvelope<{ puppet_assignments: PuppetAssignment[] }>>(
+      `/system/node_modules/${nodeModuleId}/module_puppet_assignments`
     );
-    return extractData(response).assignments ?? [];
+    return extractData(response).puppet_assignments ?? [];
   },
 };
