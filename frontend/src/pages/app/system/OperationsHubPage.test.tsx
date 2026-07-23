@@ -53,6 +53,7 @@ const mockCveRefresh = jest.fn();
 const mockCiWorkersOpenCreate = jest.fn();
 const mockCiWebhooksOpenCreate = jest.fn();
 const mockModuleBuildsRefresh = jest.fn();
+const mockAgentPeersRefresh = jest.fn();
 
 jest.mock('@system/features/system/components/operations', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -112,6 +113,17 @@ jest.mock('@system/features/system/components/operations', () => {
         'div',
         { 'data-testid': 'module-builds-tab' },
         'ModuleBuildsTab',
+      );
+    },
+    AgentPeersTab: (props: { onActionsReady?: (h: { refresh: () => void } | null) => void }) => {
+      useEffect(() => {
+        props.onActionsReady?.({ refresh: mockAgentPeersRefresh });
+        return () => props.onActionsReady?.(null);
+      }, []);
+      return require('react').createElement(
+        'div',
+        { 'data-testid': 'agent-peers-tab' },
+        'AgentPeersTab',
       );
     },
   };

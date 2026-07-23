@@ -12,6 +12,7 @@ import {
   GitopsTab,
   CveTab,
   ModuleBuildsTab,
+  AgentPeersTab,
 } from '@system/features/system/components/operations';
 import { SystemSettingsPanel } from '@system/features/system/components/settings/SystemSettingsPanel';
 
@@ -20,13 +21,16 @@ import { SystemSettingsPanel } from '@system/features/system/components/settings
 // into one tabbed page. Path-based tabs match the canonical
 // AdminSettingsPage pattern.
 
-type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'ci-workers' | 'ci-webhooks' | 'module-builds';
+type TabKey = 'fleet' | 'tasks' | 'gitops' | 'cve' | 'agent-peers' | 'ci-workers' | 'ci-webhooks' | 'module-builds';
 
 const TABS: { key: TabKey; label: string; permission: string }[] = [
   { key: 'fleet', label: 'Fleet', permission: 'system.fleet.autonomy' },
   { key: 'tasks', label: 'Tasks', permission: 'system.tasks.read' },
   { key: 'gitops', label: 'GitOps', permission: 'system.gitops.read' },
   { key: 'cve', label: 'CVE', permission: 'system.cve.read' },
+  // NodeInstance-as-Agent peers (IMP-20c082f9d519) — distinct from the
+  // platform federation peers under Compute → Platform → Peers.
+  { key: 'agent-peers', label: 'Agent Peers', permission: 'system.peers.read' },
   { key: 'ci-workers', label: 'CI Workers', permission: 'system.ci_workers.read' },
   { key: 'ci-webhooks', label: 'CI Webhooks', permission: 'system.disk_image_webhooks.read' },
   { key: 'module-builds', label: 'Module Builds', permission: 'system.module_builds.read' },
@@ -54,6 +58,7 @@ const OperationsHubPage: React.FC = () => {
   const [ciWorkersActions, setCiWorkersActions] = useState<{ openCreate: () => void } | null>(null);
   const [ciWebhooksActions, setCiWebhooksActions] = useState<{ openCreate: () => void } | null>(null);
   const [moduleBuildsActions, setModuleBuildsActions] = useState<{ refresh: () => void } | null>(null);
+  const [agentPeersActions, setAgentPeersActions] = useState<{ refresh: () => void } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
   const canCreateGitops = hasPermission('system.gitops.write');
@@ -75,6 +80,8 @@ const OperationsHubPage: React.FC = () => {
     pageActions.push({ label: 'New webhook', onClick: ciWebhooksActions.openCreate, variant: 'primary', icon: Plus });
   } else if (activeTabKey === 'module-builds' && moduleBuildsActions) {
     pageActions.push({ label: 'Refresh', onClick: moduleBuildsActions.refresh, variant: 'secondary', icon: RefreshCw });
+  } else if (activeTabKey === 'agent-peers' && agentPeersActions) {
+    pageActions.push({ label: 'Refresh', onClick: agentPeersActions.refresh, variant: 'secondary', icon: RefreshCw });
   }
 
   if (visibleTabs.length === 0) {
@@ -127,6 +134,7 @@ const OperationsHubPage: React.FC = () => {
         <Route path="tasks" element={<TasksTab />} />
         <Route path="gitops" element={<GitopsTab onActionsReady={setGitopsActions} />} />
         <Route path="cve" element={<CveTab onActionsReady={setCveActions} />} />
+        <Route path="agent-peers" element={<AgentPeersTab onActionsReady={setAgentPeersActions} />} />
         <Route path="ci-workers" element={<CiWorkersTab onActionsReady={setCiWorkersActions} />} />
         <Route path="ci-webhooks" element={<CiWebhooksTab onActionsReady={setCiWebhooksActions} />} />
         <Route path="module-builds" element={<ModuleBuildsTab onActionsReady={setModuleBuildsActions} />} />

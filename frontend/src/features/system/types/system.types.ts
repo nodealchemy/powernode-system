@@ -246,6 +246,59 @@ export interface SystemCiWorkerCreatedResponse {
   note: string;
 }
 
+// NodeInstance-as-Agent peers (operator surface — see
+// extensions/system/docs/agent-peering.md). Serialized by
+// Api::V1::System::NodeInstancePeersController#serialize_peer.
+export interface SystemPeerDeclaredSkill {
+  name: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface SystemNodeInstancePeer {
+  id: string;
+  handle: string;
+  node_instance_id: string;
+  enabled: boolean;
+  status: string;
+  capabilities: Record<string, unknown> | null;
+  declared_skills: SystemPeerDeclaredSkill[] | null;
+  addresses: string[] | null;
+  trust_score: number;
+  daily_decision_budget: number;
+  daily_decision_used: number;
+  execution_count: number;
+  execution_failure_count: number;
+  first_announced_at?: string | null;
+  last_announced_at?: string | null;
+  last_executed_at?: string | null;
+}
+
+// Small shape returned by GET /node_instance_peers/searchable
+// (#serialize_searchable) — enabled peers only, handle-prefix filtered.
+export interface SystemNodeInstancePeerSearchResult {
+  id: string;
+  handle: string;
+  status: string;
+  node_instance_id: string;
+  node_name: string | null;
+  addresses: string[] | null;
+}
+
+export interface SystemPeerExecuteRequest {
+  skill: string;
+  input?: Record<string, unknown> | string;
+}
+
+// 202 payload from POST /node_instance_peers/:id/execute — the task is
+// dispatched async; the result arrives via /node_api/peer/execute_result.
+export interface SystemPeerExecuteResponse {
+  peer: SystemNodeInstancePeer;
+  task_id: string;
+  dispatched_task: { skill: string; input?: unknown };
+  message: string;
+}
+
 export type ArchitectureFamily = 'x86' | 'arm' | 'power' | 'z' | 'risc-v' | 'mips' | 'other';
 
 export interface SystemNodeArchitecture {

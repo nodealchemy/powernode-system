@@ -8,5 +8,6 @@ export { CiWebhooksTab } from './CiWebhooksTab';
 export { GitopsTab } from './GitopsTab';
 export { CveTab } from './CveTab';
 export { ModuleBuildsTab } from './ModuleBuildsTab';
+export { AgentPeersTab } from './AgentPeersTab';
 export { BatchList } from './BatchList';
 export { BatchDetailModal } from './BatchDetailModal';
