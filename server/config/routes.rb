@@ -238,6 +238,13 @@ Rails.application.routes.draw do
         # node_platforms moved to top of namespace + extended with
         # the disk_image member action (claim-flow operator download).
         resources :node_scripts
+        # IMP-89ebc6b8afcd: deliberately NO operator UI for these. The
+        # feature is dead-end plumbing — nothing anywhere creates the
+        # InstanceMountPoint join rows that would attach a definition to an
+        # instance, so the agent-plane reader (node_api/mount_points) always
+        # sees an empty set. Storage-backed mounts moved to StorageAssignment
+        # in Phase S2 (which has full UI). Pending decision: complete the
+        # attach seam or retire this model family (see improvement queue).
         resources :node_mount_points
 
         # Phase S5 — Storage assignments (FileManagement::Storage × NodeInstance)
