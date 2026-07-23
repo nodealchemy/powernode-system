@@ -57,9 +57,6 @@ module System
                class_name: "System::InstancePool",
                optional: true
 
-    # Mount point associations (Release 3)
-    has_many :instance_mount_points, class_name: "System::InstanceMountPoint", dependent: :destroy
-    has_many :mount_points, through: :instance_mount_points, source: :mount_point
 
     # Task associations (Release 4)
     has_many :tasks, class_name: "System::Task", as: :operable, dependent: :destroy
@@ -721,7 +718,7 @@ module System
     # optional: true vs (default required) declarations on the child
     # side. Optional FKs get NULLed; required FKs get destroyed.
     # Polymorphic + already-dependent-destroy declarations on the
-    # NodeInstance side (instance_mount_points, tasks, node_certificates)
+    # NodeInstance side (tasks, node_certificates)
     # are omitted — Rails handles those automatically on .destroy.
     CASCADE_DEPENDENTS = [
       # Required FK — must be destroyed before the parent

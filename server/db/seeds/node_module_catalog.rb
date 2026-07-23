@@ -213,7 +213,6 @@ if ENV["CLEANUP_LEGACY"] == "1"
     System::ProviderVolume.where(node_instance_id: inst_id).update_all(node_instance_id: nil) if defined?(System::ProviderVolume)
     System::UnclaimedDevice.where(claimed_node_instance_id: inst_id).update_all(claimed_node_instance_id: nil) if defined?(System::UnclaimedDevice)
     System::NodeCertificate.where(node_instance_id: inst_id).destroy_all if defined?(System::NodeCertificate)
-    System::InstanceMountPoint.where(node_instance_id: inst_id).destroy_all if defined?(System::InstanceMountPoint)
     inst.destroy!
   end
 

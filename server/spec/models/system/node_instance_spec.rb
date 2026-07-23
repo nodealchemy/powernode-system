@@ -19,8 +19,6 @@ RSpec.describe System::NodeInstance, type: :model do
     it { is_expected.to belong_to(:node).class_name('System::Node') }
     it { is_expected.to belong_to(:provider_region).class_name('System::ProviderRegion').optional }
     it { is_expected.to belong_to(:provider_instance_type).class_name('System::ProviderInstanceType').optional }
-    it { is_expected.to have_many(:instance_mount_points).class_name('System::InstanceMountPoint').dependent(:destroy) }
-    it { is_expected.to have_many(:mount_points).through(:instance_mount_points) }
     it { is_expected.to have_many(:tasks).class_name('System::Task').dependent(:destroy) }
     it { is_expected.to have_many(:provider_volumes).class_name('System::ProviderVolume') }
   end

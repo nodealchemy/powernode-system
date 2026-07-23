@@ -309,7 +309,7 @@ module PowernodeSystem
           # Per-NodeInstance Claude Code CLI credential (claude-tmux module).
           resource :node_instance_credentials, actions: %i[read manage], grant: { admin: :all }
 
-          # Storage assignments + mount points (storage seed).
+          # Storage assignments (storage seed).
           # admin -> all; manager -> assignments {read,create,update,assign,rotate_credential}
           # (NOT delete); member -> assignments read.
           resource :"storage.assignments",
@@ -319,7 +319,6 @@ module PowernodeSystem
                      manager: %i[read create update assign rotate_credential],
                      member: %i[read]
                    }
-          resource :"storage.mount_points", actions: %i[read create update delete], grant: { admin: :all }
 
           # ---------------------------------------------------------------
           # SDWAN — user's prefix rule: system.sdwan.* (tables are system_sdwan_*).

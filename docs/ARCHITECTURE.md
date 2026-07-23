@@ -502,7 +502,7 @@ agent-auth mTLS conversion.
 - `POST /node_api/enroll` — bootstrap token → cert exchange (the only
   bootstrap-token-authenticated endpoint; everything else is mTLS)
 - `POST /node_api/certificates/{rotate,revoke}`
-- `GET  /node_api/{config,modules,status,ssh_keys,mount_points,puppet/resources,files/scripts/:id,files/modules/:id/:filename}`
+- `GET  /node_api/{config,modules,status,ssh_keys,puppet/resources,files/scripts/:id,files/modules/:id/:filename}`
 - `POST /node_api/status/heartbeat`
 - `GET  /node_api/tasks/lease?max=N`
 - `POST /node_api/tasks/:id/{progress,complete,fail}`

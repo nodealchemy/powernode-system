@@ -1873,7 +1873,6 @@ module Ai
         [ "ai_provisioning_code_deployments", "node_instance_id" ],
         [ "system_sdwan_host_vrf_assignments", "node_instance_id" ],
         [ "system_sdwan_host_bridges", "node_instance_id" ],
-        [ "system_instance_mount_points", "node_instance_id" ],
         [ "system_provider_volumes", "node_instance_id" ]
       ].freeze
 

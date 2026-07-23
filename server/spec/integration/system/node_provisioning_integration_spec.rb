@@ -250,19 +250,4 @@ RSpec.describe 'Node Provisioning Integration', type: :integration do
       expect(System::NodeInstance.exists?(instance_id)).to be false
     end
   end
-
-  describe 'mount point configuration' do
-    let(:mount_point) { create(:system_node_mount_point, account: account, mount_path: '/data') }
-    let(:instance) { create(:system_node_instance, node: node) }
-
-    it 'assigns mount points to instance' do
-      instance_mount = create(:system_instance_mount_point,
-                              node_instance: instance,
-                              mount_point: mount_point,
-                              enabled: true)
-
-      expect(instance.mount_points).to include(mount_point)
-      expect(instance.instance_mount_points.count).to eq(1)
-    end
-  end
 end

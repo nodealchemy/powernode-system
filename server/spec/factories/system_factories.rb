@@ -423,27 +423,6 @@ FactoryBot.define do
     progress { 100 }
   end
 
-  # System::NodeMountPoint — Phase S2: storage-backed types (nfs/cifs/efs/ebs/
-  # s3fs) moved to System::StorageAssignment. Only synthetic types remain.
-  factory :system_node_mount_point, class: "System::NodeMountPoint" do
-    association :account
-    sequence(:name) { |n| "Mount #{n}" }
-    mount_path { "/mnt/data" }
-    mount_type { "tmpfs" }
-    source { "tmpfs" }
-    options { { options: "size=64m" } }
-    enabled { true }
-    auto_mount { true }
-  end
-
-  # System::InstanceMountPoint
-  factory :system_instance_mount_point, class: "System::InstanceMountPoint" do
-    association :node_instance, factory: :system_node_instance
-    association :mount_point, factory: :system_node_mount_point
-    enabled { true }
-    config { {} }
-  end
-
   # Sdwan::Network — Phase S2 needs this to be createable from system specs
   # for storage-assignment integration. Mirrors the network model's slice-1
   # required fields (name, slug, cidr_64, routing_protocol, status).

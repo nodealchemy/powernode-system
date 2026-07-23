@@ -40,7 +40,6 @@ Account.class_eval do
            class_name: "System::DiskImageWebhook",
            dependent: :destroy
   has_many :system_node_scripts, class_name: "System::NodeScript", dependent: :restrict_with_error
-  has_many :system_node_mount_points, class_name: "System::NodeMountPoint", dependent: :restrict_with_error
 
   # Storage assignments (Phase S5 — operator-facing CRUD over file_storage ×
   # node_instance pairings). Controller scopes via `current_account.system_storage_assignments`;
