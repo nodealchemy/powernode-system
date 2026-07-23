@@ -74,7 +74,9 @@ module System
     # Scopes for dependant lookup
     scope :dependants, -> { where.not(parent_module_id: nil) }
     scope :base_modules, -> { where(parent_module_id: nil) }
-    scope :for_node, ->(node) { where(node_id: node) }
+    # NOTE: for_node lives below with the assignment-join definition — an
+    # earlier direct-column where(node_id:) version here was shadowed dead
+    # code and was removed (IMP-843c223063cf).
     scope :for_instance, ->(instance) { where(node_instance_id: instance) }
 
     # Versioning associations
