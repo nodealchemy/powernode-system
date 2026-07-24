@@ -1355,6 +1355,41 @@ RSpec.describe System::Providers::ProxmoxProvider do
       expect(shared_dna_data[:shared]).to be true
       expect(shared_dna_data[:plugin_type]).to eq("nfs")
       expect(shared_dna_data[:content_types]).to include("images")
+      # NOTE for future readers (RCP v2 campaign 019f9250 audit): this stub
+      # fabricates plugintype "nfs" for the fixture entry named "dna-data"
+      # purely to exercise this method's response parsing — it is arbitrary
+      # test data, NOT a claim about the real deployment's dna-data zpool
+      # (confirmed elsewhere, via the live Provider record + ops-hub's own
+      # cloud_instance_id, to be dna's own local ZFS).
+    end
+  end
+
+  # RCP v2 (campaign 019f9250, increment p0c) — INV-2: no boot-time network
+  # dependency. cidata_iso_transport? / .cidata_iso_transport_for? decide
+  # whether cloud-init/federation payload delivery rides the NFS-backed
+  # cicustom snippets channel or the API-token-safe ISO transport; this is
+  # the exact predicate System::Autonomy::BootPathInvariantCheck delegates
+  # to (Reuse First — no duplicated transport-detection logic).
+  describe "#cidata_iso_transport? / .cidata_iso_transport_for?" do
+    it "is false when the connection config has no cidata_transport key (today's default connection shape)" do
+      expect(provider.send(:cidata_iso_transport?)).to be false
+    end
+
+    it "is true once the connection config opts in" do
+      allow(connection).to receive(:config).and_return({ "cidata_transport" => "iso" })
+      expect(provider.send(:cidata_iso_transport?)).to be true
+    end
+
+    it "the class method is a pure function of a config Hash (no live provider instance needed)" do
+      expect(described_class.cidata_iso_transport_for?("cidata_transport" => "iso")).to be true
+      expect(described_class.cidata_iso_transport_for?("cidata_transport" => "nfs")).to be false
+      expect(described_class.cidata_iso_transport_for?({})).to be false
+      expect(described_class.cidata_iso_transport_for?(nil)).to be false
+    end
+
+    it "the instance method delegates to the class method (no drift between the two)" do
+      expect(described_class).to receive(:cidata_iso_transport_for?).with(connection.config).and_call_original
+      provider.send(:cidata_iso_transport?)
     end
   end
 

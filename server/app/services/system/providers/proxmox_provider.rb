@@ -1015,7 +1015,19 @@ module System
       # on a shared NFS storage. Opt-in per connection so DEV's default NFS path
       # is untouched.
       def cidata_iso_transport?
-        connection&.config&.dig("cidata_transport").to_s == "iso"
+        self.class.cidata_iso_transport_for?(connection&.config)
+      end
+
+      # Class-level, pure re-derivation of the same predicate above — no
+      # behavior change, just exposed so a provisioning-time check (RCP v2
+      # campaign 019f9250, System::Autonomy::BootPathInvariantCheck / INV-2:
+      # no boot-time network dependency) can evaluate a connection's
+      # transport choice from its config Hash alone, without needing a live
+      # provider instance. Defined with `def self.` so it is public even
+      # though this section of the class is otherwise marked `private` —
+      # Ruby's `private` does not apply to singleton methods.
+      def self.cidata_iso_transport_for?(provider_config)
+        provider_config.is_a?(Hash) && provider_config["cidata_transport"].to_s == "iso"
       end
 
       # ISO-transport counterpart to stage_cicustom. Builds the NoCloud seed as
