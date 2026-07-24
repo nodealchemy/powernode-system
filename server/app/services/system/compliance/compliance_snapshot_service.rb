@@ -31,6 +31,7 @@ module System
           cve_exposures: collect_cve_exposures(account),
           drift_summary: collect_drift_summary(account),
           fleet_decisions: collect_recent_decisions(account),
+          rcp_invariants: collect_rcp_invariants(account),
           counts: counts(account)
         }
 
@@ -194,6 +195,29 @@ module System
             completed_at: req.completed_at&.iso8601
           }
         end
+      end
+
+      # RCP v2 (campaign 019f9250, increment p0c) — INV-1/2/6 fleet-wide scan,
+      # folded into the existing compliance-snapshot seam rather than a
+      # parallel report format (Reuse First). Static (live: false) here —
+      # a compliance snapshot must stay a cheap, pure DB read; a live
+      # Proxmox-verified INV-6 pass is available separately via
+      # System::Compliance::RcpInvariantScanner.scan(account:, live: true)
+      # (see rcp:invariant_scan rake task) for contexts with real
+      # provider credentials.
+      def collect_rcp_invariants(account)
+        result = ::System::Compliance::RcpInvariantScanner.scan(account: account, live: false)
+        {
+          scanned_at: result.scanned_at.iso8601,
+          live_verified: result.live,
+          inv1_self_management: result.inv1,
+          inv2_boot_network_dependency: result.inv2,
+          inv6_storage_locality: result.inv6,
+          violation_count: result.violations.size
+        }
+      rescue StandardError => e
+        Rails.logger.error("[ComplianceSnapshotService] rcp_invariants scan failed: #{e.class}: #{e.message}")
+        { error: e.message }
       end
 
       def counts(account)
