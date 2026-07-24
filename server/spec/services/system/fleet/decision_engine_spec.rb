@@ -851,6 +851,56 @@ RSpec.describe System::Fleet::DecisionEngine do
     end
   end
 
+  # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.
+  # Distinct from (and layered alongside) the existing ControlPlaneFence —
+  # see System::Autonomy::SelfManagementFence's doc comment. Exercised
+  # through the same #decide entry point the pre-existing instance_silent
+  # tests above use, so this proves the REAL reap_presumed_dead! short-
+  # circuit at the top of #decide, not just the fence predicate in
+  # isolation (already covered by self_management_fence_spec.rb).
+  describe "INV-1 self-management fence" do
+    let(:platform) { create(:system_node_platform, account: account) }
+    let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+    let(:node)     { create(:system_node, account: account, node_template: template) }
+    let!(:instance) do
+      create(:system_node_instance, :running, node: node,
+             last_heartbeat_at: Time.current - (System::Fleet::DecisionEngine::PRESUMED_DEAD_SILENCE_SECONDS + 60))
+    end
+
+    def signal
+      { kind: "system.instance_silent", severity: :high,
+        payload: { instance_id: instance.id }, fingerprint: "instance_silent:#{instance.id}" }
+    end
+
+    it "reaps (marks :error) a silent instance when self_hosting_node_id is unconfigured (unchanged default behavior)" do
+      d = engine.decide(signal)
+      expect(d[:decision]).to eq(:presumed_dead)
+      expect(instance.reload.status).to eq("error")
+    end
+
+    it "does NOT reap a silent instance on this deployment's own configured self-hosting node" do
+      SiteSetting.set("self_hosting_node_id", node.id)
+
+      d = engine.decide(signal)
+
+      # reap_presumed_dead! returns nil for a self-managed target -> #decide
+      # falls through to its NORMAL signal routing (whatever that resolves
+      # to is orthogonal to this invariant) — the one thing INV-1 requires
+      # is that the reap-arm specifically never fired.
+      expect(d[:decision]).not_to eq(:presumed_dead)
+      expect(instance.reload.status).to eq("running") # unchanged — no self-management reap
+    end
+
+    it "still reaps once a DIFFERENT node is configured as self-hosting (the fence is target-specific)" do
+      SiteSetting.set("self_hosting_node_id", create(:system_node, account: account).id)
+
+      d = engine.decide(signal)
+
+      expect(d[:decision]).to eq(:presumed_dead)
+      expect(instance.reload.status).to eq("error")
+    end
+  end
+
   describe "SIGNAL_BINDINGS" do
     it "declares a callable input_mapper for every binding with a skill" do
       missing = described_class::SIGNAL_BINDINGS

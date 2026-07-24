@@ -19,6 +19,15 @@ module System
       # configured (single-plane) and until #14 stamps owners.
       include ::System::Autonomy::ControlPlaneFence
 
+      # RCP v2 (campaign 019f9250, increment p0c) — INV-1: no self-management.
+      # A DISTINCT fence from ControlPlaneFence above (see
+      # SelfManagementFence's doc comment): this one answers "is the target
+      # MY OWN hosting node", not "does another plane own it" — a plane can
+      # legally own (per ControlPlaneFence) the very instance that hosts it,
+      # and that is exactly the case INV-1 forbids. Also nil-safe/inert
+      # until self_hosting_node_id is configured.
+      include ::System::Autonomy::SelfManagementFence
+
       # Maps a CVE signal payload to CveResponseExecutor inputs — a
       # side-effect-free triage whose plan lands in approval request
       # metadata for operator review. The CveResponderService handles the
@@ -506,6 +515,13 @@ module System
           reason: "instance owned by another control plane — skipped (control-plane fence)" }
       end
 
+      # RCP v2 INV-1 counterpart to foreign_control_plane_skip above — same
+      # shape, distinct reason, distinct fence (SelfManagementFence).
+      def self_managed_skip(instance)
+        { applied: false, instance_id: instance.id,
+          reason: "instance is this control plane's own hosting node — skipped (INV-1 self-management fence)" }
+      end
+
       def recently_decided?(signal)
         return false unless Rails.cache.respond_to?(:exist?)
 
@@ -552,6 +568,10 @@ module System
         return nil unless instance && instance.status == "running"
         # Control-plane fence: never reap a fleet member owned by another plane.
         return nil unless owned_by_this_control_plane?(instance)
+        # RCP v2 INV-1: never reap this control plane's own hosting instance —
+        # that decision must come from the consensus group, not this
+        # reconciler's own tick.
+        return nil if self_managed_target?(instance)
 
         heartbeat = instance.last_heartbeat_at
         return nil if heartbeat.nil?
@@ -782,6 +802,7 @@ module System
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
+        return self_managed_skip(instance) if self_managed_target?(instance)
 
         action = if instance.may_reboot?
                    "reboot"
@@ -833,6 +854,7 @@ module System
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
+        return self_managed_skip(instance) if self_managed_target?(instance)
 
         actual_status = (payload["actual_status"] || payload[:actual_status]).to_s
         event = CONVERGENCE_EVENT_FOR_ACTUAL_STATUS[actual_status]
@@ -871,6 +893,7 @@ module System
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "instance not found: #{id.inspect}" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
+        return self_managed_skip(instance) if self_managed_target?(instance)
 
         result = ::System::InstanceControlService.execute(instance: instance, action: "terminate")
         if result.respond_to?(:success?)
@@ -912,6 +935,7 @@ module System
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: instance_id)
         return { applied: false, reason: "instance not found: #{instance_id.inspect}" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
+        return self_managed_skip(instance) if self_managed_target?(instance)
 
         node = instance.node
         return { applied: false, reason: "instance has no node" } unless node
@@ -951,6 +975,7 @@ module System
         instance = ::System::NodeInstance.where(account_id: account.id).find_by(id: target_id)
         return { applied: false, reason: "instance not found" } unless instance
         return foreign_control_plane_skip(instance) unless owned_by_this_control_plane?(instance)
+        return self_managed_skip(instance) if self_managed_target?(instance)
 
         if ::System::Task.where(account: account, operable: instance,
                                 command: command, status: OPEN_TASK_STATUSES).exists?
